@@ -48,6 +48,7 @@ This section verifies that the PRD reflects the key product decisions from the p
 | Build a Next.js agent lab dashboard showing agents, reasoning, messages, and citations in real time. | UX Requirements, Technology Stack. | Captured |
 | Make citations mandatory for every agent decision, not optional. | Mandatory Citation Policy, Exploration Audit Trail, UX Requirements (Citation Explorer). | Captured |
 | Use dynamic confidence thresholds based on actual result complexity, not fixed numbers. | Dynamic Confidence Threshold, Reproducibility Score. | Captured |
+| Use PaperCoder for code generation when no reference repo exists. | Baseline Implementation Agent Mode 2, Technology Stack, Implementation Details. | Captured |
 | Add production-grade trust, safety, versioning, cost, and evaluation controls. | Trust, Safety, And Evaluation, Implementation Details, Success Metrics. | Captured |
 
 Unresolved items from the conversation are intentionally preserved as open product questions: the first demo paper, exact runtime budget, dataset-size threshold, GPU cost threshold, verifier voting rules, and the confidence threshold for labeling a result verified.
@@ -136,6 +137,7 @@ These decisions are locked for the hackathon build. They are not open questions.
 | Context discovery (Layer 2) | Chroma | Fallback and fuzzy discovery: semantic search for conceptual similarity, cross-document connections, and content the agent didn't know to look for |
 | Knowledge graph (Layer 3, Phase 2) | [Graphify](https://github.com/safishamsi/graphify) | Structural knowledge graph from code + docs + papers via Tree-sitter AST + LLM semantic extraction; NetworkX + Leiden community detection; ~1.7k tokens/query vs ~123k naive (71.5x reduction) |
 | RLM implementation | [alexzhang13/rlm](https://github.com/alexzhang13/rlm) or [ysz/recursive-llm](https://github.com/ysz/recursive-llm) | Official and community implementations; LiteLLM-based, works with Claude via API |
+| Code generation (no-repo path) | [PaperCoder / Paper2Code](https://github.com/going-doer/Paper2Code) | Multi-agent paper→code framework; used in Baseline Implementation Agent Mode 2 when no reference repo exists; [arXiv:2504.17192](https://arxiv.org/abs/2504.17192) |
 | Metadata store | SQLite | Zero-config, file-based, sufficient for single-machine MVP |
 | Frontend | Next.js (React) | Real-time agent lab dashboard showing agent topology, reasoning, messages, and citations |
 | Real-time events | WebSocket or SSE from Python backend to Next.js frontend | Stream agent activity, reasoning steps, and inter-agent messages as they happen |
@@ -577,19 +579,32 @@ Responsibilities:
 - Apply any fixes needed for environment compatibility.
 - Record all changes as a diff against the original repository.
 
-#### Mode 2: Implement From Paper
+#### Mode 2: Implement From Paper (via PaperCoder)
 
-Used when no usable repository exists. This is the harder and riskier path.
+Used when no usable repository exists. This mode delegates code generation to [PaperCoder](https://github.com/going-doer/Paper2Code) ([arXiv:2504.17192](https://arxiv.org/abs/2504.17192)), a proven multi-agent framework for turning ML papers into code repositories. PaperCoder is benchmarked on ICLR/ICML/NeurIPS papers with 77% human preference and ~0.81% of generated lines needing modification.
 
-Responsibilities:
+PaperCoder pipeline (runs inside this agent):
 
-- Implement the paper's core algorithm from the method description alone.
-- Use the paper claim map, experiment spec, and assumption ledger as the implementation contract.
-- Make all design choices explicit in the assumption ledger with risk levels.
+1. **Planning**: Constructs a high-level roadmap, system architecture diagrams, file dependencies, and config files from the paper.
+2. **Analysis**: Interprets implementation-specific details (hyperparameters, data pipeline, training loop).
+3. **Generation**: Produces modular, dependency-aware code repository.
+
+ReproLab feeds PaperCoder:
+
+- Paper PDF.
+- Paper Claim Map (from Paper Understanding Agent).
+- Reproduction Contract (from Reproduction Planner).
+- Environment Spec (from Environment Detective Agent).
+
+ReproLab wraps PaperCoder's output:
+
+- Wrap generated code in the Docker environment built by the Environment Detective.
+- Diff PaperCoder's implementation assumptions against the paper text and log them in the assumption ledger with risk levels.
+- Add citations for every implementation decision PaperCoder made (map back to paper sections).
 - Flag the entire run as `implement_from_paper` so verifiers apply stricter method fidelity review.
-- Prefer simple, auditable implementations over optimized ones.
+- Log all generated code as artifacts with provenance pointing to PaperCoder.
 
-This mode generates more assumptions and should automatically raise the baseline assumption risk to at least `high`. The Method Fidelity Verifier must review implementation choices carefully against the paper text.
+This mode generates more assumptions and should automatically raise the baseline assumption risk to at least `high`. The Method Fidelity Verifier must review PaperCoder's implementation choices carefully against the paper text, since PaperCoder optimizes for faithful code generation but does not track assumptions or verify its own output.
 
 #### Shared Rules For Both Modes
 
@@ -2339,6 +2354,7 @@ Recommended backend modules:
 - `rlm_repl`: manages the Python REPL environment, executes agent-written exploration code, and handles `rlm_query()` recursive sub-calls.
 - `semantic_index`: chunks and embeds artifacts into Chroma for fuzzy retrieval. Exposes `semantic_search()` to agents as a fallback.
 - `artifact_discovery`: searches and indexes external artifacts.
+- `papercoder_bridge`: wraps PaperCoder for Mode 2 code generation; feeds upstream context (claim map, reproduction contract, environment spec) into PaperCoder and maps its output back to ReproLab's artifact schema with citations and assumption tracking.
 - `environment_builder`: creates Dockerfiles and lockfiles.
 - `sandbox_manager`: creates isolated local workspaces.
 - `agent_orchestrator`: schedules builder, runner, verifier, and supervisor agents. Mediates inter-agent communication and manages progressive context enrichment (adding agent outputs back to REPL).
