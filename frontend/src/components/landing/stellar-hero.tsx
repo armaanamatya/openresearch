@@ -1,5 +1,7 @@
 import { Star } from "lucide-react";
 
+import { StellarTabStage } from "./stellar-tab-stage";
+
 type StellarHeroProps = {
   children?: React.ReactNode;
 };
@@ -42,6 +44,8 @@ export function StellarHero({ children }: StellarHeroProps) {
       >
         Begin Free Trial
       </button>
+
+      <StellarTabStage />
 
       {children}
     </section>
