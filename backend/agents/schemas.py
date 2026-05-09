@@ -177,6 +177,7 @@ class VerifierScore(BaseModel):
     score: float = Field(default=0.0, ge=0.0, le=1.0)
     findings: list[str] = Field(default_factory=list)
     mismatches: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
     severity: str = ""
 
 

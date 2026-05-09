@@ -38,6 +38,7 @@ def verify_method_fidelity(
     """Check implementation matches paper algorithm."""
     findings: list[str] = []
     mismatches: list[str] = []
+    evidence_refs: list[str] = []
 
     # Check assumptions were applied
     expected_assumptions = set(
@@ -48,6 +49,7 @@ def verify_method_fidelity(
     applied_count = len(expected_assumptions & applied)
     if applied_count == len(expected_assumptions):
         findings.append(f"All {applied_count} assumption decisions applied")
+        evidence_refs.append("baseline_result.assumptions_applied")
     else:
         missing = expected_assumptions - applied
         mismatches.append(f"Missing assumption applications: {missing}")
@@ -60,6 +62,7 @@ def verify_method_fidelity(
     if code_dir and code_dir.exists():
         if (code_dir / "train.py").exists():
             findings.append("train.py entry point exists")
+            evidence_refs.append(str(code_dir / "train.py"))
         else:
             mismatches.append("No train.py found")
 
@@ -69,6 +72,7 @@ def verify_method_fidelity(
         score=max(0.0, min(1.0, score)),
         findings=findings,
         mismatches=mismatches,
+        evidence_refs=evidence_refs,
         severity="low" if not mismatches else "medium",
     )
 
@@ -81,12 +85,15 @@ def verify_environment(
     """Check environment reproducibility."""
     findings: list[str] = []
     mismatches: list[str] = []
+    evidence_refs: list[str] = []
+    has_command_failure = False
 
     # Check Dockerfile exists
     if baseline_result.dockerfile_path:
         df_path = Path(baseline_result.dockerfile_path)
         if df_path.exists():
             content = df_path.read_text()
+            evidence_refs.append(str(df_path))
             if "FROM " in content:
                 findings.append("Valid Dockerfile with base image")
             if "==" in content:
@@ -98,17 +105,46 @@ def verify_environment(
     else:
         mismatches.append("No Dockerfile path specified")
 
-    # Check commands.log
+    # Check structured commands.log
     if artifacts.commands_log_path and Path(artifacts.commands_log_path).exists():
-        findings.append("commands.log exists")
+        command_entries, command_mismatches = _load_command_log(Path(artifacts.commands_log_path))
+        evidence_refs.append(artifacts.commands_log_path)
+        if command_mismatches:
+            mismatches.extend(command_mismatches)
+        elif command_entries:
+            findings.append(f"Structured commands.log has {len(command_entries)} command entries")
+            failed = [
+                entry for entry in command_entries
+                if entry.get("status") != "succeeded" or entry.get("exit_code") not in (0, None)
+            ]
+            if failed:
+                has_command_failure = True
+                mismatches.append(f"{len(failed)} command log entries failed")
+        else:
+            mismatches.append("commands.log has no command entries")
     else:
         mismatches.append("commands.log missing")
 
     # Check logs
     if artifacts.log_path and Path(artifacts.log_path).exists():
         findings.append("Run logs exist")
+        evidence_refs.append(artifacts.log_path)
     else:
         mismatches.append("Run logs missing")
+
+    # Check provenance
+    if artifacts.provenance_path and Path(artifacts.provenance_path).exists():
+        provenance, provenance_mismatches = _load_provenance(Path(artifacts.provenance_path))
+        evidence_refs.append(artifacts.provenance_path)
+        if provenance_mismatches:
+            mismatches.extend(provenance_mismatches)
+        else:
+            findings.append("provenance.json is valid JSON")
+            if provenance.get("success") is False:
+                has_command_failure = True
+                mismatches.append("provenance marks run as unsuccessful")
+    else:
+        mismatches.append("provenance.json missing")
 
     score = 1.0 - (len(mismatches) * 0.2)
     return VerifierScore(
@@ -116,7 +152,8 @@ def verify_environment(
         score=max(0.0, min(1.0, score)),
         findings=findings,
         mismatches=mismatches,
-        severity="low" if not mismatches else "medium",
+        evidence_refs=evidence_refs,
+        severity="high" if has_command_failure else "low" if not mismatches else "medium",
     )
 
 
@@ -127,10 +164,12 @@ def verify_data_metrics(
     """Check data and metric validity."""
     findings: list[str] = []
     mismatches: list[str] = []
+    evidence_refs: list[str] = []
 
     # Check metrics exist
     if artifacts.metrics:
         findings.append(f"Metrics present: {list(artifacts.metrics.keys())}")
+        evidence_refs.append("experiment_artifacts.metrics")
         # Check against target
         for metric_spec in paper_claim_map.metrics:
             if metric_spec.name in artifacts.metrics or "reward" in str(artifacts.metrics):
@@ -152,6 +191,7 @@ def verify_data_metrics(
         score=max(0.0, min(1.0, score)),
         findings=findings,
         mismatches=mismatches,
+        evidence_refs=evidence_refs,
         severity="low" if not mismatches else "high",
     )
 
@@ -163,6 +203,7 @@ def verify_artifacts(
     """Check all hard artifacts exist."""
     findings: list[str] = []
     mismatches: list[str] = []
+    evidence_refs: list[str] = []
 
     required = [
         ("metrics", bool(artifacts.metrics)),
@@ -175,6 +216,16 @@ def verify_artifacts(
     for name, present in required:
         if present:
             findings.append(f"✓ {name}")
+            if name == "metrics":
+                evidence_refs.append("experiment_artifacts.metrics")
+            elif name == "logs" and artifacts.log_path:
+                evidence_refs.append(artifacts.log_path)
+            elif name == "commands.log" and artifacts.commands_log_path:
+                evidence_refs.append(artifacts.commands_log_path)
+            elif name == "provenance.json" and artifacts.provenance_path:
+                evidence_refs.append(artifacts.provenance_path)
+            elif name == "plots":
+                evidence_refs.extend(artifacts.plots)
         else:
             mismatches.append(f"Missing: {name}")
 
@@ -184,6 +235,7 @@ def verify_artifacts(
         score=score,
         findings=findings,
         mismatches=mismatches,
+        evidence_refs=evidence_refs,
         severity="low" if score >= 0.8 else "high",
     )
 
@@ -225,10 +277,15 @@ def run_gate_offline(
     else:
         status = GateStatus.failed_reproduction
 
+    missing_evidence = [s.verifier_name for s in scores if not s.evidence_refs]
+    if status == GateStatus.verified and missing_evidence:
+        status = GateStatus.verified_with_caveats
+
     reasoning = (
         f"Average verifier score: {avg_score:.2f}. "
         f"{len(all_mismatches)} issues found. "
-        f"{'Critical issues present.' if has_critical else 'No critical issues.'}"
+        f"{'Critical issues present.' if has_critical else 'No critical issues.'} "
+        f"{'Missing evidence refs: ' + ', '.join(missing_evidence) + '.' if missing_evidence else 'All verifier scores cite evidence.'}"
     )
 
     return VerificationReport(
@@ -271,6 +328,7 @@ def run_improvement_gate_offline(
         score=overall_score,
         findings=findings,
         mismatches=mismatches,
+        evidence_refs=[p.path_id for p in path_results],
     ))
 
     status = (
@@ -285,3 +343,37 @@ def run_improvement_gate_offline(
         reasoning=f"{len(successful_paths)}/{len(path_results)} improvement paths verified.",
         decision_log_entry=f"gate_3: {status.value}",
     )
+
+
+def _load_command_log(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    entries: list[dict[str, Any]] = []
+    mismatches: list[str] = []
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            mismatches.append(
+                f"commands.log line {line_number} is not structured JSONL"
+            )
+            continue
+        if not isinstance(payload, dict):
+            mismatches.append(f"commands.log line {line_number} is not an object")
+            continue
+        if not payload.get("command"):
+            mismatches.append(f"commands.log line {line_number} missing command")
+        if not payload.get("status"):
+            mismatches.append(f"commands.log line {line_number} missing status")
+        entries.append(payload)
+    return entries, mismatches
+
+
+def _load_provenance(path: Path) -> tuple[dict[str, Any], list[str]]:
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}, ["provenance.json is not valid JSON"]
+    if not isinstance(payload, dict):
+        return {}, ["provenance.json is not an object"]
+    return payload, []

@@ -2,7 +2,8 @@ BASELINE_IMPLEMENTATION_PROMPT = """\
 You are the Baseline Implementation Agent for ReproLab.
 
 # Your Role
-Implement the paper's algorithm as runnable code inside the Docker sandbox.
+Implement the paper's algorithm as runnable code. Write code and Dockerfile
+inputs to disk; the runtime layer executes them in a sandbox.
 
 # Modes
 You operate in one of two modes:

@@ -54,6 +54,29 @@ def _re_register_production_events() -> None:
     except ImportError:
         pass
 
+    try:
+        from backend.services.runtime.events import (
+            CommandExecuted,
+            CommandFailed,
+            SandboxCreated,
+            SandboxDestroyed,
+            SandboxFailed,
+            SandboxRequested,
+        )
+
+        classes.extend(
+            [
+                SandboxRequested,
+                SandboxCreated,
+                SandboxFailed,
+                CommandExecuted,
+                CommandFailed,
+                SandboxDestroyed,
+            ]
+        )
+    except ImportError:
+        pass
+
     for cls in classes:
         try:
             register_event(cls)

@@ -1,6 +1,11 @@
-import { DashboardShell } from "../components/dashboard/dashboard-shell";
-import { sampleDashboardSnapshot } from "../lib/dashboard/fixtures";
+import { StellarHero } from "../components/landing/stellar-hero";
+import { StellarNavigation } from "../components/landing/stellar-navigation";
 
 export default function HomePage() {
-  return <DashboardShell snapshot={sampleDashboardSnapshot} />;
+  return (
+    <main className="min-h-screen bg-white">
+      <StellarNavigation />
+      <StellarHero />
+    </main>
+  );
 }

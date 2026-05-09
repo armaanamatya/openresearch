@@ -36,7 +36,7 @@ from backend.agents.schemas import (
     VerificationReport,
     VerifierScore,
 )
-from backend.agents.orchestrator import PipelineStage, PipelineState
+from backend.agents.orchestrator import PipelineStage, PipelineState, ReproLabOrchestrator
 
 
 # -----------------------------------------------------------------------
@@ -317,3 +317,28 @@ def test_pipeline_stages_are_ordered():
         "complete",
     ]
     assert [s.value for s in stages] == expected_order
+
+
+def test_reproduction_contract_normalizes_expected_outputs():
+    orchestrator = ReproLabOrchestrator(
+        project_id="prj_norm",
+        runs_root=Path("runs"),
+    )
+
+    normalized = orchestrator._normalize_reproduction_contract(
+        {
+            "reproduction_definition": "same algo",
+            "smoke_test_plan": "run smoke",
+            "full_run_plan": "run full",
+            "evaluation_plan": "score reward",
+            "expected_outputs": [
+                {"path": "metrics.json", "description": "metrics artifact"},
+                {"name": "plots/reward_curve.png"},
+            ],
+        }
+    )
+
+    assert normalized["expected_outputs"] == [
+        "metrics.json",
+        "plots/reward_curve.png",
+    ]

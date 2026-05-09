@@ -52,8 +52,21 @@ def _success_artifacts(tmp_path: Path):
     baseline_dir.mkdir(parents=True, exist_ok=True)
     (baseline_dir / "logs").mkdir()
     (baseline_dir / "logs" / "run.log").write_text("OK")
-    (baseline_dir / "commands.log").write_text("python train.py")
-    (baseline_dir / "provenance.json").write_text("{}")
+    (baseline_dir / "commands.log").write_text(
+        json.dumps({
+            "command": "python train.py",
+            "phase": "experiment_runner",
+            "status": "succeeded",
+            "started_at": "2026-05-09T00:00:00+00:00",
+            "finished_at": "2026-05-09T00:00:01+00:00",
+            "duration_seconds": 1.0,
+            "exit_code": 0,
+        })
+        + "\n"
+    )
+    (baseline_dir / "provenance.json").write_text(
+        json.dumps({"success": True, "command_results": [{"exit_code": 0}]})
+    )
     return ExperimentArtifacts(
         metrics={"mean_reward": 487.3},
         plots=[str(baseline_dir / "plot.png")],
@@ -95,6 +108,25 @@ class TestEnvironmentVerifier:
         score = verify_environment(bl, arts)
         assert len(score.mismatches) >= 1
 
+    def test_malformed_command_log_is_flagged(self, tmp_path: Path):
+        arts = _success_artifacts(tmp_path)
+        Path(arts.commands_log_path).write_text("python train.py\n")
+        score = verify_environment(_baseline(tmp_path), arts)
+        assert any("structured JSONL" in mismatch for mismatch in score.mismatches)
+
+    def test_failed_command_log_is_high_severity(self, tmp_path: Path):
+        arts = _success_artifacts(tmp_path)
+        Path(arts.commands_log_path).write_text(
+            json.dumps({
+                "command": "python train.py",
+                "status": "failed",
+                "exit_code": 1,
+            })
+            + "\n"
+        )
+        score = verify_environment(_baseline(tmp_path), arts)
+        assert score.severity == "high"
+
 
 class TestDataMetricsVerifier:
     def test_success_with_metrics(self, tmp_path: Path):
@@ -126,6 +158,7 @@ class TestGateOffline:
         )
         assert report.status in (GateStatus.verified, GateStatus.verified_with_caveats)
         assert len(report.verifier_scores) == 4
+        assert all(score.evidence_refs for score in report.verifier_scores)
 
     def test_gate_2_fails_on_failure(self, tmp_path: Path):
         arts = ExperimentArtifacts(success=False, error_message="Crashed")
