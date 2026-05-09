@@ -239,7 +239,7 @@ class WorkspaceAppService:
                 )
             )
         # Pydantic NonEmptyCitations rejects empty — caller checks first.
-        return tuple(citations)  # type: ignore[return-value]
+        return tuple(citations)
 
     # --- Internal: aggregate / append helpers -----------------------------
 

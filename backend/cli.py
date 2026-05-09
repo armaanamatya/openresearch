@@ -46,7 +46,15 @@ import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
 
 
-def _make_services(database_url: str, runs_root: Path) -> tuple:
+def _make_services(
+    database_url: str, runs_root: Path
+) -> tuple[
+    SqliteEventStore,
+    IntakeAppService,
+    ParserAppService,
+    IndexerAppService,
+    WorkspaceAppService,
+]:
     store = SqliteEventStore(database_url)
     intake = IntakeAppService(
         store=store,

@@ -55,6 +55,9 @@ _HEADING_NAMED = re.compile(
 
 # References section detection (case-insensitive, line-anchored).
 _REF_HEADING = re.compile(r"^(References|Bibliography)\s*$", re.IGNORECASE)
+_REF_LABEL_LINE = re.compile(
+    r"^\s*(?:\[[^\]\n]{1,40}\]|\d{1,4}[.)])\s+"
+)
 
 # Patterns for individual references.
 _ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE)
@@ -207,9 +210,7 @@ class PyMuPdfParser:
             return []
 
         ref_text = "\n".join(lines[ref_start:])
-        # Naive splitter: blocks separated by blank lines. References are
-        # often blocks of multiple wrapped lines.
-        blocks = [b.strip() for b in re.split(r"\n\s*\n", ref_text) if b.strip()]
+        blocks = PyMuPdfParser._split_reference_blocks(ref_text)
 
         refs: list[Reference] = []
         for block in blocks:
@@ -230,6 +231,47 @@ class PyMuPdfParser:
                 )
             )
         return refs
+
+    @staticmethod
+    def _split_reference_blocks(ref_text: str) -> list[str]:
+        """Split a references section into likely individual citations.
+
+        PyMuPDF often collapses blank lines from generated or dense PDFs,
+        so relying only on paragraph breaks can merge adjacent references.
+        Start a new block when a line begins with a conventional reference
+        label, while preserving wrapped continuation lines.
+        """
+        blocks: list[str] = []
+        current: list[str] = []
+        saw_label = False
+
+        for raw_line in ref_text.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                if current:
+                    current.append("")
+                continue
+
+            starts_labeled_ref = _REF_LABEL_LINE.match(stripped) is not None
+            if starts_labeled_ref:
+                saw_label = True
+                if current:
+                    blocks.append("\n".join(current).strip())
+                current = [stripped]
+                continue
+
+            current.append(line)
+
+        if current:
+            blocks.append("\n".join(current).strip())
+
+        if saw_label:
+            return [block for block in blocks if block]
+
+        # Fallback for unlabeled bibliographies: paragraphs separated by
+        # blank lines are the least surprising unit.
+        return [b.strip() for b in re.split(r"\n\s*\n", ref_text) if b.strip()]
 
 
 __all__ = ["PyMuPdfParser"]

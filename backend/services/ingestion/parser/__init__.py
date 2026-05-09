@@ -22,6 +22,7 @@ from backend.services.ingestion.parser.model import (
 )
 from backend.services.ingestion.parser.service import (
     ParserAppService,
+    ParserError,
     StartParsing,
 )
 
@@ -31,6 +32,7 @@ __all__ = [
     "Parser",
     "ParseError",
     "ParserAppService",
+    "ParserError",
     "ParsedPaperAggregate",
     "ParsedPaperState",
     "ParsingCompleted",
