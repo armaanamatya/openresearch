@@ -63,7 +63,7 @@ class TrainingRecipe(BaseModel):
     batch_size: str = ""
     epochs_or_steps: str = ""
     scheduler: str = ""
-    other_hparams: dict[str, str] = Field(default_factory=dict)
+    other_hparams: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +72,7 @@ class TrainingRecipe(BaseModel):
 
 class PaperClaimMap(BaseModel):
     """Canonical extraction of the paper's claims, methods, and gaps."""
+    model_config = {"extra": "ignore"}
     core_contribution: str
     claims: list[dict[str, str]] = Field(
         default_factory=list,
@@ -92,17 +93,19 @@ class PaperClaimMap(BaseModel):
 
 class EnvironmentSpec(BaseModel):
     """Dockerfile and dependency specification."""
-    dockerfile: str = Field(description="Full Dockerfile content")
+    model_config = {"extra": "ignore"}
+    dockerfile: str = Field(default="", description="Full Dockerfile content")
     python_version: str = ""
     framework: str = ""
-    framework_version: str = ""
+    framework_version: str | dict[str, str] = ""
     system_packages: list[str] = Field(default_factory=list)
-    pip_packages: dict[str, str] = Field(
+    pip_packages: dict[str, Any] = Field(
         default_factory=dict,
-        description="package_name -> pinned_version",
+        description="package_name -> pinned_version (or nested env dicts)",
     )
     assumptions: list[Assumption] = Field(default_factory=list)
-    compatibility_notes: str = ""
+    compatibility_notes: str | list[str] = ""
+    extra: dict[str, Any] = Field(default_factory=dict, description="Overflow for LLM-generated fields")
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +114,8 @@ class EnvironmentSpec(BaseModel):
 
 class ReproductionContract(BaseModel):
     """Defines what counts as reproduction for this paper."""
-    reproduction_definition: str
+    model_config = {"extra": "ignore"}
+    reproduction_definition: str = ""
     smoke_test_plan: str = ""
     full_run_plan: str = ""
     expected_outputs: list[str] = Field(default_factory=list)
@@ -126,7 +130,8 @@ class ReproductionContract(BaseModel):
 
 class BaselineResult(BaseModel):
     """Output of the Baseline Implementation Agent."""
-    mode: str = Field(description="'adapt' or 'implement_from_paper'")
+    model_config = {"extra": "ignore"}
+    mode: str = Field(default="", description="'adapt' or 'implement_from_paper'")
     code_path: str = ""
     dockerfile_path: str = ""
     diff_summary: str = ""
@@ -143,6 +148,7 @@ class BaselineResult(BaseModel):
 
 class ExperimentArtifacts(BaseModel):
     """Hard artifacts produced by the experiment runner."""
+    model_config = {"extra": "ignore"}
     metrics: dict[str, Any] = Field(default_factory=dict)
     plots: list[str] = Field(default_factory=list, description="Plot file paths")
     log_path: str = ""
@@ -166,8 +172,9 @@ class GateStatus(str, enum.Enum):
 
 
 class VerifierScore(BaseModel):
-    verifier_name: str
-    score: float = Field(ge=0.0, le=1.0)
+    model_config = {"extra": "ignore"}
+    verifier_name: str = ""
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
     findings: list[str] = Field(default_factory=list)
     mismatches: list[str] = Field(default_factory=list)
     severity: str = ""
@@ -175,7 +182,8 @@ class VerifierScore(BaseModel):
 
 class VerificationReport(BaseModel):
     """Output of the Supervisor Verification Agent."""
-    gate: str = Field(description="gate_1, gate_2, or gate_3")
+    model_config = {"extra": "ignore"}
+    gate: str = Field(default="", description="gate_1, gate_2, or gate_3")
     status: GateStatus
     verifier_scores: list[VerifierScore] = Field(default_factory=list)
     reasoning: str = ""
@@ -196,6 +204,7 @@ class GateDecision(BaseModel):
 
 class ImprovementHypothesis(BaseModel):
     """A single improvement path hypothesis."""
+    model_config = {"extra": "ignore"}
     path_id: str
     hypothesis: str
     rationale: str
@@ -206,7 +215,8 @@ class ImprovementHypothesis(BaseModel):
 
 class PathResult(BaseModel):
     """Output of one Improvement Path Agent."""
-    path_id: str
+    model_config = {"extra": "ignore"}
+    path_id: str = ""
     hypothesis: str
     diff_summary: str = ""
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -223,7 +233,8 @@ class PathResult(BaseModel):
 
 class ResearchMap(BaseModel):
     """Final synthesis produced by the Supervisor after all paths verified."""
-    baseline_summary: str
+    model_config = {"extra": "ignore"}
+    baseline_summary: str = ""
     promising_directions: list[str] = Field(default_factory=list)
     dead_ends: list[str] = Field(default_factory=list)
     inconclusive: list[str] = Field(default_factory=list)

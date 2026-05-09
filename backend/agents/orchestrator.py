@@ -16,6 +16,8 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    ToolUseBlock,
     query,
 )
 
@@ -180,7 +183,7 @@ class ReproLabOrchestrator:
         runs_root: Path,
         *,
         model: str | None = None,
-        max_turns_per_agent: int = 30,
+        max_turns_per_agent: int = 15,
         permission_mode: str = "bypassPermissions",
     ) -> None:
         self.project_id = project_id
@@ -191,54 +194,124 @@ class ReproLabOrchestrator:
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
 
+    # Agents that write code / run experiments need more turns
+    _HEAVY_AGENTS = {"baseline-implementation", "improvement-path", "experiment-runner"}
+
     async def _invoke_agent(
         self,
         agent_id: str,
         task_prompt: str,
         *,
         cwd: str | Path | None = None,
+        max_turns: int | None = None,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
         spec = AGENT_REGISTRY[agent_id]
         agent_defs = get_agent_definitions()
 
-        full_prompt = f"{spec.prompt}\n\n---\n\n# Current Task\n{task_prompt}"
+        # Implementation agents get more turns (they write code)
+        if max_turns is None:
+            max_turns = 30 if agent_id in self._HEAVY_AGENTS else self.max_turns_per_agent
 
         options = ClaudeAgentOptions(
             model=self.model,
             permission_mode=self.permission_mode,
-            max_turns=self.max_turns_per_agent,
+            max_turns=max_turns,
             agents=agent_defs,
             cwd=str(cwd or self._project_dir),
             system_prompt=spec.prompt,
         )
 
         collected_text: list[str] = []
+        t0 = time.time()
+        msg_count = 0
+        print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
+
         async for message in query(prompt=task_prompt, options=options):
+            elapsed = time.time() - t0
+            msg_count += 1
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if hasattr(block, "text"):
+                    if hasattr(block, "text") and block.text:
                         collected_text.append(block.text)
+                        snippet = block.text[:120].replace("\n", " ").strip()
+                        if snippet:
+                            print(
+                                f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    elif isinstance(block, ToolUseBlock):
+                        # Show tool calls so the user sees activity
+                        tool_info = block.name
+                        inp = block.input or {}
+                        if "file_path" in inp:
+                            tool_info += f" {inp['file_path']}"
+                        elif "command" in inp:
+                            cmd = str(inp["command"])[:80]
+                            tool_info += f" `{cmd}`"
+                        elif "pattern" in inp:
+                            tool_info += f" {inp['pattern']}"
+                        print(
+                            f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
             elif isinstance(message, ResultMessage):
                 if message.is_error:
-                    logger.error(
-                        "Agent %s failed: %s",
-                        agent_id,
-                        collected_text[-1] if collected_text else "unknown error",
+                    err = collected_text[-1][:200] if collected_text else "unknown error"
+                    print(
+                        f"  [{agent_id}] ERROR after {elapsed:.0f}s: {err}",
+                        file=sys.stderr,
+                        flush=True,
                     )
+                    logger.error("Agent %s failed: %s", agent_id, err)
+                else:
+                    print(
+                        f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} messages, {sum(len(t) for t in collected_text)} chars)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
         result = "\n".join(collected_text)
+        if not result.strip():
+            print(
+                f"  [{agent_id}] WARNING: empty output after {time.time()-t0:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
         logger.info("Agent %s completed (%d chars output)", agent_id, len(result))
         return result
 
-    def _extract_json(self, text: str) -> dict[str, Any]:
-        """Extract JSON from agent output, handling markdown fences."""
-        # Try to find JSON in code fences first
+    def _normalize_verifier_scores(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Normalize LLM-generated verification data to match schema expectations."""
+        if "verifier_scores" in data:
+            for vs in data["verifier_scores"]:
+                # LLM sometimes uses "verifier" instead of "verifier_name"
+                if "verifier" in vs and "verifier_name" not in vs:
+                    vs["verifier_name"] = vs.pop("verifier")
+                # LLM sometimes returns 0-100 scores instead of 0.0-1.0
+                if "score" in vs and isinstance(vs["score"], (int, float)) and vs["score"] > 1.0:
+                    vs["score"] = vs["score"] / 100.0
+        return data
+
+    def _extract_json(self, text: str, fallback_file: str | None = None) -> dict[str, Any]:
+        """Extract JSON from agent output, handling markdown fences.
+
+        If the agent wrote JSON to a file instead of returning it inline,
+        falls back to reading the file from disk.
+        """
         import re
 
+        # Try to find JSON in code fences first
         fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
         if fence_match:
-            return json.loads(fence_match.group(1))
-        # Try to find a top-level JSON object
+            try:
+                return json.loads(fence_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to find a top-level JSON object in text
         brace_start = text.find("{")
         if brace_start >= 0:
             depth = 0
@@ -248,20 +321,42 @@ class ReproLabOrchestrator:
                 elif text[i] == "}":
                     depth -= 1
                     if depth == 0:
-                        return json.loads(text[brace_start : i + 1])
+                        try:
+                            return json.loads(text[brace_start : i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        # Fallback: check if agent wrote to the expected file on disk
+        if fallback_file:
+            fpath = Path(fallback_file)
+            if fpath.exists():
+                logger.info("Reading agent output from file: %s", fpath)
+                return json.loads(fpath.read_text())
+            # Also check if agent used relative path from its cwd
+            # (creates nested runs/project_id/runs/project_id/file)
+            nested = self._project_dir / fpath.name
+            if nested.exists():
+                logger.info("Reading agent output from nested file: %s", nested)
+                return json.loads(nested.read_text())
+            # Search recursively for the file
+            for found in self._project_dir.rglob(fpath.name):
+                logger.info("Reading agent output from found file: %s", found)
+                return json.loads(found.read_text())
+
         raise ValueError(f"No JSON found in agent output: {text[:200]}")
 
     async def run_paper_understanding(self, state: PipelineState) -> PipelineState:
         """Step 1: Paper Understanding Agent."""
         logger.info("[1/9] Running Paper Understanding Agent")
+        out_file = self._project_dir / "paper_claim_map.json"
         prompt = (
             f"Analyze the paper for project {self.project_id}.\n"
             f"The parsed paper content is in: {self._project_dir}\n"
             f"Read the parsed sections and extract the full PaperClaimMap.\n"
-            f"Write the output to {self._project_dir}/paper_claim_map.json"
+            f"Return the JSON in your response AND write it to {out_file}"
         )
         output = await self._invoke_agent("paper-understanding", prompt)
-        data = self._extract_json(output)
+        data = self._extract_json(output, fallback_file=str(out_file))
         state.paper_claim_map = PaperClaimMap(**data)
         # Merge ambiguities into assumption ledger
         for amb in state.paper_claim_map.ambiguities:
@@ -279,7 +374,9 @@ class ReproLabOrchestrator:
             f"Write artifact_index.json to {self._project_dir}/"
         )
         output = await self._invoke_agent("artifact-discovery", prompt)
-        state.artifact_index = self._extract_json(output)
+        state.artifact_index = self._extract_json(
+            output, fallback_file=str(self._project_dir / "artifact_index.json"),
+        )
         state.stage = PipelineStage.ARTIFACTS_DISCOVERED
         return state
 
@@ -296,7 +393,9 @@ class ReproLabOrchestrator:
             f"Write Dockerfile and environment_spec.json to {self._project_dir}/"
         )
         output = await self._invoke_agent("environment-detective", prompt)
-        data = self._extract_json(output)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "environment_spec.json"),
+        )
         state.environment_spec = EnvironmentSpec(**data)
         # Merge environment assumptions
         for assumption in state.environment_spec.assumptions:
@@ -318,7 +417,9 @@ class ReproLabOrchestrator:
             f"Write reproduction_contract.json to {self._project_dir}/"
         )
         output = await self._invoke_agent("reproduction-planner", prompt)
-        data = self._extract_json(output)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "reproduction_contract.json"),
+        )
         state.reproduction_contract = ReproductionContract(**data)
         state.stage = PipelineStage.PLAN_CREATED
         return state
@@ -339,7 +440,7 @@ class ReproLabOrchestrator:
             f"Run all 4 verifiers and produce a final gate decision."
         )
         output = await self._invoke_agent("supervisor-verifier", prompt)
-        data = self._extract_json(output)
+        data = self._normalize_verifier_scores(self._extract_json(output))
         report = VerificationReport(**data)
         state.gate_1 = GateDecision(
             gate="gate_1",
@@ -371,7 +472,9 @@ class ReproLabOrchestrator:
         output = await self._invoke_agent(
             "baseline-implementation", prompt, cwd=code_dir,
         )
-        data = self._extract_json(output)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "baseline_result.json"),
+        )
         state.baseline_result = BaselineResult(**data)
         state.stage = PipelineStage.BASELINE_IMPLEMENTED
         return state
@@ -391,7 +494,9 @@ class ReproLabOrchestrator:
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
         )
         output = await self._invoke_agent("experiment-runner", prompt)
-        data = self._extract_json(output)
+        data = self._extract_json(
+            output, fallback_file=str(baseline_dir / "experiment_artifacts.json"),
+        )
         state.experiment_artifacts = ExperimentArtifacts(**data)
         state.stage = PipelineStage.BASELINE_RUN
         return state
@@ -413,7 +518,7 @@ class ReproLabOrchestrator:
             f"Run all 4 verifiers and produce a final gate decision."
         )
         output = await self._invoke_agent("supervisor-verifier", prompt)
-        data = self._extract_json(output)
+        data = self._normalize_verifier_scores(self._extract_json(output))
         report = VerificationReport(**data)
         state.gate_2 = GateDecision(
             gate="gate_2",
@@ -502,7 +607,7 @@ class ReproLabOrchestrator:
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
         )
         output = await self._invoke_agent("supervisor-verifier", prompt)
-        data = self._extract_json(output)
+        data = self._normalize_verifier_scores(self._extract_json(output))
         report = VerificationReport(**data)
         state.gate_3 = GateDecision(
             gate="gate_3",
@@ -533,7 +638,9 @@ class ReproLabOrchestrator:
             f"Write research_map.json to {self._project_dir}/"
         )
         output = await self._invoke_agent("supervisor-verifier", prompt)
-        data = self._extract_json(output)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "research_map.json"),
+        )
         state.research_map = ResearchMap(**data)
         state.stage = PipelineStage.RESEARCH_MAP_GENERATED
         # Write final artifacts
@@ -583,17 +690,26 @@ class ReproLabOrchestrator:
         for target_stage, step_fn in pipeline:
             target_idx = stages_order.index(target_stage)
             if current_idx >= target_idx:
-                logger.info("Skipping %s (already at %s)", target_stage.value, state.stage.value)
+                print(f"  >> Skipping {target_stage.value} (already at {state.stage.value})", file=sys.stderr, flush=True)
                 continue
-            state = await step_fn(state)
+            print(f"\n{'='*50}", file=sys.stderr, flush=True)
+            print(f"  > Starting: {target_stage.value}", file=sys.stderr, flush=True)
+            print(f"{'='*50}", file=sys.stderr, flush=True)
+            try:
+                state = await step_fn(state)
+            except Exception as exc:
+                print(f"  X FAILED: {target_stage.value} -- {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                logger.exception("Step %s failed", target_stage.value)
+                raise
+            print(f"  OK Completed: {state.stage.value}", file=sys.stderr, flush=True)
             current_idx = stages_order.index(state.stage)
 
             # Check gate results
             if state.gate_1 and not state.gate_1.passed:
-                logger.error("Gate 1 FAILED: %s", state.gate_1.status.value)
+                print(f"  X Gate 1 FAILED: {state.gate_1.status.value}", file=sys.stderr, flush=True)
                 return state
             if state.gate_2 and not state.gate_2.passed:
-                logger.error("Gate 2 FAILED: %s", state.gate_2.status.value)
+                print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
                 return state
 
         # Improvement phase
