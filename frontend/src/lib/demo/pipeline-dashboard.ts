@@ -4,6 +4,7 @@ import type {
   DashboardSnapshot,
   ProgressStatus
 } from "@/lib/events/contract";
+import type { DemoProvider } from "./demo-run-types";
 
 type GateStatus =
   | "verified"
@@ -94,6 +95,7 @@ export interface LiveDemoMeta {
   outputDir: string;
   sourceKind: "repo_pdf" | "workspace_fixture";
   runMode: "offline" | "sdk";
+  llmProvider?: DemoProvider;
   sourceLabel: string;
   sourceNote: string;
 }
@@ -108,12 +110,19 @@ export interface LiveDemoPayload extends LiveDemoMeta {
     meanReward: number | null;
     improvementCount: number;
     runModeLabel: string;
+    llmProvider?: DemoProvider;
     sourceLabel: string;
   };
 }
 
-function runModeLabel(runMode: LiveDemoMeta["runMode"]): string {
-  return runMode === "sdk" ? "SDK" : "Offline";
+function runModeLabel(runMode: LiveDemoMeta["runMode"], provider?: DemoProvider): string {
+  if (runMode !== "sdk") {
+    return "Offline";
+  }
+  if (!provider) {
+    return "SDK";
+  }
+  return provider === "openai" ? "SDK: OpenAI" : "SDK: Anthropic";
 }
 
 function toStatusTone(status?: GateStatus): ProgressStatus {
@@ -247,7 +256,7 @@ function buildInitialSnapshot(
         items: [
           `Implementation mode: ${state.baseline_result?.mode ?? "pending"}`,
           `Applied assumptions: ${(state.baseline_result?.assumptions_applied ?? []).join(", ") || "Pending"}`,
-          `Run mode: ${runModeLabel(meta.runMode)}`,
+          `Run mode: ${runModeLabel(meta.runMode, meta.llmProvider)}`,
           meta.sourceNote
         ]
       },
@@ -658,7 +667,8 @@ export function buildLiveDemoDashboard(
       stage: state.stage,
       meanReward: Number.isFinite(meanReward) ? meanReward : null,
       improvementCount: pathResults.length,
-      runModeLabel: runModeLabel(meta.runMode),
+      runModeLabel: runModeLabel(meta.runMode, meta.llmProvider),
+      llmProvider: meta.llmProvider,
       sourceLabel: meta.sourceLabel
     }
   };

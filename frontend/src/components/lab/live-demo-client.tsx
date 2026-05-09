@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 
 import { DashboardShell } from "@/features/dashboard/dashboard-shell";
-import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { DemoProvider, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import { createMockEventAdapter } from "@/lib/events/mock-event-adapter";
 
 interface LiveDemoClientProps {
@@ -11,6 +12,18 @@ interface LiveDemoClientProps {
 }
 
 const POLL_INTERVAL_MS = 3000;
+const PROVIDER_OPTIONS: Array<{ value: DemoProvider; label: string; helper: string }> = [
+  {
+    value: "anthropic",
+    label: "Anthropic",
+    helper: "Claude Agent SDK"
+  },
+  {
+    value: "openai",
+    label: "OpenAI",
+    helper: "OpenAI Agents SDK"
+  }
+];
 
 function formatStatus(status: LiveDemoRunState["status"] | "idle") {
   switch (status) {
@@ -44,6 +57,9 @@ function statusTone(status: LiveDemoRunState["status"] | "idle") {
 
 export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   const [run, setRun] = useState(initialRun);
+  const [sdkProvider, setSdkProvider] = useState<DemoProvider>(
+    initialRun?.llmProvider ?? "anthropic"
+  );
   const [runningMode, setRunningMode] = useState<"offline" | "sdk" | null>(
     initialRun && (initialRun.status === "queued" || initialRun.status === "running")
       ? initialRun.runMode
@@ -64,6 +80,12 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   }, [run]);
 
   useEffect(() => {
+    if (run?.llmProvider) {
+      setSdkProvider(run.llmProvider);
+    }
+  }, [run?.llmProvider]);
+
+  useEffect(() => {
     if (run?.status !== "queued" && run?.status !== "running") {
       setRunningMode(null);
       if (pollTimer.current) {
@@ -74,11 +96,14 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     }
 
     const projectId = run.projectId;
+    const providerParam =
+      run.runMode === "sdk" && run.llmProvider ? `&provider=${run.llmProvider}` : "";
     pollTimer.current = window.setTimeout(async () => {
       try {
-        const response = await fetch(`/api/demo?projectId=${projectId}&mode=${run.runMode}`, {
-          cache: "no-store"
-        });
+        const response = await fetch(
+          `/api/demo?projectId=${projectId}&mode=${run.runMode}${providerParam}`,
+          { cache: "no-store" }
+        );
         if (!response.ok) {
           throw new Error(`Status check failed with ${response.status}`);
         }
@@ -110,7 +135,10 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     setError(null);
 
     try {
-      const response = await fetch(`/api/demo?mode=${mode}`, { method: "POST" });
+      const providerParam = mode === "sdk" ? `&provider=${sdkProvider}` : "";
+      const response = await fetch(`/api/demo?mode=${mode}${providerParam}`, {
+        method: "POST"
+      });
       if (!response.ok) {
         throw new Error(`Demo run failed with status ${response.status}`);
       }
@@ -126,6 +154,9 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   const currentStatus = run?.status ?? "idle";
   const currentPayload = run?.payload;
   const currentStage = currentPayload?.summary.stage ?? "not started";
+  const activeProvider = run?.llmProvider ?? sdkProvider;
+  const activeProviderLabel =
+    PROVIDER_OPTIONS.find((option) => option.value === activeProvider)?.label ?? "Anthropic";
 
   return (
     <main className="min-h-screen bg-stone-950 px-6 py-10 text-stone-100">
@@ -145,23 +176,50 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3">
-            <button
-              className="inline-flex items-center justify-center rounded-full bg-emerald-400 px-6 py-3 text-sm font-semibold text-stone-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-stone-700 disabled:text-stone-300"
-              disabled={runningMode !== null}
-              onClick={() => void handleRun("offline")}
-              type="button"
+          <div className="flex w-full flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:w-auto sm:min-w-[18rem]">
+            <label
+              className="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400"
+              htmlFor="sdk-provider"
             >
-              {runningMode === "offline" ? "Starting offline run..." : "Run offline demo"}
-            </button>
-            <button
-              className="inline-flex items-center justify-center rounded-full border border-emerald-300/40 bg-transparent px-6 py-3 text-sm font-semibold text-emerald-100 transition hover:border-emerald-200 hover:bg-emerald-300/10 disabled:cursor-not-allowed disabled:border-stone-700 disabled:text-stone-500"
-              disabled={runningMode !== null}
-              onClick={() => void handleRun("sdk")}
-              type="button"
-            >
-              {runningMode === "sdk" ? "Starting SDK run..." : "Run SDK demo"}
-            </button>
+              SDK provider
+            </label>
+            <div className="relative">
+              <select
+                className="w-full appearance-none rounded-xl border border-white/10 bg-stone-950 px-4 py-3 pr-10 text-sm font-semibold text-white outline-none transition focus:border-emerald-300/70 disabled:cursor-not-allowed disabled:text-stone-500"
+                disabled={runningMode !== null}
+                id="sdk-provider"
+                onChange={(event) => setSdkProvider(event.target.value as DemoProvider)}
+                value={sdkProvider}
+              >
+                {PROVIDER_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label} - {option.helper}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown
+                aria-hidden="true"
+                className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400"
+              />
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                className="inline-flex flex-1 items-center justify-center rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-stone-700 disabled:text-stone-300"
+                disabled={runningMode !== null}
+                onClick={() => void handleRun("offline")}
+                type="button"
+              >
+                {runningMode === "offline" ? "Starting offline run..." : "Run offline demo"}
+              </button>
+              <button
+                className="inline-flex flex-1 items-center justify-center rounded-full border border-emerald-300/40 bg-transparent px-5 py-3 text-sm font-semibold text-emerald-100 transition hover:border-emerald-200 hover:bg-emerald-300/10 disabled:cursor-not-allowed disabled:border-stone-700 disabled:text-stone-500"
+                disabled={runningMode !== null}
+                onClick={() => void handleRun("sdk")}
+                type="button"
+              >
+                {runningMode === "sdk" ? "Starting SDK run..." : "Run SDK"}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -174,7 +232,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         {(currentStatus === "queued" || currentStatus === "running") && run ? (
           <div className="mt-6 rounded-2xl border border-sky-400/30 bg-sky-400/10 px-4 py-3 text-sm text-sky-50">
             {run.runMode === "sdk"
-              ? "The Claude SDK pipeline is running in the background. This page refreshes checkpoints every few seconds."
+              ? `The ${activeProviderLabel} SDK pipeline is running in the background. This page refreshes checkpoints every few seconds.`
               : "The offline demo is running in the background. This page refreshes checkpoints every few seconds."}
           </div>
         ) : null}
@@ -194,11 +252,11 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
             <p className="text-xs uppercase tracking-[0.28em] text-stone-400">Mode</p>
             <p className="mt-2 text-lg font-medium text-white">
               {currentPayload?.summary.runModeLabel ??
-                (run ? (run.runMode === "sdk" ? "SDK" : "Offline") : "No run yet")}
+                (run ? (run.runMode === "sdk" ? `SDK: ${activeProviderLabel}` : "Offline") : "No run yet")}
             </p>
             <p className="mt-2 text-sm leading-6 text-stone-400">
               {run?.runMode === "sdk"
-                ? "Claude SDK path using your local Claude authentication."
+                ? `${activeProviderLabel} agent runtime using local credentials.`
                 : "Deterministic offline path for fast UI checks."}
             </p>
           </div>

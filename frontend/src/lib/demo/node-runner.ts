@@ -1,10 +1,12 @@
 import "server-only";
 
 import { promises as fs } from "fs";
+import { existsSync } from "fs";
 import path from "path";
 import { spawn } from "child_process";
 
 import type {
+  DemoProvider,
   DemoRunMode,
   DemoRunStatus,
   LiveDemoRunState
@@ -43,6 +45,7 @@ interface DemoRunStatusFile {
   projectId: string;
   outputDir: string;
   runMode: DemoRunMode;
+  llmProvider?: DemoProvider;
   status: DemoRunStatus;
   startedAt: string;
   updatedAt: string;
@@ -51,7 +54,39 @@ interface DemoRunStatusFile {
 }
 
 function repoRoot(): string {
-  return path.resolve(process.cwd(), "..");
+  return path.resolve(/* turbopackIgnore: true */ process.cwd(), "..");
+}
+
+/**
+ * Resolve the Python interpreter to use for backend subprocesses.
+ *
+ * Resolution order:
+ *   1. `REPROLAB_PYTHON_BIN` env var (explicit override).
+ *   2. Local virtualenv at `<repo>/.venv/bin/python` (Linux/macOS) or
+ *      `<repo>/.venv/Scripts/python.exe` (Windows).
+ *   3. System `python3` (POSIX) or `py` (Windows) as a last resort.
+ *
+ * The venv path is preferred so the subprocess inherits the project's
+ * pinned dependencies (pydantic, claude-agent-sdk, deepeval, etc).
+ * Without this resolution, the runner falls back to system Python which
+ * lacks the project's deps and fails with `ModuleNotFoundError`.
+ */
+function pythonBinary(): string {
+  const override = process.env.REPROLAB_PYTHON_BIN?.trim();
+  if (override) {
+    return override;
+  }
+  const root = repoRoot();
+  const venvCandidates =
+    process.platform === "win32"
+      ? [path.join(root, ".venv", "Scripts", "python.exe")]
+      : [path.join(root, ".venv", "bin", "python")];
+  for (const candidate of venvCandidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return process.platform === "win32" ? "py" : "python3";
 }
 
 function runsRoot(): string {
@@ -77,13 +112,15 @@ function pipelineStatePath(projectId: string): string {
 function defaultMeta(
   projectId: string,
   outputDir: string,
-  runMode: DemoRunMode
+  runMode: DemoRunMode,
+  llmProvider?: DemoProvider
 ): LiveDemoMeta {
   return {
     projectId,
     outputDir,
     sourceKind: "workspace_fixture",
     runMode,
+    llmProvider,
     sourceLabel: "In-repo PPO workspace fixture",
     sourceNote:
       "The repo currently does not contain a checked-in paper PDF, so this UI demo uses the deterministic PPO workspace fixture that already drives the end-to-end pipeline tests."
@@ -121,17 +158,30 @@ async function readLogTail(projectId: string, maxChars = 12000): Promise<string>
   }
 }
 
-async function payloadForProject(projectId: string, runMode: DemoRunMode, log = "") {
+async function payloadForProject(
+  projectId: string,
+  runMode: DemoRunMode,
+  log = "",
+  llmProvider?: DemoProvider
+) {
   const outputDir = runDir(projectId);
   const state = await readPipelineState(projectId);
   if (!state) {
     return null;
   }
 
-  return buildLiveDemoDashboard(state, defaultMeta(projectId, outputDir, runMode), log);
+  return buildLiveDemoDashboard(
+    state,
+    defaultMeta(projectId, outputDir, runMode, llmProvider),
+    log
+  );
 }
 
-function buildPythonScript(projectId: string, runMode: DemoRunMode): string {
+function buildPythonScript(
+  projectId: string,
+  runMode: DemoRunMode,
+  llmProvider: DemoProvider
+): string {
   return `
 import asyncio
 import json
@@ -142,6 +192,7 @@ from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk
 
 workspace = json.loads(r'''${JSON.stringify(DEMO_WORKSPACE)}''')
 project_id = r'''${projectId}'''
+llm_provider = r'''${llmProvider}'''
 runs_root = Path(r'''${runsRoot()}''')
 output_dir = (runs_root / project_id).resolve()
 output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +210,8 @@ def write_status(status, error=None, completed_at=None):
         "startedAt": started_at,
         "updatedAt": now(),
     }
+    if "${runMode}" == "sdk":
+        payload["llmProvider"] = llm_provider
     if completed_at:
         payload["completedAt"] = completed_at
     if error:
@@ -174,6 +227,7 @@ try:
             project_id,
             runs_root,
             workspace,
+            provider=llm_provider,
             user_hints=["Keep this as a lightweight smoke test"],
             n_improvement_paths=1,
         ))
@@ -186,7 +240,10 @@ except Exception as exc:
 `;
 }
 
-async function latestProjectId(runMode?: DemoRunMode): Promise<string | null> {
+async function latestProjectId(
+  runMode?: DemoRunMode,
+  llmProvider?: DemoProvider
+): Promise<string | null> {
   try {
     const entries = await fs.readdir(runsRoot(), { withFileTypes: true });
     const filtered = entries.filter((entry) => {
@@ -194,12 +251,20 @@ async function latestProjectId(runMode?: DemoRunMode): Promise<string | null> {
         return false;
       }
       if (runMode === "sdk") {
-        return entry.name.startsWith("ui_sdk_demo_");
+        if (llmProvider === "anthropic") {
+          return (
+            entry.name.startsWith("ui_sdk_anthropic_demo_") ||
+            entry.name.startsWith("ui_sdk_demo_")
+          );
+        }
+        return llmProvider
+          ? entry.name.startsWith(`ui_sdk_${llmProvider}_demo_`)
+          : entry.name.startsWith("ui_sdk_");
       }
       if (runMode === "offline") {
         return entry.name.startsWith("ui_demo_");
       }
-      return entry.name.startsWith("ui_demo_") || entry.name.startsWith("ui_sdk_demo_");
+      return entry.name.startsWith("ui_demo_") || entry.name.startsWith("ui_sdk_");
     });
 
     const candidates = await Promise.all(
@@ -223,15 +288,17 @@ async function latestProjectId(runMode?: DemoRunMode): Promise<string | null> {
 
 async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
   const status = await readStatus(projectId);
-  const runMode: DemoRunMode = projectId.startsWith("ui_sdk_demo_") ? "sdk" : "offline";
+  const runMode: DemoRunMode = projectId.startsWith("ui_sdk_") ? "sdk" : "offline";
+  const llmProvider = status?.llmProvider ?? providerFromProjectId(projectId);
   const log = await readLogTail(projectId);
-  const payload = await payloadForProject(projectId, runMode, log);
+  const payload = await payloadForProject(projectId, runMode, log, llmProvider);
 
   if (status) {
     return {
       projectId: status.projectId,
       outputDir: status.outputDir,
       runMode: status.runMode,
+      llmProvider,
       status: status.status,
       startedAt: status.startedAt,
       updatedAt: status.updatedAt,
@@ -247,6 +314,7 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
       projectId,
       outputDir: payload.outputDir,
       runMode,
+      llmProvider,
       status: "completed",
       payload,
       log: payload.log
@@ -256,8 +324,21 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
   return null;
 }
 
-async function currentRunningRun(runMode: DemoRunMode): Promise<LiveDemoRunState | null> {
-  const projectId = await latestProjectId(runMode);
+function providerFromProjectId(projectId: string): DemoProvider | undefined {
+  if (projectId.startsWith("ui_sdk_openai_demo_")) {
+    return "openai";
+  }
+  if (projectId.startsWith("ui_sdk_anthropic_demo_") || projectId.startsWith("ui_sdk_demo_")) {
+    return "anthropic";
+  }
+  return undefined;
+}
+
+async function currentRunningRun(
+  runMode: DemoRunMode,
+  llmProvider?: DemoProvider
+): Promise<LiveDemoRunState | null> {
+  const projectId = await latestProjectId(runMode, llmProvider);
   if (!projectId) {
     return null;
   }
@@ -266,13 +347,19 @@ async function currentRunningRun(runMode: DemoRunMode): Promise<LiveDemoRunState
   return state?.status === "running" || state?.status === "queued" ? state : null;
 }
 
-export async function startDemoRun(runMode: DemoRunMode): Promise<LiveDemoRunState> {
-  const existing = await currentRunningRun(runMode);
+export async function startDemoRun(
+  runMode: DemoRunMode,
+  llmProvider: DemoProvider = "anthropic"
+): Promise<LiveDemoRunState> {
+  const existing = await currentRunningRun(runMode, runMode === "sdk" ? llmProvider : undefined);
   if (existing) {
     return existing;
   }
 
-  const projectId = `${runMode === "sdk" ? "ui_sdk_demo" : "ui_demo"}_${Date.now()}`;
+  const projectId =
+    runMode === "sdk"
+      ? `ui_sdk_${llmProvider}_demo_${Date.now()}`
+      : `ui_demo_${Date.now()}`;
   const outputDir = runDir(projectId);
   await fs.mkdir(outputDir, { recursive: true });
   const now = new Date().toISOString();
@@ -280,6 +367,7 @@ export async function startDemoRun(runMode: DemoRunMode): Promise<LiveDemoRunSta
     projectId,
     outputDir,
     runMode,
+    llmProvider: runMode === "sdk" ? llmProvider : undefined,
     status: "queued",
     startedAt: now,
     updatedAt: now
@@ -288,16 +376,23 @@ export async function startDemoRun(runMode: DemoRunMode): Promise<LiveDemoRunSta
   const stderrFile = await fs.open(logPath(projectId), "a");
   const stdoutFile = await fs.open(path.join(outputDir, "runner.stdout.log"), "a");
 
-  const command = process.platform === "win32" ? "py" : "python3";
-  const args =
-    process.platform === "win32"
-      ? ["-3", "-u", "-c", buildPythonScript(projectId, runMode)]
-      : ["-u", "-c", buildPythonScript(projectId, runMode)];
+  const command = pythonBinary();
+  // When using a resolved interpreter (venv path or override), the `-3` shim
+  // flag is meaningless. We only need it for the bare Windows `py` launcher.
+  const usingPyLauncher =
+    process.platform === "win32" && command === "py";
+  const args = usingPyLauncher
+    ? ["-3", "-u", "-c", buildPythonScript(projectId, runMode, llmProvider)]
+    : ["-u", "-c", buildPythonScript(projectId, runMode, llmProvider)];
 
   const child = spawn(command, args, {
     cwd: repoRoot(),
     detached: true,
-    stdio: ["ignore", stdoutFile.fd, stderrFile.fd]
+    stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
+    env: {
+      ...process.env,
+      ...(runMode === "sdk" ? { REPROLAB_LLM_PROVIDER: llmProvider } : {})
+    }
   });
 
   child.unref();
@@ -308,6 +403,7 @@ export async function startDemoRun(runMode: DemoRunMode): Promise<LiveDemoRunSta
     projectId,
     outputDir,
     runMode,
+    llmProvider: runMode === "sdk" ? llmProvider : undefined,
     status: "queued",
     payload: null,
     log: ""
@@ -316,9 +412,10 @@ export async function startDemoRun(runMode: DemoRunMode): Promise<LiveDemoRunSta
 
 export async function loadDemoRun(
   projectId?: string,
-  runMode?: DemoRunMode
+  runMode?: DemoRunMode,
+  llmProvider?: DemoProvider
 ): Promise<LiveDemoRunState | null> {
-  const resolvedProjectId = projectId ?? (await latestProjectId(runMode));
+  const resolvedProjectId = projectId ?? (await latestProjectId(runMode, llmProvider));
   if (!resolvedProjectId) {
     return null;
   }

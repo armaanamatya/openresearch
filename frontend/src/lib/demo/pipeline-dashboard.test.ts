@@ -165,4 +165,25 @@ describe("buildLiveDemoDashboard", () => {
       { stage: "improvement", status: "pending", detail: "Waiting for Gate 3 verification." }
     ]);
   });
+
+  it("labels SDK provider when metadata includes one", () => {
+    const data = buildLiveDemoDashboard(
+      {
+        project_id: "ui_sdk_openai_demo_456",
+        stage: "ingested"
+      },
+      {
+        projectId: "ui_sdk_openai_demo_456",
+        outputDir: "runs/ui_sdk_openai_demo_456",
+        sourceKind: "workspace_fixture",
+        runMode: "sdk",
+        llmProvider: "openai",
+        sourceLabel: "In-repo PPO workspace fixture",
+        sourceNote: "Fixture"
+      }
+    );
+
+    expect(data.summary.runModeLabel).toBe("SDK: OpenAI");
+    expect(data.summary.llmProvider).toBe("openai");
+  });
 });

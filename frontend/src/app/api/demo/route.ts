@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import type { DemoProvider } from "@/lib/demo/demo-run-types";
 import { loadDemoRun, startDemoRun } from "@/lib/demo/node-runner";
 
 export const runtime = "nodejs";
@@ -19,14 +20,30 @@ function toProjectId(request: Request): string | undefined {
   return value || undefined;
 }
 
+function toProvider(request: Request): DemoProvider | undefined {
+  const url = new URL(request.url);
+  const value = url.searchParams.get("provider");
+  if (value === "anthropic" || value === "openai") {
+    return value;
+  }
+  return undefined;
+}
+
 export async function GET(request: Request) {
-  const latest = await loadDemoRun(toProjectId(request), toRunMode(request));
+  const latest = await loadDemoRun(
+    toProjectId(request),
+    toRunMode(request),
+    toProvider(request)
+  );
   return NextResponse.json(latest);
 }
 
 export async function POST(request: Request) {
   try {
-    const run = await startDemoRun(toRunMode(request) ?? "offline");
+    const run = await startDemoRun(
+      toRunMode(request) ?? "offline",
+      toProvider(request) ?? "anthropic"
+    );
     return NextResponse.json(run, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Demo pipeline failed";
