@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "ReproLab Agent backend service"
 requires-python = ">=3.11"
 dependencies = [
+    "anyio>=4,<5",
     "fastapi>=0.111,<1",
     "uvicorn[standard]>=0.29,<1",
     "pydantic>=2.7,<3",
@@ -21,7 +22,9 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["backend*"]
+where = [".", "src"]
+include = ["backend*", "reprolab*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
