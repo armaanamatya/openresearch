@@ -5,6 +5,15 @@ from backend.services.runtime.aggregate import (
     SandboxAggregate,
     SandboxState,
 )
+from backend.services.runtime.artifacts import (
+    CommandLogEntry,
+    append_command_log,
+    initialize_run_artifacts,
+    utc_now_iso,
+    write_json,
+    write_metrics,
+    write_provenance,
+)
 from backend.services.runtime.events import (
     CommandExecuted,
     CommandFailed,
@@ -32,6 +41,7 @@ from backend.services.runtime.service import (
 __all__ = [
     "CommandExecuted",
     "CommandFailed",
+    "CommandLogEntry",
     "CreateSandbox",
     "DestroySandbox",
     "ExecResult",
@@ -50,4 +60,10 @@ __all__ = [
     "SandboxRequested",
     "SandboxRuntimeError",
     "SandboxState",
+    "append_command_log",
+    "initialize_run_artifacts",
+    "utc_now_iso",
+    "write_json",
+    "write_metrics",
+    "write_provenance",
 ]

@@ -506,22 +506,16 @@ class ReproLabOrchestrator:
     async def run_experiment(self, state: PipelineState) -> PipelineState:
         """Step 6: Experiment Runner Agent."""
         logger.info("[6/9] Running Experiment Runner Agent")
-        baseline_dir = self._project_dir / "baseline"
-        baseline_dir.mkdir(parents=True, exist_ok=True)
-        context = {
-            "baseline_result": state.baseline_result.model_dump() if state.baseline_result else {},
-            "reproduction_contract": state.reproduction_contract.model_dump() if state.reproduction_contract else {},
-        }
-        prompt = (
-            f"Execute the baseline experiment for project {self.project_id}.\n"
-            f"Write artifacts to {baseline_dir}\n"
-            f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        if state.baseline_result is None:
+            raise ValueError("Cannot run experiment before baseline implementation")
+        from backend.agents.experiment_runner import run_with_runtime
+
+        state.experiment_artifacts = await run_with_runtime(
+            self.project_id,
+            self.runs_root,
+            state.baseline_result,
+            state.reproduction_contract,
         )
-        output = await self._invoke_agent("experiment-runner", prompt)
-        data = self._extract_json(
-            output, fallback_file=str(baseline_dir / "experiment_artifacts.json"),
-        )
-        state.experiment_artifacts = ExperimentArtifacts(**data)
         state.stage = PipelineStage.BASELINE_RUN
         return state
 
