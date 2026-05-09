@@ -45,13 +45,22 @@ This section verifies that the PRD reflects the key product decisions from the p
 | Make citations mandatory for every agent decision, not optional. | Mandatory Citation Policy, Exploration Audit Trail, UX Requirements (Citation Explorer). | Captured |
 | Use dynamic confidence thresholds based on actual result complexity, not fixed numbers. | Dynamic Confidence Threshold, Reproducibility Score. | Captured |
 | Use PaperCoder for code generation when no reference repo exists. | Baseline Implementation Agent Mode 2, Technology Stack, Implementation Details. | Captured |
+| Use Nougat for PDF parsing; accept arXiv URLs, DOIs, and PDF uploads. | Technology Stack, paper_ingestion module, MVP Flow. | Captured |
+| Pipeline checkpointing and automatic resume from last gate on crash. | MVP Flow, checkpoint_manager module. | Captured |
+| Agent retry with exponential backoff for transient failures. | retry_engine module, Implementation Details. | Captured |
+| User-guided improvement directions (optional hints to orchestrator). | Improvement Orchestrator, MVP Flow. | Captured |
+| Deploy frontend and backend to the web. | Technology Stack (Vercel), Production Roadmap Phase 1. | Captured |
+| Multi-paper comparative studies in Phase 2. | Production Roadmap Phase 2. | Captured |
+| REPL security via RestrictedPython. | Experiment Safety. | Captured |
+| Use SWE-ReX-inspired RuntimeBackend abstraction for Docker sandboxes; LocalDockerBackend for hackathon, ModalBackend for Phase 3. | Infrastructure (Sandbox Architecture), Technology Stack, sandbox_manager module, Production Roadmap Phase 3. | Captured |
+| Hybrid LLM billing: Claude Code subscription for dev, API keys for production. | Technology Stack. | Captured |
 | Add production-grade trust, safety, versioning, cost, and evaluation controls. | Trust, Safety, And Evaluation, Implementation Details, Success Metrics. | Captured |
 
 Unresolved items from the conversation are intentionally preserved as open product questions: the first demo paper, exact runtime budget, dataset-size threshold, GPU cost threshold, verifier voting rules, and the confidence threshold for labeling a result verified.
 
 Post-validation additions not in the original conversation: two-mode Baseline Implementation Agent (adapt vs. implement from paper), shared state write protocol, explicit Research Map ownership assigned to the Supervisor Verification Agent, simulator version support in the Environment Detective Agent, `provenance.json` in the artifact schema, and clarification of open question 17.
 
-Pre-build decisions locked after validation: demo papers are PPO (CartPole-v1) and MixMatch (CIFAR-10); agent orchestration framework is Claude Agent SDK; context exploration uses a unified REPL workspace with raw variables + `rlm_query()` + `semantic_search()` + `graph_query()` + `web_search()` + `notebook_query()`; metadata store is SQLite; SSH/cloud GPU support is deferred to Phase 3 and out of scope for the hackathon build.
+Pre-build decisions locked after validation: demo papers are PPO (CartPole-v1) and MixMatch (CIFAR-10); agent orchestration framework is Claude Agent SDK; context exploration uses a unified REPL workspace with raw variables + `rlm_query()` + `semantic_search()` + `graph_query()` + `web_search()` + `notebook_query()`; metadata store is SQLite; sandbox execution uses a `RuntimeBackend` abstraction with `LocalDockerBackend` for hackathon; LLM billing is hybrid (Claude Code subscription for dev, API keys for production); SSH/cloud GPU support is deferred to Phase 3 (`ModalBackend`) and out of scope for the hackathon build.
 
 ## Scope Decision
 
@@ -83,17 +92,19 @@ These decisions are locked for the hackathon build. They are not open questions.
 | Layer | Choice | Reason |
 | --- | --- | --- |
 | Agent orchestration | Claude Agent SDK (`claude-agent-sdk`, Python) | Native subagent spawning, built-in tool execution, session isolation, hooks for audit trail |
-| LLM | `claude-sonnet-4-6` for all agents | Best balance of capability and speed for multi-agent workloads |
+| LLM | Claude (hybrid billing) | Dev/hackathon: Claude Code subscription via `claude -p --output-format json` (headless mode). Production: `ANTHROPIC_API_KEY` for sustained multi-agent workloads (subscription has 5-hour rolling window limits) |
 | Context exploration (Layer 1) | Recursive Language Models (RLM) | Primary exploration: context stored as REPL variables; agents programmatically explore, partition, and recursively sub-query; ~2-3k tokens per query; based on [arXiv:2512.24601](https://arxiv.org/abs/2512.24601) |
 | Context discovery (Layer 2) | Chroma | Fallback and fuzzy discovery: semantic search for conceptual similarity, cross-document connections, and content the agent didn't know to look for |
 | Knowledge graph (Layer 3, Phase 2) | [Graphify](https://github.com/safishamsi/graphify) | Structural knowledge graph from code + docs + papers via Tree-sitter AST + LLM semantic extraction; NetworkX + Leiden community detection; ~1.7k tokens/query vs ~123k naive (71.5x reduction) |
 | RLM implementation | [alexzhang13/rlm](https://github.com/alexzhang13/rlm) or [ysz/recursive-llm](https://github.com/ysz/recursive-llm) | Official and community implementations; LiteLLM-based, works with Claude via API |
 | Code generation (no-repo path) | [PaperCoder / Paper2Code](https://github.com/going-doer/Paper2Code) | Multi-agent paper→code framework; used in Baseline Implementation Agent Mode 2 when no reference repo exists; [arXiv:2504.17192](https://arxiv.org/abs/2504.17192) |
 | External search | Web search + Google NotebookLM | Agents use `web_search()` for field conventions, benchmark standards, and ambiguity resolution; `notebook_query()` for cross-referencing across project sources loaded into NotebookLM |
+| Paper PDF parsing | [Nougat](https://github.com/facebookresearch/nougat) (Meta) | Best for ML papers; outputs Markdown with LaTeX equations; handles multi-column layouts, tables, and figures |
 | Metadata store | SQLite | Zero-config, file-based, sufficient for single-machine MVP |
 | Frontend | Next.js (React) | Real-time agent lab dashboard showing agent topology, reasoning, messages, and citations |
 | Real-time events | WebSocket or SSE from Python backend to Next.js frontend | Stream agent activity, reasoning steps, and inter-agent messages as they happen |
-| Container runtime | Docker (local) | Sandbox isolation; cloud GPU deferred to Phase 3 |
+| Deployment | Vercel (frontend) + cloud backend (TBD) | Web-accessible dashboard and API |
+| Container runtime | Docker (local) via `RuntimeBackend` abstraction | Sandbox isolation using SWE-ReX-inspired backend interface; `LocalDockerBackend` for hackathon, `ModalBackend` for Phase 3 cloud GPU; NVIDIA Container Toolkit for GPU passthrough (`--gpus`, `--shm-size=8g`) |
 | Language | Python 3.11 (backend), TypeScript (frontend) | Compatible with all dependencies for both demo papers |
 
 ### Claude Agent SDK Patterns
@@ -585,10 +596,11 @@ Responsibilities:
 
 ### Improvement Orchestrator
 
-After baseline verification, this agent chooses N improvement paths.
+After baseline verification, this agent chooses N improvement paths. The user can optionally provide direction hints (e.g., "try a different optimizer", "explore data augmentation", "focus on training stability") — if provided, the orchestrator incorporates them alongside evidence-based selection. If no hints are given, it operates fully autonomously.
 
 Path selection should be based on:
 
+- **User hints** (if provided — these take priority as starting points).
 - Baseline failure modes.
 - Paper ablation table.
 - Related papers.
@@ -596,9 +608,8 @@ Path selection should be based on:
 - Expected value.
 - Compute cost.
 - Novelty.
-- User constraints.
 
-The orchestrator should avoid random brainstorming. It should turn evidence into specific hypotheses.
+The orchestrator should avoid random brainstorming. It should turn evidence (and user guidance) into specific hypotheses.
 
 ### Improvement Path Agents
 
@@ -1586,13 +1597,15 @@ Threats to consider:
 
 Security controls:
 
-- Run untrusted code inside disposable containers.
+- Run untrusted code inside disposable containers via the `RuntimeBackend` abstraction (see Sandbox Architecture).
 - Avoid mounting sensitive host directories.
 - Use read-only mounts for source artifacts where possible.
 - Disable access to host credentials by default.
-- Apply CPU, memory, disk, process, and runtime limits.
+- Apply CPU, memory, disk, process, and runtime limits (`--cpus=4 --memory=8g --pids-limit=512`).
+- Drop all Linux capabilities (`--cap-drop ALL --security-opt no-new-privileges`).
+- Use read-only root filesystem with tmpfs mounts (`--read-only --tmpfs /tmp:size=2g`).
 - Require approval for network-heavy operations.
-- Restrict network egress during experiment runs unless explicitly needed.
+- Restrict network egress during experiment runs unless explicitly needed (allow during build, restrict during training, block during verification).
 - Capture all commands, network approvals, and external downloads.
 - Prefer checksummed artifacts for datasets and weights.
 - Destroy sandboxes after completion unless the user chooses to preserve them.
@@ -1928,6 +1941,69 @@ User approval is required for:
 
 **Production:** Managed remote runners, GPU queue, budget controls, resource estimates, reusable environment cache, artifact storage, job cancellation/resumption, secrets management.
 
+### Sandbox Architecture (RuntimeBackend)
+
+Inspired by [SWE-ReX](https://github.com/SWE-agent/SWE-ReX): a `RuntimeBackend` abstraction that decouples agent code from execution environment. Agent code is identical regardless of backend — only the backend implementation changes.
+
+```python
+class RuntimeBackend(ABC):
+    """Abstract interface for sandboxed code execution."""
+    async def create_sandbox(self, config: SandboxConfig) -> Sandbox: ...
+    async def exec(self, sandbox: Sandbox, command: str, timeout: int) -> ExecResult: ...
+    async def copy_out(self, sandbox: Sandbox, path: str) -> bytes: ...
+    async def copy_in(self, sandbox: Sandbox, path: str, data: bytes) -> None: ...
+    async def destroy(self, sandbox: Sandbox) -> None: ...
+```
+
+**Implementations:**
+
+| Backend | Phase | GPU | Use case |
+| --- | --- | --- | --- |
+| `LocalDockerBackend` | Phase 1 (hackathon) | Yes (NVIDIA Container Toolkit, `--gpus all`) | Local development, demo papers, CPU/GPU training |
+| `ModalBackend` | Phase 3 | Yes (A10G, A100, H100) | Cloud GPU, scaling, concurrent agents |
+
+**Container security defaults:**
+
+```bash
+docker run \
+  --cpus=4 --memory=8g --memory-swap=8g \
+  --pids-limit=512 \
+  --read-only --tmpfs /tmp:size=2g \
+  --network=reprolab-isolated \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --gpus '"device=0"' \
+  --shm-size=4g \
+  reprolab-sandbox:latest
+```
+
+**Which agents get containers:**
+
+| Agent | Container? | Lifecycle | Notes |
+| --- | --- | --- | --- |
+| Environment Detective | Yes | Persistent | Iterates on Dockerfile; persists until environment is verified |
+| Baseline Implementation | Yes | Ephemeral | Built from verified Dockerfile; destroyed after artifact extraction |
+| Improvement Path Agent | Yes | Ephemeral | CoW overlay of baseline; one container per improvement path |
+| Verification agents | Yes | Ephemeral | Independent of builder; clean environment for verification |
+| Paper Understanding | No | — | Reasoning only, no code execution |
+| Artifact Discovery | No | — | Reasoning only, no code execution |
+| Supervisor / Orchestrator | No | — | Reasoning only, coordinates other agents |
+
+**Shared volumes:**
+
+```
+/reprolab/
+  /artifacts/          # Read-write for builders, read-only for verifiers
+    /baseline/
+    /improvements/
+      /path-1/
+      /path-2/
+  /datasets/           # Read-only, downloaded once, mounted into all
+  /paper-context/      # Read-only, parsed paper + claim map
+```
+
+**Network policy:** Allow network during `docker build` (package downloads). Restrict to approved dataset-download domains during training. Block entirely during verification.
+
 ### Git And Sandbox Strategy
 
 **Baseline:** Create baseline branch → build Docker environment → run experiments → freeze verified baseline after Gate 2.
@@ -2082,21 +2158,23 @@ Demonstrate one end-to-end paper reproduction and three improvement paths, with 
 
 ### MVP Flow
 
-1. User uploads paper PDF and optional GitHub repo.
-2. System extracts the paper claim map.
+1. User provides arXiv URL, DOI, or uploads paper PDF, plus optional GitHub repo link. **[Checkpoint: project created]**
+2. Nougat parses paper into Markdown + LaTeX. System extracts the paper claim map.
 3. Artifact Discovery Agent finds repositories, datasets, and dependency clues.
 4. Environment Detective Agent builds Docker sandbox.
-5. Reproduction Planner creates baseline plan.
-6. Verifier team approves or flags the plan.
-7. Baseline Implementation Agent implements or adapts reproduction.
-8. Experiment Runner executes smoke test and budgeted run.
-9. Verifier team audits baseline artifacts.
-10. User says: "Improve it."
-11. Improvement Orchestrator launches 3 path agents.
+5. Reproduction Planner creates baseline plan. **[Checkpoint: plan ready]**
+6. Verifier team approves or flags the plan. **[Checkpoint: Gate 1 passed]**
+7. Baseline Implementation Agent implements (via PaperCoder if no repo) or adapts reproduction.
+8. Experiment Runner executes smoke test and budgeted run. **[Checkpoint: baseline run complete]**
+9. Verifier team audits baseline artifacts. **[Checkpoint: Gate 2 passed]**
+10. User says: "Improve it" — optionally with specific directions (e.g., "try a different optimizer", "explore data augmentation").
+11. Improvement Orchestrator launches 3 path agents, incorporating user hints if provided.
 12. Each path agent runs in isolated branch and sandbox.
-13. Verifier team audits each path.
+13. Verifier team audits each path. **[Checkpoint: Gate 3 passed]**
 14. Supervisor Verification Agent produces final decision.
 15. Final report shows baseline, improvements, failures, and next steps.
+
+Pipeline automatically resumes from the last checkpoint on crash or restart.
 
 ### MVP Constraints
 
@@ -2126,20 +2204,24 @@ The best demo is not "we support every paper." The best demo is:
 
 ### Phase 1: Hackathon MVP
 
-Goal: credible demo.
+Goal: credible demo, deployed and accessible on the web.
 
 Build:
 
-- PDF and repo ingestion.
+- Paper ingestion (arXiv URL, DOI, or PDF upload) via Nougat.
 - Claim extraction.
 - Docker sandbox generation.
 - Baseline run.
 - Command logging.
 - Metrics and plot collection.
 - Assumption ledger.
-- Three improvement agents.
+- Three improvement agents (with optional user direction hints).
 - Four verifier agents plus supervisor.
+- Pipeline checkpointing and automatic resume.
+- Agent retry with exponential backoff (max 3 retries).
+- Next.js agent lab dashboard.
 - Final report.
+- **Deploy frontend (Vercel) + backend to the web.**
 
 ### Phase 2: Research Workspace
 
@@ -2157,6 +2239,7 @@ Add:
 - Human approval checkpoints.
 - Reproducibility scoring.
 - **Graphify knowledge graph integration** — automated structural graph construction from code + docs via Tree-sitter AST and LLM semantic extraction; queryable graph for navigating code architecture and paper concept relationships.
+- **Multi-paper comparative studies** — reproduce and compare N related papers side-by-side; shared research map across papers; identify which approaches actually work best on the same benchmark.
 
 ### Phase 3: Cloud Execution
 
@@ -2164,7 +2247,7 @@ Goal: support serious ML workloads.
 
 Add:
 
-- SSH remote runner.
+- `ModalBackend` implementation — swap `LocalDockerBackend` for Modal cloud GPUs (A10G, A100, H100) behind the same `RuntimeBackend` interface. Zero agent code changes.
 - GPU budget approval.
 - Artifact sync.
 - Remote logs.
@@ -2196,7 +2279,7 @@ Add:
 
 Recommended backend modules:
 
-- `paper_ingestion`: handles PDFs, repos, and user notes.
+- `paper_ingestion`: accepts arXiv URLs, DOIs, or direct PDF uploads. Downloads and parses papers using Nougat (Meta) for Markdown + LaTeX equation extraction. Also handles repos and user notes.
 - `claim_extraction`: creates paper claim map.
 - `context_indexer`: builds the baseline paper index and field history index. Feeds both the RLM Context REPL and the Semantic Index.
 - `context_loader`: loads all indexed artifacts into RLM Context REPL variables for agent exploration.
@@ -2205,7 +2288,7 @@ Recommended backend modules:
 - `artifact_discovery`: searches and indexes external artifacts.
 - `papercoder_bridge`: wraps PaperCoder for Mode 2 code generation; feeds upstream context (claim map, reproduction contract, environment spec) into PaperCoder and maps its output back to ReproLab's artifact schema with citations and assumption tracking.
 - `environment_builder`: creates Dockerfiles and lockfiles.
-- `sandbox_manager`: creates isolated local workspaces.
+- `sandbox_manager`: implements the `RuntimeBackend` abstraction. `LocalDockerBackend` for hackathon (Docker + NVIDIA Container Toolkit); `ModalBackend` for Phase 3 cloud GPU. Manages container lifecycle, shared volumes, CoW overlays for improvement agents, and network policies.
 - `agent_orchestrator`: schedules builder, runner, verifier, and supervisor agents. Mediates inter-agent communication and manages progressive context enrichment (adding agent outputs back to REPL).
 - `graph_builder`: (Phase 2) runs Graphify over repo + docs to construct the knowledge graph. Exposes `graph_query()` to agents.
 - `experiment_runner`: executes commands and captures outputs.
@@ -2219,6 +2302,8 @@ Recommended backend modules:
 - `evaluation_harness`: runs ReproLab against the internal agent benchmark suite.
 - `event_stream`: emits real-time events (agent activity, reasoning steps, messages, citations) via WebSocket/SSE to the Next.js dashboard.
 - `citation_tracker`: enforces mandatory citation policy, flags uncited decisions, aggregates citation coverage per agent.
+- `checkpoint_manager`: saves pipeline state after each verification gate; enables automatic resume from last checkpoint on crash or restart.
+- `retry_engine`: handles agent-level retries with exponential backoff; classifies failures as retryable (timeout, transient API error) vs. non-retryable (missing dataset, blocked approval); max 3 retries per agent before escalating to human.
 - `remote_runner`: later supports SSH and cloud GPU execution.
 
 ### Suggested Data Model
@@ -2294,6 +2379,7 @@ The system should:
 - Require approval before network-heavy or compute-heavy actions.
 - Store secrets outside agent-visible logs.
 - Make all artifact paths explicit.
+- **REPL security:** Agent-written Python code in the Context REPL executes via RestrictedPython (used by the RLM library). Agents cannot access the filesystem, network, or subprocess outside the sandbox. The REPL environment is isolated per project.
 
 ## UX Requirements
 
