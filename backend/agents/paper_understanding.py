@@ -1,7 +1,7 @@
 """Paper Understanding Agent — LLM-powered claim extraction.
 
 This module provides two modes:
-  1. ``run_with_sdk()`` — invokes Claude Agent SDK for full LLM analysis
+  1. ``run_with_sdk()`` — invokes the configured agent runtime for LLM analysis
   2. ``run_offline()`` — deterministic extraction without LLM (for tests/CI)
 
 Both produce a PaperClaimMap and write it to the project's runs directory.
@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import (
     Ambiguity,
     DatasetRequirement,
@@ -84,11 +85,11 @@ async def run_with_sdk(
     workspace_claim_map: dict[str, Any],
     *,
     model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> PaperClaimMap:
-    """Full LLM-powered paper understanding via Claude Agent SDK."""
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
-
-    from backend.agents.prompts.paper_understanding import PAPER_UNDERSTANDING_PROMPT
+    """Full LLM-powered paper understanding via the configured agent runtime."""
+    from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
     claim_map_context = json.dumps(workspace_claim_map, indent=2)
@@ -100,23 +101,15 @@ async def run_with_sdk(
         f"Write the complete PaperClaimMap JSON to {project_dir}/paper_claim_map.json"
     )
 
-    options = ClaudeAgentOptions(
+    full_text = await collect_agent_text(
+        "paper-understanding",
+        prompt,
+        project_dir=project_dir,
         model=model,
-        system_prompt=PAPER_UNDERSTANDING_PROMPT,
-        permission_mode="bypassPermissions",
+        provider=provider,
+        runtime=runtime,
         max_turns=20,
-        cwd=str(project_dir),
     )
-
-    collected: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    collected.append(block.text)
-        elif isinstance(message, ResultMessage):
-            if message.is_error:
-                logger.error("Paper Understanding Agent failed")
 
     # Try to read the written file first
     out_path = project_dir / "paper_claim_map.json"
@@ -125,7 +118,6 @@ async def run_with_sdk(
         return PaperClaimMap(**data)
 
     # Fall back to parsing from agent output
-    full_text = "\n".join(collected)
     data = _extract_json(full_text)
     claim_map = PaperClaimMap(**data)
     out_path.write_text(claim_map.model_dump_json(indent=2))

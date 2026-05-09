@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import (
     BaselineResult,
     EnvironmentSpec,
@@ -413,10 +414,11 @@ async def run_with_sdk(
     artifact_index: dict[str, Any] | None = None,
     *,
     model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> BaselineResult:
-    """Full LLM-powered baseline implementation via Claude Agent SDK."""
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
-    from backend.agents.prompts.baseline_implementation import BASELINE_IMPLEMENTATION_PROMPT
+    """Full LLM-powered baseline implementation via the configured agent runtime."""
+    from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
     code_dir = project_dir / "code"
@@ -435,22 +437,15 @@ async def run_with_sdk(
         f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
     )
 
-    options = ClaudeAgentOptions(
+    await collect_agent_text(
+        "baseline-implementation",
+        prompt,
+        project_dir=code_dir,
         model=model,
-        system_prompt=BASELINE_IMPLEMENTATION_PROMPT,
-        permission_mode="bypassPermissions",
+        provider=provider,
+        runtime=runtime,
         max_turns=30,
-        cwd=str(code_dir),
     )
-
-    collected: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    collected.append(block.text)
-        elif isinstance(message, ResultMessage):
-            pass
 
     # Read result from disk or parse from output
     result_path = project_dir / "baseline_result.json"

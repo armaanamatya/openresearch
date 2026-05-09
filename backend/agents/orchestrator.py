@@ -2,7 +2,7 @@
 
 The orchestrator uses a hybrid approach:
   - Python code drives the pipeline sequence and manages state
-  - Each agent step invokes ``claude_agent_sdk.query()``
+  - Each agent step invokes the configured provider runtime
   - Structured outputs are parsed and fed into the next agent's prompt
   - Checkpoints are saved to the event store after each gate
 
@@ -18,20 +18,20 @@ import json
 import logging
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import (
-    AgentDefinition,
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    ToolUseBlock,
-    query,
+from backend.agents.registry import AGENT_REGISTRY
+from backend.agents.runtime import (
+    AgentRuntime,
+    AgentRuntimeSpec,
+    ProviderName,
+    StreamText,
+    StreamToolCall,
+    StreamUsage,
+    make_runtime,
 )
-
-from backend.agents.registry import AGENT_REGISTRY, get_agent_definitions
 from backend.agents.schemas import (
     AgentOutput,
     BaselineResult,
@@ -174,11 +174,11 @@ class PipelineState:
 
 
 class ReproLabOrchestrator:
-    """Drives the full ReproLab pipeline using the Claude Agent SDK.
+    """Drives the full ReproLab pipeline using the configured agent runtime.
 
     Each pipeline step:
       1. Builds a prompt with context from previous steps
-      2. Invokes ``query()`` targeting the appropriate agent
+      2. Invokes the provider runtime targeting the appropriate agent
       3. Parses the structured output
       4. Updates pipeline state
       5. Saves a checkpoint after verification gates
@@ -192,12 +192,15 @@ class ReproLabOrchestrator:
         model: str | None = None,
         max_turns_per_agent: int = 15,
         permission_mode: str = "bypassPermissions",
+        provider: ProviderName | str | None = None,
+        runtime: AgentRuntime | None = None,
     ) -> None:
         self.project_id = project_id
         self.runs_root = Path(runs_root)
         self.model = model
         self.max_turns_per_agent = max_turns_per_agent
         self.permission_mode = permission_mode
+        self._runtime = runtime or make_runtime(provider)
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
         self._telemetry = AgentTelemetryRecorder(
@@ -216,6 +219,29 @@ class ReproLabOrchestrator:
         "improvement-path": PathResult,
     }
 
+    def _build_runtime_spec(
+        self,
+        agent_id: str,
+        *,
+        cwd: str | Path | None = None,
+        max_turns: int,
+    ) -> AgentRuntimeSpec:
+        spec = AGENT_REGISTRY[agent_id]
+        provider = self._runtime.provider_name
+        sub_agents = tuple(
+            sub_spec.to_runtime_spec(provider)
+            for sub_id, sub_spec in AGENT_REGISTRY.items()
+            if sub_id != agent_id
+        )
+        runtime_spec = spec.to_runtime_spec(
+            provider,
+            model_override=self.model,
+            max_turns=max_turns,
+            working_directory=Path(cwd or self._project_dir),
+            sub_agents=sub_agents,
+        )
+        return replace(runtime_spec, permission_mode=self.permission_mode)
+
     async def _invoke_agent(
         self,
         agent_id: str,
@@ -225,20 +251,13 @@ class ReproLabOrchestrator:
         max_turns: int | None = None,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
-        spec = AGENT_REGISTRY[agent_id]
-        agent_defs = get_agent_definitions()
-
         # Implementation agents get more turns (they write code)
         if max_turns is None:
             max_turns = 30 if agent_id in self._HEAVY_AGENTS else self.max_turns_per_agent
-
-        options = ClaudeAgentOptions(
-            model=self.model,
-            permission_mode=self.permission_mode,
+        runtime_spec = self._build_runtime_spec(
+            agent_id,
+            cwd=cwd,
             max_turns=max_turns,
-            agents=agent_defs,
-            cwd=str(cwd or self._project_dir),
-            system_prompt=spec.prompt,
         )
 
         task_prompt = append_structured_output_instruction(
@@ -256,53 +275,45 @@ class ReproLabOrchestrator:
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
         try:
-            async for message in query(prompt=task_prompt, options=options):
+            async for event in self._runtime.run_agent(
+                agent=runtime_spec,
+                user_input=task_prompt,
+            ):
                 elapsed = time.time() - t0
                 msg_count += 1
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if hasattr(block, "text") and block.text:
-                            collected_text.append(block.text)
-                            snippet = block.text[:120].replace("\n", " ").strip()
-                            if snippet:
-                                print(
-                                    f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
-                                    file=sys.stderr,
-                                    flush=True,
-                                )
-                        elif isinstance(block, ToolUseBlock):
-                            # Show tool calls so the user sees activity
-                            tool_info = block.name
-                            inp = block.input or {}
-                            if "file_path" in inp:
-                                tool_info += f" {inp['file_path']}"
-                            elif "command" in inp:
-                                cmd = str(inp["command"])[:80]
-                                tool_info += f" `{cmd}`"
-                            elif "pattern" in inp:
-                                tool_info += f" {inp['pattern']}"
-                            print(
-                                f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                elif isinstance(message, ResultMessage):
-                    usage = coerce_usage(getattr(message, "usage", None))
-                    if message.is_error:
-                        success = False
-                        error_message = collected_text[-1][:200] if collected_text else "unknown error"
+                if isinstance(event, StreamText):
+                    collected_text.append(event.text)
+                    snippet = event.text[:120].replace("\n", " ").strip()
+                    if snippet:
                         print(
-                            f"  [{agent_id}] ERROR after {elapsed:.0f}s: {error_message}",
+                            f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
                             file=sys.stderr,
                             flush=True,
                         )
-                        logger.error("Agent %s failed: %s", agent_id, error_message)
-                    else:
-                        print(
-                            f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} messages, {sum(len(t) for t in collected_text)} chars)",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                elif isinstance(event, StreamToolCall):
+                    tool_info = event.tool_name
+                    inp = event.tool_input or {}
+                    if "file_path" in inp:
+                        tool_info += f" {inp['file_path']}"
+                    elif "command" in inp:
+                        cmd = str(inp["command"])[:80]
+                        tool_info += f" `{cmd}`"
+                    elif "pattern" in inp:
+                        tool_info += f" {inp['pattern']}"
+                    print(
+                        f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                elif isinstance(event, StreamUsage):
+                    usage = coerce_usage(event.as_dict())
+                    usage["provider"] = self._runtime.provider_name
+                    usage["model"] = runtime_spec.model
+                    print(
+                        f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} events, {sum(len(t) for t in collected_text)} chars)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
         except Exception as exc:
             success = False
             error_message = f"{type(exc).__name__}: {exc}"
@@ -311,7 +322,7 @@ class ReproLabOrchestrator:
             self._telemetry.append(
                 AgentInvocationRecord(
                     agent_id=agent_id,
-                    model=self.model or "",
+                    model=runtime_spec.model,
                     started_at=started_at,
                     finished_at=utc_now_iso(),
                     duration_seconds=time.time() - t0,

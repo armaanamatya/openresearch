@@ -1,0 +1,12 @@
+# ReproLab backend — development + testing dependencies.
+# Install with: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+# Pull in the runtime deps too
+-r requirements.txt
+
+# --- Test runner ------------------------------------------------------------
+pytest>=8,<9
+pytest-asyncio>=0.23
+pytest-xdist>=3.5            # parallel test execution
+pytest-rerunfailures>=14     # rerun flaky network tests
+pytest-repeat>=0.9           # `-n` repeat for determinism checks

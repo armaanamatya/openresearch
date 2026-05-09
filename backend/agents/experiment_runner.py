@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import BaselineResult, ExperimentArtifacts, ReproductionContract
 from backend.services.runtime import (
     CommandLogEntry,
@@ -296,14 +297,15 @@ async def run_with_sdk(
     reproduction_contract: ReproductionContract | None = None,
     *,
     model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> ExperimentArtifacts:
-    """Ask the Claude Agent SDK to plan/synthesize experiment artifacts.
+    """Ask the configured agent runtime to plan/synthesize experiment artifacts.
 
     This path does not execute Docker. Real command execution is handled by
     ``run_with_runtime`` once a runtime backend is available.
     """
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
-    from backend.agents.prompts.experiment_runner import EXPERIMENT_RUNNER_PROMPT
+    from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
     baseline_dir = project_dir / "baseline"
@@ -320,22 +322,15 @@ async def run_with_sdk(
         f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
     )
 
-    options = ClaudeAgentOptions(
+    await collect_agent_text(
+        "experiment-runner",
+        prompt,
+        project_dir=project_dir,
         model=model,
-        system_prompt=EXPERIMENT_RUNNER_PROMPT,
-        permission_mode="bypassPermissions",
+        provider=provider,
+        runtime=runtime,
         max_turns=30,
-        cwd=str(project_dir),
     )
-
-    collected: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    collected.append(block.text)
-        elif isinstance(message, ResultMessage):
-            pass
 
     # Try to read artifacts
     artifacts_path = baseline_dir / "artifacts.json"

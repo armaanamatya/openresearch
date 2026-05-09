@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,12 @@ class Settings(BaseSettings):
     debug: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
+    llm_provider: Literal["anthropic", "openai"] = "anthropic"
+    anthropic_default_model: str = "claude-sonnet-4-6"
+    anthropic_reasoning_model: str = "claude-opus-4-7"
+    openai_default_model: str = "gpt-4o"
+    openai_reasoning_model: str = "o4-mini"
+    agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 _settings_cache: Settings | None = None

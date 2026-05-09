@@ -1,0 +1,28 @@
+# ReproLab backend — pinned runtime dependencies.
+# Source of truth: ../pyproject.toml. Keep in sync.
+# Install with: pip install -r backend/requirements.txt
+# (For development tooling, also install backend/requirements-dev.txt.)
+
+# --- Core: HTTP server, async, validation -----------------------------------
+anyio>=4,<5
+fastapi>=0.111,<1
+uvicorn[standard]>=0.29,<1
+pydantic>=2.7,<3
+pydantic-settings>=2.2,<3
+httpx>=0.27,<1
+
+# --- Ingestion: PDF parsing -------------------------------------------------
+pymupdf>=1.24,<2
+
+# --- Agent layer: provider SDKs ---------------------------------------------
+claude-agent-sdk>=0.1.80
+openai-agents>=0.17,<0.18
+
+# --- Sandbox runtime --------------------------------------------------------
+docker>=7,<8
+
+# --- Evaluation: reproduction + innovation scoring --------------------------
+# Required by backend/evals/* — install if you use the `eval` CLI.
+deepeval>=2.0
+scipy>=1.12
+numpy>=1.26

@@ -338,7 +338,16 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)
-    print(f"Starting agent pipeline ({args.mode} mode)...", file=sys.stderr)
+    provider = None
+    if args.mode == "sdk":
+        from backend.agents.runtime import selected_provider, validate_provider_credentials
+
+        provider = selected_provider(args.provider)
+        if provider == "openai":
+            validate_provider_credentials(provider)
+
+    provider_note = f", provider={provider}" if provider else ""
+    print(f"Starting agent pipeline ({args.mode} mode{provider_note})...", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 
     # --- Phase 2: Agent Pipeline ---
@@ -358,6 +367,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         state = asyncio.run(run_pipeline_sdk(
             project_id, runs_root, workspace_claim_map,
             model=args.model,
+            provider=provider,
             user_hints=user_hints,
             n_improvement_paths=args.n_paths,
         ))
@@ -437,6 +447,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic.",
     )
     reproduce.add_argument("--model", default=None, help="Model override for SDK mode.")
+    reproduce.add_argument(
+        "--provider",
+        choices=("anthropic", "openai"),
+        default=None,
+        help="SDK provider override (defaults to REPROLAB_LLM_PROVIDER).",
+    )
     reproduce.add_argument("--hints", default=None, help="Comma-separated user hints for improvement.")
     reproduce.add_argument("--n-paths", type=int, default=3, help="Number of improvement paths.")
     reproduce.set_defaults(func=cmd_reproduce)

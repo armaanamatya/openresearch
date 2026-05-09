@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import (
     Assumption,
     EnvironmentSpec,
@@ -105,11 +106,11 @@ async def run_with_sdk(
     artifact_index: dict[str, Any] | None = None,
     *,
     model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> EnvironmentSpec:
-    """Full LLM-powered environment detection via Claude Agent SDK."""
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
-
-    from backend.agents.prompts.environment_detective import ENVIRONMENT_DETECTIVE_PROMPT
+    """Full LLM-powered environment detection via the configured agent runtime."""
+    from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
     context = {
@@ -123,23 +124,15 @@ async def run_with_sdk(
         f"Write Dockerfile and environment_spec.json to {project_dir}/"
     )
 
-    options = ClaudeAgentOptions(
+    full_text = await collect_agent_text(
+        "environment-detective",
+        prompt,
+        project_dir=project_dir,
         model=model,
-        system_prompt=ENVIRONMENT_DETECTIVE_PROMPT,
-        permission_mode="bypassPermissions",
+        provider=provider,
+        runtime=runtime,
         max_turns=20,
-        cwd=str(project_dir),
     )
-
-    collected: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    collected.append(block.text)
-        elif isinstance(message, ResultMessage):
-            if message.is_error:
-                logger.error("Environment Detective failed")
 
     # Try to read the written spec
     spec_path = project_dir / "environment_spec.json"
@@ -148,7 +141,6 @@ async def run_with_sdk(
         return EnvironmentSpec(**data)
 
     # Parse from output
-    full_text = "\n".join(collected)
     data = _extract_json(full_text)
     spec = EnvironmentSpec(**data)
     project_dir.mkdir(parents=True, exist_ok=True)

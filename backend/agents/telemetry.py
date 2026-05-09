@@ -1,4 +1,4 @@
-"""Telemetry helpers for Claude Agent SDK invocations."""
+"""Telemetry helpers for agent runtime invocations."""
 
 from __future__ import annotations
 

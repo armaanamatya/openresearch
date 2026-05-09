@@ -1,9 +1,8 @@
 """ReproLab End-to-End Pipeline — ties all agents together.
 
 Two execution modes:
-  1. ``run_pipeline_sdk()``  — Full LLM-powered pipeline via Claude Agent SDK.
-     This is the PRIMARY mode. Works with ANY paper. Each agent uses Claude
-     to reason about the specific paper, generate code, run experiments, etc.
+  1. ``run_pipeline_sdk()``  — Full LLM-powered pipeline via the configured
+     agent SDK provider. This is the PRIMARY mode. Works with ANY paper.
 
   2. ``run_pipeline_offline()`` — Deterministic demo pipeline (no LLM).
      Uses heuristic extractors and pre-built PPO implementation for testing.
@@ -26,6 +25,7 @@ from backend.agents.schemas import (
     ResearchMap,
 )
 from backend.agents.orchestrator import PipelineStage, PipelineState
+from backend.agents.runtime import AgentRuntime, ProviderName
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +36,16 @@ async def run_pipeline_sdk(
     workspace_claim_map: dict[str, Any],
     *,
     model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
     user_hints: list[str] | None = None,
     n_improvement_paths: int = 3,
     resume: bool = True,
 ) -> PipelineState:
-    """Run the full pipeline using the Claude Agent SDK (works with ANY paper).
+    """Run the full pipeline using the configured agent SDK provider.
 
     This is the primary execution mode. Every agent call goes through
-    ``claude_agent_sdk.query()`` which uses Claude to analyze, generate,
-    and verify dynamically — no paper-specific hardcoding.
+    the provider runtime to analyze, generate, and verify dynamically.
     """
     from backend.agents.orchestrator import ReproLabOrchestrator
 
@@ -52,6 +53,8 @@ async def run_pipeline_sdk(
         project_id=project_id,
         runs_root=runs_root,
         model=model,
+        provider=provider,
+        runtime=runtime,
     )
     return await orchestrator.run(
         resume=resume,
