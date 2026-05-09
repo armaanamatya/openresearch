@@ -46,6 +46,13 @@ from backend.agents.schemas import (
     ResearchMap,
     VerificationReport,
 )
+from backend.agents.structured_output import append_structured_output_instruction
+from backend.agents.telemetry import (
+    AgentInvocationRecord,
+    AgentTelemetryRecorder,
+    coerce_usage,
+    utc_now_iso,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,9 +200,21 @@ class ReproLabOrchestrator:
         self.permission_mode = permission_mode
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
+        self._telemetry = AgentTelemetryRecorder(
+            self._project_dir / "agent_telemetry.jsonl"
+        )
 
     # Agents that write code / run experiments need more turns
     _HEAVY_AGENTS = {"baseline-implementation", "improvement-path", "experiment-runner"}
+    _OUTPUT_MODELS = {
+        "paper-understanding": PaperClaimMap,
+        "environment-detective": EnvironmentSpec,
+        "reproduction-planner": ReproductionContract,
+        "baseline-implementation": BaselineResult,
+        "experiment-runner": ExperimentArtifacts,
+        "supervisor-verifier": VerificationReport,
+        "improvement-path": PathResult,
+    }
 
     async def _invoke_agent(
         self,
@@ -222,56 +241,87 @@ class ReproLabOrchestrator:
             system_prompt=spec.prompt,
         )
 
+        task_prompt = append_structured_output_instruction(
+            task_prompt,
+            self._OUTPUT_MODELS.get(agent_id),
+        )
+
         collected_text: list[str] = []
+        started_at = utc_now_iso()
         t0 = time.time()
         msg_count = 0
+        success = True
+        error_message = ""
+        usage: dict[str, Any] = {}
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
-        async for message in query(prompt=task_prompt, options=options):
-            elapsed = time.time() - t0
-            msg_count += 1
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if hasattr(block, "text") and block.text:
-                        collected_text.append(block.text)
-                        snippet = block.text[:120].replace("\n", " ").strip()
-                        if snippet:
+        try:
+            async for message in query(prompt=task_prompt, options=options):
+                elapsed = time.time() - t0
+                msg_count += 1
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            collected_text.append(block.text)
+                            snippet = block.text[:120].replace("\n", " ").strip()
+                            if snippet:
+                                print(
+                                    f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
+                                    file=sys.stderr,
+                                    flush=True,
+                                )
+                        elif isinstance(block, ToolUseBlock):
+                            # Show tool calls so the user sees activity
+                            tool_info = block.name
+                            inp = block.input or {}
+                            if "file_path" in inp:
+                                tool_info += f" {inp['file_path']}"
+                            elif "command" in inp:
+                                cmd = str(inp["command"])[:80]
+                                tool_info += f" `{cmd}`"
+                            elif "pattern" in inp:
+                                tool_info += f" {inp['pattern']}"
                             print(
-                                f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
+                                f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
                                 file=sys.stderr,
                                 flush=True,
                             )
-                    elif isinstance(block, ToolUseBlock):
-                        # Show tool calls so the user sees activity
-                        tool_info = block.name
-                        inp = block.input or {}
-                        if "file_path" in inp:
-                            tool_info += f" {inp['file_path']}"
-                        elif "command" in inp:
-                            cmd = str(inp["command"])[:80]
-                            tool_info += f" `{cmd}`"
-                        elif "pattern" in inp:
-                            tool_info += f" {inp['pattern']}"
+                elif isinstance(message, ResultMessage):
+                    usage = coerce_usage(getattr(message, "usage", None))
+                    if message.is_error:
+                        success = False
+                        error_message = collected_text[-1][:200] if collected_text else "unknown error"
                         print(
-                            f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
+                            f"  [{agent_id}] ERROR after {elapsed:.0f}s: {error_message}",
                             file=sys.stderr,
                             flush=True,
                         )
-            elif isinstance(message, ResultMessage):
-                if message.is_error:
-                    err = collected_text[-1][:200] if collected_text else "unknown error"
-                    print(
-                        f"  [{agent_id}] ERROR after {elapsed:.0f}s: {err}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    logger.error("Agent %s failed: %s", agent_id, err)
-                else:
-                    print(
-                        f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} messages, {sum(len(t) for t in collected_text)} chars)",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                        logger.error("Agent %s failed: %s", agent_id, error_message)
+                    else:
+                        print(
+                            f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} messages, {sum(len(t) for t in collected_text)} chars)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+        except Exception as exc:
+            success = False
+            error_message = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            self._telemetry.append(
+                AgentInvocationRecord(
+                    agent_id=agent_id,
+                    model=self.model or "",
+                    started_at=started_at,
+                    finished_at=utc_now_iso(),
+                    duration_seconds=time.time() - t0,
+                    message_count=msg_count,
+                    output_chars=sum(len(text) for text in collected_text),
+                    success=success,
+                    error_message=error_message,
+                    usage=usage,
+                )
+            )
 
         result = "\n".join(collected_text)
         if not result.strip():
