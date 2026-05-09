@@ -1,5 +1,6 @@
 import { Star } from "lucide-react";
 
+import { StellarLogoRail } from "./stellar-logo-rail";
 import { StellarTabStage } from "./stellar-tab-stage";
 
 type StellarHeroProps = {
@@ -46,6 +47,7 @@ export function StellarHero({ children }: StellarHeroProps) {
       </button>
 
       <StellarTabStage />
+      <StellarLogoRail />
 
       {children}
     </section>

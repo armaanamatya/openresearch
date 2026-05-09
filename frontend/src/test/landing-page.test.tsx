@@ -33,4 +33,18 @@ describe("landing page", () => {
     expect(video).toHaveAttribute("loop");
     expect((video as HTMLVideoElement).muted).toBe(true);
   });
+
+  it("shows analyse overlay content by default", () => {
+    render(<HomePage />);
+
+    expect(screen.getByText(/set up your ai workspace/i)).toBeInTheDocument();
+  });
+
+  it("renders the company logo rail", () => {
+    render(<HomePage />);
+
+    for (const label of ["INTERSCOPE", "SPOTIFY", "Nexera", "M3", "LAURA COLE", "vertex"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+  });
 });
