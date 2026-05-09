@@ -16,6 +16,8 @@ from backend.eventstore.sqlite_store import SqliteEventStore
 from backend.messaging.envelope import AggregateId
 from backend.messaging.event import _clear_registry_for_tests
 from backend.services.ingestion.intake import (
+    ArxivId,
+    DoiRef,
     FetchPaper,
     IntakeAppService,
     PaperFetched,
@@ -25,6 +27,8 @@ from backend.services.ingestion.intake import (
     ProjectState,
     RegisterProject,
 )
+from backend.services.ingestion.intake.fetchers.arxiv import ArxivFetcher
+from backend.services.ingestion.intake.fetchers.doi import DoiFetcher
 from backend.services.ingestion.intake.fetchers.pdf_path import PdfPathFetcher
 from backend.services.ingestion.intake.service import (
     UnknownProject,
@@ -46,6 +50,39 @@ def _re_register_intake_events() -> None:
 
     for cls in (ProjectCreated, PaperFetched, PaperFetchFailed):
         register_event(cls)
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self._offset = 0
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            n = len(self._body) - self._offset
+        chunk = self._body[self._offset:self._offset + n]
+        self._offset += len(chunk)
+        return chunk
+
+
+class _RecordingUrlOpen:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self.body = body
+        self.status = status
+        self.urls: list[str] = []
+        self.headers: list[dict[str, str]] = []
+
+    def __call__(self, request, *, timeout: float):
+        self.urls.append(request.full_url)
+        self.headers.append(dict(request.header_items()))
+        return _FakeHttpResponse(self.body, self.status)
 
 
 @pytest.fixture
@@ -98,6 +135,29 @@ def test_project_id_differs_across_paths(tmp_path: Path):
     a = project_id_for(PdfPath(path=str(p1)))
     b = project_id_for(PdfPath(path=str(p2)))
     assert a != b
+
+
+def test_arxiv_source_normalizes_ids_and_urls():
+    assert ArxivId(arxiv_id="arXiv:1707.06347").arxiv_id == "1707.06347"
+    assert (
+        ArxivId(arxiv_id="https://arxiv.org/pdf/1707.06347.pdf").arxiv_id
+        == "1707.06347"
+    )
+
+
+def test_doi_source_normalizes_urls():
+    assert DoiRef(doi="https://doi.org/10.1109/CVPR.2019.00075").doi == (
+        "10.1109/CVPR.2019.00075"
+    )
+
+
+def test_project_id_is_deterministic_for_arxiv_and_doi():
+    assert project_id_for(ArxivId(arxiv_id="1707.06347")) == project_id_for(
+        ArxivId(arxiv_id="https://arxiv.org/abs/1707.06347")
+    )
+    assert project_id_for(DoiRef(doi="10.1109/CVPR.2019.00075")) == project_id_for(
+        DoiRef(doi="doi:10.1109/CVPR.2019.00075")
+    )
 
 
 # --- RegisterProject -------------------------------------------------------
@@ -212,6 +272,76 @@ def test_fetch_then_retry_succeeds(service, store, tmp_path):
     events = list(store.load(AggregateId(pid)))
     types = [e.event_type for e in events]
     assert types == ["project_created", "paper_fetch_failed", "paper_fetched"]
+
+
+def test_fetch_arxiv_downloads_pdf_and_records_adapter(store, runs_dir):
+    http = _RecordingUrlOpen(b"%PDF-1.7\nremote arxiv pdf\n%%EOF")
+    service = IntakeAppService(
+        store=store,
+        fetchers={
+            "arxiv": ArxivFetcher(
+                runs_root=runs_dir,
+                base_url="https://example.test/arxiv/pdf",
+                urlopen_fn=http,
+            )
+        },
+    )
+
+    pid = service.register_project(RegisterProject(source=ArxivId(arxiv_id="1707.06347")))
+    assert service.fetch_paper(FetchPaper(project_id=pid)) is True
+
+    events = list(store.load(AggregateId(pid)))
+    assert events[-1].event_type == "paper_fetched"
+    assert events[-1].payload["fetched_via"] == "arxiv"
+    assert Path(events[-1].payload["raw_paper_path"]).read_bytes().startswith(b"%PDF-")
+    assert http.urls == ["https://example.test/arxiv/pdf/1707.06347"]
+
+
+def test_fetch_doi_resolves_with_pdf_accept_header(store, runs_dir):
+    http = _RecordingUrlOpen(b"%PDF-1.7\nremote doi pdf\n%%EOF")
+    service = IntakeAppService(
+        store=store,
+        fetchers={
+            "doi": DoiFetcher(
+                runs_root=runs_dir,
+                resolver_base_url="https://doi.example",
+                urlopen_fn=http,
+            )
+        },
+    )
+
+    pid = service.register_project(
+        RegisterProject(source=DoiRef(doi="10.1109/CVPR.2019.00075"))
+    )
+    assert service.fetch_paper(FetchPaper(project_id=pid)) is True
+
+    events = list(store.load(AggregateId(pid)))
+    assert events[-1].event_type == "paper_fetched"
+    assert events[-1].payload["fetched_via"] == "doi"
+    assert http.urls == ["https://doi.example/10.1109/CVPR.2019.00075"]
+    assert http.headers[-1]["Accept"] == "application/pdf"
+
+
+def test_remote_fetch_non_pdf_emits_non_retryable_failure(store, runs_dir):
+    http = _RecordingUrlOpen(b"<html>not a pdf</html>")
+    service = IntakeAppService(
+        store=store,
+        fetchers={
+            "arxiv": ArxivFetcher(
+                runs_root=runs_dir,
+                base_url="https://example.test/arxiv/pdf",
+                urlopen_fn=http,
+            )
+        },
+    )
+
+    pid = service.register_project(RegisterProject(source=ArxivId(arxiv_id="1707.06347")))
+    assert service.fetch_paper(FetchPaper(project_id=pid)) is False
+
+    events = list(store.load(AggregateId(pid)))
+    assert events[-1].event_type == "paper_fetch_failed"
+    assert events[-1].payload["cause_kind"] == "not_a_pdf"
+    assert events[-1].payload["retryable"] is False
 
 
 # --- Replay parity ---------------------------------------------------------

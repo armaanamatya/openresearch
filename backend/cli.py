@@ -16,22 +16,36 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 from backend.config import get_settings
 from backend.eventstore.sqlite_store import SqliteEventStore
-from backend.services.context.indexer import IndexerAppService, StartIndexing
+from backend.services.context.indexer import (
+    IndexerAppService,
+    SourcesProjection,
+    StartIndexing,
+)
 from backend.services.context.workspace import (
     BuildWorkspace,
     WorkspaceAppService,
 )
+from backend.services.ingestion.discovery import (
+    ArtifactDiscoveryAppService,
+    DiscoverArtifacts,
+    RegexArtifactDiscoveryAdapter,
+)
 from backend.services.ingestion.intake import (
+    ArxivId,
+    DoiRef,
     FetchPaper,
     IntakeAppService,
     PdfPath,
     RegisterProject,
 )
+from backend.services.ingestion.intake.fetchers.arxiv import ArxivFetcher
+from backend.services.ingestion.intake.fetchers.doi import DoiFetcher
 from backend.services.ingestion.intake.fetchers.pdf_path import PdfPathFetcher
 from backend.services.ingestion.parser import (
     ParserAppService,
@@ -42,8 +56,15 @@ from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
 # Force-import event modules so all @register_event decorators run.
 import backend.services.context.indexer.events  # noqa: F401
 import backend.services.context.workspace.events  # noqa: F401
+import backend.services.ingestion.discovery.events  # noqa: F401
 import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
+
+
+_ARXIV_RE = re.compile(
+    r"(?:arxiv:|arxiv\.org/(?:abs|pdf)/)?(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?$",
+    re.IGNORECASE,
+)
 
 
 def _make_services(
@@ -52,60 +73,77 @@ def _make_services(
     SqliteEventStore,
     IntakeAppService,
     ParserAppService,
+    ArtifactDiscoveryAppService,
     IndexerAppService,
     WorkspaceAppService,
 ]:
     store = SqliteEventStore(database_url)
     intake = IntakeAppService(
         store=store,
-        fetchers={"pdf_path": PdfPathFetcher(runs_root=runs_root)},
+        fetchers={
+            "pdf_path": PdfPathFetcher(runs_root=runs_root),
+            "arxiv": ArxivFetcher(runs_root=runs_root),
+            "doi": DoiFetcher(runs_root=runs_root),
+        },
     )
     parser = ParserAppService(
         store=store, parser=PyMuPdfParser(), runs_root=runs_root
     )
+    discovery = ArtifactDiscoveryAppService(
+        store=store,
+        adapters=[RegexArtifactDiscoveryAdapter()],
+    )
     indexer = IndexerAppService(store=store)
     workspace = WorkspaceAppService(store=store, indexer=indexer)
-    return store, intake, parser, indexer, workspace
+    return store, intake, parser, discovery, indexer, workspace
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     runs_root = Path(args.runs_root)
-    store, intake, parser, indexer, workspace = _make_services(
+    store, intake, parser, discovery, indexer, workspace = _make_services(
         args.database_url, runs_root
     )
 
-    pdf_path = Path(args.pdf).expanduser().resolve()
-    print(f"[1/4] Registering project for {pdf_path}", file=sys.stderr)
-    project_id = intake.register_project(
-        RegisterProject(source=PdfPath(path=str(pdf_path)))
-    )
+    source = _source_from_cli(args.source, args.source_kind)
+    print(f"[1/6] Registering project for {args.source}", file=sys.stderr)
+    project_id = intake.register_project(RegisterProject(source=source))
     print(f"      project_id={project_id}", file=sys.stderr)
 
-    print("[1/4] Fetching paper", file=sys.stderr)
+    print("[2/6] Fetching paper", file=sys.stderr)
     if not intake.fetch_paper(FetchPaper(project_id=project_id)):
         print("      FAILED — see paper_fetch_failed event", file=sys.stderr)
         return 1
 
-    print("[2/4] Parsing", file=sys.stderr)
+    print("[3/6] Parsing", file=sys.stderr)
     if not parser.start_parsing(StartParsing(project_id=project_id)):
         print("      FAILED — see parsing_failed event", file=sys.stderr)
         return 1
 
-    print("[3/4] Indexing", file=sys.stderr)
+    print("[4/6] Discovering external artifacts", file=sys.stderr)
+    if not discovery.discover(DiscoverArtifacts(project_id=project_id)):
+        print("      FAILED — see discovery_failed event", file=sys.stderr)
+        return 1
+
+    print("[5/6] Indexing", file=sys.stderr)
     if not indexer.start_indexing(StartIndexing(project_id=project_id)):
         print("      FAILED — see indexing_failed event", file=sys.stderr)
         return 1
 
-    print("[4/4] Building workspace", file=sys.stderr)
+    print("[6/6] Building workspace", file=sys.stderr)
     workspace_id = workspace.build_workspace(
         BuildWorkspace(project_id=project_id, agent_name=args.agent)
     )
 
+    sources = SourcesProjection()
+    indexer.project_into_projection(project_id, sources)
     view = workspace.materialize_view(workspace_id)
     summary = {
         "project_id": project_id,
         "workspace_id": workspace_id,
         "workspace_ready": view.is_ready,
+        "discovered_artifacts": len(discovery.list_artifacts(project_id)),
+        "sources": sources.source_count,
+        "chunks": sources.chunk_count,
         "variables": sorted(view.variables.keys()),
         "variable_count": view.variable_count,
     }
@@ -117,7 +155,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     runs_root = Path(args.runs_root)
-    store, _intake, _parser, indexer, workspace = _make_services(
+    store, _intake, _parser, _discovery, indexer, workspace = _make_services(
         args.database_url, runs_root
     )
 
@@ -195,7 +233,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     ingest = sub.add_parser("ingest", help="Ingest a paper end-to-end.")
-    ingest.add_argument("pdf", help="Path to the PDF.")
+    ingest.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
+    ingest.add_argument(
+        "--source-kind",
+        choices=("auto", "pdf_path", "arxiv", "doi"),
+        default="auto",
+        help="How to interpret SOURCE (default: auto).",
+    )
     ingest.add_argument("--agent", default="default", help="Agent name for the workspace.")
     ingest.set_defaults(func=cmd_ingest)
 
@@ -207,6 +251,22 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+def _source_from_cli(raw: str, source_kind: str):
+    if source_kind == "pdf_path":
+        return PdfPath(path=str(Path(raw).expanduser().resolve()))
+    if source_kind == "arxiv":
+        return ArxivId(arxiv_id=raw)
+    if source_kind == "doi":
+        return DoiRef(doi=raw)
+
+    path = Path(raw).expanduser()
+    if path.exists():
+        return PdfPath(path=str(path.resolve()))
+    if _ARXIV_RE.search(raw.strip()):
+        return ArxivId(arxiv_id=raw)
+    return DoiRef(doi=raw)
 
 
 if __name__ == "__main__":

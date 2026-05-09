@@ -95,21 +95,21 @@ class SqliteSubscription(Subscription):
         return self._iter()
 
     def _iter(self) -> Iterator[StoredEvent]:
+        next_position = self.position + 1
         while not self._closed:
-            checkpoint = self.position
-            cursor = checkpoint + 1
             # Pull a small batch from the log starting just after the
             # last ack, plus any redeliveries whose `available_at` has passed.
             redeliveries = self._claim_due_redeliveries()
             if redeliveries:
                 for ev in redeliveries:
+                    next_position = max(next_position, ev.global_position + 1)
                     yield ev
                 continue
 
             sql = (
                 "SELECT * FROM event_store_events WHERE global_position >= ? "
             )
-            params: list[object] = [cursor]
+            params: list[object] = [next_position]
             if self._types:
                 placeholders = ",".join("?" for _ in self._types)
                 sql += f"AND event_type IN ({placeholders}) "
@@ -134,6 +134,7 @@ class SqliteSubscription(Subscription):
             for row in rows:
                 if self._closed:
                     return
+                next_position = int(row["global_position"]) + 1
                 yield self._store._row_to_stored(row)
 
     # --- Ack / Nack / Lease ------------------------------------------------

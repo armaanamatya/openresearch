@@ -40,6 +40,11 @@ class SourcesProjection:
     def chunks_for_source(self, source_id: str) -> tuple[Chunk, ...]:
         return tuple(self._chunks_by_source.get(source_id, ()))
 
+    def list_chunks(self, project_id: str | None = None) -> tuple[Chunk, ...]:
+        if project_id is None:
+            return tuple(self._chunks.values())
+        return tuple(c for c in self._chunks.values() if c.project_id == project_id)
+
     def list_sources(self, project_id: str | None = None) -> tuple[SourceRef, ...]:
         if project_id is None:
             return tuple(self._sources.values())

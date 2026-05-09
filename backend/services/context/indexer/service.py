@@ -40,11 +40,17 @@ from backend.services.context.indexer.events import (
 )
 from backend.services.context.indexer.model import (
     Chunk,
+    ChunkType,
     SourceKind,
     SourceRef,
+    chunk_id_for,
     source_id_for,
 )
 from backend.services.context.indexer.projections import SourcesProjection
+from backend.services.ingestion.discovery.model import (
+    DiscoveredArtifact,
+    DiscoveredArtifactKind,
+)
 from backend.services.ingestion.parser.aggregate import (
     ParsedPaperAggregate,
     ParsedPaperState,
@@ -67,6 +73,10 @@ def _index_aggregate_id(project_id: str) -> AggregateId:
 
 def _parsed_aggregate_id(project_id: str) -> AggregateId:
     return AggregateId(f"{project_id}:parsed")
+
+
+def _discovery_aggregate_id(project_id: str) -> AggregateId:
+    return AggregateId(f"{project_id}:discovery")
 
 
 class IndexerAppService:
@@ -111,10 +121,11 @@ class IndexerAppService:
 
         # Step 2: build sources + chunks from parsed events.
         sections, references = self._read_parsed(project_id)
+        artifacts = self._read_discovered_artifacts(project_id)
 
         try:
             source_events, chunk_events = self._build_events(
-                project_id, sections, references
+                project_id, sections, references, artifacts
             )
         except Exception as exc:  # defensive: any chunker error -> failure event
             failure = IndexingFailed(
@@ -175,11 +186,21 @@ class IndexerAppService:
                 )
         return sections, references
 
+    def _read_discovered_artifacts(self, project_id: str) -> list[DiscoveredArtifact]:
+        artifacts: list[DiscoveredArtifact] = []
+        for stored in self._store.load(_discovery_aggregate_id(project_id)):
+            if stored.event_type == "artifact_discovered":
+                artifacts.append(
+                    DiscoveredArtifact.model_validate(stored.payload["artifact"])
+                )
+        return artifacts
+
     def _build_events(
         self,
         project_id: str,
         sections: list[Section],
         references: list[Reference],
+        artifacts: list[DiscoveredArtifact],
     ) -> tuple[list[DomainEvent], list[DomainEvent]]:
         # Build a SourceRef per section + per reference, deterministically.
         sources_by_upstream: dict[str, SourceRef] = {}
@@ -220,11 +241,47 @@ class IndexerAppService:
                 SourceRegistered(project_id=project_id, source=src)
             )
 
+        artifact_chunks: list[Chunk] = []
+        for artifact in sorted(artifacts, key=lambda a: (a.kind.value, a.locator)):
+            kind = _source_kind_for_artifact(artifact.kind)
+            src = SourceRef(
+                id=source_id_for(
+                    project_id=project_id,
+                    kind=kind,
+                    upstream_id=artifact.id,
+                ),
+                project_id=project_id,
+                kind=kind,
+                locator=artifact.locator,
+                upstream_id=artifact.id,
+            )
+            source_events.append(SourceRegistered(project_id=project_id, source=src))
+            text = _artifact_chunk_text(artifact)
+            artifact_chunks.append(
+                Chunk(
+                    id=chunk_id_for(
+                        source_id=src.id,
+                        chunker_name="artifact_metadata",
+                        chunker_version="1",
+                        text=text,
+                        span=(0, len(text)),
+                        chunk_type=ChunkType.artifact_metadata,
+                    ),
+                    source_id=src.id,
+                    project_id=project_id,
+                    text=text,
+                    span=(0, len(text)),
+                    chunk_type=ChunkType.artifact_metadata,
+                    parent_chunk_id=None,
+                )
+            )
+
         # Chunks: one per section via SectionChunker.
         chunks = self._chunker.chunk(
             sources_by_upstream=sources_by_upstream,
             sections=sections,
         )
+        chunks.extend(artifact_chunks)
         chunk_events: list[DomainEvent] = [
             ChunkCreated(project_id=project_id, chunk=c) for c in chunks
         ]
@@ -266,6 +323,28 @@ class IndexerAppService:
             envelopes=envelopes,
         )
         agg.apply_all(events)
+
+
+def _source_kind_for_artifact(kind: DiscoveredArtifactKind) -> SourceKind:
+    return {
+        DiscoveredArtifactKind.repository: SourceKind.repository,
+        DiscoveredArtifactKind.dataset: SourceKind.dataset,
+        DiscoveredArtifactKind.issue: SourceKind.issue,
+        DiscoveredArtifactKind.discussion: SourceKind.discussion,
+    }[kind]
+
+
+def _artifact_chunk_text(artifact: DiscoveredArtifact) -> str:
+    return "\n".join(
+        part
+        for part in (
+            f"{artifact.kind.value}: {artifact.locator}",
+            f"url: {artifact.url}",
+            f"title: {artifact.title}" if artifact.title else "",
+            f"evidence: {artifact.evidence_quote}",
+        )
+        if part
+    )
 
 
 __all__ = ["IndexerAppService", "IndexerError", "StartIndexing"]

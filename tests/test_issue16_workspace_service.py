@@ -18,6 +18,7 @@ from backend.services.context.workspace import (
     BuildWorkspace,
     Cited,
     LookupTool,
+    SemanticSearchTool,
     WorkspaceAppService,
     WorkspaceError,
     WorkspaceState,
@@ -287,6 +288,29 @@ def test_lookup_tool_unknown_source_raises():
     tool = LookupTool(projection=SourcesProjection())
     with pytest.raises(WorkspaceToolError):
         tool.call(workspace_id="ws_x", source_id="src_nope")
+
+
+def test_semantic_search_tool_returns_ranked_cited_chunks(
+    workspace_service, indexed_project, store
+):
+    workspace_service.build_workspace(BuildWorkspace(project_id=indexed_project))
+    proj = SourcesProjection()
+    IndexerAppService(store=store).project_into_projection(indexed_project, proj)
+    tool = SemanticSearchTool(projection=proj)
+
+    result = tool.call(
+        workspace_id="ws_x",
+        project_id=indexed_project,
+        query="method beta",
+        limit=2,
+    )
+
+    assert isinstance(result, Cited)
+    assert result.value["query"] == "method beta"
+    assert 1 <= len(result.value["results"]) <= 2
+    assert len(result.citations) == len(result.value["results"])
+    assert all(cite.quote for cite in result.citations)
+    assert any("beta" in cite.quote.lower() for cite in result.citations)
 
 
 # --- Failure paths ---------------------------------------------------------

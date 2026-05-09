@@ -26,6 +26,7 @@ from backend.services.context.workspace.service import (
 )
 from backend.services.context.workspace.tools.interface import WorkspaceTool
 from backend.services.context.workspace.tools.lookup import LookupTool
+from backend.services.context.workspace.tools.semantic_search import SemanticSearchTool
 
 __all__ = [
     "BuildWorkspace",
@@ -33,6 +34,7 @@ __all__ = [
     "Cited",
     "InvalidWorkspaceTransition",
     "LookupTool",
+    "SemanticSearchTool",
     "ToolInvoked",
     "VariableEnriched",
     "VariableLoaded",

@@ -20,13 +20,17 @@ ChunkId = NewType("ChunkId", str)
 class SourceKind(str, Enum):
     paper_section = "paper_section"
     paper_reference = "paper_reference"
-    # Future: repo_readme, repo_code_file, repo_issue, dataset_card, model_card,
-    # provenance_artifact (#19 cross-link).
+    repository = "repository"
+    dataset = "dataset"
+    issue = "issue"
+    discussion = "discussion"
+    # Future: repo_code_file, model_card, provenance_artifact (#19 cross-link).
 
 
 class ChunkType(str, Enum):
     section = "section"
     paragraph = "paragraph"
+    artifact_metadata = "artifact_metadata"
 
 
 def source_id_for(*, project_id: str, kind: SourceKind, upstream_id: str) -> SourceId:

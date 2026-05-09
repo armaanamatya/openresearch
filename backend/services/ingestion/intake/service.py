@@ -49,7 +49,7 @@ from backend.services.ingestion.intake.fetchers.interface import (
     IntakeFetcher,
     IntakeFetchError,
 )
-from backend.services.ingestion.intake.sources import PaperSource, PdfPath
+from backend.services.ingestion.intake.sources import ArxivId, DoiRef, PaperSource, PdfPath
 
 
 class RegisterProject(Command):
@@ -259,6 +259,12 @@ def project_id_for(source: PaperSource) -> str:
     if isinstance(source, PdfPath):
         abs_path = str(Path(source.path).expanduser().resolve())
         digest = hashlib.sha256(f"pdf_path:{abs_path}".encode()).hexdigest()
+        return f"prj_{digest[:16]}"
+    if isinstance(source, ArxivId):
+        digest = hashlib.sha256(f"arxiv:{source.arxiv_id.lower()}".encode()).hexdigest()
+        return f"prj_{digest[:16]}"
+    if isinstance(source, DoiRef):
+        digest = hashlib.sha256(f"doi:{source.doi.lower()}".encode()).hexdigest()
         return f"prj_{digest[:16]}"
     raise NotImplementedError(
         f"project_id_for: unsupported source kind {source.kind!r}"

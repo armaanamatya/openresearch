@@ -1,7 +1,7 @@
 """Paper-source intake: turns a PaperSource into a Project aggregate.
 
 Public surface:
-  - PaperSource (discriminated union; only PdfPath in this slice)
+  - PaperSource discriminated union (PdfPath, ArxivId, DoiRef)
   - Project, PaperMetadata domain types
   - ProjectCreated, PaperFetched, PaperFetchFailed events
   - ProjectAggregate (state machine; no IO)
@@ -23,9 +23,11 @@ from backend.services.ingestion.intake.service import (
     IntakeAppService,
     RegisterProject,
 )
-from backend.services.ingestion.intake.sources import PaperSource, PdfPath
+from backend.services.ingestion.intake.sources import ArxivId, DoiRef, PaperSource, PdfPath
 
 __all__ = [
+    "ArxivId",
+    "DoiRef",
     "FetchPaper",
     "IntakeAppService",
     "InvalidStateTransition",

@@ -16,6 +16,11 @@ from backend.services.context.indexer import (
     SourcesProjection,
     StartIndexing,
 )
+from backend.services.ingestion.discovery import (
+    ArtifactDiscoveryAppService,
+    DiscoverArtifacts,
+    RegexArtifactDiscoveryAdapter,
+)
 from backend.services.context.indexer.model import SourceKind
 from backend.services.ingestion.intake import (
     FetchPaper,
@@ -41,6 +46,12 @@ def _re_register_all() -> None:
         IndexingFailed,
         IndexingStarted,
         SourceRegistered,
+    )
+    from backend.services.ingestion.discovery.events import (
+        ArtifactDiscovered,
+        DiscoveryCompleted,
+        DiscoveryFailed,
+        DiscoveryStarted,
     )
     from backend.services.ingestion.intake.events import (
         PaperFetchFailed,
@@ -71,6 +82,10 @@ def _re_register_all() -> None:
         ChunkCreated,
         IndexingCompleted,
         IndexingFailed,
+        DiscoveryStarted,
+        ArtifactDiscovered,
+        DiscoveryCompleted,
+        DiscoveryFailed,
     ):
         register_event(cls)
 
@@ -221,6 +236,46 @@ def test_chunks_for_source_returns_chunks_only_for_that_source(
     assert len(chunks) >= 1
     for c in chunks:
         assert c.source_id == src.id
+
+
+def test_indexer_registers_discovered_external_artifacts(store, tmp_path):
+    body = (
+        "Abstract\n"
+        "Code lives at https://github.com/openai/baselines and data at "
+        "https://huggingface.co/datasets/ylecun/mnist.\n\n"
+        "References\n\n[1] arXiv:1707.06347\n"
+    )
+    pdf = _make_pdf(tmp_path, body)
+    runs = tmp_path / "runs"
+    intake = IntakeAppService(
+        store=store,
+        fetchers={"pdf_path": PdfPathFetcher(runs_root=runs)},
+    )
+    pid = intake.register_project(RegisterProject(source=PdfPath(path=str(pdf))))
+    intake.fetch_paper(FetchPaper(project_id=pid))
+    ParserAppService(store=store, parser=PyMuPdfParser(), runs_root=runs).start_parsing(
+        StartParsing(project_id=pid)
+    )
+    ArtifactDiscoveryAppService(
+        store=store,
+        adapters=[RegexArtifactDiscoveryAdapter()],
+    ).discover(DiscoverArtifacts(project_id=pid))
+
+    indexer = IndexerAppService(store=store)
+    indexer.start_indexing(StartIndexing(project_id=pid))
+    projection = SourcesProjection()
+    indexer.project_into_projection(pid, projection)
+
+    by_kind = {source.kind for source in projection.list_sources()}
+    assert SourceKind.repository in by_kind
+    assert SourceKind.dataset in by_kind
+    external = [
+        source
+        for source in projection.list_sources()
+        if source.kind in {SourceKind.repository, SourceKind.dataset}
+    ]
+    assert external
+    assert all(projection.chunks_for_source(source.id) for source in external)
 
 
 # --- Failure paths ---------------------------------------------------------
