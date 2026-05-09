@@ -78,6 +78,47 @@ def test_listener_exception_does_not_block_others():
     assert len(received_b) == 1
 
 
+def test_on_listener_error_hook_is_invoked_with_context():
+    """The bus surfaces listener failures via the on_listener_error
+    hook so production can log + meter them. Without the hook,
+    failures are isolated but invisible."""
+    captured: list[tuple[BaseException, object, StoredEvent]] = []
+
+    def hook(exc: BaseException, listener: object, event: StoredEvent) -> None:
+        captured.append((exc, listener, event))
+
+    bus = DomainEventBus(on_listener_error=hook)
+    err = RuntimeError("boom")
+
+    def crashing(_e: StoredEvent) -> None:
+        raise err
+
+    bus.subscribe(crashing)
+    bus.emit(_stored_event())
+
+    assert len(captured) == 1
+    seen_exc, seen_listener, seen_event = captured[0]
+    assert seen_exc is err
+    assert seen_listener is crashing
+    assert seen_event.event_type == "toy_emitted"
+
+
+def test_listener_error_hook_failure_does_not_break_bus():
+    """Defensive: even a buggy on_listener_error hook must not break
+    delivery to other listeners."""
+    other_received: list[StoredEvent] = []
+
+    def buggy_hook(_exc: BaseException, _l: object, _e: StoredEvent) -> None:
+        raise RuntimeError("hook itself crashed")
+
+    bus = DomainEventBus(on_listener_error=buggy_hook)
+    bus.subscribe(lambda _e: (_ for _ in ()).throw(RuntimeError("listener crashed")))
+    bus.subscribe(other_received.append)
+
+    bus.emit(_stored_event())  # must not raise
+    assert len(other_received) == 1
+
+
 def test_subscribe_is_thread_safe():
     bus = DomainEventBus()
     received: list[StoredEvent] = []

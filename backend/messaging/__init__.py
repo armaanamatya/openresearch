@@ -6,7 +6,7 @@ event/command instance does not know about SQLite, listeners, or HTTP.
 The event store and bus consume these types.
 """
 
-from backend.messaging.bus import DomainEventBus, EventListener
+from backend.messaging.bus import DomainEventBus, EventListener, ListenerErrorHook
 from backend.messaging.command import Command, CommandId
 from backend.messaging.envelope import (
     AggregateId,
@@ -19,11 +19,12 @@ from backend.messaging.envelope import (
 )
 from backend.messaging.event import (
     DomainEvent,
+    InvariantBypassError,
     StoredEvent,
     register_event,
     resolve_event_class,
 )
-from backend.messaging.idempotency import IdempotencyTable
+from backend.messaging.idempotency import DuplicateCommandError, IdempotencyTable
 
 __all__ = [
     "AggregateId",
@@ -33,10 +34,13 @@ __all__ = [
     "CorrelationId",
     "DomainEvent",
     "DomainEventBus",
+    "DuplicateCommandError",
     "EventEnvelope",
     "EventId",
     "EventListener",
     "IdempotencyTable",
+    "InvariantBypassError",
+    "ListenerErrorHook",
     "StoredEvent",
     "new_correlation_id",
     "new_event_id",

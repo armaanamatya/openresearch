@@ -3,13 +3,24 @@
 Defined locally for now; proposed upstream to #8 in a follow-up PR.
 Import from this module across the codebase so the move to #8 is one
 import change.
+
+Defense in depth for the citation invariant (spec §5.6):
+  1. `NonEmptyCitations` Pydantic alias rejects empty tuples at validation.
+  2. `Citation.model_construct` is overridden to raise — bypass attempts
+     fail at construction time too.
+  3. `EventStore.append` re-validates payloads against their registered
+     Pydantic class on the way in.
+  4. `StoredEvent.into()` re-validates on the way out (catches storage
+     tampering and dict-bypass attempts).
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from backend.messaging.event import InvariantBypassError
 
 
 class Citation(BaseModel):
@@ -30,10 +41,23 @@ class Citation(BaseModel):
     locator: str
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
+        """Banned: bypassing validation on a Citation undermines the
+        invariant that every citation has a real source pointer.
+
+        Use `Citation(...)` for validated construction or
+        `Citation.model_validate(...)` for validated deserialization."""
+        raise InvariantBypassError(
+            "Citation.model_construct is banned to preserve evidence invariants. "
+            "Use Citation(...) or Citation.model_validate(...) instead."
+        )
+
 
 # Pydantic-validated typed alias: every list[Citation] in an event payload
-# must be non-empty. Enforced at construction; bypasses (model_construct)
-# are caught by EventStore.append() re-validation (spec §5.6).
+# must be non-empty. Enforced at construction; bypasses (model_construct on
+# the surrounding event class) are blocked by DomainEvent.model_construct
+# raising InvariantBypassError.
 NonEmptyCitations = Annotated[tuple[Citation, ...], Field(min_length=1)]
 
 

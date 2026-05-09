@@ -17,8 +17,8 @@ at runtime.
 
 from __future__ import annotations
 
-import os
 import secrets
+import threading
 import time
 from datetime import datetime, timezone
 from typing import NewType
@@ -33,31 +33,58 @@ AggregateId = NewType("AggregateId", str)
 
 # --- ID generation ---------------------------------------------------------
 #
-# We use Crockford-base32 ULIDs for monotonic, lexicographically sortable
-# IDs without an external dependency. Implemented inline to avoid pulling
-# in `ulid-py` until later phases.
+# Crockford-base32 ULIDs: 48-bit ms timestamp + 80-bit randomness, sortable.
+# Inline to avoid a new dependency. Same-ms monotonic: when two ULIDs are
+# generated within the same millisecond, the random tail is incremented
+# rather than re-randomized, so they sort in generation order. Clock
+# regressions are pinned to the last seen timestamp (NTP backsteps,
+# leap-second smearing).
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_RAND_MASK = (1 << 80) - 1
+_TS_MASK = (1 << 48) - 1
+
+_ulid_lock = threading.Lock()
+_last_ulid_ts: int = 0
+_last_ulid_rnd: int = 0
 
 
 def _ulid() -> str:
-    """Produce a 26-character Crockford-base32 ULID.
+    """Produce a 26-character Crockford-base32 ULID, monotonic same-ms.
 
     First 10 chars: 48-bit timestamp (ms since epoch).
-    Last 16 chars: 80 random bits.
+    Last 16 chars: 80-bit randomness, incremented on same-ms collision.
     """
-    ts_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    global _last_ulid_ts, _last_ulid_rnd
+    with _ulid_lock:
+        ts_ms = int(time.time() * 1000) & _TS_MASK
+        if ts_ms < _last_ulid_ts:
+            # Clock regressed. Pin to last seen ts so monotonicity holds.
+            ts_ms = _last_ulid_ts
+        if ts_ms == _last_ulid_ts:
+            rnd = (_last_ulid_rnd + 1) & _RAND_MASK
+            if rnd == 0:
+                # Carry into ts_ms only if the 80-bit space wraps in one ms
+                # (impossibly rare in practice; defend anyway).
+                ts_ms = (ts_ms + 1) & _TS_MASK
+                rnd = int.from_bytes(secrets.token_bytes(10), "big")
+        else:
+            rnd = int.from_bytes(secrets.token_bytes(10), "big")
+        _last_ulid_ts = ts_ms
+        _last_ulid_rnd = rnd
+
     ts_chars = []
+    ts = ts_ms
     for _ in range(10):
-        ts_chars.append(_CROCKFORD[ts_ms & 0x1F])
-        ts_ms >>= 5
+        ts_chars.append(_CROCKFORD[ts & 0x1F])
+        ts >>= 5
     ts_str = "".join(reversed(ts_chars))
 
-    rnd = int.from_bytes(secrets.token_bytes(10), "big")
     rnd_chars = []
+    r = rnd
     for _ in range(16):
-        rnd_chars.append(_CROCKFORD[rnd & 0x1F])
-        rnd >>= 5
+        rnd_chars.append(_CROCKFORD[r & 0x1F])
+        r >>= 5
     rnd_str = "".join(reversed(rnd_chars))
 
     return ts_str + rnd_str

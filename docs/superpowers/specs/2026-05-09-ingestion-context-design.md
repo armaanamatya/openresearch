@@ -1307,6 +1307,17 @@ Armaanamatya landed `d5413d3` implementing #7-#11. The implementation is **CRUD-
 - Same SQLite connection (PRAGMAs already set: `journal_mode=WAL`, `foreign_keys=OFF`). We bring our own `executescript` for our schema.
 - We do **not** introduce async sqlite. Everything sync. Foreshadowed §8.3 ("Asyncio everywhere") is replaced by **sync everywhere**, threading for parallel adapter execution. The `EventStore` Protocol's async signatures collapse to sync (`def append`, `def load`, etc.).
 
+**SQLite threading model (decision)**
+
+Teammate's `Database` holds one `sqlite3.Connection` lazily created in `connection`. SQLite forbids sharing a connection across threads by default (`check_same_thread=True`). For our threaded coordinators and projections to safely use SQLite alongside teammate's services, we adopt **connection-per-thread via `threading.local()`**:
+
+- `Database` is extended (in our messaging package, not teammate's) to expose a `thread_local_connection` factory that opens a fresh `sqlite3.Connection` per thread on first access of that thread, sharing the same file. WAL mode allows N readers + 1 writer concurrently.
+- Long-running handlers (coordinators, projection workers) call `.thread_local_connection` once at thread start.
+- One-shot calls (e.g., a synchronous test, an HTTP request handler) may continue to use `Database.connection` if they pin to a single thread for the call's duration.
+- Cross-thread writes serialize on SQLite's writer lock; we don't add Python-level locks. Acceptable contention up to a few hundred concurrent writers; if measured throughput becomes a problem (§4.3 migration trigger), move to Postgres.
+
+This lives in our code (`backend/messaging/db.py` or similar) so we don't fork teammate's `Database` class. It's an extension, not a replacement.
+
 **Event publishing bridge**
 
 - Our domain events live in our event store. To make them visible to teammates' dashboard (#20/#21):

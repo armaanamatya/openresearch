@@ -8,6 +8,11 @@ source of truth; the bus is a *broadcast* channel for derived state.
 Listeners run synchronously on the emit thread by default. Long-running
 listeners should hand work to their own queue/thread; the bus does not
 back-pressure or buffer.
+
+Listener exceptions are isolated (one bad listener does not kill the
+others), but the failure is *observable* via the optional
+`on_listener_error` hook supplied at construction. Production wires
+this to structured logging + a Prometheus counter; tests assert on it.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from typing import Callable
 from backend.messaging.event import StoredEvent
 
 EventListener = Callable[[StoredEvent], None]
+ListenerErrorHook = Callable[[BaseException, EventListener, StoredEvent], None]
 
 
 class DomainEventBus:
@@ -25,11 +31,19 @@ class DomainEventBus:
 
     A single global instance lives in the app DI; tests construct
     their own.
+
+    Args:
+      on_listener_error: optional hook called when a listener raises.
+        Receives `(exception, listener, event)`. The hook MUST NOT raise
+        — if it does, the bus catches and discards to preserve listener
+        isolation. Default is a no-op (audit-grade callers should always
+        supply one in production).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_listener_error: ListenerErrorHook | None = None) -> None:
         self._lock = threading.RLock()
         self._listeners: list[EventListener] = []
+        self._on_listener_error = on_listener_error
 
     def subscribe(self, listener: EventListener) -> Callable[[], None]:
         """Register a listener. Returns an unsubscribe callable."""
@@ -49,18 +63,20 @@ class DomainEventBus:
         """Synchronously call every listener with the event.
 
         Exceptions from listeners are isolated: one bad listener does
-        not kill the others. Errors are swallowed here and observable
-        via metrics/logs in production.
+        not kill the others. The failure surfaces via the
+        `on_listener_error` hook (if supplied at construction).
         """
         with self._lock:
             listeners = list(self._listeners)
         for listener in listeners:
             try:
                 listener(event)
-            except Exception:
-                # In production this is logged + metric-incremented.
-                # In tests this is intentional silence — listeners that
-                # care about errors should observe via assertions.
+            except BaseException as exc:  # noqa: BLE001 — bus must isolate listener faults
+                if self._on_listener_error is not None:
+                    try:
+                        self._on_listener_error(exc, listener, event)
+                    except BaseException:  # noqa: BLE001 — don't let the hook break the bus
+                        pass
                 continue
 
     def listener_count(self) -> int:
@@ -68,4 +84,4 @@ class DomainEventBus:
             return len(self._listeners)
 
 
-__all__ = ["DomainEventBus", "EventListener"]
+__all__ = ["DomainEventBus", "EventListener", "ListenerErrorHook"]

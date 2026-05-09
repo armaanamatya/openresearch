@@ -1,15 +1,24 @@
-"""Domain event base class + the registry that maps event_type -> Pydantic class.
+"""Domain event base class + the (event_type, schema_version) registry.
 
 Subclasses set a class-level `event_type` and `schema_version`. The
 registry is populated by `@register_event` so the event store can
 look up the correct Pydantic class to validate any payload it loads
 back from disk (catching a hand-rolled-dict backdoor — spec §5.6).
+
+Registry key is `(event_type, schema_version)` so multiple shape
+versions of the same event_type can coexist during migrations.
+Upcasters bridge older versions forward at read time.
+
+`DomainEvent.model_construct` is overridden to raise. The bypass
+exists in tests via `BaseModel.model_construct.__func__(cls, ...)`
+which is intentionally awkward — production code that calls it is
+caught by reviewers and by ruff.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict
 
@@ -18,6 +27,11 @@ from backend.messaging.envelope import (
     EventEnvelope,
     EventId,
 )
+
+
+class InvariantBypassError(Exception):
+    """Raised when code attempts `model_construct` on a DomainEvent or
+    other invariant-bearing model. Use the validated constructor instead."""
 
 
 class DomainEvent(BaseModel):
@@ -37,6 +51,21 @@ class DomainEvent(BaseModel):
     # Subclasses override.
     event_type: ClassVar[str] = ""
     schema_version: ClassVar[int] = 1
+
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
+        """Banned: `model_construct` bypasses Pydantic validation, which
+        would let an event payload sidestep invariants like NonEmptyCitations.
+
+        Use `cls(...)` for validated construction or `cls.model_validate(...)`
+        for validated deserialization. Tests that genuinely need to bypass
+        (rare) call `BaseModel.model_construct.__func__(cls, ...)` which is
+        intentionally awkward."""
+        raise InvariantBypassError(
+            f"{cls.__name__}.model_construct is banned to preserve event "
+            f"payload invariants (e.g. NonEmptyCitations). Use {cls.__name__}(...) "
+            f"or {cls.__name__}.model_validate(...) instead."
+        )
 
 
 class StoredEvent(BaseModel):
@@ -62,11 +91,20 @@ class StoredEvent(BaseModel):
         """Return the payload deserialized into a typed DomainEvent.
 
         Re-validates via Pydantic — empty-citation backdoors etc. raise here.
+        Verifies BOTH event_type and schema_version match `cls`. Mismatched
+        schema_version means the caller should consult the upcaster registry
+        first rather than load directly into a newer class.
         """
         if cls.event_type != self.event_type:
             raise ValueError(
                 f"Cannot deserialize event_type={self.event_type!r} into "
                 f"{cls.__name__} (event_type={cls.event_type!r})"
+            )
+        if cls.schema_version != self.schema_version:
+            raise ValueError(
+                f"Schema version mismatch deserializing event_type={self.event_type!r}: "
+                f"stored={self.schema_version}, target {cls.__name__} v{cls.schema_version}. "
+                f"Upcast first."
             )
         return cls.model_validate(self.payload)
 
@@ -74,19 +112,21 @@ class StoredEvent(BaseModel):
 # --- Registry --------------------------------------------------------------
 
 
-_REGISTRY: dict[str, type[DomainEvent]] = {}
+_REGISTRY: dict[tuple[str, int], type[DomainEvent]] = {}
+"""Keyed by (event_type, schema_version). Multiple shape versions of the
+same event_type may coexist during migrations; upcasters bridge them."""
 
 
 class EventTypeAlreadyRegistered(Exception):
-    """Raised when two classes claim the same `event_type`."""
+    """Raised when two classes claim the same (event_type, schema_version)."""
 
 
 def register_event(cls: type[DomainEvent]) -> type[DomainEvent]:
-    """Decorator: register a DomainEvent subclass by its event_type.
+    """Decorator: register a DomainEvent subclass by (event_type, schema_version).
 
     Used by the event store to look up validators on load. Idempotent
-    when the same class is re-registered (helpful in test reloads);
-    raises if a *different* class claims an existing type.
+    when the same class is re-registered. Raises if a *different* class
+    claims an existing (type, version) pair.
 
     Example:
         @register_event
@@ -100,34 +140,41 @@ def register_event(cls: type[DomainEvent]) -> type[DomainEvent]:
         raise ValueError(
             f"{cls.__name__} must set a non-empty `event_type` class attribute"
         )
-    existing = _REGISTRY.get(cls.event_type)
+    if cls.schema_version < 1:
+        raise ValueError(
+            f"{cls.__name__}.schema_version must be >= 1, got {cls.schema_version}"
+        )
+    key = (cls.event_type, cls.schema_version)
+    existing = _REGISTRY.get(key)
     if existing is not None and existing is not cls:
         raise EventTypeAlreadyRegistered(
-            f"event_type={cls.event_type!r} already registered to "
+            f"({cls.event_type!r}, v{cls.schema_version}) already registered to "
             f"{existing.__module__}.{existing.__name__}; cannot reassign to "
             f"{cls.__module__}.{cls.__name__}"
         )
-    _REGISTRY[cls.event_type] = cls
+    _REGISTRY[key] = cls
     return cls
 
 
-def resolve_event_class(event_type: str) -> type[DomainEvent]:
-    """Look up the registered DomainEvent subclass for an event_type.
+def resolve_event_class(event_type: str, schema_version: int = 1) -> type[DomainEvent]:
+    """Look up the registered DomainEvent subclass for (event_type, schema_version).
 
-    Raises KeyError if unknown — indicating an event in the store that
-    no Python class can decode (an upcaster gap or a renamed type).
+    `schema_version` defaults to 1 for backwards compat with single-version events.
+    Raises KeyError if no match — indicating either a never-registered class
+    or an upcaster/rename rule is missing for this version.
     """
     try:
-        return _REGISTRY[event_type]
+        return _REGISTRY[(event_type, schema_version)]
     except KeyError as exc:
         raise KeyError(
-            f"No DomainEvent class registered for event_type={event_type!r}. "
+            f"No DomainEvent class registered for "
+            f"event_type={event_type!r} schema_version={schema_version}. "
             f"Either register it or add an upcaster/rename rule."
         ) from exc
 
 
-def registered_event_types() -> list[str]:
-    """Sorted list of currently-registered event types (for diagnostics)."""
+def registered_event_types() -> list[tuple[str, int]]:
+    """Sorted list of currently-registered (event_type, schema_version) pairs."""
     return sorted(_REGISTRY.keys())
 
 
@@ -139,6 +186,7 @@ def _clear_registry_for_tests() -> None:
 __all__ = [
     "DomainEvent",
     "EventTypeAlreadyRegistered",
+    "InvariantBypassError",
     "StoredEvent",
     "register_event",
     "registered_event_types",

@@ -9,7 +9,7 @@ import pytest
 
 from backend.messaging.command import CommandId
 from backend.messaging.envelope import AggregateId, EventId
-from backend.messaging.idempotency import IdempotencyTable
+from backend.messaging.idempotency import DuplicateCommandError, IdempotencyTable
 from backend.persistence.database import Database
 
 
@@ -39,17 +39,41 @@ def test_record_then_lookup_returns_event_ids(db):
     assert found == eids
 
 
-def test_record_replace_overwrites_prior_result(db):
+def test_record_with_same_result_is_idempotent_no_op(db):
+    """Re-recording the same result for the same (agg, cmd) is a no-op.
+    The original row is preserved unchanged."""
+    table = IdempotencyTable(db)
+    agg = AggregateId("agg_1")
+    cmd = CommandId("cmd_1")
+    eids = (EventId("evt_a"), EventId("evt_b"))
+
+    table.record(agg, cmd, eids)
+    db.connection.commit()
+    # Idempotent: same result, no exception, no overwrite.
+    table.record(agg, cmd, eids)
+    db.connection.commit()
+
+    assert table.lookup(agg, cmd) == eids
+
+
+def test_record_with_divergent_result_raises_duplicate_command_error(db):
+    """A real bug: caller skipped lookup() and re-executed IO with
+    a different outcome. The table refuses to corrupt the original."""
     table = IdempotencyTable(db)
     agg = AggregateId("agg_1")
     cmd = CommandId("cmd_1")
 
     table.record(agg, cmd, (EventId("evt_first"),))
     db.connection.commit()
-    table.record(agg, cmd, (EventId("evt_second"),))
-    db.connection.commit()
-
-    assert table.lookup(agg, cmd) == (EventId("evt_second"),)
+    with pytest.raises(DuplicateCommandError) as exc_info:
+        table.record(agg, cmd, (EventId("evt_second"),))
+    err = exc_info.value
+    assert err.aggregate_id == agg
+    assert err.command_id == cmd
+    assert err.existing == (EventId("evt_first"),)
+    assert err.incoming == (EventId("evt_second"),)
+    # Original is preserved.
+    assert table.lookup(agg, cmd) == (EventId("evt_first"),)
 
 
 def test_lookup_treats_expired_rows_as_missing(db):
@@ -61,6 +85,22 @@ def test_lookup_treats_expired_rows_as_missing(db):
 
     time.sleep(0.05)
     assert table.lookup(agg, cmd) is None
+
+
+def test_record_replaces_expired_row(db):
+    """An expired row is treated as missing by lookup(). A new record
+    on the same (agg, cmd) replaces it cleanly."""
+    table = IdempotencyTable(db, default_retention=timedelta(milliseconds=10))
+    agg = AggregateId("agg_1")
+    cmd = CommandId("cmd_1")
+    table.record(agg, cmd, (EventId("evt_old"),))
+    db.connection.commit()
+
+    time.sleep(0.05)
+    # Expired — record() replaces.
+    table.record(agg, cmd, (EventId("evt_new"),))
+    db.connection.commit()
+    assert table.lookup(agg, cmd) == (EventId("evt_new"),)
 
 
 def test_purge_expired_removes_rows(db):

@@ -60,3 +60,13 @@ def test_non_empty_citations_accepts_one_or_more():
         )
     )
     assert len(three.cites) == 3
+
+
+def test_citation_model_construct_is_banned():
+    """The third defense layer: Citation.model_construct raises
+    InvariantBypassError. Even direct attempts to bypass Pydantic
+    on a single Citation fail."""
+    from backend.messaging.event import InvariantBypassError
+
+    with pytest.raises(InvariantBypassError):
+        Citation.model_construct(source_id="s", quote="q", locator="l")

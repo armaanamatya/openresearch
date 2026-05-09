@@ -49,3 +49,37 @@ def test_envelope_accepts_explicit_correlation_for_chaining():
     e2 = make_envelope(source="b", correlation_id=cid, causation_id=e1.event_id)  # type: ignore[arg-type]
     assert e1.correlation_id == e2.correlation_id == cid
     assert e2.causation_id == e1.event_id
+
+
+def test_event_id_is_monotonic_in_same_millisecond():
+    """A burst of IDs generated in the same ms must still sort in
+    generation order. Without same-ms monotonicity the global event
+    log can present reordered concurrent events under high write rates."""
+    burst = [new_event_id() for _ in range(2000)]
+    # Each id is unique.
+    assert len(set(burst)) == len(burst)
+    # And lexicographically sorted in generation order.
+    assert burst == sorted(burst)
+
+
+def test_event_id_monotonic_across_thread_concurrency():
+    """Same property under contention: 4 threads each generate 500 ids
+    in parallel; the union must still be unique. Order across threads
+    is not required, but no two threads ever observe the same id."""
+    import threading
+
+    out: list[str] = []
+    out_lock = threading.Lock()
+
+    def worker() -> None:
+        local = [new_event_id() for _ in range(500)]
+        with out_lock:
+            out.extend(local)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(set(out)) == len(out) == 2000

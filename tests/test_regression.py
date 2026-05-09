@@ -100,10 +100,13 @@ def test_messaging_public_api_is_complete():
         "CorrelationId",
         "DomainEvent",
         "DomainEventBus",
+        "DuplicateCommandError",
         "EventEnvelope",
         "EventId",
         "EventListener",
         "IdempotencyTable",
+        "InvariantBypassError",
+        "ListenerErrorHook",
         "StoredEvent",
         "new_correlation_id",
         "new_event_id",
@@ -112,12 +115,7 @@ def test_messaging_public_api_is_complete():
     }
     actual = set(m.__all__)
     missing = expected - actual
-    extra = actual - expected
     assert not missing, f"Public API missing: {missing}"
-    # Extra is allowed but flag it so we notice unintentional additions.
-    if extra:
-        # Document, don't fail.
-        pass
 
 
 def test_eventstore_public_api_is_complete():

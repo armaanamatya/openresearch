@@ -96,30 +96,52 @@ class Subscription(Protocol):
     `nack()` returns the event for redelivery after a delay.
 
     Subscriptions are durable across process restarts: the same
-    subscription_name resumes from the last ack'd position.
+    `(subscription_name, consumer_id)` pair resumes from the last
+    ack'd position.
+
+    Ack ordering contract:
+      Acks MUST be in `global_position` order. Calling `ack(event_n)`
+      without first having ack'd every event up to `event_n - 1` is
+      undefined behavior — the implementation MAY raise or silently
+      advance, depending on backend. The recommended consumer pattern
+      is "iterate, handle one at a time, ack after each, on failure
+      nack and stop." Concurrency-tolerant designs use multiple
+      consumer_ids on the same subscription_name (each gets its own
+      checkpoint) rather than parallel ack on a single subscription.
     """
 
     @property
     def name(self) -> str: ...
 
     @property
+    def consumer_id(self) -> str:
+        """Identifies this consumer of the subscription. Multiple
+        consumers on one subscription_name (different consumer_ids)
+        get independent checkpoints — used for fan-out / sharding.
+        Single-consumer setups use a stable consumer_id like the
+        process name or "default"."""
+
+    @property
     def position(self) -> int:
-        """Last ack'd global_position. -1 means never ack'd anything."""
+        """Last ack'd global_position for this consumer. -1 means
+        never ack'd anything."""
 
     def __iter__(self) -> Iterator[StoredEvent]: ...
 
     def ack(self, event: StoredEvent) -> None:
         """Mark `event` as successfully handled. Advances the checkpoint
-        if `event.global_position` >= current position."""
+        if `event.global_position` > current position. Acks must arrive
+        in global_position order; see the class docstring."""
 
     def nack(self, event: StoredEvent, *, retry_after_seconds: float) -> None:
         """Return the event for redelivery. The subscription holds it
-        back from any other consumer until `retry_after_seconds` has
-        elapsed."""
+        back from this consumer (and only this consumer) until
+        `retry_after_seconds` has elapsed."""
 
-    def renew_lease(self) -> None:
-        """For long-running handlers: prevent the store from reassigning
-        the subscription to another worker."""
+    def renew_lease(self, ttl_seconds: float = 30.0) -> None:
+        """For long-running handlers: extend the lease that prevents the
+        store from reassigning the subscription to another worker.
+        `ttl_seconds` is how long the lease should be valid from now."""
 
     def close(self) -> None:
         """Release the subscription. Subsequent calls raise SubscriptionClosedError."""
@@ -194,10 +216,23 @@ class EventStore(Protocol):
     def subscribe(
         self,
         subscription_name: str,
+        *,
+        consumer_id: str = "default",
         types: Iterable[str] | None = None,
+        from_position: int | None = None,
     ) -> Subscription:
-        """Open (or resume) a durable subscription. The same name across
-        process restarts resumes from the last ack'd position."""
+        """Open (or resume) a durable subscription.
+
+        `(subscription_name, consumer_id)` together uniquely identify a
+        consumer position. The same pair across process restarts resumes
+        from the last ack'd position. Using different `consumer_id`s on
+        the same `subscription_name` gives each consumer its own
+        checkpoint (used for fan-out: a projection and a coordinator can
+        share a subscription_name but never block each other).
+
+        `from_position` overrides the resumed checkpoint for this open;
+        useful for explicit re-replay during projection rebuilds. Pass
+        `from_position=0` to start from the beginning of the log."""
 
     def get_aggregate_version(self, aggregate_id: AggregateId) -> int:
         """Current version of the aggregate. 0 if no events yet."""
