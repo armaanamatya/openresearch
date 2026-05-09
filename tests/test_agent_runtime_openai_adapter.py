@@ -38,7 +38,7 @@ def test_openai_runtime_normalizes_streamed_events(monkeypatch, tmp_path: Path) 
 
     class Runner:
         @staticmethod
-        def run_streamed(agent: Any, *, input: str, max_turns: int):
+        def run_streamed(agent: Any, *, input: str, max_turns: int | None = None):
             captured_run.update(agent=agent, input=input, max_turns=max_turns)
             return FakeResult()
 
@@ -122,3 +122,59 @@ def test_openai_runtime_normalizes_streamed_events(monkeypatch, tmp_path: Path) 
     assert events[2].input_tokens == 13
     assert events[2].output_tokens == 17
     assert events[2].reasoning_tokens == 5
+
+
+def test_openai_runtime_omits_uncapped_turns(monkeypatch, tmp_path: Path) -> None:
+    captured_run: dict[str, Any] = {}
+
+    class Agent:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    def function_tool(func=None, **kwargs: Any):
+        def decorate(inner):
+            return inner
+
+        return decorate(func) if func is not None else decorate
+
+    class Runner:
+        @staticmethod
+        def run_streamed(agent: Any, **kwargs: Any):
+            captured_run.update(kwargs)
+            return FakeResult()
+
+    class FakeResult:
+        async def stream_events(self):
+            yield types.SimpleNamespace(
+                type="raw_response_event",
+                data=types.SimpleNamespace(
+                    type="response.completed",
+                    response=types.SimpleNamespace(
+                        usage=types.SimpleNamespace(input_tokens=1, output_tokens=1)
+                    ),
+                ),
+            )
+
+    fake = types.ModuleType("agents")
+    fake.Agent = Agent
+    fake.ItemHelpers = type("ItemHelpers", (), {})
+    fake.Runner = Runner
+    fake.function_tool = function_tool
+    monkeypatch.setitem(sys.modules, "agents", fake)
+
+    runtime = OpenAiAgentRuntime()
+    spec = AgentRuntimeSpec(
+        name="experiment-runner",
+        instructions="system",
+        model="gpt-test",
+        working_directory=tmp_path,
+        max_turns=None,
+    )
+
+    async def collect():
+        return [event async for event in runtime.run_agent(agent=spec, user_input="task")]
+
+    asyncio.run(collect())
+
+    assert captured_run["input"] == "task"
+    assert "max_turns" not in captured_run

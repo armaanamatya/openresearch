@@ -239,7 +239,7 @@ class ReproLabOrchestrator:
         runs_root: Path,
         *,
         model: str | None = None,
-        max_turns_per_agent: int = 15,
+        max_turns_per_agent: int | None = None,
         permission_mode: str = "bypassPermissions",
         provider: ProviderName | str | None = None,
         runtime: AgentRuntime | None = None,
@@ -255,7 +255,7 @@ class ReproLabOrchestrator:
         )
         self.max_turns_per_agent = (
             max_turns_per_agent
-            if max_turns_per_agent != 15
+            if max_turns_per_agent is not None
             else self.execution_profile.max_turns_per_agent
         )
         self.heavy_agent_max_turns = self.execution_profile.heavy_agent_max_turns
@@ -295,7 +295,7 @@ class ReproLabOrchestrator:
         agent_id: str,
         *,
         cwd: str | Path | None = None,
-        max_turns: int,
+        max_turns: int | None,
     ) -> AgentRuntimeSpec:
         spec = AGENT_REGISTRY[agent_id]
         provider = self._runtime.provider_name

@@ -57,11 +57,10 @@ class OpenAiAgentRuntime:
             handoffs=handoffs,
         )
 
-        result = Runner.run_streamed(
-            openai_agent,
-            input=user_input,
-            max_turns=agent.max_turns,
-        )
+        run_kwargs = {"input": user_input}
+        if agent.max_turns is not None:
+            run_kwargs["max_turns"] = agent.max_turns
+        result = Runner.run_streamed(openai_agent, **run_kwargs)
         saw_raw_text = False
         async for event in result.stream_events():
             event_type = _get(event, "type")

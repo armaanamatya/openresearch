@@ -57,3 +57,23 @@ def test_orchestrator_builds_provider_specific_runtime_spec(tmp_path: Path) -> N
 
     telemetry = tmp_path / "prj_runtime" / "agent_telemetry.jsonl"
     assert '"provider": "openai"' in telemetry.read_text()
+
+
+def test_orchestrator_does_not_cap_heavy_agents_by_default(tmp_path: Path) -> None:
+    runtime = FakeOpenAiRuntime()
+    orchestrator = ReproLabOrchestrator(
+        "prj_uncapped",
+        tmp_path,
+        runtime=runtime,
+    )
+
+    asyncio.run(
+        orchestrator._invoke_agent(
+            "experiment-runner",
+            "Run the experiment.",
+            cwd=tmp_path / "work",
+        )
+    )
+
+    assert runtime.agent is not None
+    assert runtime.agent.max_turns is None

@@ -25,7 +25,7 @@ class AgentRuntimeSpec:
     description: str = ""
     tools: tuple[ToolSpec, ...] = ()
     sub_agents: tuple["AgentRuntimeSpec", ...] = ()
-    max_turns: int = 15
+    max_turns: int | None = None
     thinking_budget_tokens: int | None = None
     cache_static_blocks: bool = True
     permission_mode: str = "bypassPermissions"

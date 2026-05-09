@@ -32,8 +32,8 @@ class ExecutionProfile:
     """
 
     mode: ExecutionMode
-    max_turns_per_agent: int
-    heavy_agent_max_turns: int
+    max_turns_per_agent: int | None
+    heavy_agent_max_turns: int | None
     command_timeout_seconds: int
     sandbox_network_disabled: bool = True
     sandbox_memory_limit: str = "4g"
@@ -55,8 +55,8 @@ class ExecutionProfile:
         if resolved_mode is ExecutionMode.max:
             base = cls(
                 mode=resolved_mode,
-                max_turns_per_agent=25,
-                heavy_agent_max_turns=60,
+                max_turns_per_agent=None,
+                heavy_agent_max_turns=None,
                 command_timeout_seconds=7200,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit="8g",
@@ -65,8 +65,8 @@ class ExecutionProfile:
         else:
             base = cls(
                 mode=resolved_mode,
-                max_turns_per_agent=15,
-                heavy_agent_max_turns=30,
+                max_turns_per_agent=None,
+                heavy_agent_max_turns=None,
                 command_timeout_seconds=3600,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit="4g",

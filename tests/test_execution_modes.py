@@ -6,12 +6,12 @@ from backend.agents.execution import (
 )
 
 
-def test_execution_profile_efficient_preserves_current_budgets() -> None:
+def test_execution_profile_efficient_uses_uncapped_agent_turns() -> None:
     profile = ExecutionProfile.from_mode("efficient")
 
     assert profile.mode is ExecutionMode.efficient
-    assert profile.max_turns_per_agent == 15
-    assert profile.heavy_agent_max_turns == 30
+    assert profile.max_turns_per_agent is None
+    assert profile.heavy_agent_max_turns is None
     assert profile.command_timeout_seconds == 3600
     assert profile.sandbox_network_disabled is True
 
@@ -24,8 +24,8 @@ def test_execution_profile_max_raises_bounded_budgets() -> None:
     )
 
     assert profile.mode is ExecutionMode.max
-    assert profile.max_turns_per_agent > 15
-    assert profile.heavy_agent_max_turns > 30
+    assert profile.max_turns_per_agent is None
+    assert profile.heavy_agent_max_turns is None
     assert profile.command_timeout_seconds == 7200
     assert profile.sandbox_network_disabled is False
     assert profile.sandbox_platform == "linux/amd64"

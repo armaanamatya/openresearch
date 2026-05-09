@@ -79,7 +79,7 @@ class AgentSpec:
                 if tool_name != "Agent"
             ),
             sub_agents=sub_agents,
-            max_turns=max_turns or self.max_turns or 15,
+            max_turns=max_turns if max_turns is not None else self.max_turns,
             thinking_budget_tokens=self.thinking_budget_tokens,
             working_directory=working_directory,
         )

@@ -108,7 +108,6 @@ async def run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
-        max_turns=20,
     )
 
     # Try to read the written file first

@@ -444,7 +444,6 @@ async def run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
-        max_turns=30,
     )
 
     # Read result from disk or parse from output

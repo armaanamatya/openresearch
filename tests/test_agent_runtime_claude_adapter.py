@@ -96,3 +96,55 @@ def test_claude_runtime_normalizes_sdk_events(monkeypatch, tmp_path: Path) -> No
     assert events[2].input_tokens == 7
     assert events[2].output_tokens == 11
     assert events[2].cache_read_input_tokens == 3
+
+
+def test_claude_runtime_preserves_uncapped_turns(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class AgentDefinition:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["sub_agent"] = kwargs
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["options"] = kwargs
+
+    class ResultMessage:
+        usage = {"input_tokens": 1, "output_tokens": 1}
+
+    async def query(prompt: str, options: Any):
+        yield ResultMessage()
+
+    fake = types.ModuleType("claude_agent_sdk")
+    fake.AgentDefinition = AgentDefinition
+    fake.AssistantMessage = type("AssistantMessage", (), {})
+    fake.ClaudeAgentOptions = ClaudeAgentOptions
+    fake.ResultMessage = ResultMessage
+    fake.ToolUseBlock = type("ToolUseBlock", (), {})
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+
+    runtime = ClaudeAgentRuntime()
+    spec = AgentRuntimeSpec(
+        name="experiment-runner",
+        instructions="system",
+        model="claude-test",
+        sub_agents=(
+            AgentRuntimeSpec(
+                name="verifier",
+                instructions="verify",
+                model="claude-sub",
+                max_turns=None,
+            ),
+        ),
+        working_directory=tmp_path,
+        max_turns=None,
+    )
+
+    async def collect():
+        return [event async for event in runtime.run_agent(agent=spec, user_input="task")]
+
+    asyncio.run(collect())
+
+    assert captured["options"]["max_turns"] is None
+    assert captured["sub_agent"]["maxTurns"] is None
