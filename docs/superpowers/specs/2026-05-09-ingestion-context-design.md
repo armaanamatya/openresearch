@@ -1297,6 +1297,115 @@ We surface these via a small `openresearch.contracts.ingestion_context` module c
 3. Run `tests/integration/test_cross_team_contracts.py` which validates we still consume the upstream shape correctly.
 4. If incompatible, escalate; do not silently drift.
 
+### 15.13 Integration deltas (post-`d5413d3` reality, locked)
+
+Armaanamatya landed `d5413d3` implementing #7-#11. The implementation is **CRUD-with-broadcasts**, not the event-sourced canonical contract this spec assumed. We adopt **Option 2**: keep event sourcing as our internal canonical, integrate at the edges. These pins lock the integration:
+
+**Persistence**
+
+- We piggyback on their `backend.persistence.database.Database` and the configured `REPROLAB_DATABASE_URL` (default `sqlite:///reprolab.db`). **One DB file**, our tables alongside theirs, all named `event_store_*` / `projection_*` / `coordinator_*` to avoid collisions.
+- Same SQLite connection (PRAGMAs already set: `journal_mode=WAL`, `foreign_keys=OFF`). We bring our own `executescript` for our schema.
+- We do **not** introduce async sqlite. Everything sync. Foreshadowed §8.3 ("Asyncio everywhere") is replaced by **sync everywhere**, threading for parallel adapter execution. The `EventStore` Protocol's async signatures collapse to sync (`def append`, `def load`, etc.).
+
+**Event publishing bridge**
+
+- Our domain events live in our event store. To make them visible to teammates' dashboard (#20/#21):
+  - On every `append`, a thin `EventPayloadBridge` translates the domain event into their `EventPayload` and emits it through `TaskLifecycleService`-style listeners (or a sibling `DomainEventBus`).
+  - We use existing `EventType` values where they fit:
+    - `agent_reasoning_step` for `ToolInvoked`, `VariableEnriched`
+    - `context_enrichment` for `VariableLoaded`, `WorkspaceReady`
+    - `shared_state_updated` for `VariablePromoted`
+    - `agent_started` / `agent_completed` for workspace lifecycle
+  - The full domain event id is included in `EventPayload.data["domain_event_id"]` so the dashboard can re-fetch the canonical event from our event store.
+- We do **not** add new values to `backend.schemas.events.EventType`. That enum belongs to teammate; we keep our domain-event types in our own enum (`DomainEventType`) and bridge.
+
+**Citation type**
+
+- `backend.schemas.citations` is **created by us** as a local module:
+  ```python
+  class Citation(BaseModel):
+      source_id: str
+      chunk_id: str | None
+      quote: str
+      locator: str
+      confidence: float = 1.0
+
+  NonEmptyCitations = Annotated[tuple[Citation, ...], Field(min_length=1)]
+  ```
+- We propose this upstream to #8 in a follow-up PR. Until then, both halves of the codebase import from `backend.schemas.citations`.
+
+**Scope type**
+
+- We define `backend.schemas.scope.Scope` as a typed enum with the three values `private_to_parent` / `branch_shared` / `global_verified`. It is structurally compatible with the `scope: str` field on their `BlackboardRecord` — we coerce on the bridge edge. We propose upgrading `BlackboardRecord.scope` to `Scope` upstream.
+
+**Module layout (locked)**
+
+```
+backend/
+├── eventstore/                          # NEW (us)
+├── messaging/                           # NEW (us): envelope, command, event base, idempotency, bus
+├── coordinators/                        # NEW (us)
+├── capture/                             # NEW (us)
+├── persistence/                         # THEIRS — we use Database from here
+├── schemas/
+│   ├── citations.py                     # NEW (us; propose upstream to #8)
+│   ├── scope.py                         # NEW (us; propose upstream to #11)
+│   └── (their existing files)
+├── services/
+│   ├── ingestion/                       # WAS empty stub; WE FILL: intake/, parser/, discovery/
+│   ├── context/                         # WAS empty stub; WE FILL: indexer/, workspace/
+│   ├── orchestration/                   # THEIRS
+│   ├── runtime/                         # rishi-golla
+│   └── verification/                    # not in scope
+└── (other their files)
+```
+
+**Pyproject deps to add** (we'll PR these into the existing `pyproject.toml`):
+
+- `pymupdf>=1.24` (parser)
+- `chromadb>=0.5` (semantic search) — optional, behind a flag for the first slice
+- `sentence-transformers>=2.7` (embeddings) — optional
+- `tenacity>=8` (retry policy)
+- `structlog>=24` (structured logging)
+- `ulid-py>=1.1` (event ids)
+
+Optional extras gate the heavy ones (`reprolab-backend[ingestion]`, `[context]`).
+
+**Tests live where their tests live**
+
+- `tests/test_eventstore_*.py`, `tests/test_intake_*.py`, etc., at repo root. Same conftest convention they used.
+
+**Fully-sync EventStore Protocol (revised)**
+
+```python
+class EventStore(Protocol):
+    @property
+    def capabilities(self) -> StoreCapabilities: ...
+
+    def append(
+        self,
+        aggregate_id: AggregateId,
+        aggregate_type: str,
+        events: Sequence[DomainEvent],
+        expected_version: int,
+        envelope: EventEnvelope,
+    ) -> AppendResult: ...
+
+    def load(self, aggregate_id: AggregateId, from_version: int = 0) -> Iterator[StoredEvent]: ...
+    def load_global(self, from_position: int = 0, to_position: int | None = None,
+                    types: Iterable[str] | None = None, batch_size: int = 1000) -> Iterator[StoredEvent]: ...
+    def subscribe(self, subscription_name: str, types: Iterable[str] | None = None) -> Subscription: ...
+    def get_aggregate_version(self, aggregate_id: AggregateId) -> int: ...
+```
+
+`Subscription` becomes a sync iterator with sync `ack`/`nack`. Threading handles concurrent subscriptions.
+
+**Why these deltas don't break the architecture**
+
+- Event sourcing's *correctness* properties (immutability, replay, audit, idempotency, causation chains) are paradigm-level — they don't depend on async or on owning the database connection.
+- The thin bridge to their `EventPayload` means teammates and the dashboard see "events" they recognize; replay determinism (§8.5) and the citation invariant (§5.6) remain intact in our store.
+- The `Citation` type lives in our codebase right now but its shape is the canonical one; if/when #8 absorbs it, we re-export and remove the local definition. No data migration.
+
 ## 16. Appendix — File-by-File Summary
 
 ```
