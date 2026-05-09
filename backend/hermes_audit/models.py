@@ -59,4 +59,3 @@ class HermesAuditReport(BaseModel):
     provider: str = "nous-hermes"
     raw_response: dict[str, Any] = Field(default_factory=dict)
     error_message: str = ""
-

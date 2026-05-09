@@ -67,4 +67,3 @@ def test_service_persists_audit_reports(tmp_path: Path):
     assert report.target == "gate_2"
     assert client.calls
     assert "checkpoint:gate_2" in index
-

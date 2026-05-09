@@ -41,4 +41,3 @@ def test_storage_persists_step_and_checkpoint_reports(tmp_path: Path):
     assert "step:paper-understanding" in index
     assert "checkpoint:gate_2" in index
     assert index["checkpoint:gate_2"]["status"] == "caveat"
-
