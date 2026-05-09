@@ -2,7 +2,8 @@
 
 Provides:
   - ``run_offline()`` — simulates experiment execution for tests/CI
-  - ``run_with_sdk()`` — full LLM-powered experiment execution in Docker
+  - ``run_with_sdk()`` — LLM-driven experiment planning and artifact synthesis
+  - ``run_with_runtime()`` — real sandboxed command execution via RuntimeBackend
 """
 
 from __future__ import annotations
@@ -130,7 +131,11 @@ async def run_with_sdk(
     *,
     model: str | None = None,
 ) -> ExperimentArtifacts:
-    """Full experiment execution via Claude Agent SDK + Docker."""
+    """Ask the Claude Agent SDK to plan/synthesize experiment artifacts.
+
+    This path does not execute Docker. Real command execution is handled by
+    ``run_with_runtime`` once a runtime backend is available.
+    """
     from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, query
     from backend.agents.prompts.experiment_runner import EXPERIMENT_RUNNER_PROMPT
 

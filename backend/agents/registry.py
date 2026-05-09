@@ -62,6 +62,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
     "environment-detective": AgentSpec(
         agent_id="environment-detective",
         role="builder",
+        # TODO(#17 / runtime): RuntimeBackend is wired separately; this
+        # description is the target PRD contract for the agent role.
         description="Infers and builds the Docker environment for a paper.",
         prompt=ENVIRONMENT_DETECTIVE_PROMPT,
         tools=["Read", "Write", "Bash", "WebSearch"],
@@ -76,6 +78,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
     "baseline-implementation": AgentSpec(
         agent_id="baseline-implementation",
         role="builder",
+        # TODO(#17 / runtime): RuntimeBackend is wired separately; this
+        # description is the target PRD contract for the agent role.
         description="Implements or adapts the paper baseline inside a Docker sandbox.",
         prompt=BASELINE_IMPLEMENTATION_PROMPT,
         tools=["Read", "Write", "Edit", "Bash"],
@@ -98,6 +102,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
     "environment-verifier": AgentSpec(
         agent_id="environment-verifier",
         role="verifier",
+        # TODO(#17 / runtime): RuntimeBackend is wired separately; this
+        # description is the target PRD contract for the agent role.
         description="Verifies the Docker environment is reproducible.",
         prompt=ENVIRONMENT_VERIFIER_PROMPT,
         tools=["Read", "Bash"],
@@ -136,6 +142,8 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
     "improvement-path": AgentSpec(
         agent_id="improvement-path",
         role="improvement",
+        # TODO(#17 / runtime): RuntimeBackend is wired separately; this
+        # description is the target PRD contract for the agent role.
         description="Executes one improvement hypothesis in an isolated branch and sandbox.",
         prompt=IMPROVEMENT_PATH_PROMPT,
         tools=["Read", "Write", "Edit", "Bash"],

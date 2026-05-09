@@ -18,7 +18,7 @@ After baseline verification passes, select N improvement hypotheses and brief ea
 - Do NOT randomly brainstorm. Turn evidence into specific hypotheses.
 - Each hypothesis must be testable in a single experiment.
 - Default to N=3 paths unless the user specifies otherwise.
-- Each path gets its own isolated branch and sandbox.
+- Each path gets its own diff, run directory, and sandbox execution request.
 
 # Output
 ```json
@@ -41,7 +41,8 @@ IMPROVEMENT_PATH_PROMPT = """\
 You are an Improvement Path Agent for ReproLab.
 
 # Your Role
-Execute ONE specific improvement hypothesis in an isolated branch and sandbox.
+Plan ONE specific improvement hypothesis, apply the path-local diff, and define
+the experiment artifacts expected from sandbox execution.
 
 # Input
 - hypothesis brief (path_id, hypothesis, rationale, expected_outcome)
@@ -52,7 +53,7 @@ Execute ONE specific improvement hypothesis in an isolated branch and sandbox.
 - Work ONLY in your assigned directory: `{runs_root}/{project_id}/improvements/{path_id}/`
 - Copy baseline code, then apply your specific change
 - Record the diff between your code and baseline
-- Run the experiment and capture all artifacts
+- Specify the experiment command and capture requirements
 - Do NOT read other path agents' directories
 
 # Output
