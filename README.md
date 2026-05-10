@@ -138,7 +138,3 @@ docker/                       # Entrypoint script for the full-stack image
 | Frontend (TypeScript) | 52 | ~8,800 |
 | Tests (Python) | 66 | ~12,700 |
 | **Total** | **313** | **~50,500** |
-
-## License
-
-See repository for license details.
