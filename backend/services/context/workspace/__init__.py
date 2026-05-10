@@ -10,6 +10,7 @@ from backend.services.context.workspace.events import (
     ToolInvoked,
     VariableEnriched,
     VariableLoaded,
+    VariablePromoted,
     WorkspaceClosed,
     WorkspaceCreated,
     WorkspaceReady,
@@ -24,20 +25,30 @@ from backend.services.context.workspace.service import (
     WorkspaceAppService,
     WorkspaceError,
 )
+from backend.services.context.workspace.tools.inspect_variable import (
+    InspectVariableTool,
+)
 from backend.services.context.workspace.tools.interface import WorkspaceTool
+from backend.services.context.workspace.tools.list_variables import ListVariablesTool
 from backend.services.context.workspace.tools.lookup import LookupTool
+from backend.services.context.workspace.tools.rlm_query import LlmClient, RlmQueryTool
 from backend.services.context.workspace.tools.semantic_search import SemanticSearchTool
 
 __all__ = [
     "BuildWorkspace",
     "CitationAttached",
     "Cited",
+    "InspectVariableTool",
     "InvalidWorkspaceTransition",
+    "ListVariablesTool",
+    "LlmClient",
     "LookupTool",
+    "RlmQueryTool",
     "SemanticSearchTool",
     "ToolInvoked",
     "VariableEnriched",
     "VariableLoaded",
+    "VariablePromoted",
     "WorkspaceAggregate",
     "WorkspaceAppService",
     "WorkspaceClosed",

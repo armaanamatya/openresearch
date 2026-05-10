@@ -12,6 +12,7 @@ from backend.services.context.workspace.events import (
     ToolInvoked,
     VariableEnriched,
     VariableLoaded,
+    VariablePromoted,
     WorkspaceClosed,
     WorkspaceCreated,
     WorkspaceReady,
@@ -81,6 +82,8 @@ class WorkspaceAggregate:
             pass  # decisions recorded; no aggregate state change
         elif isinstance(event, ToolInvoked):
             pass  # call history recorded by projection, not aggregate
+        elif isinstance(event, VariablePromoted):
+            pass  # scope change recorded; projection tracks per-variable scope
         elif isinstance(event, WorkspaceReady):
             self.state = WorkspaceState.READY
         elif isinstance(event, WorkspaceClosed):

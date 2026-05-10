@@ -370,7 +370,6 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         BuildWorkspace(project_id=project_id, agent_name=args.agent)
     )
     view = workspace.materialize_view(workspace_id)
-    store.close()
 
     # Build workspace claim map for the agent pipeline
     workspace_claim_map = {
@@ -424,29 +423,36 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
-    if args.mode == "offline":
-        from backend.agents.pipeline import run_pipeline_offline
+    try:
+        if args.mode == "offline":
+            from backend.agents.pipeline import run_pipeline_offline
 
-        state = run_pipeline_offline(
-            project_id, runs_root, workspace_claim_map,
-            user_hints=user_hints,
-            n_improvement_paths=args.n_paths,
-            execution_profile=execution_profile,
-            sandbox_mode=sandbox_mode,
-        )
-    else:
-        from backend.agents.pipeline import run_pipeline_sdk
+            state = run_pipeline_offline(
+                project_id, runs_root, workspace_claim_map,
+                user_hints=user_hints,
+                n_improvement_paths=args.n_paths,
+                execution_profile=execution_profile,
+                sandbox_mode=sandbox_mode,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            )
+        else:
+            from backend.agents.pipeline import run_pipeline_sdk
 
-        state = asyncio.run(run_pipeline_sdk(
-            project_id, runs_root, workspace_claim_map,
-            model=args.model,
-            provider=provider,
-            verification_provider=verification_provider,
-            user_hints=user_hints,
-            n_improvement_paths=args.n_paths,
-            execution_profile=execution_profile,
-            sandbox_mode=sandbox_mode,
-        ))
+            state = asyncio.run(run_pipeline_sdk(
+                project_id, runs_root, workspace_claim_map,
+                model=args.model,
+                provider=provider,
+                verification_provider=verification_provider,
+                user_hints=user_hints,
+                n_improvement_paths=args.n_paths,
+                execution_profile=execution_profile,
+                sandbox_mode=sandbox_mode,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            ))
+    finally:
+        store.close()
 
     # Print final summary
     out_dir = runs_root / project_id

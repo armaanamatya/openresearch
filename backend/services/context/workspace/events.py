@@ -102,11 +102,29 @@ class WorkspaceClosed(DomainEvent):
     reason: str
 
 
+@register_event
+class VariablePromoted(DomainEvent):
+    """Emitted when a variable's scope is promoted (e.g., private → branch → global).
+
+    Per spec §5.5, supports the three-level visibility model for
+    cross-agent variable sharing.
+    """
+
+    event_type: ClassVar[str] = "variable_promoted"
+    schema_version: ClassVar[int] = 1
+    workspace_id: str
+    variable_name: str
+    old_scope: Scope
+    new_scope: Scope
+    promoted_by: str | None = None
+
+
 __all__ = [
     "CitationAttached",
     "ToolInvoked",
     "VariableEnriched",
     "VariableLoaded",
+    "VariablePromoted",
     "WorkspaceClosed",
     "WorkspaceCreated",
     "WorkspaceReady",
