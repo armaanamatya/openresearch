@@ -1,4 +1,4 @@
-import { ChevronDown, Star } from "lucide-react";
+import { Box, ChevronDown } from "lucide-react";
 
 export function StellarNavigation() {
   return (
@@ -7,8 +7,8 @@ export function StellarNavigation() {
       style={{ opacity: 0, animationDelay: "0.1s" }}
     >
       <div className="flex items-center gap-2">
-        <Star className="h-5 w-5 fill-black text-black" />
-        <span className="text-lg font-semibold text-black">Stellar.ai</span>
+        <Box className="h-5 w-5 text-black" />
+        <span className="text-lg font-semibold text-black">ReproLab</span>
       </div>
 
       <div className="hidden items-center gap-8 md:flex">
@@ -32,12 +32,12 @@ export function StellarNavigation() {
         <a className="text-sm text-gray-700 transition-colors hover:text-black" href="#login">
           Login
         </a>
-        <button
+        <a
           className="rounded-full bg-black px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-gray-800"
-          type="button"
+          href="/lab"
         >
           Get started free
-        </button>
+        </a>
       </div>
     </nav>
   );
