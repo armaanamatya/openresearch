@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { DashboardEvent } from "@/lib/events/contract";
 
 type NavItem = {
   accent?: boolean;
@@ -13,7 +14,7 @@ type NavItem = {
 };
 
 type Tone = "accent" | "hermes" | "info" | "neutral";
-type NodeState = "done" | "running" | "upcoming";
+type NodeState = "done" | "failed" | "running" | "upcoming";
 type Status =
   | "auditing"
   | "completed"
@@ -43,6 +44,14 @@ type EventSourceLike = {
 
 type ReproLabClientProps = {
   initialRun?: LiveDemoRunState | null;
+};
+
+type ActivityEntry = {
+  agentId?: string;
+  id: string;
+  msg: string;
+  status?: NodeState;
+  time: string;
 };
 
 const DEFAULT_RUN_QUERY =
@@ -381,6 +390,129 @@ function deriveStage(run: LiveDemoRunState | null): string | null {
   return run?.payload?.summary.stage ?? null;
 }
 
+const STAGE_RANK: Record<string, number> = {
+  ingested: 0,
+  paper_understood: 1,
+  artifacts_discovered: 2,
+  environment_built: 3,
+  plan_created: 4,
+  gate_1_passed: 5,
+  baseline_implemented: 6,
+  baseline_run: 7,
+  gate_2_passed: 8,
+  improvements_selected: 9,
+  improvements_run: 10,
+  gate_3_passed: 11,
+  research_map_generated: 12,
+  complete: 13
+};
+
+const AGENT_NODE_IDS: Record<string, string[]> = {
+  "paper-understanding": ["read"],
+  "artifact-discovery": ["env"],
+  "environment-detective": ["env"],
+  "reproduction-planner": ["plan"],
+  "baseline-implementation": ["impl"],
+  "experiment-runner": ["impl"],
+  "improvement-orchestrator": ["opt", "bb", "aug", "hor", "div"],
+  "improvement-path": ["opt", "bb", "aug", "hor", "div"],
+  "supervisor-verifier": ["audit"],
+  "method-fidelity-verifier": ["audit"],
+  "environment-verifier": ["audit"],
+  "data-metrics-verifier": ["audit"],
+  "artifact-diff-verifier": ["audit"],
+  "report-generator": ["report"],
+  "root-orchestrator": ["src"]
+};
+
+function dashboardEvents(run: LiveDemoRunState | null): DashboardEvent[] {
+  return ((run?.payload?.events ?? []) as DashboardEvent[]).filter((event) =>
+    typeof event?.event === "string"
+  );
+}
+
+function nodeIdsForAgent(agentId: string | undefined): string[] {
+  if (!agentId) {
+    return [];
+  }
+  if (agentId.startsWith("path-")) {
+    return ["opt", "bb", "aug", "hor", "div"];
+  }
+  return AGENT_NODE_IDS[agentId] ?? [];
+}
+
+function latestAgentStatuses(run: LiveDemoRunState | null): Map<string, NodeState> {
+  const statuses = new Map<string, NodeState>();
+  for (const event of dashboardEvents(run)) {
+    if (
+      event.event !== "agent_started" &&
+      event.event !== "agent_completed" &&
+      event.event !== "agent_failed"
+    ) {
+      continue;
+    }
+    const agentId = event.agent?.id ?? event.agentId;
+    const state =
+      event.event === "agent_failed"
+        ? "failed"
+        : event.event === "agent_completed"
+          ? "done"
+          : "running";
+    for (const nodeId of nodeIdsForAgent(agentId)) {
+      statuses.set(nodeId, state);
+    }
+  }
+  for (const record of run?.telemetry ?? []) {
+    if (record.success === false) {
+      for (const nodeId of nodeIdsForAgent(record.agent_id)) {
+        statuses.set(nodeId, "failed");
+      }
+    }
+  }
+  return statuses;
+}
+
+function markRankedStage(map: Record<string, NodeState>, stage: string | null, status: Status) {
+  const rank = stage ? STAGE_RANK[stage] : undefined;
+  if (rank === undefined) {
+    if (status === "queued") {
+      map.src = "running";
+    } else if (status === "failed") {
+      map.read = "failed";
+    } else {
+      map.src = "done";
+      map.read = "running";
+    }
+    return;
+  }
+
+  map.src = "done";
+  if (rank >= STAGE_RANK.paper_understood) map.read = "done";
+  else map.read = "running";
+
+  if (rank >= STAGE_RANK.environment_built) map.env = "done";
+  else if (rank >= STAGE_RANK.artifacts_discovered) map.env = "running";
+
+  if (rank >= STAGE_RANK.gate_1_passed) map.plan = "done";
+  else if (rank >= STAGE_RANK.plan_created) map.plan = "running";
+
+  if (rank >= STAGE_RANK.gate_2_passed) map.impl = "done";
+  else if (rank >= STAGE_RANK.baseline_implemented) map.impl = "running";
+
+  if (rank >= STAGE_RANK.gate_3_passed) {
+    for (const id of ["opt", "bb", "aug", "hor", "div"]) map[id] = "done";
+  } else if (rank >= STAGE_RANK.improvements_selected) {
+    for (const id of ["opt", "bb", "aug", "hor", "div"]) map[id] = "running";
+  }
+
+  if (rank >= STAGE_RANK.complete) map.report = "done";
+  else if (rank >= STAGE_RANK.research_map_generated) map.audit = "running";
+
+  if (status === "completed" || stage === "complete") {
+    for (const node of NODES) map[node.id] = "done";
+  }
+}
+
 function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState> {
   const map = Object.fromEntries(NODES.map((node) => [node.id, "upcoming"])) as Record<
     string,
@@ -393,103 +525,131 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
 
   const stage = deriveStage(run);
   const status = run.status;
-
-  function mark(ids: string[], state: NodeState) {
-    for (const id of ids) {
-      map[id] = state;
-    }
+  markRankedStage(map, stage, status);
+  for (const [nodeId, nodeState] of latestAgentStatuses(run)) {
+    map[nodeId] = nodeState;
   }
-
-  if (status === "queued" && !stage) {
-    mark(["src"], "running");
-    return map;
+  if (status === "failed" && !Array.from(latestAgentStatuses(run).values()).includes("failed")) {
+    const active = NODES.find((node) => map[node.id] === "running");
+    map[active?.id ?? "read"] = "failed";
   }
-
-  mark(["src"], "done");
-
-  if (!stage) {
-    mark(["read"], status === "failed" ? "done" : "running");
-    return map;
-  }
-
-  if (stage === "ingested") {
-    mark(["read"], "running");
-    return map;
-  }
-
-  if (["plan_created", "gate_1_passed"].includes(stage)) {
-    mark(["read"], "done");
-    mark(["env", "plan"], stage === "gate_1_passed" ? "done" : "running");
-    return map;
-  }
-
-  if (["baseline_implemented", "baseline_run", "gate_2_passed"].includes(stage)) {
-    mark(["read", "env", "plan"], "done");
-    mark(["impl"], stage === "gate_2_passed" ? "done" : "running");
-    return map;
-  }
-
-  if (["improvements_selected", "improvements_run", "gate_3_passed"].includes(stage)) {
-    mark(["read", "env", "plan", "impl"], "done");
-    mark(
-      ["opt", "bb", "aug", "hor", "div"],
-      stage === "gate_3_passed" ? "done" : "running"
-    );
-    return map;
-  }
-
-  if (stage === "research_map_generated") {
-    mark(["read", "env", "plan", "impl", "opt", "bb", "aug", "hor", "div"], "done");
-    mark(["audit"], "running");
-    return map;
-  }
-
-  if (stage === "complete" || status === "completed") {
-    mark(NODES.map((node) => node.id), "done");
-    return map;
-  }
-
-  mark(["read"], "running");
   return map;
 }
 
 /** Markers that identify meaningful pipeline log lines. */
 const LOG_MARKERS = /^\[|^={2,}|^\s*>|^\s*>>|^\s*X |^\s*\|\||^Execution|^Starting|^Workspace|^Sandbox|^Pipeline|^Agent |^Step |^Gate |^Checkpoint|WARNING|ERROR|FAILED|STOPPED|completed|queued|running/i;
 
-function parseLogEntries(run: LiveDemoRunState | null) {
-  if (!run?.log) {
-    return [];
+function activityEntries(run: LiveDemoRunState | null): ActivityEntry[] {
+  const structured = dashboardEvents(run)
+    .map((event, index): ActivityEntry | null => {
+      const timestamp = "timestamp" in event ? event.timestamp : undefined;
+      const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--";
+      if (event.event === "agent_started" || event.event === "agent_completed" || event.event === "agent_failed") {
+        return {
+          agentId: event.agent?.id ?? event.agentId,
+          id: `dashboard-${index}`,
+          msg: event.agent?.currentTask ?? event.agent?.label ?? event.event,
+          status:
+            event.event === "agent_failed"
+              ? "failed"
+              : event.event === "agent_completed"
+                ? "done"
+                : "running",
+          time
+        };
+      }
+      if (event.event === "agent_reasoning_step") {
+        return {
+          agentId: event.agentId,
+          id: `dashboard-${index}`,
+          msg: `${event.agentLabel}: ${event.title}`,
+          status: "running",
+          time
+        };
+      }
+      if (event.event === "shared_state_updated") {
+        return {
+          agentId: event.agentId,
+          id: `dashboard-${index}`,
+          msg: event.detail || event.title,
+          status: "done",
+          time
+        };
+      }
+      if (event.event === "context_enrichment") {
+        return {
+          agentId: event.agentId,
+          id: `dashboard-${index}`,
+          msg: event.summary,
+          status: "done",
+          time
+        };
+      }
+      if (event.event === "verification_gate_result") {
+        return {
+          id: `dashboard-${index}`,
+          msg: event.detail,
+          status: event.status === "failed" ? "failed" : event.status === "passed" ? "done" : "running",
+          time
+        };
+      }
+      return null;
+    })
+    .filter((entry): entry is ActivityEntry => Boolean(entry));
+
+  const logEntries =
+    run?.log
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && LOG_MARKERS.test(line))
+      .slice(-20)
+      .map((line, index) => ({
+        id: `${run.projectId}-log-${index}`,
+        time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
+        msg: line,
+        status: /failed|error|exception/i.test(line) ? "failed" as const : undefined
+      })) ?? [];
+
+  const entries = [...structured, ...logEntries].slice(-30).reverse();
+  return entries;
+}
+
+function failureDetails(run: LiveDemoRunState | null): string | null {
+  if (!run) {
+    return null;
+  }
+  if (run.error) {
+    return run.error;
+  }
+  const telemetryError = [...(run.telemetry ?? [])].reverse().find(
+    (record) => record.success === false && record.error_message
+  )?.error_message;
+  if (telemetryError) {
+    return telemetryError;
   }
 
-  return run.log
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && LOG_MARKERS.test(line))
-    .slice(-20)
-    .reverse()
-    .map((line, index) => ({
-      id: `${run.projectId}-${index}`,
-      time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      msg: line
-    }));
+  return (
+    run.log
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .reverse()
+      .find((line) => /X FAILED:|Traceback|Error:|Exception:/i.test(line)) ?? null
+  );
 }
 
 function telemetryForSelectedNode(run: LiveDemoRunState | null, selectedId: string | null) {
   if (!run?.telemetry?.length || !selectedId) {
     return [];
   }
-
-  const agentMatchers: Record<string, string[]> = {
-    read: ["paper-understanding"],
-    env: ["environment-detective"],
-    plan: ["paper-understanding", "root-orchestrator"],
-    impl: ["baseline-implementation", "experiment-runner"],
-    audit: ["supervisor-verifier"]
-  };
-
-  const matches = agentMatchers[selectedId] ?? [];
+  const matches = Object.entries(AGENT_NODE_IDS)
+    .filter(([, nodeIds]) => nodeIds.includes(selectedId))
+    .map(([agentId]) => agentId);
   return run.telemetry
-    .filter((record) => matches.some((match) => record.agent_id?.includes(match)))
+    .filter((record) =>
+      matches.some((match) => record.agent_id?.includes(match)) ||
+      (selectedId in { opt: true, bb: true, aug: true, hor: true, div: true } &&
+        record.agent_id?.includes("improvement"))
+    )
     .slice(-6)
     .reverse();
 }
@@ -712,6 +872,10 @@ function NodeCard({
         : "0 0 0 4px rgba(22,178,92,.10), 0 12px 32px -16px rgba(22,178,92,.5)";
     showProgress = true;
   }
+  if (state === "failed") {
+    borderColor = "var(--err)";
+    glow = "0 0 0 4px rgba(220,38,38,.10), 0 12px 32px -16px rgba(220,38,38,.5)";
+  }
   if (state === "done") {
     borderColor = "var(--line-2)";
   }
@@ -772,6 +936,7 @@ function NodeCard({
             </svg>
           </div>
         ) : null}
+        {state === "failed" ? <div className="node-check node-check-failed">!</div> : null}
       </div>
       {showProgress ? (
         <div className="node-progress">
@@ -954,7 +1119,7 @@ function AgentInfo({
   state,
   telemetry
 }: {
-  logEntries: Array<{ id: string; msg: string; time: string }>;
+  logEntries: ActivityEntry[];
   node: WorkflowNode;
   run: LiveDemoRunState;
   state: NodeState;
@@ -968,7 +1133,7 @@ function AgentInfo({
   } as const;
   const tone = tones[node.tone];
   const status: Status =
-    run.status === "failed"
+    state === "failed"
       ? "failed"
       : state === "done"
         ? "completed"
@@ -1010,7 +1175,11 @@ function AgentInfo({
               <div key={`${record.agent_id ?? "agent"}-${index}`} className="telemetry-row">
                 <span className="telemetry-name">{record.agent_id ?? "agent"}</span>
                 <span className="telemetry-meta">
-                  {record.duration_seconds ? `${record.duration_seconds.toFixed(1)}s` : "active"}
+                  {record.success === false && record.error_message
+                    ? record.error_message
+                    : record.duration_seconds
+                      ? `${record.duration_seconds.toFixed(1)}s`
+                      : "active"}
                 </span>
               </div>
             ))}
@@ -1040,12 +1209,14 @@ function AgentInfo({
 
 function RunOverview({
   error,
+  failure,
   logEntries,
   run,
   stateMap
 }: {
   error: string | null;
-  logEntries: Array<{ id: string; msg: string; time: string }>;
+  failure: string | null;
+  logEntries: ActivityEntry[];
   run: LiveDemoRunState;
   stateMap: Record<string, NodeState>;
 }) {
@@ -1055,7 +1226,7 @@ function RunOverview({
       acc[state] += 1;
       return acc;
     },
-    { done: 0, running: 0, upcoming: 0 }
+    { done: 0, failed: 0, running: 0, upcoming: 0 }
   );
 
   const subagents = ["opt", "bb", "aug", "hor", "div"].map((id) => ({
@@ -1083,13 +1254,13 @@ function RunOverview({
       <div className="overview-grid">
         <Stat label="Done" value={totals.done} dot="var(--ink)" />
         <Stat label="Running" value={totals.running} dot="var(--accent)" pulse />
+        <Stat label="Failed" value={totals.failed} dot="var(--err)" />
         <Stat label="Queued" value={totals.upcoming} dot="var(--line-2)" />
-        <Stat label="Agents" value={NODES.length} dot="var(--muted-2)" />
       </div>
-      {error || run.error ? (
+      {error || failure ? (
         <div className="agent-section">
           <div className="eyebrow">Issue</div>
-          <div className="agent-detail">{error ?? run.error}</div>
+          <div className="agent-detail">{error ?? failure}</div>
         </div>
       ) : null}
       {logEntries.length > 0 ? (
@@ -1169,8 +1340,12 @@ function RightPanel({
   stateMap: Record<string, NodeState>;
 }) {
   const selected = selectedId ? NODES.find((node) => node.id === selectedId) ?? null : null;
-  const logEntries = parseLogEntries(run);
+  const allActivity = activityEntries(run);
+  const logEntries = selectedId
+    ? allActivity.filter((entry) => nodeIdsForAgent(entry.agentId).includes(selectedId)).slice(0, 12)
+    : allActivity;
   const telemetry = telemetryForSelectedNode(run, selectedId);
+  const failure = failureDetails(run);
 
   return (
     <aside className="card side-panel">
@@ -1185,7 +1360,13 @@ function RightPanel({
               logEntries={logEntries}
             />
           ) : (
-            <RunOverview run={run} stateMap={stateMap} logEntries={logEntries} error={error} />
+            <RunOverview
+              run={run}
+              stateMap={stateMap}
+              logEntries={logEntries}
+              error={error}
+              failure={failure}
+            />
           )}
         </div>
       </div>
@@ -1202,7 +1383,19 @@ function RightPanel({
             logEntries.map((entry, index) => (
               <div key={entry.id} className="event fadeup" style={{ animationDelay: `${index * 30}ms` }}>
                 <span className="mono event-time">{entry.time}</span>
-                <span className="event-dot" />
+                <span
+                  className={entry.status === "running" ? "pulse-dot event-dot" : "event-dot"}
+                  style={{
+                    background:
+                      entry.status === "failed"
+                        ? "var(--err)"
+                        : entry.status === "done"
+                          ? "var(--ink)"
+                          : entry.status === "running"
+                            ? "var(--accent)"
+                            : "var(--muted-2)"
+                  }}
+                />
                 <div className="mono event-message">{entry.msg}</div>
               </div>
             ))
@@ -1741,6 +1934,14 @@ function PrototypeStyles() {
         justify-content: center;
         flex-shrink: 0;
       }
+      .reproLab .node-check-failed {
+        background: var(--err);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 18px;
+        text-align: center;
+      }
       .reproLab .node-progress,
       .reproLab .agent-progress {
         height: 5px;
@@ -2123,13 +2324,14 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       pollTimer.current = null;
     }
 
-    if (!run || !["queued", "running"].includes(run.status)) {
+    const projectId = run?.projectId;
+    if (!projectId || !run || !["queued", "running"].includes(run.status)) {
       return;
     }
 
     if (typeof EventSource !== "undefined") {
       const source = new EventSource(
-        `/api/demo/events?projectId=${encodeURIComponent(run.projectId)}`
+        `/api/demo/events?projectId=${encodeURIComponent(projectId)}`
       ) as unknown as EventSourceLike;
       eventSourceRef.current = source;
       source.addEventListener("run_state", (event) => {
@@ -2154,7 +2356,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
             text?: string;
           };
           setRun((current) =>
-            current && current.projectId === run.projectId
+            current && current.projectId === projectId
               ? {
                   ...current,
                   log:
@@ -2166,6 +2368,34 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
           );
         } catch {
           setError("Unable to parse live log update");
+        }
+      });
+      source.addEventListener("dashboard_event", (event) => {
+        try {
+          const dashboardEvent = JSON.parse((event as MessageEvent).data) as DashboardEvent;
+          setRun((current) =>
+            current && current.projectId === projectId
+              ? {
+                  ...current,
+                  payload: current.payload
+                    ? {
+                        ...current.payload,
+                        events: [...current.payload.events, dashboardEvent]
+                      }
+                    : current.payload
+                }
+              : current
+          );
+        } catch {
+          setError("Unable to parse live dashboard event");
+        }
+      });
+      source.addEventListener("agent_failed", (event) => {
+        try {
+          const update = JSON.parse((event as MessageEvent).data) as { error?: string };
+          setError(update.error ?? "Backend agent failed");
+        } catch {
+          setError("Backend agent failed");
         }
       });
       source.onerror = () => {
@@ -2185,7 +2415,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
 
     pollTimer.current = window.setTimeout(async () => {
       try {
-        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(run.projectId)}`, {
+        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(projectId)}`, {
           cache: "no-store"
         });
         if (!response.ok) {
@@ -2206,7 +2436,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
         pollTimer.current = null;
       }
     };
-  }, [run]);
+  }, [run?.projectId, run?.status]);
 
   async function startFixtureRun() {
     setBusy(true);
