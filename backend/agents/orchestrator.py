@@ -242,7 +242,9 @@ class ReproLabOrchestrator:
         max_turns_per_agent: int | None = None,
         permission_mode: str = "bypassPermissions",
         provider: ProviderName | str | None = None,
+        verification_provider: ProviderName | str | None = None,
         runtime: AgentRuntime | None = None,
+        verification_runtime: AgentRuntime | None = None,
         execution_profile: ExecutionProfile | None = None,
         sandbox_mode: SandboxMode | str = SandboxMode.docker,
         hermes_audit_service: HermesAuditService | None = None,
@@ -267,6 +269,10 @@ class ReproLabOrchestrator:
                 "Use the offline pipeline for deterministic simulation or select docker/local."
             )
         self._runtime = runtime or make_runtime(provider)
+        self._verification_runtime = (
+            verification_runtime
+            or (make_runtime(verification_provider) if verification_provider else self._runtime)
+        )
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
         self._telemetry = AgentTelemetryRecorder(
@@ -294,11 +300,12 @@ class ReproLabOrchestrator:
         self,
         agent_id: str,
         *,
+        runtime: AgentRuntime,
         cwd: str | Path | None = None,
         max_turns: int | None,
     ) -> AgentRuntimeSpec:
         spec = AGENT_REGISTRY[agent_id]
-        provider = self._runtime.provider_name
+        provider = runtime.provider_name
         sub_agents = tuple(
             sub_spec.to_runtime_spec(provider)
             for sub_id, sub_spec in AGENT_REGISTRY.items()
@@ -322,6 +329,7 @@ class ReproLabOrchestrator:
         max_turns: int | None = None,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
+        runtime = self._runtime_for_agent(agent_id)
         # Implementation agents get more turns (they write code)
         if max_turns is None:
             max_turns = (
@@ -331,6 +339,7 @@ class ReproLabOrchestrator:
             )
         runtime_spec = self._build_runtime_spec(
             agent_id,
+            runtime=runtime,
             cwd=cwd,
             max_turns=max_turns,
         )
@@ -352,7 +361,7 @@ class ReproLabOrchestrator:
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
         try:
-            async for event in self._runtime.run_agent(
+            async for event in runtime.run_agent(
                 agent=runtime_spec,
                 user_input=task_prompt,
             ):
@@ -387,7 +396,7 @@ class ReproLabOrchestrator:
                     )
                 elif isinstance(event, StreamUsage):
                     usage = coerce_usage(event.as_dict())
-                    usage["provider"] = self._runtime.provider_name
+                    usage["provider"] = runtime.provider_name
                     usage["model"] = runtime_spec.model
                     print(
                         f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} events, {sum(len(t) for t in collected_text)} chars)",
@@ -429,6 +438,11 @@ class ReproLabOrchestrator:
             elapsed_seconds=time.time() - t0,
         )
         return result
+
+    def _runtime_for_agent(self, agent_id: str) -> AgentRuntime:
+        if agent_id == "supervisor-verifier":
+            return self._verification_runtime
+        return self._runtime
 
     def _normalize_verifier_scores(self, data: dict[str, Any]) -> dict[str, Any]:
         """Normalize LLM-generated verification data to match schema expectations."""
@@ -631,6 +645,19 @@ class ReproLabOrchestrator:
             state.research_map.overall_reproducibility_assessment = (
                 state.research_map.overall_reproducibility_assessment + f" Hermes note: {report.summary}"
             ).strip()
+
+    def _step_completion_message(
+        self,
+        target_stage: PipelineStage,
+        state: PipelineState,
+    ) -> str:
+        if target_stage is PipelineStage.GATE_1_PASSED and state.gate_1 and not state.gate_1.passed:
+            return f"  ! Gate 1 evaluated: {state.gate_1.status.value}"
+        if target_stage is PipelineStage.GATE_2_PASSED and state.gate_2 and not state.gate_2.passed:
+            return f"  ! Gate 2 evaluated: {state.gate_2.status.value}"
+        if target_stage is PipelineStage.GATE_3_PASSED and state.gate_3 and not state.gate_3.passed:
+            return f"  ! Gate 3 evaluated: {state.gate_3.status.value}"
+        return f"  OK Completed: {state.stage.value}"
 
     def _audit_step(
         self,
@@ -865,6 +892,8 @@ class ReproLabOrchestrator:
                 state.baseline_result,
                 state.reproduction_contract,
                 command_timeout=self.execution_profile.command_timeout_seconds,
+                gpu_mode=self.execution_profile.gpu_mode.value,
+                extra_environment=self.execution_profile.sandbox_environment,
             )
         else:
             state.experiment_artifacts = await run_with_runtime(
@@ -877,6 +906,8 @@ class ReproLabOrchestrator:
                 memory_limit=self.execution_profile.sandbox_memory_limit,
                 cpus=self.execution_profile.sandbox_cpus,
                 platform=self.execution_profile.sandbox_platform,
+                gpu_mode=self.execution_profile.gpu_mode.value,
+                extra_environment=self.execution_profile.sandbox_environment,
             )
         self._audit_step(
             state,
@@ -1123,7 +1154,7 @@ class ReproLabOrchestrator:
                 print(f"  X FAILED: {target_stage.value} -- {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                 logger.exception("Step %s failed", target_stage.value)
                 raise
-            print(f"  OK Completed: {state.stage.value}", file=sys.stderr, flush=True)
+            print(self._step_completion_message(target_stage, state), file=sys.stderr, flush=True)
             current_idx = stages_order.index(state.stage)
 
             # Check gate results

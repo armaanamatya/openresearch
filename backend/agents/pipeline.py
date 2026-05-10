@@ -38,7 +38,9 @@ async def run_pipeline_sdk(
     *,
     model: str | None = None,
     provider: ProviderName | str | None = None,
+    verification_provider: ProviderName | str | None = None,
     runtime: AgentRuntime | None = None,
+    verification_runtime: AgentRuntime | None = None,
     user_hints: list[str] | None = None,
     n_improvement_paths: int = 3,
     resume: bool = True,
@@ -57,7 +59,9 @@ async def run_pipeline_sdk(
         runs_root=runs_root,
         model=model,
         provider=provider,
+        verification_provider=verification_provider,
         runtime=runtime,
+        verification_runtime=verification_runtime,
         execution_profile=execution_profile,
         sandbox_mode=sandbox_mode,
     )
@@ -181,6 +185,8 @@ def run_pipeline_offline(
                 memory_limit=profile.sandbox_memory_limit,
                 cpus=profile.sandbox_cpus,
                 platform=profile.sandbox_platform,
+                gpu_mode=profile.gpu_mode.value,
+                extra_environment=profile.sandbox_environment,
             )
 
         state.experiment_artifacts = anyio.run(_run_docker_experiment)
@@ -194,6 +200,8 @@ def run_pipeline_offline(
                 state.baseline_result,
                 state.reproduction_contract,
                 command_timeout=profile.command_timeout_seconds,
+                gpu_mode=profile.gpu_mode.value,
+                extra_environment=profile.sandbox_environment,
             )
 
         state.experiment_artifacts = anyio.run(_run_local_experiment)

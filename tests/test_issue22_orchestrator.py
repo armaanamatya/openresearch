@@ -319,6 +319,23 @@ def test_pipeline_stages_are_ordered():
     assert [s.value for s in stages] == expected_order
 
 
+def test_failed_gate_2_completion_message_is_not_reported_as_ok(tmp_path: Path):
+    orchestrator = ReproLabOrchestrator("prj_gate_message", tmp_path)
+    state = PipelineState(project_id="prj_gate_message")
+    state.stage = PipelineStage.GATE_2_PASSED
+    state.gate_2 = GateDecision(
+        gate="gate_2",
+        passed=False,
+        status=GateStatus.failed_reproduction,
+    )
+
+    message = orchestrator._step_completion_message(PipelineStage.GATE_2_PASSED, state)
+
+    assert "OK Completed" not in message
+    assert "Gate 2 evaluated" in message
+    assert "failed_reproduction" in message
+
+
 def test_reproduction_contract_normalizes_expected_outputs():
     orchestrator = ReproLabOrchestrator(
         project_id="prj_norm",

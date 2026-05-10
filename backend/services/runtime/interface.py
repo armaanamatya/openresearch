@@ -55,6 +55,7 @@ class SandboxConfig(BaseModel):
     platform: str | None = None
     memory_limit: str | None = "4g"
     cpus: float | None = 2.0
+    gpu_mode: str = "auto"
 
     def resolved_artifact_root(self) -> Path:
         return self.artifact_root or self.project_root / "artifacts"

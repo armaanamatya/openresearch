@@ -171,6 +171,8 @@ async def run_with_runtime(
     memory_limit: str | None = "4g",
     cpus: float | None = 2.0,
     platform: str | None = None,
+    gpu_mode: str = "auto",
+    extra_environment: dict[str, str] | None = None,
     require_dockerfile: bool = True,
     runtime_kind: str = "docker",
 ) -> ExperimentArtifacts:
@@ -226,11 +228,13 @@ async def run_with_runtime(
             "REPROLAB_ARTIFACT_DIR": artifact_env,
             "MPLCONFIGDIR": f"{artifact_env}/.matplotlib",
             "PYTHONUNBUFFERED": "1",
+            **(extra_environment or {}),
         },
         labels={"reprolab.run_kind": "baseline"},
         platform=platform,
         memory_limit=memory_limit,
         cpus=cpus,
+        gpu_mode=gpu_mode,
     )
 
     run_started_at = utc_now_iso()
@@ -340,6 +344,8 @@ async def run_with_local_process(
     reproduction_contract: ReproductionContract | None = None,
     *,
     command_timeout: int = 3600,
+    gpu_mode: str = "auto",
+    extra_environment: dict[str, str] | None = None,
 ) -> ExperimentArtifacts:
     """Execute baseline commands on the host with artifact capture.
 
@@ -358,6 +364,8 @@ async def run_with_local_process(
         memory_limit=None,
         cpus=None,
         platform=None,
+        gpu_mode=gpu_mode,
+        extra_environment=extra_environment,
         require_dockerfile=False,
         runtime_kind="local_process",
     )
@@ -557,6 +565,8 @@ def _sandbox_config_payload(config: SandboxConfig) -> dict[str, Any]:
         "platform": config.platform,
         "memory_limit": config.memory_limit,
         "cpus": config.cpus,
+        "gpu_mode": config.gpu_mode,
+        "environment": config.environment,
     }
 
 

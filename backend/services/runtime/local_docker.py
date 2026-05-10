@@ -6,6 +6,7 @@ import asyncio
 import io
 import tarfile
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -80,6 +81,13 @@ class LocalDockerBackend(RuntimeBackend):
             run_kwargs["nano_cpus"] = int(config.cpus * 1_000_000_000)
         if config.network_disabled:
             run_kwargs["network_mode"] = "none"
+        if config.gpu_mode in {"prefer", "max"}:
+            run_kwargs["device_requests"] = [_gpu_device_request()]
+            run_kwargs["environment"] = {
+                **config.environment,
+                "REPROLAB_GPU_MODE": config.gpu_mode,
+                "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            }
 
         try:
             container = await asyncio.to_thread(
@@ -254,6 +262,15 @@ def _split_container_path(path: str) -> tuple[str, str]:
         )
     parent = str(posix.parent)
     return parent, name
+
+
+def _gpu_device_request() -> Any:
+    try:
+        from docker.types import DeviceRequest  # type: ignore[import-untyped]
+
+        return DeviceRequest(count=-1, capabilities=[["gpu"]])
+    except Exception:  # pragma: no cover - used by tests without Docker SDK
+        return SimpleNamespace(count=-1, capabilities=[["gpu"]])
 
 
 def _decode_exec_result(raw: Any) -> tuple[int | None, str, str]:
