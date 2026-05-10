@@ -94,6 +94,27 @@ class Settings(BaseSettings):
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
 
+    # Apify ArXiv MCP server (https://github.com/apify/actor-arxiv-mcp-server).
+    # When apify_api_token is set, the Claude agent runtime registers the
+    # SSE endpoint as an MCP server named ``apify-arxiv`` and exposes its
+    # tools to the agents listed in apify_arxiv_enabled_agents. When the
+    # token is empty, MCP wiring is skipped entirely (no extra latency,
+    # no failed handshake on cold start). The token is read via the
+    # ``APIFY_API_TOKEN`` env var (matching Apify's own SDK convention)
+    # OR the ``REPROLAB_APIFY_API_TOKEN`` form.
+    apify_api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "APIFY_API_TOKEN",
+            "REPROLAB_APIFY_API_TOKEN",
+        ),
+    )
+    apify_arxiv_mcp_url: str = "https://jakub-kopecky--arxiv-mcp-server.apify.actor/sse"
+    # Comma-separated agent ids that should see the apify-arxiv MCP tools.
+    # Defaults to the builder agents that already do paper / artifact
+    # research. Override via .env if a custom agent should also use it.
+    apify_arxiv_enabled_agents: str = "artifact-discovery,paper-understanding"
+
 
 _settings_cache: Settings | None = None
 

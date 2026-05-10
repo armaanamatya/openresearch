@@ -9,6 +9,16 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Apify ArXiv MCP server integration.** When `APIFY_API_TOKEN` is set,
+  the Claude agent runtime registers `https://jakub-kopecky--arxiv-mcp-
+  server.apify.actor/sse` as an MCP server named `apify-arxiv` (SSE
+  transport, `Authorization: Bearer` header) and grants its tools to the
+  builder agents listed in `REPROLAB_APIFY_ARXIV_ENABLED_AGENTS`
+  (default: `artifact-discovery,paper-understanding`). Tools surface as
+  `mcp__apify-arxiv__*` and give those agents direct paper search /
+  access / listing against arXiv without round-tripping through generic
+  WebSearch. Empty token = MCP wiring is skipped entirely (no cold-start
+  handshake, no extra latency).
 - **Persistent Runpod pod reuse via `REPROLAB_RUNPOD_POD_ID`.** When set,
   `RunpodBackend.create_sandbox` attaches to the existing pod via SSH
   instead of `POST /pods`, reusing it across pipeline runs. The pod is

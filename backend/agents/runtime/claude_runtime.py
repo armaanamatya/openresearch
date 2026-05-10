@@ -46,11 +46,13 @@ class ClaudeAgentRuntime:
                 reason="claude-agent-sdk is not installed",
             ) from exc
 
+        mcp_servers, mcp_tool_extensions = _resolve_mcp_servers()
+
         sub_agents = {
             sub_agent.name: AgentDefinition(
                 description=sub_agent.description or sub_agent.instructions[:200],
                 prompt=_with_guard_prompt(sub_agent.instructions, sub_agent),
-                tools=[tool.name for tool in sub_agent.tools] or None,
+                tools=_tools_for_sub_agent(sub_agent, mcp_tool_extensions),
                 model=sub_agent.model or None,
                 maxTurns=sub_agent.max_turns,
                 permissionMode=sub_agent.permission_mode,
@@ -66,6 +68,7 @@ class ClaudeAgentRuntime:
             cwd=str(agent.working_directory) if agent.working_directory else None,
             system_prompt=_with_guard_prompt(agent.instructions, agent),
             max_thinking_tokens=agent.thinking_budget_tokens,
+            **({"mcp_servers": mcp_servers} if mcp_servers else {}),
         )
 
         async for message in query(prompt=user_input, options=options):
@@ -130,6 +133,64 @@ def _with_guard_prompt(instructions: str, agent: AgentRuntimeSpec) -> str:
         + "\n\nRuntime guardrail: do not access, fetch, clone, download, or copy "
         + f"from these blocked PaperBench resources: {blocked}."
     )
+
+
+# MCP server registration name used as the tool prefix the Claude SDK
+# exposes (Claude Code MCP convention: ``mcp__<server>__<tool>``). The
+# server name lives in this module — not in Settings — because changing
+# it changes the tool identifiers visible to agents and would require
+# coordinated changes elsewhere.
+_APIFY_ARXIV_SERVER_NAME = "apify-arxiv"
+
+
+def _resolve_mcp_servers() -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """Build the mcp_servers config and per-sub-agent tool extensions.
+
+    Returns:
+        servers: dict suitable for ``ClaudeAgentOptions(mcp_servers=...)``,
+            empty when no MCP integrations are configured.
+        tool_extensions: maps sub-agent id -> list of MCP tool prefix
+            strings to append to that sub-agent's tools list, so the SDK
+            allows the agent to call the MCP tools.
+    """
+    from backend.config import get_settings
+
+    settings = get_settings()
+    servers: dict[str, Any] = {}
+    extensions: dict[str, list[str]] = {}
+
+    if settings.apify_api_token and settings.apify_arxiv_mcp_url:
+        servers[_APIFY_ARXIV_SERVER_NAME] = {
+            "type": "sse",
+            "url": settings.apify_arxiv_mcp_url,
+            "headers": {"Authorization": f"Bearer {settings.apify_api_token}"},
+        }
+        prefix = f"mcp__{_APIFY_ARXIV_SERVER_NAME}"
+        enabled = [
+            name.strip()
+            for name in settings.apify_arxiv_enabled_agents.split(",")
+            if name.strip()
+        ]
+        for agent_id in enabled:
+            extensions.setdefault(agent_id, []).append(prefix)
+
+    return servers, extensions
+
+
+def _tools_for_sub_agent(
+    sub_agent: Any,
+    extensions: dict[str, list[str]],
+) -> list[str] | None:
+    """Compute the tools list for a sub-agent, merging MCP extras.
+
+    Returns ``None`` when there are no tools at all (SDK convention for
+    "agent inherits parent tools"), preserving prior behavior. When MCP
+    tools apply, they are appended to the explicit registry list.
+    """
+    base = [tool.name for tool in sub_agent.tools]
+    mcp_extras = extensions.get(sub_agent.name, [])
+    merged = base + [name for name in mcp_extras if name not in base]
+    return merged or None
 
 
 __all__ = ["ClaudeAgentRuntime"]
