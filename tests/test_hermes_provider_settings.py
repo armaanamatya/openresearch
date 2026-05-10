@@ -27,6 +27,7 @@ from backend.config import get_settings
 from backend.hermes_audit.providers import (
     ClaudeAuditProvider,
     ClaudeCodeSdkProvider,
+    NousHermesProvider,
     OpenAIAuditProvider,
 )
 
@@ -243,4 +244,130 @@ def test_claude_code_sdk_call_raises_on_empty_response(monkeypatch: pytest.Monke
     provider = ClaudeCodeSdkProvider()
 
     with pytest.raises(RuntimeError, match="empty response"):
+        provider.call("audit")
+
+
+# ---------------------------------------------------------------------------
+# NousHermesProvider — supports both in-venv (run_agent module) and
+# out-of-venv (hermes CLI subprocess) installations. Tests use a
+# non-existent CLI path + monkeypatched sys.modules to keep the tests
+# deterministic regardless of what's installed on the host.
+# ---------------------------------------------------------------------------
+
+
+def test_nous_hermes_unavailable_when_neither_module_nor_cli(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(sys.modules, "run_agent", None)  # pyright: ignore[reportArgumentType]
+    monkeypatch.setattr(
+        "backend.hermes_audit.providers.shutil.which",
+        lambda _: None,
+    )
+
+    provider = NousHermesProvider(cli_path="")
+
+    assert provider.is_available() is False
+
+
+def test_nous_hermes_available_via_module(monkeypatch: pytest.MonkeyPatch):
+    fake_run_agent = ModuleType("run_agent")
+
+    class FakeAgent:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def chat(self, prompt: str) -> str:
+            return f"fake-response: {prompt}"
+
+    fake_run_agent.AIAgent = FakeAgent  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    provider = NousHermesProvider()
+
+    assert provider.is_available() is True
+    assert provider.call("hello") == "fake-response: hello"
+
+
+def test_nous_hermes_available_via_cli_when_module_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    monkeypatch.setitem(sys.modules, "run_agent", None)  # pyright: ignore[reportArgumentType]
+
+    fake_cli = tmp_path / "hermes"
+    fake_cli.write_text("#!/bin/sh\nexit 0\n")
+    fake_cli.chmod(0o755)
+
+    provider = NousHermesProvider(cli_path=str(fake_cli))
+
+    assert provider.is_available() is True
+
+
+def test_nous_hermes_cli_subprocess_invoked_with_ignore_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """The CLI fallback must pass --ignore-rules and --ignore-user-config so
+    the operator's local Hermes config can't contaminate audit output."""
+
+    monkeypatch.setitem(sys.modules, "run_agent", None)  # pyright: ignore[reportArgumentType]
+
+    captured: dict[str, Any] = {}
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = '{"status":"grounded","summary":"ok"}'
+        stderr = ""
+
+    def fake_run(args: list[str], **kwargs: Any):
+        captured["args"] = args
+        captured["timeout"] = kwargs.get("timeout")
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr("backend.hermes_audit.providers.subprocess.run", fake_run)
+
+    provider = NousHermesProvider(cli_path="/usr/local/bin/hermes", cli_timeout_seconds=42.0)
+
+    response = provider.call("audit this please")
+
+    assert response == '{"status":"grounded","summary":"ok"}'
+    assert captured["args"][0] == "/usr/local/bin/hermes"
+    assert captured["args"][1] == "-z"
+    assert captured["args"][2] == "audit this please"
+    assert "--ignore-rules" in captured["args"]
+    assert "--ignore-user-config" in captured["args"]
+    assert captured["timeout"] == 42.0
+
+
+def test_nous_hermes_cli_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(sys.modules, "run_agent", None)  # pyright: ignore[reportArgumentType]
+
+    class FakeCompletedProcess:
+        returncode = 1
+        stdout = ""
+        stderr = "auth required"
+
+    monkeypatch.setattr(
+        "backend.hermes_audit.providers.subprocess.run",
+        lambda *_, **__: FakeCompletedProcess(),
+    )
+
+    provider = NousHermesProvider(cli_path="/usr/local/bin/hermes")
+
+    with pytest.raises(RuntimeError, match="exited 1.*auth required"):
+        provider.call("audit")
+
+
+def test_nous_hermes_cli_empty_stdout_raises(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(sys.modules, "run_agent", None)  # pyright: ignore[reportArgumentType]
+
+    class FakeCompletedProcess:
+        returncode = 0
+        stdout = "   \n  "
+        stderr = ""
+
+    monkeypatch.setattr(
+        "backend.hermes_audit.providers.subprocess.run",
+        lambda *_, **__: FakeCompletedProcess(),
+    )
+
+    provider = NousHermesProvider(cli_path="/usr/local/bin/hermes")
+
+    with pytest.raises(RuntimeError, match="empty stdout"):
         provider.call("audit")
