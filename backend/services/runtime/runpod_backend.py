@@ -241,12 +241,15 @@ class RunpodBackend(RuntimeBackend):
             "ports": ["22/tcp"],
             "supportPublicIp": True,
             "env": env,
-            "dockerStartCmd": [
+        }
+        # Official RunPod images (runpod/*) already handle SSH via PUBLIC_KEY
+        # env var. Only inject a custom start command for third-party images.
+        if not image.startswith("runpod/"):
+            payload["dockerStartCmd"] = [
                 "bash",
                 "-lc",
                 _runpod_start_command(),
-            ],
-        }
+            ]
         if self.network_volume_id:
             payload["networkVolumeId"] = self.network_volume_id
         if self.data_center_ids:
