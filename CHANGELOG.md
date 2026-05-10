@@ -121,6 +121,11 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **Hermes audit schema drift.** The audit adapter now normalizes common LLM
+  variants before validating `HermesAuditReport`: object-valued
+  `unsupported_claims`, string-valued `evidence_refs`, numeric confidence, and
+  free-form `recommended_intervention` text are coerced into the strict public
+  schema while preserving the original response in `raw_response`.
 - **`Reached maximum number of turns (15)`** silently aborting every
   PaperBench-class run at turn 16. Caps are now both higher and
   programmatically inspectable; see `learn.md` 2026-05-09.
