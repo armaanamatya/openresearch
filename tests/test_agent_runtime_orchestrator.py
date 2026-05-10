@@ -33,6 +33,31 @@ class FakeRuntime:
         yield StreamUsage(input_tokens=1, output_tokens=2, reasoning_tokens=1)
 
 
+class FailingRuntime(FakeRuntime):
+    def __init__(
+        self,
+        provider_name: ProviderName,
+        *,
+        message: str,
+        partial_text: str = "",
+    ) -> None:
+        super().__init__(provider_name)
+        self.message = message
+        self.partial_text = partial_text
+
+    async def run_agent(
+        self,
+        *,
+        agent: AgentRuntimeSpec,
+        user_input: str,
+    ) -> AsyncIterator[StreamEvent]:
+        self.agent = agent
+        self.user_input = user_input
+        if self.partial_text:
+            yield StreamText(self.partial_text)
+        raise Exception(self.message)
+
+
 class FakeOpenAiRuntime(FakeRuntime):
     def __init__(self) -> None:
         super().__init__("openai")
@@ -117,3 +142,66 @@ def test_orchestrator_routes_supervisor_to_verification_runtime(tmp_path: Path) 
 
     telemetry = tmp_path / "prj_review_runtime" / "agent_telemetry.jsonl"
     assert '"provider": "anthropic"' in telemetry.read_text()
+
+
+def test_orchestrator_falls_back_to_openai_when_claude_limit_is_hit(
+    tmp_path: Path,
+) -> None:
+    claude_runtime = FailingRuntime(
+        "anthropic",
+        message="Claude Code returned an error result: success",
+        partial_text="You've hit your limit - resets 9:40pm (America/Chicago)",
+    )
+    openai_runtime = FakeRuntime("openai", '{"core_contribution": "fallback ok"}')
+    orchestrator = ReproLabOrchestrator(
+        "prj_claude_limit_fallback",
+        tmp_path,
+        runtime=claude_runtime,
+        claude_limit_fallback_runtime=openai_runtime,
+    )
+
+    output = asyncio.run(
+        orchestrator._invoke_agent(
+            "paper-understanding",
+            "Analyze.",
+            cwd=tmp_path / "work",
+        )
+    )
+
+    assert output == '{"core_contribution": "fallback ok"}'
+    assert claude_runtime.agent is not None
+    assert openai_runtime.agent is not None
+    assert openai_runtime.agent.name == "paper-understanding"
+
+    telemetry = (tmp_path / "prj_claude_limit_fallback" / "agent_telemetry.jsonl").read_text()
+    assert '"provider": "openai"' in telemetry
+    assert '"success": false' in telemetry
+    assert '"success": true' in telemetry
+
+
+def test_orchestrator_does_not_fallback_for_non_limit_claude_errors(
+    tmp_path: Path,
+) -> None:
+    claude_runtime = FailingRuntime("anthropic", message="network exploded")
+    openai_runtime = FakeRuntime("openai", '{"core_contribution": "fallback ok"}')
+    orchestrator = ReproLabOrchestrator(
+        "prj_no_fallback",
+        tmp_path,
+        runtime=claude_runtime,
+        claude_limit_fallback_runtime=openai_runtime,
+    )
+
+    try:
+        asyncio.run(
+            orchestrator._invoke_agent(
+                "paper-understanding",
+                "Analyze.",
+                cwd=tmp_path / "work",
+            )
+        )
+    except Exception as exc:
+        assert "network exploded" in str(exc)
+    else:
+        raise AssertionError("Expected non-limit Claude errors to propagate")
+
+    assert openai_runtime.agent is None

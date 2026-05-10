@@ -80,6 +80,15 @@ class AgentExecutionTrace:
     elapsed_seconds: float = 0.0
 
 
+def _looks_like_claude_limit_failure(exc: Exception, observed_text: str = "") -> bool:
+    haystack = f"{type(exc).__name__}: {exc}\n{observed_text}".lower()
+    return (
+        "you've hit your limit" in haystack
+        or "you have hit your limit" in haystack
+        or "claude code returned an error result: success" in haystack
+    )
+
+
 class PipelineStage(str, enum.Enum):
     """Stages in the reproduction pipeline."""
 
@@ -245,6 +254,7 @@ class ReproLabOrchestrator:
         verification_provider: ProviderName | str | None = None,
         runtime: AgentRuntime | None = None,
         verification_runtime: AgentRuntime | None = None,
+        claude_limit_fallback_runtime: AgentRuntime | None = None,
         execution_profile: ExecutionProfile | None = None,
         sandbox_mode: SandboxMode | str = SandboxMode.docker,
         hermes_audit_service: HermesAuditService | None = None,
@@ -273,6 +283,7 @@ class ReproLabOrchestrator:
             verification_runtime
             or (make_runtime(verification_provider) if verification_provider else self._runtime)
         )
+        self._claude_limit_fallback_runtime = claude_limit_fallback_runtime
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
         self._telemetry = AgentTelemetryRecorder(
@@ -327,9 +338,12 @@ class ReproLabOrchestrator:
         *,
         cwd: str | Path | None = None,
         max_turns: int | None = None,
+        _runtime_override: AgentRuntime | None = None,
+        _allow_claude_limit_fallback: bool = True,
+        _structured_prompt: bool = False,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
-        runtime = self._runtime_for_agent(agent_id)
+        runtime = _runtime_override or self._runtime_for_agent(agent_id)
         # Implementation agents get more turns (they write code)
         if max_turns is None:
             max_turns = (
@@ -344,10 +358,11 @@ class ReproLabOrchestrator:
             max_turns=max_turns,
         )
 
-        task_prompt = append_structured_output_instruction(
-            task_prompt,
-            self._OUTPUT_MODELS.get(agent_id),
-        )
+        if not _structured_prompt:
+            task_prompt = append_structured_output_instruction(
+                task_prompt,
+                self._OUTPUT_MODELS.get(agent_id),
+            )
 
         collected_text: list[str] = []
         started_at = utc_now_iso()
@@ -358,6 +373,7 @@ class ReproLabOrchestrator:
         success = True
         error_message = ""
         usage: dict[str, Any] = {}
+        fallback_runtime: AgentRuntime | None = None
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
         try:
@@ -406,7 +422,21 @@ class ReproLabOrchestrator:
         except Exception as exc:
             success = False
             error_message = f"{type(exc).__name__}: {exc}"
-            raise
+            usage.setdefault("provider", runtime.provider_name)
+            usage.setdefault("model", runtime_spec.model)
+            if _allow_claude_limit_fallback:
+                fallback_runtime = self._claude_limit_fallback_for(
+                    runtime,
+                    exc,
+                    "\n".join(trace_lines + collected_text),
+                )
+            if fallback_runtime is None:
+                raise
+            print(
+                f"  [{agent_id}] Claude limit detected; retrying with OpenAI...",
+                file=sys.stderr,
+                flush=True,
+            )
         finally:
             self._telemetry.append(
                 AgentInvocationRecord(
@@ -421,6 +451,16 @@ class ReproLabOrchestrator:
                     error_message=error_message,
                     usage=usage,
                 )
+            )
+        if fallback_runtime is not None:
+            return await self._invoke_agent(
+                agent_id,
+                task_prompt,
+                cwd=cwd,
+                max_turns=max_turns,
+                _runtime_override=fallback_runtime,
+                _allow_claude_limit_fallback=False,
+                _structured_prompt=True,
             )
         result = "\n".join(collected_text)
         if not result.strip():
@@ -443,6 +483,20 @@ class ReproLabOrchestrator:
         if agent_id == "supervisor-verifier":
             return self._verification_runtime
         return self._runtime
+
+    def _claude_limit_fallback_for(
+        self,
+        runtime: AgentRuntime,
+        exc: Exception,
+        observed_text: str,
+    ) -> AgentRuntime | None:
+        if runtime.provider_name != "anthropic":
+            return None
+        if not _looks_like_claude_limit_failure(exc, observed_text):
+            return None
+        if self._claude_limit_fallback_runtime is None:
+            self._claude_limit_fallback_runtime = make_runtime("openai")
+        return self._claude_limit_fallback_runtime
 
     def _normalize_verifier_scores(self, data: dict[str, Any]) -> dict[str, Any]:
         """Normalize LLM-generated verification data to match schema expectations."""
