@@ -376,7 +376,7 @@ _REPRODUCE_DEFAULTS = {
     "hints": None,
     "n_paths": 3,
     "execution_mode": "efficient",
-    "sandbox": "auto",
+    "sandbox": "runpod",
     "gpu_mode": "auto",
     "command_timeout": None,
     "allow_sandbox_network": False,
