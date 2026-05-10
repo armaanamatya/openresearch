@@ -15,6 +15,7 @@ from backend.services.context.workspace.tools.rlm_query import (
     LlmClient,
     RlmQueryTool,
 )
+from backend.services.context.workspace.tools.web_search import WebSearchTool
 
 __all__ = [
     "ClaudeLlmClient",
@@ -24,6 +25,7 @@ __all__ = [
     "LlmClient",
     "LookupTool",
     "RlmQueryTool",
+    "WebSearchTool",
     "WorkspaceTool",
     "WorkspaceToolError",
 ]

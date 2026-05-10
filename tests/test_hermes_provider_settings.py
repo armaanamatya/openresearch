@@ -26,6 +26,7 @@ import pytest
 from backend.config import get_settings
 from backend.hermes_audit.providers import (
     ClaudeAuditProvider,
+    ClaudeCodeSdkProvider,
     OpenAIAuditProvider,
 )
 
@@ -162,3 +163,84 @@ def test_settings_falls_back_to_reprolab_prefix(monkeypatch: pytest.MonkeyPatch)
     settings = get_settings(_force_reload=True)
 
     assert settings.openai_api_key == "sk-reprolab-scoped"
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCodeSdkProvider — uses claude_agent_sdk with Claude Code session auth
+# instead of an Anthropic API key. Tests verify availability gating on the
+# SDK module's presence and that ``call()`` correctly drives the async
+# ``query`` iterator from a sync caller.
+# ---------------------------------------------------------------------------
+
+
+def test_claude_code_sdk_unavailable_when_module_missing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)  # pyright: ignore[reportArgumentType]
+
+    provider = ClaudeCodeSdkProvider()
+
+    assert provider.is_available() is False
+
+
+def test_claude_code_sdk_available_when_module_present(monkeypatch: pytest.MonkeyPatch):
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.ClaudeAgentOptions = lambda **_: None  # type: ignore[attr-defined]
+    fake_sdk.ResultMessage = type("ResultMessage", (), {})  # type: ignore[attr-defined]
+    fake_sdk.query = lambda **_: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    provider = ClaudeCodeSdkProvider()
+
+    assert provider.is_available() is True
+
+
+def test_claude_code_sdk_call_collects_async_iterator(monkeypatch: pytest.MonkeyPatch):
+    """``call()`` is sync but the SDK's query() is an async iterator.
+    Verify the provider drains the iterator and returns concatenated text."""
+
+    captured_options: dict[str, Any] = {}
+
+    class FakeOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_options.update(kwargs)
+
+    class FakeResultMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    async def fake_query(*, prompt: str, options: Any):
+        yield FakeResultMessage('{"status":"grounded"}')
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.ClaudeAgentOptions = FakeOptions  # type: ignore[attr-defined]
+    fake_sdk.ResultMessage = FakeResultMessage  # type: ignore[attr-defined]
+    fake_sdk.query = fake_query  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    provider = ClaudeCodeSdkProvider()
+
+    response = provider.call("audit this please")
+
+    assert response == '{"status":"grounded"}'
+    assert captured_options["permission_mode"] == "bypassPermissions"
+    assert captured_options["max_turns"] == 1
+
+
+def test_claude_code_sdk_call_raises_on_empty_response(monkeypatch: pytest.MonkeyPatch):
+    """Empty stream is treated as a failure (so the chain falls through
+    to the next provider) — the alternative would be returning '' which
+    extract_audit_json would surface as an opaque parse error."""
+
+    async def fake_query(*, prompt: str, options: Any):
+        if False:  # never yields
+            yield None
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.ClaudeAgentOptions = lambda **_: None  # type: ignore[attr-defined]
+    fake_sdk.ResultMessage = type("ResultMessage", (), {})  # type: ignore[attr-defined]
+    fake_sdk.query = fake_query  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    provider = ClaudeCodeSdkProvider()
+
+    with pytest.raises(RuntimeError, match="empty response"):
+        provider.call("audit")

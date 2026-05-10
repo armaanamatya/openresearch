@@ -33,7 +33,7 @@ export function StellarTabStage() {
       className="animate-fade-in-up"
       style={{ opacity: 0, animationDelay: "0.6s" }}
     >
-      <div className="mx-auto mb-8 max-w-3xl rounded-lg bg-gray-100 p-1">
+      <div className="mx-auto mb-6 max-w-3xl rounded-lg bg-gray-100 p-1">
         <div className="grid grid-cols-2 gap-1 md:hidden">
           {stellarTabs.map((tab) => {
             const Icon = tab.icon;
