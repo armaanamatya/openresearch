@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from backend.hermes_audit.models import HermesAuditReport, HermesAuditScope
 class HermesAuditStorage:
     """Stores audit reports under a run-scoped `hermes/` directory."""
 
+    _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
     def __init__(self, runs_root: Path, project_id: str) -> None:
         self._base_dir = Path(runs_root) / project_id / "hermes"
         self._base_dir.mkdir(parents=True, exist_ok=True)
@@ -19,7 +22,7 @@ class HermesAuditStorage:
 
     def _report_path(self, report: HermesAuditReport) -> Path:
         prefix = "step" if report.scope == HermesAuditScope.step else "checkpoint"
-        safe_target = report.target.replace("/", "_").replace("\\", "_")
+        safe_target = self._INVALID_FILENAME_CHARS.sub("_", report.target)
         return self._base_dir / f"{prefix}-{safe_target}.json"
 
     def save_report(self, report: HermesAuditReport) -> Path:

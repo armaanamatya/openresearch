@@ -41,3 +41,21 @@ def test_storage_persists_step_and_checkpoint_reports(tmp_path: Path):
     assert "step:paper-understanding" in index
     assert "checkpoint:gate_2" in index
     assert index["checkpoint:gate_2"]["status"] == "caveat"
+
+
+def test_storage_uses_portable_report_filenames(tmp_path: Path):
+    storage = HermesAuditStorage(tmp_path, "prj_hermes")
+    report = HermesAuditReport(
+        target="improvement-path:path_1",
+        scope=HermesAuditScope.step,
+        status=HermesAuditStatus.grounded,
+        summary="Grounded improvement",
+        recommended_intervention=HermesInterventionType.annotate,
+    )
+
+    report_path = storage.save_report(report)
+    index = storage.load_index()
+
+    assert ":" not in report_path.name
+    assert report_path.exists()
+    assert index["step:improvement-path:path_1"]["path"].endswith(report_path.name)
