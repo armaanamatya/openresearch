@@ -97,7 +97,21 @@ def _make_services(
         adapters=[RegexArtifactDiscoveryAdapter()],
     )
     indexer = IndexerAppService(store=store)
-    workspace = WorkspaceAppService(store=store, indexer=indexer)
+
+    # Auto-wire Chroma embedding store if chromadb is available.
+    embedding_store = None
+    try:
+        from backend.services.context.semantic.store import try_create_chroma_store
+        embedding_store = try_create_chroma_store()
+    except Exception:
+        pass
+
+    workspace = WorkspaceAppService(
+        store=store,
+        indexer=indexer,
+        discovery=discovery,
+        embedding_store=embedding_store,
+    )
     return store, intake, parser, discovery, indexer, workspace
 
 

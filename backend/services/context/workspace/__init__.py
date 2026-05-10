@@ -31,13 +31,18 @@ from backend.services.context.workspace.tools.inspect_variable import (
 from backend.services.context.workspace.tools.interface import WorkspaceTool
 from backend.services.context.workspace.tools.list_variables import ListVariablesTool
 from backend.services.context.workspace.tools.lookup import LookupTool
-from backend.services.context.workspace.tools.rlm_query import LlmClient, RlmQueryTool
+from backend.services.context.workspace.tools.rlm_query import (
+    ClaudeLlmClient,
+    LlmClient,
+    RlmQueryTool,
+)
 from backend.services.context.workspace.tools.semantic_search import SemanticSearchTool
 
 __all__ = [
     "BuildWorkspace",
     "CitationAttached",
     "Cited",
+    "ClaudeLlmClient",
     "InspectVariableTool",
     "InvalidWorkspaceTransition",
     "ListVariablesTool",
