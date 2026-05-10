@@ -64,6 +64,8 @@ class Settings(BaseSettings):
             "REPROLAB_OPENAI_API_KEY",
         ),
     )
+    codex_cli_path: str = ""
+    codex_auth_path: str = ""
 
     runpod_api_key: str = ""
     runpod_api_base_url: str = "https://rest.runpod.io/v1"

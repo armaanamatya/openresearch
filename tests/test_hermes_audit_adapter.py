@@ -5,7 +5,11 @@ from pathlib import Path
 from backend.agents.orchestrator import ReproLabOrchestrator
 from backend.hermes_audit.client import NousHermesClient
 from backend.hermes_audit.memory import load_memory
-from backend.hermes_audit.models import HermesAuditScope, HermesAuditStatus
+from backend.hermes_audit.models import (
+    HermesAuditScope,
+    HermesAuditStatus,
+    HermesInterventionType,
+)
 from backend.hermes_audit.providers import extract_audit_json
 
 
@@ -106,6 +110,66 @@ def test_hermes_client_returns_unavailable_after_chain_exhaustion(tmp_path: Path
     memory = load_memory(tmp_path)
     assert memory.stats_for("missing").failures == 1
     assert memory.stats_for("bad_json").failures == 1
+
+
+def test_hermes_client_normalizes_rich_llm_json_before_validation(tmp_path: Path):
+    """Regression for Claude/Hermes returning useful but over-rich JSON.
+
+    The live failure shape had object-valued unsupported_claims,
+    string-valued evidence_refs, and a sentence in recommended_intervention.
+    The adapter should preserve the evidence by normalizing it, not discard
+    the provider response as non-conforming.
+    """
+
+    response = """
+    {
+      "status": "unsupported_claims",
+      "summary": {"headline": "needs citations"},
+      "findings": [{"claim": "metric table missing", "reason": "no quote"}],
+      "unsupported_claims": [
+        {
+          "claim": "NetHack model uses scaled-BC architecture.",
+          "reason": "The trace does not cite the architecture section."
+        },
+        {
+          "claim": "Vanilla fine-tuning forgets capabilities.",
+          "missing_evidence": "No table excerpt was supplied."
+        }
+      ],
+      "evidence_refs": [
+        "state_snapshot.assumptions.A004",
+        {
+          "source_id": "structured_output.claims",
+          "relevant_quote": "claim text",
+          "summary": "claim map output"
+        }
+      ],
+      "recommended_intervention": "Reconcile extracted model architecture with paper evidence.",
+      "confidence": 0.82
+    }
+    """
+    provider = FakeProvider("claude_code_sdk", response=response)
+    fallback = FakeProvider("openai", response=_audit_json(provider="openai"))
+
+    client = NousHermesClient(providers=[provider, fallback], runs_root=tmp_path)
+    report = client.audit(scope=HermesAuditScope.step, target="paper_understood", payload={})
+
+    assert report.provider == "claude_code_sdk"
+    assert report.status == HermesAuditStatus.unsupported
+    assert report.recommended_intervention == HermesInterventionType.request_evidence
+    assert report.confidence.value == "high"
+    assert report.summary == '{"headline": "needs citations"}'
+    assert report.unsupported_claims == [
+        "NetHack model uses scaled-BC architecture. (The trace does not cite the architecture section.)",
+        "Vanilla fine-tuning forgets capabilities. (No table excerpt was supplied.)",
+    ]
+    assert report.findings == ["metric table missing (no quote)"]
+    assert report.evidence_refs[0].kind == "audit_reference"
+    assert report.evidence_refs[0].description == "state_snapshot.assumptions.A004"
+    assert report.evidence_refs[1].path == "structured_output.claims"
+    assert report.evidence_refs[1].snippet == "claim text"
+    assert "Auditor recommendation: Reconcile extracted model architecture" in report.corrective_note
+    assert fallback.calls == []
 
 
 def test_orchestrator_default_hermes_client_uses_configured_runs_root(tmp_path: Path):

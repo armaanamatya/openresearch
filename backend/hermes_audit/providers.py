@@ -13,6 +13,8 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any, Protocol
 
 from backend.config import get_settings
@@ -424,10 +426,82 @@ class ClaudeCodeSdkProvider:
         return result
 
 
+class CodexCliProvider:
+    """Codex CLI via ChatGPT OAuth.
+
+    This is the OpenAI-side subscription fallback matching
+    ``ClaudeCodeSdkProvider``: it uses the operator's existing ``codex login``
+    session rather than an ``OPENAI_API_KEY``. The OAuth token remains opaque to
+    ReproLab; the CLI owns refresh and expiry handling.
+    """
+
+    name = "codex_cli"
+
+    def __init__(
+        self,
+        *,
+        cli_path: str | None = None,
+        cli_timeout_seconds: float = 120.0,
+        auth_path_override: str | None = None,
+    ) -> None:
+        self.cli_timeout_seconds = cli_timeout_seconds
+        self._cli_override = cli_path
+        self._auth_path_override = auth_path_override
+
+    def _cli_path(self) -> str | None:
+        if self._cli_override is not None:
+            return self._cli_override or None
+        return shutil.which("codex")
+
+    def _auth_path(self) -> Path:
+        if self._auth_path_override is not None:
+            return Path(self._auth_path_override)
+        return Path.home() / ".codex" / "auth.json"
+
+    def is_available(self) -> bool:
+        return self._cli_path() is not None and self._auth_path().is_file()
+
+    def call(self, prompt: str) -> str:
+        cli = self._cli_path()
+        if cli is None:
+            raise RuntimeError("codex CLI not on PATH")
+        with tempfile.TemporaryDirectory(prefix="reprolab-codex-audit-") as tmp:
+            out_path = Path(tmp) / "last_message.txt"
+            result = subprocess.run(
+                [
+                    cli,
+                    "exec",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--output-last-message",
+                    str(out_path),
+                    prompt,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.cli_timeout_seconds,
+                check=False,
+            )
+            if result.returncode != 0:
+                stderr_excerpt = (result.stderr or "").strip()[:500]
+                raise RuntimeError(
+                    f"codex CLI exited {result.returncode}: {stderr_excerpt}"
+                )
+            output = out_path.read_text(encoding="utf-8").strip() if out_path.exists() else ""
+            if not output:
+                output = (result.stdout or "").strip()
+            if not output:
+                raise RuntimeError("codex CLI returned empty response")
+            return output
+
+
 __all__ = [
     "AuditProvider",
     "ClaudeAuditProvider",
     "ClaudeCodeSdkProvider",
+    "CodexCliProvider",
     "NousHermesProvider",
     "OpenAIAuditProvider",
     "extract_audit_json",

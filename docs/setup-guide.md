@@ -360,6 +360,38 @@ The image is a 3-stage build:
 SIGTERM so `docker stop` is fast (10 s grace) instead of waiting on
 the 30 s default SIGKILL.
 
+## 12. Provider resilience and subscription fallbacks
+
+SDK agent runs write provider recovery artifacts beside the project:
+
+```text
+runs/<project_id>/agent_telemetry.jsonl
+runs/<project_id>/cost_ledger.jsonl
+runs/<project_id>/fallback_summary.json
+```
+
+Use budget flags when you want hard stops before a fallback can spend more:
+
+```bash
+python -m backend.cli reproduce paper.pdf \
+  --mode sdk \
+  --max-usd 25 \
+  --max-wall-clock 7200 \
+  --max-invocations paper-understanding=3,artifact-discovery=5
+```
+
+Hermes audits can also use Codex CLI as an OpenAI subscription fallback. Run
+`codex login` once, then leave `OPENAI_API_KEY` unset if you want the API-key
+provider to be skipped. Optional overrides are:
+
+```bash
+REPROLAB_CODEX_CLI_PATH=
+REPROLAB_CODEX_AUTH_PATH=
+```
+
+The Codex CLI contract was verified with `codex-cli 0.125.0` using
+`codex exec --skip-git-repo-check --ephemeral --ignore-user-config --ignore-rules`.
+
 ## Quick reference — what to install
 
 | Tool | Required? | Install time |

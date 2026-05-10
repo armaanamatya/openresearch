@@ -6,10 +6,9 @@ a ``HermesAuditReport``. Callers that already construct
 
 What's new under the hood:
 
-* **Provider chain.** Tries Nous Hermes first, then Claude (direct
-  Anthropic SDK), then OpenAI (direct OpenAI SDK). Each provider is a
-  Protocol implementation in ``providers.py`` — new providers plug in
-  by registration, never by editing this file's branching.
+* **Provider chain.** Tries Nous Hermes first, then Claude/OpenAI API-key
+  paths, then subscription-backed CLI paths where available. Each provider
+  is a Protocol implementation in ``providers.py``.
 * **Self-learning order.** Persists per-provider success / failure
   counters to ``<runs_root>/.hermes_adapter_memory.json`` between runs.
   The next run starts with last-known-good provider first and skips
@@ -43,21 +42,25 @@ import logging
 from pathlib import Path
 from typing import Any, Sequence
 
+from backend.config import get_settings
 from backend.hermes_audit.memory import (
     AdapterMemory,
     load_memory,
     save_memory,
 )
 from backend.hermes_audit.models import (
+    HermesAuditConfidence,
     HermesAuditReport,
     HermesAuditScope,
     HermesAuditStatus,
+    HermesEvidenceRef,
     HermesInterventionType,
 )
 from backend.hermes_audit.providers import (
     AuditProvider,
     ClaudeAuditProvider,
     ClaudeCodeSdkProvider,
+    CodexCliProvider,
     NousHermesProvider,
     OpenAIAuditProvider,
     extract_audit_json,
@@ -69,9 +72,9 @@ logger = logging.getLogger(__name__)
 
 def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
     """Default chain: Nous → Claude (API key) → Claude Code SDK
-    (subscription) → OpenAI. Each provider is constructed with safe
-    defaults; callers wanting different models pass an explicit
-    ``providers=`` list to ``NousHermesClient``.
+    (subscription) → OpenAI (API key) → Codex CLI (subscription). Each
+    provider is constructed with safe defaults; callers wanting different
+    models pass an explicit ``providers=`` list to ``NousHermesClient``.
 
     Why this order:
 
@@ -86,13 +89,22 @@ def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
       Slightly heavier (spins up the agent SDK), so we don't preempt
       an explicit API key configuration.
     * ``openai`` is last as the cross-provider fallback.
+    * ``codex_cli`` is the final OpenAI-side subscription fallback: when
+      no OpenAI API key is available but the operator has run ``codex
+      login``, audits can still run via the Codex CLI without reading
+      OAuth tokens directly.
     """
+    settings = get_settings()
 
     return [
         NousHermesProvider(model=nous_model),
         ClaudeAuditProvider(),
         ClaudeCodeSdkProvider(),
         OpenAIAuditProvider(),
+        CodexCliProvider(
+            cli_path=settings.codex_cli_path or None,
+            auth_path_override=settings.codex_auth_path or None,
+        ),
     ]
 
 
@@ -167,9 +179,12 @@ class NousHermesClient:
                 )
                 continue
 
-            data.setdefault("target", target)
-            data.setdefault("scope", scope.value)
-            data.setdefault("provider", provider.name)
+            data = _normalize_audit_data(
+                data,
+                target=target,
+                scope=scope,
+                provider=provider.name,
+            )
             try:
                 report = HermesAuditReport(**data)
             except Exception as exc:  # noqa: BLE001 — schema mismatch, try next
@@ -223,6 +238,7 @@ def _disabled_report(*, scope: HermesAuditScope, target: str) -> HermesAuditRepo
 def _build_prompt(
     *, scope: HermesAuditScope, target: str, payload: dict[str, Any]
 ) -> str:
+    intervention_values = ", ".join(item.value for item in HermesInterventionType)
     return (
         "You are auditing a research reproduction pipeline for unsupported claims.\n"
         f"Scope: {scope.value}\n"
@@ -231,9 +247,275 @@ def _build_prompt(
         "status (one of: grounded, caveat, unsupported), summary, findings, "
         "unsupported_claims, evidence_refs, recommended_intervention, "
         "corrective_note, confidence (one of: low, medium, high).\n"
+        "Schema constraints:\n"
+        "- findings must be an array of strings.\n"
+        "- unsupported_claims must be an array of strings, not objects.\n"
+        "- evidence_refs must be an array of objects with string fields: "
+        "kind, path, snippet, description.\n"
+        f"- recommended_intervention must be exactly one of: {intervention_values}.\n"
+        "- Put detailed rationale in findings or corrective_note, not in "
+        "recommended_intervention.\n"
         "Do not include prose before or after the JSON. Do not wrap in code fences.\n"
         f"Payload:\n```json\n{json.dumps(payload, indent=2)}\n```"
     )
+
+
+def _normalize_audit_data(
+    data: dict[str, Any],
+    *,
+    target: str,
+    scope: HermesAuditScope,
+    provider: str,
+) -> dict[str, Any]:
+    """Coerce common LLM JSON variants into HermesAuditReport's contract.
+
+    The audit providers are intentionally allowed to be heterogeneous. In
+    practice, Claude/Hermes often return semantically useful JSON with richer
+    objects for ``unsupported_claims`` or free-form text for
+    ``recommended_intervention``. Rejecting those responses forces a fallback
+    and loses evidence. This normalizer keeps the strict public model while
+    accepting common, safely lossy variants at the adapter boundary.
+    """
+
+    raw_response = dict(data)
+    normalized = dict(data)
+    normalized["target"] = _coerce_string(normalized.get("target") or target)
+    normalized["scope"] = _coerce_scope(normalized.get("scope"), scope)
+    normalized["provider"] = _coerce_string(normalized.get("provider") or provider)
+
+    unsupported_claims = _coerce_string_list(normalized.get("unsupported_claims"))
+    findings = _coerce_string_list(normalized.get("findings"))
+    normalized["unsupported_claims"] = unsupported_claims
+    normalized["findings"] = findings
+    normalized["evidence_refs"] = _coerce_evidence_refs(normalized.get("evidence_refs"))
+
+    normalized["status"] = _coerce_status(
+        normalized.get("status"),
+        has_unsupported_claims=bool(unsupported_claims),
+    )
+    normalized["confidence"] = _coerce_confidence(normalized.get("confidence"))
+    normalized["summary"] = _coerce_string(normalized.get("summary"))
+
+    corrective_note = _coerce_string(normalized.get("corrective_note"))
+    raw_intervention = normalized.get("recommended_intervention")
+    intervention = _coerce_intervention(raw_intervention)
+    if intervention is None:
+        intervention = _default_intervention(
+            normalized["status"],
+            has_unsupported_claims=bool(unsupported_claims),
+        )
+        raw_note = _coerce_string(raw_intervention)
+        if raw_note:
+            corrective_note = "\n".join(
+                part
+                for part in (
+                    corrective_note,
+                    f"Auditor recommendation: {raw_note}",
+                )
+                if part
+            )
+    normalized["recommended_intervention"] = intervention
+    normalized["corrective_note"] = corrective_note
+    normalized["raw_response"] = raw_response
+    return normalized
+
+
+def _coerce_scope(value: Any, fallback: HermesAuditScope) -> str:
+    if isinstance(value, HermesAuditScope):
+        return value.value
+    raw = _coerce_string(value).lower()
+    return raw if raw in {item.value for item in HermesAuditScope} else fallback.value
+
+
+def _coerce_status(value: Any, *, has_unsupported_claims: bool) -> str:
+    if isinstance(value, HermesAuditStatus):
+        return value.value
+    raw = _enumish(value)
+    aliases = {
+        "grounded": HermesAuditStatus.grounded.value,
+        "ok": HermesAuditStatus.grounded.value,
+        "supported": HermesAuditStatus.grounded.value,
+        "verified": HermesAuditStatus.grounded.value,
+        "caveat": HermesAuditStatus.caveat.value,
+        "caveated": HermesAuditStatus.caveat.value,
+        "warning": HermesAuditStatus.caveat.value,
+        "partial": HermesAuditStatus.caveat.value,
+        "unsupported": HermesAuditStatus.unsupported.value,
+        "unsupported_claim": HermesAuditStatus.unsupported.value,
+        "unsupported_claims": HermesAuditStatus.unsupported.value,
+        "not_grounded": HermesAuditStatus.unsupported.value,
+        "unavailable": HermesAuditStatus.unavailable.value,
+        "system_error": HermesAuditStatus.system_error.value,
+    }
+    if raw in aliases:
+        return aliases[raw]
+    return HermesAuditStatus.unsupported.value if has_unsupported_claims else HermesAuditStatus.caveat.value
+
+
+def _coerce_confidence(value: Any) -> str:
+    if isinstance(value, HermesAuditConfidence):
+        return value.value
+    if isinstance(value, (int, float)):
+        if value >= 0.75:
+            return HermesAuditConfidence.high.value
+        if value <= 0.4:
+            return HermesAuditConfidence.low.value
+        return HermesAuditConfidence.medium.value
+    raw = _enumish(value)
+    if raw in {item.value for item in HermesAuditConfidence}:
+        return raw
+    if raw in {"certain", "strong"}:
+        return HermesAuditConfidence.high.value
+    if raw in {"uncertain", "weak"}:
+        return HermesAuditConfidence.low.value
+    return HermesAuditConfidence.medium.value
+
+
+def _coerce_intervention(value: Any) -> str | None:
+    if isinstance(value, HermesInterventionType):
+        return value.value
+    raw = _enumish(value)
+    if raw in {item.value for item in HermesInterventionType}:
+        return raw
+    return None
+
+
+def _default_intervention(status: str, *, has_unsupported_claims: bool) -> str:
+    if status == HermesAuditStatus.unsupported.value or has_unsupported_claims:
+        return HermesInterventionType.request_evidence.value
+    if status == HermesAuditStatus.system_error.value:
+        return HermesInterventionType.escalate_human.value
+    return HermesInterventionType.annotate.value
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        value = [value]
+    result: list[str] = []
+    for item in value:
+        text = _coerce_claim_like_string(item).strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _coerce_claim_like_string(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        claim = _coerce_string(value.get("claim") or value.get("summary") or value.get("title"))
+        details: list[str] = []
+        for key in (
+            "reason",
+            "rationale",
+            "issue",
+            "detail",
+            "why",
+            "missing_evidence",
+            "evidence_gap",
+            "recommendation",
+        ):
+            detail = _coerce_string(value.get(key))
+            if detail:
+                details.append(detail)
+        if claim:
+            return f"{claim} ({'; '.join(details)})" if details else claim
+    return _coerce_string(value)
+
+
+def _coerce_evidence_refs(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = [value]
+    refs: list[dict[str, str]] = []
+    for item in value:
+        ref = _coerce_evidence_ref(item)
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
+def _coerce_evidence_ref(value: Any) -> dict[str, str] | None:
+    if isinstance(value, HermesEvidenceRef):
+        return value.model_dump(mode="json")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        return {
+            "kind": "audit_reference",
+            "path": "",
+            "snippet": "",
+            "description": text,
+        }
+    if isinstance(value, dict):
+        kind = _coerce_string(
+            value.get("kind")
+            or value.get("source_type")
+            or value.get("type")
+            or value.get("retrieved_via")
+            or "audit_reference"
+        )
+        path = _coerce_string(
+            value.get("path")
+            or value.get("source_path")
+            or value.get("locator")
+            or value.get("source")
+            or value.get("source_id")
+            or value.get("chunk_id")
+        )
+        snippet = _coerce_string(
+            value.get("snippet")
+            or value.get("quote")
+            or value.get("relevant_quote")
+            or value.get("content")
+        )
+        description = _coerce_string(
+            value.get("description")
+            or value.get("summary")
+            or value.get("detail")
+            or value.get("evidence")
+        )
+        if not any((kind, path, snippet, description)):
+            return None
+        return {
+            "kind": kind or "audit_reference",
+            "path": path,
+            "snippet": snippet,
+            "description": description,
+        }
+    text = _coerce_string(value)
+    if not text:
+        return None
+    return {
+        "kind": "audit_reference",
+        "path": "",
+        "snippet": "",
+        "description": text,
+    }
+
+
+def _coerce_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    try:
+        return json.dumps(value, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _enumish(value: Any) -> str:
+    return _coerce_string(value).lower().replace("-", "_").replace(" ", "_")
 
 
 def _persist_memory_quietly(runs_root: Path, memory: AdapterMemory) -> None:
