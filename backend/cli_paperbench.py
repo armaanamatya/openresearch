@@ -428,8 +428,8 @@ def add_paperbench_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     run.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker"),
-        default="auto",
+        choices=("auto", "local", "docker", "runpod"),
+        default="runpod",
     )
     run.add_argument("--allow-sandbox-network", action="store_true")
     run.set_defaults(func=cmd_paperbench_run)

@@ -280,7 +280,7 @@ class FileLiveRunService:
                 continue
             if execution_mode and (status.get("executionMode") or "efficient") != execution_mode:
                 continue
-            if sandbox and (status.get("sandboxMode") or "auto") != sandbox:
+            if sandbox and (status.get("sandboxMode") or "runpod") != sandbox:
                 continue
             if verification_provider and status.get("verificationProvider") != verification_provider:
                 continue

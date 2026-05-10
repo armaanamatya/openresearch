@@ -166,7 +166,7 @@ function buildFixtureMeta(
   llmProvider?: DemoProvider,
   verificationProvider?: DemoProvider,
   executionMode: DemoExecutionMode = "efficient",
-  sandboxMode: DemoSandboxMode = "auto",
+  sandboxMode: DemoSandboxMode = "runpod",
   gpuMode: DemoGpuMode = "auto"
 ): LiveDemoMeta {
   return {
@@ -303,7 +303,7 @@ function metaFromStatus(
   >
 ): LiveDemoMeta {
   const executionMode = status?.executionMode ?? "efficient";
-  const sandboxMode = status?.sandboxMode ?? "auto";
+  const sandboxMode = status?.sandboxMode ?? "runpod";
   const verificationProvider = status?.verificationProvider;
   const gpuMode = status?.gpuMode ?? "auto";
 
@@ -597,7 +597,7 @@ async function latestProjectId(
           if (executionMode && (status.executionMode ?? "efficient") !== executionMode) {
             return null;
           }
-          if (sandboxMode && (status.sandboxMode ?? "auto") !== sandboxMode) {
+          if (sandboxMode && (status.sandboxMode ?? "runpod") !== sandboxMode) {
             return null;
           }
           if (verificationProvider && status.verificationProvider !== verificationProvider) {
@@ -630,7 +630,7 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
   const llmProvider = status?.llmProvider ?? providerFromProjectId(projectId);
   const verificationProvider = status?.verificationProvider;
   const executionMode = status?.executionMode ?? "efficient";
-  const sandboxMode = status?.sandboxMode ?? "auto";
+  const sandboxMode = status?.sandboxMode ?? "runpod";
   const gpuMode = status?.gpuMode ?? "auto";
   const log = await readLogTail(projectId);
   const payload = await payloadForProject(projectId, runMode, log, status ?? undefined);
@@ -795,7 +795,7 @@ export async function startDemoRun(
   runMode: DemoRunMode,
   llmProvider: DemoProvider = "anthropic",
   executionMode: DemoExecutionMode = "efficient",
-  sandboxMode: DemoSandboxMode = "auto",
+  sandboxMode: DemoSandboxMode = "runpod",
   options?: DemoRunStartOptions
 ): Promise<LiveDemoRunState> {
   const verificationProvider =

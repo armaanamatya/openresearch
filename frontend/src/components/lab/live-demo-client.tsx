@@ -94,19 +94,14 @@ const GPU_OPTIONS: Array<{ value: DemoGpuMode; label: string; helper: string }> 
 ];
 const SANDBOX_OPTIONS: Array<{ value: DemoSandboxMode; label: string; helper: string }> = [
   {
-    value: "auto",
-    label: "Auto Docker",
-    helper: "Docker first"
+    value: "runpod",
+    label: "Runpod GPU",
+    helper: "Remote GPU Pod (default)"
   },
   {
     value: "docker",
     label: "Docker",
-    helper: "Container sandbox"
-  },
-  {
-    value: "runpod",
-    label: "Runpod GPU",
-    helper: "Remote GPU Pod"
+    helper: "Local container sandbox"
   },
   {
     value: "local",
@@ -210,9 +205,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   const [executionMode, setExecutionMode] = useState<DemoExecutionMode>(
     initialRun?.executionMode ?? "efficient"
   );
-  const [sandboxMode, setSandboxMode] = useState<DemoSandboxMode>(
-    initialRun?.sandboxMode ?? "auto"
-  );
+  const [sandboxMode, setSandboxMode] = useState<DemoSandboxMode>("runpod");
   const [gpuMode, setGpuMode] = useState<DemoGpuMode>(initialRun?.gpuMode ?? "auto");
   const [selectedPaper, setSelectedPaper] = useState<File | null>(null);
   const [runningMode, setRunningMode] = useState<"offline" | "sdk" | null>(
@@ -242,7 +235,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     if (run?.executionMode) {
       setExecutionMode(run.executionMode);
     }
-    if (run?.sandboxMode) {
+    if (run?.sandboxMode && run.sandboxMode !== "auto") {
       setSandboxMode(run.sandboxMode);
     }
     if (run) {

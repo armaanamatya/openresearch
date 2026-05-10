@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 
+    # Default sandbox mode for the dashboard's "start a run" form.
+    # CLI defaults remain controlled separately by argparse flags.
+    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
+
     runpod_api_key: str = ""
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
     runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
@@ -84,6 +88,11 @@ class Settings(BaseSettings):
     runpod_boot_timeout_seconds: int = 900
     runpod_delete_on_destroy: bool = True
     runpod_bootstrap_command: str = ""
+    # When set, the Runpod backend attaches to this existing pod ID
+    # instead of creating a fresh pod per run. The pod is NEVER deleted
+    # by the backend (the _owned_pod_ids allowlist enforces this even
+    # if delete_on_destroy=true). Useful for persistent shared workers.
+    runpod_pod_id: str = ""
 
 
 _settings_cache: Settings | None = None

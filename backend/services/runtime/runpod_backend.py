@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import os
+import subprocess
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +14,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
+
+_log = logging.getLogger(__name__)
 
 from backend.services.runtime.interface import (
     ExecResult,
@@ -64,6 +68,7 @@ class RunpodBackend(RuntimeBackend):
         boot_timeout_seconds: int = 900,
         delete_on_destroy: bool = True,
         bootstrap_command: str = "",
+        pod_id: str = "",
     ) -> None:
         self.api_key = (
             api_key
@@ -81,19 +86,24 @@ class RunpodBackend(RuntimeBackend):
         self.volume_mount_path = volume_mount_path.rstrip("/") or "/workspace"
         self.network_volume_id = network_volume_id.strip()
         self.data_center_ids = data_center_ids or []
-        self.ssh_key_path = Path(ssh_key_path or "~/.ssh/id_ed25519").expanduser()
+        self.ssh_key_path = _normalize_ssh_key_path(ssh_key_path)
         self.ssh_public_key = ssh_public_key.strip()
         self.ssh_user = ssh_user
         self.boot_timeout_seconds = boot_timeout_seconds
         self.delete_on_destroy = delete_on_destroy
         self.bootstrap_command = bootstrap_command.strip()
+        # Optional persistent pod. When set, create_sandbox attaches to
+        # this pod instead of POSTing /pods. The pod is never added to
+        # _owned_pod_ids, so the destroy() guard refuses to delete it.
+        self.pod_id = pod_id.strip()
         self._connections: dict[str, _RunpodConnection] = {}
         self._ssh_clients: dict[str, Any] = {}
         # Allowlist of pod IDs THIS backend instance created. Any delete
         # call against a pod ID NOT in this set is refused with a typed
         # error — defense in depth on top of ``delete_on_destroy=false``
         # so a logic bug or rogue caller can never delete a pod created
-        # outside our process (e.g. a coworker's pod on the same account).
+        # outside our process (e.g. a coworker's pod on the same account,
+        # or a persistent pod attached via REPROLAB_RUNPOD_POD_ID).
         self._owned_pod_ids: set[str] = set()
 
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
@@ -116,38 +126,146 @@ class RunpodBackend(RuntimeBackend):
 
         config.resolved_artifact_root().mkdir(parents=True, exist_ok=True)
         image = self.image_name or config.image
+
+        # Persistent-pod mode: REPROLAB_RUNPOD_POD_ID points at an existing pod.
+        # If it's RUNNING, attach. If it's missing/stopped, fall through to
+        # create a new pod (and log the new ID prominently so the user can
+        # update .env). Either way the resulting pod is never deleted on
+        # destroy because we do NOT add it to _owned_pod_ids.
+        if self.pod_id:
+            attached = await self._try_attach_existing_pod(config, image)
+            if attached is not None:
+                return attached
+            _log.warning(
+                "REPROLAB_RUNPOD_POD_ID=%r is unusable; creating a new persistent pod. "
+                "Update .env with the new pod id printed below to reuse it next run.",
+                self.pod_id,
+            )
+            pod = await self._create_pod(config, image)
+            pod_id = str(pod["id"])
+            _log.warning(
+                "RUNPOD_PERSISTENT_POD_CREATED pod_id=%s name=%s — "
+                "set REPROLAB_RUNPOD_POD_ID=%s in .env to reuse it.",
+                pod_id,
+                pod.get("name") or _pod_name(config),
+                pod_id,
+            )
+            # Persistent semantics: never delete this pod from destroy().
+            # Skip _owned_pod_ids on purpose.
+            try:
+                return await self._finish_create(config, image, pod_id, pod)
+            except Exception:
+                # We created it but it failed to come up; user will see it
+                # in their dashboard with the warned id. We do NOT delete
+                # because the user opted into persistent mode by setting
+                # REPROLAB_RUNPOD_POD_ID.
+                raise
+
+        # Per-run create-and-(maybe-)destroy mode (existing behavior).
         pod = await self._create_pod(config, image)
         pod_id = str(pod["id"])
         # Record ownership BEFORE the SSH-wait try block so the cleanup
         # path's _delete_pod_quietly call is allowed to proceed.
         self._owned_pod_ids.add(pod_id)
         try:
-            ready = await self._wait_for_pod_ssh(pod_id)
-            remote_base = _join_posix(
-                self.volume_mount_path,
-                "reprolab",
-                _safe_name(config.project_id),
-                _safe_name(config.run_id),
-            )
-            connection = _RunpodConnection(
-                pod_id=pod_id,
-                public_ip=ready["public_ip"],
-                ssh_port=ready["ssh_port"],
-                remote_base=remote_base,
-                remote_workdir=_join_posix(remote_base, "work"),
-                remote_artifacts_dir=_join_posix(remote_base, "artifacts"),
-            )
-            self._connections[pod_id] = connection
-            await self._prepare_remote_workspace(config, connection)
-            return Sandbox(
-                sandbox_id=pod_id,
-                name=str(pod.get("name") or _pod_name(config)),
-                image=image,
-                config=config,
-            )
+            return await self._finish_create(config, image, pod_id, pod)
         except Exception:
             await self._delete_pod_quietly(pod_id)
             raise
+
+    async def _try_attach_existing_pod(
+        self,
+        config: SandboxConfig,
+        image: str,
+    ) -> Sandbox | None:
+        """Attach to ``self.pod_id`` if it exists and is RUNNING, else None."""
+        try:
+            pod = await self._request_json("GET", f"/pods/{self.pod_id}")
+        except SandboxRuntimeError as exc:
+            _log.warning(
+                "Runpod GET /pods/%s failed (%s) — falling back to create.",
+                self.pod_id,
+                exc,
+            )
+            return None
+        status = str(pod.get("desiredStatus") or "").upper()
+        if status != "RUNNING":
+            _log.warning(
+                "Configured persistent pod %s is not RUNNING (status=%s).",
+                self.pod_id,
+                status or "unknown",
+            )
+            return None
+        public_ip = pod.get("publicIp") or pod.get("publicIP")
+        ssh_port = _ssh_port(pod.get("portMappings") or {})
+        if not public_ip or not ssh_port:
+            _log.warning(
+                "Persistent pod %s has no SSH endpoint (publicIp=%s, port22=%s).",
+                self.pod_id,
+                public_ip,
+                ssh_port,
+            )
+            return None
+        try:
+            conn = await self._connect_ssh(str(public_ip), int(ssh_port))
+        except Exception as exc:
+            _log.warning(
+                "SSH connect to persistent pod %s@%s:%s failed: %s",
+                self.ssh_user,
+                public_ip,
+                ssh_port,
+                exc,
+            )
+            return None
+        self._ssh_clients[self.pod_id] = conn
+        _log.info(
+            "Attached to persistent Runpod pod %s at %s:%s (will not delete on destroy).",
+            self.pod_id,
+            public_ip,
+            ssh_port,
+        )
+        # Reuse _finish_create's workspace prep, but skip _wait_for_pod_ssh
+        # since we already have a live SSH connection.
+        return await self._finish_create(
+            config,
+            pod.get("imageName") or image,
+            self.pod_id,
+            pod,
+            ssh_ready={"public_ip": str(public_ip), "ssh_port": int(ssh_port)},
+        )
+
+    async def _finish_create(
+        self,
+        config: SandboxConfig,
+        image: str,
+        pod_id: str,
+        pod: dict[str, Any],
+        *,
+        ssh_ready: dict[str, Any] | None = None,
+    ) -> Sandbox:
+        ready = ssh_ready or await self._wait_for_pod_ssh(pod_id)
+        remote_base = _join_posix(
+            self.volume_mount_path,
+            "reprolab",
+            _safe_name(config.project_id),
+            _safe_name(config.run_id),
+        )
+        connection = _RunpodConnection(
+            pod_id=pod_id,
+            public_ip=ready["public_ip"],
+            ssh_port=ready["ssh_port"],
+            remote_base=remote_base,
+            remote_workdir=_join_posix(remote_base, "work"),
+            remote_artifacts_dir=_join_posix(remote_base, "artifacts"),
+        )
+        self._connections[pod_id] = connection
+        await self._prepare_remote_workspace(config, connection)
+        return Sandbox(
+            sandbox_id=pod_id,
+            name=str(pod.get("name") or _pod_name(config)),
+            image=image,
+            config=config,
+        )
 
     async def exec(self, sandbox: Sandbox, command: str, timeout: int) -> ExecResult:
         started_at = datetime.now(timezone.utc)
@@ -228,6 +346,16 @@ class RunpodBackend(RuntimeBackend):
             conn.close()
             await conn.wait_closed()
         self._connections.pop(sandbox.sandbox_id, None)
+        # Persistent pods (attached via REPROLAB_RUNPOD_POD_ID, or any pod
+        # not in our ownership allowlist) are never deleted. The
+        # _delete_pod guard would also refuse, but short-circuiting here
+        # avoids a noisy SandboxRuntimeError and keeps logs clean.
+        if sandbox.sandbox_id not in self._owned_pod_ids:
+            _log.info(
+                "Runpod destroy() skipping delete for unowned pod %s (persistent).",
+                sandbox.sandbox_id,
+            )
+            return
         if self.delete_on_destroy:
             await self._delete_pod(sandbox.sandbox_id)
 
@@ -482,6 +610,18 @@ class RunpodBackend(RuntimeBackend):
         public_key_path = Path(f"{self.ssh_key_path}.pub")
         if public_key_path.exists():
             return public_key_path.read_text(encoding="utf-8").strip()
+        try:
+            derived = subprocess.run(
+                ["ssh-keygen", "-y", "-f", str(self.ssh_key_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+        except Exception:
+            return ""
+        if derived.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-")):
+            return derived
         return ""
 
     def _map_remote_path(self, sandbox: Sandbox, path: str) -> str:
@@ -590,6 +730,21 @@ def _coerce_text(value: bytes | str | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _normalize_ssh_key_path(value: str | Path | None) -> Path:
+    raw = str(value or "~/.ssh/id_ed25519").strip()
+    expanded = Path(raw).expanduser()
+    if expanded.exists():
+        return expanded
+    # Accept Windows-style absolute paths in .env when running from WSL/Linux.
+    # Example: C:\Users\name\.ssh\id_ed25519 -> /mnt/c/Users/name/.ssh/id_ed25519
+    if ":" in raw and "\\" in raw and len(raw) >= 3 and raw[1] == ":":
+        drive = raw[0].lower()
+        tail = raw[2:].replace("\\", "/").lstrip("/")
+        mapped = Path(f"/mnt/{drive}/{tail}")
+        return mapped.expanduser()
+    return expanded
 
 
 __all__ = ["RunpodBackend"]
