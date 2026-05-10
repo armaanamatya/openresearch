@@ -23,6 +23,12 @@ What's new under the hood:
   show which auditor produced it. Failures never silently substitute
   a fake "ok" — terminal status is ``unavailable`` only after the
   whole chain has been exhausted.
+* **Settings-driven keys.** Providers source API keys via
+  ``backend.config.Settings`` (which pydantic-settings loads from
+  ``.env`` regardless of os.environ state). This supersedes the old
+  os.environ-based config resolution: the values were always in .env,
+  but never reached os.environ for processes that didn't ``source``
+  it (Lab UI's spawned children, pytest, …) — Settings closes that gap.
 
 Why no async: each audit is one short LLM call producing JSON. The
 sync ``audit()`` contract keeps ``HermesAuditService`` simple and lets
@@ -51,6 +57,7 @@ from backend.hermes_audit.models import (
 from backend.hermes_audit.providers import (
     AuditProvider,
     ClaudeAuditProvider,
+    ClaudeCodeSdkProvider,
     NousHermesProvider,
     OpenAIAuditProvider,
     extract_audit_json,
@@ -61,13 +68,30 @@ logger = logging.getLogger(__name__)
 
 
 def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
-    """Default chain: Nous → Claude → OpenAI. Each provider is constructed
-    with safe defaults; callers wanting different models pass an explicit
-    ``providers=`` list to ``NousHermesClient``."""
+    """Default chain: Nous → Claude (API key) → Claude Code SDK
+    (subscription) → OpenAI. Each provider is constructed with safe
+    defaults; callers wanting different models pass an explicit
+    ``providers=`` list to ``NousHermesClient``.
+
+    Why this order:
+
+    * ``nous_hermes`` is first because it's the project-native auditor
+      and ships with its own model config; whoever installed
+      ``hermes-agent`` did so deliberately.
+    * ``claude`` (direct Anthropic API key) is second: lowest latency,
+      no agent overhead, fully sync.
+    * ``claude_code_sdk`` is third: when no Anthropic API key is set
+      but the operator has a Claude Code subscription, audits run
+      against that subscription instead of failing through to OpenAI.
+      Slightly heavier (spins up the agent SDK), so we don't preempt
+      an explicit API key configuration.
+    * ``openai`` is last as the cross-provider fallback.
+    """
 
     return [
         NousHermesProvider(model=nous_model),
         ClaudeAuditProvider(),
+        ClaudeCodeSdkProvider(),
         OpenAIAuditProvider(),
     ]
 

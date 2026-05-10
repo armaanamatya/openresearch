@@ -255,9 +255,97 @@ class OpenAIAuditProvider:
         return response.choices[0].message.content or ""
 
 
+class ClaudeCodeSdkProvider:
+    """Claude via the ``claude_agent_sdk`` package.
+
+    Why this exists alongside ``ClaudeAuditProvider``:
+
+    * ``ClaudeAuditProvider`` requires an Anthropic *API* key (paid
+      per-token, billed to your Anthropic console).
+    * ``ClaudeCodeSdkProvider`` uses ``claude_agent_sdk.query``, which
+      authenticates via your Claude Code session — i.e. the same auth
+      backing ``claude`` in your terminal. If you're on Claude Pro / Max,
+      the audit is included in your subscription rather than charged
+      per-token.
+
+    The SDK is async (returns an async iterator of messages); this
+    provider hides that behind the sync ``call()`` Protocol contract by
+    running the consumer in either ``asyncio.run`` (no loop) or a
+    short-lived thread-pool worker (when the caller is itself inside a
+    running loop, e.g. ``HermesAuditService`` invoked from FastAPI).
+
+    Availability requires the ``claude-agent-sdk`` package (already a
+    project dependency); no env-var check, since the SDK reads its own
+    auth context.
+    """
+
+    name = "claude_code_sdk"
+
+    def __init__(self, *, max_turns: int = 1, timeout_seconds: float = 120.0) -> None:
+        self.max_turns = max_turns
+        self.timeout_seconds = timeout_seconds
+
+    def is_available(self) -> bool:
+        try:
+            importlib.import_module("claude_agent_sdk")
+            return True
+        except ImportError:
+            return False
+
+    def call(self, prompt: str) -> str:
+        import asyncio
+
+        sdk = importlib.import_module("claude_agent_sdk")
+        ClaudeAgentOptions = sdk.ClaudeAgentOptions
+        ResultMessage = sdk.ResultMessage
+        query = sdk.query
+
+        options = ClaudeAgentOptions(
+            permission_mode="bypassPermissions",
+            max_turns=self.max_turns,
+        )
+
+        async def _collect() -> str:
+            chunks: list[str] = []
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    text = getattr(message, "text", "")
+                    if text:
+                        chunks.append(str(text))
+                else:
+                    for block in getattr(message, "content", []) or []:
+                        text = getattr(block, "text", "")
+                        if text:
+                            chunks.append(str(text))
+            return "\n".join(chunks)
+
+        # Two cases: caller is sync (no loop) → asyncio.run; caller is
+        # already inside an event loop (e.g. FastAPI request) → run in a
+        # short-lived thread that owns its own loop. The thread bound is
+        # 1 because each audit is a single short LLM call.
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running and running.is_running():
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(lambda: asyncio.run(_collect()))
+                result = future.result(timeout=self.timeout_seconds)
+        else:
+            result = asyncio.run(_collect())
+
+        if not result or not result.strip():
+            raise RuntimeError("claude_agent_sdk returned empty response")
+        return result
+
+
 __all__ = [
     "AuditProvider",
     "ClaudeAuditProvider",
+    "ClaudeCodeSdkProvider",
     "NousHermesProvider",
     "OpenAIAuditProvider",
     "extract_audit_json",

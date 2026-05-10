@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.hermes_audit.client import NousHermesClient
 from backend.hermes_audit.models import (
     HermesAuditConfidence,
     HermesAuditReport,
@@ -67,3 +68,46 @@ def test_service_persists_audit_reports(tmp_path: Path):
     assert report.target == "gate_2"
     assert client.calls
     assert "checkpoint:gate_2" in index
+
+
+# ---------------------------------------------------------------------------
+# NousHermesClient enabled-flag contract.
+#
+# The pluggable provider chain (primary path / fallback / chain-exhaustion)
+# is covered exhaustively by tests/test_hermes_audit_adapter.py; the
+# Settings-driven key resolution is covered by
+# tests/test_hermes_provider_settings.py. The only orthogonal contract
+# left for this file is: when ``enabled=False``, no provider is reached
+# and the report's ``provider`` field is the literal "disabled" sentinel.
+# ---------------------------------------------------------------------------
+
+
+class _CountingProvider:
+    """Provider that counts every is_available()/call() invocation."""
+
+    def __init__(self) -> None:
+        self.name = "counting"
+        self.is_available_calls = 0
+        self.call_calls = 0
+
+    def is_available(self) -> bool:
+        self.is_available_calls += 1
+        return True
+
+    def call(self, prompt: str) -> str:
+        self.call_calls += 1
+        return '{"status":"grounded","summary":"x","recommended_intervention":"annotate"}'
+
+
+def test_client_disabled_returns_unavailable_without_touching_providers(tmp_path: Path):
+    counting = _CountingProvider()
+    client = NousHermesClient(enabled=False, providers=[counting], runs_root=tmp_path)
+
+    report = client.audit(
+        scope=HermesAuditScope.step, target="baseline-implementation", payload={}
+    )
+
+    assert counting.is_available_calls == 0
+    assert counting.call_calls == 0
+    assert report.status == HermesAuditStatus.unavailable
+    assert report.provider == "disabled"

@@ -222,6 +222,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   );
   const [error, setError] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const adapter = useMemo(() => {
     if (!run?.payload) {
@@ -259,6 +260,9 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   ]);
 
   useEffect(() => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+
     if (run?.status !== "queued" && run?.status !== "running") {
       setRunningMode(null);
       if (pollTimer.current) {
@@ -269,6 +273,57 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     }
 
     const projectId = run.projectId;
+    if (typeof EventSource !== "undefined") {
+      const source = new EventSource(
+        `/api/demo/events?projectId=${encodeURIComponent(projectId)}`
+      );
+      eventSourceRef.current = source;
+      source.addEventListener("run_state", (event) => {
+        try {
+          const next = JSON.parse((event as MessageEvent).data) as LiveDemoRunState;
+          setRun(next);
+          if (next.status === "failed") {
+            setError(next.error ?? "Demo run failed");
+          }
+        } catch {
+          setError("Unable to parse live run update");
+        }
+      });
+      source.addEventListener("agent_log", (event) => {
+        try {
+          const update = JSON.parse((event as MessageEvent).data) as {
+            log?: string;
+            text?: string;
+          };
+          setRun((current) =>
+            current && current.projectId === projectId
+              ? {
+                  ...current,
+                  log:
+                    typeof update.log === "string"
+                      ? update.log
+                      : `${current.log}${update.text ?? ""}`
+                }
+              : current
+          );
+        } catch {
+          setError("Unable to parse live log update");
+        }
+      });
+      source.onerror = () => {
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+      };
+      return () => {
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+      };
+    }
+
     const providerParam =
       run.runMode === "sdk" && run.llmProvider ? `&provider=${run.llmProvider}` : "";
     const verificationParam =
@@ -308,7 +363,16 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         pollTimer.current = null;
       }
     };
-  }, [run]);
+  }, [
+    run?.executionMode,
+    run?.gpuMode,
+    run?.llmProvider,
+    run?.projectId,
+    run?.runMode,
+    run?.sandboxMode,
+    run?.status,
+    run?.verificationProvider
+  ]);
 
   async function handleRun(mode: "offline" | "sdk") {
     setRunningMode(mode);
@@ -442,8 +506,8 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
               Run the real pipeline and follow it from the UI
             </h1>
             <p className="mt-4 text-base leading-7 text-stone-300">
-              This page launches the repo pipeline in the background, polls fresh
-              checkpoints while it runs, and replays the latest state through the lab
+              This page launches the backend pipeline, streams live agent events
+              while it runs, and replays the latest state through the lab
               dashboard below.
             </p>
           </div>
@@ -612,8 +676,8 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         {(currentStatus === "queued" || currentStatus === "running") && run ? (
           <div className="mt-6 rounded-2xl border border-sky-400/30 bg-sky-400/10 px-4 py-3 text-sm text-sky-50">
             {run.runMode === "sdk"
-              ? `The ${activeProviderLabel} SDK pipeline is running with ${activeReviewProviderLabel.toLowerCase()} review, ${activeExecutionLabel.toLowerCase()} profile, ${activeSandboxLabel.toLowerCase()} execution, and ${activeGpuLabel.toLowerCase()} compute. This page refreshes checkpoints every few seconds.`
-              : `The offline demo is running with ${activeExecutionLabel.toLowerCase()} profile, ${activeSandboxLabel.toLowerCase()} execution, and ${activeGpuLabel.toLowerCase()} compute. This page refreshes checkpoints every few seconds.`}
+              ? `The ${activeProviderLabel} SDK pipeline is running with ${activeReviewProviderLabel.toLowerCase()} review, ${activeExecutionLabel.toLowerCase()} profile, ${activeSandboxLabel.toLowerCase()} execution, and ${activeGpuLabel.toLowerCase()} compute. This page streams live backend events as they arrive.`
+              : `The offline demo is running with ${activeExecutionLabel.toLowerCase()} profile, ${activeSandboxLabel.toLowerCase()} execution, and ${activeGpuLabel.toLowerCase()} compute. This page streams live backend events as they arrive.`}
           </div>
         ) : null}
 

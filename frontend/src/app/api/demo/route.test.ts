@@ -2,37 +2,34 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const startDemoRun = vi.fn();
-const loadDemoRun = vi.fn();
-const stopDemoRun = vi.fn();
-
-vi.mock("@/lib/demo/node-runner", () => ({
-  startDemoRun,
-  loadDemoRun,
-  stopDemoRun
-}));
-
-describe("POST /api/demo", () => {
+describe("/api/demo backend proxy", () => {
   beforeEach(() => {
-    startDemoRun.mockReset();
-    loadDemoRun.mockReset();
-    stopDemoRun.mockReset();
+    vi.stubEnv("REPROLAB_BACKEND_URL", "http://backend.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            projectId: "prj_upload",
+            outputDir: "runs/prj_upload",
+            runMode: "sdk",
+            status: "queued",
+            payload: null,
+            log: ""
+          },
+          { status: 202 }
+        )
+      )
+    );
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
-  it("starts an uploaded-paper run from multipart form data", async () => {
-    startDemoRun.mockResolvedValue({
-      projectId: "prj_upload",
-      outputDir: "runs/prj_upload",
-      runMode: "sdk",
-      status: "queued",
-      payload: null,
-      log: ""
-    });
-
+  it("forwards uploaded-paper runs to the FastAPI upload route", async () => {
     const { POST } = await import("./route");
     const formData = new FormData();
     formData.set("mode", "sdk");
@@ -53,16 +50,43 @@ describe("POST /api/demo", () => {
     );
 
     expect(response.status).toBe(202);
-    expect(startDemoRun).toHaveBeenCalledWith("sdk", "anthropic", "efficient", "auto", {
-      uploadedPaper: expect.objectContaining({
-        fileName: "paper.pdf"
-      }),
-      verificationProvider: "openai",
-      gpuMode: "auto"
-    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://backend.test/runs/upload",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.any(FormData)
+      })
+    );
   });
 
-  it("rejects multipart requests without a pdf file", async () => {
+  it("starts fixture runs through the FastAPI JSON route", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request(
+        "http://localhost:3000/api/demo?mode=sdk&provider=openai&verificationProvider=anthropic&executionMode=max&sandbox=docker&gpuMode=prefer",
+        { method: "POST" }
+      )
+    );
+
+    expect(response.status).toBe(202);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://backend.test/runs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          mode: "sdk",
+          provider: "openai",
+          verificationProvider: "anthropic",
+          executionMode: "max",
+          sandbox: "docker",
+          gpuMode: "prefer"
+        })
+      })
+    );
+  });
+
+  it("rejects multipart requests without a pdf file before proxying", async () => {
     const { POST } = await import("./route");
     const formData = new FormData();
     formData.set("mode", "offline");
@@ -78,7 +102,7 @@ describe("POST /api/demo", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Upload a PDF before starting a lab run."
     });
-    expect(startDemoRun).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("surfaces sandbox preflight failures with a setup status", async () => {

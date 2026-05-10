@@ -164,4 +164,38 @@ describe("LiveDemoClient", () => {
     expect(formData.get("gpuMode")).toBe("auto");
     expect(formData.get("paper")).toBe(file);
   });
+
+  it("opens a server-sent event stream for active runs", async () => {
+    const instances: Array<{ url: string; close: ReturnType<typeof vi.fn> }> = [];
+    class FakeEventSource {
+      url: string;
+      close = vi.fn();
+
+      constructor(url: string) {
+        this.url = url;
+        instances.push(this);
+      }
+
+      addEventListener = vi.fn();
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    render(
+      <LiveDemoClient
+        initialRun={{
+          projectId: "prj_live",
+          outputDir: "runs/prj_live",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          status: "running",
+          payload: null,
+          log: ""
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(instances[0]?.url).toBe("/api/demo/events?projectId=prj_live");
+    });
+  });
 });
