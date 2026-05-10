@@ -11,6 +11,62 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-10 — Hermes Agent oversight silently no-oped on every run
+
+**Symptom.** `hermes_step_reports` and `hermes_checkpoint_reports` in pipeline
+state always showed `status=unavailable` with `summary="Nous Hermes runtime
+unavailable"`.  The oversight layer was integrated into the orchestrator but
+never actually audited anything.
+
+**Root cause.** Two compounding issues:
+
+1. `NousHermesClient._run_agent()` called `importlib.import_module("run_agent")`
+   to load the Nous Hermes Agent runtime, but the `hermes-agent` package was
+   never installed.  Every call raised `ModuleNotFoundError`.
+2. The constructor hardcoded `model="anthropic/claude-sonnet-4"` without
+   passing `api_key` or `provider` to `AIAgent`.  Even after installing the
+   package, Hermes Agent's provider resolver could not find credentials because
+   `ANTHROPIC_API_KEY` was empty in `.env` — only `OPENAI_API_KEY` was set.
+
+The `audit()` method caught all exceptions and returned an `unavailable`
+report, so the pipeline never crashed — but oversight was entirely dead.
+
+**Fix.**
+
+1. Installed `hermes-agent` (`pip install git+https://github.com/NousResearch/hermes-agent.git`).
+2. Rewrote `NousHermesClient` (`backend/hermes_audit/client.py`) with:
+   - `_resolve_hermes_config()` — auto-detects available API keys
+     (`ANTHROPIC_API_KEY` preferred, `OPENAI_API_KEY` fallback) and returns
+     the correct `(model, api_key, provider)` triple.
+   - Explicit `api_key=` and `provider=` passed to `AIAgent()` so Hermes
+     doesn't rely on its own config wizard / env-var discovery.
+   - **Fallback chain:** Hermes Agent → Claude Code SDK (`claude_agent_sdk.query()`)
+     → unavailable report.  The Claude SDK is already installed for the main
+     pipeline, so it serves as a zero-config fallback.
+
+**Lesson.** **A graceful degradation path that is always active is
+indistinguishable from a missing feature.**  The original code's
+`try/except → unavailable` was correct for resilience, but without any
+logging, alerting, or test that asserts the *happy* path works, the feature
+shipped dead.  When you add a `try/except → soft fallback`, always pair it
+with:
+- A log line at WARNING level so the fallback is visible in stderr
+- A test that exercises the primary path with a mock
+- A test that exercises the fallback path with the primary disabled
+
+**Guardrail.**
+- `tests/test_hermes_audit_service.py::test_client_uses_hermes_agent_when_available`
+  asserts the primary Hermes Agent path produces a valid report.
+- `tests/test_hermes_audit_service.py::test_client_falls_back_to_claude_sdk_when_hermes_unavailable`
+  asserts the Claude SDK fallback activates when Hermes fails.
+- `tests/test_hermes_audit_service.py::test_client_returns_unavailable_when_both_backends_fail`
+  asserts the final unavailable fallback with error details.
+- `tests/test_hermes_audit_service.py::test_client_resolve_config_prefers_anthropic_key`
+  and `test_client_resolve_config_falls_back_to_openai_key` lock in the
+  credential resolution order.
+
+---
+
 ## 2026-05-09 — `database disk image is malformed` on `reprolab.db`
 
 **Symptom.** `reprolab reproduce …` boot crashes:
@@ -316,6 +372,16 @@ invariant (`assert max_turns is None`), not a placeholder value
 (`assert max_turns == 999`). Otherwise the next refactor will silently
 re-introduce a cap that survives review because the test still passes
 against the new number.
+
+### 11. A silent fallback needs a loud test.
+
+When you write `try/except → return degraded_result`, you are creating a
+feature that can ship dead without anyone noticing.  Pair every graceful
+degradation path with: (1) a WARNING-level log so operators see it in
+stderr, (2) a test that asserts the *primary* path works with a mock, and
+(3) a test that asserts the *fallback* path activates when the primary is
+broken.  If you only test the fallback, you'll never know the primary was
+never invoked.  See learn.md 2026-05-10 (Hermes Agent no-op).
 
 ### 8. Auto-reload is your friend AND your enemy.
 
