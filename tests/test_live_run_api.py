@@ -192,3 +192,26 @@ def test_file_live_run_service_enriches_run_from_pipeline_and_dashboard_events(
     assert state.payload["events"] == [dashboard_event]
     assert state.payload["initialSnapshot"]["agents"][0]["id"] == "paper-understanding"
 
+
+def test_file_live_run_service_tolerates_legacy_unknown_provider(tmp_path: Path) -> None:
+    project_dir = tmp_path / "ui_sdk_codex_demo_legacy"
+    project_dir.mkdir()
+    (project_dir / "demo_status.json").write_text(
+        json.dumps(
+            {
+                "projectId": "ui_sdk_codex_demo_legacy",
+                "outputDir": str(project_dir),
+                "runMode": "sdk",
+                "llmProvider": "codex",
+                "status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = FileLiveRunService(runs_root=tmp_path)._load_run("ui_sdk_codex_demo_legacy")
+
+    assert state is not None
+    assert state.llmProvider is None
+    assert state.payload["summary"]["runModeLabel"] == "SDK"
+

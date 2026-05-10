@@ -315,6 +315,8 @@ class FileLiveRunService:
         status["log"] = self._read_log(project_id)
         status["telemetry"] = self._read_telemetry(project_id)
         status["payload"] = self._build_payload(project_id, status)
+        status["llmProvider"] = _public_provider(status.get("llmProvider"))
+        status["verificationProvider"] = _public_provider(status.get("verificationProvider"))
         return LiveRunState(**status)
 
     def _latest_run(
@@ -686,6 +688,12 @@ def _provider_from_project_id(project_id: str) -> str | None:
         return "openai"
     if project_id.startswith("ui_sdk_anthropic_") or project_id.startswith("ui_sdk_demo_"):
         return "anthropic"
+    return None
+
+
+def _public_provider(provider: Any) -> Provider | None:
+    if provider in {"anthropic", "openai"}:
+        return provider
     return None
 
 
