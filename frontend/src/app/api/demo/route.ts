@@ -167,7 +167,18 @@ export async function POST(request: Request) {
     return NextResponse.json(run, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Demo pipeline failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const statusCode =
+      error &&
+      typeof error === "object" &&
+      "statusCode" in error &&
+      typeof error.statusCode === "number"
+        ? error.statusCode
+        : 500;
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "demo_pipeline_failed";
+    return NextResponse.json({ error: message, code }, { status: statusCode });
   }
 }
 

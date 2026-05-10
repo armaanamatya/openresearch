@@ -88,6 +88,28 @@ describe("LiveDemoClient", () => {
     });
   });
 
+  it("shows the backend setup error when Docker preflight fails", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        error: "Docker sandbox is not ready for the Python backend."
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LiveDemoClient initialRun={null} />);
+
+    fireEvent.change(screen.getByLabelText(/sandbox/i), {
+      target: { value: "docker" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /run sdk/i }));
+
+    expect(
+      await screen.findByText("Docker sandbox is not ready for the Python backend.")
+    ).toBeInTheDocument();
+  });
+
   it("shows the selected pdf name and posts provider form data for uploaded sdk runs", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

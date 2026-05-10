@@ -85,6 +85,16 @@ interface DemoRunStartOptions {
 
 const execFileAsync = promisify(execFile);
 
+export class DemoPreflightError extends Error {
+  statusCode = 503;
+  code = "sandbox_preflight_failed";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "DemoPreflightError";
+  }
+}
+
 function repoRoot(): string {
   const override = process.env.REPROLAB_REPO_ROOT?.trim();
   if (override) {
@@ -739,6 +749,48 @@ async function terminateRunProcess(pid: number): Promise<void> {
   }
 }
 
+function sandboxNeedsLocalDocker(sandboxMode: DemoSandboxMode): boolean {
+  return sandboxMode === "auto" || sandboxMode === "docker";
+}
+
+async function ensureDemoSandboxReady(sandboxMode: DemoSandboxMode): Promise<void> {
+  if (!sandboxNeedsLocalDocker(sandboxMode)) {
+    return;
+  }
+
+  const script = `
+from backend.agents.execution import ensure_sandbox_mode_available, resolve_sandbox_mode
+
+mode = resolve_sandbox_mode(${pythonStringLiteral(sandboxMode)}, pipeline_mode="sdk")
+ensure_sandbox_mode_available(mode)
+print("sandbox preflight OK")
+`;
+
+  try {
+    await execFileAsync(pythonBinary(), ["-c", script], {
+      cwd: repoRoot(),
+      timeout: 15000,
+      env: process.env
+    });
+  } catch (error) {
+    const detail =
+      error && typeof error === "object" && "stderr" in error
+        ? String((error as { stderr?: unknown }).stderr ?? "").trim()
+        : "";
+    const message =
+      detail ||
+      (error instanceof Error ? error.message : "Docker sandbox preflight failed");
+    throw new DemoPreflightError(
+      [
+        "Docker sandbox is not ready for the Python backend.",
+        "You do not need to launch the web app in Docker.",
+        "Start Docker Desktop or Docker Engine, then install backend dependencies with `python -m pip install -r requirements.txt`.",
+        message
+      ].join(" ")
+    );
+  }
+}
+
 export async function startDemoRun(
   runMode: DemoRunMode,
   llmProvider: DemoProvider = "anthropic",
@@ -760,6 +812,8 @@ export async function startDemoRun(
   if (existing) {
     return existing;
   }
+
+  await ensureDemoSandboxReady(sandboxMode);
 
   const uploadedPaper = options?.uploadedPaper
     ? await stageUploadedPaper(options.uploadedPaper)
@@ -1002,5 +1056,6 @@ async function stageUploadedPaper(
 
 export const __test__ = {
   buildPythonScript,
+  ensureDemoSandboxReady,
   projectIdForUploadedPdfPath
 };

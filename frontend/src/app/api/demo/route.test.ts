@@ -80,4 +80,25 @@ describe("POST /api/demo", () => {
     });
     expect(startDemoRun).not.toHaveBeenCalled();
   });
+
+  it("surfaces sandbox preflight failures with a setup status", async () => {
+    const error = Object.assign(new Error("Docker sandbox is not ready"), {
+      code: "sandbox_preflight_failed",
+      statusCode: 503
+    });
+    startDemoRun.mockRejectedValue(error);
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request("http://localhost:3000/api/demo?mode=sdk&sandbox=docker", {
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Docker sandbox is not ready",
+      code: "sandbox_preflight_failed"
+    });
+  });
 });
