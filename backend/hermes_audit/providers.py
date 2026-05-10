@@ -11,6 +11,8 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import shutil
+import subprocess
 from typing import Any, Protocol
 
 from backend.config import get_settings
@@ -126,21 +128,77 @@ class AuditProvider(Protocol):
 
 
 class NousHermesProvider:
-    """Wraps the official Nous Hermes Python runtime via importlib."""
+    """Hermes Agent — supports both in-venv and out-of-venv installations.
+
+    The Hermes Agent ships in two shapes:
+
+    * **In-venv** — ``pip install hermes-agent`` into the current Python
+      environment exposes a ``run_agent`` module. We call ``AIAgent``
+      directly. Fastest (no subprocess), but requires a deliberate pip
+      install into our venv.
+    * **Out-of-venv (npm install)** — the npm wrapper drops a ``hermes``
+      binary at ``~/.local/bin/hermes`` that execs Hermes's own
+      bundled venv at ``~/.hermes/hermes-agent/venv``. ``run_agent`` is
+      NOT importable from our Python; we shell out to the CLI's
+      one-shot mode (``hermes -z <prompt> --ignore-rules
+      --ignore-user-config``) and capture stdout.
+
+    Detection precedence at ``is_available()``:
+
+    1. Module is importable → use it (fast path).
+    2. CLI is on ``$PATH`` → use it (subprocess fallback).
+    3. Neither → unavailable.
+
+    The CLI path passes ``--ignore-rules --ignore-user-config`` so the
+    operator's local Hermes config / project rules don't leak into the
+    audit prompt and contaminate the JSON output.
+    """
 
     name = "nous_hermes"
 
-    def __init__(self, model: str = "anthropic/claude-sonnet-4") -> None:
+    def __init__(
+        self,
+        model: str = "anthropic/claude-sonnet-4",
+        *,
+        cli_path: str | None = None,
+        cli_timeout_seconds: float = 120.0,
+    ) -> None:
         self.model = model
+        self.cli_timeout_seconds = cli_timeout_seconds
+        self._cli_override = cli_path
 
-    def is_available(self) -> bool:
+    # ----- backend selection ------------------------------------------------
+
+    def _module_available(self) -> bool:
         try:
             importlib.import_module("run_agent")
             return True
         except ImportError:
             return False
 
+    def _cli_path(self) -> str | None:
+        if self._cli_override is not None:
+            return self._cli_override or None
+        return shutil.which("hermes")
+
+    def is_available(self) -> bool:
+        return self._module_available() or self._cli_path() is not None
+
+    # ----- call --------------------------------------------------------------
+
     def call(self, prompt: str) -> str:
+        if self._module_available():
+            return self._call_via_module(prompt)
+        cli = self._cli_path()
+        if cli is not None:
+            return self._call_via_cli(cli, prompt)
+        raise RuntimeError(
+            "Hermes Agent is unavailable: neither `run_agent` module nor "
+            "`hermes` CLI is reachable. Install with `pip install hermes-agent` "
+            "or `npm install -g hermes-agent`."
+        )
+
+    def _call_via_module(self, prompt: str) -> str:
         module = importlib.import_module("run_agent")
         agent_cls = getattr(module, "AIAgent")
         agent = agent_cls(
@@ -156,6 +214,30 @@ class NousHermesProvider:
         if callable(agent):
             return str(agent(prompt))
         raise RuntimeError("unsupported Nous Hermes runtime interface")
+
+    def _call_via_cli(self, cli_path: str, prompt: str) -> str:
+        result = subprocess.run(
+            [
+                cli_path,
+                "-z",
+                prompt,
+                "--ignore-rules",
+                "--ignore-user-config",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=self.cli_timeout_seconds,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr_excerpt = (result.stderr or "").strip()[:500]
+            raise RuntimeError(
+                f"hermes CLI exited {result.returncode}: {stderr_excerpt}"
+            )
+        output = (result.stdout or "").strip()
+        if not output:
+            raise RuntimeError("hermes CLI returned empty stdout")
+        return output
 
 
 class ClaudeAuditProvider:
