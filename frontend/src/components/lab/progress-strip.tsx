@@ -115,6 +115,7 @@ export function ProgressStrip({ run, nowMs }: ProgressStripProps) {
         <p
           className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900"
           data-testid="stall-warning"
+          suppressHydrationWarning
         >
           No agent activity for {formatDuration(snapshot.lastActivitySeconds)} —
           this stage may be stuck. Check the runner log below for the last tool call.
