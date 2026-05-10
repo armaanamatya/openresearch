@@ -205,6 +205,13 @@ class FileLiveRunService:
 
         stderr = (output_dir / "runner.stderr.log").open("a", encoding="utf-8")
         stdout = (output_dir / "runner.stdout.log").open("a", encoding="utf-8")
+        # On Windows, detach the child from the parent's process group so its
+        # lifecycle doesn't trigger uvicorn's shutdown handler.
+        creation_flags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            if sys.platform == "win32"
+            else 0
+        )
         try:
             process = subprocess.Popen(
                 [
@@ -222,6 +229,7 @@ class FileLiveRunService:
                 stdout=stdout,
                 stderr=stderr,
                 stdin=subprocess.DEVNULL,
+                creationflags=creation_flags,
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,

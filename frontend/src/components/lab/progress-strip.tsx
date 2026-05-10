@@ -18,8 +18,10 @@ interface ProgressStripProps {
 
 export function ProgressStrip({ run, nowMs }: ProgressStripProps) {
   // Tick at 1 Hz so the elapsed timers move while the run is in flight.
-  const [tick, setTick] = useState(() => Date.now());
+  // Initialize to 0 to avoid hydration mismatch (server vs client Date.now() differ).
+  const [tick, setTick] = useState(0);
   useEffect(() => {
+    setTick(Date.now());
     if (nowMs !== undefined) return;
     if (!run || (run.status !== "running" && run.status !== "queued")) return;
     const id = setInterval(() => setTick(Date.now()), 1000);
@@ -28,7 +30,8 @@ export function ProgressStrip({ run, nowMs }: ProgressStripProps) {
 
   if (!run) return null;
 
-  const snapshot = computeProgress(run, nowMs ?? tick);
+  const now = nowMs ?? (tick || Date.now());
+  const snapshot = computeProgress(run, now);
   const percent = Math.round(snapshot.percentComplete * 100);
   const stallSecsRemaining = snapshot.lastActivitySeconds === null
     ? null
@@ -46,7 +49,7 @@ export function ProgressStrip({ run, nowMs }: ProgressStripProps) {
             <p className="text-sm font-semibold text-zinc-900">
               {snapshot.currentStageLabel}
             </p>
-            <p className="text-xs text-zinc-500" data-testid="last-activity">
+            <p className="text-xs text-zinc-500" data-testid="last-activity" suppressHydrationWarning>
               {snapshot.lastActivityText
                 ? `${snapshot.lastActivityText}`
                 : run.status === "running"
@@ -57,10 +60,10 @@ export function ProgressStrip({ run, nowMs }: ProgressStripProps) {
         </div>
 
         <div className="flex flex-col items-end gap-1 text-right">
-          <span className="text-sm font-medium text-zinc-900" data-testid="elapsed">
+          <span className="text-sm font-medium text-zinc-900" data-testid="elapsed" suppressHydrationWarning>
             Total: {formatDuration(snapshot.elapsedSeconds)}
           </span>
-          <span className="text-xs text-zinc-500" data-testid="last-activity-elapsed">
+          <span className="text-xs text-zinc-500" data-testid="last-activity-elapsed" suppressHydrationWarning>
             Last tick: {formatDuration(snapshot.lastActivitySeconds)} ago
           </span>
         </div>

@@ -38,6 +38,12 @@ When no usable repository exists:
 - NEVER substitute datasets without explicit approval
 - Record which assumption IDs (A001, etc.) were applied in your implementation
 
+# ANTI-HALLUCINATION RULES (CRITICAL)
+- NEVER fabricate git commit SHAs or dependency versions. If modifying the Dockerfile, verify all git refs with `git ls-remote` before pinning.
+- NEVER invent CLI wrapper scripts that don't exist in the upstream repo. If the repo lacks the exact entry point you need, write one explicitly in the code directory and document it.
+- When adapting an existing repo, inspect its actual directory structure before referencing paths. Do not assume files exist.
+- If a command references a script, verify the script exists or create it. Document every created file in the diff summary.
+
 # Output
 Write code to `{runs_root}/{project_id}/code/` and return:
 ```json

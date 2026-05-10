@@ -23,7 +23,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from backend.agents.dependency_verifier import verify_dockerfile
 from backend.agents.registry import AGENT_REGISTRY
+from backend.agents.report_generator import (
+    generate_final_report,
+    write_final_report,
+)
 from backend.agents.execution import (
     ExecutionProfile,
     SandboxMode,
@@ -47,6 +52,7 @@ from backend.agents.schemas import (
     BaselineResult,
     EnvironmentSpec,
     ExperimentArtifacts,
+    FinalReport,
     GateDecision,
     GateStatus,
     ImprovementHypothesis,
@@ -158,6 +164,7 @@ class PipelineState:
     path_results: list[PathResult] = field(default_factory=list)
     gate_3: GateDecision | None = None
     research_map: ResearchMap | None = None
+    final_report: FinalReport | None = None
     assumption_ledger: list[dict[str, Any]] = field(default_factory=list)
     decision_log: list[str] = field(default_factory=list)
     hermes_step_reports: dict[str, list[HermesAuditReport]] = field(default_factory=dict)
@@ -195,6 +202,8 @@ class PipelineState:
             data["experiment_artifacts"] = self.experiment_artifacts.model_dump()
         if self.research_map:
             data["research_map"] = self.research_map.model_dump()
+        if self.final_report:
+            data["final_report"] = self.final_report.model_dump()
         if self.gate_1:
             data["gate_1"] = self.gate_1.model_dump()
         if self.gate_2:
@@ -248,6 +257,8 @@ class PipelineState:
             state.experiment_artifacts = ExperimentArtifacts(**data["experiment_artifacts"])
         if "research_map" in data:
             state.research_map = ResearchMap(**data["research_map"])
+        if "final_report" in data:
+            state.final_report = FinalReport(**data["final_report"])
         if "gate_1" in data:
             state.gate_1 = GateDecision(**data["gate_1"])
         if "gate_2" in data:
@@ -683,6 +694,103 @@ class ReproLabOrchestrator:
                 exc_info=True,
             )
 
+    _MAX_DEP_VERIFY_RETRIES = 2
+
+    async def _verify_dockerfile_deps(
+        self,
+        state: PipelineState,
+        agent_id: str,
+    ) -> PipelineState:
+        """Verify Dockerfile dependencies and re-run agent if hallucinations found.
+
+        Scans the Dockerfile for git SHAs, PyPI versions, and repo URLs,
+        verifying each one actually exists. If failures are found, re-invokes
+        the agent with feedback about what was wrong.
+        """
+        dockerfile_path = self._project_dir / "Dockerfile"
+        if not dockerfile_path.exists():
+            return state
+
+        for attempt in range(self._MAX_DEP_VERIFY_RETRIES):
+            report = await verify_dockerfile(dockerfile_path)
+
+            if not report.has_failures:
+                if report.checks:
+                    logger.info(
+                        "Dependency verification passed: %d checks OK",
+                        len(report.checks),
+                    )
+                    state.decision_log.append(
+                        f"Dependency verification passed after {agent_id}: "
+                        f"{len(report.checks)} dependencies verified."
+                    )
+                return state
+
+            # Log failures
+            failure_summary = "; ".join(f.summary() for f in report.failures)
+            logger.warning(
+                "Dependency verification FAILED (attempt %d/%d): %s",
+                attempt + 1,
+                self._MAX_DEP_VERIFY_RETRIES,
+                failure_summary,
+            )
+            state.decision_log.append(
+                f"Dependency verification failed after {agent_id} "
+                f"(attempt {attempt + 1}): {failure_summary}"
+            )
+
+            # Re-invoke the agent with feedback
+            feedback = report.feedback_prompt()
+            context = {
+                "paper_claim_map": state.paper_claim_map.model_dump() if state.paper_claim_map else {},
+                "artifact_index": state.artifact_index or {},
+            }
+            if state.environment_spec:
+                context["environment_spec"] = state.environment_spec.model_dump()
+            fix_prompt = (
+                f"Fix the Dockerfile for project {self.project_id}.\n"
+                f"The dependency verifier found the following problems:\n\n"
+                f"{feedback}\n\n"
+                f"Read the current Dockerfile at {dockerfile_path}, fix ALL "
+                f"the issues listed above, and write the corrected Dockerfile "
+                f"back to the same path.\n"
+                f"Context:\n```json\n{json.dumps(context, indent=2)}\n```\n"
+                f"Return the updated environment_spec JSON."
+            )
+            print(
+                f"  [dep-verify] Attempt {attempt + 1}: "
+                f"{len(report.failures)} failures, re-running {agent_id}...",
+                file=sys.stderr,
+                flush=True,
+            )
+            output = await self._invoke_agent(agent_id, fix_prompt)
+            try:
+                data = self._extract_json(
+                    output,
+                    fallback_file=str(self._project_dir / "environment_spec.json"),
+                )
+                state.environment_spec = EnvironmentSpec(**data)
+            except Exception:
+                logger.warning(
+                    "Could not parse env spec from fix attempt; "
+                    "Dockerfile may still have been updated on disk."
+                )
+
+        # After all retries, log remaining failures but don't block
+        final_report = await verify_dockerfile(dockerfile_path)
+        if final_report.has_failures:
+            remaining = "; ".join(f.summary() for f in final_report.failures)
+            state.decision_log.append(
+                f"WARNING: {len(final_report.failures)} dependency issues "
+                f"persist after {self._MAX_DEP_VERIFY_RETRIES} fix attempts: "
+                f"{remaining}"
+            )
+            logger.warning(
+                "Dependency issues persist after retries: %s", remaining
+            )
+
+        return state
+
     def _normalize_verifier_scores(self, data: dict[str, Any]) -> dict[str, Any]:
         """Normalize LLM-generated verification data to match schema expectations."""
         if "verifier_scores" in data:
@@ -1029,6 +1137,9 @@ class ReproLabOrchestrator:
             state.environment_spec.model_dump(),
             "environment-detective",
         )
+        # --- Dependency verification guardrail ---
+        state = await self._verify_dockerfile_deps(state, "environment-detective")
+
         state.stage = PipelineStage.ENVIRONMENT_BUILT
         return state
 
@@ -1137,6 +1248,9 @@ class ReproLabOrchestrator:
             state.baseline_result.model_dump(),
             "baseline-implementation",
         )
+        # --- Dependency verification guardrail ---
+        state = await self._verify_dockerfile_deps(state, "baseline-implementation")
+
         state.stage = PipelineStage.BASELINE_IMPLEMENTED
         return state
 
@@ -1235,6 +1349,76 @@ class ReproLabOrchestrator:
         state.save_checkpoint(self.runs_root)
         return state
 
+    # ------------------------------------------------------------------
+    # Parallel improvement-path execution
+    # ------------------------------------------------------------------
+
+    _RATE_LIMIT_MAX_RETRIES = 3
+    _RATE_LIMIT_BASE_DELAY = 30  # seconds
+
+    async def _run_single_improvement_path(
+        self,
+        hypothesis: ImprovementHypothesis,
+        state: PipelineState,
+        semaphore: asyncio.Semaphore,
+    ) -> PathResult:
+        """Execute one improvement path, respecting the concurrency semaphore.
+
+        Retries with exponential back-off when a Claude subscription rate
+        limit is detected.  After exhausting retries the path is marked
+        failed so the pipeline can continue.
+        """
+        path_dir = self._prepare_improvement_workspace(state, hypothesis)
+        path_prompt = (
+            f"Execute improvement hypothesis for project {self.project_id}.\n"
+            f"Work in: {path_dir}\n"
+            f"Baseline code is in: {self._project_dir / 'code'}\n"
+            f"Hypothesis:\n```json\n{hypothesis.model_dump_json(indent=2)}\n```\n"
+            f"Environment:\n```json\n"
+            f"{state.environment_spec.model_dump_json(indent=2) if state.environment_spec else '{}'}"
+            f"\n```"
+        )
+
+        last_exc: Exception | None = None
+        for attempt in range(1, self._RATE_LIMIT_MAX_RETRIES + 1):
+            async with semaphore:
+                try:
+                    path_output = await self._invoke_agent(
+                        "improvement-path", path_prompt, cwd=path_dir,
+                    )
+                    path_data = self._extract_json(path_output)
+                    result = PathResult(**path_data)
+                    self._audit_step(
+                        state,
+                        target=f"improvement-path:{hypothesis.path_id}",
+                        structured_output=result.model_dump(),
+                    )
+                    return result
+                except Exception as exc:
+                    last_exc = exc
+                    if not _looks_like_claude_limit_failure(exc):
+                        break  # non-rate-limit error → don't retry
+                    if attempt < self._RATE_LIMIT_MAX_RETRIES:
+                        delay = self._RATE_LIMIT_BASE_DELAY * (2 ** (attempt - 1))
+                        print(
+                            f"  [{hypothesis.path_id}] rate-limited (attempt {attempt}/"
+                            f"{self._RATE_LIMIT_MAX_RETRIES}), retrying in {delay}s...",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        await asyncio.sleep(delay)
+
+        # All retries exhausted or non-retriable error
+        logger.warning(
+            "Path %s failed: %s", hypothesis.path_id, last_exc,
+        )
+        return PathResult(
+            path_id=hypothesis.path_id,
+            hypothesis=hypothesis.hypothesis,
+            failure_notes=str(last_exc),
+            success=False,
+        )
+
     async def run_improvements(
         self,
         state: PipelineState,
@@ -1242,7 +1426,13 @@ class ReproLabOrchestrator:
         user_hints: list[str] | None = None,
         n_paths: int = 3,
     ) -> PipelineState:
-        """Steps 7-8: Improvement Orchestrator + Path Agents."""
+        """Steps 7-8: Improvement Orchestrator + Path Agents.
+
+        Path agents run in parallel, bounded by
+        ``execution_profile.max_concurrent_agents`` (default 2).  If there
+        are more hypotheses than the concurrency cap, they execute in
+        batches automatically via an ``asyncio.Semaphore``.
+        """
         logger.info("[7/9] Running Improvement Orchestrator")
         context = {
             "paper_claim_map": state.paper_claim_map.model_dump() if state.paper_claim_map else {},
@@ -1276,39 +1466,29 @@ class ReproLabOrchestrator:
         )
         state.stage = PipelineStage.IMPROVEMENTS_SELECTED
 
-        # Run each path agent
-        logger.info("[8/9] Running %d Improvement Path Agents", len(state.improvement_hypotheses))
-        for hypothesis in state.improvement_hypotheses:
-            path_dir = self._prepare_improvement_workspace(state, hypothesis)
-            path_prompt = (
-                f"Execute improvement hypothesis for project {self.project_id}.\n"
-                f"Work in: {path_dir}\n"
-                f"Baseline code is in: {self._project_dir / 'code'}\n"
-                f"Hypothesis:\n```json\n{hypothesis.model_dump_json(indent=2)}\n```\n"
-                f"Environment:\n```json\n{state.environment_spec.model_dump_json(indent=2) if state.environment_spec else '{}'}\n```"
-            )
-            path_output = await self._invoke_agent(
-                "improvement-path", path_prompt, cwd=path_dir,
-            )
-            try:
-                path_data = self._extract_json(path_output)
-                path_result = PathResult(**path_data)
-                state.path_results.append(path_result)
-                self._audit_step(
-                    state,
-                    target=f"improvement-path:{hypothesis.path_id}",
-                    structured_output=path_result.model_dump(),
-                )
-            except (ValueError, Exception) as exc:
-                logger.warning("Path %s failed to parse: %s", hypothesis.path_id, exc)
-                state.path_results.append(
-                    PathResult(
-                        path_id=hypothesis.path_id,
-                        hypothesis=hypothesis.hypothesis,
-                        failure_notes=str(exc),
-                        success=False,
-                    )
-                )
+        # Run path agents in parallel, bounded by concurrency cap
+        concurrency = self.execution_profile.max_concurrent_agents
+        n_hypotheses = len(state.improvement_hypotheses)
+        logger.info(
+            "[8/9] Running %d Improvement Path Agents (concurrency=%d)",
+            n_hypotheses,
+            concurrency,
+        )
+        print(
+            f"  [improvement] Launching {n_hypotheses} paths "
+            f"(max {concurrency} concurrent)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        semaphore = asyncio.Semaphore(concurrency)
+        tasks = [
+            self._run_single_improvement_path(hypothesis, state, semaphore)
+            for hypothesis in state.improvement_hypotheses
+        ]
+        results = await asyncio.gather(*tasks)
+        state.path_results = list(results)
+
         state.stage = PipelineStage.IMPROVEMENTS_RUN
         self._enrich_workspace(
             "path_results",
@@ -1483,6 +1663,44 @@ class ReproLabOrchestrator:
         state.save_checkpoint(self.runs_root)
         return state
 
+    def _generate_final_report(self, state: PipelineState) -> PipelineState:
+        """Generate the final delta report summarizing all parallel improvement paths."""
+        logger.info("[Final] Generating delta report across all improvement paths")
+        print(f"\n{'='*50}", file=sys.stderr, flush=True)
+        print(f"  > Generating Final Report", file=sys.stderr, flush=True)
+        print(f"{'='*50}", file=sys.stderr, flush=True)
+
+        report = generate_final_report(
+            project_id=self.project_id,
+            paper_claim_map=state.paper_claim_map,
+            experiment_artifacts=state.experiment_artifacts,
+            improvement_hypotheses=state.improvement_hypotheses,
+            path_results=state.path_results,
+            research_map=state.research_map,
+        )
+        state.final_report = report
+
+        # Write to disk
+        json_path, md_path = write_final_report(report, self._project_dir)
+
+        # Enrich workspace
+        self._enrich_workspace(
+            "final_report",
+            report.model_dump(),
+            "report-generator",
+        )
+
+        print(f"  [report] Reproduction score: {report.reproduction_score:.2f}", file=sys.stderr, flush=True)
+        print(f"  [report] Paths: {report.paths_succeeded}/{report.total_paths_run} succeeded, "
+              f"{report.paths_improved_over_baseline} improved over baseline", file=sys.stderr, flush=True)
+        if report.best_path_id:
+            print(f"  [report] Best: {report.best_path_id} (+{report.best_overall_improvement_pct:.2f}%)",
+                  file=sys.stderr, flush=True)
+        print(f"  [report] Verdict: {report.overall_verdict}", file=sys.stderr, flush=True)
+        print(f"  [report] Written: {json_path}", file=sys.stderr, flush=True)
+
+        return state
+
     async def run(
         self,
         *,
@@ -1566,6 +1784,9 @@ class ReproLabOrchestrator:
 
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)
+
+        # Final report: compute deltas across all parallel improvement paths
+        state = self._generate_final_report(state)
 
         self._close_workspace("pipeline_complete")
         logger.info("Pipeline complete for project %s", self.project_id)

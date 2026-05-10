@@ -244,6 +244,65 @@ class ResearchMap(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Final Report (#30)
+# ---------------------------------------------------------------------------
+
+class MetricDelta(BaseModel):
+    """Delta comparison for a single metric across paper -> baseline -> improvement."""
+    metric_name: str
+    paper_target: str | float | None = None
+    baseline_value: float | None = None
+    best_improved_value: float | None = None
+    best_path_id: str | None = Field(default=None, description="Which path achieved the best value")
+    delta_vs_paper: float | None = Field(default=None, description="best_improved - paper_target (or baseline - paper_target if no improvement)")
+    delta_vs_baseline: float | None = Field(default=None, description="best_improved - baseline")
+    pct_change_vs_baseline: float | None = Field(default=None, description="Percent improvement over baseline")
+    direction: str = Field(default="higher_is_better", description="higher_is_better or lower_is_better")
+
+
+class PathSummary(BaseModel):
+    """Summary of one parallel improvement path for the final report."""
+    path_id: str
+    hypothesis: str
+    status: str = Field(default="", description="success, failed, or partial")
+    diff_summary: str = ""
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    delta_vs_baseline: dict[str, float] = Field(default_factory=dict, description="metric_name -> delta")
+    recommendation: str = ""
+    verdict: str = Field(default="", description="accept, reject, or inconclusive")
+
+
+class FinalReport(BaseModel):
+    """Final pipeline report: deltas, path summaries, and overall assessment."""
+    model_config = {"extra": "ignore"}
+    project_id: str = ""
+    paper_title: str = ""
+    core_contribution: str = ""
+
+    # Reproduction fidelity
+    reproduction_score: float = Field(default=0.0, ge=0.0, le=1.0, description="How close baseline matched paper targets (0-1)")
+    reproduction_status: str = Field(default="", description="verified, partial, or failed")
+
+    # Metric deltas
+    metric_deltas: list[MetricDelta] = Field(default_factory=list)
+
+    # Parallel improvement paths
+    paths: list[PathSummary] = Field(default_factory=list)
+    best_path_id: str | None = None
+    best_overall_improvement_pct: float | None = None
+
+    # Aggregate stats
+    total_paths_run: int = 0
+    paths_succeeded: int = 0
+    paths_failed: int = 0
+    paths_improved_over_baseline: int = 0
+
+    # Final verdict
+    overall_verdict: str = Field(default="", description="Concise one-line summary of the run outcome")
+    next_steps: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Generic agent output envelope
 # ---------------------------------------------------------------------------
 

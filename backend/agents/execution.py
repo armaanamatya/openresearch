@@ -51,6 +51,9 @@ class ExecutionProfile:
     # to notice. Enforced via asyncio.timeout in the orchestrator.
     agent_wall_clock_seconds: int
     command_timeout_seconds: int
+    # Maximum number of agent invocations to run concurrently (e.g. parallel
+    # improvement paths).  Bounded by Claude subscription concurrency limits.
+    max_concurrent_agents: int = 2
     sandbox_network_disabled: bool = True
     sandbox_memory_limit: str = "4g"
     sandbox_cpus: float = 2.0
@@ -84,6 +87,7 @@ class ExecutionProfile:
                 max_tool_calls_per_agent=None,
                 agent_wall_clock_seconds=3600,
                 command_timeout_seconds=7200,
+                max_concurrent_agents=4,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit="12g" if resolved_gpu_mode is GpuMode.max else "8g",
                 sandbox_cpus=6.0 if resolved_gpu_mode is GpuMode.max else 4.0,
@@ -133,6 +137,7 @@ class ExecutionProfile:
                 if command_timeout_seconds is not None
                 else base.command_timeout_seconds
             ),
+            max_concurrent_agents=base.max_concurrent_agents,
             sandbox_network_disabled=(
                 sandbox_network_disabled
                 if sandbox_network_disabled is not None
