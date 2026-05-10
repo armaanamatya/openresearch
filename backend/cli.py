@@ -276,10 +276,63 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_sdk_providers(
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None]:
+    if getattr(args, "mode", None) != "sdk":
+        return None, None
+
+    from backend.agents.runtime import selected_provider, validate_provider_credentials
+
+    provider = selected_provider(getattr(args, "provider", None))
+    requested_verification_provider = getattr(args, "verification_provider", None)
+    verification_provider = (
+        selected_provider(requested_verification_provider)
+        if requested_verification_provider
+        else None
+    )
+    if provider == "openai":
+        validate_provider_credentials(provider)
+    if verification_provider == "openai":
+        validate_provider_credentials(verification_provider)
+    return provider, verification_provider
+
+
+_REPRODUCE_DEFAULTS = {
+    "database_url": get_settings().database_url,
+    "runs_root": "runs",
+    "source_kind": "auto",
+    "agent": "default",
+    "mode": "sdk",
+    "model": None,
+    "provider": None,
+    "verification_provider": None,
+    "hints": None,
+    "n_paths": 3,
+    "execution_mode": "efficient",
+    "sandbox": "auto",
+    "gpu_mode": "auto",
+    "command_timeout": None,
+    "allow_sandbox_network": False,
+    "sandbox_platform": None,
+    "sandbox_memory": None,
+    "sandbox_cpus": None,
+}
+
+
+def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Backfill argparse defaults for generated Namespace callers."""
+    for name, value in _REPRODUCE_DEFAULTS.items():
+        if not hasattr(args, name):
+            setattr(args, name, value)
+    return args
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     import asyncio
 
+    args = _with_reproduce_defaults(args)
     runs_root = Path(args.runs_root)
 
     # --- Phase 1: Ingest ---
@@ -338,16 +391,15 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)
-    provider = None
-    if args.mode == "sdk":
-        from backend.agents.runtime import selected_provider, validate_provider_credentials
-
-        provider = selected_provider(args.provider)
-        if provider == "openai":
-            validate_provider_credentials(provider)
+    provider, verification_provider = _resolve_sdk_providers(args)
 
     provider_note = f", provider={provider}" if provider else ""
-    print(f"Starting agent pipeline ({args.mode} mode{provider_note})...", file=sys.stderr)
+    verification_note = (
+        f", verification_provider={verification_provider}"
+        if verification_provider
+        else ""
+    )
+    print(f"Starting agent pipeline ({args.mode} mode{provider_note}{verification_note})...", file=sys.stderr)
     print(f"{'='*60}\n", file=sys.stderr)
 
     # --- Phase 2: Agent Pipeline ---
@@ -364,6 +416,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         sandbox_memory_limit=args.sandbox_memory,
         sandbox_cpus=args.sandbox_cpus,
         sandbox_platform=args.sandbox_platform,
+        gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode=args.mode)
     print(
@@ -388,6 +441,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             project_id, runs_root, workspace_claim_map,
             model=args.model,
             provider=provider,
+            verification_provider=verification_provider,
             user_hints=user_hints,
             n_improvement_paths=args.n_paths,
             execution_profile=execution_profile,
@@ -477,6 +531,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="SDK provider override (defaults to REPROLAB_LLM_PROVIDER).",
     )
+    reproduce.add_argument(
+        "--verification-provider",
+        choices=("anthropic", "openai"),
+        default=None,
+        help="Optional SDK provider for supervisor verification/review agents.",
+    )
     reproduce.add_argument("--hints", default=None, help="Comma-separated user hints for improvement.")
     reproduce.add_argument("--n-paths", type=int, default=3, help="Number of improvement paths.")
     reproduce.add_argument(
@@ -492,6 +552,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Experiment backend: local runs commands on the host; docker is isolated; "
             "auto selects Docker and never falls back to host-local execution."
+        ),
+    )
+    reproduce.add_argument(
+        "--gpu-mode",
+        choices=("off", "auto", "prefer", "max"),
+        default="auto",
+        help=(
+            "GPU policy for experiment sandboxes: off disables CUDA visibility; "
+            "auto records intent without forcing GPUs; prefer/max request Docker GPUs when available."
         ),
     )
     reproduce.add_argument(
