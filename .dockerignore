@@ -1,0 +1,50 @@
+# Keep the build context small. Anything here is invisible to `docker build`.
+
+# Python
+.venv/
+venv/
+backend/venv/
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / Next
+**/node_modules/
+frontend/.next/dev/
+frontend/.next/cache/
+frontend/tsconfig.tsbuildinfo
+.next/
+
+# Local state
+.env
+.env.*
+!.env.example
+runs/
+_test_logs/
+*.db
+*.db-*
+reprolab.db.*
+
+# Tooling / VCS
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+.codex/
+.claude/
+
+# Working / transient docs
+claude_plan_*.md
+claude_review_*.md
+codex_prompt_*.md
+conflicts.md
+*:Zone.Identifier
+
+# Compose / extra Dockerfiles aren't needed inside the build context, but
+# the active Dockerfile + docker/ MUST stay reachable so the COPY succeeds.
+docker-compose*.yml
