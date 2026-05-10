@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import AsyncIterator
 
-from backend.agents.orchestrator import ReproLabOrchestrator
+from backend.agents.orchestrator import PipelineState, ReproLabOrchestrator
 from backend.agents.runtime.base import (
     AgentRuntimeSpec,
     ProviderName,
@@ -69,6 +70,69 @@ class FakeOpenAiRuntime(FakeRuntime):
         super().__init__("openai")
 
 
+class ConcurrentImprovementRuntime(FakeRuntime):
+    def __init__(self) -> None:
+        super().__init__("openai")
+        self.active_path_calls = 0
+        self.max_active_path_calls = 0
+
+    async def run_agent(
+        self,
+        *,
+        agent: AgentRuntimeSpec,
+        user_input: str,
+    ) -> AsyncIterator[StreamEvent]:
+        self.agent = agent
+        self.user_input = user_input
+        if agent.name == "improvement-orchestrator":
+            yield StreamText(
+                json.dumps(
+                    {
+                        "hypotheses": [
+                            {
+                                "path_id": "path_1",
+                                "hypothesis": "Tune learning rate",
+                                "rationale": "Learning rate is underexplored.",
+                                "expected_outcome": "Higher reward",
+                            },
+                            {
+                                "path_id": "path_2",
+                                "hypothesis": "Tune entropy",
+                                "rationale": "Entropy changes exploration.",
+                                "expected_outcome": "More stable reward",
+                            },
+                        ]
+                    }
+                )
+            )
+            yield StreamUsage(input_tokens=1, output_tokens=2)
+            return
+        if agent.name == "improvement-path":
+            self.active_path_calls += 1
+            self.max_active_path_calls = max(
+                self.max_active_path_calls,
+                self.active_path_calls,
+            )
+            try:
+                await asyncio.sleep(0.05)
+                path_id = "path_1" if "path_1" in user_input else "path_2"
+                yield StreamText(
+                    json.dumps(
+                        {
+                            "path_id": path_id,
+                            "hypothesis": f"{path_id} hypothesis",
+                            "diff_summary": "changed config",
+                            "success": True,
+                        }
+                    )
+                )
+                yield StreamUsage(input_tokens=1, output_tokens=2)
+            finally:
+                self.active_path_calls -= 1
+            return
+        yield StreamText("{}")
+
+
 def test_orchestrator_builds_provider_specific_runtime_spec(tmp_path: Path) -> None:
     runtime = FakeOpenAiRuntime()
     orchestrator = ReproLabOrchestrator(
@@ -97,6 +161,23 @@ def test_orchestrator_builds_provider_specific_runtime_spec(tmp_path: Path) -> N
 
     telemetry = tmp_path / "prj_runtime" / "agent_telemetry.jsonl"
     assert '"provider": "openai"' in telemetry.read_text()
+
+
+def test_improvement_path_agents_run_with_bounded_concurrency(tmp_path: Path) -> None:
+    runtime = ConcurrentImprovementRuntime()
+    orchestrator = ReproLabOrchestrator(
+        "prj_parallel_paths",
+        tmp_path,
+        runtime=runtime,
+    )
+    orchestrator._audit_step = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    orchestrator._enrich_workspace = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    state = PipelineState(project_id="prj_parallel_paths")
+    state = asyncio.run(orchestrator.run_improvements(state, n_paths=2))
+
+    assert runtime.max_active_path_calls == 2
+    assert [result.path_id for result in state.path_results] == ["path_1", "path_2"]
 
 
 def test_orchestrator_uses_efficient_default_caps_for_heavy_agents(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.agents.execution import DEFAULT_SANDBOX_MODE
 from backend.evals.paperbench import (
     code_development_ceiling,
     create_submission_manifest,
@@ -429,7 +430,7 @@ def add_paperbench_subparser(subparsers: argparse._SubParsersAction) -> None:
     run.add_argument(
         "--sandbox",
         choices=("auto", "local", "docker", "runpod"),
-        default="runpod",
+        default=DEFAULT_SANDBOX_MODE.value,
     )
     run.add_argument("--allow-sandbox-network", action="store_true")
     run.set_defaults(func=cmd_paperbench_run)

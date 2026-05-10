@@ -14,10 +14,6 @@ describe("ReproLabClient", () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => null
-      })
-      .mockResolvedValueOnce({
-        ok: true,
         json: async () => ({
           projectId: "ui_sdk_fixture_demo_1",
           outputDir: "runs/ui_sdk_fixture_demo_1",
@@ -75,10 +71,6 @@ describe("ReproLabClient", () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => null
-      })
-      .mockResolvedValueOnce({
-        ok: true,
         json: async () => ({
           projectId: "ui_sdk_uploaded_demo_1",
           outputDir: "runs/ui_sdk_uploaded_demo_1",
@@ -103,9 +95,9 @@ describe("ReproLabClient", () => {
       target: { files: [file] }
     });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
-    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/demo");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);
@@ -155,5 +147,15 @@ describe("ReproLabClient", () => {
 
     expect(await screen.findByRole("heading", { name: "Upload PDF" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /still latest run/i })).not.toBeInTheDocument();
+  });
+
+  it("does not restore persisted runs without an explicit initial run", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReproLabClient />);
+
+    expect(screen.getByRole("heading", { name: "Upload PDF" })).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

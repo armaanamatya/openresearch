@@ -27,6 +27,7 @@ from backend.agents.schemas import (
 )
 from backend.agents.orchestrator import PipelineStage, PipelineState
 from backend.agents.execution import (
+    DEFAULT_SANDBOX_MODE,
     ExecutionProfile,
     SandboxMode,
     ensure_sandbox_mode_available,
@@ -53,7 +54,7 @@ async def run_pipeline_sdk(
     resume: bool = True,
     execution_profile: ExecutionProfile | None = None,
     run_budget: RunBudget | None = None,
-    sandbox_mode: SandboxMode | str = SandboxMode.docker,
+    sandbox_mode: SandboxMode | str = DEFAULT_SANDBOX_MODE,
     seed: int | None = None,
     attempt_id: str | None = None,
     run_group_id: str | None = None,

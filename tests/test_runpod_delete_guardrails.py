@@ -21,7 +21,7 @@ import asyncio
 import pytest
 
 from backend.services.runtime.interface import RuntimeCauseKind, SandboxRuntimeError
-from backend.services.runtime.runpod_backend import RunpodBackend
+from backend.services.runtime.runpod_backend import RunpodBackend, ensure_runpod_available
 
 
 def _backend() -> RunpodBackend:
@@ -95,3 +95,27 @@ def test_delete_on_destroy_default_does_not_block_safety_layer() -> None:
     with pytest.raises(SandboxRuntimeError) as excinfo:
         asyncio.run(backend._delete_pod("foreign-pod"))
     assert "owned-pod allowlist" in str(excinfo.value)
+
+
+def test_runpod_preflight_fails_fast_without_api_key(monkeypatch) -> None:
+    """RunPod is the default sandbox, so missing credentials must fail early."""
+
+    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type(
+            "SettingsStub",
+            (),
+            {
+                "runpod_api_key": "",
+                "runpod_ssh_key_path": "/dev/null",
+            },
+        )(),
+    )
+
+    with pytest.raises(SandboxRuntimeError) as excinfo:
+        ensure_runpod_available()
+
+    assert excinfo.value.cause_kind is RuntimeCauseKind.backend_unavailable
+    assert "RUNPOD_API_KEY" in str(excinfo.value)

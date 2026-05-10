@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
+from backend.agents.runtime.factory import configure_openai_agents_sdk_credentials
 from backend.agents.runtime.base import (
     AgentRuntimeSpec,
     ProviderConfigurationError,
@@ -33,16 +34,20 @@ class OpenAiAgentRuntime:
         user_input: str,
     ) -> AsyncIterator[StreamEvent]:
         try:
-            from agents import Agent, ItemHelpers, Runner, function_tool
+            import agents as agents_module
         except ImportError as exc:  # pragma: no cover - depends on local install
             raise ProviderConfigurationError(
                 provider=self.provider_name,
                 reason="openai-agents is not installed",
             ) from exc
-        try:
-            from agents import WebSearchTool
-        except ImportError:  # pragma: no cover - depends on installed SDK version
-            WebSearchTool = None
+        Agent = agents_module.Agent
+        ItemHelpers = agents_module.ItemHelpers
+        Runner = agents_module.Runner
+        WebSearchTool = getattr(agents_module, "WebSearchTool", None)
+        function_tool = agents_module.function_tool
+        configure_openai_agents_sdk_credentials(
+            getattr(agents_module, "set_default_openai_key", None)
+        )
 
         root = (agent.working_directory or Path.cwd()).resolve()
         handoffs = [
@@ -105,12 +110,31 @@ def _build_openai_agent(
     handoffs: list[Any] | None = None,
 ) -> Any:
     return agent_cls(
-        name=spec.name,
+        name=_openai_safe_name(spec.name),
+        handoff_description=spec.description or spec.name,
         instructions=spec.instructions,
         model=spec.model or None,
         tools=_build_tools(spec, root, function_tool, web_search_tool_cls),
         handoffs=handoffs or [],
     )
+
+
+def _openai_safe_name(name: str) -> str:
+    """Encode a canonical ReproLab agent id as an OpenAI-safe identifier.
+
+    OpenAI handoff tool names are derived from ``Agent.name``. Hyphenated
+    canonical ids like ``paper-understanding`` become invalid function names
+    when exposed as ``transfer_to_*`` tools, and a plain hyphen-to-underscore
+    conversion can collide with an id that already used underscores. Encoding
+    each unsupported byte keeps the mapping deterministic and collision-safe.
+    """
+    encoded = "".join(
+        char
+        if char.isascii() and (char.isalnum() or char == "_")
+        else f"_x{ord(char):02x}_"
+        for char in name
+    )
+    return f"reprolab_{encoded or 'agent'}"
 
 
 def _build_tools(

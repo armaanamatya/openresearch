@@ -2122,37 +2122,8 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState(false);
-  const [showUploadOnly, setShowUploadOnly] = useState(false);
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (run || showUploadOnly) {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadLatest() {
-      try {
-        const response = await fetch("/api/demo", { cache: "no-store" });
-        if (!response.ok || cancelled) {
-          return;
-        }
-        const next = (await response.json()) as LiveDemoRunState | null;
-        if (next && !cancelled) {
-          setRun(next);
-        }
-      } catch {
-        // Ignore initial load failures and let the user start a new run.
-      }
-    }
-
-    void loadLatest();
-    return () => {
-      cancelled = true;
-    };
-  }, [run, showUploadOnly]);
 
   useEffect(() => {
     eventSourceRef.current?.close();
@@ -2250,7 +2221,6 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   async function startFixtureRun() {
     setBusy(true);
     setError(null);
-    setShowUploadOnly(false);
     try {
       const response = await fetch(DEFAULT_RUN_QUERY, { method: "POST" });
       if (!response.ok) {
@@ -2269,7 +2239,6 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   async function startUploadedRun(file: File) {
     setBusy(true);
     setError(null);
-    setShowUploadOnly(false);
     try {
       const formData = new FormData();
       formData.set("mode", "sdk");
@@ -2308,7 +2277,6 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   }
 
   function resetToUpload() {
-    setShowUploadOnly(true);
     setRun(null);
     setArxiv("");
     setBusy(false);

@@ -749,12 +749,8 @@ async function terminateRunProcess(pid: number): Promise<void> {
   }
 }
 
-function sandboxNeedsLocalDocker(sandboxMode: DemoSandboxMode): boolean {
-  return sandboxMode === "auto" || sandboxMode === "docker";
-}
-
 async function ensureDemoSandboxReady(sandboxMode: DemoSandboxMode): Promise<void> {
-  if (!sandboxNeedsLocalDocker(sandboxMode)) {
+  if (sandboxMode === "local") {
     return;
   }
 
@@ -779,12 +775,12 @@ print("sandbox preflight OK")
         : "";
     const message =
       detail ||
-      (error instanceof Error ? error.message : "Docker sandbox preflight failed");
+      (error instanceof Error ? error.message : "Sandbox preflight failed");
     throw new DemoPreflightError(
       [
-        "Docker sandbox is not ready for the Python backend.",
-        "You do not need to launch the web app in Docker.",
-        "Start Docker Desktop or Docker Engine, then install backend dependencies with `python -m pip install -r requirements.txt`.",
+        "The selected experiment sandbox is not ready for the Python backend.",
+        "RunPod requires REPROLAB_RUNPOD_API_KEY and an SSH private key; Docker requires Docker Desktop or Docker Engine.",
+        "Install backend dependencies with `python -m pip install -r requirements.txt`.",
         message
       ].join(" ")
     );

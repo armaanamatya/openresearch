@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.agents.execution import ExecutionProfile, SandboxMode
+from backend.agents.execution import DEFAULT_SANDBOX_MODE, ExecutionProfile, SandboxMode
 from backend.agents.orchestrator import PipelineState
 from backend.agents.pipeline import run_pipeline_sdk
 from backend.agents.runtime import AgentRuntime, ProviderName
@@ -31,7 +31,7 @@ class PaperBenchAttemptConfig:
     user_hints: list[str] | None = None
     n_improvement_paths: int = 3
     execution_profile: ExecutionProfile | None = None
-    sandbox_mode: SandboxMode | str = SandboxMode.docker
+    sandbox_mode: SandboxMode | str = DEFAULT_SANDBOX_MODE
     blacklist_terms: tuple[str, ...] = ()
 
 
