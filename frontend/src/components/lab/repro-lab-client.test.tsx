@@ -113,4 +113,47 @@ describe("ReproLabClient", () => {
       expect(instances[0]?.url).toBe("/api/demo/events?projectId=ui_sdk_uploaded_demo_1");
     });
   });
+
+  it("returns to the upload screen when the ReproLab brand is clicked from a run", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        projectId: "still-latest-run",
+        outputDir: "runs/still-latest-run",
+        runMode: "sdk",
+        llmProvider: "anthropic",
+        sourceKind: "workspace_fixture",
+        sourceLabel: "Still latest run",
+        sourceNote: "latest",
+        status: "running",
+        payload: null,
+        log: ""
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ReproLabClient
+        initialRun={{
+          projectId: "active-run",
+          outputDir: "runs/active-run",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "paper.pdf",
+          sourceNote: "uploaded",
+          status: "running",
+          payload: null,
+          log: ""
+        }}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: /paper\.pdf/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^reprolab$/i }));
+
+    expect(await screen.findByRole("heading", { name: "Upload PDF" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /still latest run/i })).not.toBeInTheDocument();
+  });
 });

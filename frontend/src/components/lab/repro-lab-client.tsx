@@ -501,7 +501,7 @@ function buildEdgePath(from: WorkflowNode, to: WorkflowNode) {
   return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
 }
 
-function Sidebar({ active }: { active: string }) {
+function Sidebar({ active, onBrandClick }: { active: string; onBrandClick: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -526,10 +526,10 @@ function Sidebar({ active }: { active: string }) {
           <path d="M10 4l-4 4 4 4" />
         </svg>
       </button>
-      <div className="brand-row">
+      <button className="brand-row" type="button" onClick={onBrandClick}>
         <span className="nav-icon">{ICONS.logo}</span>
         <span className="brand-text">ReproLab</span>
-      </div>
+      </button>
       <div className="dotted" />
       {NAV.map((item) => (
         <a
@@ -1393,6 +1393,15 @@ function PrototypeStyles() {
         align-items: center;
         gap: 11px;
         padding: 4px 11px 12px;
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        text-align: left;
+      }
+      .reproLab .brand-row:hover .brand-text {
+        color: var(--ink);
       }
       .reproLab .brand-text {
         font-weight: 700;
@@ -2113,11 +2122,12 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState(false);
+  const [showUploadOnly, setShowUploadOnly] = useState(false);
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    if (run) {
+    if (run || showUploadOnly) {
       return;
     }
 
@@ -2142,7 +2152,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
     return () => {
       cancelled = true;
     };
-  }, [run]);
+  }, [run, showUploadOnly]);
 
   useEffect(() => {
     eventSourceRef.current?.close();
@@ -2240,6 +2250,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   async function startFixtureRun() {
     setBusy(true);
     setError(null);
+    setShowUploadOnly(false);
     try {
       const response = await fetch(DEFAULT_RUN_QUERY, { method: "POST" });
       if (!response.ok) {
@@ -2258,6 +2269,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   async function startUploadedRun(file: File) {
     setBusy(true);
     setError(null);
+    setShowUploadOnly(false);
     try {
       const formData = new FormData();
       formData.set("mode", "sdk");
@@ -2291,11 +2303,22 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
         }).catch(() => null);
       }
     } finally {
-      setRun(null);
-      setBusy(false);
-      setError(null);
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
+      resetToUpload();
+    }
+  }
+
+  function resetToUpload() {
+    setShowUploadOnly(true);
+    setRun(null);
+    setArxiv("");
+    setBusy(false);
+    setError(null);
+    setOver(false);
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    if (pollTimer.current) {
+      window.clearTimeout(pollTimer.current);
+      pollTimer.current = null;
     }
   }
 
@@ -2303,7 +2326,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
     <div className="reproLab">
       <PrototypeStyles />
       <div className="layout">
-        <Sidebar active="lab" />
+        <Sidebar active="lab" onBrandClick={resetToUpload} />
         <main className="content">
           {run ? (
             <WorkflowView run={run} onClear={clearRun} busy={busy} error={error} />
