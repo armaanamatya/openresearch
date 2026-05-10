@@ -276,7 +276,7 @@ class ReproLabOrchestrator:
         if self.sandbox_mode is SandboxMode.simulate:
             raise ValueError(
                 "SDK pipeline does not support simulated experiment execution. "
-                "Use the offline pipeline for deterministic simulation or select docker/local."
+                "Use the offline pipeline for deterministic simulation or select docker/local/runpod."
             )
         self._runtime = runtime or make_runtime(provider)
         self._verification_runtime = (
@@ -936,6 +936,7 @@ class ReproLabOrchestrator:
             raise ValueError("Cannot run experiment before baseline implementation")
         from backend.agents.experiment_runner import (
             run_with_local_process,
+            run_with_runpod,
             run_with_runtime,
         )
 
@@ -948,6 +949,14 @@ class ReproLabOrchestrator:
                 command_timeout=self.execution_profile.command_timeout_seconds,
                 gpu_mode=self.execution_profile.gpu_mode.value,
                 extra_environment=self.execution_profile.sandbox_environment,
+            )
+        elif self.sandbox_mode is SandboxMode.runpod:
+            state.experiment_artifacts = await run_with_runpod(
+                self.project_id,
+                self.runs_root,
+                state.baseline_result,
+                state.reproduction_contract,
+                command_timeout=self.execution_profile.command_timeout_seconds,
             )
         else:
             state.experiment_artifacts = await run_with_runtime(

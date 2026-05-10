@@ -547,10 +547,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker"),
+        choices=("auto", "local", "docker", "runpod"),
         default="auto",
         help=(
-            "Experiment backend: local runs commands on the host; docker is isolated; "
+            "Experiment backend: local runs commands on the host; docker is isolated; runpod uses a remote GPU Pod; "
             "auto selects Docker and never falls back to host-local execution."
         ),
     )
