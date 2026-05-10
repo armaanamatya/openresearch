@@ -9,6 +9,21 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Typed provider resilience for SDK agents.** Agent invocations now use
+  a reusable `backend/agents/resilience/` layer with provider-neutral
+  failure classification (`QuotaExhausted`, `RateLimited`,
+  `TransientError`, turn/tool/wall-clock budget failures, auth and guard
+  failures), bidirectional Anthropic↔OpenAI quota fallback, partial-output
+  continuation prompts, provider health cooldowns, append-only
+  `cost_ledger.jsonl`, and `fallback_summary.json`. CLI runs can enforce
+  pre-invocation caps with `--max-usd`, `--max-wall-clock`, and
+  `--max-invocations agent=count`.
+- **Codex CLI Hermes audit fallback.** Hermes provider chain now appends
+  `codex_cli`, which uses `codex exec` with the operator's ChatGPT OAuth
+  session after API-key OpenAI is unavailable. The provider never reads
+  OAuth tokens; it only checks for the binary and `~/.codex/auth.json`.
+  Optional overrides: `REPROLAB_CODEX_CLI_PATH` and
+  `REPROLAB_CODEX_AUTH_PATH`. Verified locally with `codex-cli 0.125.0`.
 - **Phase 2 research workspace services.** Added deterministic services for
   AST-backed knowledge graph construction and `graph_query()`, reusable
   cross-project memory, multi-paper comparison summaries, Git worktree
