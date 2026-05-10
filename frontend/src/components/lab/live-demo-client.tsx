@@ -94,19 +94,14 @@ const GPU_OPTIONS: Array<{ value: DemoGpuMode; label: string; helper: string }> 
 ];
 const SANDBOX_OPTIONS: Array<{ value: DemoSandboxMode; label: string; helper: string }> = [
   {
-    value: "auto",
-    label: "Auto Docker",
-    helper: "Docker first"
+    value: "runpod",
+    label: "Runpod GPU",
+    helper: "Remote GPU Pod (default)"
   },
   {
     value: "docker",
     label: "Docker",
-    helper: "Container sandbox"
-  },
-  {
-    value: "runpod",
-    label: "Runpod GPU",
-    helper: "Remote GPU Pod"
+    helper: "Local container sandbox"
   },
   {
     value: "local",
@@ -210,9 +205,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   const [executionMode, setExecutionMode] = useState<DemoExecutionMode>(
     initialRun?.executionMode ?? "efficient"
   );
-  const [sandboxMode, setSandboxMode] = useState<DemoSandboxMode>(
-    initialRun?.sandboxMode ?? "auto"
-  );
+  const [sandboxMode, setSandboxMode] = useState<DemoSandboxMode>("runpod");
   const [gpuMode, setGpuMode] = useState<DemoGpuMode>(initialRun?.gpuMode ?? "auto");
   const [selectedPaper, setSelectedPaper] = useState<File | null>(null);
   const [runningMode, setRunningMode] = useState<"offline" | "sdk" | null>(
@@ -242,7 +235,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     if (run?.executionMode) {
       setExecutionMode(run.executionMode);
     }
-    if (run?.sandboxMode) {
+    if (run?.sandboxMode && run.sandboxMode !== "auto") {
       setSandboxMode(run.sandboxMode);
     }
     if (run) {
@@ -258,6 +251,46 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     run?.sandboxMode,
     run?.verificationProvider
   ]);
+
+  // Client-side recovery: when SSR couldn't fetch the latest run within
+  // its tight timeout (busy backend, single-worker uvicorn behind SSE),
+  // poll /api/demo with exponential backoff after mount until we get
+  // run state. Stops as soon as run is populated by any source (this
+  // poll, the SSE stream below, or the user's own submit).
+  useEffect(() => {
+    if (run) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async (delayMs: number) => {
+      if (cancelled) return;
+      try {
+        const controller = new AbortController();
+        const t = window.setTimeout(() => controller.abort(), 4000);
+        const response = await fetch("/api/demo", {
+          cache: "no-store",
+          signal: controller.signal
+        });
+        window.clearTimeout(t);
+        if (!cancelled && response.ok) {
+          const next = (await response.json()) as LiveDemoRunState | null;
+          if (next && !cancelled) {
+            setRun(next);
+            return;
+          }
+        }
+      } catch {
+        // swallow — retry until cancelled
+      }
+      if (!cancelled) {
+        timer = window.setTimeout(() => tick(Math.min(delayMs * 2, 15_000)), delayMs);
+      }
+    };
+    void tick(2_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [run]);
 
   useEffect(() => {
     eventSourceRef.current?.close();

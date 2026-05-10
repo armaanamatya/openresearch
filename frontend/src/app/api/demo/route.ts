@@ -82,13 +82,36 @@ async function jsonFromBackend(response: Response): Promise<NextResponse> {
   });
 }
 
+// Backend GET timeout for the lab page's status polling. Single-worker
+// uvicorn (--reload) blocks on long SSE streams, so we cap how long the
+// browser waits and let the client retry with backoff.
+const BACKEND_GET_TIMEOUT_MS = 4000;
+
 export async function GET(request: Request) {
   const projectId = toProjectId(request);
   const params = backendQuery(request);
   const endpoint = projectId
     ? `${backendBaseUrl()}/runs/${encodeURIComponent(projectId)}`
     : `${backendBaseUrl()}/runs/latest${params.size ? `?${params}` : ""}`;
-  return jsonFromBackend(await fetch(endpoint, { cache: "no-store" }));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BACKEND_GET_TIMEOUT_MS);
+  try {
+    return jsonFromBackend(
+      await fetch(endpoint, { cache: "no-store", signal: controller.signal })
+    );
+  } catch (error) {
+    const aborted =
+      error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+    return NextResponse.json(
+      {
+        error: aborted ? "Backend timed out" : "Backend unreachable",
+        code: aborted ? "backend_timeout" : "backend_unreachable"
+      },
+      { status: 504 }
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function POST(request: Request) {
@@ -128,7 +151,7 @@ export async function POST(request: Request) {
           provider: toProvider(request) ?? "anthropic",
           verificationProvider: toVerificationProvider(request),
           executionMode: toExecutionMode(request) ?? "efficient",
-          sandbox: toSandboxMode(request) ?? "auto",
+          sandbox: toSandboxMode(request) ?? "runpod",
           gpuMode: toGpuMode(request) ?? "auto"
         })
       })

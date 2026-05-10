@@ -303,7 +303,7 @@ class FileLiveRunService:
                 continue
             if execution_mode and (status.get("executionMode") or "efficient") != execution_mode:
                 continue
-            if sandbox and (status.get("sandboxMode") or "auto") != sandbox:
+            if sandbox and (status.get("sandboxMode") or "runpod") != sandbox:
                 continue
             if verification_provider and status.get("verificationProvider") != verification_provider:
                 continue
@@ -322,10 +322,13 @@ class FileLiveRunService:
     def _write_status(self, project_id: str, status: dict[str, Any]) -> None:
         run_dir = self.runs_root / project_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "demo_status.json").write_text(
-            json.dumps(status, indent=2),
-            encoding="utf-8",
-        )
+        path = run_dir / "demo_status.json"
+        # Atomic write via tempfile + os.replace: a crash mid-write
+        # leaves either the previous valid JSON or the new one — never
+        # a half-written file that breaks _read_status downstream.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
     def _read_telemetry(self, project_id: str, max_records: int = 50) -> list[TelemetryRecordPublic]:
         path = self.runs_root / project_id / "agent_telemetry.jsonl"

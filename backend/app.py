@@ -60,7 +60,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             provider=_form_value(form, "provider", "anthropic"),
             verificationProvider=_optional_form_value(form, "verificationProvider"),
             executionMode=_form_value(form, "executionMode", "efficient"),
-            sandbox=_form_value(form, "sandbox", "auto"),
+            sandbox=_form_value(form, "sandbox", settings.default_sandbox),
             gpuMode=_form_value(form, "gpuMode", "auto"),
         )
         return await service.start_uploaded_run(

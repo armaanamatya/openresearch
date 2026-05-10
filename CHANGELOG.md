@@ -9,6 +9,24 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Persistent Runpod pod reuse via `REPROLAB_RUNPOD_POD_ID`.** When set,
+  `RunpodBackend.create_sandbox` attaches to the existing pod via SSH
+  instead of `POST /pods`, reusing it across pipeline runs. The pod is
+  structurally undeletable (never added to `_owned_pod_ids`). If the
+  configured pod is missing or stopped, the backend creates a new
+  persistent pod and logs the new id at WARNING
+  (`RUNPOD_PERSISTENT_POD_CREATED`) so `.env` can be updated.
+- **Default sandbox = `runpod` end-to-end.** Lab UI dropdown, settings,
+  FastAPI form fallback, `/api/demo` route, Node demo runner, and CLI
+  `--sandbox` flag (`backend/cli.py`, `backend/cli_paperbench.py`) all
+  default to `runpod`. The ambiguous "Auto Docker" option was removed
+  from the Lab UI dropdown — three explicit choices: Runpod / Docker /
+  Local.
+- **`scripts/runpod_check.sh` preflight.** Exit-coded auth + SSH key
+  pair + GPU/account sanity check, optionally `--start-pod` for a paid
+  end-to-end smoke. `start.sh` runs the free preflight before booting
+  uvicorn; opt-in `START_FULL_SMOKE=1` for the paid smoke.
+
 - **Typed provider resilience for SDK agents.** Agent invocations now use
   a reusable `backend/agents/resilience/` layer with provider-neutral
   failure classification (`QuotaExhausted`, `RateLimited`,
@@ -136,6 +154,24 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **SIGINT/CancelledError no longer dumps a 50-line stack trace.**
+  `backend/cli.py:cmd_reproduce` catches `(KeyboardInterrupt,
+  asyncio.CancelledError)` around `asyncio.run`, flips
+  `demo_status.json` to `status="stopped"` via an atomic write, and
+  exits 130. `orchestrator.py` step loop adds an explicit cancellation
+  guard before the generic `except Exception` so the runner log shows a
+  clean `|| STOPPED at <stage>` line and `state.save_checkpoint()` runs
+  for resume.
+- **`demo_status.json` corruption window closed.** Both
+  `cli._atomic_write_json` and `live_runs._write_status` now write via
+  tempfile + `os.replace`, so a crash during a status flush leaves
+  either the previous valid JSON or the new one — never a truncated
+  file that breaks `_read_status` downstream.
+- **Lab page white-screen under busy backend.** `lab/page.tsx` SSR
+  fetch uses `AbortSignal` with a 1.5 s timeout; `/api/demo` GET proxy
+  adds a 4 s timeout (returns 504 instead of hanging); a client-side
+  recovery poll with exponential backoff (2 s → 15 s cap) refills run
+  state when SSR couldn't get a snapshot.
 - **Hermes audit schema drift.** The audit adapter now normalizes common LLM
   variants before validating `HermesAuditReport`: object-valued
   `unsupported_claims`, string-valued `evidence_refs`, numeric confidence, and

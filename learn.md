@@ -11,6 +11,200 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-10 — Pipeline SIGINT dumped a 50-line stack trace and left status="running"
+
+**Symptom.** Killing the `python -m backend.cli reproduce` subprocess (Ctrl-C
+or backend restart) produced a noisy traceback in `runner.stderr.log`:
+
+```
+asyncio.exceptions.CancelledError
+…
+File "/home/abheekp/openresearch/backend/cli.py", line 485, in cmd_reproduce
+    state = asyncio.run(run_pipeline_sdk(
+KeyboardInterrupt
+```
+
+The dashboard meanwhile showed `status="running"` until the user hit `/lab`
+again, at which point `live_runs._load_run` detected the dead PID via
+`_pid_exists` and rewrote status to `failed` with whatever string the log
+heuristic happened to extract — usually misleading.
+
+**Root cause.** The application code had **zero** explicit handlers for
+`KeyboardInterrupt` or `asyncio.CancelledError`:
+
+1. `cli.py:485` wrapped `asyncio.run(run_pipeline_sdk(...))` with only
+   `except Exception` (catches `BudgetExhausted`). `BaseException`
+   subclasses fell through, which is correct Python convention but meant
+   we never got a chance to write a clean status before exiting.
+2. `orchestrator.py:1441` step loop's `except Exception` likewise didn't
+   catch `CancelledError`. The "X FAILED:" line never printed for
+   cancellation either, so the log just stopped mid-stage with no
+   actionable signal.
+3. `live_runs._write_status` wrote `demo_status.json` non-atomically, so
+   a crash during a status write could leave a half-written JSON that
+   `_read_status` then failed to parse. Compounding the original
+   interrupt with a corruption bug.
+
+**Fix.**
+
+- `cli.py` catches `(KeyboardInterrupt, asyncio.CancelledError)` around
+  `asyncio.run(run_pipeline_sdk(...))`, prints a single readable line,
+  calls `_mark_demo_status_stopped()` to flip the status to `stopped`
+  with a descriptive `error` field, and exits 130 (SIGINT convention).
+  No more stack-trace dumps.
+- `orchestrator.py:1431` step loop now catches cancellation **before**
+  the generic `except Exception`, prints `|| STOPPED at <stage>`, calls
+  `state.save_checkpoint(self.runs_root)` so a future
+  `reproduce --resume` picks up from the last completed stage, and
+  re-raises so the CLI's outer handler runs.
+- `cli._atomic_write_json` (and the equivalent in
+  `live_runs._write_status`) writes via tempfile + `os.replace` so
+  `demo_status.json` is never half-written. Readers always see either
+  the previous valid JSON or the new one.
+
+**Lesson.** **`asyncio.CancelledError` is a `BaseException`, not an
+`Exception` — your `except Exception` does NOT catch it.** Long-running
+async pipelines need an explicit `(asyncio.CancelledError, KeyboardInterrupt)`
+handler at every layer that owns persistent state, before the generic
+`except Exception` clause. The handler should: (1) log a clean message,
+(2) flush partial state to disk so resume works, (3) re-raise so callers
+above can do their own cleanup. Status files that record run lifecycle
+should be written atomically (`tempfile.write_text` + `os.replace`) so a
+crash during the write doesn't corrupt the file the dashboard is about
+to read.
+
+**Open edge cases (documented, not yet fixed):**
+- Concurrent runs on the same `project_id` will race on
+  `demo_status.json`, `pipeline_state.json`, and `runs/{project_id}/*`.
+  Atomic writes prevent corruption but don't prevent overwrite.
+- SIGKILL bypasses the CLI's interrupt handler entirely — the pipeline
+  dies, any orphaned ephemeral runpod sandbox stays running until
+  someone (or `_owned_pod_ids` reconciliation on the next backend
+  restart) kills it. Persistent pods (`REPROLAB_RUNPOD_POD_ID`) are
+  unaffected.
+- Single-worker uvicorn (`--reload`) blocks all other endpoints behind
+  one slow SSE stream. The frontend already mitigates this with SSR +
+  proxy + client-poll timeouts (`lab/page.tsx`, `api/demo/route.ts`,
+  `live-demo-client.tsx`); the durable fix is multi-worker uvicorn or
+  an ASGI server with proper concurrency.
+
+**Guardrail.**
+- The `(asyncio.CancelledError, KeyboardInterrupt)` handler in
+  `cli.py:cmd_reproduce` is the single chokepoint where pipeline runs
+  exit. Future async entrypoints (CLI subcommands, scheduled jobs)
+  should follow the same shape: catch cancellation FIRST, write status,
+  return 130, then `except Exception` for anything else.
+- `_atomic_write_json` / `_write_status` use the canonical
+  tempfile+replace pattern. New status writers should reuse one of
+  these helpers, not write directly.
+- `orchestrator.py:1431` has the per-step cancellation guard. Stages
+  added to the pipeline list inherit it for free.
+
+---
+
+## 2026-05-10 — Runpod smoke trap destroyed a pod we wanted to keep
+
+**Symptom.** Running `START_FULL_SMOKE=1 ./start.sh` to verify Runpod
+end-to-end booted pod `nfh9zaeetfubv0` (RTX 4090 SECURE, $0.69/hr) — exactly
+what we wanted. When we SIGTERM'd the script mid-boot, we were about to lose
+the pod even though we hadn't gotten our verification yet. Separately, when
+the user later asked "can we just use my coworker's pod that's already on
+the account?", the answer was "the smoke flow has no concept of that — it
+always creates and destroys its own."
+
+**Root cause.** Two design assumptions in the Runpod tooling collided with
+the actual workflow:
+
+1. `scripts/runpod_check.sh` installs `trap cleanup_pod EXIT` immediately
+   after pod creation (line 361). The trap issues a raw `curl -X DELETE`
+   against `/pods/${POD_ID}`, **bypassing** the `RunpodBackend._owned_pod_ids`
+   allowlist + `reprolab-` name-prefix guard that protects coworker pods on
+   the same account. The trap is correct for its designed purpose
+   (boot → nvidia-smi → tear down, never leak money on failure), but
+   incompatible with "boot a pod and keep it."
+2. `RunpodBackend.delete_on_destroy` defaults to `True` (config.py:89), so
+   even pods created via the dashboard get deleted after each run unless
+   `.env` overrides it. There is no first-class "attach to existing pod"
+   mode — every `create_sandbox` call hits `POST /pods`.
+3. The May 2026 REST v1 API has no GPU-listing endpoint, so the only way to
+   know whether a 4090 is bookable is to actually book one. That pushes
+   teams toward `--start-pod`-style smokes, which then collide with point 1.
+
+**Fix.**
+
+- For *auth + key* verification only: `./scripts/runpod_check.sh` with **no
+  flag**. Free, no pod boot, no trap risk. This is what `start.sh` runs by
+  default before booting uvicorn.
+- For *first-time GPU bookability* verification: `--start-pod` is fine
+  **provided you let the trap finish naturally**. SIGKILL bypasses the trap
+  and leaks a pod; SIGTERM lets the trap fire and destroys the pod. Neither
+  is what you want if you intend to keep using the pod afterwards.
+- For *persistent pod usage* (the real workflow): set
+  `REPROLAB_RUNPOD_DELETE_ON_DESTROY=false` in `.env`. The dashboard /
+  `--sandbox runpod` flow will then leave pods running after each pipeline
+  finishes. Reuse a coworker's pod by adding their public key to your local
+  `REPROLAB_RUNPOD_SSH_PUBLIC_KEY` — RunPod injects it via `PUBLIC_KEY` env
+  var on `runpod/*` images, no custom start command needed.
+- For *single-pod reuse across runs* (skip per-run boot, attach to a fixed
+  worker): set `REPROLAB_RUNPOD_POD_ID=<pod-id>` in `.env`. The backend
+  fetches the pod, attaches via SSH, and reuses it for every pipeline run.
+  The pod is structurally undeletable — never added to `_owned_pod_ids`,
+  so `_delete_pod` refuses. If the configured pod is missing or stopped,
+  the backend creates a new persistent pod and logs the new id at WARNING
+  (`RUNPOD_PERSISTENT_POD_CREATED pod_id=…`); update `.env` with that id
+  to reuse it on subsequent runs. Constraint: this assumes one pipeline
+  run at a time on the shared pod (the `/workspace/work` symlink is
+  per-pod, not per-run).
+- The `_owned_pod_ids` allowlist + `reprolab-` name-prefix check in
+  `runpod_backend.py:_delete_pod` already prevents the backend from deleting
+  any pod it didn't create itself (defense against logic bugs and shared-
+  account accidents). That guard is the *only* thing protecting your
+  coworker's pods if they share a Runpod account with you.
+
+**Lesson.** **A "smoke test" that boots real paid infrastructure is two
+features in a trench coat, and they fight.** The cleanup-on-failure trap is
+correct for "did this work end-to-end, free if not," and wrong for "boot
+something I want to keep." Don't try to repurpose one for the other by
+killing the script with the right signal — that's spell-casting, not
+engineering. When the workflow shifts from "verify + tear down" to "verify +
+keep," take a different code path: skip the smoke, set
+`DELETE_ON_DESTROY=false`, and let the backend's normal create-sandbox flow
+do the booking with the real safeguards (`_owned_pod_ids`, name prefix)
+intact.
+
+May 2026 Runpod REST v1 facts worth remembering so we don't drift:
+- Endpoint: `POST https://rest.runpod.io/v1/pods`
+- Auth: `Authorization: Bearer <key>` (key prefix is `rpa_…`)
+- Payload uses `gpuTypeIds: ["NVIDIA GeForce RTX 4090"]` (plural array form,
+  per the docs' curl examples). The OpenAPI schema lists `gpuTypeId`
+  singular, but the live API accepts the plural array — match the curl
+  examples, not the schema.
+- `ports: ["22/tcp"]` — string form with protocol suffix.
+- Official `runpod/*` images read `PUBLIC_KEY` (and `SSH_PUBLIC_KEY`) env
+  vars automatically; do **not** override `dockerStartCmd` for them or you
+  will lose RunPod's own SSH bootstrap. Custom `dockerStartCmd` is only
+  needed for third-party images (handled in
+  `runpod_backend.py:_runpod_start_command`).
+- REST v1 has no GPU-listing endpoint. Fail-on-creation is the only signal
+  that a configured GPU type isn't bookable on your account/region.
+
+**Guardrail.**
+- `RunpodBackend._owned_pod_ids: set[str]` (`runpod_backend.py:98`) is
+  populated only on backend-created pods, and `_delete_pod` refuses to issue
+  DELETE for any pod ID outside that set. Coworker's pods on the same
+  account are structurally unreachable from the backend's delete path.
+- `_delete_pod` belt-and-suspenders: even if a pod ID ended up in the
+  allowlist via some future code path, the pod's name must start with
+  `reprolab-` or DELETE is refused (`runpod_backend.py:444-449`).
+- `.env` documents `REPROLAB_RUNPOD_DELETE_ON_DESTROY` and recommends
+  `false` for shared-pod workflows. The default (`true`) stays as-is so
+  one-off runs still clean up.
+- `start.sh` runs the **free** preflight by default; `START_FULL_SMOKE=1`
+  is opt-in only. Never make the paid smoke the default — money + traps =
+  silent footguns.
+
+---
+
 ## 2026-05-10 — Hermes Agent oversight silently no-oped on every run
 
 **Symptom.** `hermes_step_reports` and `hermes_checkpoint_reports` in pipeline
