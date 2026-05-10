@@ -442,14 +442,18 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     view = workspace.materialize_view(workspace_id)
 
-    # Build workspace claim map for the agent pipeline
+    # Build workspace claim map for the agent pipeline.
+    # Truncate excerpts so the LLM prompt stays manageable.
+    def _truncate(text: str, max_chars: int = 600) -> str:
+        return text if len(text) <= max_chars else text[:max_chars] + "..."
+
     workspace_claim_map = {
         "project_id": project_id,
         "entries": [
             {
                 "source_id": name,
                 "title": name,
-                "excerpt": (
+                "excerpt": _truncate(
                     cited.value if isinstance(cited.value, str)
                     else json.dumps(cited.value) if cited.value is not None
                     else ""

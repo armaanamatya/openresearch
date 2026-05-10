@@ -38,6 +38,37 @@ from backend.agents.runtime import AgentRuntime, ProviderName
 logger = logging.getLogger(__name__)
 
 
+def _truncate_excerpt(text: str, max_chars: int = 600) -> str:
+    """Truncate an excerpt to a reasonable length for LLM prompts."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "..."
+
+
+def _write_workspace_claim_map(
+    project_dir: Path, workspace_claim_map: dict[str, Any],
+) -> None:
+    """Write a truncated workspace claim map to the project directory.
+
+    The paper understanding agent reads this file to understand the paper
+    without needing access to the SQLite event store.
+    """
+    truncated = {
+        "project_id": workspace_claim_map.get("project_id", ""),
+        "entries": [
+            {
+                "source_id": entry.get("source_id", ""),
+                "title": entry.get("title", ""),
+                "excerpt": _truncate_excerpt(entry.get("excerpt", "")),
+            }
+            for entry in workspace_claim_map.get("entries", [])
+        ],
+    }
+    project_dir.mkdir(parents=True, exist_ok=True)
+    out_path = project_dir / "workspace_claim_map.json"
+    out_path.write_text(json.dumps(truncated, indent=2), encoding="utf-8")
+
+
 async def run_pipeline_sdk(
     project_id: str,
     runs_root: Path,
@@ -67,6 +98,10 @@ async def run_pipeline_sdk(
     the provider runtime to analyze, generate, and verify dynamically.
     """
     from backend.agents.orchestrator import ReproLabOrchestrator
+
+    # Write workspace claim map to project directory so agents can read it
+    project_dir = Path(runs_root) / project_id
+    _write_workspace_claim_map(project_dir, workspace_claim_map)
 
     resolved_sandbox_mode = resolve_sandbox_mode(sandbox_mode, pipeline_mode="sdk")
     orchestrator = ReproLabOrchestrator(
@@ -134,6 +169,7 @@ def run_pipeline_offline(
     from backend.schemas.citations import Citation
 
     runs = Path(runs_root)
+    _write_workspace_claim_map(runs / project_id, workspace_claim_map)
     profile = execution_profile or ExecutionProfile.from_mode("efficient")
     resolved_sandbox_mode = resolve_sandbox_mode(sandbox_mode, pipeline_mode="offline")
     ensure_sandbox_mode_available(resolved_sandbox_mode)

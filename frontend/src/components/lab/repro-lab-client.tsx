@@ -453,6 +453,9 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
   return map;
 }
 
+/** Markers that identify meaningful pipeline log lines. */
+const LOG_MARKERS = /^\[|^={2,}|^\s*>|^\s*>>|^\s*X |^\s*\|\||^Execution|^Starting|^Workspace|^Sandbox|^Pipeline|^Agent |^Step |^Gate |^Checkpoint|WARNING|ERROR|FAILED|STOPPED|completed|queued|running/i;
+
 function parseLogEntries(run: LiveDemoRunState | null) {
   if (!run?.log) {
     return [];
@@ -461,7 +464,7 @@ function parseLogEntries(run: LiveDemoRunState | null) {
   return run.log
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => line && LOG_MARKERS.test(line))
     .slice(-20)
     .reverse()
     .map((line, index) => ({
@@ -547,22 +550,9 @@ function Sidebar({ active, onBrandClick }: { active: string; onBrandClick: () =>
       ))}
       <div className="dotted" />
       <div className="nav-section-title">Recent</div>
-      {[
-        { t: "Diffusion Policy", s: "running" },
-        { t: "ACT Transformer", s: "shipped" },
-        { t: "PerAct", s: "failed" }
-      ].map((item) => (
-        <a key={item.t} href="/lab" className="navitem navitem-small">
-          <span
-            className="nav-icon nav-status-dot"
-            style={{
-              background:
-                item.s === "running" ? "var(--accent)" : item.s === "failed" ? "var(--err)" : "var(--muted-2)"
-            }}
-          />
-          <span className="nav-label">{item.t}</span>
-        </a>
-      ))}
+      <span className="navitem navitem-small" style={{ color: "var(--muted)", cursor: "default" }}>
+        <span className="nav-label">No recent runs</span>
+      </span>
       <div className="sidebar-footer">
         <div className="dotted" />
         {[
@@ -2140,7 +2130,9 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
           return;
         }
         const next = (await response.json()) as LiveDemoRunState | null;
-        if (next && !cancelled) {
+        // Only resume runs that are still active — don't auto-load
+        // completed/failed/stopped runs from previous sessions.
+        if (next && !cancelled && (next.status === "queued" || next.status === "running")) {
           setRun(next);
         }
       } catch {
