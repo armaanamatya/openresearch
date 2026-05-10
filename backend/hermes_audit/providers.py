@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import re
 from typing import Any, Protocol
+
+from backend.config import get_settings
 
 
 # --------------------------------------------------------------------------- #
@@ -159,16 +160,36 @@ class NousHermesProvider:
 
 class ClaudeAuditProvider:
     """Direct Anthropic SDK call — bypasses our agent runtime so we don't
-    need an event loop or tool plumbing for a one-shot JSON request."""
+    need an event loop or tool plumbing for a one-shot JSON request.
+
+    The API key is sourced from ``Settings.anthropic_api_key`` (which
+    pydantic-settings loads from ``.env``), NOT ``os.environ``. This is
+    deliberate: a previous version read os.environ directly and was
+    silently skipped whenever the parent process never sourced .env
+    (Lab UI spawn, pytest from a clean shell, …). Settings is the
+    single source of truth — it reads disk on construction regardless
+    of os.environ state.
+    """
 
     name = "claude"
 
-    def __init__(self, model: str = "claude-sonnet-4-6", max_tokens: int = 2000) -> None:
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-6",
+        max_tokens: int = 2000,
+        api_key: str | None = None,
+    ) -> None:
         self.model = model
         self.max_tokens = max_tokens
+        self._api_key_override = api_key
+
+    def _resolve_api_key(self) -> str:
+        if self._api_key_override is not None:
+            return self._api_key_override
+        return get_settings().anthropic_api_key
 
     def is_available(self) -> bool:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        if not self._resolve_api_key():
             return False
         try:
             importlib.import_module("anthropic")
@@ -178,7 +199,7 @@ class ClaudeAuditProvider:
 
     def call(self, prompt: str) -> str:
         anthropic = importlib.import_module("anthropic")
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(api_key=self._resolve_api_key())
         response = client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -191,16 +212,31 @@ class ClaudeAuditProvider:
 
 
 class OpenAIAuditProvider:
-    """Direct OpenAI SDK call — same shape as ClaudeAuditProvider."""
+    """Direct OpenAI SDK call — same shape as ClaudeAuditProvider.
+
+    See ``ClaudeAuditProvider`` for why the key is resolved through
+    ``Settings`` rather than ``os.environ``.
+    """
 
     name = "openai"
 
-    def __init__(self, model: str = "gpt-4o", max_tokens: int = 2000) -> None:
+    def __init__(
+        self,
+        model: str = "gpt-4o",
+        max_tokens: int = 2000,
+        api_key: str | None = None,
+    ) -> None:
         self.model = model
         self.max_tokens = max_tokens
+        self._api_key_override = api_key
+
+    def _resolve_api_key(self) -> str:
+        if self._api_key_override is not None:
+            return self._api_key_override
+        return get_settings().openai_api_key
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not self._resolve_api_key():
             return False
         try:
             importlib.import_module("openai")
@@ -210,7 +246,7 @@ class OpenAIAuditProvider:
 
     def call(self, prompt: str) -> str:
         openai_mod = importlib.import_module("openai")
-        client = openai_mod.OpenAI()
+        client = openai_mod.OpenAI(api_key=self._resolve_api_key())
         response = client.chat.completions.create(
             model=self.model,
             max_tokens=self.max_tokens,
