@@ -28,6 +28,9 @@ dev = [
 hermes = [
     "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git",
 ]
+semantic = [
+    "chromadb>=0.5,<1",
+]
 evals = [
     "deepeval>=2.0",
     "scipy>=1.12",
