@@ -1,0 +1,9 @@
+id: ftrl
+title: "Fine-tuning Reinforcement Learning Models is Secretly a Forgetting Mitigation Problem"
+authors: "Wolczyk, Cupiał, Ostaszewski, Bortkiewicz, Zajac, Pascanu, Kuciński, Miłoś"
+venue: "ICML 2024 (Spotlight)"
+url: "https://openreview.net/forum?id=53iSXb1m8w"
+icml_topic: "Reinforcement Learning: Deep RL"
+rubric_node_count_paper: 233
+rubric_leaf_count_paper: 178
+notes: "Placeholder bundle. Replace paper.md / addendum.md / rubric.json with the upstream PaperBench artifacts before claiming apples-to-apples comparison."

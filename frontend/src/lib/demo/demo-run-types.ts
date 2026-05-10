@@ -37,4 +37,18 @@ export interface LiveDemoRunState {
   pid?: number;
   payload: LiveDemoPayload | null;
   log: string;
+  telemetry?: TelemetryRecordPublic[];
+}
+
+/** Compact, public-safe view of one agent invocation telemetry record. */
+export interface TelemetryRecordPublic {
+  agent_id?: string;
+  model?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  message_count?: number;
+  output_chars?: number;
+  success?: boolean;
+  error_message?: string | null;
 }

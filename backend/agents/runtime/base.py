@@ -5,9 +5,85 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal, Protocol
+from urllib.parse import urlparse
 
 
 ProviderName = Literal["anthropic", "openai"]
+
+
+class RuntimeGuardViolation(RuntimeError):
+    """Raised when a provider tool call violates runtime guardrails."""
+
+
+class AgentLimitExceeded(RuntimeError):
+    """Raised when an agent invocation hits a configured budget cap.
+
+    Carries enough structured info that the orchestrator (or a UI) can
+    decide how to react — fail loudly, retry with a bumped budget, or
+    continue with the partial output. ``kind`` is one of:
+
+      * ``"turns"``       — provider SDK returned its turn-cap error
+      * ``"tool_calls"``  — orchestrator-side counter exceeded the cap
+      * ``"wall_clock"``  — agent invocation exceeded agent_wall_clock_seconds
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_id: str,
+        kind: Literal["turns", "tool_calls", "wall_clock"],
+        limit_value: int,
+        elapsed_seconds: float,
+        partial_output: str = "",
+    ) -> None:
+        self.agent_id = agent_id
+        self.kind = kind
+        self.limit_value = limit_value
+        self.elapsed_seconds = elapsed_seconds
+        self.partial_output = partial_output
+        super().__init__(
+            f"Agent {agent_id!r} hit {kind} cap of {limit_value} after "
+            f"{elapsed_seconds:.1f}s "
+            f"({len(partial_output)} chars of partial output preserved)"
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeGuard:
+    """Runtime policy shared across provider adapters."""
+
+    blocked_terms: tuple[str, ...] = ()
+    max_tool_calls: int | None = None
+
+    def normalized_blocked_terms(self) -> tuple[str, ...]:
+        terms: list[str] = []
+        for term in self.blocked_terms:
+            raw = term.strip()
+            if not raw:
+                continue
+            lowered = raw.lower()
+            if lowered not in terms:
+                terms.append(lowered)
+            canonical = _canonicalize_url_term(raw)
+            if canonical and canonical not in terms:
+                terms.append(canonical)
+        return tuple(terms)
+
+    def find_blocked_term(self, text: str) -> str | None:
+        if not text:
+            return None
+        haystack = text.lower()
+        for term in self.normalized_blocked_terms():
+            if term and term in haystack:
+                return term
+        return None
+
+    def raise_if_blocked(self, text: str, surface: str) -> None:
+        blocked = self.find_blocked_term(text)
+        if blocked is not None:
+            raise RuntimeGuardViolation(
+                f"{surface} references blocked PaperBench resource: {blocked}"
+            )
 
 
 @dataclass(frozen=True)
@@ -30,6 +106,7 @@ class AgentRuntimeSpec:
     cache_static_blocks: bool = True
     permission_mode: str = "bypassPermissions"
     working_directory: Path | None = None
+    guard: RuntimeGuard = field(default_factory=RuntimeGuard)
 
 
 @dataclass(frozen=True)
@@ -92,14 +169,49 @@ class AgentRuntime(Protocol):
 
 
 __all__ = [
+    "AgentLimitExceeded",
     "AgentRuntime",
     "AgentRuntimeSpec",
     "ProviderConfigurationError",
     "ProviderFeatureUnsupported",
     "ProviderName",
+    "RuntimeGuard",
+    "RuntimeGuardViolation",
     "StreamEvent",
     "StreamText",
     "StreamToolCall",
     "StreamUsage",
     "ToolSpec",
 ]
+
+
+def _canonicalize_url_term(value: str) -> str:
+    """Canonicalize a configured blocked term that is *expected* to be URL-like.
+
+    Returns a lowercase ``host/path`` form so that
+    ``https://github.com/foo/bar.git`` and ``GITHUB.COM/foo/bar`` match the
+    same way. Never raises: free-form input that is not a URL falls back to
+    the lowercased, stripped string.
+    """
+
+    text = value.lower().strip()
+    if not text:
+        return ""
+    text = text.replace("http://", "").replace("https://", "")
+    candidate = text if "://" in text else "https://" + text
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        # Stray brackets, unbalanced quotes, etc. The raw lowercased form is
+        # still useful for substring matching, so return it unchanged.
+        return text
+    if parsed.netloc:
+        path = parsed.path.rstrip("/")
+        text = f"{parsed.netloc}{path}".lower()
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text
+
+
+# Public alias: callers should prefer the explicit name.
+_normalize_guard_text = _canonicalize_url_term

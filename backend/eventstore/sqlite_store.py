@@ -106,10 +106,22 @@ def _extract_path(database_url: str) -> str:
 
 
 def _new_connection(path: str) -> sqlite3.Connection:
-    """Open a fresh connection with our PRAGMAs."""
+    """Open a fresh connection with our PRAGMAs.
+
+    ``synchronous=FULL`` is intentional: in WAL mode the default is NORMAL,
+    which can leave the main DB file in an inconsistent state if a process
+    is SIGKILL'd between the WAL write and the checkpoint. We've seen this
+    in practice (see ``learn.md`` 2026-05-09) — a killed
+    ``backend.cli reproduce`` subprocess corrupted the event store and the
+    next startup raised ``DatabaseError: database disk image is malformed``.
+    FULL trades a small write throughput hit for crash safety, which is
+    the right call for a single-writer event store.
+    """
+
     conn = sqlite3.connect(path, isolation_level="DEFERRED")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA foreign_keys=OFF")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn

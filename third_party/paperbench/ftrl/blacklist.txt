@@ -1,0 +1,3 @@
+# Blocked URLs / terms — agents must not consult these during a PaperBench run.
+# Replace with the upstream blacklist when the real bundle is dropped in.
+github.com/wolczyk/ftrl

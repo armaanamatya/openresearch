@@ -1,6 +1,10 @@
 from argparse import Namespace
 
-from backend.cli import _resolve_sdk_providers, _with_reproduce_defaults
+from backend.cli import (
+    _blacklist_entries_from_arg,
+    _resolve_sdk_providers,
+    _with_reproduce_defaults,
+)
 
 
 def test_reproduce_defaults_accept_generated_namespace_without_cli_fields() -> None:
@@ -24,6 +28,10 @@ def test_reproduce_defaults_accept_generated_namespace_without_cli_fields() -> N
     assert args.sandbox_platform is None
     assert args.sandbox_memory is None
     assert args.sandbox_cpus is None
+    assert args.seed is None
+    assert args.attempt_id is None
+    assert args.run_group_id is None
+    assert args.blacklist is None
 
 
 def test_resolve_sdk_providers_accepts_generated_namespace_without_provider(
@@ -37,3 +45,16 @@ def test_resolve_sdk_providers_accepts_generated_namespace_without_provider(
 
     assert provider == "anthropic"
     assert verification_provider is None
+
+
+def test_blacklist_entries_from_inline_arg_and_file(tmp_path) -> None:
+    blacklist = tmp_path / "blacklist.txt"
+    blacklist.write_text(
+        "# comment\nhttps://github.com/BartekCupial/finetuning-RL-as-CL\n",
+        encoding="utf-8",
+    )
+
+    assert _blacklist_entries_from_arg(str(blacklist)) == (
+        "https://github.com/BartekCupial/finetuning-RL-as-CL",
+    )
+    assert _blacklist_entries_from_arg("one, two") == ("one", "two")

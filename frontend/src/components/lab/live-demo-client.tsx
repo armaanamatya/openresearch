@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { DashboardShell } from "@/features/dashboard/dashboard-shell";
+import { ProgressStrip } from "@/components/lab/progress-strip";
+import { TimelinePanel } from "@/components/lab/timeline-panel";
 import type {
   DemoExecutionMode,
   DemoGpuMode,
@@ -680,18 +682,140 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
 
       {run ? (
         <>
+          <div className="mx-auto mb-6 max-w-7xl">
+            <ProgressStrip run={run} />
+          </div>
           <section className="mx-auto mb-8 max-w-7xl overflow-hidden rounded-[28px] border border-white/10 bg-stone-900/80 shadow-[0_14px_60px_rgba(0,0,0,0.35)]">
-            <div className="border-b border-white/10 px-6 py-4">
+            <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
               <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Runner log</p>
+              <div className="flex items-center gap-2">
+                <CopyLogButton log={run.log ?? ""} />
+                <CopyDebugBundleButton projectId={run.projectId} />
+              </div>
             </div>
             <pre className="max-h-[24rem] overflow-auto px-6 py-5 text-sm leading-6 text-emerald-100">
               {run.log || "No stderr log has been captured yet."}
             </pre>
           </section>
 
+          <div className="mx-auto mb-8 max-w-7xl">
+            <TimelinePanel telemetry={run.telemetry} />
+          </div>
+
           {adapter ? <DashboardShell adapter={adapter} /> : null}
         </>
       ) : null}
     </main>
+  );
+}
+
+function CopyDebugBundleButton({ projectId }: { projectId: string }) {
+  const [state, setState] = useState<"idle" | "fetching" | "copied" | "error">(
+    "idle"
+  );
+
+  const handleClick = async () => {
+    setState("fetching");
+    try {
+      const res = await fetch(
+        `/api/lab/debug-bundle?projectId=${encodeURIComponent(projectId)}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const text = JSON.stringify(json, null, 2);
+      await copyText(text);
+      setState("copied");
+      setTimeout(() => setState("idle"), 1800);
+    } catch {
+      setState("error");
+      setTimeout(() => setState("idle"), 1800);
+    }
+  };
+
+  const label =
+    state === "fetching"
+      ? "Bundling…"
+      : state === "copied"
+        ? "Copied"
+        : state === "error"
+          ? "Bundle failed"
+          : "Copy debug bundle";
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={state === "fetching"}
+      className={`rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+        state === "copied"
+          ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+          : state === "error"
+            ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+            : "border-white/15 bg-white/5 text-stone-200 hover:bg-white/10"
+      }`}
+      aria-live="polite"
+      title="Copy a structured JSON bundle (status, last log lines, telemetry tail, pipeline state preview) to share with Claude Code or paste into a bug report."
+    >
+      {label}
+    </button>
+  );
+}
+
+async function copyText(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // Fallback for environments without the async clipboard API.
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand?.("copy") ?? false;
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error("execCommand copy failed");
+}
+
+function CopyLogButton({ log }: { log: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+  const disabled = !log;
+
+  const handleCopy = async () => {
+    if (!log) return;
+    try {
+      await copyText(log);
+      setState("copied");
+      setTimeout(() => setState("idle"), 1800);
+    } catch {
+      setState("error");
+      setTimeout(() => setState("idle"), 1800);
+    }
+  };
+
+  const label =
+    state === "copied" ? "Copied" : state === "error" ? "Copy failed" : "Copy log";
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={disabled}
+      className={`rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+        disabled
+          ? "cursor-not-allowed border-white/10 bg-white/5 text-stone-500"
+          : state === "copied"
+            ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+            : state === "error"
+              ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+              : "border-white/15 bg-white/5 text-stone-200 hover:bg-white/10"
+      }`}
+      aria-live="polite"
+    >
+      {label}
+    </button>
   );
 }

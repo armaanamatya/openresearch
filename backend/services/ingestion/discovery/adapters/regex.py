@@ -43,7 +43,14 @@ class RegexArtifactDiscoveryAdapter:
         )
         for match in _URL_RE.finditer(text):
             raw_url = match.group(0).rstrip(".")
-            parsed = urlparse(raw_url)
+            try:
+                parsed = urlparse(raw_url)
+            except ValueError:
+                # Malformed URL captured by the regex (e.g., stray brackets
+                # that look like an IPv6 literal). Skip silently — the
+                # discovery layer should never crash the pipeline because of
+                # one bad reference in paper text.
+                continue
             host_path = f"{parsed.netloc}{parsed.path}".rstrip("/")
             artifact = self._artifact_for_url(
                 project_id=project_id,

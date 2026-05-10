@@ -53,3 +53,21 @@ runs/
 
 # Windows artifacts
 %APPDATA%/
+*:Zone.Identifier
+
+# Frontend build artifacts
+frontend/tsconfig.tsbuildinfo
+
+# Local-only test logs and DB backups
+_test_logs/
+reprolab.db.offline_backup
+reprolab.db-shm
+reprolab.db-wal
+
+# Sample input PDFs — keep paperbench1.pdf as the canonical FTRL fixture.
+# Add ! exceptions if more named samples should be tracked.
+/paperbench*.pdf
+!/paperbench1.pdf
+
+# Stray pip output written into repo root
+/[0-9]*.[0-9]*.[0-9]*

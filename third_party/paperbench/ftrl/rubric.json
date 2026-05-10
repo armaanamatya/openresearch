@@ -1,0 +1,100 @@
+{
+  "id": "ftrl-root",
+  "requirements": "The paper 'Fine-tuning Reinforcement Learning Models is Secretly a Forgetting Mitigation Problem' has been replicated.",
+  "weight": 1,
+  "task_category": "Root",
+  "finegrained_task_category": "Root",
+  "sub_tasks": [
+    {
+      "id": "ftrl-code",
+      "requirements": "All required code has been implemented.",
+      "weight": 6,
+      "task_category": "Code Development",
+      "finegrained_task_category": "Methodology",
+      "sub_tasks": [
+        {
+          "id": "ftrl-code-env",
+          "requirements": "Environment wrappers for the chosen Brax / Gym tasks are present and parameterized.",
+          "weight": 1,
+          "task_category": "Code Development",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        },
+        {
+          "id": "ftrl-code-pretrain",
+          "requirements": "Pre-training script implements the source-task RL algorithm with the hyperparameters listed in the paper.",
+          "weight": 2,
+          "task_category": "Code Development",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        },
+        {
+          "id": "ftrl-code-finetune",
+          "requirements": "Fine-tuning script implements the target-task adaptation loop with the forgetting-mitigation regularizers studied in the paper.",
+          "weight": 2,
+          "task_category": "Code Development",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        },
+        {
+          "id": "ftrl-code-eval",
+          "requirements": "Evaluation harness produces the per-task return curves used in the paper's plots.",
+          "weight": 1,
+          "task_category": "Code Development",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "ftrl-exec",
+      "requirements": "reproduce.sh runs the pretraining, fine-tuning, and evaluation passes end-to-end.",
+      "weight": 2,
+      "task_category": "Execution",
+      "finegrained_task_category": "Methodology",
+      "sub_tasks": [
+        {
+          "id": "ftrl-exec-pretrain",
+          "requirements": "Pre-training pass completes and emits a checkpoint.",
+          "weight": 1,
+          "task_category": "Execution",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        },
+        {
+          "id": "ftrl-exec-finetune",
+          "requirements": "Fine-tuning pass completes and emits per-step return logs.",
+          "weight": 1,
+          "task_category": "Execution",
+          "finegrained_task_category": "Methodology",
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "ftrl-results",
+      "requirements": "Reported numbers match the paper within tolerance.",
+      "weight": 2,
+      "task_category": "Result Match",
+      "finegrained_task_category": "Results",
+      "sub_tasks": [
+        {
+          "id": "ftrl-results-curves",
+          "requirements": "Return curves track the paper's published shape.",
+          "weight": 1,
+          "task_category": "Result Match",
+          "finegrained_task_category": "Results",
+          "sub_tasks": []
+        },
+        {
+          "id": "ftrl-results-final",
+          "requirements": "Final-task return matches the paper within stated error.",
+          "weight": 1,
+          "task_category": "Result Match",
+          "finegrained_task_category": "Results",
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

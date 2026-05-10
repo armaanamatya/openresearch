@@ -11,6 +11,7 @@ from backend.agents.runtime.base import (
     AgentRuntimeSpec,
     ProviderConfigurationError,
     ProviderName,
+    RuntimeGuard,
     StreamEvent,
     StreamText,
     StreamToolCall,
@@ -122,13 +123,17 @@ def _build_tools(
         "Read": lambda: _read_tool(root),
         "Write": lambda: _write_tool(root),
         "Edit": lambda: _edit_tool(root),
-        "Bash": lambda: _bash_tool(root),
-        "WebSearch": _unsupported_web_search_tool,
-        "WebFetch": _unsupported_web_fetch_tool,
+        "Bash": lambda: _bash_tool(root, spec.guard),
+        "WebSearch": lambda: _unsupported_web_search_tool(spec.guard),
+        "WebFetch": lambda: _unsupported_web_fetch_tool(spec.guard),
     }
     tools: list[Any] = []
     for tool_spec in spec.tools:
-        if tool_spec.name == "WebSearch" and web_search_tool_cls is not None:
+        if (
+            tool_spec.name == "WebSearch"
+            and web_search_tool_cls is not None
+            and not spec.guard.blocked_terms
+        ):
             tools.append(web_search_tool_cls())
             continue
         factory = factories.get(tool_spec.name)
@@ -196,8 +201,9 @@ def _edit_tool(root: Path) -> Callable[[str, str, str], str]:
     return edit
 
 
-def _bash_tool(root: Path) -> Callable[[str, int], str]:
+def _bash_tool(root: Path, guard: RuntimeGuard) -> Callable[[str, int], str]:
     async def bash(command: str, timeout_seconds: int = 120) -> str:
+        guard.raise_if_blocked(command, "Bash command")
         timeout = max(1, min(int(timeout_seconds or 120), 600))
         proc = await asyncio.to_thread(
             subprocess.run,
@@ -218,8 +224,9 @@ def _bash_tool(root: Path) -> Callable[[str, int], str]:
     return bash
 
 
-def _unsupported_web_search_tool() -> Callable[[str], str]:
+def _unsupported_web_search_tool(guard: RuntimeGuard) -> Callable[[str], str]:
     def web_search(query: str) -> str:
+        guard.raise_if_blocked(query, "WebSearch query")
         return (
             "WebSearch is not available in the local OpenAI runtime adapter yet. "
             f"Requested query: {query}"
@@ -228,8 +235,9 @@ def _unsupported_web_search_tool() -> Callable[[str], str]:
     return web_search
 
 
-def _unsupported_web_fetch_tool() -> Callable[[str], str]:
+def _unsupported_web_fetch_tool(guard: RuntimeGuard) -> Callable[[str], str]:
     def web_fetch(url: str) -> str:
+        guard.raise_if_blocked(url, "WebFetch URL")
         return (
             "WebFetch is not available in the local OpenAI runtime adapter yet. "
             f"Requested URL: {url}"

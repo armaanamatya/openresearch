@@ -111,6 +111,20 @@ def _parsed_project(store, tmp_path: Path) -> str:
     return pid
 
 
+def test_regex_adapter_skips_malformed_url_without_crashing():
+    """Regression: a malformed URL that survives the regex (e.g. stray
+    bracket suggesting an IPv6 literal) used to crash urlparse on Python
+    3.12. The adapter must skip such matches and continue."""
+
+    text = (
+        "see https://[malformed for the broken case "
+        "and https://github.com/openai/baselines for the good one."
+    )
+    artifacts = RegexArtifactDiscoveryAdapter().discover(project_id="prj_x", text=text)
+    locators = {artifact.locator for artifact in artifacts}
+    assert "github:openai/baselines" in locators
+
+
 def test_regex_adapter_discovers_repository_issue_and_dataset():
     text = (
         "Code: https://github.com/openai/baselines. "

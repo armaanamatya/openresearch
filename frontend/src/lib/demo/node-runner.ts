@@ -233,6 +233,49 @@ async function readLogTail(projectId: string, maxChars = 12000): Promise<string>
   }
 }
 
+function telemetryPath(projectId: string): string {
+  return path.join(runDir(projectId), "agent_telemetry.jsonl");
+}
+
+/** Streamed-append JSONL files: tail without loading entire file into RAM. */
+export async function readTelemetryTail(
+  projectId: string,
+  maxRecords = 50
+): Promise<TelemetryRecord[]> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(telemetryPath(projectId), "utf8");
+  } catch {
+    return [];
+  }
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const tail = lines.slice(-maxRecords);
+  const records: TelemetryRecord[] = [];
+  for (const line of tail) {
+    try {
+      records.push(JSON.parse(line) as TelemetryRecord);
+    } catch {
+      // Skip partial / corrupt JSONL lines silently.
+    }
+  }
+  return records;
+}
+
+/** Single agent invocation as recorded by AgentTelemetryRecorder. */
+export interface TelemetryRecord {
+  agent_id?: string;
+  model?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  message_count?: number;
+  output_chars?: number;
+  success?: boolean;
+  error_message?: string | null;
+  usage?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 function metaFromStatus(
   projectId: string,
   outputDir: string,
@@ -581,6 +624,7 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
   const gpuMode = status?.gpuMode ?? "auto";
   const log = await readLogTail(projectId);
   const payload = await payloadForProject(projectId, runMode, log, status ?? undefined);
+  const telemetry = await readTelemetryTail(projectId);
 
   if (status) {
     return {
@@ -602,7 +646,8 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
       error: status.error,
       pid: status.pid,
       payload,
-      log
+      log,
+      telemetry
     };
   }
 
@@ -621,7 +666,8 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
       sourceLabel: payload.sourceLabel,
       sourceNote: payload.sourceNote,
       payload,
-      log: payload.log
+      log: payload.log,
+      telemetry
     };
   }
 

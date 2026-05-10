@@ -46,6 +46,10 @@ async def run_pipeline_sdk(
     resume: bool = True,
     execution_profile: ExecutionProfile | None = None,
     sandbox_mode: SandboxMode | str = SandboxMode.docker,
+    seed: int | None = None,
+    attempt_id: str | None = None,
+    run_group_id: str | None = None,
+    blacklist_terms: tuple[str, ...] = (),
     workspace_service: Any | None = None,
     workspace_id: str | None = None,
 ) -> PipelineState:
@@ -66,6 +70,10 @@ async def run_pipeline_sdk(
         verification_runtime=verification_runtime,
         execution_profile=execution_profile,
         sandbox_mode=sandbox_mode,
+        seed=seed,
+        attempt_id=attempt_id,
+        run_group_id=run_group_id,
+        blacklist_terms=blacklist_terms,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
     )
@@ -85,6 +93,10 @@ def run_pipeline_offline(
     n_improvement_paths: int = 3,
     execution_profile: ExecutionProfile | None = None,
     sandbox_mode: SandboxMode | str = SandboxMode.simulate,
+    seed: int | None = None,
+    attempt_id: str | None = None,
+    run_group_id: str | None = None,
+    blacklist_terms: tuple[str, ...] = (),
     workspace_service: Any | None = None,
     workspace_id: str | None = None,
 ) -> PipelineState:
@@ -114,7 +126,13 @@ def run_pipeline_offline(
     runs = Path(runs_root)
     profile = execution_profile or ExecutionProfile.from_mode("efficient")
     resolved_sandbox_mode = resolve_sandbox_mode(sandbox_mode, pipeline_mode="offline")
-    state = PipelineState(project_id=project_id)
+    state = PipelineState(
+        project_id=project_id,
+        seed=seed,
+        attempt_id=attempt_id,
+        run_group_id=run_group_id,
+        blacklist_terms=list(blacklist_terms),
+    )
 
     def _enrich(variable_name: str, value: dict, agent_id: str) -> None:
         if workspace_service is None or workspace_id is None:

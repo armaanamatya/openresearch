@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, AsyncIterator
 
 from backend.agents.runtime.base import (
     AgentRuntimeSpec,
     ProviderConfigurationError,
     ProviderName,
+    RuntimeGuardViolation,
     StreamEvent,
     StreamText,
     StreamToolCall,
@@ -47,7 +49,7 @@ class ClaudeAgentRuntime:
         sub_agents = {
             sub_agent.name: AgentDefinition(
                 description=sub_agent.description or sub_agent.instructions[:200],
-                prompt=sub_agent.instructions,
+                prompt=_with_guard_prompt(sub_agent.instructions, sub_agent),
                 tools=[tool.name for tool in sub_agent.tools] or None,
                 model=sub_agent.model or None,
                 maxTurns=sub_agent.max_turns,
@@ -62,7 +64,7 @@ class ClaudeAgentRuntime:
             max_turns=agent.max_turns,
             agents=sub_agents,
             cwd=str(agent.working_directory) if agent.working_directory else None,
-            system_prompt=agent.instructions,
+            system_prompt=_with_guard_prompt(agent.instructions, agent),
             max_thinking_tokens=agent.thinking_budget_tokens,
         )
 
@@ -73,10 +75,18 @@ class ClaudeAgentRuntime:
                     if text:
                         yield StreamText(str(text))
                     elif isinstance(block, ToolUseBlock):
+                        tool_input = _as_dict(getattr(block, "input", None))
+                        blocked = agent.guard.find_blocked_term(
+                            json.dumps(tool_input, sort_keys=True)
+                        )
+                        if blocked is not None:
+                            raise RuntimeGuardViolation(
+                                f"Claude tool call references blocked PaperBench resource: {blocked}"
+                            )
                         yield StreamToolCall(
                             tool_id=str(getattr(block, "id", "")),
                             tool_name=str(getattr(block, "name", "")),
-                            tool_input=_as_dict(getattr(block, "input", None)),
+                            tool_input=tool_input,
                         )
             elif isinstance(message, ResultMessage):
                 usage = coerce_usage(getattr(message, "usage", None))
@@ -109,6 +119,17 @@ def _int_value(data: dict[str, Any], key: str) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _with_guard_prompt(instructions: str, agent: AgentRuntimeSpec) -> str:
+    if not agent.guard.blocked_terms:
+        return instructions
+    blocked = ", ".join(agent.guard.blocked_terms)
+    return (
+        instructions
+        + "\n\nRuntime guardrail: do not access, fetch, clone, download, or copy "
+        + f"from these blocked PaperBench resources: {blocked}."
+    )
 
 
 __all__ = ["ClaudeAgentRuntime"]

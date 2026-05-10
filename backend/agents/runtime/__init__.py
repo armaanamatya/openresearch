@@ -1,11 +1,14 @@
 """Provider-agnostic agent runtime API."""
 
 from backend.agents.runtime.base import (
+    AgentLimitExceeded,
     AgentRuntime,
     AgentRuntimeSpec,
     ProviderConfigurationError,
     ProviderFeatureUnsupported,
     ProviderName,
+    RuntimeGuard,
+    RuntimeGuardViolation,
     StreamEvent,
     StreamText,
     StreamToolCall,
@@ -19,11 +22,14 @@ from backend.agents.runtime.factory import (
 )
 
 __all__ = [
+    "AgentLimitExceeded",
     "AgentRuntime",
     "AgentRuntimeSpec",
     "ProviderConfigurationError",
     "ProviderFeatureUnsupported",
     "ProviderName",
+    "RuntimeGuard",
+    "RuntimeGuardViolation",
     "StreamEvent",
     "StreamText",
     "StreamToolCall",
