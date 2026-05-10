@@ -1,11 +1,13 @@
 """WorkspaceAppService — builds workspaces, preloads variables, manages lifecycle.
 
-Preloads three variables from indexed sources:
+Preloads variables from indexed sources:
   - `paper_text`: full paper text concatenated from all section chunks
   - `paper_sections`: dict mapping section locator -> section text
   - `claim_map`: one entry per section with source_id, title, excerpt
+  - `discovered_artifacts`: repos/datasets/issues found during discovery
 
-Also provides `enrich_variable()` for progressive enrichment,
+Also auto-wires Chroma vector embeddings when chromadb is installed,
+provides `enrich_variable()` for progressive enrichment,
 `close_workspace()` for lifecycle cleanup, and `promote_variable()`
 for scope transitions.
 """
@@ -13,6 +15,7 @@ for scope transitions.
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from pydantic import ConfigDict
@@ -51,6 +54,8 @@ from backend.services.context.workspace.projections import (
     WorkspaceView,
 )
 
+logger = logging.getLogger(__name__)
+
 
 _CLAIM_MAP_QUOTE_TRUNCATE = 240
 
@@ -82,9 +87,17 @@ def _index_aggregate_id(project_id: str) -> AggregateId:
 
 
 class WorkspaceAppService:
-    def __init__(self, store: EventStore, indexer: IndexerAppService) -> None:
+    def __init__(
+        self,
+        store: EventStore,
+        indexer: IndexerAppService,
+        discovery: Any | None = None,
+        embedding_store: Any | None = None,
+    ) -> None:
         self._store = store
         self._indexer = indexer
+        self._discovery = discovery
+        self._embedding_store = embedding_store
 
     # --- Public ------------------------------------------------------------
 
@@ -230,6 +243,12 @@ class WorkspaceAppService:
                 source_agent="workspace_service",
             )], cid)
 
+        # Step 3d: auto-wire Chroma embeddings.
+        self._embed_chunks(proj, cmd.project_id)
+
+        # Step 3e: preload discovered artifacts.
+        self._preload_artifacts(cmd.project_id, workspace_id, agg, cid)
+
         # Step 4: WorkspaceReady.
         ready = WorkspaceReady(
             workspace_id=workspace_id, variable_count=agg.variable_count
@@ -359,6 +378,87 @@ class WorkspaceAppService:
 
     def get_state(self, workspace_id: str) -> WorkspaceState:
         return self._load_workspace_aggregate(workspace_id).state
+
+    # --- Internal: Chroma auto-wire ----------------------------------------
+
+    def _embed_chunks(self, proj: SourcesProjection, project_id: str) -> None:
+        """Embed indexed chunks into the Chroma store if available."""
+        if self._embedding_store is None:
+            # Try to create one automatically.
+            try:
+                from backend.services.context.semantic.store import (
+                    try_create_chroma_store,
+                )
+                self._embedding_store = try_create_chroma_store()
+            except Exception:
+                logger.debug("Chroma auto-wire skipped (import failed)")
+                return
+
+        if self._embedding_store is None:
+            return
+
+        chunks = proj.list_chunks(project_id)
+        if chunks:
+            try:
+                added = self._embedding_store.add_chunks(chunks)
+                logger.info("Auto-embedded %d chunks into Chroma", added)
+            except Exception:
+                logger.warning("Failed to embed chunks into Chroma", exc_info=True)
+
+    # --- Internal: discovery artifact preload -------------------------------
+
+    def _preload_artifacts(
+        self,
+        project_id: str,
+        workspace_id: str,
+        agg: WorkspaceAggregate,
+        cid: CorrelationId,
+    ) -> None:
+        """Load discovered artifacts (repos, datasets, issues) as a workspace variable."""
+        if self._discovery is None:
+            return
+
+        try:
+            artifacts = self._discovery.list_artifacts(project_id)
+        except Exception:
+            logger.warning("Failed to load discovered artifacts", exc_info=True)
+            return
+
+        if not artifacts:
+            return
+
+        entries: list[dict[str, Any]] = []
+        citations: list[Citation] = []
+        for art in artifacts:
+            entries.append({
+                "id": art.id,
+                "kind": art.kind.value if hasattr(art.kind, "value") else str(art.kind),
+                "locator": art.locator,
+                "url": str(art.url),
+                "title": art.title,
+                "confidence": art.confidence,
+            })
+            citations.append(Citation(
+                source_id=f"artifact:{art.id}",
+                chunk_id=None,
+                quote=art.evidence_quote[:_CLAIM_MAP_QUOTE_TRUNCATE],
+                locator=art.locator,
+                confidence=art.confidence,
+            ))
+
+        if citations:
+            self._append(agg, workspace_id, [VariableLoaded(
+                workspace_id=workspace_id,
+                variable_name="discovered_artifacts",
+                value_payload={
+                    "project_id": project_id,
+                    "artifacts": entries,
+                    "count": len(entries),
+                },
+                citations=tuple(citations),
+                scope=Scope.private_to_parent,
+                source_agent="workspace_service",
+            )], cid)
 
     # --- Internal: claim_map preload ---------------------------------------
 

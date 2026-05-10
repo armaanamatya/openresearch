@@ -9,9 +9,14 @@ from backend.services.context.workspace.tools.interface import (
 )
 from backend.services.context.workspace.tools.list_variables import ListVariablesTool
 from backend.services.context.workspace.tools.lookup import LookupTool
-from backend.services.context.workspace.tools.rlm_query import LlmClient, RlmQueryTool
+from backend.services.context.workspace.tools.rlm_query import (
+    ClaudeLlmClient,
+    LlmClient,
+    RlmQueryTool,
+)
 
 __all__ = [
+    "ClaudeLlmClient",
     "InspectVariableTool",
     "ListVariablesTool",
     "LlmClient",

@@ -173,4 +173,46 @@ class RlmQueryTool:
         return json.dumps(value, default=str)
 
 
-__all__ = ["LlmClient", "RlmQueryTool"]
+class ClaudeLlmClient:
+    """LlmClient implementation using Claude Code via claude-agent-sdk.
+
+    Uses the ``query()`` function from claude-agent-sdk which spawns
+    Claude Code as a subprocess. No ANTHROPIC_API_KEY needed — uses
+    the user's Claude Code subscription.
+    """
+
+    def __init__(self, model: str | None = None, max_turns: int = 1) -> None:
+        self._model = model
+        self._max_turns = max_turns
+
+    def complete(self, *, system: str, user: str) -> str:
+        """Synchronous wrapper around the async claude-agent-sdk query."""
+        import asyncio
+
+        return asyncio.run(self._async_complete(system=system, user=user))
+
+    async def _async_complete(self, *, system: str, user: str) -> str:
+        from claude_agent_sdk import (
+            ClaudeAgentOptions,
+            ResultMessage,
+            query,
+        )
+
+        options = ClaudeAgentOptions(
+            system_prompt=system,
+            model=self._model,
+            max_turns=self._max_turns,
+            permission_mode="plan",
+            tools=[],
+        )
+
+        result_text = ""
+        async for event in query(prompt=user, options=options):
+            if isinstance(event, ResultMessage):
+                result_text = event.result or ""
+                break
+
+        return result_text
+
+
+__all__ = ["ClaudeLlmClient", "LlmClient", "RlmQueryTool"]

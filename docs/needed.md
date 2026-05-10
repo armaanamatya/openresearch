@@ -13,7 +13,7 @@ Instead of stuffing context into prompts or embedding everything in a vector sto
 | Layer | Role | Status |
 |-------|------|--------|
 | **Layer 1 — RLM workspace** (primary) | Variables + programmatic exploration. Precise, structured queries. | **Complete** — full event-sourced workspace with variable preloading, progressive enrichment, scope promotion, 5 workspace tools, `Cited[T]` invariant |
-| **Layer 2 — Semantic search** (fallback) | Fuzzy similarity, discovery of things the agent didn't know to look for | **Built** — `SemanticSearchTool` (BM25 lexical ranker, not yet Chroma embeddings) |
+| **Layer 2 — Semantic search** (fallback) | Fuzzy similarity, discovery of things the agent didn't know to look for | **Complete** — `SemanticSearchTool` with Chroma vector embeddings (all-MiniLM-L6-v2) + BM25 fallback. `ChromaEmbeddingStore` in `backend/services/context/semantic/`. Optional dep: `pip install reprolab-backend[semantic]` |
 | **Layer 3 — Knowledge Graph / Graphify** | Structural code/doc navigation via AST | **Phase 2**, not yet implemented |
 
 ### What's Actually Built

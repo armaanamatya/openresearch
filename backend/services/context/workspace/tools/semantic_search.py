@@ -1,8 +1,10 @@
-"""Deterministic local semantic-search fallback over indexed chunks.
+"""Semantic search tool — vector embeddings (Chroma) with BM25 fallback.
 
-This is not an embedding service; it is a production-safe lexical ranker
-that gives agents a real retrieval primitive before Chroma is connected.
-Every result is returned with evidence-grade citations.
+When an EmbeddingStore is provided, uses true semantic similarity via
+vector embeddings (cosine distance). Falls back to a deterministic BM25
+lexical ranker when no embedding store is available.
+
+Both paths return evidence-grade citations via Cited[dict].
 """
 
 from __future__ import annotations
@@ -24,12 +26,27 @@ _QUOTE_TRUNCATE = 240
 
 
 class SemanticSearchTool:
-    """Rank indexed chunks with a small BM25-style lexical scorer."""
+    """Search indexed chunks with vector embeddings or BM25 fallback.
+
+    When constructed with an ``embedding_store``, queries use true semantic
+    similarity (cosine distance via Chroma). Without one, falls back to
+    deterministic BM25 lexical ranking.
+    """
 
     name = "semantic_search"
 
-    def __init__(self, projection: SourcesProjection) -> None:
+    def __init__(
+        self,
+        projection: SourcesProjection,
+        embedding_store: Any | None = None,
+    ) -> None:
         self._proj = projection
+        self._embedding_store = embedding_store
+
+    @property
+    def backend(self) -> str:
+        """Return which search backend is active."""
+        return "vector" if self._embedding_store is not None else "bm25"
 
     def call(
         self,
@@ -42,6 +59,54 @@ class SemanticSearchTool:
         del workspace_id
         if limit < 1:
             raise WorkspaceToolError("semantic_search limit must be >= 1")
+        if not query.strip():
+            raise WorkspaceToolError("semantic_search query must contain searchable text")
+
+        if self._embedding_store is not None and self._embedding_store.count > 0:
+            return self._vector_search(query, limit)
+        return self._bm25_search(query, project_id, limit)
+
+    # --- Vector search (Chroma) --------------------------------------------
+
+    def _vector_search(
+        self, query: str, limit: int
+    ) -> Cited[dict[str, Any]]:
+        hits = self._embedding_store.query(text=query, top_k=limit)
+        if not hits:
+            raise WorkspaceToolError("semantic_search found no matching chunks")
+
+        results: list[dict[str, Any]] = []
+        citations: list[Citation] = []
+        for hit in hits:
+            source = self._proj.get_source(hit.source_id)
+            locator = source.locator if source is not None else hit.source_id
+            quote = hit.text[:_QUOTE_TRUNCATE]
+            results.append({
+                "source_id": hit.source_id,
+                "chunk_id": hit.chunk_id,
+                "score": hit.score,
+                "locator": locator,
+                "excerpt": quote,
+                "backend": "vector",
+            })
+            citations.append(Citation(
+                source_id=hit.source_id,
+                chunk_id=hit.chunk_id,
+                quote=quote,
+                locator=locator,
+                confidence=min(1.0, max(0.2, hit.score)),
+            ))
+
+        return Cited(
+            value={"query": query, "results": results, "backend": "vector"},
+            citations=tuple(citations),
+        )
+
+    # --- BM25 fallback -----------------------------------------------------
+
+    def _bm25_search(
+        self, query: str, project_id: str | None, limit: int
+    ) -> Cited[dict[str, Any]]:
         query_terms = _tokenize(query)
         if not query_terms:
             raise WorkspaceToolError("semantic_search query must contain searchable text")
@@ -61,29 +126,29 @@ class SemanticSearchTool:
             source = self._proj.get_source(chunk.source_id)
             locator = source.locator if source is not None else chunk.source_id
             quote = chunk.text[:_QUOTE_TRUNCATE]
-            results.append(
-                {
-                    "source_id": chunk.source_id,
-                    "chunk_id": chunk.id,
-                    "score": round(score, 6),
-                    "locator": locator,
-                    "excerpt": quote,
-                }
-            )
-            citations.append(
-                Citation(
-                    source_id=chunk.source_id,
-                    chunk_id=chunk.id,
-                    quote=quote,
-                    locator=locator,
-                    confidence=min(1.0, max(0.2, score / 5.0)),
-                )
-            )
+            results.append({
+                "source_id": chunk.source_id,
+                "chunk_id": chunk.id,
+                "score": round(score, 6),
+                "locator": locator,
+                "excerpt": quote,
+                "backend": "bm25",
+            })
+            citations.append(Citation(
+                source_id=chunk.source_id,
+                chunk_id=chunk.id,
+                quote=quote,
+                locator=locator,
+                confidence=min(1.0, max(0.2, score / 5.0)),
+            ))
 
         return Cited(
-            value={"query": query, "results": results},
+            value={"query": query, "results": results, "backend": "bm25"},
             citations=tuple(citations),
         )
+
+
+# --- BM25 internals -------------------------------------------------------
 
 
 def _tokenize(text: str) -> list[str]:

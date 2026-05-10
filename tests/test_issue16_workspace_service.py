@@ -611,3 +611,129 @@ def test_rlm_query_missing_variable_raises(workspace_service, indexed_project):
             question="test",
             variable_name="nonexistent",
         )
+
+
+# --- Auto-wire Chroma into workspace build ---------------------------------
+
+
+def test_build_workspace_auto_embeds_chunks(store, indexed_project):
+    """When an embedding_store is provided, build_workspace embeds chunks."""
+    from backend.services.context.semantic.store import ChromaEmbeddingStore
+
+    chroma = ChromaEmbeddingStore(collection_name="test_auto_embed")
+    indexer = IndexerAppService(store=store)
+    ws = WorkspaceAppService(
+        store=store, indexer=indexer, embedding_store=chroma
+    )
+    ws.build_workspace(BuildWorkspace(project_id=indexed_project))
+    assert chroma.count > 0
+
+
+def test_build_workspace_without_chroma_still_works(store, indexed_project):
+    """Without chromadb, build_workspace still succeeds (no embedding)."""
+    indexer = IndexerAppService(store=store)
+    ws = WorkspaceAppService(store=store, indexer=indexer, embedding_store=None)
+    wsid = ws.build_workspace(BuildWorkspace(project_id=indexed_project))
+    view = ws.materialize_view(wsid)
+    assert view.is_ready
+    assert view.variable_count >= 3
+
+
+# --- Discovery artifact preloading -----------------------------------------
+
+
+class _FakeDiscovery:
+    """Stub discovery service for testing artifact preloading."""
+
+    def __init__(self, artifacts):
+        self._artifacts = artifacts
+
+    def list_artifacts(self, project_id: str):
+        return self._artifacts
+
+
+class _FakeArtifact:
+    """Minimal artifact stub matching DiscoveredArtifact fields."""
+
+    def __init__(self, *, id, kind, locator, url, title, evidence_quote, confidence=0.8):
+        self.id = id
+        self.kind = kind
+        self.locator = locator
+        self.url = url
+        self.title = title
+        self.evidence_quote = evidence_quote
+        self.confidence = confidence
+
+
+def test_build_workspace_preloads_discovered_artifacts(store, indexed_project):
+    """When a discovery service is provided, artifacts become workspace variables."""
+    from backend.services.ingestion.discovery.model import DiscoveredArtifactKind
+
+    artifacts = [
+        _FakeArtifact(
+            id="art_abc123",
+            kind=DiscoveredArtifactKind.repository,
+            locator="github.com/test/repo",
+            url="https://github.com/test/repo",
+            title="test repo",
+            evidence_quote="See our code at github.com/test/repo",
+        ),
+        _FakeArtifact(
+            id="art_def456",
+            kind=DiscoveredArtifactKind.dataset,
+            locator="huggingface.co/datasets/test/data",
+            url="https://huggingface.co/datasets/test/data",
+            title="test dataset",
+            evidence_quote="Dataset available at huggingface.co/datasets/test/data",
+        ),
+    ]
+    discovery = _FakeDiscovery(artifacts)
+    indexer = IndexerAppService(store=store)
+    ws = WorkspaceAppService(
+        store=store, indexer=indexer, discovery=discovery
+    )
+    wsid = ws.build_workspace(BuildWorkspace(project_id=indexed_project))
+    view = ws.materialize_view(wsid)
+
+    cited = view.get("discovered_artifacts")
+    assert cited is not None
+    assert cited.value["count"] == 2
+    kinds = [a["kind"] for a in cited.value["artifacts"]]
+    assert "repository" in kinds
+    assert "dataset" in kinds
+    assert len(cited.citations) == 2
+
+
+def test_build_workspace_no_discovery_no_artifact_variable(
+    workspace_service, indexed_project
+):
+    """Without a discovery service, no discovered_artifacts variable is created."""
+    wsid = workspace_service.build_workspace(
+        BuildWorkspace(project_id=indexed_project)
+    )
+    view = workspace_service.materialize_view(wsid)
+    assert view.get("discovered_artifacts") is None
+
+
+def test_build_workspace_empty_discovery(store, indexed_project):
+    """If discovery finds nothing, no artifact variable is created."""
+    discovery = _FakeDiscovery([])
+    indexer = IndexerAppService(store=store)
+    ws = WorkspaceAppService(
+        store=store, indexer=indexer, discovery=discovery
+    )
+    wsid = ws.build_workspace(BuildWorkspace(project_id=indexed_project))
+    view = ws.materialize_view(wsid)
+    assert view.get("discovered_artifacts") is None
+
+
+# --- ClaudeLlmClient -------------------------------------------------------
+
+
+def test_claude_llm_client_importable():
+    """ClaudeLlmClient can be imported and instantiated."""
+    from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+    client = ClaudeLlmClient(model="claude-haiku-4-5-20251001", max_turns=1)
+    assert client._model == "claude-haiku-4-5-20251001"
+    assert client._max_turns == 1
