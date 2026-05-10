@@ -1,0 +1,49 @@
+# OpenResearch — local-dev / smoke-run compose file.
+#
+#   docker compose up --build              # foreground, build first time
+#   docker compose up -d                   # detached
+#   docker compose logs -f app             # tail logs
+#   docker compose down                    # stop, keep volumes
+#
+# Lab UI:        http://localhost:3000/lab
+# PaperBench UI: http://localhost:3000/paperbench
+# Backend API:   http://localhost:8000/health
+#
+# This compose mounts the host docker socket so the inner agent pipeline's
+# LocalDockerBackend can spawn sandbox containers against the host daemon
+# (no nested DinD). For prod, use the RunPodBackend instead — see
+# docs/setup-guide.md §"Remote GPU support with Runpod".
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openresearch/app:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"   # Next.js
+      - "8000:8000"   # FastAPI
+    volumes:
+      # Host docker socket → inner LocalDockerBackend works against host daemon.
+      # This grants the container effective root on host Docker. Local-dev only.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist run artifacts + Hermes adapter memory + paperbench statuses.
+      - ./runs:/app/runs
+      # Vendored PaperBench bundles (read-only — they're inputs, not outputs).
+      - ./third_party:/app/third_party:ro
+      # .env is gitignored. Mounted read-only so a typo inside the container
+      # can't clobber your local secrets. The entrypoint sources it at runtime
+      # so docker compose config does not print secret values.
+      - ./.env:/app/.env:ro
+    environment:
+      # Tell anything that wants the venv interpreter where it lives.
+      - REPROLAB_PYTHON_BIN=/opt/venv/bin/python
+      # Persisted SQLite event store (volume above keeps it between restarts).
+      - REPROLAB_DATABASE_URL=sqlite:///app/runs/reprolab.db
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 30s

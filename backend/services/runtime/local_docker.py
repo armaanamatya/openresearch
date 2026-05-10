@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import sys
 import tarfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -34,16 +35,19 @@ class LocalDockerBackend(RuntimeBackend):
     @property
     def client(self) -> Any:
         if self._client is None:
-            try:
-                import docker  # type: ignore[import-untyped]
-            except ImportError as exc:
-                raise SandboxRuntimeError(
-                    RuntimeCauseKind.backend_unavailable,
-                    "Docker SDK is not installed. Install the 'docker' Python package.",
-                    retryable=False,
-                ) from exc
-            self._client = docker.from_env()
+            self._client = _make_docker_client()
         return self._client
+
+    @classmethod
+    def verify_available(cls) -> None:
+        """Fail fast when Docker mode cannot create SDK-backed sandboxes."""
+        client = _make_docker_client()
+        try:
+            _ping_docker(client)
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
         project_root = config.project_root.resolve()
@@ -273,6 +277,57 @@ def _gpu_device_request() -> Any:
         return SimpleNamespace(count=-1, capabilities=[["gpu"]])
 
 
+def ensure_local_docker_available(client: Any | None = None) -> None:
+    """Validate the Python Docker SDK and daemon before starting a run."""
+    if client is not None:
+        _ping_docker(client)
+        return
+    LocalDockerBackend.verify_available()
+
+
+def _make_docker_client() -> Any:
+    try:
+        import docker  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise SandboxRuntimeError(
+            RuntimeCauseKind.backend_unavailable,
+            (
+                "Python Docker SDK is not installed for this environment "
+                f"({sys.executable}). Install backend dependencies with "
+                "`python -m pip install -r backend/requirements.txt` or "
+                "`python -m pip install -e .` before using Docker sandbox mode."
+            ),
+            retryable=False,
+            detail={"python": sys.executable, "missing_package": "docker"},
+        ) from exc
+    try:
+        return docker.from_env()
+    except Exception as exc:  # pragma: no cover - docker-specific branch
+        raise _docker_daemon_unavailable(exc) from exc
+
+
+def _ping_docker(client: Any) -> None:
+    ping = getattr(client, "ping", None)
+    if not callable(ping):
+        return
+    try:
+        ping()
+    except Exception as exc:  # pragma: no cover - docker-specific branch
+        raise _docker_daemon_unavailable(exc) from exc
+
+
+def _docker_daemon_unavailable(exc: Exception) -> SandboxRuntimeError:
+    return SandboxRuntimeError(
+        RuntimeCauseKind.backend_unavailable,
+        (
+            "Docker daemon is not reachable from this Python environment. "
+            "Start Docker Desktop or Docker Engine, then verify `docker run hello-world`. "
+            f"Original error: {exc}"
+        ),
+        retryable=True,
+    )
+
+
 def _decode_exec_result(raw: Any) -> tuple[int | None, str, str]:
     exit_code = getattr(raw, "exit_code", None)
     output = getattr(raw, "output", None)
@@ -314,4 +369,4 @@ def _map_docker_error(exc: Exception, default: RuntimeCauseKind) -> SandboxRunti
     return SandboxRuntimeError(cause, text, retryable=cause != RuntimeCauseKind.build_failed)
 
 
-__all__ = ["LocalDockerBackend"]
+__all__ = ["LocalDockerBackend", "ensure_local_docker_available"]

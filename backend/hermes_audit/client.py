@@ -1,228 +1,248 @@
-"""Adapter for the Nous Hermes Python runtime with Claude Code SDK fallback."""
+"""Hermes audit client — robust, self-learning, fallback-aware.
+
+Public surface (unchanged): ``NousHermesClient(...).audit(...)`` returns
+a ``HermesAuditReport``. Callers that already construct
+``NousHermesClient(model=..., enabled=...)`` keep working as-is.
+
+What's new under the hood:
+
+* **Provider chain.** Tries Nous Hermes first, then Claude (direct
+  Anthropic SDK), then OpenAI (direct OpenAI SDK). Each provider is a
+  Protocol implementation in ``providers.py`` — new providers plug in
+  by registration, never by editing this file's branching.
+* **Self-learning order.** Persists per-provider success / failure
+  counters to ``<runs_root>/.hermes_adapter_memory.json`` between runs.
+  The next run starts with last-known-good provider first and skips
+  providers that have failed ``MAX_CONSECUTIVE_FAILURES`` (3) times in
+  a row until they recover.
+* **Robust JSON extraction.** Three strategies (fenced block, balanced
+  braces, prose-prefix-strip) tried in order. Common LLM output shapes
+  parse cleanly; the rest raise loudly.
+* **Observable fallbacks.** Every fallback attempt logs to stderr at
+  WARNING; the final report carries ``provider`` so the lab UI can
+  show which auditor produced it. Failures never silently substitute
+  a fake "ok" — terminal status is ``unavailable`` only after the
+  whole chain has been exhausted.
+* **Settings-driven keys.** Providers source API keys via
+  ``backend.config.Settings`` (which pydantic-settings loads from
+  ``.env`` regardless of os.environ state). This supersedes the old
+  os.environ-based config resolution: the values were always in .env,
+  but never reached os.environ for processes that didn't ``source``
+  it (Lab UI's spawned children, pytest, …) — Settings closes that gap.
+
+Why no async: each audit is one short LLM call producing JSON. The
+sync ``audit()`` contract keeps ``HermesAuditService`` simple and lets
+us call it from both the sync setup paths and (via ``asyncio.to_thread``
+if needed) any async context.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
-import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
 
+from backend.hermes_audit.memory import (
+    AdapterMemory,
+    load_memory,
+    save_memory,
+)
 from backend.hermes_audit.models import (
     HermesAuditReport,
     HermesAuditScope,
     HermesAuditStatus,
     HermesInterventionType,
 )
+from backend.hermes_audit.providers import (
+    AuditProvider,
+    ClaudeAuditProvider,
+    ClaudeCodeSdkProvider,
+    NousHermesProvider,
+    OpenAIAuditProvider,
+    extract_audit_json,
+)
+
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_hermes_config() -> tuple[str, str, str]:
-    """Return (model, api_key, provider) based on available credentials.
+def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
+    """Default chain: Nous → Claude (API key) → Claude Code SDK
+    (subscription) → OpenAI. Each provider is constructed with safe
+    defaults; callers wanting different models pass an explicit
+    ``providers=`` list to ``NousHermesClient``.
 
-    Checks ANTHROPIC_API_KEY first, then OPENAI_API_KEY.  Returns the
-    Hermes-style ``provider/model`` string, the raw key, and the provider
-    name so callers can pass all three to ``AIAgent``.
+    Why this order:
+
+    * ``nous_hermes`` is first because it's the project-native auditor
+      and ships with its own model config; whoever installed
+      ``hermes-agent`` did so deliberately.
+    * ``claude`` (direct Anthropic API key) is second: lowest latency,
+      no agent overhead, fully sync.
+    * ``claude_code_sdk`` is third: when no Anthropic API key is set
+      but the operator has a Claude Code subscription, audits run
+      against that subscription instead of failing through to OpenAI.
+      Slightly heavier (spins up the agent SDK), so we don't preempt
+      an explicit API key configuration.
+    * ``openai`` is last as the cross-provider fallback.
     """
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if anthropic_key:
-        return "anthropic/claude-sonnet-4", anthropic_key, "anthropic"
 
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if openai_key:
-        return "openai/gpt-4o", openai_key, "openai"
-
-    return "", "", ""
+    return [
+        NousHermesProvider(model=nous_model),
+        ClaudeAuditProvider(),
+        ClaudeCodeSdkProvider(),
+        OpenAIAuditProvider(),
+    ]
 
 
 class NousHermesClient:
-    """Audit client: Hermes Agent primary, Claude Code SDK fallback.
+    """Adapter that audits a payload via the best-available provider.
 
-    Resolution order for each ``audit()`` call:
-
-    1. **Hermes Agent** (``run_agent.AIAgent``) — full agent with tool use.
-       Requires the ``hermes-agent`` package *and* a valid API key.
-    2. **Claude Code SDK** (``claude_agent_sdk.query``) — lightweight
-       single-turn query.  Requires ``claude-agent-sdk`` (already used by
-       the main pipeline).
-    3. **Unavailable report** — returned when both backends fail so the
-       pipeline can continue without crashing.
+    The class name is preserved for backward compatibility — under the
+    hood it now manages a chain of providers, not just Nous Hermes.
     """
 
     def __init__(
         self,
         *,
-        model: str | None = None,
-        api_key: str | None = None,
+        model: str = "anthropic/claude-sonnet-4",
         enabled: bool = True,
+        providers: Sequence[AuditProvider] | None = None,
+        runs_root: str | Path | None = None,
     ) -> None:
-        self._explicit_model = model
-        self._explicit_api_key = api_key
+        self.model = model
         self.enabled = enabled
+        self._providers: list[AuditProvider] = list(
+            providers if providers is not None else _default_provider_chain(model)
+        )
+        # ``runs_root`` is where the self-learning memory file lives. When
+        # not provided we fall back to ``./runs`` so tests / local CLI
+        # invocations work out of the box.
+        self._runs_root = Path(runs_root) if runs_root is not None else Path("runs")
 
-    def _effective_config(self) -> tuple[str, str, str]:
-        """Return (model, api_key, provider) honouring explicit overrides."""
-        auto_model, auto_key, auto_provider = _resolve_hermes_config()
-        model = self._explicit_model or auto_model
-        api_key = self._explicit_api_key or auto_key
-        provider = auto_provider
-        return model, api_key, provider
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
 
-    def audit(self, *, scope: HermesAuditScope, target: str, payload: dict[str, Any]) -> HermesAuditReport:
+    def audit(
+        self,
+        *,
+        scope: HermesAuditScope,
+        target: str,
+        payload: dict[str, Any],
+    ) -> HermesAuditReport:
         if not self.enabled:
-            return HermesAuditReport(
-                target=target,
-                scope=scope,
-                status=HermesAuditStatus.unavailable,
-                summary="Nous Hermes audit disabled",
-                recommended_intervention=HermesInterventionType.annotate,
-            )
+            return _disabled_report(scope=scope, target=target)
 
-        prompt = self._build_prompt(scope=scope, target=target, payload=payload)
-        hermes_error = ""
-        sdk_error = ""
+        prompt = _build_prompt(scope=scope, target=target, payload=payload)
+        memory = load_memory(self._runs_root)
+        order = memory.preferred_order([p.name for p in self._providers])
+        provider_by_name = {p.name: p for p in self._providers}
 
-        # --- Primary: Hermes Agent ---
-        try:
-            response = self._run_hermes_agent(prompt)
-            return self._parse_response(response, target=target, scope=scope, provider="nous-hermes")
-        except Exception as exc:
-            hermes_error = str(exc)
-            logger.warning("Hermes Agent unavailable (%s), trying Claude Code SDK fallback", exc)
+        last_error: str = ""
+        last_provider_tried: str = ""
 
-        # --- Fallback: Claude Code SDK ---
-        try:
-            response = self._run_claude_sdk(prompt)
-            return self._parse_response(response, target=target, scope=scope, provider="claude-code-sdk")
-        except Exception as exc:
-            sdk_error = str(exc)
-            logger.warning("Claude Code SDK fallback also failed: %s", exc)
+        for provider_name in order:
+            provider = provider_by_name.get(provider_name)
+            if provider is None:
+                continue
 
-        # --- Both failed ---
+            if not provider.is_available():
+                memory.record_failure(provider.name, error="provider not available (precheck)")
+                logger.warning("hermes-audit: %s skipped (precheck failed)", provider.name)
+                continue
+
+            last_provider_tried = provider.name
+            try:
+                response_text = provider.call(prompt)
+                data = extract_audit_json(response_text)
+            except Exception as exc:  # noqa: BLE001 — record failure, try next
+                memory.record_failure(provider.name, error=f"{type(exc).__name__}: {exc}")
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "hermes-audit: %s failed (%s); trying next provider",
+                    provider.name,
+                    last_error,
+                )
+                continue
+
+            data.setdefault("target", target)
+            data.setdefault("scope", scope.value)
+            data.setdefault("provider", provider.name)
+            try:
+                report = HermesAuditReport(**data)
+            except Exception as exc:  # noqa: BLE001 — schema mismatch, try next
+                memory.record_failure(
+                    provider.name, error=f"schema_mismatch: {type(exc).__name__}: {exc}"
+                )
+                last_error = f"schema_mismatch: {type(exc).__name__}: {exc}"
+                logger.warning(
+                    "hermes-audit: %s returned non-conforming JSON (%s); trying next",
+                    provider.name,
+                    exc,
+                )
+                continue
+
+            memory.record_success(provider.name)
+            _persist_memory_quietly(self._runs_root, memory)
+            return report
+
+        # Whole chain exhausted — return an honest "unavailable" report.
+        # Status is ``unavailable``, not ``system_error``: every provider
+        # had a chance and none produced a parseable report. The report's
+        # ``provider`` field reflects the LAST provider tried so operators
+        # can see where the chain bottomed out.
+        _persist_memory_quietly(self._runs_root, memory)
         return HermesAuditReport(
             target=target,
             scope=scope,
             status=HermesAuditStatus.unavailable,
-            summary="All audit backends unavailable",
+            summary="All Hermes audit providers failed",
             recommended_intervention=HermesInterventionType.annotate,
-            error_message=f"hermes: {hermes_error}; claude-sdk: {sdk_error}",
+            provider=last_provider_tried or "none",
+            error_message=last_error or "no providers available",
         )
 
-    def _parse_response(
-        self,
-        response: str,
-        *,
-        target: str,
-        scope: HermesAuditScope,
-        provider: str,
-    ) -> HermesAuditReport:
-        data = self._extract_json(response)
-        data.setdefault("target", target)
-        data.setdefault("scope", scope.value)
-        data.setdefault("provider", provider)
-        return HermesAuditReport(**data)
 
-    # ------------------------------------------------------------------
-    # Backend 1: Hermes Agent (run_agent.AIAgent)
-    # ------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
 
-    def _run_hermes_agent(self, prompt: str) -> str:
-        from run_agent import AIAgent  # hermes-agent package
+def _disabled_report(*, scope: HermesAuditScope, target: str) -> HermesAuditReport:
+    return HermesAuditReport(
+        target=target,
+        scope=scope,
+        status=HermesAuditStatus.unavailable,
+        summary="Nous Hermes audit disabled",
+        recommended_intervention=HermesInterventionType.annotate,
+        provider="disabled",
+    )
 
-        model, api_key, provider = self._effective_config()
-        if not api_key:
-            raise RuntimeError("No API key available for Hermes Agent")
 
-        agent = AIAgent(
-            model=model,
-            api_key=api_key,
-            provider=provider,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        if hasattr(agent, "chat"):
-            return str(agent.chat(prompt))
-        if hasattr(agent, "run"):
-            return str(agent.run(prompt))
-        if callable(agent):
-            return str(agent(prompt))
-        raise RuntimeError("Unsupported Hermes Agent interface")
+def _build_prompt(
+    *, scope: HermesAuditScope, target: str, payload: dict[str, Any]
+) -> str:
+    return (
+        "You are auditing a research reproduction pipeline for unsupported claims.\n"
+        f"Scope: {scope.value}\n"
+        f"Target: {target}\n"
+        "Return ONLY a single JSON object with these fields: target, scope, "
+        "status (one of: grounded, caveat, unsupported), summary, findings, "
+        "unsupported_claims, evidence_refs, recommended_intervention, "
+        "corrective_note, confidence (one of: low, medium, high).\n"
+        "Do not include prose before or after the JSON. Do not wrap in code fences.\n"
+        f"Payload:\n```json\n{json.dumps(payload, indent=2)}\n```"
+    )
 
-    # ------------------------------------------------------------------
-    # Backend 2: Claude Code SDK (claude_agent_sdk.query)
-    # ------------------------------------------------------------------
 
-    def _run_claude_sdk(self, prompt: str) -> str:
-        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+def _persist_memory_quietly(runs_root: Path, memory: AdapterMemory) -> None:
+    """Save memory; never let a memory-write failure break an audit."""
 
-        options = ClaudeAgentOptions(
-            permission_mode="bypassPermissions",
-            max_turns=1,
-        )
+    try:
+        save_memory(runs_root, memory)
+    except OSError as exc:  # disk full, perms, etc.
+        logger.warning("hermes-audit: could not persist adapter memory: %s", exc)
 
-        collected: list[str] = []
 
-        # query() is async — run it in an event loop
-        async def _collect() -> None:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    text = getattr(message, "text", "")
-                    if text:
-                        collected.append(str(text))
-                else:
-                    for block in getattr(message, "content", []):
-                        text = getattr(block, "text", "")
-                        if text:
-                            collected.append(str(text))
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(lambda: asyncio.run(_collect())).result(timeout=120)
-        else:
-            asyncio.run(_collect())
-
-        result = "\n".join(collected)
-        if not result.strip():
-            raise RuntimeError("Claude Code SDK returned empty response")
-        return result
-
-    # ------------------------------------------------------------------
-    # Shared helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_prompt(*, scope: HermesAuditScope, target: str, payload: dict[str, Any]) -> str:
-        return (
-            "You are auditing a research reproduction pipeline for unsupported claims.\n"
-            f"Scope: {scope.value}\n"
-            f"Target: {target}\n"
-            "Return only JSON with fields: target, scope, status, summary, findings, "
-            "unsupported_claims, evidence_refs, recommended_intervention, corrective_note, confidence.\n"
-            f"Payload:\n```json\n{json.dumps(payload, indent=2)}\n```"
-        )
-
-    @staticmethod
-    def _extract_json(text: str) -> dict[str, Any]:
-        fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-        if fence_match:
-            return json.loads(fence_match.group(1))
-        brace_start = text.find("{")
-        if brace_start >= 0:
-            depth = 0
-            for idx in range(brace_start, len(text)):
-                if text[idx] == "{":
-                    depth += 1
-                elif text[idx] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return json.loads(text[brace_start : idx + 1])
-        raise ValueError("No JSON found in audit response")
+__all__ = ["NousHermesClient"]

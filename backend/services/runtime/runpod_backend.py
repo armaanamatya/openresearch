@@ -89,6 +89,12 @@ class RunpodBackend(RuntimeBackend):
         self.bootstrap_command = bootstrap_command.strip()
         self._connections: dict[str, _RunpodConnection] = {}
         self._ssh_clients: dict[str, Any] = {}
+        # Allowlist of pod IDs THIS backend instance created. Any delete
+        # call against a pod ID NOT in this set is refused with a typed
+        # error — defense in depth on top of ``delete_on_destroy=false``
+        # so a logic bug or rogue caller can never delete a pod created
+        # outside our process (e.g. a coworker's pod on the same account).
+        self._owned_pod_ids: set[str] = set()
 
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
         if not self.api_key:
@@ -112,6 +118,9 @@ class RunpodBackend(RuntimeBackend):
         image = self.image_name or config.image
         pod = await self._create_pod(config, image)
         pod_id = str(pod["id"])
+        # Record ownership BEFORE the SSH-wait try block so the cleanup
+        # path's _delete_pod_quietly call is allowed to proceed.
+        self._owned_pod_ids.add(pod_id)
         try:
             ready = await self._wait_for_pod_ssh(pod_id)
             remote_base = _join_posix(
@@ -405,6 +414,16 @@ class RunpodBackend(RuntimeBackend):
             ) from exc
 
     async def _delete_pod(self, pod_id: str) -> None:
+        # Guardrail: refuse to delete any pod this backend instance did
+        # not create. Defense in depth on top of ``delete_on_destroy=false``.
+        # Catches logic bugs, rogue callers, and accidental cross-account
+        # deletions (e.g. a coworker's pods on the same Runpod account).
+        if pod_id not in self._owned_pod_ids:
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.backend_unavailable,
+                f"Refusing to delete pod {pod_id!r}: not in owned-pod allowlist. "
+                "This backend only deletes pods it created itself.",
+            )
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             async with httpx.AsyncClient(
@@ -412,14 +431,44 @@ class RunpodBackend(RuntimeBackend):
                 headers=headers,
                 timeout=60,
             ) as client:
+                # Belt-and-suspenders: verify the pod's name still has our
+                # prefix (`reprolab-…`) before issuing the DELETE. If the
+                # name doesn't match, refuse — covers the case where a pod
+                # ID was added to our allowlist via some future code path
+                # but the pod was actually created by someone else.
+                try:
+                    info = await client.get(f"/pods/{pod_id}")
+                    info.raise_for_status()
+                    pod_name = str((info.json() or {}).get("name") or "")
+                    if pod_name and not pod_name.startswith("reprolab-"):
+                        raise SandboxRuntimeError(
+                            RuntimeCauseKind.backend_unavailable,
+                            f"Refusing to delete pod {pod_id!r} (name {pod_name!r}): "
+                            "name does not start with 'reprolab-' — not ours.",
+                        )
+                except SandboxRuntimeError:
+                    raise
+                except Exception:
+                    # GET failed (transient API error etc.). The allowlist
+                    # check above already passed, so we proceed — the
+                    # name-prefix check is best-effort hardening, not the
+                    # primary guarantee.
+                    pass
+
                 response = await client.delete(f"/pods/{pod_id}")
                 response.raise_for_status()
+        except SandboxRuntimeError:
+            raise
         except Exception as exc:
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
                 f"Runpod pod deletion failed for {pod_id}: {exc}",
                 retryable=True,
             ) from exc
+        finally:
+            # Drop ownership regardless of API outcome — the pod either
+            # was deleted or the caller now knows our records are stale.
+            self._owned_pod_ids.discard(pod_id)
 
     async def _delete_pod_quietly(self, pod_id: str) -> None:
         try:

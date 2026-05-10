@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +14,11 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # pydantic-settings does NOT mutate os.environ, but it does read the
+        # .env file with full precedence rules: shell env > .env file >
+        # default. That's exactly what we want for API keys — see the
+        # ``anthropic_api_key`` / ``openai_api_key`` fields below.
+        populate_by_name=True,
     )
 
     environment: Literal["development", "testing", "production"] = "development"
@@ -27,6 +32,39 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-4o"
     openai_reasoning_model: str = "o4-mini"
     agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
+
+    # External provider API keys. We read both the unprefixed names that
+    # the upstream SDKs (anthropic, openai) and most CI conventions use,
+    # AND the REPROLAB_-prefixed forms, because some deployments reserve
+    # the unprefixed names for a different scope. First match wins.
+    #
+    # WHY THIS LIVES IN SETTINGS, NOT os.environ:
+    # The Hermes audit providers used to read these directly from
+    # ``os.environ.get(...)`` and were skipped whenever the spawning
+    # process (Lab UI's Next.js dev server, docker entrypoint without
+    # env_file, pytest from a fresh shell) hadn't loaded the .env. The
+    # values were always in .env, but never in os.environ. Funnelling
+    # through Settings makes pydantic-settings the single source of
+    # truth: it reads .env from disk on every ``Settings()`` construction
+    # regardless of what os.environ contains. Providers pass these
+    # values explicitly to ``anthropic.Anthropic(api_key=...)`` /
+    # ``openai.OpenAI(api_key=...)`` so the SDKs don't fall back to
+    # their own os.environ lookup either.
+    anthropic_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ANTHROPIC_API_KEY",
+            "REPROLAB_ANTHROPIC_API_KEY",
+        ),
+    )
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPENAI_API_KEY",
+            "REPROLAB_OPENAI_API_KEY",
+        ),
+    )
+
     runpod_api_key: str = ""
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
     runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"

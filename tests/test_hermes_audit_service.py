@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from backend.hermes_audit.client import NousHermesClient
 from backend.hermes_audit.models import (
@@ -73,135 +71,43 @@ def test_service_persists_audit_reports(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# NousHermesClient: Hermes Agent primary + Claude Code SDK fallback
+# NousHermesClient enabled-flag contract.
+#
+# The pluggable provider chain (primary path / fallback / chain-exhaustion)
+# is covered exhaustively by tests/test_hermes_audit_adapter.py; the
+# Settings-driven key resolution is covered by
+# tests/test_hermes_provider_settings.py. The only orthogonal contract
+# left for this file is: when ``enabled=False``, no provider is reached
+# and the report's ``provider`` field is the literal "disabled" sentinel.
 # ---------------------------------------------------------------------------
 
-_VALID_JSON_RESPONSE = json.dumps(
-    {
-        "target": "baseline-implementation",
-        "scope": "step",
-        "status": "grounded",
-        "summary": "Claims are supported by evidence",
-        "findings": ["Loss decreased"],
-        "unsupported_claims": [],
-        "evidence_refs": [],
-        "recommended_intervention": "annotate",
-        "corrective_note": "",
-        "confidence": "high",
-    }
-)
+
+class _CountingProvider:
+    """Provider that counts every is_available()/call() invocation."""
+
+    def __init__(self) -> None:
+        self.name = "counting"
+        self.is_available_calls = 0
+        self.call_calls = 0
+
+    def is_available(self) -> bool:
+        self.is_available_calls += 1
+        return True
+
+    def call(self, prompt: str) -> str:
+        self.call_calls += 1
+        return '{"status":"grounded","summary":"x","recommended_intervention":"annotate"}'
 
 
-def test_client_uses_hermes_agent_when_available():
-    """Primary path: Hermes Agent (run_agent.AIAgent) produces a valid report."""
-    client = NousHermesClient(model="openai/gpt-4o", api_key="sk-test")
-    fake_agent = MagicMock()
-    fake_agent.chat.return_value = _VALID_JSON_RESPONSE
+def test_client_disabled_returns_unavailable_without_touching_providers(tmp_path: Path):
+    counting = _CountingProvider()
+    client = NousHermesClient(enabled=False, providers=[counting], runs_root=tmp_path)
 
-    with patch("backend.hermes_audit.client.AIAgent", create=True) as mock_cls:
-        # Patch the import inside _run_hermes_agent
-        import backend.hermes_audit.client as client_mod
-        original_run = client_mod.NousHermesClient._run_hermes_agent
+    report = client.audit(
+        scope=HermesAuditScope.step, target="baseline-implementation", payload={}
+    )
 
-        def patched_run(self, prompt):
-            mock_cls.return_value = fake_agent
-            agent = mock_cls(
-                model="openai/gpt-4o",
-                api_key="sk-test",
-                provider="openai",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            return str(agent.chat(prompt))
-
-        with patch.object(NousHermesClient, "_run_hermes_agent", patched_run):
-            report = client.audit(
-                scope=HermesAuditScope.step,
-                target="baseline-implementation",
-                payload={"mode": "adapt"},
-            )
-
-    assert report.status == HermesAuditStatus.grounded
-    assert report.provider == "nous-hermes"
-
-
-def test_client_falls_back_to_claude_sdk_when_hermes_unavailable():
-    """Fallback: when Hermes Agent fails, Claude Code SDK is used."""
-    client = NousHermesClient(model="openai/gpt-4o", api_key="sk-test")
-
-    with patch.object(
-        NousHermesClient, "_run_hermes_agent", side_effect=RuntimeError("hermes not available")
-    ), patch.object(
-        NousHermesClient, "_run_claude_sdk", return_value=_VALID_JSON_RESPONSE
-    ) as mock_sdk:
-        report = client.audit(
-            scope=HermesAuditScope.step,
-            target="baseline-implementation",
-            payload={"mode": "adapt"},
-        )
-
-    assert mock_sdk.called
-    assert report.status == HermesAuditStatus.grounded
-    assert report.provider == "claude-code-sdk"
-
-
-def test_client_returns_unavailable_when_both_backends_fail():
-    """Both Hermes and Claude SDK fail: returns unavailable report, not crash."""
-    client = NousHermesClient(model="openai/gpt-4o", api_key="sk-test")
-
-    with patch.object(
-        NousHermesClient, "_run_hermes_agent", side_effect=RuntimeError("hermes down")
-    ), patch.object(
-        NousHermesClient, "_run_claude_sdk", side_effect=RuntimeError("sdk down")
-    ):
-        report = client.audit(
-            scope=HermesAuditScope.step,
-            target="baseline-implementation",
-            payload={},
-        )
-
+    assert counting.is_available_calls == 0
+    assert counting.call_calls == 0
     assert report.status == HermesAuditStatus.unavailable
-    assert "hermes" in report.error_message
-    assert "sdk" in report.error_message
-
-
-def test_client_disabled_returns_unavailable_without_calling_backends():
-    """When enabled=False, no backend is touched."""
-    client = NousHermesClient(enabled=False)
-
-    with patch.object(NousHermesClient, "_run_hermes_agent") as mock_hermes, \
-         patch.object(NousHermesClient, "_run_claude_sdk") as mock_sdk:
-        report = client.audit(
-            scope=HermesAuditScope.step,
-            target="test",
-            payload={},
-        )
-
-    assert not mock_hermes.called
-    assert not mock_sdk.called
-    assert report.status == HermesAuditStatus.unavailable
-
-
-def test_client_resolve_config_prefers_anthropic_key(monkeypatch):
-    """_resolve_hermes_config prefers ANTHROPIC_API_KEY over OPENAI_API_KEY."""
-    from backend.hermes_audit.client import _resolve_hermes_config
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
-    model, key, provider = _resolve_hermes_config()
-    assert provider == "anthropic"
-    assert key == "sk-ant-test"
-    assert "claude" in model
-
-
-def test_client_resolve_config_falls_back_to_openai_key(monkeypatch):
-    """_resolve_hermes_config uses OPENAI_API_KEY when ANTHROPIC is empty."""
-    from backend.hermes_audit.client import _resolve_hermes_config
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
-    model, key, provider = _resolve_hermes_config()
-    assert provider == "openai"
-    assert key == "sk-oai-test"
-    assert "gpt" in model
+    assert report.provider == "disabled"
