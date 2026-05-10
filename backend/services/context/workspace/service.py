@@ -1,10 +1,13 @@
-"""WorkspaceAppService — builds workspaces, preloads claim_map.
+"""WorkspaceAppService — builds workspaces, preloads variables, manages lifecycle.
 
-For the slice we preload one variable: `claim_map`, derived from the
-indexed sources. Each section becomes one entry in the claim map with
-a citation pointing to that section's source. This is enough to demo
-the end-to-end `python -m backend.cli inspect <pid> --variable claim_map`
-flow with real evidence-grade citations.
+Preloads three variables from indexed sources:
+  - `paper_text`: full paper text concatenated from all section chunks
+  - `paper_sections`: dict mapping section locator -> section text
+  - `claim_map`: one entry per section with source_id, title, excerpt
+
+Also provides `enrich_variable()` for progressive enrichment,
+`close_workspace()` for lifecycle cleanup, and `promote_variable()`
+for scope transitions.
 """
 
 from __future__ import annotations
@@ -36,7 +39,10 @@ from backend.services.context.workspace.aggregate import (
     WorkspaceState,
 )
 from backend.services.context.workspace.events import (
+    VariableEnriched,
     VariableLoaded,
+    VariablePromoted,
+    WorkspaceClosed,
     WorkspaceCreated,
     WorkspaceReady,
 )
@@ -92,7 +98,7 @@ class WorkspaceAppService:
 
         - Validates the index is INDEXED.
         - Creates the workspace aggregate (idempotent on re-issue).
-        - Preloads `claim_map` from the SourcesProjection.
+        - Preloads `paper_text`, `paper_sections`, and `claim_map`.
         - Emits WorkspaceReady.
         """
         cid = correlation_id or new_correlation_id()
@@ -131,24 +137,98 @@ class WorkspaceAppService:
         proj = SourcesProjection()
         self._indexer.project_into_projection(cmd.project_id, proj)
 
-        # Step 3: preload `claim_map` — one entry per section source.
-        claim_map = self._build_claim_map(cmd.project_id, proj)
-        if not claim_map["entries"]:
-            # No sections at all? Don't preload — create a stub variable
-            # with a structural citation pointing at the project itself.
-            # But for the slice, just skip the variable.
-            pass
+        sections = sorted(
+            (s for s in proj.list_sources(cmd.project_id)
+             if s.kind is SourceKind.paper_section),
+            key=lambda s: s.id,
+        )
+
+        if not sections:
+            # Empty project — emit a structural stub so workspace is valid.
+            stub_citation = Citation(
+                source_id=f"project:{cmd.project_id}",
+                chunk_id=None,
+                quote=f"<project {cmd.project_id}: no indexed sections>",
+                locator=cmd.project_id,
+                confidence=0.5,
+            )
+            stub_event = VariableLoaded(
+                workspace_id=workspace_id,
+                variable_name="paper_text",
+                value_payload={"text": "", "project_id": cmd.project_id},
+                citations=(stub_citation,),
+                scope=Scope.private_to_parent,
+                source_agent="workspace_service",
+            )
+            self._append(agg, workspace_id, [stub_event], cid)
         else:
+            # Step 3a: preload `paper_text` — full concatenated text.
+            paper_text_parts: list[str] = []
+            text_citations: list[Citation] = []
+            for src in sections:
+                chunks = proj.chunks_for_source(src.id)
+                section_text = " ".join(c.text for c in chunks)
+                paper_text_parts.append(section_text)
+                if chunks:
+                    text_citations.append(Citation(
+                        source_id=src.id,
+                        chunk_id=chunks[0].id,
+                        quote=chunks[0].text[:_CLAIM_MAP_QUOTE_TRUNCATE],
+                        locator=src.locator,
+                        confidence=1.0,
+                    ))
+            if text_citations:
+                self._append(agg, workspace_id, [VariableLoaded(
+                    workspace_id=workspace_id,
+                    variable_name="paper_text",
+                    value_payload={
+                        "text": "\n\n".join(paper_text_parts),
+                        "project_id": cmd.project_id,
+                    },
+                    citations=tuple(text_citations),
+                    scope=Scope.private_to_parent,
+                    source_agent="workspace_service",
+                )], cid)
+
+            # Step 3b: preload `paper_sections` — dict of locator -> text.
+            sections_dict: dict[str, str] = {}
+            section_citations: list[Citation] = []
+            for src in sections:
+                chunks = proj.chunks_for_source(src.id)
+                section_text = " ".join(c.text for c in chunks)
+                sections_dict[src.locator] = section_text
+                if chunks:
+                    section_citations.append(Citation(
+                        source_id=src.id,
+                        chunk_id=chunks[0].id,
+                        quote=chunks[0].text[:_CLAIM_MAP_QUOTE_TRUNCATE],
+                        locator=src.locator,
+                        confidence=1.0,
+                    ))
+            if section_citations:
+                self._append(agg, workspace_id, [VariableLoaded(
+                    workspace_id=workspace_id,
+                    variable_name="paper_sections",
+                    value_payload={
+                        "sections": sections_dict,
+                        "project_id": cmd.project_id,
+                    },
+                    citations=tuple(section_citations),
+                    scope=Scope.private_to_parent,
+                    source_agent="workspace_service",
+                )], cid)
+
+            # Step 3c: preload `claim_map` — one entry per section source.
+            claim_map = self._build_claim_map(cmd.project_id, proj)
             citations = self._claim_map_citations(proj)
-            load_event = VariableLoaded(
+            self._append(agg, workspace_id, [VariableLoaded(
                 workspace_id=workspace_id,
                 variable_name="claim_map",
                 value_payload=claim_map,
                 citations=citations,
                 scope=Scope.private_to_parent,
                 source_agent="workspace_service",
-            )
-            self._append(agg, workspace_id, [load_event], cid)
+            )], cid)
 
         # Step 4: WorkspaceReady.
         ready = WorkspaceReady(
@@ -156,6 +236,94 @@ class WorkspaceAppService:
         )
         self._append(agg, workspace_id, [ready], cid)
         return workspace_id
+
+    def enrich_variable(
+        self,
+        *,
+        workspace_id: str,
+        variable_name: str,
+        value_payload: dict[str, Any],
+        citations: NonEmptyCitations,
+        enriched_by: str,
+        scope: Scope = Scope.private_to_parent,
+        correlation_id: CorrelationId | None = None,
+    ) -> None:
+        """Add or overwrite a workspace variable via progressive enrichment.
+
+        Called by the orchestrator when an agent completes and its
+        structured outputs need to become queryable variables for
+        downstream agents.
+        """
+        cid = correlation_id or new_correlation_id()
+        agg = self._load_workspace_aggregate(workspace_id)
+        if agg.state not in (WorkspaceState.LOADING, WorkspaceState.READY):
+            raise WorkspaceError(
+                f"Cannot enrich variable in workspace {workspace_id!r}: "
+                f"state is {agg.state.value!r}, must be 'loading' or 'ready'."
+            )
+        event = VariableEnriched(
+            workspace_id=workspace_id,
+            variable_name=variable_name,
+            value_payload=value_payload,
+            citations=citations,
+            scope=scope,
+            enriched_by=enriched_by,
+        )
+        self._append(agg, workspace_id, [event], cid)
+
+    def close_workspace(
+        self,
+        *,
+        workspace_id: str,
+        reason: str = "completed",
+        correlation_id: CorrelationId | None = None,
+    ) -> None:
+        """Close a workspace. Idempotent on already-closed workspaces."""
+        cid = correlation_id or new_correlation_id()
+        agg = self._load_workspace_aggregate(workspace_id)
+        if agg.state is WorkspaceState.CLOSED:
+            return  # idempotent
+        if agg.state is WorkspaceState.NEW:
+            raise WorkspaceError(
+                f"Cannot close workspace {workspace_id!r}: it was never created."
+            )
+        event = WorkspaceClosed(workspace_id=workspace_id, reason=reason)
+        self._append(agg, workspace_id, [event], cid)
+
+    def promote_variable(
+        self,
+        *,
+        workspace_id: str,
+        variable_name: str,
+        new_scope: Scope,
+        promoted_by: str | None = None,
+        correlation_id: CorrelationId | None = None,
+    ) -> None:
+        """Promote a variable's scope (e.g., private_to_parent -> branch_shared)."""
+        cid = correlation_id or new_correlation_id()
+        agg = self._load_workspace_aggregate(workspace_id)
+        if agg.state not in (WorkspaceState.LOADING, WorkspaceState.READY):
+            raise WorkspaceError(
+                f"Cannot promote variable in workspace {workspace_id!r}: "
+                f"state is {agg.state.value!r}."
+            )
+        # Determine current scope from the view.
+        view = self.materialize_view(workspace_id)
+        if view.get(variable_name) is None:
+            raise WorkspaceError(
+                f"Variable {variable_name!r} not found in workspace {workspace_id!r}."
+            )
+        old_scope = view.get_scope(variable_name) or Scope.private_to_parent
+        if old_scope == new_scope:
+            return  # no-op
+        event = VariablePromoted(
+            workspace_id=workspace_id,
+            variable_name=variable_name,
+            old_scope=old_scope,
+            new_scope=new_scope,
+            promoted_by=promoted_by,
+        )
+        self._append(agg, workspace_id, [event], cid)
 
     def materialize_view(self, workspace_id: str) -> WorkspaceView:
         """Replay this workspace's events into a fresh WorkspaceView."""
@@ -169,6 +337,7 @@ class WorkspaceAppService:
                     variable_name=stored.payload["variable_name"],
                     value_payload=stored.payload["value_payload"],
                     citations_payload=stored.payload["citations"],
+                    scope=Scope(stored.payload.get("scope", Scope.private_to_parent.value)),
                 )
             elif stored.event_type == "variable_enriched":
                 proj.apply_variable_enriched(
@@ -176,6 +345,13 @@ class WorkspaceAppService:
                     variable_name=stored.payload["variable_name"],
                     value_payload=stored.payload["value_payload"],
                     citations_payload=stored.payload["citations"],
+                    scope=Scope(stored.payload.get("scope", Scope.private_to_parent.value)),
+                )
+            elif stored.event_type == "variable_promoted":
+                proj.apply_variable_promoted(
+                    workspace_id=workspace_id,
+                    variable_name=stored.payload["variable_name"],
+                    new_scope=Scope(stored.payload["new_scope"]),
                 )
             elif stored.event_type == "workspace_ready":
                 proj.apply_workspace_ready(workspace_id)

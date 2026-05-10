@@ -12,19 +12,20 @@ from __future__ import annotations
 from typing import Any
 
 from backend.schemas.citations import Citation
+from backend.schemas.scope import Scope
 from backend.services.context.workspace.model import Cited
 
 
 class WorkspaceView:
     """Read-side materialization of a workspace.
 
-    A simple dict of name -> Cited[Any] for the slice. Adds tool-call
-    history if needed later.
+    Tracks variables as Cited[Any] with per-variable scope metadata.
     """
 
     def __init__(self, workspace_id: str) -> None:
         self._workspace_id = workspace_id
         self._variables: dict[str, Cited[Any]] = {}
+        self._scopes: dict[str, Scope] = {}
         self._is_ready = False
 
     @property
@@ -37,6 +38,12 @@ class WorkspaceView:
 
     def get(self, name: str) -> Cited[Any] | None:
         return self._variables.get(name)
+
+    def get_scope(self, name: str) -> Scope | None:
+        return self._scopes.get(name)
+
+    def variable_names(self) -> list[str]:
+        return list(self._variables.keys())
 
     @property
     def variables(self) -> dict[str, Cited[Any]]:
@@ -54,12 +61,17 @@ class WorkspaceView:
         name: str,
         value_payload: dict[str, Any],
         citations_payload: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        scope: Scope = Scope.private_to_parent,
     ) -> None:
         cites = tuple(Citation.model_validate(c) for c in citations_payload)
         # Cited.__post_init__ raises CitationMissingError on empty —
         # but the event's NonEmptyCitations validator already rejected
         # that on the way IN. Belt + suspenders.
         self._variables[name] = Cited.from_payload(value=value_payload, citations=cites)
+        self._scopes[name] = scope
+
+    def _promote_variable(self, name: str, new_scope: Scope) -> None:
+        self._scopes[name] = new_scope
 
     def _set_ready(self) -> None:
         self._is_ready = True
@@ -89,9 +101,10 @@ class WorkspaceProjection:
         variable_name: str,
         value_payload: dict[str, Any],
         citations_payload: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        scope: Scope = Scope.private_to_parent,
     ) -> None:
         self.view(workspace_id)._apply_variable(
-            variable_name, value_payload, citations_payload
+            variable_name, value_payload, citations_payload, scope
         )
 
     def apply_variable_enriched(
@@ -101,11 +114,21 @@ class WorkspaceProjection:
         variable_name: str,
         value_payload: dict[str, Any],
         citations_payload: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        scope: Scope = Scope.private_to_parent,
     ) -> None:
         # Same shape as loaded — just overwrites.
         self.view(workspace_id)._apply_variable(
-            variable_name, value_payload, citations_payload
+            variable_name, value_payload, citations_payload, scope
         )
+
+    def apply_variable_promoted(
+        self,
+        *,
+        workspace_id: str,
+        variable_name: str,
+        new_scope: Scope,
+    ) -> None:
+        self.view(workspace_id)._promote_variable(variable_name, new_scope)
 
     def apply_workspace_ready(self, workspace_id: str) -> None:
         self.view(workspace_id)._set_ready()

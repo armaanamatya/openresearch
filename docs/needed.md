@@ -12,7 +12,7 @@ Instead of stuffing context into prompts or embedding everything in a vector sto
 
 | Layer | Role | Status |
 |-------|------|--------|
-| **Layer 1 — RLM workspace** (primary) | Variables + programmatic exploration. Precise, structured queries. | **Partially built** — event-sourced workspace with `VariableLoaded`/`VariableEnriched` events, `LookupTool`, `Cited[T]` wrapper |
+| **Layer 1 — RLM workspace** (primary) | Variables + programmatic exploration. Precise, structured queries. | **Complete** — full event-sourced workspace with variable preloading, progressive enrichment, scope promotion, 5 workspace tools, `Cited[T]` invariant |
 | **Layer 2 — Semantic search** (fallback) | Fuzzy similarity, discovery of things the agent didn't know to look for | **Built** — `SemanticSearchTool` (BM25 lexical ranker, not yet Chroma embeddings) |
 | **Layer 3 — Knowledge Graph / Graphify** | Structural code/doc navigation via AST | **Phase 2**, not yet implemented |
 
@@ -20,12 +20,18 @@ Instead of stuffing context into prompts or embedding everything in a vector sto
 
 The RLM influence manifests in these concrete implementations:
 
-- **`backend/services/context/workspace/`** — Per-agent workspaces where context lives as named variables (e.g., `claim_map`), not as embedded chunks.
+- **`backend/services/context/workspace/`** — Per-agent workspaces where context lives as named variables (`paper_text`, `paper_sections`, `claim_map`), not as embedded chunks.
 - **`Cited[T]`** (`workspace/model.py`) — The architectural keystone: every variable and every tool result is paired with mandatory citations. You literally cannot construct a `Cited[T]` without evidence. Four-layer defense chain.
-- **`VariableLoaded` / `VariableEnriched`** events — Context is event-sourced. When an agent produces structured output, it gets written back as a `VariableEnriched` event for downstream agents (**progressive context enrichment**, the key RLM-multi-agent insight from chat session #12).
-- **`LookupTool`** — Exact source lookup (Layer 1 pattern: structured, precise).
-- **`SemanticSearchTool`** — BM25 lexical fallback (Layer 2: fuzzy discovery).
-- **Layered workflow**: try RLM-style variable lookup first -> fall back to `semantic_search()` -> use recursive drill-down on semantic hits.
+- **7 domain events** — `WorkspaceCreated`, `VariableLoaded`, `VariableEnriched`, `VariablePromoted`, `CitationAttached`, `ToolInvoked`, `WorkspaceReady`, `WorkspaceClosed`. Full lifecycle including scope promotion.
+- **Progressive enrichment** — `enrich_variable()` lets agents write structured outputs back as workspace variables for downstream agents.
+- **Scope promotion** — `promote_variable()` transitions visibility (private_to_parent -> branch_shared -> global_verified).
+- **5 workspace tools**:
+  - `LookupTool` — Exact source lookup (Layer 1: structured, precise).
+  - `SemanticSearchTool` — BM25 lexical fallback (Layer 2: fuzzy discovery).
+  - `ListVariablesTool` — Discover available variables and metadata.
+  - `InspectVariableTool` — Deep-dive into a specific variable's value and citations.
+  - `RlmQueryTool` — Core RLM capability: recursive LLM sub-query over a context segment (~2-3k tokens per query vs 95k+ for naive prompt stuffing). Uses `LlmClient` protocol for provider-agnostic integration.
+- **Workspace lifecycle** — `build_workspace()`, `enrich_variable()`, `promote_variable()`, `close_workspace()`, `materialize_view()`.
 
 The RLM paper's influence is **architectural**, not a code dependency — no `import rlm` anywhere.
 
@@ -39,8 +45,9 @@ The current system has no persistent memory across projects or sessions. Each wo
 
 ### What the System Does Have (Memory-Adjacent)
 
-- **Progressive enrichment** within a single run (agents build on each other's outputs).
+- **Progressive enrichment** within a single run (agents build on each other's outputs via `enrich_variable()`).
 - **Event-sourced audit trail** (full replay of how context evolved).
+- **Scope promotion** — variables can be promoted from private to shared to global via `promote_variable()`.
 - **Shared Memory Objects** in the PRD design (Claim Map, Assumption Ledger, Experiment Ledger, etc.).
 
 ### What the System Does Not Have
