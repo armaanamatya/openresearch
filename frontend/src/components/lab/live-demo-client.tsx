@@ -149,6 +149,13 @@ function statusTone(status: LiveDemoRunState["status"] | "idle") {
   }
 }
 
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  const payload = (await response.json().catch(() => null)) as {
+    error?: string;
+  } | null;
+  return new Error(payload?.error ?? fallback);
+}
+
 function SelectControl({
   disabled,
   id,
@@ -320,7 +327,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         }
       );
       if (!response.ok) {
-        throw new Error(`Demo run failed with status ${response.status}`);
+        throw await responseError(response, `Demo run failed with status ${response.status}`);
       }
 
       const next = (await response.json()) as LiveDemoRunState;
@@ -357,8 +364,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         body: formData
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(payload?.error ?? `Demo run failed with status ${response.status}`);
+        throw await responseError(response, `Demo run failed with status ${response.status}`);
       }
 
       const next = (await response.json()) as LiveDemoRunState;

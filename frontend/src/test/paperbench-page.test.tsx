@@ -103,7 +103,7 @@ describe("paperbench page", () => {
     expect(screen.getByText("Result Match")).toBeInTheDocument();
     expect(screen.getByText("claude_3_5_sonnet_basicagent")).toBeInTheDocument();
     expect(screen.getByText("o1_basicagent")).toBeInTheDocument();
-    expect(screen.getByText("succeeded")).toBeInTheDocument();
+    expect(screen.getAllByText("succeeded").length).toBeGreaterThan(0);
   });
 
   it("enables provider/model inputs by default (pipeline mode is the default)", () => {
