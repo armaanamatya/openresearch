@@ -13,7 +13,9 @@ import type {
   DemoSandboxMode,
   LiveDemoRunState
 } from "@/lib/demo/demo-run-types";
+import type { DashboardEvent } from "@/lib/events/contract";
 import { createMockEventAdapter } from "@/lib/events/mock-event-adapter";
+import { createLiveEventAdapter, type LiveEventAdapter } from "@/lib/events/live-event-adapter";
 
 interface LiveDemoClientProps {
   initialRun: LiveDemoRunState | null;
@@ -216,6 +218,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   const [error, setError] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const liveAdapterRef = useRef<LiveEventAdapter>(createLiveEventAdapter());
 
   const adapter = useMemo(() => {
     if (!run?.payload) {
@@ -343,6 +346,16 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
           setError("Unable to parse live log update");
         }
       });
+      source.addEventListener("dashboard_event", (event) => {
+        try {
+          const dashEvent = JSON.parse(
+            (event as MessageEvent).data
+          ) as DashboardEvent;
+          liveAdapterRef.current.push(dashEvent);
+        } catch {
+          // ignore malformed dashboard events
+        }
+      });
       source.onerror = () => {
         source.close();
         if (eventSourceRef.current === source) {
@@ -408,6 +421,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   ]);
 
   async function handleRun(mode: "offline" | "sdk") {
+    liveAdapterRef.current = createLiveEventAdapter();
     setRunningMode(mode);
     setError(null);
 
@@ -436,6 +450,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   }
 
   async function handleUploadedRun(mode: "offline" | "sdk") {
+    liveAdapterRef.current = createLiveEventAdapter();
     if (!selectedPaper) {
       setError("Choose a PDF before starting an uploaded-paper run.");
       return;
@@ -805,7 +820,11 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
             <TimelinePanel telemetry={run.telemetry} />
           </div>
 
-          {adapter ? <DashboardShell adapter={adapter} /> : null}
+          {adapter ? (
+            <DashboardShell adapter={adapter} />
+          ) : run ? (
+            <DashboardShell adapter={liveAdapterRef.current} />
+          ) : null}
         </>
       ) : null}
     </main>

@@ -159,6 +159,7 @@ class FileLiveRunService:
     async def stream_events(self, project_id: str) -> AsyncIterator[str]:
         last_log_len = 0
         last_status_json = ""
+        last_dash_count = 0
         counter = 0
         state = await self.get_run(project_id)
         if state is None:
@@ -173,6 +174,12 @@ class FileLiveRunService:
                 "agent_log",
                 {"projectId": project_id, "text": state.log[-12000:], "log": state.log},
             )
+
+        # Flush any dashboard events already written before streaming started
+        initial_dash = await asyncio.to_thread(self._read_dashboard_events, project_id, 0)
+        for dash_event in initial_dash:
+            yield sse_event("dashboard_event", dash_event, event_id=f"dash-{last_dash_count}")
+            last_dash_count += 1
 
         while state.status in {"queued", "running"}:
             await asyncio.sleep(1)
@@ -193,6 +200,11 @@ class FileLiveRunService:
                     {"projectId": project_id, "text": delta, "log": state.log},
                     event_id=f"log-{counter}",
                 )
+            # Stream new dashboard events
+            new_dash = await asyncio.to_thread(self._read_dashboard_events, project_id, last_dash_count)
+            for dash_event in new_dash:
+                yield sse_event("dashboard_event", dash_event, event_id=f"dash-{last_dash_count}")
+                last_dash_count += 1
             if counter % 15 == 0:
                 yield sse_event("heartbeat", {"projectId": project_id, "status": state.status})
 
@@ -360,6 +372,25 @@ class FileLiveRunService:
         except OSError:
             pass
         return records
+
+    def _read_dashboard_events(self, project_id: str, offset: int = 0) -> list[dict[str, Any]]:
+        path = self.runs_root / project_id / "dashboard_events.jsonl"
+        if not path.exists():
+            return []
+        events: list[dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines[offset:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            pass
+        return events
 
     def _read_log(self, project_id: str, max_chars: int = 12000) -> str:
         path = self.runs_root / project_id / "runner.stderr.log"

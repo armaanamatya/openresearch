@@ -36,7 +36,7 @@ _PIP_PACKAGE_RE = re.compile(
     re.MULTILINE,
 )
 _GITHUB_CLONE_RE = re.compile(
-    r"git\s+clone\s+(?:--[^\s]+\s+)*https?://github\.com/([^\s]+?)(?:\.git)?(?:\s|$)"
+    r"git\s+clone\s+(?:--[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*https?://github\.com/([^\s]+?)(?:\.git)?(?:\s|$)"
 )
 
 

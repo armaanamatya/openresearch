@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.schemas import (
     GateDecision,
     GateStatus,
@@ -144,6 +145,9 @@ def run_pipeline_offline(
         blacklist_terms=list(blacklist_terms),
     )
 
+    emitter = DashboardEmitter(project_id, runs)
+    emitter.agent_started("root-orchestrator", "Starting offline pipeline", parent_id=None)
+
     def _enrich(variable_name: str, value: dict, agent_id: str) -> None:
         if workspace_service is None or workspace_id is None:
             return
@@ -167,6 +171,7 @@ def run_pipeline_offline(
 
     # --- Step 1: Paper Understanding ---
     print(f"[1/9] Paper Understanding Agent", file=sys.stderr)
+    emitter.agent_started("paper-understanding", "Extracting claims from paper")
     state.paper_claim_map = paper_understanding(
         project_id, runs, workspace_claim_map,
     )
@@ -174,10 +179,14 @@ def run_pipeline_offline(
     for amb in state.paper_claim_map.ambiguities:
         state.assumption_ledger.append(amb.model_dump())
     _enrich("paper_claim_map_agent", state.paper_claim_map.model_dump(), "paper-understanding")
+    emitter.agent_completed("paper-understanding", f"{len(state.paper_claim_map.ambiguities)} ambiguities detected")
+    emitter.reasoning_step("paper-understanding", "Claims extracted", f"Found {len(state.paper_claim_map.ambiguities)} ambiguities in paper")
+    emitter.context_enrichment("paper-understanding", "paper_claim_map", "Paper claim map extracted")
     print(f"      {len(state.paper_claim_map.ambiguities)} ambiguities detected", file=sys.stderr)
 
     # --- Step 2: Artifact Discovery (simplified offline) ---
     print(f"[2/9] Artifact Discovery Agent", file=sys.stderr)
+    emitter.agent_started("artifact-discovery", "Searching for external artifacts")
     state.artifact_index = {
         "artifacts": [],
         "recommended_repo": None,
@@ -185,9 +194,11 @@ def run_pipeline_offline(
         "note": "Offline mode: no web search performed",
     }
     state.stage = PipelineStage.ARTIFACTS_DISCOVERED
+    emitter.agent_completed("artifact-discovery", "Offline mode: no web search performed")
 
     # --- Step 3: Environment Detective ---
     print(f"[3/9] Environment Detective Agent", file=sys.stderr)
+    emitter.agent_started("environment-detective", "Building Docker environment specification")
     state.environment_spec = env_detective(
         project_id, runs, state.paper_claim_map, state.artifact_index,
     )
@@ -195,11 +206,15 @@ def run_pipeline_offline(
         state.assumption_ledger.append(assumption.model_dump())
     state.stage = PipelineStage.ENVIRONMENT_BUILT
     _enrich("environment_spec", state.environment_spec.model_dump(), "environment-detective")
+    emitter.agent_completed("environment-detective", f"Python {state.environment_spec.python_version}, {state.environment_spec.framework}=={state.environment_spec.framework_version}")
+    emitter.reasoning_step("environment-detective", "Environment resolved", f"Dockerfile: Python {state.environment_spec.python_version}, {state.environment_spec.framework}=={state.environment_spec.framework_version}")
+    emitter.context_enrichment("environment-detective", "environment_spec", "Environment specification built")
     print(f"      Dockerfile generated: Python {state.environment_spec.python_version}, "
           f"{state.environment_spec.framework}=={state.environment_spec.framework_version}", file=sys.stderr)
 
     # --- Step 4: Reproduction Planner (simplified offline) ---
     print(f"[4/9] Reproduction Planner", file=sys.stderr)
+    emitter.agent_started("reproduction-planner", "Creating reproduction contract")
     from backend.agents.schemas import ReproductionContract
     state.reproduction_contract = ReproductionContract(
         reproduction_definition="Same algorithm, same dataset, same specifications where discoverable.",
@@ -209,29 +224,38 @@ def run_pipeline_offline(
         evaluation_plan="Mean reward over 100 evaluation episodes.",
     )
     state.stage = PipelineStage.PLAN_CREATED
+    emitter.agent_completed("reproduction-planner", "Reproduction contract created")
 
     # --- Gate 1: Plan Verification ---
     print(f"[Gate 1] Plan Verification", file=sys.stderr)
+    emitter.agent_started("supervisor-verifier", "Verifying reproduction plan")
     # In offline mode, auto-pass gate 1 (plan is deterministic)
     state.gate_1 = GateDecision(gate="gate_1", passed=True, status=GateStatus.verified)
     state.decision_log.append("gate_1: verified (offline mode)")
     state.stage = PipelineStage.GATE_1_PASSED
     state.save_checkpoint(runs)
+    emitter.agent_completed("supervisor-verifier", "Gate 1: verified")
+    emitter.verification_gate("plan", "passed", "Gate 1: Plan verification passed (offline mode)")
     print(f"      PASSED", file=sys.stderr)
 
     # --- Step 5: Baseline Implementation ---
     print(f"[5/9] Baseline Implementation Agent", file=sys.stderr)
+    emitter.agent_started("baseline-implementation", "Implementing baseline code")
     state.baseline_result = baseline_impl(
         project_id, runs, state.paper_claim_map, state.environment_spec,
         state.reproduction_contract, state.artifact_index,
     )
     state.stage = PipelineStage.BASELINE_IMPLEMENTED
     _enrich("baseline_result", state.baseline_result.model_dump(), "baseline-implementation")
+    emitter.agent_completed("baseline-implementation", f"Mode: {state.baseline_result.mode}")
+    emitter.reasoning_step("baseline-implementation", "Baseline implemented", f"Mode: {state.baseline_result.mode}, assumptions: {state.baseline_result.assumptions_applied}")
+    emitter.context_enrichment("baseline-implementation", "baseline_result", "Baseline implementation ready")
     print(f"      Mode: {state.baseline_result.mode}, "
           f"assumptions applied: {state.baseline_result.assumptions_applied}", file=sys.stderr)
 
     # --- Step 6: Experiment Runner ---
     print(f"[6/9] Experiment Runner Agent", file=sys.stderr)
+    emitter.agent_started("experiment-runner", f"Running experiment ({resolved_sandbox_mode.value})")
     if resolved_sandbox_mode is SandboxMode.docker:
         import anyio
 
@@ -285,11 +309,15 @@ def run_pipeline_offline(
         )
     state.stage = PipelineStage.BASELINE_RUN
     _enrich("experiment_artifacts", state.experiment_artifacts.model_dump(), "experiment-runner")
+    emitter.agent_completed("experiment-runner", f"Success: {state.experiment_artifacts.success}, mean_reward: {state.experiment_artifacts.metrics.get('mean_reward', 'N/A')}")
+    emitter.reasoning_step("experiment-runner", "Experiment completed", f"Success: {state.experiment_artifacts.success}, mean_reward: {state.experiment_artifacts.metrics.get('mean_reward', 'N/A')}")
+    emitter.context_enrichment("experiment-runner", "experiment_artifacts", "Experiment artifacts collected")
     print(f"      Success: {state.experiment_artifacts.success}, "
           f"mean_reward: {state.experiment_artifacts.metrics.get('mean_reward', 'N/A')}", file=sys.stderr)
 
     # --- Gate 2: Baseline Verification ---
     print(f"[Gate 2] Baseline Verification", file=sys.stderr)
+    emitter.agent_started("supervisor-verifier", "Verifying baseline reproduction")
     code_dir = runs / project_id / "code"
     gate2_report = run_gate_offline(
         "gate_2",
@@ -306,6 +334,12 @@ def run_pipeline_offline(
     state.decision_log.append(gate2_report.decision_log_entry)
     state.stage = PipelineStage.GATE_2_PASSED
     state.save_checkpoint(runs)
+    emitter.agent_completed("supervisor-verifier", f"Gate 2: {gate2_report.status.value}")
+    emitter.verification_gate(
+        "baseline",
+        "passed" if state.gate_2.passed else "failed",
+        f"Gate 2: {gate2_report.status.value}",
+    )
     print(f"      {gate2_report.status.value} (avg score: "
           f"{sum(s.score for s in gate2_report.verifier_scores)/len(gate2_report.verifier_scores):.2f})", file=sys.stderr)
 
@@ -315,6 +349,7 @@ def run_pipeline_offline(
 
     # --- Step 7: Improvement Orchestrator ---
     print(f"[7/9] Improvement Orchestrator", file=sys.stderr)
+    emitter.agent_started("improvement-orchestrator", "Selecting improvement hypotheses")
     state.improvement_hypotheses = select_hypotheses_offline(
         state.paper_claim_map,
         state.experiment_artifacts.metrics,
@@ -322,12 +357,15 @@ def run_pipeline_offline(
         n_paths=n_improvement_paths,
     )
     state.stage = PipelineStage.IMPROVEMENTS_SELECTED
+    emitter.agent_completed("improvement-orchestrator", f"Selected {len(state.improvement_hypotheses)} hypotheses")
     for h in state.improvement_hypotheses:
+        emitter.reasoning_step("improvement-orchestrator", f"Hypothesis: {h.path_id}", h.hypothesis[:200], step_type="hypothesis")
         print(f"      → {h.path_id}: {h.hypothesis[:60]}...", file=sys.stderr)
 
     # --- Step 8: Path Agents ---
     print(f"[8/9] Running {len(state.improvement_hypotheses)} Improvement Path Agents", file=sys.stderr)
     for hypothesis in state.improvement_hypotheses:
+        emitter.agent_started("improvement-path", f"Running {hypothesis.path_id}", parent_id="improvement-orchestrator")
         result = run_path_offline(
             project_id, runs, hypothesis,
             state.experiment_artifacts.metrics,
@@ -335,11 +373,17 @@ def run_pipeline_offline(
         state.path_results.append(result)
         status_str = "✓" if result.success else "✗"
         reward = result.metrics.get("mean_reward", "N/A")
+        if result.success:
+            emitter.agent_completed("improvement-path", f"{hypothesis.path_id}: reward={reward}", parent_id="improvement-orchestrator")
+        else:
+            emitter.agent_failed("improvement-path", f"{hypothesis.path_id}: {result.failure_notes}", parent_id="improvement-orchestrator")
+        emitter.reasoning_step("improvement-path", f"Path {hypothesis.path_id}: {status_str}", f"reward={reward}", step_type="experiment")
         print(f"      {status_str} {hypothesis.path_id}: reward={reward}", file=sys.stderr)
     state.stage = PipelineStage.IMPROVEMENTS_RUN
 
     # --- Gate 3: Improvement Verification ---
     print(f"[Gate 3] Improvement Verification", file=sys.stderr)
+    emitter.agent_started("supervisor-verifier", "Verifying improvement results")
     gate3_report = run_improvement_gate_offline(
         state.path_results,
         state.paper_claim_map,
@@ -353,6 +397,12 @@ def run_pipeline_offline(
     state.decision_log.append(gate3_report.decision_log_entry)
     state.stage = PipelineStage.GATE_3_PASSED
     state.save_checkpoint(runs)
+    emitter.agent_completed("supervisor-verifier", f"Gate 3: {gate3_report.status.value}")
+    emitter.verification_gate(
+        "improvement",
+        "passed" if state.gate_3.passed else "failed",
+        f"Gate 3: {gate3_report.status.value}",
+    )
     print(f"      {gate3_report.status.value}", file=sys.stderr)
 
     # --- Step 9: Research Map ---
@@ -404,6 +454,8 @@ def run_pipeline_offline(
 
     state.stage = PipelineStage.COMPLETE
     state.save_checkpoint(runs)
+
+    emitter.agent_completed("root-orchestrator", f"Pipeline complete for {project_id}", parent_id=None)
 
     if workspace_service is not None and workspace_id is not None:
         try:

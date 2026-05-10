@@ -151,7 +151,7 @@ class TestVerifyDockerfile:
         return tmp_path / "Dockerfile"
 
     def test_nonexistent_dockerfile(self, tmp_path: Path):
-        report = asyncio.get_event_loop().run_until_complete(
+        report = asyncio.run(
             verify_dockerfile(tmp_path / "Dockerfile.missing")
         )
         assert not report.has_failures
@@ -159,7 +159,7 @@ class TestVerifyDockerfile:
 
     def test_empty_dockerfile(self, tmp_dockerfile: Path):
         tmp_dockerfile.write_text("FROM python:3.11-slim\nRUN echo hello\n")
-        report = asyncio.get_event_loop().run_until_complete(
+        report = asyncio.run(
             verify_dockerfile(tmp_dockerfile)
         )
         # No dependency pins to check
@@ -170,7 +170,7 @@ class TestVerifyDockerfile:
             FROM python:3.11-slim
             RUN pip install git+https://github.com/Farama-Foundation/Metaworld.git@04be337a12bcdef0
         """))
-        report = asyncio.get_event_loop().run_until_complete(
+        report = asyncio.run(
             verify_dockerfile(tmp_dockerfile)
         )
         # Should have at least one check for the git SHA
@@ -185,7 +185,7 @@ class TestVerifyDockerfile:
             FROM python:3.11-slim
             RUN pip install torch==2.2.0
         """))
-        report = asyncio.get_event_loop().run_until_complete(
+        report = asyncio.run(
             verify_dockerfile(tmp_dockerfile)
         )
         pypi_checks = [c for c in report.checks if c.kind == "pypi_version"]
@@ -198,7 +198,7 @@ class TestVerifyDockerfile:
             FROM python:3.11-slim
             RUN git clone https://github.com/mikelma/componet.git /workspace
         """))
-        report = asyncio.get_event_loop().run_until_complete(
+        report = asyncio.run(
             verify_dockerfile(tmp_dockerfile)
         )
         repo_checks = [c for c in report.checks if c.kind == "github_repo"]

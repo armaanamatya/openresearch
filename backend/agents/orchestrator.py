@@ -58,6 +58,7 @@ from backend.agents.schemas import (
     VerificationReport,
 )
 from backend.agents.structured_output import append_structured_output_instruction
+from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.telemetry import (
     AgentTelemetryRecorder,
 )
@@ -331,6 +332,7 @@ class ReproLabOrchestrator:
         )
         self._workspace_service = workspace_service
         self._workspace_id = workspace_id
+        self._dashboard = DashboardEmitter(project_id, runs_root)
 
     # Agents that write code / run experiments need more turns
     _HEAVY_AGENTS = {"baseline-implementation", "improvement-path", "experiment-runner"}
@@ -421,30 +423,37 @@ class ReproLabOrchestrator:
                 max_turns=attempt_max_turns,
             )
 
-        result_obj = await run_agent_with_resilience(
-            agent_id=agent_id,
-            base_prompt=task_prompt,
-            primary_provider=primary_runtime.provider_name,
-            runtime_for=runtime_for,
-            chain=chain,
-            policy=policy,
-            health=self._provider_health,
-            ledger=self._cost_ledger,
-            budget=self._run_budget,
-            runtime_kwargs=RuntimeKwargs(
-                cwd=cwd_path,
-                max_turns=max_turns,
-                wall_clock_seconds=self.execution_profile.agent_wall_clock_seconds,
-                build_runtime_spec=build_runtime_spec,
-                telemetry=self._telemetry,
-                run_started_at=self._pipeline_started_at,
-                salvage_validator=lambda text: self._partial_output_validates(
-                    agent_id,
-                    text,
+        self._dashboard.agent_started(agent_id, task_prompt[:120])
+
+        try:
+            result_obj = await run_agent_with_resilience(
+                agent_id=agent_id,
+                base_prompt=task_prompt,
+                primary_provider=primary_runtime.provider_name,
+                runtime_for=runtime_for,
+                chain=chain,
+                policy=policy,
+                health=self._provider_health,
+                ledger=self._cost_ledger,
+                budget=self._run_budget,
+                runtime_kwargs=RuntimeKwargs(
+                    cwd=cwd_path,
+                    max_turns=max_turns,
+                    wall_clock_seconds=self.execution_profile.agent_wall_clock_seconds,
+                    build_runtime_spec=build_runtime_spec,
+                    telemetry=self._telemetry,
+                    run_started_at=self._pipeline_started_at,
+                    salvage_validator=lambda text: self._partial_output_validates(
+                        agent_id,
+                        text,
+                    ),
+                    summary_path=self._fallback_summary_path,
                 ),
-                summary_path=self._fallback_summary_path,
-            ),
-        )
+            )
+        except Exception:
+            self._dashboard.agent_failed(agent_id, f"Agent {agent_id} encountered an error")
+            raise
+
         result = result_obj.output_text
         if not result.strip():
             print(
@@ -459,6 +468,16 @@ class ReproLabOrchestrator:
             trace_text=result_obj.trace_text,
             tool_calls=result_obj.tool_calls,
             elapsed_seconds=result_obj.elapsed_seconds,
+        )
+        self._dashboard.agent_completed(
+            agent_id,
+            f"Completed ({len(result)} chars, {result_obj.elapsed_seconds:.1f}s)",
+        )
+        self._dashboard.reasoning_step(
+            agent_id,
+            "Analysis complete",
+            result[:300] if result else "No output",
+            step_type="completion",
         )
         return result
 
@@ -560,6 +579,7 @@ class ReproLabOrchestrator:
             logger.info(
                 "Workspace enriched: %s from %s", variable_name, agent_id
             )
+            self._dashboard.context_enrichment(agent_id, variable_name, f"Enriched {variable_name}")
         except Exception:
             logger.warning(
                 "Failed to enrich workspace variable %s from %s",
@@ -989,6 +1009,11 @@ class ReproLabOrchestrator:
             passed=report.status in (GateStatus.verified, GateStatus.verified_with_caveats),
             status=report.status,
         )
+        self._dashboard.verification_gate(
+            "plan",
+            "passed" if state.gate_1.passed else "failed",
+            f"Gate 1: {state.gate_1.status.value}",
+        )
         checkpoint_report = self._audit_checkpoint(
             state,
             target="gate_1",
@@ -1120,6 +1145,11 @@ class ReproLabOrchestrator:
             gate="gate_2",
             passed=report.status in (GateStatus.verified, GateStatus.verified_with_caveats),
             status=report.status,
+        )
+        self._dashboard.verification_gate(
+            "baseline",
+            "passed" if state.gate_2.passed else "failed",
+            f"Gate 2: {state.gate_2.status.value}",
         )
         checkpoint_report = self._audit_checkpoint(
             state,
@@ -1304,6 +1334,11 @@ class ReproLabOrchestrator:
             passed=report.status in (GateStatus.verified, GateStatus.verified_with_caveats),
             status=report.status,
         )
+        self._dashboard.verification_gate(
+            "improvement",
+            "passed" if state.gate_3.passed else "failed",
+            f"Gate 3: {state.gate_3.status.value}",
+        )
         checkpoint_report = self._audit_checkpoint(
             state,
             target="gate_3",
@@ -1410,6 +1445,12 @@ class ReproLabOrchestrator:
             if self.blacklist_terms:
                 state.blacklist_terms = list(self.blacklist_terms)
 
+        self._dashboard.agent_started(
+            "root-orchestrator",
+            f"Pipeline starting from {state.stage.value}",
+            parent_id=None,
+        )
+
         stages_order = list(PipelineStage)
         if stages_order.index(state.stage) < stages_order.index(PipelineStage.BASELINE_RUN):
             ensure_sandbox_mode_available(self.sandbox_mode)
@@ -1484,6 +1525,11 @@ class ReproLabOrchestrator:
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)
 
+        self._dashboard.agent_completed(
+            "root-orchestrator",
+            f"Pipeline complete: {state.stage.value}",
+            parent_id=None,
+        )
         self._close_workspace("pipeline_complete")
         logger.info("Pipeline complete for project %s", self.project_id)
         return state
