@@ -618,6 +618,10 @@ def test_rlm_query_missing_variable_raises(workspace_service, indexed_project):
 
 def test_build_workspace_auto_embeds_chunks(store, indexed_project):
     """When an embedding_store is provided, build_workspace embeds chunks."""
+    pytest.importorskip(
+        "chromadb",
+        reason="chromadb is an optional dependency (install via reprolab-backend[semantic])",
+    )
     from backend.services.context.semantic.store import ChromaEmbeddingStore
 
     chroma = ChromaEmbeddingStore(collection_name="test_auto_embed")
