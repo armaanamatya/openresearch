@@ -249,6 +249,36 @@ node --version            # 20+
 npm --version             # 10+
 ```
 
+## 9. PaperBench head-to-head
+
+Run the agent pipeline against a vendored PaperBench paper bundle and
+compare to the published BasicAgent baselines (PaperBench paper, OpenAI,
+April 2025, Tables 11/15).
+
+```bash
+# 1. Inspect the bundle (no LLM key needed — pure rubric math)
+.venv/bin/python -m backend.cli paperbench list
+.venv/bin/python -m backend.cli paperbench summary --paper-id ftrl
+
+# 2. Dry validation (writes a placeholder submission, no LLM key)
+.venv/bin/python -m backend.cli paperbench run --no-pipeline --paper-id ftrl
+
+# 3. Real run (requires ANTHROPIC_API_KEY or OPENAI_API_KEY in .env)
+.venv/bin/python -m backend.cli paperbench run --paper-id ftrl --seeds 0 1 2
+
+# 4. Poll status
+.venv/bin/python -m backend.cli paperbench status --run-group-id <id>
+```
+
+The web UI mirrors this at `http://localhost:3000/paperbench` (paper
+picker, seed input, dry/pipeline toggle, score-vs-baseline grid, live
+attempts table). Results land in `runs/paperbench/<run_group_id>/`.
+
+To produce numbers that are honestly comparable to PaperBench's
+published Tables 11/15, replace `third_party/paperbench/ftrl/paper.md`,
+`addendum.md`, and `rubric.json` with the upstream artifacts. Full
+swap-in steps are in `third_party/paperbench/README.md`.
+
 ## Quick reference — what to install
 
 | Tool | Required? | Install time |

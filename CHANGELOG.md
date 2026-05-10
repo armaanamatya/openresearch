@@ -41,6 +41,11 @@ version + date and start a new `[Unreleased]` block above it.
   pointer.
 - **Layer 1 RLM workspace service** wired into the orchestrator (from
   upstream).
+- **Layer 2 semantic store** with Chroma vector embeddings + BM25
+  fallback, auto-wired through `_make_services` when `chromadb` is
+  installed (from upstream, second merge round).
+- **PaperBench section in `docs/setup-guide.md`** — 4-step workflow
+  from `list` → `summary` → `--no-pipeline` dry → real run + UI link.
 
 ### Changed
 - `RuntimeGuard.find_blocked_term` no longer URL-parses arbitrary agent
@@ -84,3 +89,7 @@ version + date and start a new `[Unreleased]` block above it.
   `frontend/tsconfig.tsbuildinfo`, `_test_logs/`, `reprolab.db.*`,
   Windows `*:Zone.Identifier`, stray pip-version files at repo root.
   `paperbench1.pdf` is whitelisted as the canonical input fixture.
+- `tests/test_issue16_workspace_service.py::test_build_workspace_auto_embeds_chunks`
+  now uses `pytest.importorskip("chromadb")` so the suite stays green
+  when the optional `reprolab-backend[semantic]` extras aren't
+  installed (matches the pattern in `test_semantic_layer2.py`).
