@@ -192,6 +192,9 @@ function runModeLabel(runMode: LiveDemoMeta["runMode"], provider?: DemoProvider)
 }
 
 function sandboxLabel(mode?: DemoSandboxMode): string {
+  if (!mode || mode === "auto") {
+    return "Runpod GPU";
+  }
   if (mode === "local") {
     return "Local";
   }
@@ -201,7 +204,7 @@ function sandboxLabel(mode?: DemoSandboxMode): string {
   if (mode === "runpod") {
     return "Runpod GPU";
   }
-  return "Auto Docker sandbox";
+  return "Runpod GPU";
 }
 
 function gpuLabel(mode?: DemoGpuMode): string {

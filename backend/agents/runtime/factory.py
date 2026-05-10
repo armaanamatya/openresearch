@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from backend.agents.runtime.base import (
     AgentRuntime,
@@ -35,13 +36,64 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
 def validate_provider_credentials(provider: ProviderName | str | None = None) -> ProviderName:
     """Validate API credentials for explicit SDK-mode invocations."""
     resolved = selected_provider(provider)
-    env_name = "ANTHROPIC_API_KEY" if resolved == "anthropic" else "OPENAI_API_KEY"
-    if not os.getenv(env_name):
+    settings = get_settings(_force_reload=True)
+    if resolved == "anthropic":
+        if not (
+            os.getenv("ANTHROPIC_API_KEY")
+            or getattr(settings, "anthropic_api_key", "")
+        ):
+            raise ProviderConfigurationError(
+                provider=resolved,
+                reason=(
+                    "Anthropic credentials are missing; set ANTHROPIC_API_KEY "
+                    "or REPROLAB_ANTHROPIC_API_KEY"
+                ),
+            )
+        return resolved
+    if not (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("OPENAI_ADMIN_KEY")
+        or getattr(settings, "openai_api_key", "")
+        or getattr(settings, "openai_admin_key", "")
+    ):
         raise ProviderConfigurationError(
             provider=resolved,
-            reason=f"{env_name} is not set",
+            reason=(
+                "OpenAI credentials are missing; set OPENAI_API_KEY "
+                "or REPROLAB_OPENAI_API_KEY, or set OPENAI_ADMIN_KEY "
+                "or REPROLAB_OPENAI_ADMIN_KEY"
+            ),
         )
     return resolved
+
+
+def configure_openai_agents_sdk_credentials(
+    set_default_openai_key: Callable[..., Any] | None,
+) -> None:
+    """Bridge ReproLab settings into the OpenAI Agents SDK credential hooks.
+
+    The OpenAI Agents SDK can read ``OPENAI_API_KEY`` / ``OPENAI_ADMIN_KEY``
+    directly. ReproLab also supports ``REPROLAB_*`` aliases and ``.env`` via
+    Settings, so this function performs the provider-specific bridge once,
+    before any Agents SDK objects are constructed.
+    """
+    validate_provider_credentials("openai")
+    settings = get_settings(_force_reload=True)
+    api_key = (settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+        if set_default_openai_key is not None:
+            try:
+                set_default_openai_key(api_key, use_for_tracing=True)
+            except TypeError:
+                set_default_openai_key(api_key)
+    admin_key = (
+        settings.openai_admin_key
+        or os.getenv("OPENAI_ADMIN_KEY")
+        or ""
+    ).strip()
+    if admin_key:
+        os.environ["OPENAI_ADMIN_KEY"] = admin_key
 
 
 def make_runtime(
@@ -73,4 +125,9 @@ def make_runtime(
     )
 
 
-__all__ = ["make_runtime", "selected_provider", "validate_provider_credentials"]
+__all__ = [
+    "configure_openai_agents_sdk_credentials",
+    "make_runtime",
+    "selected_provider",
+    "validate_provider_credentials",
+]

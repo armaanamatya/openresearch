@@ -648,6 +648,31 @@ class RunpodBackend(RuntimeBackend):
         )
 
 
+def ensure_runpod_available() -> None:
+    """Fail fast when RunPod is selected but local credentials are incomplete."""
+    from backend.config import get_settings
+
+    settings = get_settings(_force_reload=True)
+    api_key = (
+        settings.runpod_api_key
+        or os.environ.get("REPROLAB_RUNPOD_API_KEY")
+        or os.environ.get("RUNPOD_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise SandboxRuntimeError(
+            RuntimeCauseKind.backend_unavailable,
+            "RunPod sandbox is selected but REPROLAB_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
+        )
+    ssh_key_path = _normalize_ssh_key_path(settings.runpod_ssh_key_path or None)
+    if not ssh_key_path.exists():
+        raise SandboxRuntimeError(
+            RuntimeCauseKind.backend_unavailable,
+            f"RunPod sandbox is selected but SSH private key was not found: {ssh_key_path}. "
+            "Set REPROLAB_RUNPOD_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
+        )
+
+
 def _runpod_start_command() -> str:
     return (
         "command -v sshd >/dev/null || "
@@ -747,4 +772,4 @@ def _normalize_ssh_key_path(value: str | Path | None) -> Path:
     return expanded
 
 
-__all__ = ["RunpodBackend"]
+__all__ = ["RunpodBackend", "ensure_runpod_available"]

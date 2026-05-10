@@ -25,6 +25,7 @@ from typing import Any
 
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.execution import (
+    DEFAULT_SANDBOX_MODE,
     ExecutionProfile,
     SandboxMode,
     ensure_sandbox_mode_available,
@@ -268,7 +269,7 @@ class ReproLabOrchestrator:
         claude_limit_fallback_runtime: AgentRuntime | None = None,
         execution_profile: ExecutionProfile | None = None,
         run_budget: RunBudget | None = None,
-        sandbox_mode: SandboxMode | str = SandboxMode.docker,
+        sandbox_mode: SandboxMode | str = DEFAULT_SANDBOX_MODE,
         hermes_audit_service: HermesAuditService | None = None,
         seed: int | None = None,
         attempt_id: str | None = None,
@@ -1216,10 +1217,23 @@ class ReproLabOrchestrator:
         )
         state.stage = PipelineStage.IMPROVEMENTS_SELECTED
 
-        # Run each path agent
-        logger.info("[8/9] Running %d Improvement Path Agents", len(state.improvement_hypotheses))
-        for hypothesis in state.improvement_hypotheses:
-            path_dir = self._prepare_improvement_workspace(state, hypothesis)
+        # Run path agents with bounded concurrency. Results are applied to
+        # state in hypothesis order after all invocations finish so checkpoints,
+        # audits, and workspace enrichment stay deterministic.
+        logger.info(
+            "[8/9] Running %d Improvement Path Agents (concurrency=%d)",
+            len(state.improvement_hypotheses),
+            self.execution_profile.max_concurrent_agents,
+        )
+        path_workspaces = [
+            (hypothesis, self._prepare_improvement_workspace(state, hypothesis))
+            for hypothesis in state.improvement_hypotheses
+        ]
+
+        async def run_path_agent(
+            hypothesis: ImprovementHypothesis,
+            path_dir: Path,
+        ) -> tuple[ImprovementHypothesis, PathResult]:
             path_prompt = (
                 f"Execute improvement hypothesis for project {self.project_id}.\n"
                 f"Work in: {path_dir}\n"
@@ -1228,27 +1242,50 @@ class ReproLabOrchestrator:
                 f"Environment:\n```json\n{state.environment_spec.model_dump_json(indent=2) if state.environment_spec else '{}'}\n```"
             )
             path_output = await self._invoke_agent(
-                "improvement-path", path_prompt, cwd=path_dir,
+                "improvement-path",
+                path_prompt,
+                cwd=path_dir,
             )
             try:
                 path_data = self._extract_json(path_output)
                 path_result = PathResult(**path_data)
-                state.path_results.append(path_result)
-                self._audit_step(
-                    state,
-                    target=f"improvement-path:{hypothesis.path_id}",
-                    structured_output=path_result.model_dump(),
-                )
+                return hypothesis, path_result
             except (ValueError, Exception) as exc:
                 logger.warning("Path %s failed to parse: %s", hypothesis.path_id, exc)
-                state.path_results.append(
+                return (
+                    hypothesis,
                     PathResult(
                         path_id=hypothesis.path_id,
                         hypothesis=hypothesis.hypothesis,
                         failure_notes=str(exc),
                         success=False,
-                    )
+                    ),
                 )
+
+        semaphore = asyncio.Semaphore(
+            max(1, self.execution_profile.max_concurrent_agents)
+        )
+
+        async def run_limited(
+            hypothesis: ImprovementHypothesis,
+            path_dir: Path,
+        ) -> tuple[ImprovementHypothesis, PathResult]:
+            async with semaphore:
+                return await run_path_agent(hypothesis, path_dir)
+
+        path_results = await asyncio.gather(
+            *(
+                run_limited(hypothesis, path_dir)
+                for hypothesis, path_dir in path_workspaces
+            )
+        )
+        for hypothesis, path_result in path_results:
+            state.path_results.append(path_result)
+            self._audit_step(
+                state,
+                target=f"improvement-path:{hypothesis.path_id}",
+                structured_output=path_result.model_dump(),
+            )
         state.stage = PipelineStage.IMPROVEMENTS_RUN
         self._enrich_workspace(
             "path_results",

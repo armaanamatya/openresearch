@@ -1,5 +1,9 @@
 from argparse import Namespace
+from types import SimpleNamespace
 
+import pytest
+
+from backend.agents.runtime import ProviderConfigurationError
 from backend.cli import (
     _blacklist_entries_from_arg,
     _resolve_sdk_providers,
@@ -21,7 +25,7 @@ def test_reproduce_defaults_accept_generated_namespace_without_cli_fields() -> N
     assert args.hints is None
     assert args.n_paths == 3
     assert args.execution_mode == "efficient"
-    assert args.sandbox == "auto"
+    assert args.sandbox == "runpod"
     assert args.gpu_mode == "auto"
     assert args.command_timeout is None
     assert args.allow_sandbox_network is False
@@ -45,6 +49,21 @@ def test_resolve_sdk_providers_accepts_generated_namespace_without_provider(
 
     assert provider == "anthropic"
     assert verification_provider is None
+
+
+def test_resolve_sdk_providers_fails_openai_without_credentials(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REPROLAB_LLM_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(openai_api_key="", openai_admin_key=""),
+    )
+
+    with pytest.raises(ProviderConfigurationError):
+        _resolve_sdk_providers(Namespace(mode="sdk"))
 
 
 def test_blacklist_entries_from_inline_arg_and_file(tmp_path) -> None:

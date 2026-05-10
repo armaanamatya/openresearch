@@ -32,6 +32,9 @@ class SandboxMode(str, Enum):
     simulate = "simulate"
 
 
+DEFAULT_SANDBOX_MODE = SandboxMode.runpod
+
+
 @dataclass(frozen=True)
 class ExecutionProfile:
     """Resolved pipeline execution settings.
@@ -178,23 +181,30 @@ def resolve_sandbox_mode(
 ) -> SandboxMode:
     """Resolve auto sandbox policy from the high-level pipeline mode.
 
-    Auto is intentionally Docker-first for user-triggered runs. Local host
-    execution is never selected implicitly; callers must request it explicitly.
+    Auto is intentionally RunPod-first for user-triggered runs. Local host
+    execution and local Docker are never selected implicitly; callers must
+    request them explicitly.
     """
 
     mode = SandboxMode(requested)
     if mode is not SandboxMode.auto:
         return mode
-    return SandboxMode.docker
+    return DEFAULT_SANDBOX_MODE
 
 
 def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
     """Fail fast when a selected sandbox backend is unavailable locally."""
     resolved = SandboxMode(mode)
+    if resolved is SandboxMode.auto:
+        resolved = DEFAULT_SANDBOX_MODE
     if resolved is SandboxMode.docker:
         from backend.services.runtime import ensure_local_docker_available
 
         ensure_local_docker_available()
+    elif resolved is SandboxMode.runpod:
+        from backend.services.runtime import ensure_runpod_available
+
+        ensure_runpod_available()
 
 
 def _gpu_environment(mode: GpuMode) -> dict[str, str]:
@@ -209,6 +219,7 @@ def _gpu_environment(mode: GpuMode) -> dict[str, str]:
 __all__ = [
     "ExecutionMode",
     "ExecutionProfile",
+    "DEFAULT_SANDBOX_MODE",
     "GpuMode",
     "SandboxMode",
     "ensure_sandbox_mode_available",

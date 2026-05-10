@@ -64,6 +64,13 @@ class Settings(BaseSettings):
             "REPROLAB_OPENAI_API_KEY",
         ),
     )
+    openai_admin_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPENAI_ADMIN_KEY",
+            "REPROLAB_OPENAI_ADMIN_KEY",
+        ),
+    )
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 
@@ -71,7 +78,13 @@ class Settings(BaseSettings):
     # CLI defaults remain controlled separately by argparse flags.
     default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
 
-    runpod_api_key: str = ""
+    runpod_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "RUNPOD_API_KEY",
+            "REPROLAB_RUNPOD_API_KEY",
+        ),
+    )
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
     runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
     runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"

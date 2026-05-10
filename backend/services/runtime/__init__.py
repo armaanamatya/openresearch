@@ -35,7 +35,7 @@ from backend.services.runtime.local_docker import (
     ensure_local_docker_available,
 )
 from backend.services.runtime.local_process import LocalProcessBackend
-from backend.services.runtime.runpod_backend import RunpodBackend
+from backend.services.runtime.runpod_backend import RunpodBackend, ensure_runpod_available
 from backend.services.runtime.service import (
     CreateSandbox,
     DestroySandbox,
@@ -69,6 +69,7 @@ __all__ = [
     "SandboxState",
     "append_command_log",
     "ensure_local_docker_available",
+    "ensure_runpod_available",
     "initialize_run_artifacts",
     "utc_now_iso",
     "write_json",

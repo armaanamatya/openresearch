@@ -13,7 +13,7 @@ describe("LiveDemoClient", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the automatic Docker-first sandbox by default", async () => {
+  it("uses the Runpod sandbox by default", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -22,7 +22,7 @@ describe("LiveDemoClient", () => {
         runMode: "sdk",
         llmProvider: "anthropic",
         executionMode: "efficient",
-        sandboxMode: "auto",
+        sandboxMode: "runpod",
         status: "queued",
         payload: null,
         log: ""
@@ -36,7 +36,7 @@ describe("LiveDemoClient", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=auto&gpuMode=auto",
+        "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=runpod&gpuMode=auto",
         {
           method: "POST"
         }

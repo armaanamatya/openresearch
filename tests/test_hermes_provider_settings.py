@@ -32,24 +32,33 @@ from backend.hermes_audit.providers import (
 )
 
 
+PROVIDER_ENV_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_ADMIN_KEY",
+    "RUNPOD_API_KEY",
+    "REPROLAB_ANTHROPIC_API_KEY",
+    "REPROLAB_OPENAI_API_KEY",
+    "REPROLAB_OPENAI_ADMIN_KEY",
+    "REPROLAB_RUNPOD_API_KEY",
+)
+
+
 @pytest.fixture(autouse=True)
 def scrub_provider_env(monkeypatch: pytest.MonkeyPatch):
     """Strip every os.environ var that any of these tests' assertions
     depend on. Asserts the post-condition that the providers do NOT use
     os.environ — if any test only passes because the host shell happens
     to have ANTHROPIC_API_KEY set, we want it to fail loudly."""
-    for name in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "REPROLAB_ANTHROPIC_API_KEY",
-        "REPROLAB_OPENAI_API_KEY",
-    ):
+    for name in PROVIDER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     # Force a fresh Settings construction so we don't leak the cached
     # one from any prior test that read .env.
     get_settings(_force_reload=True)
     yield
     # Restore so other test files see a clean slate.
+    for name in PROVIDER_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
     get_settings(_force_reload=True)
 
 
@@ -164,6 +173,34 @@ def test_settings_falls_back_to_reprolab_prefix(monkeypatch: pytest.MonkeyPatch)
     settings = get_settings(_force_reload=True)
 
     assert settings.openai_api_key == "sk-reprolab-scoped"
+
+
+def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPatch):
+    """RunPod is the default sandbox, so its standard env name must work
+    from either shell env or .env without an os.environ bootstrap."""
+
+    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
+    monkeypatch.setenv("RUNPOD_API_KEY", "runpod-from-shell-env")
+    settings = get_settings(_force_reload=True)
+
+    assert settings.runpod_api_key == "runpod-from-shell-env"
+
+
+def test_settings_reads_unprefixed_provider_keys_from_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """A checked-in .env next to the process cwd is enough; callers do not
+    need to export provider keys before starting the app."""
+
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=sk-from-dotenv\nRUNPOD_API_KEY=runpod-from-dotenv\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    settings = get_settings(_force_reload=True)
+
+    assert settings.openai_api_key == "sk-from-dotenv"
+    assert settings.runpod_api_key == "runpod-from-dotenv"
 
 
 # ---------------------------------------------------------------------------

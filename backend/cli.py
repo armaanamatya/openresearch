@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.agents.execution import DEFAULT_SANDBOX_MODE
 from backend.config import get_settings
 from backend.eventstore.sqlite_store import SqliteEventStore
 from backend.services.context.indexer import (
@@ -376,7 +377,7 @@ _REPRODUCE_DEFAULTS = {
     "hints": None,
     "n_paths": 3,
     "execution_mode": "efficient",
-    "sandbox": "runpod",
+    "sandbox": DEFAULT_SANDBOX_MODE.value,
     "gpu_mode": "auto",
     "command_timeout": None,
     "allow_sandbox_network": False,
@@ -405,6 +406,20 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
     runs_root = Path(args.runs_root)
+    from backend.agents.runtime import ProviderConfigurationError
+
+    try:
+        provider, verification_provider = _resolve_sdk_providers(args)
+    except ProviderConfigurationError as exc:
+        print(f"SDK provider preflight failed: {exc}", file=sys.stderr)
+        if getattr(args, "mode", None) == "sdk":
+            print(
+                "Set the matching provider key, choose --provider anthropic "
+                "when Claude Code session auth is available, or use "
+                "--mode offline for a deterministic local run.",
+                file=sys.stderr,
+            )
+        return 2
 
     # --- Phase 1: Ingest ---
     store, intake, parser, discovery, indexer, workspace = _make_services(
@@ -465,7 +480,6 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)
-    provider, verification_provider = _resolve_sdk_providers(args)
 
     provider_note = f", provider={provider}" if provider else ""
     verification_note = (
@@ -681,10 +695,11 @@ def main(argv: list[str] | None = None) -> int:
     reproduce.add_argument(
         "--sandbox",
         choices=("auto", "local", "docker", "runpod"),
-        default="runpod",
+        default=DEFAULT_SANDBOX_MODE.value,
         help=(
-            "Experiment backend (default: runpod). local runs commands on the host; docker is isolated; "
-            "runpod uses a remote GPU Pod; auto selects Docker and never falls back to host-local execution."
+            f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
+            "runpod uses a remote GPU Pod; docker is isolated local Docker; "
+            "local runs commands on the host; auto resolves to the configured default."
         ),
     )
     reproduce.add_argument(

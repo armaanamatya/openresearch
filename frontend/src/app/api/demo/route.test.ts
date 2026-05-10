@@ -106,11 +106,15 @@ describe("/api/demo backend proxy", () => {
   });
 
   it("surfaces sandbox preflight failures with a setup status", async () => {
-    const error = Object.assign(new Error("Docker sandbox is not ready"), {
-      code: "sandbox_preflight_failed",
-      statusCode: 503
-    });
-    startDemoRun.mockRejectedValue(error);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json(
+        {
+          error: "Docker sandbox is not ready",
+          code: "sandbox_preflight_failed"
+        },
+        { status: 503 }
+      )
+    );
 
     const { POST } = await import("./route");
     const response = await POST(

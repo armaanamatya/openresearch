@@ -16,6 +16,7 @@ from backend.agents.runtime.base import (
     ToolSpec,
 )
 from backend.agents.runtime.factory import (
+    configure_openai_agents_sdk_credentials,
     make_runtime,
     selected_provider,
     validate_provider_credentials,
@@ -35,6 +36,7 @@ __all__ = [
     "StreamToolCall",
     "StreamUsage",
     "ToolSpec",
+    "configure_openai_agents_sdk_credentials",
     "make_runtime",
     "selected_provider",
     "validate_provider_credentials",

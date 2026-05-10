@@ -32,7 +32,7 @@ class StartRunRequest(BaseModel):
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "efficient"
-    sandbox: SandboxMode = "auto"
+    sandbox: SandboxMode = "runpod"
     gpuMode: GpuMode = "auto"
 
 
@@ -658,4 +658,3 @@ __all__ = [
     "project_id_for_pdf_path",
     "sse_event",
 ]
-

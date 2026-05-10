@@ -1,4 +1,5 @@
 from backend.agents.execution import (
+    DEFAULT_SANDBOX_MODE,
     GpuMode,
     ExecutionMode,
     ExecutionProfile,
@@ -63,9 +64,10 @@ def test_execution_profile_gpu_modes_set_resource_intent() -> None:
     assert max_gpu.sandbox_environment["REPROLAB_GPU_MODE"] == "max"
 
 
-def test_sandbox_mode_auto_defaults_to_docker_for_all_user_modes() -> None:
-    assert resolve_sandbox_mode("auto", pipeline_mode="sdk") is SandboxMode.docker
-    assert resolve_sandbox_mode("auto", pipeline_mode="offline") is SandboxMode.docker
+def test_sandbox_mode_auto_defaults_to_runpod_for_all_user_modes() -> None:
+    assert DEFAULT_SANDBOX_MODE is SandboxMode.runpod
+    assert resolve_sandbox_mode("auto", pipeline_mode="sdk") is SandboxMode.runpod
+    assert resolve_sandbox_mode("auto", pipeline_mode="offline") is SandboxMode.runpod
 
 
 def test_sandbox_mode_preserves_explicit_simulation_request() -> None:
