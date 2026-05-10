@@ -6,10 +6,9 @@ a ``HermesAuditReport``. Callers that already construct
 
 What's new under the hood:
 
-* **Provider chain.** Tries Nous Hermes first, then Claude (direct
-  Anthropic SDK), then OpenAI (direct OpenAI SDK). Each provider is a
-  Protocol implementation in ``providers.py`` — new providers plug in
-  by registration, never by editing this file's branching.
+* **Provider chain.** Tries Nous Hermes first, then Claude/OpenAI API-key
+  paths, then subscription-backed CLI paths where available. Each provider
+  is a Protocol implementation in ``providers.py``.
 * **Self-learning order.** Persists per-provider success / failure
   counters to ``<runs_root>/.hermes_adapter_memory.json`` between runs.
   The next run starts with last-known-good provider first and skips
@@ -43,6 +42,7 @@ import logging
 from pathlib import Path
 from typing import Any, Sequence
 
+from backend.config import get_settings
 from backend.hermes_audit.memory import (
     AdapterMemory,
     load_memory,
@@ -60,6 +60,7 @@ from backend.hermes_audit.providers import (
     AuditProvider,
     ClaudeAuditProvider,
     ClaudeCodeSdkProvider,
+    CodexCliProvider,
     NousHermesProvider,
     OpenAIAuditProvider,
     extract_audit_json,
@@ -71,9 +72,9 @@ logger = logging.getLogger(__name__)
 
 def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
     """Default chain: Nous → Claude (API key) → Claude Code SDK
-    (subscription) → OpenAI. Each provider is constructed with safe
-    defaults; callers wanting different models pass an explicit
-    ``providers=`` list to ``NousHermesClient``.
+    (subscription) → OpenAI (API key) → Codex CLI (subscription). Each
+    provider is constructed with safe defaults; callers wanting different
+    models pass an explicit ``providers=`` list to ``NousHermesClient``.
 
     Why this order:
 
@@ -88,13 +89,22 @@ def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
       Slightly heavier (spins up the agent SDK), so we don't preempt
       an explicit API key configuration.
     * ``openai`` is last as the cross-provider fallback.
+    * ``codex_cli`` is the final OpenAI-side subscription fallback: when
+      no OpenAI API key is available but the operator has run ``codex
+      login``, audits can still run via the Codex CLI without reading
+      OAuth tokens directly.
     """
+    settings = get_settings()
 
     return [
         NousHermesProvider(model=nous_model),
         ClaudeAuditProvider(),
         ClaudeCodeSdkProvider(),
         OpenAIAuditProvider(),
+        CodexCliProvider(
+            cli_path=settings.codex_cli_path or None,
+            auth_path_override=settings.codex_auth_path or None,
+        ),
     ]
 
 
