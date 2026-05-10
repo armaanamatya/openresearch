@@ -18,10 +18,14 @@ command extends the pipeline into the agent layer.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from backend.config import get_settings
 from backend.eventstore.sqlite_store import SqliteEventStore
@@ -68,6 +72,54 @@ _ARXIV_RE = re.compile(
     r"(?:arxiv:|arxiv\.org/(?:abs|pdf)/)?(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?$",
     re.IGNORECASE,
 )
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write ``data`` to ``path`` atomically via tempfile + os.replace.
+
+    Prevents a half-written demo_status.json if the process is killed
+    mid-flush — readers see either the old contents or the new contents,
+    never a truncated/empty file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _mark_demo_status_stopped(
+    runs_root: Path,
+    project_id: str,
+    *,
+    reason: str = "Pipeline interrupted",
+) -> None:
+    """Best-effort: flip demo_status.json to status=stopped on graceful exit.
+
+    Called on KeyboardInterrupt/CancelledError in the CLI. Reads the
+    existing status, preserves all fields, sets status=stopped + a
+    completedAt timestamp + an error string the dashboard can render.
+    Silent on failure — never let status bookkeeping mask the original
+    interrupt cause.
+    """
+    try:
+        path = runs_root / project_id / "demo_status.json"
+        existing: dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        merged = {
+            **existing,
+            "status": "stopped",
+            "updatedAt": now_iso,
+            "completedAt": now_iso,
+            "error": reason,
+        }
+        _atomic_write_json(path, merged)
+    except Exception:
+        return
 
 
 def _make_services(
@@ -351,8 +403,6 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
-    import asyncio
-
     args = _with_reproduce_defaults(args)
     runs_root = Path(args.runs_root)
 
@@ -499,6 +549,24 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_service=workspace,
                 workspace_id=workspace_id,
             ))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Graceful interrupt: don't dump a stack trace. Flip
+        # demo_status.json to status=stopped so the dashboard reflects
+        # the right state instead of waiting for live_runs reconciliation
+        # to mark the run "failed" via _pid_exists. Conventional SIGINT
+        # exit code is 130.
+        print(
+            "\n[reprolab] Pipeline interrupted (Ctrl-C). "
+            "Marking run as stopped and exiting.",
+            file=sys.stderr,
+            flush=True,
+        )
+        _mark_demo_status_stopped(
+            runs_root,
+            project_id,
+            reason="Pipeline interrupted (Ctrl-C)",
+        )
+        return 130
     except Exception as exc:
         from backend.agents.resilience import BudgetExhausted
 

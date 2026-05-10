@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
 import logging
@@ -1438,6 +1439,22 @@ class ReproLabOrchestrator:
             print(f"{'='*50}", file=sys.stderr, flush=True)
             try:
                 state = await step_fn(state)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                # Graceful interrupt — DON'T treat as a failure.
+                # asyncio.CancelledError is a BaseException (not Exception),
+                # so the generic except below would not catch it anyway —
+                # we surface it explicitly to log a clean STOPPED line and
+                # checkpoint partial state for resume.
+                print(
+                    f"  || STOPPED at {target_stage.value} (graceful interrupt)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                try:
+                    state.save_checkpoint(self.runs_root)
+                except Exception:
+                    pass
+                raise
             except Exception as exc:
                 print(f"  X FAILED: {target_stage.value} -- {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                 logger.exception("Step %s failed", target_stage.value)

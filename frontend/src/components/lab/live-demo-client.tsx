@@ -252,6 +252,46 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
     run?.verificationProvider
   ]);
 
+  // Client-side recovery: when SSR couldn't fetch the latest run within
+  // its tight timeout (busy backend, single-worker uvicorn behind SSE),
+  // poll /api/demo with exponential backoff after mount until we get
+  // run state. Stops as soon as run is populated by any source (this
+  // poll, the SSE stream below, or the user's own submit).
+  useEffect(() => {
+    if (run) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const tick = async (delayMs: number) => {
+      if (cancelled) return;
+      try {
+        const controller = new AbortController();
+        const t = window.setTimeout(() => controller.abort(), 4000);
+        const response = await fetch("/api/demo", {
+          cache: "no-store",
+          signal: controller.signal
+        });
+        window.clearTimeout(t);
+        if (!cancelled && response.ok) {
+          const next = (await response.json()) as LiveDemoRunState | null;
+          if (next && !cancelled) {
+            setRun(next);
+            return;
+          }
+        }
+      } catch {
+        // swallow — retry until cancelled
+      }
+      if (!cancelled) {
+        timer = window.setTimeout(() => tick(Math.min(delayMs * 2, 15_000)), delayMs);
+      }
+    };
+    void tick(2_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [run]);
+
   useEffect(() => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
