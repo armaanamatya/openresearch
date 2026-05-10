@@ -2,10 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type RunState = {
-  t: number;
-  title: string;
-};
+import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
 
 type NavItem = {
   accent?: boolean;
@@ -27,8 +24,7 @@ type Status =
   | "stopped";
 
 type WorkflowNode = {
-  accentClass?: string;
-  detail?: string;
+  detail: string;
   icon: keyof typeof ICONS;
   id: string;
   role: string;
@@ -39,11 +35,19 @@ type WorkflowNode = {
   agent: string;
 };
 
-type Phase = {
-  dur: number;
-  ids: string[];
+type EventSourceLike = {
+  addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
+  close: () => void;
+  onerror: ((this: EventSource, ev: Event) => unknown) | null;
 };
 
+type ReproLabClientProps = {
+  initialRun?: LiveDemoRunState | null;
+};
+
+const DEFAULT_RUN_QUERY =
+  "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=runpod&gpuMode=auto";
+const POLL_INTERVAL_MS = 3000;
 const NODE_W = 200;
 const NODE_H = 80;
 
@@ -59,10 +63,12 @@ const NODES: WorkflowNode[] = [
     x: 20,
     y: 310,
     agent: "Paper",
-    step: "Source PDF",
+    step: "Source intake",
     icon: "doc",
     tone: "neutral",
-    role: "Diffusion Policy - arXiv:2303.04137"
+    role: "Receives the source artifact",
+    detail:
+      "This is the paper or workspace input that starts the run. Uploaded PDFs are ingested directly; fixture runs use the in-repo PPO workspace."
   },
   {
     id: "read",
@@ -72,9 +78,9 @@ const NODES: WorkflowNode[] = [
     step: "Paper understanding",
     icon: "brain",
     tone: "info",
-    role: "Extracts claims, metrics, datasets",
+    role: "Extracts claims, metrics, and assumptions",
     detail:
-      "Parses the paper structure, extracts verifiable claims, and cross-references citations to the reported metrics."
+      "Parses the paper, identifies the core contribution, and turns benchmarks and assumptions into a runnable reproduction plan."
   },
   {
     id: "env",
@@ -84,21 +90,21 @@ const NODES: WorkflowNode[] = [
     step: "Environment",
     icon: "beaker",
     tone: "info",
-    role: "Reproduces the build environment",
+    role: "Rebuilds the runtime environment",
     detail:
-      "Resolves dependencies, builds an isolated container, and applies compatibility patches needed to run the code."
+      "Resolves dependencies, creates the isolated execution environment, and prepares the run surface for the baseline implementation."
   },
   {
     id: "plan",
     x: 500,
     y: 420,
     agent: "Architect",
-    step: "Baseline plan",
+    step: "Reproduction plan",
     icon: "doc",
     tone: "info",
-    role: "12-step reproduction contract",
+    role: "Defines the verification contract",
     detail:
-      "Drafts the experiment plan that maps each paper claim to a concrete verification step before implementation."
+      "Maps the paper claims to experiments and checkpoints so the baseline and follow-on improvements can be judged against a real contract."
   },
   {
     id: "impl",
@@ -108,69 +114,69 @@ const NODES: WorkflowNode[] = [
     step: "Baseline implementation",
     icon: "zap",
     tone: "accent",
-    role: "Generates code and runs the baseline",
+    role: "Builds and runs the baseline",
     detail:
-      "Generates the reproduction code, launches the baseline training runs, and compares the first results against the paper."
+      "Produces the baseline implementation, launches the run, and records the first metrics used for downstream verification."
   },
   {
     id: "opt",
     x: 1020,
     y: 60,
     agent: "Vesta",
-    step: "Optimizer pathway",
+    step: "Optimizer path",
     icon: "spark",
     tone: "info",
-    role: "AdamW -> Lion and LR cosine",
+    role: "Explores optimizer changes",
     detail:
-      "Explores alternative optimizers and learning-rate schedules, tracking gains against the reproduced baseline."
+      "Tests alternative optimizers and schedules once the baseline is stable enough to compare against."
   },
   {
     id: "bb",
     x: 1020,
     y: 200,
     agent: "Athena",
-    step: "Backbone swap",
+    step: "Backbone path",
     icon: "copy",
     tone: "info",
-    role: "ResNet-18 -> DINOv2",
+    role: "Tests representation swaps",
     detail:
-      "Swaps the visual encoder and compares frozen versus fine-tuned backbones on the paper benchmark."
+      "Evaluates backbone changes and logs the resulting deltas so Hermes can verify whether they are real improvements."
   },
   {
     id: "aug",
     x: 1020,
     y: 340,
     agent: "Orion",
-    step: "Augmentation pathway",
+    step: "Augmentation path",
     icon: "graph",
     tone: "info",
-    role: "RandAug plus temporal jitter",
+    role: "Explores robustness changes",
     detail:
-      "Tests augmentation strategies and tracks whether robustness improvements hold up on the evaluation tasks."
+      "Sweeps augmentation strategies and checks whether they help or hurt the reproduced baseline."
   },
   {
     id: "hor",
     x: 1020,
     y: 480,
     agent: "Lyra",
-    step: "Horizon extension",
+    step: "Horizon path",
     icon: "flag",
     tone: "info",
-    role: "16 -> 24 step planning horizon",
+    role: "Extends planning horizon",
     detail:
-      "Extends the planning horizon and reruns the evaluation to measure the tradeoff between accuracy and runtime."
+      "Tests longer-horizon variants and re-runs evaluation to measure any tradeoff between reward and runtime."
   },
   {
     id: "div",
     x: 1020,
     y: 620,
     agent: "Pyxis",
-    step: "DDIM step ablation",
+    step: "Diffusion path",
     icon: "compute",
     tone: "info",
-    role: "12 -> 16 -> 20 inference steps",
+    role: "Sweeps diffusion settings",
     detail:
-      "Sweeps DDIM inference steps and logs accuracy deltas against wall-clock cost for each setting."
+      "Compares DDIM and related inference-time changes, then records cost and metric impact for audit."
   },
   {
     id: "audit",
@@ -180,9 +186,9 @@ const NODES: WorkflowNode[] = [
     step: "Result audit",
     icon: "shield",
     tone: "hermes",
-    role: "Verification and merge gate",
+    role: "Verifies claims against the run",
     detail:
-      "Cross-checks every sub-agent claim against the reproduced runs, accepts faithful improvements, and rejects regressions."
+      "Hermes checks whether claimed results are grounded in the actual run outputs, flags regressions, and records interventions."
   },
   {
     id: "report",
@@ -192,9 +198,9 @@ const NODES: WorkflowNode[] = [
     step: "Final report",
     icon: "flag",
     tone: "neutral",
-    role: "Manifest, report, and checkpoints",
+    role: "Packages the reproducibility output",
     detail:
-      "Compiles the reproducibility manifest, checkpoint hashes, report, and the full Hermes audit trail."
+      "Compiles manifests, logs, checkpoints, and the audit trail into the final reproducibility packet."
   }
 ];
 
@@ -217,88 +223,23 @@ const EDGES: Array<[string, string]> = [
   ["audit", "report"]
 ];
 
-const PHASES: Phase[] = [
-  { ids: ["src"], dur: 1400 },
-  { ids: ["read"], dur: 3200 },
-  { ids: ["env", "plan"], dur: 3400 },
-  { ids: ["impl"], dur: 3800 },
-  { ids: ["opt", "bb", "aug", "hor", "div"], dur: 5200 },
-  { ids: ["audit"], dur: 3400 },
-  { ids: ["report"], dur: 2200 }
-];
-
-const PER_AGENT_LOG: Record<string, Array<{ msg: string; t: string }>> = {
-  src: [{ t: "09:32:00", msg: "PDF received - 4.2 MB - 14 pages" }],
-  read: [
-    { t: "09:32:18", msg: "Parsing structure - 8 sections" },
-    { t: "09:32:42", msg: "Extracted 17 claims" },
-    { t: "09:33:05", msg: "4 reported metrics resolved" }
-  ],
-  env: [
-    { t: "09:33:55", msg: "py3.10 - cu12.1 - resolving 38 deps" },
-    { t: "09:34:30", msg: "Patch applied: torch.compile fix" },
-    { t: "09:35:10", msg: "Container ready - 2.1 GB" }
-  ],
-  plan: [
-    { t: "09:34:00", msg: "Drafted 12-step contract" },
-    { t: "09:34:48", msg: "Mapped claims to experiments" },
-    { t: "09:35:20", msg: "Plan v3 frozen" }
-  ],
-  impl: [
-    { t: "09:35:30", msg: "Generated 14 files - 1,420 LOC" },
-    { t: "09:36:18", msg: "Type-check passed" },
-    { t: "09:37:00", msg: "Seed 1/5 - loss 0.052" },
-    { t: "09:38:14", msg: "Seed 5/5 - within +/-1.5% of paper" }
-  ],
-  opt: [
-    { t: "09:38:30", msg: "Spawned - LR sweep started" },
-    { t: "09:39:12", msg: "Lion beta1=0.95 - ckpt-128" },
-    { t: "09:40:00", msg: "Delta +0.8% on Push-T" }
-  ],
-  bb: [
-    { t: "09:38:30", msg: "Spawned - downloading DINOv2 weights" },
-    { t: "09:39:48", msg: "Frozen backbone - ablation A" },
-    { t: "09:40:33", msg: "Delta +1.4% (frozen)" }
-  ],
-  aug: [
-    { t: "09:38:30", msg: "Spawned - RandAug N=2 M=9" },
-    { t: "09:39:20", msg: "Temporal jitter tau=0.1" },
-    { t: "09:40:11", msg: "Delta -0.3% - regression" }
-  ],
-  hor: [
-    { t: "09:38:30", msg: "Spawned - horizon=24" },
-    { t: "09:39:50", msg: "Re-eval Push-T - 5 seeds" },
-    { t: "09:40:42", msg: "Delta +0.5%" }
-  ],
-  div: [
-    { t: "09:38:30", msg: "Spawned - DDIM sweep" },
-    { t: "09:39:35", msg: "steps=12 - accuracy down, cost down 2.4x" },
-    { t: "09:40:25", msg: "steps=20 - Delta +0.6%" }
-  ],
-  audit: [
-    { t: "09:41:48", msg: "Cross-checking 5 deltas" },
-    { t: "09:41:58", msg: "Vesta accepted (+0.8%)" },
-    { t: "09:42:11", msg: "Athena accepted (+1.4%)" },
-    { t: "09:42:20", msg: "Orion stopped - regression" }
-  ],
-  report: [
-    { t: "09:42:45", msg: "Compiling manifest" },
-    { t: "09:42:58", msg: "PDF rendering - 12 pages" }
-  ]
-};
-
-const GLOBAL_LOG = [
-  { t: "09:42:11", who: "Hermes", msg: "Result hashes match across 5 seeds" },
-  { t: "09:41:58", who: "Vesta", msg: "Lion optimizer - Delta +0.8% accepted" },
-  { t: "09:41:12", who: "Builder", msg: "checkpoint saved - ckpt-540" },
-  { t: "09:40:47", who: "Pyxis", msg: "DDIM 12 -> 20 steps - +0.6%" },
-  { t: "09:39:20", who: "Hermes", msg: "Orion regressed - stopped" },
-  { t: "09:38:02", who: "Forge", msg: "DINOv2 weights downloaded" },
-  { t: "09:36:41", who: "Architect", msg: "plan v3 verified - 12 steps" },
-  { t: "09:35:10", who: "Builder", msg: "epoch 100/300 - loss 0.0521" },
-  { t: "09:33:55", who: "System", msg: "compute pool - 7 -> 11 A100s" },
-  { t: "09:32:18", who: "Reader", msg: "17 claims extracted - 4 metrics" }
-];
+function icon(children: React.ReactNode, size = 18) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 18 18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
 
 const ICONS = {
   logo: (
@@ -383,7 +324,11 @@ const ICONS = {
       <circle cx="7" cy="9" r=".5" fill="currentColor" />
     </>
   ),
-  shield: icon(<path d="M9 2l5.5 2v5c0 3.5-2.5 6.5-5.5 7.5C6 15.5 3.5 12.5 3.5 9V4z" />),
+  shield: icon(
+    <>
+      <path d="M9 2l5.5 2v5c0 3.5-2.5 6.5-5.5 7.5C6 15.5 3.5 12.5 3.5 9V4z" />
+    </>
+  ),
   zap: icon(<path d="M10 2L4.5 10h3l-1 6 5.5-8h-3l1-6z" fill="currentColor" stroke="none" />),
   copy: icon(
     <>
@@ -412,24 +357,6 @@ const ICONS = {
   )
 };
 
-function icon(children: React.ReactNode, size = 18) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 18 18"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
-
 function statusTone(status: Status) {
   switch (status) {
     case "running":
@@ -446,13 +373,156 @@ function statusTone(status: Status) {
   }
 }
 
+function sourceTitle(run: LiveDemoRunState) {
+  return run.sourceLabel || run.projectId;
+}
+
+function deriveStage(run: LiveDemoRunState | null): string | null {
+  return run?.payload?.summary.stage ?? null;
+}
+
+function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState> {
+  const map = Object.fromEntries(NODES.map((node) => [node.id, "upcoming"])) as Record<
+    string,
+    NodeState
+  >;
+
+  if (!run) {
+    return map;
+  }
+
+  const stage = deriveStage(run);
+  const status = run.status;
+
+  function mark(ids: string[], state: NodeState) {
+    for (const id of ids) {
+      map[id] = state;
+    }
+  }
+
+  if (status === "queued" && !stage) {
+    mark(["src"], "running");
+    return map;
+  }
+
+  mark(["src"], "done");
+
+  if (!stage) {
+    mark(["read"], status === "failed" ? "done" : "running");
+    return map;
+  }
+
+  if (stage === "ingested") {
+    mark(["read"], "running");
+    return map;
+  }
+
+  if (["plan_created", "gate_1_passed"].includes(stage)) {
+    mark(["read"], "done");
+    mark(["env", "plan"], stage === "gate_1_passed" ? "done" : "running");
+    return map;
+  }
+
+  if (["baseline_implemented", "baseline_run", "gate_2_passed"].includes(stage)) {
+    mark(["read", "env", "plan"], "done");
+    mark(["impl"], stage === "gate_2_passed" ? "done" : "running");
+    return map;
+  }
+
+  if (["improvements_selected", "improvements_run", "gate_3_passed"].includes(stage)) {
+    mark(["read", "env", "plan", "impl"], "done");
+    mark(
+      ["opt", "bb", "aug", "hor", "div"],
+      stage === "gate_3_passed" ? "done" : "running"
+    );
+    return map;
+  }
+
+  if (stage === "research_map_generated") {
+    mark(["read", "env", "plan", "impl", "opt", "bb", "aug", "hor", "div"], "done");
+    mark(["audit"], "running");
+    return map;
+  }
+
+  if (stage === "complete" || status === "completed") {
+    mark(NODES.map((node) => node.id), "done");
+    return map;
+  }
+
+  mark(["read"], "running");
+  return map;
+}
+
+function parseLogEntries(run: LiveDemoRunState | null) {
+  if (!run?.log) {
+    return [];
+  }
+
+  return run.log
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-20)
+    .reverse()
+    .map((line, index) => ({
+      id: `${run.projectId}-${index}`,
+      time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
+      msg: line
+    }));
+}
+
+function telemetryForSelectedNode(run: LiveDemoRunState | null, selectedId: string | null) {
+  if (!run?.telemetry?.length || !selectedId) {
+    return [];
+  }
+
+  const agentMatchers: Record<string, string[]> = {
+    read: ["paper-understanding"],
+    env: ["environment-detective"],
+    plan: ["paper-understanding", "root-orchestrator"],
+    impl: ["baseline-implementation", "experiment-runner"],
+    audit: ["supervisor-verifier"]
+  };
+
+  const matches = agentMatchers[selectedId] ?? [];
+  return run.telemetry
+    .filter((record) => matches.some((match) => record.agent_id?.includes(match)))
+    .slice(-6)
+    .reverse();
+}
+
+function buildEdgePath(from: WorkflowNode, to: WorkflowNode) {
+  const x1 = from.x + NODE_W;
+  const y1 = from.y + NODE_H / 2;
+  const x2 = to.x;
+  const y2 = to.y + NODE_H / 2;
+  const cx1 = x1 + Math.max(40, (x2 - x1) * 0.45);
+  const cx2 = x2 - Math.max(40, (x2 - x1) * 0.45);
+  return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
+}
+
 function Sidebar({ active }: { active: string }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
-      <button className="sb-toggle" onClick={() => setCollapsed((value) => !value)} type="button" aria-label="Toggle sidebar">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <button
+        className="sb-toggle"
+        onClick={() => setCollapsed((value) => !value)}
+        type="button"
+        aria-label="Toggle sidebar"
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
           <path d="M10 4l-4 4 4 4" />
         </svg>
       </button>
@@ -462,7 +532,12 @@ function Sidebar({ active }: { active: string }) {
       </div>
       <div className="dotted" />
       {NAV.map((item) => (
-        <a key={item.id} href={item.href} data-label={item.label} className={`navitem${active === item.id ? " active" : ""}`}>
+        <a
+          key={item.id}
+          href={item.href}
+          data-label={item.label}
+          className={`navitem${active === item.id ? " active" : ""}`}
+        >
           <span className="nav-icon" style={{ color: item.accent ? "var(--hermes)" : "var(--ink-2)" }}>
             {ICONS[item.icon]}
           </span>
@@ -509,7 +584,6 @@ function Sidebar({ active }: { active: string }) {
 
 function StatusPill({ status }: { status: Status }) {
   const tone = statusTone(status);
-
   return (
     <span className="status-pill" style={{ background: tone.bg, color: tone.fg }}>
       <span className={`status-dot${tone.pulse ? " pulse-dot" : ""}`} style={{ background: tone.dot }} />
@@ -518,16 +592,26 @@ function StatusPill({ status }: { status: Status }) {
   );
 }
 
-function UploadView({ onLaunch }: { onLaunch: (run: RunState) => void }) {
-  const [arxiv, setArxiv] = useState("");
-  const [over, setOver] = useState(false);
+function UploadView({
+  arxiv,
+  busy,
+  error,
+  onArxivChange,
+  onArxivSubmit,
+  onFileSelected,
+  over,
+  setOver
+}: {
+  arxiv: string;
+  busy: boolean;
+  error: string | null;
+  onArxivChange: (value: string) => void;
+  onArxivSubmit: () => void;
+  onFileSelected: (file: File) => void;
+  over: boolean;
+  setOver: (value: boolean) => void;
+}) {
   const fileInput = useRef<HTMLInputElement | null>(null);
-
-  function launch(label?: string) {
-    const title =
-      label ?? (arxiv ? arxiv.replace(/^https?:\/\//, "").slice(0, 60) : "diffusion_policy.pdf");
-    onLaunch({ title, t: Date.now() });
-  }
 
   return (
     <div className="upload-shell">
@@ -542,7 +626,9 @@ function UploadView({ onLaunch }: { onLaunch: (run: RunState) => void }) {
           event.preventDefault();
           setOver(false);
           const file = event.dataTransfer.files[0];
-          launch(file?.name);
+          if (file) {
+            onFileSelected(file);
+          }
         }}
         onClick={() => fileInput.current?.click()}
       >
@@ -551,10 +637,13 @@ function UploadView({ onLaunch }: { onLaunch: (run: RunState) => void }) {
           type="file"
           accept=".pdf"
           className="hidden-input"
+          aria-label="Upload paper PDF"
+          disabled={busy}
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (file) {
-              launch(file.name);
+              onFileSelected(file);
+              event.currentTarget.value = "";
             }
           }}
         />
@@ -575,71 +664,36 @@ function UploadView({ onLaunch }: { onLaunch: (run: RunState) => void }) {
         className="upload-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (arxiv.length >= 8) {
-            launch();
+          if (!busy && arxiv.length >= 8) {
+            onArxivSubmit();
           }
         }}
-        onClick={(event) => event.stopPropagation()}
       >
         <span className="mono upload-prefix">https://</span>
         <input
           value={arxiv}
-          onChange={(event) => setArxiv(event.target.value)}
+          onChange={(event) => onArxivChange(event.target.value)}
           placeholder="arxiv.org/abs/2303.04137"
           className="upload-text-input mono"
+          disabled={busy}
         />
-        <button type="submit" disabled={arxiv.length < 8} className="begin-button">
-          Begin -&gt;
+        <button type="submit" disabled={busy || arxiv.length < 8} className="begin-button">
+          {busy ? "Starting..." : "Begin ->"}
         </button>
       </form>
+      {error ? <p className="upload-error">{error}</p> : null}
     </div>
   );
-}
-
-function useWorkflowProgress() {
-  const [phaseIdx, setPhaseIdx] = useState(0);
-  const [playing, setPlaying] = useState(true);
-
-  useEffect(() => {
-    if (!playing || phaseIdx >= PHASES.length) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => setPhaseIdx((value) => value + 1), PHASES[phaseIdx].dur);
-    return () => window.clearTimeout(timer);
-  }, [phaseIdx, playing]);
-
-  const stateMap = useMemo(() => {
-    const stateById: Record<string, NodeState> = {};
-    for (let phase = 0; phase < PHASES.length; phase += 1) {
-      const state: NodeState = phase < phaseIdx ? "done" : phase === phaseIdx ? "running" : "upcoming";
-      for (const id of PHASES[phase].ids) {
-        stateById[id] = state;
-      }
-    }
-    return stateById;
-  }, [phaseIdx]);
-
-  return {
-    finished: phaseIdx >= PHASES.length,
-    phaseIdx,
-    playing,
-    reset: () => setPhaseIdx(0),
-    setPlaying,
-    stateMap
-  };
 }
 
 function NodeCard({
   node,
   onClick,
-  popDelay,
   selected,
   state
 }: {
   node: WorkflowNode;
   onClick: () => void;
-  popDelay: number;
   selected: boolean;
   state: NodeState;
 }) {
@@ -702,7 +756,6 @@ function NodeCard({
         transition: "border-color .25s ease, box-shadow .25s ease, opacity .3s ease, transform .25s ease",
         opacity,
         transform: selected ? "translateY(-2px) scale(1.015)" : "scale(1)",
-        animationDelay: `${popDelay}ms`,
         zIndex: selected ? 5 : state === "running" ? 3 : 2
       }}
     >
@@ -718,83 +771,36 @@ function NodeCard({
         {state === "done" ? (
           <div className="node-check">
             <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              <path
+                d="M3 8.5l3 3 7-7"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
           </div>
         ) : null}
       </div>
       {showProgress ? (
         <div className="node-progress">
-          <div className="wf-bar" style={{ background: node.tone === "hermes" ? "var(--hermes)" : "var(--accent)" }} />
+          <div
+            className="wf-bar"
+            style={{ background: node.tone === "hermes" ? "var(--hermes)" : "var(--accent)" }}
+          />
         </div>
       ) : null}
     </div>
   );
 }
 
-function bezier(a: WorkflowNode, b: WorkflowNode) {
-  const x1 = a.x + NODE_W;
-  const y1 = a.y + NODE_H / 2;
-  const x2 = b.x;
-  const y2 = b.y + NODE_H / 2;
-  const cx1 = x1 + Math.max(40, (x2 - x1) * 0.45);
-  const cx2 = x2 - Math.max(40, (x2 - x1) * 0.45);
-  return `M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`;
-}
-
-function Edge({
-  from,
-  state,
-  to
-}: {
-  from: WorkflowNode;
-  state: "active" | "done" | "upcoming";
-  to: WorkflowNode;
-}) {
-  const d = bezier(from, to);
-  let color = "var(--line-2)";
-  let strokeWidth = 1.5;
-  let opacity = 1;
-
-  if (state === "upcoming") {
-    opacity = 0.5;
-  }
-  if (state === "done") {
-    color = "var(--ink-2)";
-    strokeWidth = 1.6;
-  }
-  if (state === "active") {
-    color = "var(--accent)";
-    strokeWidth = 2;
-  }
-
-  return (
-    <g style={{ opacity }}>
-      <path d={d} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-      {state === "active" ? (
-        <path
-          d={d}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeDasharray="4 8"
-          className="wf-flow"
-          style={{ opacity: 0.7 }}
-        />
-      ) : null}
-    </g>
-  );
-}
-
 function Canvas({
   onSelect,
-  phaseIdx,
   selectedId,
   stateMap
 }: {
   onSelect: (id: string | null) => void;
-  phaseIdx: number;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
 }) {
@@ -816,222 +822,62 @@ function Canvas({
         {EDGES.map(([fromId, toId]) => {
           const from = NODES.find((node) => node.id === fromId)!;
           const to = NODES.find((node) => node.id === toId)!;
-          return <Edge key={`${fromId}-${toId}`} from={from} to={to} state={edgeState(fromId, toId)} />;
+          const state = edgeState(fromId, toId);
+          const path = buildEdgePath(from, to);
+          let color = "var(--line-2)";
+          let strokeWidth = 1.5;
+          let opacity = 1;
+
+          if (state === "upcoming") {
+            opacity = 0.5;
+          } else if (state === "done") {
+            color = "var(--ink-2)";
+            strokeWidth = 1.6;
+          } else {
+            color = "var(--accent)";
+            strokeWidth = 2;
+          }
+
+          return (
+            <g key={`${fromId}-${toId}`} style={{ opacity }}>
+              <path d={path} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+              {state === "active" ? (
+                <path
+                  d={path}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  strokeDasharray="4 8"
+                  className="wf-flow"
+                  style={{ opacity: 0.7 }}
+                />
+              ) : null}
+            </g>
+          );
         })}
       </svg>
-      {phaseIdx === 4 ? (
-        <div className="spawn-banner wf-pop">
-          <span className="pulse-dot spawn-dot" />
-          5 sub-agents spawning
-        </div>
-      ) : null}
       {NODES.map((node) => (
         <NodeCard
           key={node.id}
           node={node}
           state={stateMap[node.id]}
           selected={selectedId === node.id}
-          onClick={() => (stateMap[node.id] === "upcoming" ? undefined : onSelect(node.id === selectedId ? null : node.id))}
-          popDelay={(PHASES.findIndex((phase) => phase.ids.includes(node.id)) % 2) * 60}
+          onClick={() =>
+            stateMap[node.id] === "upcoming" ? undefined : onSelect(node.id === selectedId ? null : node.id)
+          }
         />
       ))}
     </div>
   );
 }
 
-function AgentInfo({ node, state }: { node: WorkflowNode; state: NodeState }) {
-  const tones = {
-    info: { icBg: "var(--info-soft)", icFg: "#3b48d1" },
-    accent: { icBg: "var(--accent-soft)", icFg: "var(--accent-ink)" },
-    hermes: { icBg: "var(--hermes-soft)", icFg: "var(--hermes)" },
-    neutral: { icBg: "var(--chip)", icFg: "var(--muted)" }
-  } as const;
-  const tone = tones[node.tone];
-  const status: Status =
-    state === "done" ? "completed" : state === "running" ? (node.tone === "hermes" ? "auditing" : "running") : "queued";
-
-  return (
-    <div>
-      <div className="agent-head">
-        <div className="agent-icon" style={{ background: tone.icBg, color: tone.icFg }}>
-          {ICONS[node.icon]}
-        </div>
-        <div>
-          <div className="eyebrow">Agent</div>
-          <div className="agent-name">{node.agent}</div>
-        </div>
-      </div>
-      <StatusPill status={status} />
-      <div className="agent-section">
-        <div className="eyebrow">Task</div>
-        <div className="agent-task">{node.step}</div>
-        <div className="agent-role">{node.role}</div>
-      </div>
-      {node.detail ? <div className="agent-detail">{node.detail}</div> : null}
-      {state === "running" ? (
-        <div className="agent-section">
-          <div className="eyebrow">Progress</div>
-          <div className="agent-progress">
-            <div className="wf-bar" style={{ background: node.tone === "hermes" ? "var(--hermes)" : "var(--accent)" }} />
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function RunOverview({ finished, stateMap }: { finished: boolean; stateMap: Record<string, NodeState> }) {
-  const totals = NODES.reduce(
-    (acc, node) => {
-      const state = stateMap[node.id];
-      acc[state] += 1;
-      return acc;
-    },
-    { done: 0, running: 0, upcoming: 0 }
-  );
-
-  const subagents = ["opt", "bb", "aug", "hor", "div"].map((id) => {
-    const node = NODES.find((entry) => entry.id === id)!;
-    return { id, node, state: stateMap[id] };
-  });
-
-  return (
-    <div>
-      <div className="eyebrow">Run</div>
-      <div className="overview-title">{finished ? "Run complete" : "Reproducing baseline"}</div>
-      <div className="overview-copy">Click any agent in the graph to inspect its work.</div>
-      <div className="overview-grid">
-        <Stat label="Done" value={totals.done} dot="var(--ink)" />
-        <Stat label="Running" value={totals.running} dot="var(--accent)" pulse />
-        <Stat label="Queued" value={totals.upcoming} dot="var(--line-2)" />
-        <Stat label="Agents" value={NODES.length} dot="var(--muted-2)" />
-      </div>
-      <div className="agent-section">
-        <div className="eyebrow">Improvement sub-agents</div>
-        <div className="subagent-list">
-          {subagents.map((item) => (
-            <div
-              key={item.id}
-              className="subagent-row"
-              style={{
-                background:
-                  item.state === "running"
-                    ? "var(--accent-soft)"
-                    : item.state === "done"
-                      ? "var(--bg)"
-                      : "transparent"
-              }}
-            >
-              <span
-                className={item.state === "running" ? "pulse-dot subagent-dot" : "subagent-dot"}
-                style={{
-                  background:
-                    item.state === "running"
-                      ? "var(--accent)"
-                      : item.state === "done"
-                        ? "var(--ink)"
-                        : "var(--line-2)"
-                }}
-              />
-              <span className="subagent-name">{item.node.agent}</span>
-              <span className="subagent-step">{item.node.step.replace(" pathway", "")}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Stat({
-  dot,
-  label,
-  pulse,
-  value
-}: {
-  dot: string;
-  label: string;
-  pulse?: boolean;
-  value: number;
-}) {
-  return (
-    <div className="stat-card">
-      <div className="stat-head">
-        <span className={pulse ? "pulse-dot stat-dot" : "stat-dot"} style={{ background: dot }} />
-        <span className="stat-label">{label}</span>
-      </div>
-      <div className="stat-value">{value}</div>
-    </div>
-  );
-}
-
-function RightPanel({
-  finished,
-  selectedId,
-  stateMap
-}: {
-  finished: boolean;
-  selectedId: string | null;
-  stateMap: Record<string, NodeState>;
-}) {
-  const selected = selectedId ? NODES.find((node) => node.id === selectedId) ?? null : null;
-  const state = selected ? stateMap[selected.id] : null;
-  const agentLog = selected ? [...(PER_AGENT_LOG[selected.id] ?? [])].reverse() : null;
-
-  return (
-    <aside className="card side-panel">
-      <div className="side-panel-top">
-        <div key={selectedId ?? "overview"} className="rp-pane side-panel-scroll">
-          {selected && state ? <AgentInfo node={selected} state={state} /> : <RunOverview finished={finished} stateMap={stateMap} />}
-        </div>
-      </div>
-      <div className="side-panel-bottom">
-        <div className="side-panel-heading">
-          <div className="side-panel-title">{selected ? `${selected.agent} activity` : "Live activity"}</div>
-          <span className="live-pill">
-            <span className="pulse-dot live-pill-dot" />
-            live
-          </span>
-        </div>
-        <div className="side-panel-scroll" key={`act-${selectedId ?? "all"}`}>
-          {selected ? (
-            agentLog && agentLog.length > 0 ? (
-              agentLog.map((entry, index) => (
-                <div key={`${entry.t}-${index}`} className="event fadeup" style={{ animationDelay: `${index * 40}ms` }}>
-                  <span className="mono event-time">{entry.t}</span>
-                  <span className="event-dot" />
-                  <div className="mono event-message">{entry.msg}</div>
-                </div>
-              ))
-            ) : (
-              <div className="empty-activity">Waiting for activity...</div>
-            )
-          ) : (
-            GLOBAL_LOG.map((entry, index) => (
-              <div key={`${entry.t}-${entry.who}`} className="event fadeup" style={{ animationDelay: `${index * 30}ms` }}>
-                <span className="mono event-time">{entry.t}</span>
-                <span className="event-dot" />
-                <div>
-                  <div className="event-who">{entry.who}</div>
-                  <div className="mono event-copy">{entry.msg}</div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </aside>
-  );
-}
-
 function PanCanvas({
   onSelect,
-  phaseIdx,
   selectedId,
   stateMap
 }: {
   onSelect: (id: string | null) => void;
-  phaseIdx: number;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
 }) {
@@ -1101,7 +947,6 @@ function PanCanvas({
       <Canvas
         stateMap={stateMap}
         selectedId={selectedId}
-        phaseIdx={phaseIdx}
         onSelect={(id) => {
           if (!dragRef.current.moved) {
             onSelect(id);
@@ -1112,51 +957,322 @@ function PanCanvas({
   );
 }
 
-function WorkflowView({ onClear, run }: { onClear: () => void; run: RunState }) {
-  const { finished, phaseIdx, playing, reset, setPlaying, stateMap } = useWorkflowProgress();
+function AgentInfo({
+  logEntries,
+  node,
+  run,
+  state,
+  telemetry
+}: {
+  logEntries: Array<{ id: string; msg: string; time: string }>;
+  node: WorkflowNode;
+  run: LiveDemoRunState;
+  state: NodeState;
+  telemetry: LiveDemoRunState["telemetry"];
+}) {
+  const tones = {
+    info: { icBg: "var(--info-soft)", icFg: "#3b48d1" },
+    accent: { icBg: "var(--accent-soft)", icFg: "var(--accent-ink)" },
+    hermes: { icBg: "var(--hermes-soft)", icFg: "var(--hermes)" },
+    neutral: { icBg: "var(--chip)", icFg: "var(--muted)" }
+  } as const;
+  const tone = tones[node.tone];
+  const status: Status =
+    run.status === "failed"
+      ? "failed"
+      : state === "done"
+        ? "completed"
+        : state === "running"
+          ? node.tone === "hermes"
+            ? "auditing"
+            : "running"
+          : "queued";
+
+  return (
+    <div>
+      <div className="agent-head">
+        <div className="agent-icon" style={{ background: tone.icBg, color: tone.icFg }}>
+          {ICONS[node.icon]}
+        </div>
+        <div>
+          <div className="eyebrow">Agent</div>
+          <div className="agent-name">{node.agent}</div>
+        </div>
+      </div>
+      <StatusPill status={status} />
+      <div className="agent-section">
+        <div className="eyebrow">Task</div>
+        <div className="agent-task">{node.step}</div>
+        <div className="agent-role">{node.role}</div>
+      </div>
+      <div className="agent-detail">{node.detail}</div>
+      {run.payload?.summary.stage ? (
+        <div className="agent-section">
+          <div className="eyebrow">Backend stage</div>
+          <div className="agent-task">{run.payload.summary.stage}</div>
+        </div>
+      ) : null}
+      {telemetry && telemetry.length > 0 ? (
+        <div className="agent-section">
+          <div className="eyebrow">Telemetry</div>
+          <div className="telemetry-list">
+            {telemetry.map((record, index) => (
+              <div key={`${record.agent_id ?? "agent"}-${index}`} className="telemetry-row">
+                <span className="telemetry-name">{record.agent_id ?? "agent"}</span>
+                <span className="telemetry-meta">
+                  {record.duration_seconds ? `${record.duration_seconds.toFixed(1)}s` : "active"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {state === "running" ? (
+        <div className="agent-section">
+          <div className="eyebrow">Progress</div>
+          <div className="agent-progress">
+            <div
+              className="wf-bar"
+              style={{ background: node.tone === "hermes" ? "var(--hermes)" : "var(--accent)" }}
+            />
+          </div>
+        </div>
+      ) : null}
+      {logEntries.length > 0 ? (
+        <div className="agent-section">
+          <div className="eyebrow">Latest log</div>
+          <div className="agent-detail">{logEntries[0].msg}</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RunOverview({
+  error,
+  logEntries,
+  run,
+  stateMap
+}: {
+  error: string | null;
+  logEntries: Array<{ id: string; msg: string; time: string }>;
+  run: LiveDemoRunState;
+  stateMap: Record<string, NodeState>;
+}) {
+  const totals = NODES.reduce(
+    (acc, node) => {
+      const state = stateMap[node.id];
+      acc[state] += 1;
+      return acc;
+    },
+    { done: 0, running: 0, upcoming: 0 }
+  );
+
+  const subagents = ["opt", "bb", "aug", "hor", "div"].map((id) => ({
+    id,
+    node: NODES.find((entry) => entry.id === id)!,
+    state: stateMap[id]
+  }));
+
+  const title =
+    run.status === "completed"
+      ? "Run complete"
+      : run.status === "failed"
+        ? "Run failed"
+        : "Reproducing live backend run";
+
+  return (
+    <div>
+      <div className="eyebrow">Run</div>
+      <div className="overview-title">{title}</div>
+      <div className="overview-copy">
+        {run.payload?.summary.stage
+          ? `Current backend stage: ${run.payload.summary.stage}`
+          : run.sourceNote ?? "Waiting for the first backend update."}
+      </div>
+      <div className="overview-grid">
+        <Stat label="Done" value={totals.done} dot="var(--ink)" />
+        <Stat label="Running" value={totals.running} dot="var(--accent)" pulse />
+        <Stat label="Queued" value={totals.upcoming} dot="var(--line-2)" />
+        <Stat label="Agents" value={NODES.length} dot="var(--muted-2)" />
+      </div>
+      {error || run.error ? (
+        <div className="agent-section">
+          <div className="eyebrow">Issue</div>
+          <div className="agent-detail">{error ?? run.error}</div>
+        </div>
+      ) : null}
+      {logEntries.length > 0 ? (
+        <div className="agent-section">
+          <div className="eyebrow">Latest backend log</div>
+          <div className="agent-detail">{logEntries[0].msg}</div>
+        </div>
+      ) : null}
+      <div className="agent-section">
+        <div className="eyebrow">Improvement sub-agents</div>
+        <div className="subagent-list">
+          {subagents.map((item) => (
+            <div
+              key={item.id}
+              className="subagent-row"
+              style={{
+                background:
+                  item.state === "running"
+                    ? "var(--accent-soft)"
+                    : item.state === "done"
+                      ? "var(--bg)"
+                      : "transparent"
+              }}
+            >
+              <span
+                className={item.state === "running" ? "pulse-dot subagent-dot" : "subagent-dot"}
+                style={{
+                  background:
+                    item.state === "running"
+                      ? "var(--accent)"
+                      : item.state === "done"
+                        ? "var(--ink)"
+                        : "var(--line-2)"
+                }}
+              />
+              <span className="subagent-name">{item.node.agent}</span>
+              <span className="subagent-step">{item.node.step}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  dot,
+  label,
+  pulse,
+  value
+}: {
+  dot: string;
+  label: string;
+  pulse?: boolean;
+  value: number;
+}) {
+  return (
+    <div className="stat-card">
+      <div className="stat-head">
+        <span className={pulse ? "pulse-dot stat-dot" : "stat-dot"} style={{ background: dot }} />
+        <span className="stat-label">{label}</span>
+      </div>
+      <div className="stat-value">{value}</div>
+    </div>
+  );
+}
+
+function RightPanel({
+  error,
+  run,
+  selectedId,
+  stateMap
+}: {
+  error: string | null;
+  run: LiveDemoRunState;
+  selectedId: string | null;
+  stateMap: Record<string, NodeState>;
+}) {
+  const selected = selectedId ? NODES.find((node) => node.id === selectedId) ?? null : null;
+  const logEntries = parseLogEntries(run);
+  const telemetry = telemetryForSelectedNode(run, selectedId);
+
+  return (
+    <aside className="card side-panel">
+      <div className="side-panel-top">
+        <div key={selectedId ?? "overview"} className="rp-pane side-panel-scroll">
+          {selected ? (
+            <AgentInfo
+              node={selected}
+              state={stateMap[selected.id]}
+              run={run}
+              telemetry={telemetry}
+              logEntries={logEntries}
+            />
+          ) : (
+            <RunOverview run={run} stateMap={stateMap} logEntries={logEntries} error={error} />
+          )}
+        </div>
+      </div>
+      <div className="side-panel-bottom">
+        <div className="side-panel-heading">
+          <div className="side-panel-title">{selected ? `${selected.agent} activity` : "Live activity"}</div>
+          <span className="live-pill">
+            <span className="pulse-dot live-pill-dot" />
+            live
+          </span>
+        </div>
+        <div className="side-panel-scroll">
+          {logEntries.length > 0 ? (
+            logEntries.map((entry, index) => (
+              <div key={entry.id} className="event fadeup" style={{ animationDelay: `${index * 30}ms` }}>
+                <span className="mono event-time">{entry.time}</span>
+                <span className="event-dot" />
+                <div className="mono event-message">{entry.msg}</div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-activity">Waiting for backend activity...</div>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function WorkflowView({
+  busy,
+  error,
+  onClear,
+  run
+}: {
+  busy: boolean;
+  error: string | null;
+  onClear: () => Promise<void>;
+  run: LiveDemoRunState;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const stateMap = useMemo(() => stateMapForRun(run), [run]);
   const doneCount = NODES.filter((node) => stateMap[node.id] === "done").length;
+  const liveStatus: Status =
+    run.status === "failed"
+      ? "failed"
+      : run.status === "completed"
+        ? "completed"
+        : deriveStage(run) === "research_map_generated"
+          ? "auditing"
+          : run.status === "stopped"
+            ? "stopped"
+            : "running";
 
   return (
     <>
       <div className="workflow-header">
         <div>
-          <div className="eyebrow">workflow - run_8a4f</div>
-          <h1 className="h1 workflow-title">{run.title}</h1>
+          <div className="eyebrow">workflow - {run.projectId}</div>
+          <h1 className="h1 workflow-title">{sourceTitle(run)}</h1>
           <div className="workflow-meta">
-            <StatusPill status={finished ? "completed" : "running"} />
+            <StatusPill status={liveStatus} />
             <span className="workflow-meta-sep">.</span>
             <span className="mono">{doneCount}/{NODES.length} agents complete</span>
           </div>
         </div>
         <div className="workflow-actions">
-          <button className="btn btn-sm" onClick={onClear} type="button">
-            {ICONS.upload} New paper
+          <button className="btn btn-sm" onClick={() => void onClear()} type="button" disabled={busy}>
+            {busy ? "Stopping..." : "New paper"}
           </button>
-          {finished ? (
-            <button className="btn btn-sm" onClick={reset} type="button">
-              {ICONS.spark} Replay
-            </button>
-          ) : (
-            <button className="btn btn-sm" onClick={() => setPlaying((value) => !value)} type="button">
-              {playing ? (
-                <>
-                  {ICONS.pause} Pause
-                </>
-              ) : (
-                <>
-                  {ICONS.play} Play
-                </>
-              )}
-            </button>
-          )}
         </div>
       </div>
       <div className="workflow-layout">
         <div className="canvas-wrap">
-          <PanCanvas stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} phaseIdx={phaseIdx} />
+          <PanCanvas stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
-        <RightPanel selectedId={selectedId} stateMap={stateMap} finished={finished} />
+        <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
       </div>
     </>
   );
@@ -1268,7 +1384,6 @@ function PrototypeStyles() {
         z-index: 10;
         cursor: pointer;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 10px rgba(0, 0, 0, 0.04);
-        transition: transform 0.25s ease, color 0.15s ease, border-color 0.15s ease;
       }
       .reproLab .sidebar.collapsed .sb-toggle {
         transform: rotate(180deg);
@@ -1469,12 +1584,16 @@ function PrototypeStyles() {
         font-weight: 600;
         letter-spacing: -0.005em;
         cursor: not-allowed;
-        transition: all 0.15s;
       }
       .reproLab .begin-button:enabled {
         background: var(--ink);
         color: #fff;
         cursor: pointer;
+      }
+      .reproLab .upload-error {
+        margin: 0;
+        font-size: 13px;
+        color: var(--err);
       }
       .reproLab .workflow-header {
         display: flex;
@@ -1569,31 +1688,6 @@ function PrototypeStyles() {
         position: absolute;
         inset: 0;
         pointer-events: none;
-      }
-      .reproLab .spawn-banner {
-        position: absolute;
-        left: 1020px;
-        top: 14px;
-        width: 200px;
-        text-align: center;
-        font-size: 10.5px;
-        color: var(--accent-ink);
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        background: var(--accent-soft);
-        padding: 4px 10px;
-        border-radius: 999px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-      }
-      .reproLab .spawn-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 999px;
-        background: var(--accent);
       }
       .reproLab .node-head {
         display: flex;
@@ -1816,24 +1910,31 @@ function PrototypeStyles() {
         font-weight: 700;
         letter-spacing: -0.025em;
       }
-      .reproLab .subagent-list {
+      .reproLab .subagent-list,
+      .reproLab .telemetry-list {
         display: flex;
         flex-direction: column;
         gap: 5px;
       }
-      .reproLab .subagent-row {
+      .reproLab .subagent-row,
+      .reproLab .telemetry-row {
         display: flex;
         align-items: center;
         gap: 8px;
         padding: 6px 10px;
         border-radius: 8px;
       }
-      .reproLab .subagent-name {
+      .reproLab .telemetry-row {
+        background: var(--bg);
+      }
+      .reproLab .subagent-name,
+      .reproLab .telemetry-name {
         font-size: 12px;
         font-weight: 600;
         letter-spacing: -0.005em;
       }
-      .reproLab .subagent-step {
+      .reproLab .subagent-step,
+      .reproLab .telemetry-meta {
         font-size: 11.5px;
         color: var(--muted);
         margin-left: auto;
@@ -1869,16 +1970,6 @@ function PrototypeStyles() {
         font-size: 11px;
         color: var(--ink-2);
         line-height: 1.5;
-      }
-      .reproLab .event-who {
-        font-size: 11.5px;
-        font-weight: 600;
-        letter-spacing: -0.005em;
-      }
-      .reproLab .event-copy {
-        font-size: 11px;
-        color: var(--muted);
-        line-height: 1.4;
       }
       .reproLab .empty-activity {
         padding: 20px;
@@ -2016,35 +2107,195 @@ function PrototypeStyles() {
   );
 }
 
-export function ReproLabClient() {
-  const [run, setRun] = useState<RunState | null>(null);
+export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
+  const [run, setRun] = useState<LiveDemoRunState | null>(initialRun);
+  const [arxiv, setArxiv] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [over, setOver] = useState(false);
+  const eventSourceRef = useRef<EventSourceLike | null>(null);
+  const pollTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem("rl-run");
-      if (saved) {
-        setRun(JSON.parse(saved) as RunState);
-      }
-    } catch {
-      // Ignore client storage read failures.
+    if (run) {
+      return;
     }
-  }, []);
 
-  function launch(nextRun: RunState) {
-    setRun(nextRun);
+    let cancelled = false;
+
+    async function loadLatest() {
+      try {
+        const response = await fetch("/api/demo", { cache: "no-store" });
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const next = (await response.json()) as LiveDemoRunState | null;
+        if (next && !cancelled) {
+          setRun(next);
+        }
+      } catch {
+        // Ignore initial load failures and let the user start a new run.
+      }
+    }
+
+    void loadLatest();
+    return () => {
+      cancelled = true;
+    };
+  }, [run]);
+
+  useEffect(() => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    if (pollTimer.current) {
+      window.clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+
+    if (!run || !["queued", "running"].includes(run.status)) {
+      return;
+    }
+
+    if (typeof EventSource !== "undefined") {
+      const source = new EventSource(
+        `/api/demo/events?projectId=${encodeURIComponent(run.projectId)}`
+      ) as unknown as EventSourceLike;
+      eventSourceRef.current = source;
+      source.addEventListener("run_state", (event) => {
+        try {
+          const next = JSON.parse((event as MessageEvent).data) as LiveDemoRunState;
+          setRun(next);
+          if (next.status === "failed") {
+            setError(next.error ?? "Run failed");
+            setBusy(false);
+          }
+          if (next.status === "completed" || next.status === "stopped") {
+            setBusy(false);
+          }
+        } catch {
+          setError("Unable to parse live run update");
+        }
+      });
+      source.addEventListener("agent_log", (event) => {
+        try {
+          const update = JSON.parse((event as MessageEvent).data) as {
+            log?: string;
+            text?: string;
+          };
+          setRun((current) =>
+            current && current.projectId === run.projectId
+              ? {
+                  ...current,
+                  log:
+                    typeof update.log === "string"
+                      ? update.log
+                      : `${current.log}${update.text ?? ""}`
+                }
+              : current
+          );
+        } catch {
+          setError("Unable to parse live log update");
+        }
+      });
+      source.onerror = () => {
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+      };
+
+      return () => {
+        source.close();
+        if (eventSourceRef.current === source) {
+          eventSourceRef.current = null;
+        }
+      };
+    }
+
+    pollTimer.current = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(run.projectId)}`, {
+          cache: "no-store"
+        });
+        if (!response.ok) {
+          throw new Error("Unable to refresh run");
+        }
+        const next = (await response.json()) as LiveDemoRunState | null;
+        if (next) {
+          setRun(next);
+        }
+      } catch (pollError) {
+        setError(pollError instanceof Error ? pollError.message : "Unable to refresh run");
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      if (pollTimer.current) {
+        window.clearTimeout(pollTimer.current);
+        pollTimer.current = null;
+      }
+    };
+  }, [run]);
+
+  async function startFixtureRun() {
+    setBusy(true);
+    setError(null);
     try {
-      window.localStorage.setItem("rl-run", JSON.stringify(nextRun));
-    } catch {
-      // Ignore client storage write failures.
+      const response = await fetch(DEFAULT_RUN_QUERY, { method: "POST" });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Unable to start run");
+      }
+      const next = (await response.json()) as LiveDemoRunState;
+      setRun(next);
+      setArxiv("");
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Unable to start run");
+      setBusy(false);
     }
   }
 
-  function clear() {
-    setRun(null);
+  async function startUploadedRun(file: File) {
+    setBusy(true);
+    setError(null);
     try {
-      window.localStorage.removeItem("rl-run");
-    } catch {
-      // Ignore client storage write failures.
+      const formData = new FormData();
+      formData.set("mode", "sdk");
+      formData.set("provider", "anthropic");
+      formData.set("executionMode", "efficient");
+      formData.set("sandbox", "runpod");
+      formData.set("gpuMode", "auto");
+      formData.set("paper", file);
+      const response = await fetch("/api/demo", {
+        method: "POST",
+        body: formData
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Unable to start uploaded run");
+      }
+      const next = (await response.json()) as LiveDemoRunState;
+      setRun(next);
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "Unable to start uploaded run");
+      setBusy(false);
+    }
+  }
+
+  async function clearRun() {
+    setBusy(true);
+    try {
+      if (run) {
+        await fetch(`/api/demo?projectId=${encodeURIComponent(run.projectId)}`, {
+          method: "DELETE"
+        }).catch(() => null);
+      }
+    } finally {
+      setRun(null);
+      setBusy(false);
+      setError(null);
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
     }
   }
 
@@ -2053,7 +2304,22 @@ export function ReproLabClient() {
       <PrototypeStyles />
       <div className="layout">
         <Sidebar active="lab" />
-        <main className="content">{run ? <WorkflowView run={run} onClear={clear} /> : <UploadView onLaunch={launch} />}</main>
+        <main className="content">
+          {run ? (
+            <WorkflowView run={run} onClear={clearRun} busy={busy} error={error} />
+          ) : (
+            <UploadView
+              arxiv={arxiv}
+              busy={busy}
+              error={error}
+              onArxivChange={setArxiv}
+              onArxivSubmit={() => void startFixtureRun()}
+              onFileSelected={(file) => void startUploadedRun(file)}
+              over={over}
+              setOver={setOver}
+            />
+          )}
+        </main>
       </div>
     </div>
   );
