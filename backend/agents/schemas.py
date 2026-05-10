@@ -212,6 +212,16 @@ class ImprovementHypothesis(BaseModel):
     expected_outcome: str
     compute_estimate: str = ""
     risk: RiskLevel = RiskLevel.medium
+    expected_value_score: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="LLM-estimated probability of success (0-1). Used for adaptive batch selection.",
+    )
+    category: str = Field(
+        default="",
+        description="Hypothesis category (e.g. hyperparameter, architecture, data, regularization). Used to diversify batches.",
+    )
 
 
 class PathResult(BaseModel):
@@ -226,6 +236,49 @@ class PathResult(BaseModel):
     failure_notes: str = ""
     recommendation: str = ""
     success: bool = False
+
+
+class ImprovementRound(BaseModel):
+    """Records one round of parallel improvement paths."""
+    round_number: int
+    baseline_path_id: str | None = Field(
+        default=None,
+        description="path_id of the winning path used as baseline for this round (None for round 1 = original baseline)",
+    )
+    baseline_metrics: dict[str, Any] = Field(default_factory=dict)
+    hypotheses: list[ImprovementHypothesis] = Field(default_factory=list)
+    path_results: list[PathResult] = Field(default_factory=list)
+    best_path_id: str | None = None
+    best_metrics: dict[str, Any] = Field(default_factory=dict)
+    improvement_pct: float | None = Field(
+        default=None,
+        description="Best path improvement % over this round's baseline",
+    )
+    converged: bool = False
+
+
+class CompositionAttempt(BaseModel):
+    """One attempt at composing multiple winning paths."""
+    attempt_id: str = Field(description="e.g. compose_all, compose_p1_p2")
+    composed_path_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    improvement_pct_vs_baseline: float | None = None
+    improvement_pct_vs_best_individual: float | None = None
+    success: bool = False
+    diff_summary: str = ""
+    failure_notes: str = ""
+
+
+class CompositionPhase(BaseModel):
+    """Records the full composition phase: combine winners, ablate if needed."""
+    winning_path_ids: list[str] = Field(default_factory=list)
+    full_composition: CompositionAttempt | None = None
+    ablation_attempts: list[CompositionAttempt] = Field(default_factory=list)
+    best_composition: CompositionAttempt | None = None
+    strategy_used: str = Field(
+        default="",
+        description="full_only (combo worked), greedy_ablation (combo failed, searched subsets), skipped (< 2 winners)",
+    )
 
 
 # ---------------------------------------------------------------------------

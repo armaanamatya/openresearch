@@ -312,6 +312,7 @@ def test_pipeline_stages_are_ordered():
         "gate_2_passed",
         "improvements_selected",
         "improvements_run",
+        "composition_tested",
         "gate_3_passed",
         "research_map_generated",
         "complete",
