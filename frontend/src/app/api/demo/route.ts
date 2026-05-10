@@ -151,7 +151,7 @@ export async function POST(request: Request) {
           provider: toProvider(request) ?? "anthropic",
           verificationProvider: toVerificationProvider(request),
           executionMode: toExecutionMode(request) ?? "efficient",
-          sandbox: toSandboxMode(request) ?? "auto",
+          sandbox: toSandboxMode(request) ?? "runpod",
           gpuMode: toGpuMode(request) ?? "auto"
         })
       })
