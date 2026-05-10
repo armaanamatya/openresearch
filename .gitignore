@@ -64,8 +64,10 @@ reprolab.db.offline_backup
 reprolab.db-shm
 reprolab.db-wal
 
-# Sample input PDFs (track real demo files as demo_paper.pdf only)
+# Sample input PDFs — keep paperbench1.pdf as the canonical FTRL fixture.
+# Add ! exceptions if more named samples should be tracked.
 /paperbench*.pdf
+!/paperbench1.pdf
 
 # Stray pip output written into repo root
 /[0-9]*.[0-9]*.[0-9]*
