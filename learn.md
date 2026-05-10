@@ -11,6 +11,97 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-10 — Pipeline SIGINT dumped a 50-line stack trace and left status="running"
+
+**Symptom.** Killing the `python -m backend.cli reproduce` subprocess (Ctrl-C
+or backend restart) produced a noisy traceback in `runner.stderr.log`:
+
+```
+asyncio.exceptions.CancelledError
+…
+File "/home/abheekp/openresearch/backend/cli.py", line 485, in cmd_reproduce
+    state = asyncio.run(run_pipeline_sdk(
+KeyboardInterrupt
+```
+
+The dashboard meanwhile showed `status="running"` until the user hit `/lab`
+again, at which point `live_runs._load_run` detected the dead PID via
+`_pid_exists` and rewrote status to `failed` with whatever string the log
+heuristic happened to extract — usually misleading.
+
+**Root cause.** The application code had **zero** explicit handlers for
+`KeyboardInterrupt` or `asyncio.CancelledError`:
+
+1. `cli.py:485` wrapped `asyncio.run(run_pipeline_sdk(...))` with only
+   `except Exception` (catches `BudgetExhausted`). `BaseException`
+   subclasses fell through, which is correct Python convention but meant
+   we never got a chance to write a clean status before exiting.
+2. `orchestrator.py:1441` step loop's `except Exception` likewise didn't
+   catch `CancelledError`. The "X FAILED:" line never printed for
+   cancellation either, so the log just stopped mid-stage with no
+   actionable signal.
+3. `live_runs._write_status` wrote `demo_status.json` non-atomically, so
+   a crash during a status write could leave a half-written JSON that
+   `_read_status` then failed to parse. Compounding the original
+   interrupt with a corruption bug.
+
+**Fix.**
+
+- `cli.py` catches `(KeyboardInterrupt, asyncio.CancelledError)` around
+  `asyncio.run(run_pipeline_sdk(...))`, prints a single readable line,
+  calls `_mark_demo_status_stopped()` to flip the status to `stopped`
+  with a descriptive `error` field, and exits 130 (SIGINT convention).
+  No more stack-trace dumps.
+- `orchestrator.py:1431` step loop now catches cancellation **before**
+  the generic `except Exception`, prints `|| STOPPED at <stage>`, calls
+  `state.save_checkpoint(self.runs_root)` so a future
+  `reproduce --resume` picks up from the last completed stage, and
+  re-raises so the CLI's outer handler runs.
+- `cli._atomic_write_json` (and the equivalent in
+  `live_runs._write_status`) writes via tempfile + `os.replace` so
+  `demo_status.json` is never half-written. Readers always see either
+  the previous valid JSON or the new one.
+
+**Lesson.** **`asyncio.CancelledError` is a `BaseException`, not an
+`Exception` — your `except Exception` does NOT catch it.** Long-running
+async pipelines need an explicit `(asyncio.CancelledError, KeyboardInterrupt)`
+handler at every layer that owns persistent state, before the generic
+`except Exception` clause. The handler should: (1) log a clean message,
+(2) flush partial state to disk so resume works, (3) re-raise so callers
+above can do their own cleanup. Status files that record run lifecycle
+should be written atomically (`tempfile.write_text` + `os.replace`) so a
+crash during the write doesn't corrupt the file the dashboard is about
+to read.
+
+**Open edge cases (documented, not yet fixed):**
+- Concurrent runs on the same `project_id` will race on
+  `demo_status.json`, `pipeline_state.json`, and `runs/{project_id}/*`.
+  Atomic writes prevent corruption but don't prevent overwrite.
+- SIGKILL bypasses the CLI's interrupt handler entirely — the pipeline
+  dies, any orphaned ephemeral runpod sandbox stays running until
+  someone (or `_owned_pod_ids` reconciliation on the next backend
+  restart) kills it. Persistent pods (`REPROLAB_RUNPOD_POD_ID`) are
+  unaffected.
+- Single-worker uvicorn (`--reload`) blocks all other endpoints behind
+  one slow SSE stream. The frontend already mitigates this with SSR +
+  proxy + client-poll timeouts (`lab/page.tsx`, `api/demo/route.ts`,
+  `live-demo-client.tsx`); the durable fix is multi-worker uvicorn or
+  an ASGI server with proper concurrency.
+
+**Guardrail.**
+- The `(asyncio.CancelledError, KeyboardInterrupt)` handler in
+  `cli.py:cmd_reproduce` is the single chokepoint where pipeline runs
+  exit. Future async entrypoints (CLI subcommands, scheduled jobs)
+  should follow the same shape: catch cancellation FIRST, write status,
+  return 130, then `except Exception` for anything else.
+- `_atomic_write_json` / `_write_status` use the canonical
+  tempfile+replace pattern. New status writers should reuse one of
+  these helpers, not write directly.
+- `orchestrator.py:1431` has the per-step cancellation guard. Stages
+  added to the pipeline list inherit it for free.
+
+---
+
 ## 2026-05-10 — Runpod smoke trap destroyed a pod we wanted to keep
 
 **Symptom.** Running `START_FULL_SMOKE=1 ./start.sh` to verify Runpod
