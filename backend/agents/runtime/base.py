@@ -15,6 +15,39 @@ class RuntimeGuardViolation(RuntimeError):
     """Raised when a provider tool call violates runtime guardrails."""
 
 
+class AgentLimitExceeded(RuntimeError):
+    """Raised when an agent invocation hits a configured budget cap.
+
+    Carries enough structured info that the orchestrator (or a UI) can
+    decide how to react — fail loudly, retry with a bumped budget, or
+    continue with the partial output. ``kind`` is one of:
+
+      * ``"turns"``       — provider SDK returned its turn-cap error
+      * ``"tool_calls"``  — orchestrator-side counter exceeded the cap
+      * ``"wall_clock"``  — agent invocation exceeded agent_wall_clock_seconds
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_id: str,
+        kind: Literal["turns", "tool_calls", "wall_clock"],
+        limit_value: int,
+        elapsed_seconds: float,
+        partial_output: str = "",
+    ) -> None:
+        self.agent_id = agent_id
+        self.kind = kind
+        self.limit_value = limit_value
+        self.elapsed_seconds = elapsed_seconds
+        self.partial_output = partial_output
+        super().__init__(
+            f"Agent {agent_id!r} hit {kind} cap of {limit_value} after "
+            f"{elapsed_seconds:.1f}s "
+            f"({len(partial_output)} chars of partial output preserved)"
+        )
+
+
 @dataclass(frozen=True)
 class RuntimeGuard:
     """Runtime policy shared across provider adapters."""
@@ -136,6 +169,7 @@ class AgentRuntime(Protocol):
 
 
 __all__ = [
+    "AgentLimitExceeded",
     "AgentRuntime",
     "AgentRuntimeSpec",
     "ProviderConfigurationError",

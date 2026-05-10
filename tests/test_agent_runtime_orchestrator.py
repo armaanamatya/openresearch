@@ -99,11 +99,10 @@ def test_orchestrator_builds_provider_specific_runtime_spec(tmp_path: Path) -> N
     assert '"provider": "openai"' in telemetry.read_text()
 
 
-def test_orchestrator_does_not_cap_heavy_agents_by_default(tmp_path: Path) -> None:
-    """Regression: capping at 30 turns for heavy agents (and 15 for normal
-    agents) caused the SDK to abort PaperBench-class runs at turn 16. We
-    now rely on command_timeout_seconds + the agent's submit-when-done
-    contract instead of a per-agent turn count."""
+def test_orchestrator_uses_efficient_default_caps_for_heavy_agents(tmp_path: Path) -> None:
+    """Heavy agents (experiment-runner, baseline-implementation) get 60
+    turns + 80 tool calls + 20 min wall-clock by default. Hitting any
+    cap raises a typed AgentLimitExceeded — see learn.md 2026-05-09."""
 
     runtime = FakeOpenAiRuntime()
     orchestrator = ReproLabOrchestrator(
@@ -121,7 +120,8 @@ def test_orchestrator_does_not_cap_heavy_agents_by_default(tmp_path: Path) -> No
     )
 
     assert runtime.agent is not None
-    assert runtime.agent.max_turns is None
+    assert runtime.agent.max_turns == 60
+    assert runtime.agent.guard.max_tool_calls == 80
 
 
 def test_orchestrator_propagates_run_metadata_and_guard(tmp_path: Path) -> None:
@@ -146,9 +146,9 @@ def test_orchestrator_propagates_run_metadata_and_guard(tmp_path: Path) -> None:
     )
 
     assert runtime.agent is not None
-    # max_tool_calls_per_agent is uncapped by default for the same reason
-    # as max_turns_per_agent — see test_execution_modes.py.
-    assert runtime.agent.guard.max_tool_calls is None
+    # max_tool_calls_per_agent default: 80 in efficient mode (None in max).
+    # See test_execution_modes.py for the cross-reference.
+    assert runtime.agent.guard.max_tool_calls == 80
     assert runtime.agent.guard.find_blocked_term(
         "git clone https://github.com/BartekCupial/finetuning-RL-as-CL.git"
     )
@@ -248,3 +248,41 @@ def test_orchestrator_does_not_fallback_for_non_limit_claude_errors(
         raise AssertionError("Expected non-limit Claude errors to propagate")
 
     assert openai_runtime.agent is None
+
+
+def test_orchestrator_converts_sdk_turn_cap_message_to_typed_exception(
+    tmp_path: Path,
+) -> None:
+    """Regression: the SDK throws Exception('...Reached maximum number of
+    turns (15)') instead of a typed error. The orchestrator now extracts
+    the cap value via _TURN_LIMIT_RE and re-raises as AgentLimitExceeded
+    so callers can react programmatically — see learn.md 2026-05-09."""
+
+    from backend.agents.runtime.base import AgentLimitExceeded
+
+    claude_runtime = FailingRuntime(
+        "anthropic",
+        message="Claude Code returned an error result: Reached maximum number of turns (30)",
+        partial_text="Halfway through analyzing the paper",
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_turn_cap",
+        tmp_path,
+        runtime=claude_runtime,
+    )
+
+    try:
+        asyncio.run(
+            orchestrator._invoke_agent(
+                "paper-understanding",
+                "Analyze.",
+                cwd=tmp_path / "work",
+            )
+        )
+    except AgentLimitExceeded as exc:
+        assert exc.kind == "turns"
+        assert exc.limit_value == 30
+        assert exc.agent_id == "paper-understanding"
+        assert "Halfway" in exc.partial_output
+    else:
+        raise AssertionError("Expected AgentLimitExceeded")

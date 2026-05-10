@@ -1,6 +1,7 @@
 """Provider-agnostic agent runtime API."""
 
 from backend.agents.runtime.base import (
+    AgentLimitExceeded,
     AgentRuntime,
     AgentRuntimeSpec,
     ProviderConfigurationError,
@@ -21,6 +22,7 @@ from backend.agents.runtime.factory import (
 )
 
 __all__ = [
+    "AgentLimitExceeded",
     "AgentRuntime",
     "AgentRuntimeSpec",
     "ProviderConfigurationError",

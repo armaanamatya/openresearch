@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
 import logging
@@ -25,6 +26,7 @@ from typing import Any
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.execution import ExecutionProfile, SandboxMode, resolve_sandbox_mode
 from backend.agents.runtime import (
+    AgentLimitExceeded,
     AgentRuntime,
     AgentRuntimeSpec,
     ProviderName,
@@ -70,6 +72,28 @@ from backend.hermes_audit import (
 from backend.schemas.citations import Citation
 
 logger = logging.getLogger(__name__)
+
+# Matches the Claude Code CLI / Agent SDK error returned when its turn cap
+# fires, e.g. "Claude Code returned an error result: Reached maximum number
+# of turns (15)". We extract the integer so the orchestrator can re-raise
+# it as a typed AgentLimitExceeded rather than leaving callers to string-match.
+import re  # local import to keep the standard-library import block above tidy
+
+_TURN_LIMIT_RE = re.compile(r"maximum number of turns\s*\((\d+)\)", re.IGNORECASE)
+
+
+class _NullAsyncContext:
+    """No-op async context manager used when the wall-clock cap is disabled.
+
+    Lets the orchestrator unconditionally write ``async with timeout_ctx:``
+    without branching on whether agent_wall_clock_seconds is None.
+    """
+
+    async def __aenter__(self) -> "_NullAsyncContext":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
 
 
 @dataclass
@@ -413,63 +437,98 @@ class ReproLabOrchestrator:
         fallback_runtime: AgentRuntime | None = None
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
+        wall_clock_seconds = self.execution_profile.agent_wall_clock_seconds
         try:
-            async for event in runtime.run_agent(
-                agent=runtime_spec,
-                user_input=task_prompt,
-            ):
-                elapsed = time.time() - t0
-                msg_count += 1
-                if isinstance(event, StreamText):
-                    collected_text.append(event.text)
-                    trace_lines.append(event.text)
-                    snippet = event.text[:120].replace("\n", " ").strip()
-                    if snippet:
+            # Wall-clock cap on the entire agent invocation. Catches stuck
+            # runs even when the SDK happily streams forever (e.g. infinite
+            # tool-call loop). asyncio.timeout requires Python 3.11+.
+            timeout_ctx = (
+                asyncio.timeout(wall_clock_seconds)
+                if wall_clock_seconds is not None
+                else _NullAsyncContext()
+            )
+            async with timeout_ctx:
+                async for event in runtime.run_agent(
+                    agent=runtime_spec,
+                    user_input=task_prompt,
+                ):
+                    elapsed = time.time() - t0
+                    msg_count += 1
+                    if isinstance(event, StreamText):
+                        collected_text.append(event.text)
+                        trace_lines.append(event.text)
+                        snippet = event.text[:120].replace("\n", " ").strip()
+                        if snippet:
+                            print(
+                                f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                    elif isinstance(event, StreamToolCall):
+                        tool_call_count += 1
+                        if (
+                            runtime_spec.guard.max_tool_calls is not None
+                            and tool_call_count > runtime_spec.guard.max_tool_calls
+                        ):
+                            raise AgentLimitExceeded(
+                                agent_id=agent_id,
+                                kind="tool_calls",
+                                limit_value=runtime_spec.guard.max_tool_calls,
+                                elapsed_seconds=elapsed,
+                                partial_output="".join(collected_text),
+                            )
+                        tool_info = event.tool_name
+                        inp = event.tool_input or {}
+                        if "file_path" in inp:
+                            tool_info += f" {inp['file_path']}"
+                        elif "command" in inp:
+                            cmd = str(inp["command"])[:80]
+                            tool_info += f" `{cmd}`"
+                        elif "pattern" in inp:
+                            tool_info += f" {inp['pattern']}"
+                        tool_calls.append(tool_info)
+                        trace_lines.append(f"tool: {tool_info}")
                         print(
-                            f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
+                            f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
                             file=sys.stderr,
                             flush=True,
                         )
-                elif isinstance(event, StreamToolCall):
-                    tool_call_count += 1
-                    if (
-                        runtime_spec.guard.max_tool_calls is not None
-                        and tool_call_count > runtime_spec.guard.max_tool_calls
-                    ):
-                        raise RuntimeGuardViolation(
-                            f"{agent_id} exceeded tool-call budget "
-                            f"({runtime_spec.guard.max_tool_calls})"
+                    elif isinstance(event, StreamUsage):
+                        usage = coerce_usage(event.as_dict())
+                        usage["provider"] = runtime.provider_name
+                        usage["model"] = runtime_spec.model
+                        print(
+                            f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} events, {sum(len(t) for t in collected_text)} chars)",
+                            file=sys.stderr,
+                            flush=True,
                         )
-                    tool_info = event.tool_name
-                    inp = event.tool_input or {}
-                    if "file_path" in inp:
-                        tool_info += f" {inp['file_path']}"
-                    elif "command" in inp:
-                        cmd = str(inp["command"])[:80]
-                        tool_info += f" `{cmd}`"
-                    elif "pattern" in inp:
-                        tool_info += f" {inp['pattern']}"
-                    tool_calls.append(tool_info)
-                    trace_lines.append(f"tool: {tool_info}")
-                    print(
-                        f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                elif isinstance(event, StreamUsage):
-                    usage = coerce_usage(event.as_dict())
-                    usage["provider"] = runtime.provider_name
-                    usage["model"] = runtime_spec.model
-                    print(
-                        f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} events, {sum(len(t) for t in collected_text)} chars)",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+        except TimeoutError as exc:
+            # asyncio.timeout fired — wrap as a typed limit error.
+            raise AgentLimitExceeded(
+                agent_id=agent_id,
+                kind="wall_clock",
+                limit_value=wall_clock_seconds or 0,
+                elapsed_seconds=time.time() - t0,
+                partial_output="".join(collected_text),
+            ) from exc
         except Exception as exc:
             success = False
             error_message = f"{type(exc).__name__}: {exc}"
             usage.setdefault("provider", runtime.provider_name)
             usage.setdefault("model", runtime_spec.model)
+            # Detect the SDK's "Reached maximum number of turns (N)" message
+            # and convert to a typed AgentLimitExceeded so callers can react
+            # programmatically instead of string-matching exception text.
+            if not isinstance(exc, AgentLimitExceeded):
+                limit_match = _TURN_LIMIT_RE.search(str(exc))
+                if limit_match:
+                    raise AgentLimitExceeded(
+                        agent_id=agent_id,
+                        kind="turns",
+                        limit_value=int(limit_match.group(1)),
+                        elapsed_seconds=time.time() - t0,
+                        partial_output="".join(collected_text),
+                    ) from exc
             if _allow_claude_limit_fallback:
                 fallback_runtime = self._claude_limit_fallback_for(
                     runtime,

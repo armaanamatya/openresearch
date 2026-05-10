@@ -45,6 +45,11 @@ class ExecutionProfile:
     max_turns_per_agent: int | None
     heavy_agent_max_turns: int | None
     max_tool_calls_per_agent: int | None
+    # Hard upper bound on wall-clock time for ONE agent invocation. Catches
+    # runs that get stuck thrashing on a small problem (e.g. an infinite
+    # tool-call loop the SDK doesn't break) without relying on the user
+    # to notice. Enforced via asyncio.timeout in the orchestrator.
+    agent_wall_clock_seconds: int
     command_timeout_seconds: int
     sandbox_network_disabled: bool = True
     sandbox_memory_limit: str = "4g"
@@ -70,13 +75,14 @@ class ExecutionProfile:
         if resolved_mode is ExecutionMode.max:
             base = cls(
                 mode=resolved_mode,
-                # No turn cap. The SDK / Claude Code default is 15, which is
-                # far too low for any non-trivial paper. We rely on
-                # command_timeout_seconds + the agent's submit-when-done
-                # contract to bound runs instead of a hard turn count.
+                # No turn / tool-call cap. The SDK default of 15 turns is
+                # far too low for any non-trivial paper. ``max`` mode is
+                # explicit opt-in: bound the run with agent_wall_clock_seconds
+                # and the agent's submit-when-done contract instead.
                 max_turns_per_agent=None,
                 heavy_agent_max_turns=None,
                 max_tool_calls_per_agent=None,
+                agent_wall_clock_seconds=3600,
                 command_timeout_seconds=7200,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit="12g" if resolved_gpu_mode is GpuMode.max else "8g",
@@ -87,12 +93,19 @@ class ExecutionProfile:
         else:
             base = cls(
                 mode=resolved_mode,
-                # See `max` branch above: we deliberately do NOT cap turns or
-                # tool calls per agent. The SDK default of 15 is too low for
-                # PaperBench-class papers and silently aborts runs at turn 16.
-                max_turns_per_agent=None,
-                heavy_agent_max_turns=None,
-                max_tool_calls_per_agent=None,
+                # ``efficient`` is the default profile and bounds runaway
+                # agents with three independent governors:
+                #   * 30 turns / 60 for "heavy" code-writing agents
+                #   * 80 tool calls / agent (heavy agents share the same cap;
+                #     overrun raises AgentLimitExceeded for clean handling)
+                #   * 20 minute wall-clock per agent invocation
+                # Hitting any of these raises a typed AgentLimitExceeded with
+                # partial output preserved, so the orchestrator can decide
+                # whether to fail loudly or continue.
+                max_turns_per_agent=30,
+                heavy_agent_max_turns=60,
+                max_tool_calls_per_agent=80,
+                agent_wall_clock_seconds=1200,
                 command_timeout_seconds=3600,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit=(
@@ -114,6 +127,7 @@ class ExecutionProfile:
             max_turns_per_agent=base.max_turns_per_agent,
             heavy_agent_max_turns=base.heavy_agent_max_turns,
             max_tool_calls_per_agent=base.max_tool_calls_per_agent,
+            agent_wall_clock_seconds=base.agent_wall_clock_seconds,
             command_timeout_seconds=(
                 command_timeout_seconds
                 if command_timeout_seconds is not None

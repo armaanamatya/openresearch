@@ -7,24 +7,31 @@ from backend.agents.execution import (
 )
 
 
-def test_execution_profile_efficient_does_not_cap_agent_turns() -> None:
-    """Regression: capping max_turns_per_agent caused the SDK to abort runs
-    at turn 16 with 'Reached maximum number of turns (15)'. We rely on
-    command_timeout_seconds + the agent's submit-when-done contract to
-    bound runs instead of a per-agent turn count."""
+def test_execution_profile_efficient_caps_at_30_turns_and_80_tool_calls() -> None:
+    """Efficient mode bounds runaway agents with three governors:
+      * 30 turns (60 for heavy code-writing agents)
+      * 80 tool calls per agent
+      * 20 minute wall-clock cap
+
+    Hitting any of these raises AgentLimitExceeded with partial output
+    preserved (see learn.md 2026-05-09)."""
 
     profile = ExecutionProfile.from_mode("efficient")
 
     assert profile.mode is ExecutionMode.efficient
     assert profile.gpu_mode is GpuMode.auto
-    assert profile.max_turns_per_agent is None
-    assert profile.heavy_agent_max_turns is None
-    assert profile.max_tool_calls_per_agent is None
+    assert profile.max_turns_per_agent == 30
+    assert profile.heavy_agent_max_turns == 60
+    assert profile.max_tool_calls_per_agent == 80
+    assert profile.agent_wall_clock_seconds == 1200
     assert profile.command_timeout_seconds == 3600
     assert profile.sandbox_network_disabled is True
 
 
-def test_execution_profile_max_does_not_cap_agent_turns() -> None:
+def test_execution_profile_max_uncaps_per_call_governs_only_by_wall_clock() -> None:
+    """Max mode is explicit opt-in to uncapped per-invocation budgets, but
+    keeps a 1 hour wall-clock per agent so a stuck run still terminates."""
+
     profile = ExecutionProfile.from_mode(
         "max",
         sandbox_network_disabled=False,
@@ -35,6 +42,7 @@ def test_execution_profile_max_does_not_cap_agent_turns() -> None:
     assert profile.max_turns_per_agent is None
     assert profile.heavy_agent_max_turns is None
     assert profile.max_tool_calls_per_agent is None
+    assert profile.agent_wall_clock_seconds == 3600
     assert profile.command_timeout_seconds == 7200
     assert profile.sandbox_network_disabled is False
     assert profile.sandbox_platform == "linux/amd64"

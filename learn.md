@@ -11,6 +11,107 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-09 — `database disk image is malformed` on `reprolab.db`
+
+**Symptom.** `reprolab reproduce …` boot crashes:
+```
+File "backend/eventstore/sqlite_store.py", line 132
+    boot = _new_connection(self._path)
+sqlite3.DatabaseError: database disk image is malformed
+```
+`sqlite3 reprolab.db "PRAGMA integrity_check"` confirms the file is corrupt.
+
+**Root cause.** `SqliteEventStore` ran in WAL mode with the SQLite default
+`synchronous=NORMAL`. NORMAL is fast — it doesn't fsync the WAL on every
+commit — but if the writer process is `SIGKILL`'d at exactly the wrong
+moment between a WAL write and the next checkpoint, the main DB file can
+be left referring to pages that the WAL never committed. The most recent
+killed `backend.cli reproduce` subprocess (mid-pipeline crash on the IPv6
+URL bug) was the proximate trigger.
+
+**Fix.** `backend/eventstore/sqlite_store.py:_new_connection` now sets
+`PRAGMA synchronous=FULL`. The throughput cost is negligible at our write
+rate (≈ a few hundred events per pipeline run); the durability win is the
+whole point of an event store. The corrupt DB was quarantined to
+`reprolab.db.corrupt-<timestamp>` and the offline backup restored.
+
+**Lesson.** **Default SQLite settings are tuned for read-heavy app caches,
+not for event stores.** Any code path where a SIGKILL'd process must leave
+the DB in a recoverable state needs `synchronous=FULL` (or at minimum
+`synchronous=NORMAL` with explicit `PRAGMA wal_checkpoint(TRUNCATE)` after
+each commit batch). NORMAL + WAL is a fine combination for a process you
+control the lifecycle of, but pipelines crash and dev servers get
+`Ctrl+C`'d — assume the worst.
+
+**Guardrail.**
+- Inline comment in `_new_connection` cites this entry.
+- `learn.md` cross-cutting principle #9 (added below) generalises the
+  "configure for the failure mode you actually have" rule to any local
+  store.
+
+---
+
+## 2026-05-09 — Per-agent budget caps must be elegant, not silent
+
+**Symptom.** Two related complaints from the same root cause:
+1. Agents would silently fail at turn 16 with the SDK's opaque
+   `"Reached maximum number of turns (15)"` exception bubbling out — no
+   structured signal, no partial-output preservation, no remediation
+   hint. The lab UI just showed the run as `failed` with no actionable
+   detail.
+2. With turn caps removed entirely, runaway agents (infinite tool-call
+   loops, model-side hallucinated retries) had no stop condition other
+   than killing the dev server.
+
+**Root cause.** The original implementation conflated two concerns:
+"how do we bound a misbehaving agent" and "how do we surface that
+boundary being hit". The fix-by-removal made the second worse; the
+fix-by-numerical-cap made the first worse.
+
+**Fix.** Three independent governors per agent invocation, each with a
+typed exception:
+
+| Governor | Efficient | Max | Enforced by |
+|---|---|---|---|
+| `max_turns_per_agent` | 30 (60 heavy) | None | SDK `--max-turns` flag |
+| `max_tool_calls_per_agent` | 80 | None | orchestrator counter |
+| `agent_wall_clock_seconds` | 1200 (20 min) | 3600 (1 hr) | `asyncio.timeout` wrapping `runtime.run_agent` |
+
+All three raise the same typed exception:
+```python
+class AgentLimitExceeded(RuntimeError):
+    agent_id: str
+    kind: Literal["turns", "tool_calls", "wall_clock"]
+    limit_value: int
+    elapsed_seconds: float
+    partial_output: str   # preserved for retry / logging / display
+```
+
+The orchestrator additionally **converts the SDK's untyped
+`Reached maximum number of turns (N)` exception** into the same
+`AgentLimitExceeded(kind="turns")` via a regex match, so callers
+never have to string-match exception text. The frontend timeline panel
++ `agent_telemetry.jsonl` already render `error_message`, so partial
+output and the kind/value of the limit hit surface in the UI for free.
+
+**Lesson.** **Bounded resources are a product surface, not an
+implementation detail.** When a budget cap fires, the system must:
+1. Preserve partial work (don't blow away the `collected_text` buffer)
+2. Tell the operator *which* budget fired and *what value* it was at
+3. Suggest remediation (`--execution-mode max` raises all caps)
+4. Be programmatically inspectable so retry / fallback logic can branch
+   on `kind`, not on string-matched English
+
+**Guardrail.**
+- `tests/test_execution_modes.py::test_execution_profile_efficient_caps_at_30_turns_and_80_tool_calls`
+  locks in the numerical contract.
+- `tests/test_agent_runtime_orchestrator.py::test_orchestrator_converts_sdk_turn_cap_message_to_typed_exception`
+  asserts the SDK-error → typed-exception conversion path.
+- `tests/test_agent_runtime_orchestrator.py::test_orchestrator_uses_efficient_default_caps_for_heavy_agents`
+  asserts that heavy agents see the heavy-agent caps end-to-end.
+
+---
+
 ## 2026-05-09 — `Reached maximum number of turns (15)` aborts every real run
 
 **Symptom.** Frontend lab page shows the run failing in `paper_understood`.
@@ -191,6 +292,30 @@ Whenever you add a feature whose happy path needs hardware we don't have,
 add a `dry` / `simulate` mode at the same time so CI and local dev can
 exercise it. If the feature only works on prod hardware, it doesn't really
 work.
+
+### 9. Configure local stores for the failure mode you actually have.
+
+A long-running pipeline can be killed at any instant — the OS killing it
+for memory, the developer hitting Ctrl+C, an upstream crash leaving a
+subprocess orphaned. Any local data store needs settings tuned for *that*
+failure mode, not for the abstract "well-behaved process" case. For SQLite
+that means `synchronous=FULL` in WAL mode, despite the small write
+throughput hit. For file-backed JSON status (`runs/<project>/status.json`)
+that means atomic write-and-rename, not in-place mutation. For any cache,
+a `try/except` around the read with a one-shot rebuild path.
+
+If your local store can't survive a `kill -9`, treat it the same as you'd
+treat ephemeral memory and persist the source of truth elsewhere.
+
+### 10. A removed cap is a contract — test for `is None`, not for the new number.
+
+See learn.md 2026-05-09 ("Reached maximum number of turns") and the
+follow-up "Per-agent budget caps must be elegant". When you decide a
+constraint shouldn't exist, the test must assert the type-level
+invariant (`assert max_turns is None`), not a placeholder value
+(`assert max_turns == 999`). Otherwise the next refactor will silently
+re-introduce a cap that survives review because the test still passes
+against the new number.
 
 ### 8. Auto-reload is your friend AND your enemy.
 
