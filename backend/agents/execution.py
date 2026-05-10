@@ -28,6 +28,7 @@ class SandboxMode(str, Enum):
     auto = "auto"
     docker = "docker"
     local = "local"
+    runpod = "runpod"
     simulate = "simulate"
 
 

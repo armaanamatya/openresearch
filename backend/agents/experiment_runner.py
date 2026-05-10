@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.runtime.base import AgentRuntime, ProviderName
+from backend.config import get_settings
 from backend.agents.schemas import BaselineResult, ExperimentArtifacts, ReproductionContract
 from backend.services.runtime import (
     CommandLogEntry,
@@ -23,6 +24,7 @@ from backend.services.runtime import (
     ExecuteCommand,
     LocalDockerBackend,
     LocalProcessBackend,
+    RunpodBackend,
     RuntimeAppService,
     SandboxConfig,
     append_command_log,
@@ -368,6 +370,57 @@ async def run_with_local_process(
         extra_environment=extra_environment,
         require_dockerfile=False,
         runtime_kind="local_process",
+    )
+
+
+async def run_with_runpod(
+    project_id: str,
+    runs_root: Path,
+    baseline_result: BaselineResult,
+    reproduction_contract: ReproductionContract | None = None,
+    *,
+    command_timeout: int = 3600,
+) -> ExperimentArtifacts:
+    """Execute baseline commands on a remote Runpod GPU Pod."""
+
+    settings = get_settings()
+    data_center_ids = [
+        item.strip()
+        for item in settings.runpod_data_center_ids.split(",")
+        if item.strip()
+    ]
+    backend = RunpodBackend(
+        api_key=settings.runpod_api_key,
+        api_base_url=settings.runpod_api_base_url,
+        image_name=settings.runpod_image,
+        gpu_type=settings.runpod_gpu_type,
+        gpu_count=settings.runpod_gpu_count,
+        cloud_type=settings.runpod_cloud_type,
+        container_disk_gb=settings.runpod_container_disk_gb,
+        volume_gb=settings.runpod_volume_gb,
+        volume_mount_path=settings.runpod_volume_mount_path,
+        network_volume_id=settings.runpod_network_volume_id,
+        data_center_ids=data_center_ids,
+        ssh_key_path=settings.runpod_ssh_key_path or None,
+        ssh_public_key=settings.runpod_ssh_public_key,
+        ssh_user=settings.runpod_ssh_user,
+        boot_timeout_seconds=settings.runpod_boot_timeout_seconds,
+        delete_on_destroy=settings.runpod_delete_on_destroy,
+        bootstrap_command=settings.runpod_bootstrap_command,
+    )
+    return await run_with_runtime(
+        project_id,
+        runs_root,
+        baseline_result,
+        reproduction_contract,
+        runtime=RuntimeAppService(backend),
+        command_timeout=command_timeout,
+        network_disabled=False,
+        memory_limit=None,
+        cpus=None,
+        platform=None,
+        require_dockerfile=True,
+        runtime_kind="runpod",
     )
 
 

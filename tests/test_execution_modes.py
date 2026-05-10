@@ -55,3 +55,7 @@ def test_sandbox_mode_auto_defaults_to_docker_for_all_user_modes() -> None:
 
 def test_sandbox_mode_preserves_explicit_simulation_request() -> None:
     assert resolve_sandbox_mode("simulate", pipeline_mode="sdk") is SandboxMode.simulate
+
+
+def test_sandbox_mode_preserves_explicit_runpod_request() -> None:
+    assert resolve_sandbox_mode("runpod", pipeline_mode="sdk") is SandboxMode.runpod

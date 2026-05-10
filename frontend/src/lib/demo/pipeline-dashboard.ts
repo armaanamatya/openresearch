@@ -198,6 +198,9 @@ function sandboxLabel(mode?: DemoSandboxMode): string {
   if (mode === "docker") {
     return "Docker sandbox";
   }
+  if (mode === "runpod") {
+    return "Runpod GPU";
+  }
   return "Auto Docker sandbox";
 }
 

@@ -55,7 +55,7 @@ function toExecutionMode(request: Request): DemoExecutionMode | undefined {
 function toSandboxMode(request: Request): DemoSandboxMode | undefined {
   const url = new URL(request.url);
   const value = url.searchParams.get("sandbox");
-  if (value === "auto" || value === "docker" || value === "local") {
+  if (value === "auto" || value === "docker" || value === "local" || value === "runpod") {
     return value;
   }
   return undefined;
@@ -109,7 +109,10 @@ export async function POST(request: Request) {
           ? executionMode
           : toExecutionMode(request) ?? "efficient";
       const runSandboxMode =
-        sandboxMode === "auto" || sandboxMode === "docker" || sandboxMode === "local"
+        sandboxMode === "auto" ||
+        sandboxMode === "docker" ||
+        sandboxMode === "local" ||
+        sandboxMode === "runpod"
           ? sandboxMode
           : toSandboxMode(request) ?? "auto";
       const runGpuMode =

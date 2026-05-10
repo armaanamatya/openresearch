@@ -32,6 +32,7 @@ from backend.services.runtime.interface import (
 )
 from backend.services.runtime.local_docker import LocalDockerBackend
 from backend.services.runtime.local_process import LocalProcessBackend
+from backend.services.runtime.runpod_backend import RunpodBackend
 from backend.services.runtime.service import (
     CreateSandbox,
     DestroySandbox,
@@ -50,6 +51,7 @@ __all__ = [
     "InvalidSandboxTransition",
     "LocalDockerBackend",
     "LocalProcessBackend",
+    "RunpodBackend",
     "RuntimeAppService",
     "RuntimeBackend",
     "RuntimeCauseKind",
