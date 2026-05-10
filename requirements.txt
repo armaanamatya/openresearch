@@ -1,0 +1,4 @@
+# Repo-root install entrypoint.
+# The backend dependency set lives in backend/requirements.txt; keep this file
+# so documented `pip install -r requirements.txt` installs the runtime stack.
+-r backend/requirements.txt

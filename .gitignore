@@ -71,3 +71,14 @@ reprolab.db-wal
 
 # Stray pip output written into repo root
 /[0-9]*.[0-9]*.[0-9]*
+
+# Stray npm lockfile written into repo root; the real lockfile is frontend/package-lock.json.
+/package-lock.json
+
+# Local planning prompts, ad-hoc screenshots, and corrupt DB recovery snapshots.
+/claude_plan_*.md
+/claude_review_*.md
+/codex_prompt*.md
+/conflicts.md
+/localhost_*.png
+/reprolab.db.corrupt-*

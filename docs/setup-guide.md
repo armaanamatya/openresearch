@@ -7,7 +7,7 @@ Everything a contributor needs to install and configure before working on ReproL
 | Requirement | Minimum version | Check command |
 | --- | --- | --- |
 | Python | 3.11+ | `python --version` |
-| Node.js | 20+ (LTS) | `node --version` |
+| Node.js | 20.19+ LTS or 22.12+ LTS | `node --version` |
 | npm | 10+ | `npm --version` |
 | Git | 2.40+ | `git --version` |
 | Docker Desktop | 4.30+ (Engine 26+) | `docker --version` |
@@ -68,16 +68,14 @@ For production/sustained runs, you'll also need an Anthropic API key:
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## 3. Claude Agent SDK (Python)
+## 3. Agent SDKs (Python)
+
+The Python agent SDKs are installed with the backend dependency set in step 6.
+If you want to verify them independently after installing dependencies:
 
 ```bash
-pip install claude-code-sdk
-```
-
-Verify:
-
-```python
-python -c "from claude_code_sdk import query; print('SDK installed')"
+python -c "import claude_agent_sdk; print('claude-agent-sdk OK')"
+python -c "import agents; print('openai-agents OK')"
 ```
 
 ## 4. Docker Desktop
@@ -162,7 +160,7 @@ The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated
 ## 5. Node.js and frontend dependencies
 
 ```bash
-# Install Node.js 20+ LTS
+# Install Node.js 20.19+ LTS or 22.12+ LTS
 # macOS
 brew install node@20
 
@@ -186,24 +184,24 @@ From the repo root (with your venv activated):
 
 ```bash
 pip install -r requirements.txt
+# or, equivalently:
+pip install -r backend/requirements.txt
 ```
 
-Key packages that will be in `requirements.txt`:
+`requirements.txt` at the repo root delegates to `backend/requirements.txt`.
+Key packages installed by the backend runtime set:
 
 | Package | Purpose |
 | --- | --- |
-| `claude-code-sdk` | Agent orchestration via Claude Agent SDK |
-| `chromadb` | Semantic vector search (Context Layer 2) |
-| `nougat-ocr` | PDF parsing for ML papers |
+| `claude-agent-sdk` | Agent orchestration via Claude Agent SDK |
+| `openai-agents` | OpenAI Agents SDK runtime support |
+| `pymupdf` | PDF parsing for ML papers |
 | `docker` | Python Docker SDK for `LocalDockerBackend` |
-| `litellm` | LLM abstraction used by RLM |
-| `networkx` | Knowledge graph (Phase 2, Graphify) |
-| `restrictedpython` | REPL sandbox security |
+| `asyncssh` | Remote runtime support |
 | `fastapi` | Backend API server |
 | `uvicorn` | ASGI server |
-| `websockets` | Real-time event streaming to frontend |
 | `pydantic` | Data validation and schemas |
-| `aiohttp` | Async HTTP for web search |
+| `httpx` | HTTP client support |
 
 ## 7. Environment variables
 
@@ -230,8 +228,8 @@ Run these checks to confirm your setup is complete:
 ```bash
 # Python
 python --version          # 3.11+
-python -c "import chromadb; print('chromadb OK')"
-python -c "from claude_code_sdk import query; print('claude-sdk OK')"
+python -c "import docker; print('docker SDK OK')"
+python -c "import claude_agent_sdk; print('claude-agent-sdk OK')"
 
 # Claude Code
 claude --version
@@ -245,7 +243,7 @@ docker run hello-world
 docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 
 # Node
-node --version            # 20+
+node --version            # 20.19+ LTS or 22.12+ LTS
 npm --version             # 10+
 ```
 
@@ -279,6 +277,89 @@ published Tables 11/15, replace `third_party/paperbench/ftrl/paper.md`,
 `addendum.md`, and `rubric.json` with the upstream artifacts. Full
 swap-in steps are in `third_party/paperbench/README.md`.
 
+## 10. Phase 2 research workspace services
+
+Phase 2 adds durable workspace services for graph navigation, reusable
+cross-project memory, dataset cache state, approval checkpoints, failure
+diagnosis, reproducibility scoring, and multi-paper comparison summaries.
+For the end-to-end agent state model, see
+[`docs/agent-lifecycle.md`](agent-lifecycle.md).
+
+Start the backend:
+
+```bash
+.venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
+```
+
+Useful local checks:
+
+```bash
+# Combined Phase 2 workspace read model
+curl http://127.0.0.1:8000/phase2/projects/<project_id>/summary
+
+# AST knowledge graph query
+curl "http://127.0.0.1:8000/phase2/projects/<project_id>/graph?entity_type=function&calls=train"
+
+# Cross-project memory search
+curl "http://127.0.0.1:8000/phase2/memory/search?query=torch%20gymnasium"
+
+# Dataset cache planning
+curl -X POST http://127.0.0.1:8000/phase2/datasets/plan \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"prj_demo","name":"CIFAR-10","version":"official","size_bytes":178257920}'
+
+# Human approval checkpoint
+curl -X POST http://127.0.0.1:8000/phase2/approvals/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"prj_demo","action":"dataset_download","dataset_size_gb":82}'
+
+# Failure diagnosis taxonomy
+curl -X POST http://127.0.0.1:8000/phase2/failures/diagnose \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"prj_demo","stage":"training","command":"python train.py","stderr":"CUDA out of memory"}'
+```
+
+## 11. Docker (run the whole app in one container)
+
+For a one-command boot of backend + frontend together:
+
+```bash
+docker compose up --build       # first time
+docker compose up -d            # subsequent (detached)
+docker compose logs -f app      # tail logs
+docker compose down             # stop, keep volumes
+```
+
+URLs after boot:
+- Lab UI: http://localhost:3000/lab
+- PaperBench UI: http://localhost:3000/paperbench
+- Backend health: http://localhost:8000/health
+
+What the compose file mounts:
+- `/var/run/docker.sock` (host) → so the inner `LocalDockerBackend`
+  spawns sandbox containers against the host daemon (no nested DinD).
+  **Local-dev only**: this gives the container effective root on host
+  Docker. For prod, use `RunPodBackend` (`--sandbox runpod`) instead.
+- `./runs` → persists pipeline artifacts, Hermes adapter memory, and
+  PaperBench statuses between restarts.
+- `./third_party` (read-only) → vendored PaperBench bundles.
+- `./.env` (read-only) → keeps `OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY` / `REPROLAB_RUNPOD_API_KEY` available to the
+  entrypoint without printing secret values through `docker compose config`
+  (and prevents in-container typos from clobbering your local secrets).
+
+The image is a 3-stage build:
+1. `python:3.12-slim` — installs `backend/requirements.txt` into `/opt/venv`
+2. `node:20-bookworm-slim` — `npm ci` + `next build` for the frontend
+3. `python:3.12-slim` runtime — copies the venv + Next build, adds
+   `tini` (PID 1), `docker.io` (CLI for the Python `docker` SDK),
+   `nodejs` (to run `next start`), `openssh-client` (for asyncssh /
+   RunPod backend)
+
+`docker/entrypoint.sh` boots both servers in parallel and forwards
+SIGTERM so `docker stop` is fast (10 s grace) instead of waiting on
+the 30 s default SIGKILL.
+
 ## Quick reference — what to install
 
 | Tool | Required? | Install time |
@@ -287,6 +368,6 @@ swap-in steps are in `third_party/paperbench/README.md`.
 | Claude Code CLI | Yes | 1 min |
 | Claude Pro/Max subscription | Yes | — |
 | Docker Desktop | Yes | 5 min |
-| Node.js 20+ | Yes | 2 min |
+| Node.js 20.19+ LTS or 22.12+ LTS | Yes | 2 min |
 | NVIDIA Container Toolkit | Only for GPU papers | 5 min |
 | Anthropic API key | Only for production | — |
