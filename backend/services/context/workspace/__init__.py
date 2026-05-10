@@ -37,6 +37,7 @@ from backend.services.context.workspace.tools.rlm_query import (
     RlmQueryTool,
 )
 from backend.services.context.workspace.tools.semantic_search import SemanticSearchTool
+from backend.services.context.workspace.tools.web_search import WebSearchTool
 
 __all__ = [
     "BuildWorkspace",
@@ -54,6 +55,7 @@ __all__ = [
     "VariableEnriched",
     "VariableLoaded",
     "VariablePromoted",
+    "WebSearchTool",
     "WorkspaceAggregate",
     "WorkspaceAppService",
     "WorkspaceClosed",

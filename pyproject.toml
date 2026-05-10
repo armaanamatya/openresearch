@@ -31,6 +31,9 @@ hermes = [
 semantic = [
     "chromadb>=0.5,<1",
 ]
+websearch = [
+    "tavily-python>=0.5",
+]
 evals = [
     "deepeval>=2.0",
     "scipy>=1.12",
