@@ -407,6 +407,7 @@ async def run_with_runpod(
         boot_timeout_seconds=settings.runpod_boot_timeout_seconds,
         delete_on_destroy=settings.runpod_delete_on_destroy,
         bootstrap_command=settings.runpod_bootstrap_command,
+        pod_id=settings.runpod_pod_id,
     )
     return await run_with_runtime(
         project_id,
