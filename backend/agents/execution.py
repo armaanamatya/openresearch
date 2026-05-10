@@ -51,6 +51,14 @@ class ExecutionProfile:
     # to notice. Enforced via asyncio.timeout in the orchestrator.
     agent_wall_clock_seconds: int
     command_timeout_seconds: int
+    # Maximum number of agent invocations to run concurrently (e.g. parallel
+    # improvement paths).  Bounded by Claude subscription concurrency limits.
+    max_concurrent_agents: int = 2
+    max_improvement_rounds: int = 1
+    improvement_convergence_pct: float = 1.0
+    max_gate_retries: int = 0
+    adaptive_selection: bool = False
+    hypothesis_pool_multiplier: float = 1.0
     sandbox_network_disabled: bool = True
     sandbox_memory_limit: str = "4g"
     sandbox_cpus: float = 2.0
@@ -84,6 +92,12 @@ class ExecutionProfile:
                 max_tool_calls_per_agent=None,
                 agent_wall_clock_seconds=3600,
                 command_timeout_seconds=7200,
+                max_concurrent_agents=4,
+                max_improvement_rounds=4,
+                improvement_convergence_pct=0.5,
+                max_gate_retries=2,
+                adaptive_selection=True,
+                hypothesis_pool_multiplier=2.0,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit="12g" if resolved_gpu_mode is GpuMode.max else "8g",
                 sandbox_cpus=6.0 if resolved_gpu_mode is GpuMode.max else 4.0,
@@ -107,6 +121,11 @@ class ExecutionProfile:
                 max_tool_calls_per_agent=80,
                 agent_wall_clock_seconds=1200,
                 command_timeout_seconds=3600,
+                max_improvement_rounds=2,
+                improvement_convergence_pct=1.0,
+                max_gate_retries=1,
+                adaptive_selection=False,
+                hypothesis_pool_multiplier=1.0,
                 sandbox_network_disabled=True,
                 sandbox_memory_limit=(
                     "6g"
@@ -133,6 +152,12 @@ class ExecutionProfile:
                 if command_timeout_seconds is not None
                 else base.command_timeout_seconds
             ),
+            max_concurrent_agents=base.max_concurrent_agents,
+            max_improvement_rounds=base.max_improvement_rounds,
+            improvement_convergence_pct=base.improvement_convergence_pct,
+            max_gate_retries=base.max_gate_retries,
+            adaptive_selection=base.adaptive_selection,
+            hypothesis_pool_multiplier=base.hypothesis_pool_multiplier,
             sandbox_network_disabled=(
                 sandbox_network_disabled
                 if sandbox_network_disabled is not None

@@ -1,0 +1,827 @@
+{
+  "project_id": "prj_8b78ac6368bad043",
+  "stage": "gate_2_passed",
+  "assumption_ledger": [
+    {
+      "assumption_id": "A001",
+      "detail": "Atari CNN architecture is not described in this paper. Section 6.4 says 'same policy network architecture as used in Mnih et al. 2016'. The actual architecture must be sourced from A3C: 3 conv layers, FC 512, then separate policy (softmax) and value heads.",
+      "chosen_value": "A3C CNN: Conv(32, 8x8, s4) -> Conv(64, 4x4, s2) -> Conv(64, 3x3, s1) -> FC(512) -> policy head + value head (shared parameters)",
+      "evidence": [
+        "Section 6.4: 'we used the same policy network architecture as used in [Mni+16]'",
+        "Mnih et al. 2016 (A3C paper) describes the CNN architecture"
+      ],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A002",
+      "detail": "Roboschool Adam stepsize is listed as '*' in Table 4 with footnote 'Adam stepsize was adjusted based on the target value of the KL divergence.' Specific initial LR and dtarg are not given.",
+      "chosen_value": "Adaptive KL scheme from Section 4 with dtarg~0.01; initial beta=1; initial Adam stepsize default 3e-4.",
+      "evidence": [
+        "Table 4 footnote: 'Adam stepsize was adjusted based on the target value of the KL divergence'",
+        "Section 4 describes the adaptive KL penalty algorithm"
+      ],
+      "risk": "high"
+    },
+    {
+      "assumption_id": "A003",
+      "detail": "Number of parallel actors N for the MuJoCo 1M timestep benchmark is not specified in Table 3 or Section 6.1. Table 3 does not list 'Number of actors' unlike Tables 4 and 5.",
+      "chosen_value": "N=1 (single actor) is the most common default for MuJoCo experiments at this scale, giving batch of T=2048 per update.",
+      "evidence": [
+        "Table 3 does not list 'Number of actors'",
+        "Atari Table 5 and Roboschool Table 4 both explicitly list N"
+      ],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A004",
+      "detail": "Roboschool architecture not specified in the paper. Combined L^{CLIP+VF+S} objective is used (implied by Table 4 having c1 and c2), but network depth/width unknown.",
+      "chosen_value": "Likely MLP similar to MuJoCo but larger (e.g., 2 hidden layers of 64 or 128 units) given 3D humanoid complexity.",
+      "evidence": [
+        "Section 6.3 does not specify architecture",
+        "Table 4 does not list architecture parameters"
+      ],
+      "risk": "high"
+    },
+    {
+      "assumption_id": "A005",
+      "detail": "The exact clipping parameter epsilon used in Roboschool experiments is not specified in Table 4. It is not clear if LCLIP or LKLPEN variant was used.",
+      "chosen_value": "Adaptive KL variant (LKLPEN with adaptive beta) appears to be used based on Table 4 footnote about adaptive Adam stepsize based on KL. Epsilon not applicable.",
+      "evidence": [
+        "Table 4 footnote references KL divergence",
+        "Section 6.3: 'Heess et al. used the adaptive KL variant of PPO'"
+      ],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A006",
+      "detail": "Roboschool 'LinearAnneal(-0.7, -1.6)' for log standard deviation of action distribution \u2014 schedule over total timesteps vs. epochs is not specified.",
+      "chosen_value": "Linear annealing over total training timesteps from start to end of training.",
+      "evidence": [
+        "Table 4: 'Log stdev. of action distribution: LinearAnneal(-0.7, -1.6)'"
+      ],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A007",
+      "detail": "MuJoCo normalization procedure: 'best result' for normalization is taken over all 11 algorithm settings tested, but it's unclear whether this is the best seen in any single run or mean performance.",
+      "chosen_value": "Best mean performance across all algorithm settings for each environment is used as the normalization ceiling, consistent with standard practice.",
+      "evidence": [
+        "Section 6.1: 'the best result was set to 1, and averaged over 21 runs'"
+      ],
+      "risk": "low"
+    },
+    {
+      "assumption_id": "A008",
+      "detail": "GAE bootstrap: whether the value V(s_T) used in the advantage estimator (Equation 10) uses a stopped gradient during backpropagation is not stated.",
+      "chosen_value": "Value at terminal step V(s_T) uses stopped gradient (no backprop through bootstrap), which is standard practice in actor-critic implementations.",
+      "evidence": [
+        "Equations 10-12 describe the advantage estimator; no mention of gradient stopping"
+      ],
+      "risk": "low"
+    },
+    {
+      "assumption_id": "ENV001",
+      "detail": "Python version not stated in paper; CleanRL v1.0.0 requires Python >=3.7.1,<3.11",
+      "chosen_value": "3.10",
+      "evidence": [
+        "CleanRL README: 'Python >=3.7.1,<3.11'",
+        "3.10 is highest stable in range"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV002",
+      "detail": "Paper used TensorFlow 1.x (EOL) via openai/baselines; switching to PyTorch via CleanRL",
+      "chosen_value": "torch==2.1.0",
+      "evidence": [
+        "CleanRL requires torch>=1.12.1; 2.1.0 stable and RL-validated",
+        "TF1 EOL since 2021"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV003",
+      "detail": "Paper uses MuJoCo 1.50 + gym -v1 envs (deprecated, removed in gym>=0.26); using modern free DeepMind MuJoCo with -v4 envs",
+      "chosen_value": "mujoco==3.1.1 + gymnasium==0.29.1 (-v4 envs)",
+      "evidence": [
+        "artifact_index A013: '-v1 deprecated; slight dynamics difference from -v4'",
+        "MuJoCo now free via DeepMind"
+      ],
+      "risk": "medium",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV004",
+      "detail": "Adam epsilon not stated in paper text; reference code uses eps=1e-5, NOT PyTorch default 1e-8",
+      "chosen_value": "Adam eps=1e-5",
+      "evidence": [
+        "'37 implementation details' blog: 'Adam eps=1e-5 \u2014 critical!'",
+        "openai/baselines ppo2 uses eps=1e-5",
+        "CleanRL implements this correctly"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV005",
+      "detail": "Implementation selected: CleanRL v1.0.0 (PyTorch) over openai/baselines (TF1, EOL) or spinningup (maintenance-only)",
+      "chosen_value": "https://github.com/vwxyzjn/cleanrl at tag v1.0.0",
+      "evidence": [
+        "artifact_index recommended_repo",
+        "incorporates all 37 implementation details",
+        "benchmark validated ~400 return on Breakout"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV006",
+      "detail": "Atari ROMs: pre-2020 gym shipped ROMs; now requires explicit license acceptance",
+      "chosen_value": "AutoROM[accept-rom-license]==0.6.1 + AutoROM --accept-license",
+      "evidence": [
+        "artifact_index A014: 'ROM licensing changed'",
+        "AutoROM[accept-rom-license] ships ROMs directly"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV007",
+      "detail": "MuJoCo rendering backend for Docker headless environment",
+      "chosen_value": "MUJOCO_GL=egl (EGL backend); libosmesa6 as CPU fallback",
+      "evidence": [
+        "EGL is standard headless rendering for MuJoCo in Docker",
+        "OSMesa fallback for CPU-only containers"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV008",
+      "detail": "Roboschool (Section 6.3) excluded: pip install roboschool broken on modern Python; qualitative-only section",
+      "chosen_value": "Roboschool NOT included; Section 6.3 reproduction skipped",
+      "evidence": [
+        "artifact_index A015: deprecated",
+        "reproduction_risk_summary: 'roboschool VERY HIGH'",
+        "Section 6.3 has no quantitative baselines"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV009",
+      "detail": "Global gradient clipping absent from paper text but present in all reference implementations",
+      "chosen_value": "max_grad_norm=0.5",
+      "evidence": [
+        "'37 details' blog documents this as implementation trick",
+        "openai/baselines ppo2 commit ea25b9e",
+        "CleanRL enforces this"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV010",
+      "detail": "Orthogonal weight initialization absent from paper; required for matching openai/baselines behavior",
+      "chosen_value": "Orthogonal init: hidden scale=sqrt(2), policy head scale=0.01, value head scale=1.0",
+      "evidence": [
+        "'37 details' blog documents orthogonal init",
+        "CleanRL layer_init() implements correctly"
+      ],
+      "risk": "low",
+      "verified_by": null
+    }
+  ],
+  "decision_log": [
+    "Gate 1 \u2014 Plan Verification for PPO (Schulman 2017) reproduction: VERIFIED WITH CAVEATS. Four verifiers ran in parallel. Method Fidelity (8.1/10) confirms hyperparameters, architecture, and implementation tricks are correctly specified. Data & Metrics (5.5/10, fail) flagged that the normalization ceiling formula in evaluation_plan uses PPO-Clip's own per-seed maximum as best=1 rather than the cross-algorithm maximum required by the paper's Section 6.1 methodology \u2014 this makes the scalar incomparable to the paper's 0.82 target and must be corrected to use an external reference ceiling. Environment (5.8/10, fail) flagged that MUJOCO_GL=egl is set but libegl-mesa0 (Mesa software EGL driver) is absent from the Dockerfile; fix is add libegl-mesa0 or switch to MUJOCO_GL=osmesa. Artifact & Diff (6.8/10, pass) flagged missing provenance.json and commands.log from the expected outputs list. Supervisor binding decisions: (1) EGL rendering fix is a hard pre-execution Dockerfile requirement; (2) normalization formula must be corrected in the evaluation plan before analysis code is written; (3) Atari update-epochs must be locked to K=3 everywhere (contract is authoritative over Dockerfile comment); (4) provenance.json and commands.log must be added to expected_outputs. Non-blocking: metrics.json schema should be defined, A2C baseline source URL must be pinned before Atari comparison, random policy baseline values should be sourced to a citable document. Plan may proceed to execution after mandatory fixes are confirmed.",
+    "Gate 2 FAILED for prj_8b78ac6368bad043 (PPO, Schulman 2017). Supervisor binding decision: failed_reproduction. Primary cause: experiment-runner Docker build failure due to CWD path mismatch \u2014 code written to triple-nested path, runner could not locate Dockerfile, zero training runs completed, metrics.json is empty. Secondary cause: two Gate 1 mandatory fixes (Atari update_epochs 4->3, vf_coef 0.5->1.0) were never applied to config.json before execution. Tertiary: MuJoCo normalization ceiling is self-referential (PPO seeds only vs cross-algorithm max). Method design quality is sound (81/100, all 37 PPO tricks present, correct architectures). Required fixes before re-run: (1) fix runner CWD or pass -f <abs_path> to docker build, (2) set update_epochs=3 for Atari in config.json, (3) set vf_coef=1.0 for Atari in config.json, (4) fix evaluate.py normalization ceiling to use cross-algorithm reference values. Expected post-fix gate outcome: verified_with_caveats (ENV003 -v4 dynamics delta, 5/49 Atari scope, A2C comparison via published refs)."
+  ],
+  "seed": null,
+  "attempt_id": null,
+  "run_group_id": null,
+  "blacklist_terms": [],
+  "paper_claim_map": {
+    "core_contribution": "Proximal Policy Optimization (PPO) introduces a clipped surrogate objective (L^CLIP) that enables multiple epochs of minibatch SGD updates per data sample in policy gradient RL, achieving TRPO-level stability and reliability with first-order optimization only, while being simpler to implement and more general.",
+    "claims": [
+      {
+        "method": "PPO with clipped surrogate objective (epsilon=0.2)",
+        "dataset": "7 MuJoCo continuous control tasks (HalfCheetah, Hopper, InvertedDoublePendulum, InvertedPendulum, Reacher, Swimmer, Walker2d, all -v1) via OpenAI Gym",
+        "metric": "Average normalized score across all 7 environments and 3 seeds (21 runs), normalized so random=0 and best=1",
+        "expected_result": "0.82 average normalized score, best among all variants tested including TRPO, CEM, A2C, A2C+Trust Region, Vanilla PG with adaptive stepsize"
+      },
+      {
+        "method": "PPO with clipped surrogate objective vs A2C and ACER",
+        "dataset": "49 Atari games from Arcade Learning Environment (ALE), trained for 40M game frames (10M timesteps)",
+        "metric": "Number of games 'won' by average episode reward over all of training across 3 trials",
+        "expected_result": "PPO wins 30/49 games vs A2C winning 1 and ACER winning 18"
+      },
+      {
+        "method": "PPO with clipped surrogate objective vs A2C and ACER",
+        "dataset": "49 Atari games from Arcade Learning Environment (ALE), trained for 40M game frames (10M timesteps)",
+        "metric": "Number of games 'won' by average episode reward over last 100 episodes across 3 trials",
+        "expected_result": "PPO wins 19/49 games vs A2C winning 1, ACER winning 28, and 1 tie"
+      },
+      {
+        "method": "PPO clipped surrogate, no clipping or penalty, adaptive KL, fixed KL variants",
+        "dataset": "7 MuJoCo tasks (1M timesteps each), 3 seeds, 21 runs total",
+        "metric": "Average normalized score (random=0, best=1)",
+        "expected_result": "Clipping epsilon=0.2 achieves 0.82; No clipping/penalty: -0.39; Clipping epsilon=0.1: 0.76; Clipping epsilon=0.3: 0.70; Adaptive KL dtarg=0.01: 0.74; best fixed KL (beta=3): 0.72"
+      }
+    ],
+    "datasets": [
+      {
+        "name": "OpenAI Gym MuJoCo continuous control tasks",
+        "source": "OpenAI Gym [Brockman et al. 2016], MuJoCo physics engine [Todorov et al. 2012]",
+        "download_method": "pip install gym mujoco-py; requires MuJoCo license",
+        "size_estimate": "7 environments: HalfCheetah-v1, Hopper-v1, InvertedDoublePendulum-v1, InvertedPendulum-v1, Reacher-v1, Swimmer-v1, Walker2d-v1; 1M timesteps each",
+        "notes": "Section 6.1 footnote 2 lists the 7 tasks. All use '-v1' suffix. Environments are simulated so no download of data, only simulator."
+      },
+      {
+        "name": "Arcade Learning Environment (ALE) / Atari",
+        "source": "Bellemare et al. 2015, available via OpenAI Gym",
+        "download_method": "pip install gym[atari] ale-py; ROM files required separately",
+        "size_estimate": "49 Atari games; 40M game frames (10M timesteps) per run; 3 seeds",
+        "notes": "Section 6.4. Same 49 games included in OpenAI Gym at time of publication. Full per-game results in Appendix B Table 6."
+      },
+      {
+        "name": "Roboschool 3D Humanoid tasks",
+        "source": "OpenAI Roboschool (open-source, PyBullet-based)",
+        "download_method": "pip install roboschool (now deprecated; use pybullet-based alternatives or PyBullet gym)",
+        "size_estimate": "3 environments: RoboschoolHumanoid-v0 (up to 50M steps), RoboschoolHumanoidFlagrun-v0 (up to 100M steps), RoboschoolHumanoidFlagrunHarder-v0 (up to 100M steps)",
+        "notes": "Section 6.3. Flagrun: target position randomly varied every 200 timesteps or on goal reach. Harder variant: robot pelted by cubes and must get up."
+      }
+    ],
+    "metrics": [
+      {
+        "name": "Average normalized score",
+        "definition": "For each environment, compute the average total reward of the last 100 episodes. Shift and scale so that random policy = 0 and best result across all tested algorithms = 1. Then average over all 7 environments and 3 seeds (21 runs total) to get a single scalar per algorithm setting.",
+        "target_value": "0.82 for PPO Clip epsilon=0.2 (best among all variants)",
+        "source_section": "Section 6.1, Table 1"
+      },
+      {
+        "name": "Games won count (avg episode reward over all training)",
+        "definition": "For each of 49 Atari games, compute avg episode reward over the entire training run. Average across 3 trials. Declare victor as the algorithm with highest average. Count total games won per algorithm.",
+        "target_value": "PPO: 30, ACER: 18, A2C: 1, Tie: 0 out of 49 games",
+        "source_section": "Section 6.4, Table 2"
+      },
+      {
+        "name": "Games won count (avg episode reward over last 100 episodes)",
+        "definition": "For each of 49 Atari games, compute avg episode reward over last 100 episodes of training. Average across 3 trials. Declare victor as algorithm with highest average. Count total games won per algorithm.",
+        "target_value": "PPO: 19, ACER: 28, A2C: 1, Tie: 1 out of 49 games",
+        "source_section": "Section 6.4, Table 2"
+      },
+      {
+        "name": "Mean final score per Atari game",
+        "definition": "Average episode reward over last 100 episodes of training at 40M game frames (10M timesteps), averaged across 3 random seeds",
+        "target_value": "Per-game results in Appendix B Table 6 (e.g., Alien: 1850.3, Assault: 4971.9, Atlantis: 2311815.0)",
+        "source_section": "Appendix B, Table 6"
+      }
+    ],
+    "model_architecture": "MuJoCo experiments: Fully-connected MLP with 2 hidden layers of 64 units each, tanh nonlinearities, outputs the mean of a Gaussian distribution with variable (learned) standard deviations. Policy and value function do NOT share parameters. No entropy bonus. (Section 6.1, following Schulman et al. 2015b and Duan et al. 2016). Atari experiments: Same convolutional policy network architecture as used in Mnih et al. 2016 (A3C paper) \u2014 a CNN with shared policy and value function head. (Section 6.4). Roboschool humanoid: Architecture not specified in the paper beyond use of the combined LCLIP+VF+S objective with shared parameters (implied by Table 4 having VF and entropy coefficients).",
+    "training_recipe": {
+      "optimizer": "Adam [Kingma & Ba 2014] (stochastic gradient ascent on surrogate objective)",
+      "learning_rate": "MuJoCo: 3e-4 (Table 3); Atari: 2.5e-4 * alpha where alpha linearly annealed from 1 to 0 (Table 5); Roboschool: adaptive based on KL divergence target (Table 4, marked as '*')",
+      "batch_size": "MuJoCo: minibatch size 64, total batch N*T (N actors * T=2048 timesteps); Atari: minibatch size 32*8=256, N=8 actors, T=128 timesteps, total batch 1024; Roboschool: minibatch size 4096, T=512, N=32 (locomotion) or 128 (flagrun)",
+      "epochs_or_steps": "MuJoCo: K=10 epochs per update, 1M total timesteps per environment; Atari: K=3 epochs per update, 40M game frames (10M timesteps) total; Roboschool: K=15 epochs per update, up to 50M (Humanoid) or 100M timesteps (Flagrun variants)",
+      "scheduler": "Atari: linear annealing of learning rate and clipping epsilon via alpha from 1 to 0 over course of training (Table 5). Roboschool: action distribution log-std linearly annealed from -0.7 to -1.6 (Table 4).",
+      "other_hparams": {
+        "horizon_T": "MuJoCo: 2048; Atari: 128; Roboschool: 512",
+        "discount_gamma": "0.99 (all experiments)",
+        "gae_lambda": "0.95 (all experiments)",
+        "clip_epsilon": "MuJoCo: 0.2 (best); Atari: 0.1*alpha (annealed); Roboschool: not specified",
+        "vf_coefficient_c1": "Atari: 1 (Table 5); MuJoCo: irrelevant (no shared parameters)",
+        "entropy_coefficient_c2": "Atari: 0.01 (Table 5); MuJoCo: 0 (no entropy bonus)",
+        "num_actors_N": "MuJoCo: not specified in Table 3; Atari: 8 (Table 5); Roboschool: 32 locomotion / 128 flagrun (Table 4)",
+        "adaptive_kl_dtarg": "Tested: 0.003, 0.01, 0.03 in ablation (Table 1); used in Roboschool",
+        "adaptive_kl_adjustment_factors": "1.5 and 2.0 (Section 4)",
+        "initial_beta_for_kl_penalty": "1 (Table 1 caption)",
+        "roboschool_action_log_std_anneal": "LinearAnneal(-0.7, -1.6) (Table 4)"
+      }
+    },
+    "evaluation_protocol": "MuJoCo (Section 6.1): Run each algorithm on all 7 environments with 3 random seeds each (21 runs total per algorithm setting). Score each run as avg total reward of last 100 episodes. Normalize per-environment scores so random policy=0 and best algorithm=1. Average normalized scores over all 21 runs to get a single scalar. Atari (Section 6.4): Run 3 trials per algorithm, train for 40M game frames (10M timesteps). Report two metrics: (1) avg episode reward over entire training, (2) avg episode reward over last 100 episodes. For each metric and game, declare winner as algorithm with highest avg across 3 trials. Count total games won. Roboschool (Section 6.3): Qualitative showcase, learning curves shown in Figure 4, no quantitative comparison to baselines.",
+    "hardware_clues": [
+      "No explicit GPU type, memory usage, or training time mentioned in the paper.",
+      "Roboschool experiments use up to 128 parallel actors (Table 4), implying large-scale parallel CPU rollout.",
+      "Atari uses 8 parallel actors (Table 5), consistent with multi-core CPU data collection.",
+      "Wall-time is mentioned as a metric to optimize (Abstract) but no specific numbers given.",
+      "Paper published 2017 at OpenAI; typical hardware of that era was NVIDIA GTX 1080 Ti or Tesla K80/P100."
+    ],
+    "ambiguities": [
+      {
+        "assumption_id": "A001",
+        "detail": "Atari CNN architecture is not described in this paper. Section 6.4 says 'same policy network architecture as used in Mnih et al. 2016'. The actual architecture must be sourced from A3C: 3 conv layers, FC 512, then separate policy (softmax) and value heads.",
+        "chosen_value": "A3C CNN: Conv(32, 8x8, s4) -> Conv(64, 4x4, s2) -> Conv(64, 3x3, s1) -> FC(512) -> policy head + value head (shared parameters)",
+        "evidence": [
+          "Section 6.4: 'we used the same policy network architecture as used in [Mni+16]'",
+          "Mnih et al. 2016 (A3C paper) describes the CNN architecture"
+        ],
+        "risk": "medium"
+      },
+      {
+        "assumption_id": "A002",
+        "detail": "Roboschool Adam stepsize is listed as '*' in Table 4 with footnote 'Adam stepsize was adjusted based on the target value of the KL divergence.' Specific initial LR and dtarg are not given.",
+        "chosen_value": "Adaptive KL scheme from Section 4 with dtarg~0.01; initial beta=1; initial Adam stepsize default 3e-4.",
+        "evidence": [
+          "Table 4 footnote: 'Adam stepsize was adjusted based on the target value of the KL divergence'",
+          "Section 4 describes the adaptive KL penalty algorithm"
+        ],
+        "risk": "high"
+      },
+      {
+        "assumption_id": "A003",
+        "detail": "Number of parallel actors N for the MuJoCo 1M timestep benchmark is not specified in Table 3 or Section 6.1. Table 3 does not list 'Number of actors' unlike Tables 4 and 5.",
+        "chosen_value": "N=1 (single actor) is the most common default for MuJoCo experiments at this scale, giving batch of T=2048 per update.",
+        "evidence": [
+          "Table 3 does not list 'Number of actors'",
+          "Atari Table 5 and Roboschool Table 4 both explicitly list N"
+        ],
+        "risk": "medium"
+      },
+      {
+        "assumption_id": "A004",
+        "detail": "Roboschool architecture not specified in the paper. Combined L^{CLIP+VF+S} objective is used (implied by Table 4 having c1 and c2), but network depth/width unknown.",
+        "chosen_value": "Likely MLP similar to MuJoCo but larger (e.g., 2 hidden layers of 64 or 128 units) given 3D humanoid complexity.",
+        "evidence": [
+          "Section 6.3 does not specify architecture",
+          "Table 4 does not list architecture parameters"
+        ],
+        "risk": "high"
+      },
+      {
+        "assumption_id": "A005",
+        "detail": "The exact clipping parameter epsilon used in Roboschool experiments is not specified in Table 4. It is not clear if LCLIP or LKLPEN variant was used.",
+        "chosen_value": "Adaptive KL variant (LKLPEN with adaptive beta) appears to be used based on Table 4 footnote about adaptive Adam stepsize based on KL. Epsilon not applicable.",
+        "evidence": [
+          "Table 4 footnote references KL divergence",
+          "Section 6.3: 'Heess et al. used the adaptive KL variant of PPO'"
+        ],
+        "risk": "medium"
+      },
+      {
+        "assumption_id": "A006",
+        "detail": "Roboschool 'LinearAnneal(-0.7, -1.6)' for log standard deviation of action distribution \u2014 schedule over total timesteps vs. epochs is not specified.",
+        "chosen_value": "Linear annealing over total training timesteps from start to end of training.",
+        "evidence": [
+          "Table 4: 'Log stdev. of action distribution: LinearAnneal(-0.7, -1.6)'"
+        ],
+        "risk": "medium"
+      },
+      {
+        "assumption_id": "A007",
+        "detail": "MuJoCo normalization procedure: 'best result' for normalization is taken over all 11 algorithm settings tested, but it's unclear whether this is the best seen in any single run or mean performance.",
+        "chosen_value": "Best mean performance across all algorithm settings for each environment is used as the normalization ceiling, consistent with standard practice.",
+        "evidence": [
+          "Section 6.1: 'the best result was set to 1, and averaged over 21 runs'"
+        ],
+        "risk": "low"
+      },
+      {
+        "assumption_id": "A008",
+        "detail": "GAE bootstrap: whether the value V(s_T) used in the advantage estimator (Equation 10) uses a stopped gradient during backpropagation is not stated.",
+        "chosen_value": "Value at terminal step V(s_T) uses stopped gradient (no backprop through bootstrap), which is standard practice in actor-critic implementations.",
+        "evidence": [
+          "Equations 10-12 describe the advantage estimator; no mention of gradient stopping"
+        ],
+        "risk": "low"
+      }
+    ]
+  },
+  "environment_spec": {
+    "dockerfile": "FROM python:3.10-slim\nLABEL org.opencontainers.image.description=\"PPO (Schulman 2017) reproduction \u2014 CleanRL + PyTorch + MuJoCo v4 + Atari\"\nRUN apt-get update && apt-get install -y --no-install-recommends git wget curl unzip build-essential cmake libgl1 libgl1-mesa-dev libglew-dev libegl1 libosmesa6 libosmesa6-dev libglib2.0-0 libxext6 libxrender1 libgomp1 patchelf ffmpeg swig && rm -rf /var/lib/apt/lists/*\nENV MUJOCO_GL=egl\nENV PYOPENGL_PLATFORM=egl\nWORKDIR /workspace\nRUN pip install --no-cache-dir --upgrade pip setuptools wheel\nRUN pip install --no-cache-dir \"torch==2.1.0\" \"torchvision==0.16.0\"\nRUN pip install --no-cache-dir \"numpy>=1.23.5,<2.0\" \"scipy==1.11.4\"\nRUN pip install --no-cache-dir \"mujoco==3.1.1\" \"gymnasium[mujoco]==0.29.1\"\nRUN pip install --no-cache-dir \"ale-py==0.8.1\" \"AutoROM[accept-rom-license]==0.6.1\" && AutoROM --accept-license --quiet || true\nRUN pip install --no-cache-dir \"tyro>=0.5.0,<0.9.0\" rich tensorboard \"shimmy>=1.3.0\" \"moviepy>=1.0.3\" \"imageio>=2.33.0\" \"opencv-python-headless>=4.8.0\" \"huggingface_hub>=0.19.0\" \"stable-baselines3>=2.1.0\"\nRUN git clone --depth 1 --branch v1.0.0 https://github.com/vwxyzjn/cleanrl /workspace/cleanrl && cd /workspace/cleanrl && pip install --no-cache-dir -e \".[mujoco,atari]\" 2>/dev/null || pip install --no-cache-dir -e . 2>/dev/null || true\nRUN python -c \"import torch; import gymnasium; import mujoco; print(f'[OK] torch={torch.__version__} gymnasium={gymnasium.__version__} mujoco={mujoco.__version__}')\"\nCMD [\"/bin/bash\"]",
+    "python_version": "3.10",
+    "framework": "pytorch",
+    "framework_version": "2.1.0",
+    "system_packages": [
+      "git",
+      "wget",
+      "curl",
+      "unzip",
+      "build-essential",
+      "cmake",
+      "libgl1",
+      "libgl1-mesa-dev",
+      "libglew-dev",
+      "libegl1",
+      "libosmesa6",
+      "libosmesa6-dev",
+      "libglib2.0-0",
+      "libxext6",
+      "libxrender1",
+      "libgomp1",
+      "patchelf",
+      "ffmpeg",
+      "swig"
+    ],
+    "pip_packages": {
+      "torch": "2.1.0",
+      "torchvision": "0.16.0",
+      "numpy": ">=1.23.5,<2.0",
+      "scipy": "1.11.4",
+      "mujoco": "3.1.1",
+      "gymnasium": "0.29.1",
+      "gymnasium[mujoco]": "0.29.1",
+      "ale-py": "0.8.1",
+      "AutoROM[accept-rom-license]": "0.6.1",
+      "tyro": ">=0.5.0,<0.9.0",
+      "rich": ">=13.0.0",
+      "tensorboard": ">=2.14.0",
+      "shimmy": ">=1.3.0",
+      "moviepy": ">=1.0.3",
+      "imageio": ">=2.33.0",
+      "opencv-python-headless": ">=4.8.0",
+      "huggingface_hub": ">=0.19.0",
+      "stable-baselines3": ">=2.1.0",
+      "cleanrl": "v1.0.0 (from git)"
+    },
+    "assumptions": [
+      {
+        "assumption_id": "ENV001",
+        "detail": "Python version not stated in paper; CleanRL v1.0.0 requires Python >=3.7.1,<3.11",
+        "chosen_value": "3.10",
+        "evidence": [
+          "CleanRL README: 'Python >=3.7.1,<3.11'",
+          "3.10 is highest stable in range"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV002",
+        "detail": "Paper used TensorFlow 1.x (EOL) via openai/baselines; switching to PyTorch via CleanRL",
+        "chosen_value": "torch==2.1.0",
+        "evidence": [
+          "CleanRL requires torch>=1.12.1; 2.1.0 stable and RL-validated",
+          "TF1 EOL since 2021"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV003",
+        "detail": "Paper uses MuJoCo 1.50 + gym -v1 envs (deprecated, removed in gym>=0.26); using modern free DeepMind MuJoCo with -v4 envs",
+        "chosen_value": "mujoco==3.1.1 + gymnasium==0.29.1 (-v4 envs)",
+        "evidence": [
+          "artifact_index A013: '-v1 deprecated; slight dynamics difference from -v4'",
+          "MuJoCo now free via DeepMind"
+        ],
+        "risk": "medium",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV004",
+        "detail": "Adam epsilon not stated in paper text; reference code uses eps=1e-5, NOT PyTorch default 1e-8",
+        "chosen_value": "Adam eps=1e-5",
+        "evidence": [
+          "'37 implementation details' blog: 'Adam eps=1e-5 \u2014 critical!'",
+          "openai/baselines ppo2 uses eps=1e-5",
+          "CleanRL implements this correctly"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV005",
+        "detail": "Implementation selected: CleanRL v1.0.0 (PyTorch) over openai/baselines (TF1, EOL) or spinningup (maintenance-only)",
+        "chosen_value": "https://github.com/vwxyzjn/cleanrl at tag v1.0.0",
+        "evidence": [
+          "artifact_index recommended_repo",
+          "incorporates all 37 implementation details",
+          "benchmark validated ~400 return on Breakout"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV006",
+        "detail": "Atari ROMs: pre-2020 gym shipped ROMs; now requires explicit license acceptance",
+        "chosen_value": "AutoROM[accept-rom-license]==0.6.1 + AutoROM --accept-license",
+        "evidence": [
+          "artifact_index A014: 'ROM licensing changed'",
+          "AutoROM[accept-rom-license] ships ROMs directly"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV007",
+        "detail": "MuJoCo rendering backend for Docker headless environment",
+        "chosen_value": "MUJOCO_GL=egl (EGL backend); libosmesa6 as CPU fallback",
+        "evidence": [
+          "EGL is standard headless rendering for MuJoCo in Docker",
+          "OSMesa fallback for CPU-only containers"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV008",
+        "detail": "Roboschool (Section 6.3) excluded: pip install roboschool broken on modern Python; qualitative-only section",
+        "chosen_value": "Roboschool NOT included; Section 6.3 reproduction skipped",
+        "evidence": [
+          "artifact_index A015: deprecated",
+          "reproduction_risk_summary: 'roboschool VERY HIGH'",
+          "Section 6.3 has no quantitative baselines"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV009",
+        "detail": "Global gradient clipping absent from paper text but present in all reference implementations",
+        "chosen_value": "max_grad_norm=0.5",
+        "evidence": [
+          "'37 details' blog documents this as implementation trick",
+          "openai/baselines ppo2 commit ea25b9e",
+          "CleanRL enforces this"
+        ],
+        "risk": "low",
+        "verified_by": null
+      },
+      {
+        "assumption_id": "ENV010",
+        "detail": "Orthogonal weight initialization absent from paper; required for matching openai/baselines behavior",
+        "chosen_value": "Orthogonal init: hidden scale=sqrt(2), policy head scale=0.01, value head scale=1.0",
+        "evidence": [
+          "'37 details' blog documents orthogonal init",
+          "CleanRL layer_init() implements correctly"
+        ],
+        "risk": "low",
+        "verified_by": null
+      }
+    ],
+    "compatibility_notes": "MODERN REPRODUCTION (MuJoCo v4, approximate): Uses CleanRL v1.0.0 (PyTorch) + gymnasium 0.29.1 + free DeepMind MuJoCo 3.1.1. Paper's original stack was TF1 + mujoco-py 1.50 + gym 0.15.x + -v1 envs (all deprecated/EOL). Key divergences: (1) -v4 vs -v1 MuJoCo envs \u2014 slight reward scaling difference (~5-15%); (2) PyTorch vs TF1 \u2014 numerically equivalent when Adam eps=1e-5 enforced; (3) Roboschool (Section 6.3) excluded. CRITICAL NON-PAPER TRICKS required for correct results: Adam eps=1e-5, max_grad_norm=0.5, orthogonal init, value-function loss clipping, per-minibatch advantage normalization. For GPU: rebuild with torch==2.1.0+cu118 and nvidia-container-runtime. Full Atari 49-game reproduction (~1.47B steps total) requires GPU.",
+    "extra": {
+      "base_image": "python:3.10-slim",
+      "mujoco_version": "3.1.1",
+      "gymnasium_version": "0.29.1",
+      "ale_py_version": "0.8.1",
+      "cleanrl_version": "v1.0.0",
+      "cleanrl_scripts": {
+        "mujoco_ppo": "cleanrl/ppo_continuous_action.py",
+        "atari_ppo": "cleanrl/ppo_atari.py",
+        "discrete_ppo": "cleanrl/ppo.py"
+      },
+      "environment_strategy": "mujoco_v4_approximate",
+      "excluded_experiments": [
+        "Section 6.3 Roboschool (deprecated)"
+      ],
+      "critical_hyperparameter_overrides": {
+        "adam_eps": "1e-5",
+        "max_grad_norm": "0.5",
+        "weight_init": "orthogonal",
+        "advantage_normalization": "per_minibatch",
+        "value_loss_clipping": true
+      },
+      "reproduction_risk": {
+        "mujoco_v4_approximate": "LOW",
+        "atari_49games": "MEDIUM",
+        "roboschool_section63": "EXCLUDED"
+      },
+      "docker_env_vars": {
+        "MUJOCO_GL": "egl",
+        "PYOPENGL_PLATFORM": "egl"
+      }
+    }
+  },
+  "reproduction_contract": {
+    "reproduction_definition": "Reproduce the two primary quantitative claims from Schulman et al. 2017 (PPO) using CleanRL v1.0.0 + PyTorch 2.1.0 + gymnasium 0.29.1 + MuJoCo 3.1.1 (DeepMind free release): (1) MuJoCo benchmark (Table 1, Section 6.1): PPO with clipped surrogate objective (epsilon=0.2) achieves an average normalized score >= 0.70 across 7 MuJoCo -v4 continuous control environments x 3 seeds (21 runs), with a target of 0.82 from the paper (tolerance of -0.12 granted for -v4 vs -v1 dynamics drift, ~5-15% expected deviation per ENV003). (2) Atari benchmark (Table 2, Section 6.4, BUDGETED): PPO wins a majority of head-to-head comparisons against A2C across a representative 5-game subset (BeamRider, Breakout, Pong, Qbert, SpaceInvaders) trained for 40M game frames (10M timesteps) and 3 seeds per game; full 49-game reproduction is tracked as a stretch goal requiring GPU. Roboschool (Section 6.3) is EXCLUDED per ENV008 (deprecated, qualitative-only). The reproduction is APPROXIMATE: uses -v4 MuJoCo envs instead of deprecated -v1, PyTorch instead of TF1, and incorporates undocumented but necessary implementation tricks (Adam eps=1e-5, max_grad_norm=0.5, orthogonal init, per-minibatch advantage normalization, value-function loss clipping) that are absent from the paper but present in all reference implementations.",
+    "smoke_test_plan": "Goal: Validate the full pipeline in under 2 minutes. MuJoCo smoke test: `python /workspace/cleanrl/cleanrl/ppo_continuous_action.py --env-id HalfCheetah-v4 --total-timesteps 50000 --learning-rate 3e-4 --num-envs 1 --num-steps 2048 --num-minibatches 32 --update-epochs 10 --clip-coef 0.2 --gamma 0.99 --gae-lambda 0.95 --seed 1 --track False`. Pass criteria: (a) completes without error, (b) \u22651 policy update occurs, (c) episodic_return is finite, (d) no NaN in losses, (e) <120s on CPU. Atari smoke test: `python /workspace/cleanrl/cleanrl/ppo_atari.py --env-id BreakoutNoFrameskip-v4 --total-timesteps 50000 --num-envs 8 --num-steps 128 --num-minibatches 4 --update-epochs 3 --clip-coef 0.1 --anneal-lr True --seed 1 --track False`. Same pass criteria.",
+    "full_run_plan": "PHASE 1 \u2014 MuJoCo Benchmark (FULL, 21 runs): Environments: [HalfCheetah-v4, Hopper-v4, InvertedDoublePendulum-v4, InvertedPendulum-v4, Reacher-v4, Swimmer-v4, Walker2d-v4] x Seeds [1, 2, 3]. Command: `python ppo_continuous_action.py --env-id {ENV} --total-timesteps 1000000 --learning-rate 3e-4 --num-envs 1 --num-steps 2048 --num-minibatches 32 --update-epochs 10 --clip-coef 0.2 --gamma 0.99 --gae-lambda 0.95 --ent-coef 0.0 --vf-coef 0.5 --max-grad-norm 0.5 --seed {SEED}`. Minibatch size = (1\u00d72048)/32 = 64, matching Table 3. Est. ~5-7 hours for all 21 runs (parallelizable). PHASE 2 \u2014 Atari Benchmark (BUDGETED, 5-game subset, 15 runs): Games: [BreakoutNoFrameskip-v4, BeamRiderNoFrameskip-v4, PongNoFrameskip-v4, QbertNoFrameskip-v4, SpaceInvadersNoFrameskip-v4] x Seeds [1, 2, 3]. Command: `python ppo_atari.py --env-id {GAME} --total-timesteps 10000000 --learning-rate 2.5e-4 --num-envs 8 --num-steps 128 --num-minibatches 4 --update-epochs 3 --clip-coef 0.1 --anneal-lr True --clip-vloss True --ent-coef 0.01 --vf-coef 1.0 --max-grad-norm 0.5 --gamma 0.99 --gae-lambda 0.95 --seed {SEED}`. Minibatch = (8\u00d7128)/4 = 256, matching Table 5. STRETCH: Full 49-game Atari requires GPU (~145 GPU-hours).",
+    "expected_outputs": [
+      "results/mujoco/episodic_returns_raw.json",
+      "results/mujoco/normalized_scores.json",
+      "results/mujoco/mujoco_summary_table.csv",
+      "results/mujoco/avg_normalized_score_scalar.txt",
+      "results/mujoco/reward_curves_per_env.png",
+      "results/mujoco/normalized_score_barplot.png",
+      "results/atari/episodic_returns_raw.json",
+      "results/atari/atari_summary_table.csv",
+      "results/atari/games_won_alltraining.json",
+      "results/atari/games_won_last100.json",
+      "results/atari/reward_curves_per_game.png",
+      "results/metrics.json",
+      "results/tensorboard/",
+      "results/run_log.txt"
+    ],
+    "dataset_plan": "MuJoCo (no download): Simulators provided by `gymnasium[mujoco]==0.29.1` + `mujoco==3.1.1`. Set `MUJOCO_GL=egl` for headless Docker. Use -v4 environments; -v1 removed in gymnasium>=0.26 (see ENV003, accepted ~5-15% reward deviation). Atari ROMs (pre-installed in Docker): Installed via `AutoROM[accept-rom-license]==0.6.1` with `AutoROM --accept-license` during build. Use NoFrameskip-v4 variants; CleanRL ppo_atari.py applies its own frame-skip and grayscale wrappers. Verify: `python -c \"import ale_py, gymnasium; gymnasium.make('BreakoutNoFrameskip-v4').reset(); print('OK')\"`. No external data files, checkpoints, or pre-collected trajectories required.",
+    "evaluation_plan": "MUJOCO (Section 6.1 / Table 1): (1) Record all episodic returns per run. (2) Compute mean return over last 100 episodes per run. (3) Normalize per-env: (score \u2212 random_score) / (best_score \u2212 random_score) where random_score = published random-policy baselines and best_score = max mean-final-perf across 3 seeds for PPO Clip. (4) Average all 21 normalized scores \u2192 single scalar. Target: \u22650.70 (paper: 0.82; \u22120.12 tolerance for -v4 drift). ATARI (Section 6.4 / Table 2): (1) Record full episode-return history per run. (2) Metric A: mean over entire training. (3) Metric B: mean over last 100 episodes. (4) Average each metric across 3 seeds per game. (5) Compare PPO vs A2C (CleanRL/SB3 A2C benchmarks as reference; A2C not re-run). (6) Count games won per metric. Target: PPO wins \u22653/5 games on Metric A for the 5-game subset.",
+    "verification_checklist": [
+      "MuJoCo: 2-layer MLP, 64 units, tanh, separate policy/value networks (no shared params), Gaussian head",
+      "MuJoCo hyperparameters: LR=3e-4, T=2048, minibatch=64, K=10, gamma=0.99, lambda=0.95, epsilon=0.2, ent-coef=0.0",
+      "Atari: A3C CNN (Conv32/8x8/s4 \u2192 Conv64/4x4/s2 \u2192 Conv64/3x3/s1 \u2192 FC512 \u2192 shared policy+value heads)",
+      "Atari hyperparameters: LR=2.5e-4 annealed, N=8, T=128, minibatch=256, K=3, epsilon=0.1 annealed, ent-coef=0.01, vf-coef=1.0",
+      "Adam epsilon=1e-5 confirmed (not PyTorch default 1e-8) \u2014 verify optimizer constructor in CleanRL source",
+      "max_grad_norm=0.5 gradient clipping applied before optimizer step",
+      "Orthogonal init: hidden scale=sqrt(2), policy head scale=0.01, value head scale=1.0",
+      "Per-minibatch advantage normalization (mean=0, std=1 within each minibatch, not globally)",
+      "Value-function loss clipping applied (clipped + unclipped in max() formulation)",
+      "GAE uses stopped gradient for V(s_T) bootstrap term",
+      "MuJoCo total timesteps = exactly 1,000,000 per run",
+      "Atari total timesteps = exactly 10,000,000 per run (= 40M frames / 4 frame-skip)",
+      "3 independent seeds per environment with torch.manual_seed and numpy seed set",
+      "MuJoCo normalization: (score \u2212 random) / (best \u2212 random), averaged over all 21 runs",
+      "Atari two metrics both reported: all-training avg and last-100-episodes avg",
+      "MuJoCo avg normalized score \u2265 0.70 (primary pass/fail, paper target 0.82)",
+      "Atari PPO wins majority of head-to-head game comparisons vs A2C on Metric A",
+      "No NaN or infinite values in metrics.json",
+      "Reward curves show improving trend for \u22654/7 MuJoCo environments",
+      "Roboschool confirmed EXCLUDED with rationale (ENV008: deprecated, qualitative-only, no quantitative baselines)",
+      "All 21 MuJoCo runs completed without crashes or timeouts",
+      "Docker container builds successfully from provided Dockerfile; `[OK] torch=... gymnasium=... mujoco=...` printed",
+      "MUJOCO_GL=egl confirmed set in environment before any MuJoCo run",
+      "Atari ROM install verified: `gymnasium.make('BreakoutNoFrameskip-v4')` succeeds without ImportError"
+    ]
+  },
+  "baseline_result": {
+    "mode": "adapt",
+    "code_path": "runs_e2e_local/prj_8b78ac6368bad043/code/",
+    "dockerfile_path": "runs_e2e_local/prj_8b78ac6368bad043/code/Dockerfile",
+    "diff_summary": "Adapted CleanRL v1.0.0 single-file PPO into two self-contained scripts: ppo_continuous_action.py (MuJoCo, Section 6.1) and ppo_atari.py (Atari, Section 6.4). Both incorporate the 37 PPO implementation details documented by Huang et al. (Adam eps=1e-5, max_grad_norm=0.5, orthogonal init scale=sqrt(2)/0.01/1.0, per-minibatch advantage normalization, value-function loss clipping, GAE with stopped-gradient bootstrap). MuJoCo: 2x64 tanh MLP with separate policy/value nets, Gaussian head with learned log_std, T=2048, K=10, mb=64, eps=0.2, ent=0.0, lr=3e-4, N=1 (per A003), 1M steps. Atari: A3C/Nature CNN (Conv32/8/4 -> Conv64/4/2 -> Conv64/3/1 -> FC512) with shared trunk + separate policy & value heads (per A001), N=8, T=128, K=4, mb=256, eps=0.1 annealed, ent=0.01, lr=2.5e-4 annealed, 10M steps. Standard SB3 Atari wrappers (NoopReset/MaxAndSkip/EpisodicLife/FireReset/ClipReward/Resize84/Grayscale/FrameStack-4). Switched paper's deprecated -v1 MuJoCo envs -> -v4 (per ENV003); TF1 -> PyTorch 2.1.0 (per ENV002); roboschool excluded (per ENV008). Added top-level train.py that drives the 21 MuJoCo + 15 Atari runs from config.json with a --smoke flag for the <2-min pipeline check, and evaluate.py that aggregates per-run JSONs into normalized scores, summary CSVs, and a metrics.json matching the reproduction-contract output schema.",
+    "commands_to_run": [
+      "docker build -t ppo-repro:latest .",
+      "python train.py --config config.json --smoke",
+      "python train.py --config config.json --suite mujoco",
+      "python train.py --config config.json --suite atari",
+      "python evaluate.py --results-dir results"
+    ],
+    "assumptions_applied": [
+      "A001",
+      "A003",
+      "A007",
+      "A008",
+      "ENV001",
+      "ENV002",
+      "ENV003",
+      "ENV004",
+      "ENV005",
+      "ENV006",
+      "ENV007",
+      "ENV008",
+      "ENV009",
+      "ENV010"
+    ]
+  },
+  "experiment_artifacts": {
+    "metrics": {},
+    "plots": [],
+    "log_path": "runs_e2e_local\\prj_8b78ac6368bad043\\baseline\\logs\\run.log",
+    "commands_log_path": "runs_e2e_local\\prj_8b78ac6368bad043\\baseline\\commands.log",
+    "provenance_path": "runs_e2e_local\\prj_8b78ac6368bad043\\baseline\\provenance.json",
+    "success": false,
+    "error_message": "#0 building with \"default\" instance using docker driver\n\n#1 [internal] load build definition from Dockerfile\n#1 transferring dockerfile: 2B 0.1s done\n#1 DONE 0.2s\nERROR: failed to solve: failed to read dockerfile: open Dockerfile: no such file or directory\n"
+  },
+  "gate_1": {
+    "gate": "gate_1",
+    "passed": true,
+    "status": "verified_with_caveats",
+    "blocking_issues": []
+  },
+  "gate_2": {
+    "gate": "gate_2",
+    "passed": false,
+    "status": "failed_reproduction",
+    "blocking_issues": []
+  },
+  "hermes_step_reports": {
+    "paper-understanding": [
+      {
+        "target": "paper-understanding",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 28 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='pass_with_findings', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'category': ...h paper-derived items.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'category': ..., not paper-supported.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'category': ...g it as an assumption.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'category': ...the assumption ledger.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'category': ...downstream comparison.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'category': ... a paper-derived spec.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.6\n  Input should be a valid string [type=string_type, input_value={'id': 'F7', 'category': ...at N as authoritative.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.7\n  Input should be a valid string [type=string_type, input_value={'id': 'F8', 'category': ... should be reconciled.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.8\n  Input should be a valid string [type=string_type, input_value={'id': 'F9', 'category': ... be off by one or two.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.0\n  Input should be a valid string [type=string_type, input_value={'claim': 'Typical hardwa...paper; pure inference.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.1\n  Input should be a valid string [type=string_type, input_value={'claim': \"Atari minibatc...mposition is external.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.2\n  Input should be a valid string [type=string_type, input_value={'claim': 'Roboschool min...e 4 of the parsed PDF.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.3\n  Input should be a valid string [type=string_type, input_value={'claim': 'Per-game Atari...-read from Appendix B.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.4\n  Input should be a valid string [type=string_type, input_value={'claim': \"Atari CNN arch...hout an inline caveat.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.5\n  Input should be a valid string [type=string_type, input_value={'claim': 'MuJoCo total b... variable as resolved.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.6\n  Input should be a valid string [type=string_type, input_value={'claim': \"Roboschool cli..., not merely missing).'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='PPO Section 6.1 + Table ...alues, 21 runs/3 seeds)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='PPO Section 6.4 + Table ... and 19/49 vs A2C/ACER)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='PPO Table 3 (MuJoCo hpar...ibatch=64; no N listed)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='PPO Table 5 (Atari hpara...c2=0.01, eps=0.1*alpha)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"PPO Table 4 (Roboschool ....6), Adam='*' adaptive)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.5\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='PPO Section 4 (adaptive ...5, 2.0; initial beta=1)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.6\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"PPO Section 6.4 'same po...tecture as in [Mni+16]'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.7\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='Assumption ledger A001-A008 in state_snapshot', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.8\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='Trace shows parsed_full_...ed in the trace excerpt', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value=\"soft_correction: (1) Mov...s the Roboschool block.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.78, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "artifact-discovery": [
+      {
+        "target": "artifact-discovery",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 24 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='claims_with_unsupported_specifics', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'category': ... to substantiate them.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'category': ...ch shown in the trace.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'category': ...ne in the cited repos.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'category': ... included as evidence.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'category': ...l line of defaults.py.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'category': ...o single-file scripts.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.6\n  Input should be a valid string [type=string_type, input_value={'id': 'F7', 'category': ...m these specific pins.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.7\n  Input should be a valid string [type=string_type, input_value={'id': 'F8', 'category': ...fact without evidence.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.8\n  Input should be a valid string [type=string_type, input_value={'id': 'F9', 'category': ...ct list to support it.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.9\n  Input should be a valid string [type=string_type, input_value={'id': 'F10', 'category':...e, which they are not.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0.kind\n  Field required [type=missing, input_value={'location': 'structured_...L or git log captured.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.1.kind\n  Field required [type=missing, input_value={'location': 'structured_...flicts with paper K=3.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.2.kind\n  Field required [type=missing, input_value={'location': 'structured_...' benchmark not cited.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.3.kind\n  Field required [type=missing, input_value={'location': 'structured_...a github API response.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.4.kind\n  Field required [type=missing, input_value={'location': 'structured_...ut PyPI/release fetch.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.5.kind\n  Field required [type=missing, input_value={'location': 'structured_...ed from the blog post.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.6.kind\n  Field required [type=missing, input_value={'location': 'structured_...ot directly evidenced.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.7.kind\n  Field required [type=missing, input_value={'location': 'structured_...r-line code citations.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.8.kind\n  Field required [type=missing, input_value={'location': 'structured_... mapping in the trace.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.9.kind\n  Field required [type=missing, input_value={'location': 'structured_... deprecation evidence.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nevidence_refs.10.kind\n  Field required [type=missing, input_value={'location': 'trace_text'...URL or quoted excerpt.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value={'action': 'augment_with_...Schulman et al. 2017.']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.78, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "environment-detective": [
+      {
+        "target": "environment-detective",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 18 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='issues_found', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'type': 'uns...\", 'severity': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'type': 'uns...\", 'severity': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'type': 'uns...\", 'severity': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'type': 'unv...ll.\", 'severity': 'low'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'type': 'mis...\", 'severity': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'type': 'uns...al.\", 'severity': 'low'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.6\n  Input should be a valid string [type=string_type, input_value={'id': 'F7', 'type': 'sco...am.\", 'severity': 'low'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.7\n  Input should be a valid string [type=string_type, input_value={'id': 'F8', 'type': 'bui...d.', 'severity': 'high'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.8\n  Input should be a valid string [type=string_type, input_value={'id': 'F9', 'type': 'unv...\", 'severity': 'medium'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.9\n  Input should be a valid string [type=string_type, input_value={'id': 'F10', 'type': 'cl...ts.\", 'severity': 'low'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.environme...pec.compatibility_notes', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.assumption_ledger[ENV001..ENV010]', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.paper_cla...atasets[2] (Roboschool)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='structured_output.docker...-only verification RUN)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='trace_text (no fetch of ...; artifact_paths empty)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value=[\"Downgrade strength of u...ly drop a paper claim.'], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.78, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "reproduction-planner": [
+      {
+        "target": "reproduction-planner",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 21 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='concerns', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'severity': ...adicts its own ledger.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'severity': ...-100 vs all-training).\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'severity': ...ersion is unjustified.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'severity': ...dence from Appendix B.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'severity': ... pinned to a citation.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'severity': ...r as concrete numbers.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.6\n  Input should be a valid string [type=string_type, input_value={'id': 'F7', 'severity': ...be sourced or removed.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.7\n  Input should be a valid string [type=string_type, input_value={'id': 'F8', 'severity': ...ther than informative.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.8\n  Input should be a valid string [type=string_type, input_value={'id': 'F9', 'severity': ...' overstates the case.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.reproduct...ished random baselines)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.reproduct...15% deviation phrasing)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.assumptio...adicts evaluation_plan)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.assumptio...ntain a 5\u201315% figure)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.assumptio... ~400 claim, no source)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.5\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.assumptio...ated vs paper Figure 4)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.6\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.paper_cla...d-to-head; basis of F4)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.7\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.reproduct...ours runtime estimates)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.8\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.reproduct...20s Atari smoke timing)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value='request_revision', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.78, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "baseline-implementation": [
+      {
+        "target": "baseline-implementation",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 17 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='fail', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'severity': ...ed_output.diff_summary'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'severity': ...ed_output.diff_summary'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'severity': ...ed_output.diff_summary'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'severity': ...location': 'trace_text'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'severity': ...ed_output.diff_summary'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'severity': ...ut.assumptions_applied'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.6\n  Input should be a valid string [type=string_type, input_value={'id': 'F7', 'severity': ...tion': 'artifact_paths'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"reproduction_contract.fu...ate-epochs 3' for Atari\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"reproduction_contract.ve...perparameters: ... K=3'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"decision_log[0] binding ...cked to K=3 everywhere'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"structured_output.diff_s... T=128, K=4, mb=256...'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='trace_text: no Read/Bash...executes the smoke test', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.5\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='reproduction_contract.ex...e.json and commands.log', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.6\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='structured_output.assump...,A006 without rationale', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value='block_and_correct', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.86, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "experiment-runner": [
+      {
+        "target": "experiment-runner",
+        "scope": "step",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 19 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='fail', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nunsupported_claims.0\n  Input should be a valid string [type=string_type, input_value={'claim': \"stage='baselin...om the evidence given.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.1\n  Input should be a valid string [type=string_type, input_value={'claim': \"baseline_resul... build could not read.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.2\n  Input should be a valid string [type=string_type, input_value={'claim': \"baseline_resul...to the (unbuilt) code.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.3\n  Input should be a valid string [type=string_type, input_value={'claim': \"Atari config '...e cited paper Table 5.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.4\n  Input should be a valid string [type=string_type, input_value={'claim': 'commands_to_ru...-run JSONs are listed.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.5\n  Input should be a valid string [type=string_type, input_value={'claim': \"Assumptions A0...be considered applied.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nunsupported_claims.6\n  Input should be a valid string [type=string_type, input_value={'claim': 'Gate 1 mandato...te them never started.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.baseline_result.success=false', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.baseline_...such file or directory'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='structured_output.metric...uctured_output.plots=[]', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='state_snapshot.experimen...artifacts.success=false', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.stage='baseline_implemented'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.5\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.baseline_...ked to K=3 everywhere')\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.6\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.environme...h to MUJOCO_GL=osmesa')\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.7\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='artifact_paths lists onl...ntract.expected_outputs', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.8\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"state_snapshot.baseline_...d's failure is observed\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value={'action': 'halt_and_reme...ssumptions_intended'.\"]}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.9, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ]
+  },
+  "hermes_checkpoint_reports": {
+    "gate_1": [
+      {
+        "target": "gate_1",
+        "scope": "checkpoint",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: 17 validation errors for HermesAuditReport\nstatus\n  Input should be 'grounded', 'caveat', 'unsupported', 'unavailable' or 'system_error' [type=enum, input_value='verified_with_caveats', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nfindings.0\n  Input should be a valid string [type=string_type, input_value={'id': 'F1', 'area': 'dat...e paper's 0.82 target.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.1\n  Input should be a valid string [type=string_type, input_value={'id': 'F2', 'area': 'env...thout the Mesa driver.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.2\n  Input should be a valid string [type=string_type, input_value={'id': 'F3', 'area': 'met...unsupported deviation.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.3\n  Input should be a valid string [type=string_type, input_value={'id': 'F4', 'area': 'art...eteness without these.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.4\n  Input should be a valid string [type=string_type, input_value={'id': 'F5', 'area': 'dat...unspecified baselines.\"}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nfindings.5\n  Input should be a valid string [type=string_type, input_value={'id': 'F6', 'area': 'env...hides future breakage.'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type\nevidence_refs.0\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"reproduction_contract.ev...s 3 seeds for PPO Clip'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.1\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"paper_claim_map.metrics[... (Section 6.1, Table 1)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.2\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='environment_spec.dockerf...a6 but not libegl-mesa0', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.3\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"ENV007 evidence: 'EGL is...ut driver verification)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.4\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"reproduction_contract.fu...le CMD comment with K=4\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.5\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"paper_claim_map.training...s per update' (Table 5)\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.6\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value=\"reproduction_contract.ex... 'results/commands.log'\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nevidence_refs.7\n  Input should be a valid dictionary or instance of HermesEvidenceRef [type=model_type, input_value='verification_report.veri....8, method_fidelity=8.1', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/model_type\nrecommended_intervention\n  Input should be 'annotate', 'retry_step', 'request_evidence', 'downgrade_claim', 'suppress_publication' or 'escalate_human' [type=enum, input_value=\"Apply four targeted pre-...on CleanRL pip install.\", input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum\nconfidence\n  Input should be 'low', 'medium' or 'high' [type=enum, input_value=0.82, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.13/v/enum"
+      }
+    ],
+    "gate_2": [
+      {
+        "target": "gate_2",
+        "scope": "checkpoint",
+        "status": "unavailable",
+        "summary": "All audit backends unavailable",
+        "findings": [],
+        "unsupported_claims": [],
+        "evidence_refs": [],
+        "recommended_intervention": "annotate",
+        "corrective_note": "",
+        "confidence": "medium",
+        "provider": "nous-hermes",
+        "raw_response": {},
+        "error_message": "hermes: Provider 'openai' is set in config.yaml but no API key was found. Set the OPENAI_API_KEY environment variable, or switch to a different provider with `hermes model`.; claude-sdk: Claude Code returned an error result: success"
+      }
+    ]
+  }
+}

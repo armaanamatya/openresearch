@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class HermesAuditScope(str, enum.Enum):
@@ -52,6 +52,23 @@ class HermesAuditReport(BaseModel):
     summary: str = ""
     findings: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
+
+    @field_validator("findings", "unsupported_claims", mode="before")
+    @classmethod
+    def _coerce_str_list(cls, v: Any) -> list[str]:
+        """LLMs sometimes return dicts like {'claim': '...'} instead of plain strings."""
+        if not isinstance(v, list):
+            return v
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                out.append(item.get("claim") or item.get("description") or str(item))
+            else:
+                out.append(str(item))
+        return out
+
     evidence_refs: list[HermesEvidenceRef] = Field(default_factory=list)
     recommended_intervention: HermesInterventionType = HermesInterventionType.annotate
     corrective_note: str = ""

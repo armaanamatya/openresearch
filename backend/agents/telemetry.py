@@ -22,6 +22,7 @@ class AgentInvocationRecord(BaseModel):
     output_chars: int
     success: bool
     error_message: str = ""
+    tool_calls: list[str] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
     provider: str = ""
     attempt_index: int = 0

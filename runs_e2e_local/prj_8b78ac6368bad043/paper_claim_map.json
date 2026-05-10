@@ -1,0 +1,165 @@
+{
+  "core_contribution": "Proximal Policy Optimization (PPO) introduces a clipped surrogate objective (L^CLIP) that enables multiple epochs of minibatch SGD updates per data sample in policy gradient RL, achieving TRPO-level stability and reliability with first-order optimization only, while being simpler to implement and more general.",
+  "claims": [
+    {
+      "method": "PPO with clipped surrogate objective (epsilon=0.2)",
+      "dataset": "7 MuJoCo continuous control tasks (HalfCheetah, Hopper, InvertedDoublePendulum, InvertedPendulum, Reacher, Swimmer, Walker2d, all -v1) via OpenAI Gym",
+      "metric": "Average normalized score across all 7 environments and 3 seeds (21 runs), normalized so random=0 and best=1",
+      "expected_result": "0.82 average normalized score, best among all variants tested including TRPO, CEM, A2C, A2C+Trust Region, Vanilla PG with adaptive stepsize"
+    },
+    {
+      "method": "PPO with clipped surrogate objective vs A2C and ACER",
+      "dataset": "49 Atari games from Arcade Learning Environment (ALE), trained for 40M game frames (10M timesteps)",
+      "metric": "Number of games 'won' by average episode reward over all of training across 3 trials",
+      "expected_result": "PPO wins 30/49 games vs A2C winning 1 and ACER winning 18"
+    },
+    {
+      "method": "PPO with clipped surrogate objective vs A2C and ACER",
+      "dataset": "49 Atari games from Arcade Learning Environment (ALE), trained for 40M game frames (10M timesteps)",
+      "metric": "Number of games 'won' by average episode reward over last 100 episodes across 3 trials",
+      "expected_result": "PPO wins 19/49 games vs A2C winning 1, ACER winning 28, and 1 tie"
+    },
+    {
+      "method": "PPO clipped surrogate, no clipping or penalty, adaptive KL, fixed KL variants",
+      "dataset": "7 MuJoCo tasks (1M timesteps each), 3 seeds, 21 runs total",
+      "metric": "Average normalized score (random=0, best=1)",
+      "expected_result": "Clipping epsilon=0.2 achieves 0.82; No clipping/penalty: -0.39; Clipping epsilon=0.1: 0.76; Clipping epsilon=0.3: 0.70; Adaptive KL dtarg=0.01: 0.74; best fixed KL (beta=3): 0.72"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "OpenAI Gym MuJoCo continuous control tasks",
+      "source": "OpenAI Gym [Brockman et al. 2016], MuJoCo physics engine [Todorov et al. 2012]",
+      "download_method": "pip install gym mujoco-py; requires MuJoCo license",
+      "size_estimate": "7 environments: HalfCheetah-v1, Hopper-v1, InvertedDoublePendulum-v1, InvertedPendulum-v1, Reacher-v1, Swimmer-v1, Walker2d-v1; 1M timesteps each",
+      "notes": "Section 6.1 footnote 2 lists the 7 tasks. All use '-v1' suffix. Environments are simulated so no download of data, only simulator."
+    },
+    {
+      "name": "Arcade Learning Environment (ALE) / Atari",
+      "source": "Bellemare et al. 2015, available via OpenAI Gym",
+      "download_method": "pip install gym[atari] ale-py; ROM files required separately",
+      "size_estimate": "49 Atari games; 40M game frames (10M timesteps) per run; 3 seeds",
+      "notes": "Section 6.4. Same 49 games included in OpenAI Gym at time of publication. Full per-game results in Appendix B Table 6."
+    },
+    {
+      "name": "Roboschool 3D Humanoid tasks",
+      "source": "OpenAI Roboschool (open-source, PyBullet-based)",
+      "download_method": "pip install roboschool (now deprecated; use pybullet-based alternatives or PyBullet gym)",
+      "size_estimate": "3 environments: RoboschoolHumanoid-v0 (up to 50M steps), RoboschoolHumanoidFlagrun-v0 (up to 100M steps), RoboschoolHumanoidFlagrunHarder-v0 (up to 100M steps)",
+      "notes": "Section 6.3. Flagrun: target position randomly varied every 200 timesteps or on goal reach. Harder variant: robot pelted by cubes and must get up."
+    }
+  ],
+  "metrics": [
+    {
+      "name": "Average normalized score",
+      "definition": "For each environment, compute the average total reward of the last 100 episodes. Shift and scale so that random policy = 0 and best result across all tested algorithms = 1. Then average over all 7 environments and 3 seeds (21 runs total) to get a single scalar per algorithm setting.",
+      "target_value": "0.82 for PPO Clip epsilon=0.2 (best among all variants)",
+      "source_section": "Section 6.1, Table 1"
+    },
+    {
+      "name": "Games won count (avg episode reward over all training)",
+      "definition": "For each of 49 Atari games, compute avg episode reward over the entire training run. Average across 3 trials. Declare victor as the algorithm with highest average. Count total games won per algorithm.",
+      "target_value": "PPO: 30, ACER: 18, A2C: 1, Tie: 0 out of 49 games",
+      "source_section": "Section 6.4, Table 2"
+    },
+    {
+      "name": "Games won count (avg episode reward over last 100 episodes)",
+      "definition": "For each of 49 Atari games, compute avg episode reward over last 100 episodes of training. Average across 3 trials. Declare victor as algorithm with highest average. Count total games won per algorithm.",
+      "target_value": "PPO: 19, ACER: 28, A2C: 1, Tie: 1 out of 49 games",
+      "source_section": "Section 6.4, Table 2"
+    },
+    {
+      "name": "Mean final score per Atari game",
+      "definition": "Average episode reward over last 100 episodes of training at 40M game frames (10M timesteps), averaged across 3 random seeds",
+      "target_value": "Per-game results in Appendix B Table 6 (e.g., Alien: 1850.3, Assault: 4971.9, Atlantis: 2311815.0)",
+      "source_section": "Appendix B, Table 6"
+    }
+  ],
+  "model_architecture": "MuJoCo experiments: Fully-connected MLP with 2 hidden layers of 64 units each, tanh nonlinearities, outputs the mean of a Gaussian distribution with variable (learned) standard deviations. Policy and value function do NOT share parameters. No entropy bonus. (Section 6.1, following Schulman et al. 2015b and Duan et al. 2016). Atari experiments: Same convolutional policy network architecture as used in Mnih et al. 2016 (A3C paper) - a CNN with shared policy and value function head. (Section 6.4). Roboschool humanoid: Architecture not specified in the paper beyond use of the combined LCLIP+VF+S objective with shared parameters (implied by Table 4 having VF and entropy coefficients).",
+  "training_recipe": {
+    "optimizer": "Adam [Kingma & Ba 2014] (stochastic gradient ascent on surrogate objective)",
+    "learning_rate": "MuJoCo: 3e-4 (Table 3); Atari: 2.5e-4 * alpha where alpha linearly annealed from 1 to 0 (Table 5); Roboschool: adaptive based on KL divergence target (Table 4, marked as '*')",
+    "batch_size": "MuJoCo: minibatch size 64, total batch N*T (N actors * T=2048 timesteps); Atari: minibatch size 32*8=256, N=8 actors, T=128 timesteps, total batch 1024; Roboschool: minibatch size 4096, T=512, N=32 (locomotion) or 128 (flagrun)",
+    "epochs_or_steps": "MuJoCo: K=10 epochs per update, 1M total timesteps per environment; Atari: K=3 epochs per update, 40M game frames (10M timesteps) total; Roboschool: K=15 epochs per update, up to 50M (Humanoid) or 100M timesteps (Flagrun variants)",
+    "scheduler": "Atari: linear annealing of learning rate and clipping epsilon via alpha from 1 to 0 over course of training (Table 5). Roboschool: no explicit scheduler for LR; action distribution log-std linearly annealed from -0.7 to -1.6 (Table 4).",
+    "other_hparams": {
+      "horizon_T": "MuJoCo: 2048; Atari: 128; Roboschool: 512",
+      "discount_gamma": "0.99 (all experiments)",
+      "gae_lambda": "0.95 (all experiments)",
+      "clip_epsilon": "MuJoCo: 0.2 (best); Atari: 0.1*alpha (annealed); Roboschool: not specified (adaptive KL variant may have been used)",
+      "vf_coefficient_c1": "Atari: 1 (Table 5); MuJoCo: irrelevant (no shared parameters, Section 6.1)",
+      "entropy_coefficient_c2": "Atari: 0.01 (Table 5); MuJoCo: 0 (no entropy bonus, Section 6.1)",
+      "num_actors_N": "MuJoCo: not specified in Table 3; Atari: 8 (Table 5); Roboschool: 32 locomotion / 128 flagrun (Table 4)",
+      "adaptive_kl_dtarg": "Used in Roboschool experiments (Table 4 footnote); tested values in ablation: 0.003, 0.01, 0.03 (Table 1)",
+      "adaptive_kl_adjustment_factors": "1.5 and 2.0 (Section 4); if d < dtarg/1.5 then beta /= 2; if d > dtarg*1.5 then beta *= 2",
+      "initial_beta_for_kl_penalty": "1 (Table 1 caption)",
+      "roboschool_action_log_std_anneal": "LinearAnneal(-0.7, -1.6) (Table 4)"
+    }
+  },
+  "evaluation_protocol": "MuJoCo (Section 6.1): Run each algorithm on all 7 environments with 3 random seeds each (21 runs total per algorithm setting). Score each run as avg total reward of last 100 episodes. Normalize per-environment scores so random policy=0 and best algorithm=1. Average normalized scores over all 21 runs to get a single scalar. Atari (Section 6.4): Run 3 trials per algorithm, train for 40M game frames (10M timesteps). Report two metrics: (1) avg episode reward over entire training, (2) avg episode reward over last 100 episodes. For each metric and game, declare winner as algorithm with highest avg across 3 trials. Count total games won. Roboschool (Section 6.3): Qualitative showcase, learning curves shown in Figure 4, no quantitative comparison to baselines.",
+  "hardware_clues": [
+    "No explicit GPU type, memory usage, or training time mentioned in the paper.",
+    "Roboschool experiments use up to 128 parallel actors (Table 4), implying large-scale parallel CPU rollout.",
+    "Atari uses 8 parallel actors (Table 4), consistent with multi-core CPU data collection.",
+    "Paper published 2017 at OpenAI; typical hardware of that era was NVIDIA GTX 1080 Ti or Tesla K80/P100.",
+    "Wall-time is mentioned as a metric to optimize (Abstract) but no specific numbers given."
+  ],
+  "ambiguities": [
+    {
+      "assumption_id": "A001",
+      "detail": "Atari CNN architecture is not described in this paper. Section 6.4 says 'same policy network architecture as used in Mnih et al. 2016 (A3C paper)'. The actual architecture must be sourced from A3C: 3 conv layers (32 filters 8x8 stride 4, 64 filters 4x4 stride 2, 64 filters 3x3 stride 1), followed by FC 512, then separate policy (softmax) and value heads.",
+      "chosen_value": "A3C CNN: Conv(32, 8x8, s4) -> Conv(64, 4x4, s2) -> Conv(64, 3x3, s1) -> FC(512) -> policy head + value head (shared parameters)",
+      "evidence": ["Section 6.4: 'we used the same policy network architecture as used in [Mni+16]'", "Mnih et al. 2016 (A3C paper) describes the CNN architecture"],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A002",
+      "detail": "Roboschool Adam stepsize is listed as '*' in Table 4 with a footnote saying 'Adam stepsize was adjusted based on the target value of the KL divergence.' The specific initial value, target KL (dtarg), and adjustment rule are not given.",
+      "chosen_value": "Use adaptive KL scheme from Section 4 with dtarg around 0.01 (best value from Table 1 ablation). Initial beta=1. Initial Adam stepsize unknown; a reasonable default is 3e-4 (same as MuJoCo).",
+      "evidence": ["Table 4 footnote: 'Adam stepsize was adjusted based on the target value of the KL divergence'", "Section 4 describes the adaptive KL penalty algorithm"],
+      "risk": "high"
+    },
+    {
+      "assumption_id": "A003",
+      "detail": "Number of parallel actors N for the MuJoCo 1M timestep benchmark is not specified in Table 3 or Section 6.1. The paper only gives T=2048, K=10, M=64.",
+      "chosen_value": "N=1 (single actor) is the most common default for MuJoCo experiments at this scale. Some implementations use N=1 with T=2048 giving batch of 2048 per update.",
+      "evidence": ["Table 3 does not list 'Number of actors'", "Algorithm 1 box shows N actors as a generic parameter", "Atari Table 5 and Roboschool Table 4 both explicitly list N, while Table 3 does not"],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A004",
+      "detail": "The value function coefficient c1 and entropy coefficient c2 (from the combined objective L^{CLIP+VF+S}) for MuJoCo experiments are not specified because the paper states parameters are not shared and no entropy bonus is used. However, whether value function is trained with the same optimizer/LR is not stated.",
+      "chosen_value": "c1=0 (no shared parameters so VF loss coefficient irrelevant), c2=0 (no entropy bonus). Value function trained separately with same Adam optimizer and LR=3e-4.",
+      "evidence": ["Section 6.1: 'We don't share parameters between the policy and value function (so coefficient c1 is irrelevant), and we don't use an entropy bonus'"],
+      "risk": "low"
+    },
+    {
+      "assumption_id": "A005",
+      "detail": "The number of epochs K=10 for MuJoCo applies to both policy and value function, but the paper does not clarify whether value function uses the same K or a different number of update steps.",
+      "chosen_value": "Same K=10 epochs for value function updates, using minibatch SGD with size M=64, consistent with standard PPO implementations.",
+      "evidence": ["Algorithm 1 box: 'Optimize surrogate L wrt theta, with K epochs and minibatch size M <= NT'", "Equation 9 combines policy and value objectives into a single loss L^{CLIP+VF+S}"],
+      "risk": "low"
+    },
+    {
+      "assumption_id": "A006",
+      "detail": "The Roboschool experiments specify 'LinearAnneal(-0.7, -1.6)' for log standard deviation of the action distribution, but the schedule (linear over total timesteps? over epochs?) is not specified.",
+      "chosen_value": "Linear annealing over total training timesteps (from start to end of training), from log_std=-0.7 to log_std=-1.6, matching alpha-style annealing.",
+      "evidence": ["Table 4: 'Log stdev. of action distribution: LinearAnneal(-0.7, -1.6)'"],
+      "risk": "medium"
+    },
+    {
+      "assumption_id": "A007",
+      "detail": "MuJoCo experiments used 1 million timesteps total but it is unclear if this is per seed or across seeds. Also, whether 1M includes all 7 environments or is per environment.",
+      "chosen_value": "1 million timesteps per environment per seed (21 total training runs: 7 envs x 3 seeds). This is the standard interpretation and consistent with Figure 3 x-axis showing 0 to 1,000,000.",
+      "evidence": ["Section 6.1: 'We do one million timesteps of training on each one'", "Figure 3 x-axis: '0 to 1000000'"],
+      "risk": "low"
+    },
+    {
+      "assumption_id": "A008",
+      "detail": "The generalized advantage estimation (GAE) truncation: the paper uses truncated GAE with lambda=0.95, but does not specify whether the value bootstrap at step T uses a stopped gradient or not.",
+      "chosen_value": "Value at terminal step V(s_T) uses stopped gradient (no backprop through bootstrap), which is standard practice in actor-critic implementations.",
+      "evidence": ["Equations 10-12 describe the advantage estimator; no mention of gradient stopping"],
+      "risk": "low"
+    }
+  ]
+}

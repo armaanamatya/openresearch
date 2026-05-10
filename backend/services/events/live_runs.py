@@ -36,6 +36,19 @@ class StartRunRequest(BaseModel):
     gpuMode: GpuMode = "auto"
 
 
+class TelemetryRecordPublic(BaseModel):
+    agent_id: str | None = None
+    model: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_seconds: float | None = None
+    message_count: int | None = None
+    output_chars: int | None = None
+    success: bool | None = None
+    error_message: str | None = None
+    tool_calls: list[str] = Field(default_factory=list)
+
+
 class LiveRunState(BaseModel):
     projectId: str
     outputDir: str
@@ -56,6 +69,7 @@ class LiveRunState(BaseModel):
     pid: int | None = None
     payload: Any | None = None
     log: str = ""
+    telemetry: list[TelemetryRecordPublic] = Field(default_factory=list)
 
 
 def sse_event(event: str, data: Any, *, event_id: str | None = None) -> str:
@@ -205,6 +219,13 @@ class FileLiveRunService:
 
         stderr = (output_dir / "runner.stderr.log").open("a", encoding="utf-8")
         stdout = (output_dir / "runner.stdout.log").open("a", encoding="utf-8")
+        # On Windows, detach the child from the parent's process group so its
+        # lifecycle doesn't trigger uvicorn's shutdown handler.
+        creation_flags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            if sys.platform == "win32"
+            else 0
+        )
         try:
             process = subprocess.Popen(
                 [
@@ -222,6 +243,7 @@ class FileLiveRunService:
                 stdout=stdout,
                 stderr=stderr,
                 stdin=subprocess.DEVNULL,
+                creationflags=creation_flags,
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,
@@ -256,6 +278,7 @@ class FileLiveRunService:
             self._write_status(project_id, status)
         status.setdefault("payload", None)
         status["log"] = self._read_log(project_id)
+        status["telemetry"] = self._read_telemetry(project_id)
         return LiveRunState(**status)
 
     def _latest_run(
@@ -303,6 +326,37 @@ class FileLiveRunService:
             json.dumps(status, indent=2),
             encoding="utf-8",
         )
+
+    def _read_telemetry(self, project_id: str, max_records: int = 50) -> list[TelemetryRecordPublic]:
+        path = self.runs_root / project_id / "agent_telemetry.jsonl"
+        if not path.exists():
+            return []
+        records: list[TelemetryRecordPublic] = []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines[-max_records:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    records.append(TelemetryRecordPublic(
+                        agent_id=data.get("agent_id"),
+                        model=data.get("model"),
+                        started_at=data.get("started_at"),
+                        finished_at=data.get("finished_at"),
+                        duration_seconds=data.get("duration_seconds"),
+                        message_count=data.get("message_count"),
+                        output_chars=data.get("output_chars"),
+                        success=data.get("success"),
+                        error_message=data.get("error_message") or None,
+                        tool_calls=data.get("tool_calls", []),
+                    ))
+                except (json.JSONDecodeError, Exception):
+                    continue
+        except OSError:
+            pass
+        return records
 
     def _read_log(self, project_id: str, max_chars: int = 12000) -> str:
         path = self.runs_root / project_id / "runner.stderr.log"

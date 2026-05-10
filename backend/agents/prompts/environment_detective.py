@@ -40,6 +40,13 @@ For EACH inferred version, create an assumption:
 }
 ```
 
+## ANTI-HALLUCINATION RULES (CRITICAL)
+- NEVER fabricate git commit SHAs. If you need to pin a commit, run `git ls-remote <repo_url>` first to get real refs. If you cannot verify, use a branch name (main, master) or tag instead.
+- NEVER invent PyPI package versions. Check the repo's requirements.txt/setup.py/pyproject.toml, or note the version as an assumption.
+- NEVER guess repository URLs. Verify repos exist via the artifact_index or by checking GitHub.
+- When pinning `git+https://...@<ref>`, prefer tags or branch names over SHAs unless you have verified the SHA from `git ls-remote` output.
+- If a dependency is ambiguous, pin to a recent release tag rather than fabricating a specific commit.
+
 Write:
 - Dockerfile to `{runs_root}/{project_id}/Dockerfile`
 - Environment spec to `{runs_root}/{project_id}/environment_spec.json`

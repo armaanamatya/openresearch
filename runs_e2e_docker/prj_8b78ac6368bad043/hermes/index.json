@@ -1,0 +1,8 @@
+{
+  "step:paper-understanding": {
+    "path": "runs_e2e_docker\\prj_8b78ac6368bad043\\hermes\\step-paper-understanding.json",
+    "status": "unavailable",
+    "recommended_intervention": "annotate",
+    "summary": "All audit backends unavailable"
+  }
+}
