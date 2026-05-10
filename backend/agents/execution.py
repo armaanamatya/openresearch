@@ -163,6 +163,15 @@ def resolve_sandbox_mode(
     return SandboxMode.docker
 
 
+def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
+    """Fail fast when a selected sandbox backend is unavailable locally."""
+    resolved = SandboxMode(mode)
+    if resolved is SandboxMode.docker:
+        from backend.services.runtime import ensure_local_docker_available
+
+        ensure_local_docker_available()
+
+
 def _gpu_environment(mode: GpuMode) -> dict[str, str]:
     env = {"REPROLAB_GPU_MODE": mode.value}
     if mode is GpuMode.off:
@@ -177,5 +186,6 @@ __all__ = [
     "ExecutionProfile",
     "GpuMode",
     "SandboxMode",
+    "ensure_sandbox_mode_available",
     "resolve_sandbox_mode",
 ]
