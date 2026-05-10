@@ -331,6 +331,9 @@ _REPRODUCE_DEFAULTS = {
     "sandbox_platform": None,
     "sandbox_memory": None,
     "sandbox_cpus": None,
+    "max_usd": None,
+    "max_wall_clock": None,
+    "max_invocations": None,
     "seed": None,
     "attempt_id": None,
     "run_group_id": None,
@@ -438,6 +441,15 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         sandbox_platform=args.sandbox_platform,
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
+    run_budget = None
+    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations:
+        from backend.agents.resilience import RunBudget
+
+        run_budget = RunBudget(
+            max_usd=args.max_usd,
+            max_wall_clock_seconds=args.max_wall_clock,
+            max_invocations_per_agent=_max_invocations_from_arg(args.max_invocations),
+        )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode=args.mode)
     print(
         f"Execution profile: {execution_profile.mode.value}; sandbox: {sandbox_mode.value}",
@@ -478,6 +490,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 user_hints=user_hints,
                 n_improvement_paths=args.n_paths,
                 execution_profile=execution_profile,
+                run_budget=run_budget,
                 sandbox_mode=sandbox_mode,
                 seed=args.seed,
                 attempt_id=args.attempt_id,
@@ -486,6 +499,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_service=workspace,
                 workspace_id=workspace_id,
             ))
+    except Exception as exc:
+        from backend.agents.resilience import BudgetExhausted
+
+        if isinstance(exc, BudgetExhausted):
+            print(f"Pipeline budget exhausted: {exc}", file=sys.stderr)
+            return 3
+        raise
     finally:
         store.close()
 
@@ -632,6 +652,26 @@ def main(argv: list[str] | None = None) -> int:
         help="Docker CPU limit override.",
     )
     reproduce.add_argument(
+        "--max-usd",
+        type=float,
+        default=None,
+        help="Maximum estimated provider spend before blocking the next SDK invocation.",
+    )
+    reproduce.add_argument(
+        "--max-wall-clock",
+        type=float,
+        default=None,
+        help="Maximum whole-run wall-clock seconds before blocking the next SDK invocation.",
+    )
+    reproduce.add_argument(
+        "--max-invocations",
+        default=None,
+        help=(
+            "Comma-separated per-agent invocation caps, e.g. "
+            "paper-understanding=3,artifact-discovery=5."
+        ),
+    )
+    reproduce.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -691,6 +731,24 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _max_invocations_from_arg(raw: str | None) -> dict[str, int]:
+    if not raw:
+        return {}
+    caps: dict[str, int] = {}
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                "--max-invocations entries must be agent_id=count, "
+                f"got {item!r}"
+            )
+        name, value = item.split("=", 1)
+        caps[name.strip()] = int(value)
+    return caps
 
 
 if __name__ == "__main__":

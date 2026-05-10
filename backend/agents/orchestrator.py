@@ -13,13 +13,12 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import enum
 import json
 import logging
 import sys
-import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,16 +30,17 @@ from backend.agents.execution import (
     resolve_sandbox_mode,
 )
 from backend.agents.runtime import (
-    AgentLimitExceeded,
     AgentRuntime,
     AgentRuntimeSpec,
     ProviderName,
     RuntimeGuard,
-    RuntimeGuardViolation,
-    StreamText,
-    StreamToolCall,
-    StreamUsage,
     make_runtime,
+)
+from backend.agents.resilience import ProviderHealthMonitor, RunBudget, RunCostLedger
+from backend.agents.resilience.engine import (
+    RuntimeKwargs,
+    default_recovery_policy,
+    run_agent_with_resilience,
 )
 from backend.agents.schemas import (
     AgentOutput,
@@ -58,10 +58,7 @@ from backend.agents.schemas import (
 )
 from backend.agents.structured_output import append_structured_output_instruction
 from backend.agents.telemetry import (
-    AgentInvocationRecord,
     AgentTelemetryRecorder,
-    coerce_usage,
-    utc_now_iso,
 )
 from backend.hermes_audit import (
     HermesAuditReport,
@@ -78,29 +75,6 @@ from backend.schemas.citations import Citation
 
 logger = logging.getLogger(__name__)
 
-# Matches the Claude Code CLI / Agent SDK error returned when its turn cap
-# fires, e.g. "Claude Code returned an error result: Reached maximum number
-# of turns (15)". We extract the integer so the orchestrator can re-raise
-# it as a typed AgentLimitExceeded rather than leaving callers to string-match.
-import re  # local import to keep the standard-library import block above tidy
-
-_TURN_LIMIT_RE = re.compile(r"maximum number of turns\s*\((\d+)\)", re.IGNORECASE)
-
-
-class _NullAsyncContext:
-    """No-op async context manager used when the wall-clock cap is disabled.
-
-    Lets the orchestrator unconditionally write ``async with timeout_ctx:``
-    without branching on whether agent_wall_clock_seconds is None.
-    """
-
-    async def __aenter__(self) -> "_NullAsyncContext":
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
-
-
 @dataclass
 class AgentExecutionTrace:
     """Trace metadata captured for one agent invocation."""
@@ -110,15 +84,6 @@ class AgentExecutionTrace:
     trace_text: str
     tool_calls: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
-
-
-def _looks_like_claude_limit_failure(exc: Exception, observed_text: str = "") -> bool:
-    haystack = f"{type(exc).__name__}: {exc}\n{observed_text}".lower()
-    return (
-        "you've hit your limit" in haystack
-        or "you have hit your limit" in haystack
-        or "claude code returned an error result: success" in haystack
-    )
 
 
 class PipelineStage(str, enum.Enum):
@@ -300,6 +265,7 @@ class ReproLabOrchestrator:
         verification_runtime: AgentRuntime | None = None,
         claude_limit_fallback_runtime: AgentRuntime | None = None,
         execution_profile: ExecutionProfile | None = None,
+        run_budget: RunBudget | None = None,
         sandbox_mode: SandboxMode | str = SandboxMode.docker,
         hermes_audit_service: HermesAuditService | None = None,
         seed: int | None = None,
@@ -337,12 +303,26 @@ class ReproLabOrchestrator:
             verification_runtime
             or (make_runtime(verification_provider) if verification_provider else self._runtime)
         )
-        self._claude_limit_fallback_runtime = claude_limit_fallback_runtime
+        self._fallback_runtimes: dict[ProviderName, AgentRuntime] = {}
+        if claude_limit_fallback_runtime is not None:
+            self._fallback_runtimes[
+                claude_limit_fallback_runtime.provider_name
+            ] = claude_limit_fallback_runtime
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
         self._telemetry = AgentTelemetryRecorder(
             self._project_dir / "agent_telemetry.jsonl"
         )
+        ledger_path = self._project_dir / "cost_ledger.jsonl"
+        self._cost_ledger = RunCostLedger.load_jsonl(
+            ledger_path,
+            project_id=project_id,
+            attach_path=True,
+        )
+        self._run_budget = run_budget or RunBudget()
+        self._provider_health = ProviderHealthMonitor()
+        self._pipeline_started_at = datetime.now(timezone.utc)
+        self._fallback_summary_path = self._project_dir / "fallback_summary.json"
         self._latest_agent_traces: dict[str, AgentExecutionTrace] = {}
         self._hermes_audit_service = hermes_audit_service or HermesAuditService(
             client=NousHermesClient(runs_root=self.runs_root),
@@ -407,20 +387,13 @@ class ReproLabOrchestrator:
         _structured_prompt: bool = False,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
-        runtime = _runtime_override or self._runtime_for_agent(agent_id)
-        # Implementation agents get more turns (they write code)
+        primary_runtime = _runtime_override or self._runtime_for_agent(agent_id)
         if max_turns is None:
             max_turns = (
                 self.heavy_agent_max_turns
                 if agent_id in self._HEAVY_AGENTS
                 else self.max_turns_per_agent
             )
-        runtime_spec = self._build_runtime_spec(
-            agent_id,
-            runtime=runtime,
-            cwd=cwd,
-            max_turns=max_turns,
-        )
 
         task_prompt = self._append_run_controls(task_prompt)
         if not _structured_prompt:
@@ -429,153 +402,52 @@ class ReproLabOrchestrator:
                 self._OUTPUT_MODELS.get(agent_id),
             )
 
-        collected_text: list[str] = []
-        started_at = utc_now_iso()
-        trace_lines: list[str] = []
-        tool_calls: list[str] = []
-        t0 = time.time()
-        msg_count = 0
-        success = True
-        error_message = ""
-        usage: dict[str, Any] = {}
-        tool_call_count = 0
-        fallback_runtime: AgentRuntime | None = None
-        print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
+        cwd_path = Path(cwd or self._project_dir)
+        chain = self._provider_chain(primary_runtime.provider_name)
+        policy = default_recovery_policy(chain=chain, health=self._provider_health)
 
-        wall_clock_seconds = self.execution_profile.agent_wall_clock_seconds
-        try:
-            # Wall-clock cap on the entire agent invocation. Catches stuck
-            # runs even when the SDK happily streams forever (e.g. infinite
-            # tool-call loop). asyncio.timeout requires Python 3.11+.
-            timeout_ctx = (
-                asyncio.timeout(wall_clock_seconds)
-                if wall_clock_seconds is not None
-                else _NullAsyncContext()
-            )
-            async with timeout_ctx:
-                async for event in runtime.run_agent(
-                    agent=runtime_spec,
-                    user_input=task_prompt,
-                ):
-                    elapsed = time.time() - t0
-                    msg_count += 1
-                    if isinstance(event, StreamText):
-                        collected_text.append(event.text)
-                        trace_lines.append(event.text)
-                        snippet = event.text[:120].replace("\n", " ").strip()
-                        if snippet:
-                            print(
-                                f"  [{agent_id}] ({elapsed:.0f}s) {snippet}...",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                    elif isinstance(event, StreamToolCall):
-                        tool_call_count += 1
-                        if (
-                            runtime_spec.guard.max_tool_calls is not None
-                            and tool_call_count > runtime_spec.guard.max_tool_calls
-                        ):
-                            raise AgentLimitExceeded(
-                                agent_id=agent_id,
-                                kind="tool_calls",
-                                limit_value=runtime_spec.guard.max_tool_calls,
-                                elapsed_seconds=elapsed,
-                                partial_output="".join(collected_text),
-                            )
-                        tool_info = event.tool_name
-                        inp = event.tool_input or {}
-                        if "file_path" in inp:
-                            tool_info += f" {inp['file_path']}"
-                        elif "command" in inp:
-                            cmd = str(inp["command"])[:80]
-                            tool_info += f" `{cmd}`"
-                        elif "pattern" in inp:
-                            tool_info += f" {inp['pattern']}"
-                        tool_calls.append(tool_info)
-                        trace_lines.append(f"tool: {tool_info}")
-                        print(
-                            f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                    elif isinstance(event, StreamUsage):
-                        usage = coerce_usage(event.as_dict())
-                        usage["provider"] = runtime.provider_name
-                        usage["model"] = runtime_spec.model
-                        print(
-                            f"  [{agent_id}] completed in {elapsed:.0f}s ({msg_count} events, {sum(len(t) for t in collected_text)} chars)",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-        except TimeoutError as exc:
-            # asyncio.timeout fired — wrap as a typed limit error.
-            raise AgentLimitExceeded(
-                agent_id=agent_id,
-                kind="wall_clock",
-                limit_value=wall_clock_seconds or 0,
-                elapsed_seconds=time.time() - t0,
-                partial_output="".join(collected_text),
-            ) from exc
-        except Exception as exc:
-            success = False
-            error_message = f"{type(exc).__name__}: {exc}"
-            usage.setdefault("provider", runtime.provider_name)
-            usage.setdefault("model", runtime_spec.model)
-            # Detect the SDK's "Reached maximum number of turns (N)" message
-            # and convert to a typed AgentLimitExceeded so callers can react
-            # programmatically instead of string-matching exception text.
-            if not isinstance(exc, AgentLimitExceeded):
-                limit_match = _TURN_LIMIT_RE.search(str(exc))
-                if limit_match:
-                    raise AgentLimitExceeded(
-                        agent_id=agent_id,
-                        kind="turns",
-                        limit_value=int(limit_match.group(1)),
-                        elapsed_seconds=time.time() - t0,
-                        partial_output="".join(collected_text),
-                    ) from exc
-            if _allow_claude_limit_fallback:
-                fallback_runtime = self._claude_limit_fallback_for(
-                    runtime,
-                    exc,
-                    "\n".join(trace_lines + collected_text),
-                )
-            if fallback_runtime is None:
-                raise
-            print(
-                f"  [{agent_id}] Claude limit detected; retrying with OpenAI...",
-                file=sys.stderr,
-                flush=True,
-            )
-        finally:
-            self._telemetry.append(
-                AgentInvocationRecord(
-                    agent_id=agent_id,
-                    model=runtime_spec.model,
-                    started_at=started_at,
-                    finished_at=utc_now_iso(),
-                    duration_seconds=time.time() - t0,
-                    message_count=msg_count,
-                    output_chars=sum(len(text) for text in collected_text),
-                    success=success,
-                    error_message=error_message,
-                    usage=usage,
-                )
-            )
-        if fallback_runtime is not None:
-            return await self._invoke_agent(
+        def runtime_for(provider: ProviderName) -> AgentRuntime:
+            return self._runtime_for_provider(provider, primary_runtime=primary_runtime)
+
+        def build_runtime_spec(
+            runtime: AgentRuntime,
+            attempt_max_turns: int | None,
+        ) -> AgentRuntimeSpec:
+            return self._build_runtime_spec(
                 agent_id,
-                task_prompt,
-                cwd=cwd,
-                max_turns=max_turns,
-                _runtime_override=fallback_runtime,
-                _allow_claude_limit_fallback=False,
-                _structured_prompt=True,
+                runtime=runtime,
+                cwd=cwd_path,
+                max_turns=attempt_max_turns,
             )
-        result = "\n".join(collected_text)
+
+        result_obj = await run_agent_with_resilience(
+            agent_id=agent_id,
+            base_prompt=task_prompt,
+            primary_provider=primary_runtime.provider_name,
+            runtime_for=runtime_for,
+            chain=chain,
+            policy=policy,
+            health=self._provider_health,
+            ledger=self._cost_ledger,
+            budget=self._run_budget,
+            runtime_kwargs=RuntimeKwargs(
+                cwd=cwd_path,
+                max_turns=max_turns,
+                wall_clock_seconds=self.execution_profile.agent_wall_clock_seconds,
+                build_runtime_spec=build_runtime_spec,
+                telemetry=self._telemetry,
+                run_started_at=self._pipeline_started_at,
+                salvage_validator=lambda text: self._partial_output_validates(
+                    agent_id,
+                    text,
+                ),
+                summary_path=self._fallback_summary_path,
+            ),
+        )
+        result = result_obj.output_text
         if not result.strip():
             print(
-                f"  [{agent_id}] WARNING: empty output after {time.time()-t0:.0f}s",
+                f"  [{agent_id}] WARNING: empty output",
                 file=sys.stderr,
                 flush=True,
             )
@@ -583,9 +455,9 @@ class ReproLabOrchestrator:
         self._latest_agent_traces[agent_id] = AgentExecutionTrace(
             agent_id=agent_id,
             output_text=result,
-            trace_text="\n".join(trace_lines),
-            tool_calls=tool_calls,
-            elapsed_seconds=time.time() - t0,
+            trace_text=result_obj.trace_text,
+            tool_calls=result_obj.tool_calls,
+            elapsed_seconds=result_obj.elapsed_seconds,
         )
         return result
 
@@ -615,19 +487,47 @@ class ReproLabOrchestrator:
             return self._verification_runtime
         return self._runtime
 
-    def _claude_limit_fallback_for(
+    def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
+        other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
+        chain: list[ProviderName] = []
+        for provider in (primary, other):
+            if provider not in chain:
+                chain.append(provider)
+        return chain
+
+    def _runtime_for_provider(
         self,
-        runtime: AgentRuntime,
-        exc: Exception,
-        observed_text: str,
-    ) -> AgentRuntime | None:
-        if runtime.provider_name != "anthropic":
-            return None
-        if not _looks_like_claude_limit_failure(exc, observed_text):
-            return None
-        if self._claude_limit_fallback_runtime is None:
-            self._claude_limit_fallback_runtime = make_runtime("openai")
-        return self._claude_limit_fallback_runtime
+        provider: ProviderName,
+        *,
+        primary_runtime: AgentRuntime,
+    ) -> AgentRuntime:
+        if primary_runtime.provider_name == provider:
+            return primary_runtime
+        if self._runtime.provider_name == provider:
+            return self._runtime
+        if self._verification_runtime.provider_name == provider:
+            return self._verification_runtime
+        cached = self._fallback_runtimes.get(provider)
+        if cached is not None:
+            return cached
+        runtime = make_runtime(provider)
+        self._fallback_runtimes[provider] = runtime
+        return runtime
+
+    def _partial_output_validates(self, agent_id: str, text: str) -> bool:
+        model = self._OUTPUT_MODELS.get(agent_id)
+        if model is None:
+            return bool(text.strip())
+        try:
+            data = self._extract_json(text)
+            if agent_id == "supervisor-verifier":
+                data = self._normalize_verifier_scores(data)
+            elif agent_id == "reproduction-planner":
+                data = self._normalize_reproduction_contract(data)
+            model(**data)
+            return True
+        except Exception:
+            return False
 
     def _enrich_workspace(
         self,

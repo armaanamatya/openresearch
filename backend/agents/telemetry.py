@@ -23,6 +23,11 @@ class AgentInvocationRecord(BaseModel):
     success: bool
     error_message: str = ""
     usage: dict[str, Any] = Field(default_factory=dict)
+    provider: str = ""
+    attempt_index: int = 0
+    outcome: str = ""
+    failure_kind: str = ""
+    next_provider: str = ""
 
 
 class AgentTelemetryRecorder:

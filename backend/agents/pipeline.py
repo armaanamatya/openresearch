@@ -31,6 +31,7 @@ from backend.agents.execution import (
     ensure_sandbox_mode_available,
     resolve_sandbox_mode,
 )
+from backend.agents.resilience import RunBudget
 from backend.agents.runtime import AgentRuntime, ProviderName
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ async def run_pipeline_sdk(
     n_improvement_paths: int = 3,
     resume: bool = True,
     execution_profile: ExecutionProfile | None = None,
+    run_budget: RunBudget | None = None,
     sandbox_mode: SandboxMode | str = SandboxMode.docker,
     seed: int | None = None,
     attempt_id: str | None = None,
@@ -75,6 +77,7 @@ async def run_pipeline_sdk(
         runtime=runtime,
         verification_runtime=verification_runtime,
         execution_profile=execution_profile,
+        run_budget=run_budget,
         sandbox_mode=resolved_sandbox_mode,
         seed=seed,
         attempt_id=attempt_id,
