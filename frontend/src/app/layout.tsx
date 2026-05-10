@@ -8,7 +8,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Stellar.ai",
+  title: "ReproLab",
   description:
     "Intelligent automation syncs with the tools you love to streamline tasks, boost output, and save time."
 };
