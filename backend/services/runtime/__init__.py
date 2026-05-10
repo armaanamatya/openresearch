@@ -30,7 +30,10 @@ from backend.services.runtime.interface import (
     SandboxConfig,
     SandboxRuntimeError,
 )
-from backend.services.runtime.local_docker import LocalDockerBackend
+from backend.services.runtime.local_docker import (
+    LocalDockerBackend,
+    ensure_local_docker_available,
+)
 from backend.services.runtime.local_process import LocalProcessBackend
 from backend.services.runtime.runpod_backend import RunpodBackend
 from backend.services.runtime.service import (
@@ -65,6 +68,7 @@ __all__ = [
     "SandboxRuntimeError",
     "SandboxState",
     "append_command_log",
+    "ensure_local_docker_available",
     "initialize_run_artifacts",
     "utc_now_iso",
     "write_json",

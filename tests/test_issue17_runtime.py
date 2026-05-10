@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import io
 import tarfile
 from pathlib import Path
 
 import anyio
+import pytest
 
 from backend.services.runtime import (
     CommandExecuted,
@@ -19,9 +21,12 @@ from backend.services.runtime import (
     RunpodBackend,
     RuntimeAppService,
     RuntimeBackend,
+    RuntimeCauseKind,
     SandboxAggregate,
     SandboxConfig,
+    SandboxRuntimeError,
     SandboxState,
+    ensure_local_docker_available,
 )
 
 
@@ -99,6 +104,31 @@ def test_local_docker_backend_delegates_lifecycle(tmp_path: Path) -> None:
         assert client.containers.container.removed
 
     anyio.run(scenario)
+
+
+def test_local_docker_preflight_reports_missing_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "docker":
+            raise ImportError("missing docker")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(SandboxRuntimeError) as exc_info:
+        ensure_local_docker_available()
+
+    assert exc_info.value.cause_kind is RuntimeCauseKind.backend_unavailable
+    assert exc_info.value.retryable is False
+    assert "backend/requirements.txt" in str(exc_info.value)
+
+
+def test_local_docker_preflight_pings_injected_client() -> None:
+    client = FakeDockerClient()
+
+    ensure_local_docker_available(client=client)
+
+    assert client.pinged is True
 
 
 def test_runtime_service_records_events_without_store(tmp_path: Path) -> None:
@@ -233,3 +263,8 @@ class FakeDockerClient:
     def __init__(self) -> None:
         self.containers = FakeContainers()
         self.images = FakeImages()
+        self.pinged = False
+
+    def ping(self):
+        self.pinged = True
+        return True

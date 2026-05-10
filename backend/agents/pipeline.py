@@ -25,7 +25,12 @@ from backend.agents.schemas import (
     ResearchMap,
 )
 from backend.agents.orchestrator import PipelineStage, PipelineState
-from backend.agents.execution import ExecutionProfile, SandboxMode, resolve_sandbox_mode
+from backend.agents.execution import (
+    ExecutionProfile,
+    SandboxMode,
+    ensure_sandbox_mode_available,
+    resolve_sandbox_mode,
+)
 from backend.agents.runtime import AgentRuntime, ProviderName
 
 logger = logging.getLogger(__name__)
@@ -60,6 +65,7 @@ async def run_pipeline_sdk(
     """
     from backend.agents.orchestrator import ReproLabOrchestrator
 
+    resolved_sandbox_mode = resolve_sandbox_mode(sandbox_mode, pipeline_mode="sdk")
     orchestrator = ReproLabOrchestrator(
         project_id=project_id,
         runs_root=runs_root,
@@ -69,7 +75,7 @@ async def run_pipeline_sdk(
         runtime=runtime,
         verification_runtime=verification_runtime,
         execution_profile=execution_profile,
-        sandbox_mode=sandbox_mode,
+        sandbox_mode=resolved_sandbox_mode,
         seed=seed,
         attempt_id=attempt_id,
         run_group_id=run_group_id,
@@ -126,6 +132,7 @@ def run_pipeline_offline(
     runs = Path(runs_root)
     profile = execution_profile or ExecutionProfile.from_mode("efficient")
     resolved_sandbox_mode = resolve_sandbox_mode(sandbox_mode, pipeline_mode="offline")
+    ensure_sandbox_mode_available(resolved_sandbox_mode)
     state = PipelineState(
         project_id=project_id,
         seed=seed,

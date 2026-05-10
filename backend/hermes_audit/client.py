@@ -1,95 +1,224 @@
-"""Adapter for the Nous Hermes Python runtime."""
+"""Hermes audit client — robust, self-learning, fallback-aware.
+
+Public surface (unchanged): ``NousHermesClient(...).audit(...)`` returns
+a ``HermesAuditReport``. Callers that already construct
+``NousHermesClient(model=..., enabled=...)`` keep working as-is.
+
+What's new under the hood:
+
+* **Provider chain.** Tries Nous Hermes first, then Claude (direct
+  Anthropic SDK), then OpenAI (direct OpenAI SDK). Each provider is a
+  Protocol implementation in ``providers.py`` — new providers plug in
+  by registration, never by editing this file's branching.
+* **Self-learning order.** Persists per-provider success / failure
+  counters to ``<runs_root>/.hermes_adapter_memory.json`` between runs.
+  The next run starts with last-known-good provider first and skips
+  providers that have failed ``MAX_CONSECUTIVE_FAILURES`` (3) times in
+  a row until they recover.
+* **Robust JSON extraction.** Three strategies (fenced block, balanced
+  braces, prose-prefix-strip) tried in order. Common LLM output shapes
+  parse cleanly; the rest raise loudly.
+* **Observable fallbacks.** Every fallback attempt logs to stderr at
+  WARNING; the final report carries ``provider`` so the lab UI can
+  show which auditor produced it. Failures never silently substitute
+  a fake "ok" — terminal status is ``unavailable`` only after the
+  whole chain has been exhausted.
+
+Why no async: each audit is one short LLM call producing JSON. The
+sync ``audit()`` contract keeps ``HermesAuditService`` simple and lets
+us call it from both the sync setup paths and (via ``asyncio.to_thread``
+if needed) any async context.
+"""
 
 from __future__ import annotations
 
-import importlib
 import json
-import re
-from typing import Any
+import logging
+from pathlib import Path
+from typing import Any, Sequence
 
+from backend.hermes_audit.memory import (
+    AdapterMemory,
+    load_memory,
+    save_memory,
+)
 from backend.hermes_audit.models import (
     HermesAuditReport,
     HermesAuditScope,
     HermesAuditStatus,
     HermesInterventionType,
 )
+from backend.hermes_audit.providers import (
+    AuditProvider,
+    ClaudeAuditProvider,
+    NousHermesProvider,
+    OpenAIAuditProvider,
+    extract_audit_json,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+def _default_provider_chain(nous_model: str) -> list[AuditProvider]:
+    """Default chain: Nous → Claude → OpenAI. Each provider is constructed
+    with safe defaults; callers wanting different models pass an explicit
+    ``providers=`` list to ``NousHermesClient``."""
+
+    return [
+        NousHermesProvider(model=nous_model),
+        ClaudeAuditProvider(),
+        OpenAIAuditProvider(),
+    ]
 
 
 class NousHermesClient:
-    """Thin adapter around the official Nous Hermes Python runtime."""
+    """Adapter that audits a payload via the best-available provider.
 
-    def __init__(self, *, model: str = "anthropic/claude-sonnet-4", enabled: bool = True) -> None:
+    The class name is preserved for backward compatibility — under the
+    hood it now manages a chain of providers, not just Nous Hermes.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = "anthropic/claude-sonnet-4",
+        enabled: bool = True,
+        providers: Sequence[AuditProvider] | None = None,
+        runs_root: str | Path | None = None,
+    ) -> None:
         self.model = model
         self.enabled = enabled
+        self._providers: list[AuditProvider] = list(
+            providers if providers is not None else _default_provider_chain(model)
+        )
+        # ``runs_root`` is where the self-learning memory file lives. When
+        # not provided we fall back to ``./runs`` so tests / local CLI
+        # invocations work out of the box.
+        self._runs_root = Path(runs_root) if runs_root is not None else Path("runs")
 
-    def audit(self, *, scope: HermesAuditScope, target: str, payload: dict[str, Any]) -> HermesAuditReport:
+    # ------------------------------------------------------------------ #
+    # Public API
+    # ------------------------------------------------------------------ #
+
+    def audit(
+        self,
+        *,
+        scope: HermesAuditScope,
+        target: str,
+        payload: dict[str, Any],
+    ) -> HermesAuditReport:
         if not self.enabled:
-            return HermesAuditReport(
-                target=target,
-                scope=scope,
-                status=HermesAuditStatus.unavailable,
-                summary="Nous Hermes audit disabled",
-                recommended_intervention=HermesInterventionType.annotate,
-            )
+            return _disabled_report(scope=scope, target=target)
 
-        try:
-            response = self._run_agent(self._build_prompt(scope=scope, target=target, payload=payload))
-            data = self._extract_json(response)
+        prompt = _build_prompt(scope=scope, target=target, payload=payload)
+        memory = load_memory(self._runs_root)
+        order = memory.preferred_order([p.name for p in self._providers])
+        provider_by_name = {p.name: p for p in self._providers}
+
+        last_error: str = ""
+        last_provider_tried: str = ""
+
+        for provider_name in order:
+            provider = provider_by_name.get(provider_name)
+            if provider is None:
+                continue
+
+            if not provider.is_available():
+                memory.record_failure(provider.name, error="provider not available (precheck)")
+                logger.warning("hermes-audit: %s skipped (precheck failed)", provider.name)
+                continue
+
+            last_provider_tried = provider.name
+            try:
+                response_text = provider.call(prompt)
+                data = extract_audit_json(response_text)
+            except Exception as exc:  # noqa: BLE001 — record failure, try next
+                memory.record_failure(provider.name, error=f"{type(exc).__name__}: {exc}")
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "hermes-audit: %s failed (%s); trying next provider",
+                    provider.name,
+                    last_error,
+                )
+                continue
+
             data.setdefault("target", target)
             data.setdefault("scope", scope.value)
-            data.setdefault("provider", "nous-hermes")
-            return HermesAuditReport(**data)
-        except Exception as exc:  # pragma: no cover - exercised by integration/failure tests later
-            return HermesAuditReport(
-                target=target,
-                scope=scope,
-                status=HermesAuditStatus.unavailable,
-                summary="Nous Hermes runtime unavailable",
-                recommended_intervention=HermesInterventionType.annotate,
-                error_message=str(exc),
-            )
+            data.setdefault("provider", provider.name)
+            try:
+                report = HermesAuditReport(**data)
+            except Exception as exc:  # noqa: BLE001 — schema mismatch, try next
+                memory.record_failure(
+                    provider.name, error=f"schema_mismatch: {type(exc).__name__}: {exc}"
+                )
+                last_error = f"schema_mismatch: {type(exc).__name__}: {exc}"
+                logger.warning(
+                    "hermes-audit: %s returned non-conforming JSON (%s); trying next",
+                    provider.name,
+                    exc,
+                )
+                continue
 
-    def _run_agent(self, prompt: str) -> str:
-        module = importlib.import_module("run_agent")
-        agent_cls = getattr(module, "AIAgent")
-        agent = agent_cls(
-            model=self.model,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        if hasattr(agent, "chat"):
-            return str(agent.chat(prompt))
-        if hasattr(agent, "run"):
-            return str(agent.run(prompt))
-        if callable(agent):
-            return str(agent(prompt))
-        raise RuntimeError("Unsupported Nous Hermes runtime interface")
+            memory.record_success(provider.name)
+            _persist_memory_quietly(self._runs_root, memory)
+            return report
 
-    @staticmethod
-    def _build_prompt(*, scope: HermesAuditScope, target: str, payload: dict[str, Any]) -> str:
-        return (
-            "You are auditing a research reproduction pipeline for unsupported claims.\n"
-            f"Scope: {scope.value}\n"
-            f"Target: {target}\n"
-            "Return only JSON with fields: target, scope, status, summary, findings, "
-            "unsupported_claims, evidence_refs, recommended_intervention, corrective_note, confidence.\n"
-            f"Payload:\n```json\n{json.dumps(payload, indent=2)}\n```"
+        # Whole chain exhausted — return an honest "unavailable" report.
+        # Status is ``unavailable``, not ``system_error``: every provider
+        # had a chance and none produced a parseable report. The report's
+        # ``provider`` field reflects the LAST provider tried so operators
+        # can see where the chain bottomed out.
+        _persist_memory_quietly(self._runs_root, memory)
+        return HermesAuditReport(
+            target=target,
+            scope=scope,
+            status=HermesAuditStatus.unavailable,
+            summary="All Hermes audit providers failed",
+            recommended_intervention=HermesInterventionType.annotate,
+            provider=last_provider_tried or "none",
+            error_message=last_error or "no providers available",
         )
 
-    @staticmethod
-    def _extract_json(text: str) -> dict[str, Any]:
-        fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-        if fence_match:
-            return json.loads(fence_match.group(1))
-        brace_start = text.find("{")
-        if brace_start >= 0:
-            depth = 0
-            for idx in range(brace_start, len(text)):
-                if text[idx] == "{":
-                    depth += 1
-                elif text[idx] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return json.loads(text[brace_start : idx + 1])
-        raise ValueError("No JSON found in Nous Hermes response")
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _disabled_report(*, scope: HermesAuditScope, target: str) -> HermesAuditReport:
+    return HermesAuditReport(
+        target=target,
+        scope=scope,
+        status=HermesAuditStatus.unavailable,
+        summary="Nous Hermes audit disabled",
+        recommended_intervention=HermesInterventionType.annotate,
+        provider="disabled",
+    )
+
+
+def _build_prompt(
+    *, scope: HermesAuditScope, target: str, payload: dict[str, Any]
+) -> str:
+    return (
+        "You are auditing a research reproduction pipeline for unsupported claims.\n"
+        f"Scope: {scope.value}\n"
+        f"Target: {target}\n"
+        "Return ONLY a single JSON object with these fields: target, scope, "
+        "status (one of: grounded, caveat, unsupported), summary, findings, "
+        "unsupported_claims, evidence_refs, recommended_intervention, "
+        "corrective_note, confidence (one of: low, medium, high).\n"
+        "Do not include prose before or after the JSON. Do not wrap in code fences.\n"
+        f"Payload:\n```json\n{json.dumps(payload, indent=2)}\n```"
+    )
+
+
+def _persist_memory_quietly(runs_root: Path, memory: AdapterMemory) -> None:
+    """Save memory; never let a memory-write failure break an audit."""
+
+    try:
+        save_memory(runs_root, memory)
+    except OSError as exc:  # disk full, perms, etc.
+        logger.warning("hermes-audit: could not persist adapter memory: %s", exc)
+
+
+__all__ = ["NousHermesClient"]

@@ -424,8 +424,10 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     blacklist_terms = _blacklist_entries_from_arg(args.blacklist)
     from backend.agents.execution import (
         ExecutionProfile,
+        ensure_sandbox_mode_available,
         resolve_sandbox_mode,
     )
+    from backend.services.runtime import SandboxRuntimeError
 
     execution_profile = ExecutionProfile.from_mode(
         args.execution_mode,
@@ -441,6 +443,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         f"Execution profile: {execution_profile.mode.value}; sandbox: {sandbox_mode.value}",
         file=sys.stderr,
     )
+    try:
+        ensure_sandbox_mode_available(sandbox_mode)
+    except SandboxRuntimeError as exc:
+        print(f"Sandbox preflight failed: {exc}", file=sys.stderr)
+        store.close()
+        return 2
 
     try:
         if args.mode == "offline":

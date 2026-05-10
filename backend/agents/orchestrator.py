@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.registry import AGENT_REGISTRY
-from backend.agents.execution import ExecutionProfile, SandboxMode, resolve_sandbox_mode
+from backend.agents.execution import (
+    ExecutionProfile,
+    SandboxMode,
+    ensure_sandbox_mode_available,
+    resolve_sandbox_mode,
+)
 from backend.agents.runtime import (
     AgentLimitExceeded,
     AgentRuntime,
@@ -340,7 +345,7 @@ class ReproLabOrchestrator:
         )
         self._latest_agent_traces: dict[str, AgentExecutionTrace] = {}
         self._hermes_audit_service = hermes_audit_service or HermesAuditService(
-            client=NousHermesClient(),
+            client=NousHermesClient(runs_root=self.runs_root),
             storage=HermesAuditStorage(self.runs_root, project_id),
         )
         self._workspace_service = workspace_service
@@ -1274,8 +1279,7 @@ class ReproLabOrchestrator:
         # Run each path agent
         logger.info("[8/9] Running %d Improvement Path Agents", len(state.improvement_hypotheses))
         for hypothesis in state.improvement_hypotheses:
-            path_dir = self._project_dir / "improvements" / hypothesis.path_id
-            path_dir.mkdir(parents=True, exist_ok=True)
+            path_dir = self._prepare_improvement_workspace(state, hypothesis)
             path_prompt = (
                 f"Execute improvement hypothesis for project {self.project_id}.\n"
                 f"Work in: {path_dir}\n"
@@ -1312,6 +1316,69 @@ class ReproLabOrchestrator:
             "improvement-path",
         )
         return state
+
+    def _prepare_improvement_workspace(
+        self,
+        state: PipelineState,
+        hypothesis: ImprovementHypothesis,
+    ) -> Path:
+        """Create an isolated workspace for one improvement path.
+
+        Phase 2 uses git worktrees when the baseline code is a git repository.
+        Generated code paths are not always repos yet, so non-git baselines keep
+        the existing isolated directory behavior.
+        """
+        fallback = self._project_dir / "improvements" / hypothesis.path_id
+        baseline_code = (
+            Path(state.baseline_result.code_path)
+            if state.baseline_result and state.baseline_result.code_path
+            else self._project_dir / "code"
+        )
+        if not baseline_code.is_absolute():
+            baseline_code = Path.cwd() / baseline_code
+
+        if not self._is_git_repo(baseline_code):
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
+
+        from backend.services.worktrees import GitWorktreeError, GitWorktreeManager
+
+        manager = GitWorktreeManager(worktrees_root=self._project_dir / "worktrees")
+        spec = manager.spec_for(
+            project_id=self.project_id,
+            path_id=hypothesis.path_id,
+            slug=hypothesis.hypothesis,
+        )
+        if spec.worktree_path.exists():
+            return spec.worktree_path
+        try:
+            info = manager.create(repo_root=baseline_code, spec=spec)
+            state.decision_log.append(
+                f"worktree:{hypothesis.path_id}: {info.branch} -> {info.path}"
+            )
+            return spec.worktree_path
+        except GitWorktreeError as exc:
+            logger.warning(
+                "Falling back to directory workspace for %s: %s",
+                hypothesis.path_id,
+                exc,
+            )
+            state.decision_log.append(
+                f"worktree_fallback:{hypothesis.path_id}: {exc}"
+            )
+            fallback.mkdir(parents=True, exist_ok=True)
+            return fallback
+
+    def _is_git_repo(self, path: Path) -> bool:
+        import subprocess
+
+        result = subprocess.run(
+            ("git", "-C", str(path), "rev-parse", "--is-inside-work-tree"),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
 
     async def run_gate_3(self, state: PipelineState) -> PipelineState:
         """Gate 3: Improvement Verification + Research Map."""
@@ -1442,6 +1509,10 @@ class ReproLabOrchestrator:
             if self.blacklist_terms:
                 state.blacklist_terms = list(self.blacklist_terms)
 
+        stages_order = list(PipelineStage)
+        if stages_order.index(state.stage) < stages_order.index(PipelineStage.BASELINE_RUN):
+            ensure_sandbox_mode_available(self.sandbox_mode)
+
         # Define the pipeline as a sequence of (stage_threshold, step_fn) pairs.
         # Each step only runs if the pipeline hasn't passed that stage yet.
         pipeline: list[tuple[PipelineStage, Any]] = [
@@ -1455,7 +1526,6 @@ class ReproLabOrchestrator:
             (PipelineStage.GATE_2_PASSED, self.run_gate_2),
         ]
 
-        stages_order = list(PipelineStage)
         current_idx = stages_order.index(state.stage)
 
         for target_stage, step_fn in pipeline:
