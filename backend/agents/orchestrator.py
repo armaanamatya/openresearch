@@ -871,12 +871,21 @@ class ReproLabOrchestrator:
         """Step 1: Paper Understanding Agent."""
         logger.info("[1/9] Running Paper Understanding Agent")
         out_file = self._project_dir / "paper_claim_map.json"
-        prompt = (
-            f"Analyze the paper for project {self.project_id}.\n"
-            f"The parsed paper content is in: {self._project_dir}\n"
-            f"Read the parsed sections and extract the full PaperClaimMap.\n"
-            f"Return the JSON in your response AND write it to {out_file}"
-        )
+        claim_map_file = self._project_dir / "workspace_claim_map.json"
+        if claim_map_file.exists():
+            prompt = (
+                f"Analyze the paper for project {self.project_id}.\n"
+                f"The parsed paper sections are in: {claim_map_file}\n"
+                f"Read that JSON file to understand the paper content, then extract the full PaperClaimMap.\n"
+                f"Return the JSON in your response AND write it to {out_file}"
+            )
+        else:
+            prompt = (
+                f"Analyze the paper for project {self.project_id}.\n"
+                f"The parsed paper content is in: {self._project_dir}\n"
+                f"Read any available files (workspace_claim_map.json, raw_paper.pdf) and extract the full PaperClaimMap.\n"
+                f"Return the JSON in your response AND write it to {out_file}"
+            )
         output = await self._invoke_agent("paper-understanding", prompt)
         data = self._extract_json(output, fallback_file=str(out_file))
         state.paper_claim_map = PaperClaimMap(**data)

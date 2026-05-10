@@ -258,8 +258,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
   // Client-side recovery: when SSR couldn't fetch the latest run within
   // its tight timeout (busy backend, single-worker uvicorn behind SSE),
   // poll /api/demo with exponential backoff after mount until we get
-  // run state. Stops as soon as run is populated by any source (this
-  // poll, the SSE stream below, or the user's own submit).
+  // run state. Only resumes runs that are still active (queued/running).
   useEffect(() => {
     if (run) return;
     let cancelled = false;
@@ -276,7 +275,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
         window.clearTimeout(t);
         if (!cancelled && response.ok) {
           const next = (await response.json()) as LiveDemoRunState | null;
-          if (next && !cancelled) {
+          if (next && !cancelled && (next.status === "queued" || next.status === "running")) {
             setRun(next);
             return;
           }
