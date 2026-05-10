@@ -102,6 +102,11 @@ const SANDBOX_OPTIONS: Array<{ value: DemoSandboxMode; label: string; helper: st
     helper: "Container sandbox"
   },
   {
+    value: "runpod",
+    label: "Runpod GPU",
+    helper: "Remote GPU Pod"
+  },
+  {
     value: "local",
     label: "Local",
     helper: "Explicit host run"

@@ -127,6 +127,38 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 
 **macOS:** No NVIDIA GPU support. Use CPU-only mode (fine for demo papers).
 
+### Remote GPU support with Runpod
+
+Use this when local Docker is not enough and experiments need a disposable remote GPU.
+
+Install and verify the CLI:
+
+```powershell
+# Windows PowerShell
+Invoke-WebRequest -Uri https://github.com/runpod/runpodctl/releases/latest/download/runpodctl-windows-amd64.zip -OutFile runpodctl.zip
+Expand-Archive runpodctl.zip -DestinationPath $env:LOCALAPPDATA\runpodctl
+[Environment]::SetEnvironmentVariable('Path', $env:Path + ";$env:LOCALAPPDATA\runpodctl", 'User')
+runpodctl version
+```
+
+Set the backend environment:
+
+```bash
+REPROLAB_RUNPOD_API_KEY=
+REPROLAB_RUNPOD_IMAGE=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+REPROLAB_RUNPOD_GPU_TYPE=NVIDIA GeForce RTX 4090
+REPROLAB_RUNPOD_GPU_COUNT=1
+REPROLAB_RUNPOD_SSH_KEY_PATH=~/.ssh/id_ed25519
+```
+
+Then run a paper with:
+
+```bash
+python -m backend.cli reproduce path/to/paper.pdf --mode sdk --sandbox runpod
+```
+
+The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/reprolab/<project>/baseline/work`, runs commands from `/work`, syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
+
 ## 5. Node.js and frontend dependencies
 
 ```bash

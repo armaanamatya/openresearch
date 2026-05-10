@@ -98,6 +98,7 @@ def run_pipeline_offline(
     from backend.agents.baseline_implementation import run_offline as baseline_impl
     from backend.agents.experiment_runner import run_offline as experiment_run
     from backend.agents.experiment_runner import run_with_local_process
+    from backend.agents.experiment_runner import run_with_runpod
     from backend.agents.experiment_runner import run_with_runtime as experiment_run_docker
     from backend.agents.verification import run_gate_offline, run_improvement_gate_offline
     from backend.agents.improvement import select_hypotheses_offline, run_path_offline
@@ -205,6 +206,19 @@ def run_pipeline_offline(
             )
 
         state.experiment_artifacts = anyio.run(_run_local_experiment)
+    elif resolved_sandbox_mode is SandboxMode.runpod:
+        import anyio
+
+        async def _run_runpod_experiment():
+            return await run_with_runpod(
+                project_id,
+                runs,
+                state.baseline_result,
+                state.reproduction_contract,
+                command_timeout=profile.command_timeout_seconds,
+            )
+
+        state.experiment_artifacts = anyio.run(_run_runpod_experiment)
     else:
         state.experiment_artifacts = experiment_run(
             project_id, runs, state.baseline_result, state.reproduction_contract,
