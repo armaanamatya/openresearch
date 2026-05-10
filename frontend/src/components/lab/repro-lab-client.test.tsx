@@ -158,4 +158,211 @@ describe("ReproLabClient", () => {
     expect(screen.getByRole("heading", { name: "Upload PDF" })).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("renders dashboard events as live activity and maps completed agents to graph progress", () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    render(
+      <ReproLabClient
+        initialRun={{
+          projectId: "event-backed-run",
+          outputDir: "runs/event-backed-run",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "paper.pdf",
+          sourceNote: "uploaded",
+          status: "running",
+          payload: {
+            projectId: "event-backed-run",
+            outputDir: "runs/event-backed-run",
+            sourceKind: "uploaded_pdf",
+            runMode: "sdk",
+            sourceLabel: "paper.pdf",
+            sourceNote: "uploaded",
+            generatedAt: "2026-05-10T10:00:00.000Z",
+            log: "",
+            summary: {
+              stage: "artifacts_discovered",
+              meanReward: null,
+              improvementCount: 0,
+              runModeLabel: "SDK: Anthropic",
+              llmProvider: "anthropic",
+              sourceLabel: "paper.pdf"
+            },
+            initialSnapshot: {
+              agents: [],
+              reasoning: [],
+              messages: [],
+              citations: [],
+              approvals: [],
+              progress: [],
+              dataPanels: [],
+              hermesPanel: null,
+              conceptCard: null
+            },
+            events: [
+              {
+                event: "agent_completed",
+                timestamp: "2026-05-10T10:00:01.000Z",
+                agentId: "paper-understanding",
+                agent: {
+                  id: "paper-understanding",
+                  label: "Paper Understanding",
+                  type: "builder",
+                  status: "completed",
+                  currentTask: "Claim map published",
+                  lastUpdated: "2026-05-10T10:00:01.000Z",
+                  outputTargetIds: ["artifact-discovery"],
+                  contextVariables: ["paper_claim_map"]
+                }
+              },
+              {
+                event: "agent_started",
+                timestamp: "2026-05-10T10:00:02.000Z",
+                agentId: "artifact-discovery",
+                agent: {
+                  id: "artifact-discovery",
+                  label: "Artifact Discovery",
+                  type: "builder",
+                  status: "running",
+                  currentTask: "Searching repositories",
+                  lastUpdated: "2026-05-10T10:00:02.000Z",
+                  outputTargetIds: ["environment-detective"],
+                  contextVariables: ["paper_claim_map"]
+                }
+              }
+            ]
+          },
+          log: ""
+        }}
+      />
+    );
+
+    expect(screen.getByText("Claim map published")).toBeInTheDocument();
+    expect(screen.getAllByText("Searching repositories").length).toBeGreaterThan(0);
+    expect(screen.getByText(/2\/12 agents complete/i)).toBeInTheDocument();
+  });
+
+  it("maps canonical backend pipeline stages without leaving paper understanding stuck", () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    render(
+      <ReproLabClient
+        initialRun={{
+          projectId: "stage-backed-run",
+          outputDir: "runs/stage-backed-run",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "paper.pdf",
+          sourceNote: "uploaded",
+          status: "running",
+          payload: {
+            projectId: "stage-backed-run",
+            outputDir: "runs/stage-backed-run",
+            sourceKind: "uploaded_pdf",
+            runMode: "sdk",
+            sourceLabel: "paper.pdf",
+            sourceNote: "uploaded",
+            generatedAt: "2026-05-10T10:00:00.000Z",
+            log: "",
+            summary: {
+              stage: "paper_understood",
+              meanReward: null,
+              improvementCount: 0,
+              runModeLabel: "SDK: Anthropic",
+              llmProvider: "anthropic",
+              sourceLabel: "paper.pdf"
+            },
+            initialSnapshot: {
+              agents: [],
+              reasoning: [],
+              messages: [],
+              citations: [],
+              approvals: [],
+              progress: [],
+              dataPanels: [],
+              hermesPanel: null,
+              conceptCard: null
+            },
+            events: []
+          },
+          log: ""
+        }}
+      />
+    );
+
+    expect(screen.getByText(/2\/12 agents complete/i)).toBeInTheDocument();
+  });
+
+  it("shows the exact failing agent without marking completed nodes as failed", () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    render(
+      <ReproLabClient
+        initialRun={{
+          projectId: "failed-run",
+          outputDir: "runs/failed-run",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "paper.pdf",
+          sourceNote: "uploaded",
+          status: "failed",
+          error: "No JSON found in agent output",
+          payload: {
+            projectId: "failed-run",
+            outputDir: "runs/failed-run",
+            sourceKind: "uploaded_pdf",
+            runMode: "sdk",
+            sourceLabel: "paper.pdf",
+            sourceNote: "uploaded",
+            generatedAt: "2026-05-10T10:00:00.000Z",
+            log: "",
+            summary: {
+              stage: "ingested",
+              meanReward: null,
+              improvementCount: 0,
+              runModeLabel: "SDK: Anthropic",
+              llmProvider: "anthropic",
+              sourceLabel: "paper.pdf"
+            },
+            initialSnapshot: {
+              agents: [],
+              reasoning: [],
+              messages: [],
+              citations: [],
+              approvals: [],
+              progress: [],
+              dataPanels: [],
+              hermesPanel: null,
+              conceptCard: null
+            },
+            events: [
+              {
+                event: "agent_failed",
+                timestamp: "2026-05-10T10:00:01.000Z",
+                agentId: "paper-understanding",
+                agent: {
+                  id: "paper-understanding",
+                  label: "Paper Understanding",
+                  type: "builder",
+                  status: "failed",
+                  currentTask: "No JSON found in agent output",
+                  lastUpdated: "2026-05-10T10:00:01.000Z",
+                  outputTargetIds: ["root-orchestrator"],
+                  contextVariables: ["paper_claim_map"]
+                }
+              }
+            ]
+          },
+          log: ""
+        }}
+      />
+    );
+
+    expect(screen.getAllByText("No JSON found in agent output").length).toBeGreaterThan(0);
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+  });
 });

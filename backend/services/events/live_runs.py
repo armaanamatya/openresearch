@@ -49,6 +49,24 @@ class TelemetryRecordPublic(BaseModel):
     tool_calls: list[str] = Field(default_factory=list)
 
 
+PIPELINE_STAGE_ORDER = [
+    "ingested",
+    "paper_understood",
+    "artifacts_discovered",
+    "environment_built",
+    "plan_created",
+    "gate_1_passed",
+    "baseline_implemented",
+    "baseline_run",
+    "gate_2_passed",
+    "improvements_selected",
+    "improvements_run",
+    "gate_3_passed",
+    "research_map_generated",
+    "complete",
+]
+
+
 class LiveRunState(BaseModel):
     projectId: str
     outputDir: str
@@ -279,7 +297,13 @@ class FileLiveRunService:
         status = self._read_status(project_id)
         if status is None:
             return None
-        if status.get("status") in {"queued", "running"} and not _pid_exists(status.get("pid")):
+        pid = status.get("pid")
+        if (
+            status.get("status") in {"queued", "running"}
+            and isinstance(pid, int)
+            and pid > 0
+            and not _pid_exists(pid)
+        ):
             status = {
                 **status,
                 "status": "failed",
@@ -288,9 +312,9 @@ class FileLiveRunService:
                 "error": _summarize_failure(self._read_log(project_id)),
             }
             self._write_status(project_id, status)
-        status.setdefault("payload", None)
         status["log"] = self._read_log(project_id)
         status["telemetry"] = self._read_telemetry(project_id)
+        status["payload"] = self._build_payload(project_id, status)
         return LiveRunState(**status)
 
     def _latest_run(
@@ -391,6 +415,48 @@ class FileLiveRunService:
         except OSError:
             pass
         return events
+
+    def _read_pipeline_state(self, project_id: str) -> dict[str, Any] | None:
+        return _read_json(self.runs_root / project_id / "pipeline_state.json")
+
+    def _build_payload(self, project_id: str, status: dict[str, Any]) -> dict[str, Any]:
+        pipeline_state = self._read_pipeline_state(project_id)
+        dashboard_events = self._read_dashboard_events(project_id)
+        log = str(status.get("log") or "")
+        stage = _infer_stage(self.runs_root / project_id, pipeline_state, dashboard_events)
+        meta = {
+            "projectId": project_id,
+            "outputDir": status.get("outputDir") or str(self.runs_root / project_id),
+            "sourceKind": status.get("sourceKind") or "workspace_fixture",
+            "runMode": status.get("runMode") or "offline",
+            "llmProvider": status.get("llmProvider"),
+            "verificationProvider": status.get("verificationProvider"),
+            "executionMode": status.get("executionMode"),
+            "sandboxMode": status.get("sandboxMode"),
+            "gpuMode": status.get("gpuMode"),
+            "sourceLabel": status.get("sourceLabel") or project_id,
+            "sourceNote": status.get("sourceNote") or "",
+        }
+        return {
+            **meta,
+            "generatedAt": _now(),
+            "log": log,
+            "pipelineState": pipeline_state,
+            "initialSnapshot": _snapshot_from_dashboard_events(dashboard_events),
+            "events": dashboard_events,
+            "summary": {
+                "stage": stage,
+                "meanReward": _mean_reward(pipeline_state),
+                "improvementCount": len((pipeline_state or {}).get("path_results") or []),
+                "runModeLabel": _run_mode_label(meta["runMode"], meta.get("llmProvider")),
+                "llmProvider": meta.get("llmProvider"),
+                "verificationProvider": meta.get("verificationProvider"),
+                "executionMode": meta.get("executionMode"),
+                "sandboxMode": meta.get("sandboxMode"),
+                "gpuMode": meta.get("gpuMode"),
+                "sourceLabel": meta["sourceLabel"],
+            },
+        }
 
     def _read_log(self, project_id: str, max_chars: int = 12000) -> str:
         path = self.runs_root / project_id / "runner.stderr.log"
@@ -621,6 +687,137 @@ def _provider_from_project_id(project_id: str) -> str | None:
     if project_id.startswith("ui_sdk_anthropic_") or project_id.startswith("ui_sdk_demo_"):
         return "anthropic"
     return None
+
+
+def _infer_stage(
+    run_dir: Path,
+    pipeline_state: dict[str, Any] | None,
+    dashboard_events: list[dict[str, Any]],
+) -> str:
+    stage = pipeline_state.get("stage") if pipeline_state else None
+    if isinstance(stage, str) and stage:
+        return stage
+
+    completed_agents = {
+        str(event.get("agentId") or event.get("agent", {}).get("id"))
+        for event in dashboard_events
+        if event.get("event") == "agent_completed"
+    }
+    running_agents = {
+        str(event.get("agentId") or event.get("agent", {}).get("id"))
+        for event in dashboard_events
+        if event.get("event") == "agent_started"
+    }
+
+    artifact_files = {
+        "paper_understood": "paper_claim_map.json",
+        "artifacts_discovered": "artifact_index.json",
+        "environment_built": "environment_spec.json",
+        "plan_created": "reproduction_contract.json",
+        "baseline_implemented": "baseline_result.json",
+    }
+    # Artifact files appear before the first full checkpoint in some runs, so
+    # they provide a durable stage hint during the live part of the pipeline.
+    for inferred_stage, file_name in reversed(list(artifact_files.items())):
+        if (run_dir / file_name).exists():
+            return inferred_stage
+
+    if "baseline-implementation" in completed_agents:
+        return "baseline_implemented"
+    if "reproduction-planner" in completed_agents:
+        return "plan_created"
+    if "environment-detective" in completed_agents:
+        return "environment_built"
+    if "artifact-discovery" in completed_agents:
+        return "artifacts_discovered"
+    if "paper-understanding" in completed_agents:
+        return "paper_understood"
+    if "paper-understanding" in running_agents:
+        return "ingested"
+    return "ingested"
+
+
+def _snapshot_from_dashboard_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    agents: dict[str, dict[str, Any]] = {}
+    reasoning: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    progress: list[dict[str, Any]] = []
+    data_panels: list[dict[str, Any]] = []
+    hermes_panel: dict[str, Any] | None = None
+    concept_card: dict[str, Any] | None = None
+
+    for event in events:
+        event_type = event.get("event")
+        agent = event.get("agent")
+        if event_type in {"agent_started", "agent_completed", "agent_failed"} and isinstance(agent, dict):
+            agent_id = str(agent.get("id") or event.get("agentId") or "")
+            if agent_id:
+                agents[agent_id] = agent
+        elif event_type == "agent_reasoning_step":
+            reasoning.append({
+                "id": f"{event.get('agentId', 'agent')}-{len(reasoning)}",
+                "agentId": event.get("agentId") or "",
+                "agentLabel": event.get("agentLabel") or event.get("agentId") or "Agent",
+                "title": event.get("title") or "Reasoning update",
+                "detail": event.get("detail") or "",
+                "stepType": event.get("stepType") or "analysis",
+                "timestamp": event.get("timestamp") or _now(),
+                "citations": event.get("citations") or [],
+            })
+        elif event_type == "shared_state_updated":
+            messages.append({
+                "id": f"message-{len(messages)}",
+                "fromAgentId": event.get("fromAgentId") or event.get("agentId") or "agent",
+                "toAgentId": event.get("toAgentId") or "root-orchestrator",
+                "summary": event.get("title") or "Shared state updated",
+                "detail": event.get("detail") or "",
+                "timestamp": event.get("timestamp") or _now(),
+            })
+        elif event_type == "verification_gate_result":
+            progress.append({
+                "stage": event.get("stage") or "plan",
+                "status": event.get("status") or "pending",
+                "detail": event.get("detail") or "",
+            })
+        elif event_type == "context_enrichment":
+            data_panels.append({
+                "id": f"context-{event.get('variableName', len(data_panels))}",
+                "title": str(event.get("variableName") or "Context"),
+                "summary": str(event.get("summary") or ""),
+                "items": [str(event.get("agentId") or "")],
+            })
+        elif event_type == "hermes_check_updated" and isinstance(event.get("panel"), dict):
+            hermes_panel = event["panel"]
+        elif event_type == "concept_card_updated" and isinstance(event.get("card"), dict):
+            concept_card = event["card"]
+
+    return {
+        "agents": list(agents.values()),
+        "reasoning": reasoning,
+        "messages": messages,
+        "citations": [],
+        "approvals": [],
+        "progress": progress,
+        "dataPanels": data_panels,
+        "hermesPanel": hermes_panel,
+        "conceptCard": concept_card,
+    }
+
+
+def _mean_reward(pipeline_state: dict[str, Any] | None) -> float | int | None:
+    metrics = ((pipeline_state or {}).get("experiment_artifacts") or {}).get("metrics") or {}
+    value = metrics.get("mean_reward")
+    return value if isinstance(value, (float, int)) else None
+
+
+def _run_mode_label(run_mode: Any, provider: Any) -> str:
+    if run_mode != "sdk":
+        return "Offline"
+    if provider == "openai":
+        return "SDK: OpenAI"
+    if provider == "anthropic":
+        return "SDK: Anthropic"
+    return "SDK"
 
 
 def _pid_exists(pid: Any) -> bool:
