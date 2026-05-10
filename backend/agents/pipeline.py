@@ -50,6 +50,8 @@ async def run_pipeline_sdk(
     attempt_id: str | None = None,
     run_group_id: str | None = None,
     blacklist_terms: tuple[str, ...] = (),
+    workspace_service: Any | None = None,
+    workspace_id: str | None = None,
 ) -> PipelineState:
     """Run the full pipeline using the configured agent SDK provider.
 
@@ -72,6 +74,8 @@ async def run_pipeline_sdk(
         attempt_id=attempt_id,
         run_group_id=run_group_id,
         blacklist_terms=blacklist_terms,
+        workspace_service=workspace_service,
+        workspace_id=workspace_id,
     )
     return await orchestrator.run(
         resume=resume,
@@ -93,6 +97,8 @@ def run_pipeline_offline(
     attempt_id: str | None = None,
     run_group_id: str | None = None,
     blacklist_terms: tuple[str, ...] = (),
+    workspace_service: Any | None = None,
+    workspace_id: str | None = None,
 ) -> PipelineState:
     """Run the full pipeline WITHOUT an LLM (deterministic demo mode).
 
@@ -110,9 +116,12 @@ def run_pipeline_offline(
     from backend.agents.baseline_implementation import run_offline as baseline_impl
     from backend.agents.experiment_runner import run_offline as experiment_run
     from backend.agents.experiment_runner import run_with_local_process
+    from backend.agents.experiment_runner import run_with_runpod
     from backend.agents.experiment_runner import run_with_runtime as experiment_run_docker
     from backend.agents.verification import run_gate_offline, run_improvement_gate_offline
     from backend.agents.improvement import select_hypotheses_offline, run_path_offline
+
+    from backend.schemas.citations import Citation
 
     runs = Path(runs_root)
     profile = execution_profile or ExecutionProfile.from_mode("efficient")
@@ -125,6 +134,27 @@ def run_pipeline_offline(
         blacklist_terms=list(blacklist_terms),
     )
 
+    def _enrich(variable_name: str, value: dict, agent_id: str) -> None:
+        if workspace_service is None or workspace_id is None:
+            return
+        try:
+            cite = Citation(
+                source_id=f"agent:{agent_id}",
+                chunk_id=None,
+                quote=f"Output from {agent_id} for project {project_id}",
+                locator=f"{agent_id}@{project_id}",
+                confidence=0.9,
+            )
+            workspace_service.enrich_variable(
+                workspace_id=workspace_id,
+                variable_name=variable_name,
+                value_payload=value,
+                citations=(cite,),
+                enriched_by=agent_id,
+            )
+        except Exception:
+            logger.warning("Failed to enrich workspace: %s", variable_name, exc_info=True)
+
     # --- Step 1: Paper Understanding ---
     print(f"[1/9] Paper Understanding Agent", file=sys.stderr)
     state.paper_claim_map = paper_understanding(
@@ -133,6 +163,7 @@ def run_pipeline_offline(
     state.stage = PipelineStage.PAPER_UNDERSTOOD
     for amb in state.paper_claim_map.ambiguities:
         state.assumption_ledger.append(amb.model_dump())
+    _enrich("paper_claim_map_agent", state.paper_claim_map.model_dump(), "paper-understanding")
     print(f"      {len(state.paper_claim_map.ambiguities)} ambiguities detected", file=sys.stderr)
 
     # --- Step 2: Artifact Discovery (simplified offline) ---
@@ -153,6 +184,7 @@ def run_pipeline_offline(
     for assumption in state.environment_spec.assumptions:
         state.assumption_ledger.append(assumption.model_dump())
     state.stage = PipelineStage.ENVIRONMENT_BUILT
+    _enrich("environment_spec", state.environment_spec.model_dump(), "environment-detective")
     print(f"      Dockerfile generated: Python {state.environment_spec.python_version}, "
           f"{state.environment_spec.framework}=={state.environment_spec.framework_version}", file=sys.stderr)
 
@@ -184,6 +216,7 @@ def run_pipeline_offline(
         state.reproduction_contract, state.artifact_index,
     )
     state.stage = PipelineStage.BASELINE_IMPLEMENTED
+    _enrich("baseline_result", state.baseline_result.model_dump(), "baseline-implementation")
     print(f"      Mode: {state.baseline_result.mode}, "
           f"assumptions applied: {state.baseline_result.assumptions_applied}", file=sys.stderr)
 
@@ -223,11 +256,25 @@ def run_pipeline_offline(
             )
 
         state.experiment_artifacts = anyio.run(_run_local_experiment)
+    elif resolved_sandbox_mode is SandboxMode.runpod:
+        import anyio
+
+        async def _run_runpod_experiment():
+            return await run_with_runpod(
+                project_id,
+                runs,
+                state.baseline_result,
+                state.reproduction_contract,
+                command_timeout=profile.command_timeout_seconds,
+            )
+
+        state.experiment_artifacts = anyio.run(_run_runpod_experiment)
     else:
         state.experiment_artifacts = experiment_run(
             project_id, runs, state.baseline_result, state.reproduction_contract,
         )
     state.stage = PipelineStage.BASELINE_RUN
+    _enrich("experiment_artifacts", state.experiment_artifacts.model_dump(), "experiment-runner")
     print(f"      Success: {state.experiment_artifacts.success}, "
           f"mean_reward: {state.experiment_artifacts.metrics.get('mean_reward', 'N/A')}", file=sys.stderr)
 
@@ -341,8 +388,20 @@ def run_pipeline_offline(
     (out_dir / "assumption_ledger.json").write_text(json.dumps(state.assumption_ledger, indent=2))
     (out_dir / "decision_log.json").write_text(json.dumps(state.decision_log, indent=2))
 
+    _enrich("research_map", state.research_map.model_dump(), "research-map-generator")
+    _enrich("assumption_ledger", {"entries": state.assumption_ledger}, "orchestrator")
+    _enrich("decision_log", {"entries": state.decision_log}, "orchestrator")
+
     state.stage = PipelineStage.COMPLETE
     state.save_checkpoint(runs)
+
+    if workspace_service is not None and workspace_id is not None:
+        try:
+            workspace_service.close_workspace(
+                workspace_id=workspace_id, reason="pipeline_complete"
+            )
+        except Exception:
+            logger.warning("Failed to close workspace", exc_info=True)
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Pipeline complete for {project_id}", file=sys.stderr)

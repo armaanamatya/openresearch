@@ -27,6 +27,23 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-4o"
     openai_reasoning_model: str = "o4-mini"
     agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
+    runpod_api_key: str = ""
+    runpod_api_base_url: str = "https://rest.runpod.io/v1"
+    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+    runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
+    runpod_gpu_count: int = 1
+    runpod_cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
+    runpod_container_disk_gb: int = 50
+    runpod_volume_gb: int = 20
+    runpod_volume_mount_path: str = "/workspace"
+    runpod_network_volume_id: str = ""
+    runpod_data_center_ids: str = ""
+    runpod_ssh_key_path: str = ""
+    runpod_ssh_public_key: str = ""
+    runpod_ssh_user: str = "root"
+    runpod_boot_timeout_seconds: int = 900
+    runpod_delete_on_destroy: bool = True
+    runpod_bootstrap_command: str = ""
 
 
 _settings_cache: Settings | None = None

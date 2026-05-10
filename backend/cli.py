@@ -374,7 +374,6 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         BuildWorkspace(project_id=project_id, agent_name=args.agent)
     )
     view = workspace.materialize_view(workspace_id)
-    store.close()
 
     # Build workspace claim map for the agent pipeline
     workspace_claim_map = {
@@ -429,37 +428,44 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
-    if args.mode == "offline":
-        from backend.agents.pipeline import run_pipeline_offline
+    try:
+        if args.mode == "offline":
+            from backend.agents.pipeline import run_pipeline_offline
 
-        state = run_pipeline_offline(
-            project_id, runs_root, workspace_claim_map,
-            user_hints=user_hints,
-            n_improvement_paths=args.n_paths,
-            execution_profile=execution_profile,
-            sandbox_mode=sandbox_mode,
-            seed=args.seed,
-            attempt_id=args.attempt_id,
-            run_group_id=args.run_group_id,
-            blacklist_terms=blacklist_terms,
-        )
-    else:
-        from backend.agents.pipeline import run_pipeline_sdk
+            state = run_pipeline_offline(
+                project_id, runs_root, workspace_claim_map,
+                user_hints=user_hints,
+                n_improvement_paths=args.n_paths,
+                execution_profile=execution_profile,
+                sandbox_mode=sandbox_mode,
+                seed=args.seed,
+                attempt_id=args.attempt_id,
+                run_group_id=args.run_group_id,
+                blacklist_terms=blacklist_terms,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            )
+        else:
+            from backend.agents.pipeline import run_pipeline_sdk
 
-        state = asyncio.run(run_pipeline_sdk(
-            project_id, runs_root, workspace_claim_map,
-            model=args.model,
-            provider=provider,
-            verification_provider=verification_provider,
-            user_hints=user_hints,
-            n_improvement_paths=args.n_paths,
-            execution_profile=execution_profile,
-            sandbox_mode=sandbox_mode,
-            seed=args.seed,
-            attempt_id=args.attempt_id,
-            run_group_id=args.run_group_id,
-            blacklist_terms=blacklist_terms,
-        ))
+            state = asyncio.run(run_pipeline_sdk(
+                project_id, runs_root, workspace_claim_map,
+                model=args.model,
+                provider=provider,
+                verification_provider=verification_provider,
+                user_hints=user_hints,
+                n_improvement_paths=args.n_paths,
+                execution_profile=execution_profile,
+                sandbox_mode=sandbox_mode,
+                seed=args.seed,
+                attempt_id=args.attempt_id,
+                run_group_id=args.run_group_id,
+                blacklist_terms=blacklist_terms,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            ))
+    finally:
+        store.close()
 
     # Print final summary
     out_dir = runs_root / project_id
@@ -560,10 +566,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker"),
+        choices=("auto", "local", "docker", "runpod"),
         default="auto",
         help=(
-            "Experiment backend: local runs commands on the host; docker is isolated; "
+            "Experiment backend: local runs commands on the host; docker is isolated; runpod uses a remote GPU Pod; "
             "auto selects Docker and never falls back to host-local execution."
         ),
     )

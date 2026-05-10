@@ -67,6 +67,7 @@ from backend.hermes_audit import (
     build_checkpoint_audit_payload,
     build_step_audit_payload,
 )
+from backend.schemas.citations import Citation
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,15 @@ class AgentExecutionTrace:
     trace_text: str
     tool_calls: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
+
+
+def _looks_like_claude_limit_failure(exc: Exception, observed_text: str = "") -> bool:
+    haystack = f"{type(exc).__name__}: {exc}\n{observed_text}".lower()
+    return (
+        "you've hit your limit" in haystack
+        or "you have hit your limit" in haystack
+        or "claude code returned an error result: success" in haystack
+    )
 
 
 class PipelineStage(str, enum.Enum):
@@ -259,6 +269,7 @@ class ReproLabOrchestrator:
         verification_provider: ProviderName | str | None = None,
         runtime: AgentRuntime | None = None,
         verification_runtime: AgentRuntime | None = None,
+        claude_limit_fallback_runtime: AgentRuntime | None = None,
         execution_profile: ExecutionProfile | None = None,
         sandbox_mode: SandboxMode | str = SandboxMode.docker,
         hermes_audit_service: HermesAuditService | None = None,
@@ -266,6 +277,8 @@ class ReproLabOrchestrator:
         attempt_id: str | None = None,
         run_group_id: str | None = None,
         blacklist_terms: tuple[str, ...] = (),
+        workspace_service: Any | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         self.project_id = project_id
         self.runs_root = Path(runs_root)
@@ -288,13 +301,14 @@ class ReproLabOrchestrator:
         if self.sandbox_mode is SandboxMode.simulate:
             raise ValueError(
                 "SDK pipeline does not support simulated experiment execution. "
-                "Use the offline pipeline for deterministic simulation or select docker/local."
+                "Use the offline pipeline for deterministic simulation or select docker/local/runpod."
             )
         self._runtime = runtime or make_runtime(provider)
         self._verification_runtime = (
             verification_runtime
             or (make_runtime(verification_provider) if verification_provider else self._runtime)
         )
+        self._claude_limit_fallback_runtime = claude_limit_fallback_runtime
         self._project_dir = self.runs_root / project_id
         self._project_dir.mkdir(parents=True, exist_ok=True)
         self._telemetry = AgentTelemetryRecorder(
@@ -305,6 +319,8 @@ class ReproLabOrchestrator:
             client=NousHermesClient(),
             storage=HermesAuditStorage(self.runs_root, project_id),
         )
+        self._workspace_service = workspace_service
+        self._workspace_id = workspace_id
 
     # Agents that write code / run experiments need more turns
     _HEAVY_AGENTS = {"baseline-implementation", "improvement-path", "experiment-runner"}
@@ -357,9 +373,12 @@ class ReproLabOrchestrator:
         *,
         cwd: str | Path | None = None,
         max_turns: int | None = None,
+        _runtime_override: AgentRuntime | None = None,
+        _allow_claude_limit_fallback: bool = True,
+        _structured_prompt: bool = False,
     ) -> str:
         """Invoke a single agent via the SDK and return its final text output."""
-        runtime = self._runtime_for_agent(agent_id)
+        runtime = _runtime_override or self._runtime_for_agent(agent_id)
         # Implementation agents get more turns (they write code)
         if max_turns is None:
             max_turns = (
@@ -375,10 +394,11 @@ class ReproLabOrchestrator:
         )
 
         task_prompt = self._append_run_controls(task_prompt)
-        task_prompt = append_structured_output_instruction(
-            task_prompt,
-            self._OUTPUT_MODELS.get(agent_id),
-        )
+        if not _structured_prompt:
+            task_prompt = append_structured_output_instruction(
+                task_prompt,
+                self._OUTPUT_MODELS.get(agent_id),
+            )
 
         collected_text: list[str] = []
         started_at = utc_now_iso()
@@ -390,6 +410,7 @@ class ReproLabOrchestrator:
         error_message = ""
         usage: dict[str, Any] = {}
         tool_call_count = 0
+        fallback_runtime: AgentRuntime | None = None
         print(f"  [{agent_id}] starting...", file=sys.stderr, flush=True)
 
         try:
@@ -447,7 +468,21 @@ class ReproLabOrchestrator:
         except Exception as exc:
             success = False
             error_message = f"{type(exc).__name__}: {exc}"
-            raise
+            usage.setdefault("provider", runtime.provider_name)
+            usage.setdefault("model", runtime_spec.model)
+            if _allow_claude_limit_fallback:
+                fallback_runtime = self._claude_limit_fallback_for(
+                    runtime,
+                    exc,
+                    "\n".join(trace_lines + collected_text),
+                )
+            if fallback_runtime is None:
+                raise
+            print(
+                f"  [{agent_id}] Claude limit detected; retrying with OpenAI...",
+                file=sys.stderr,
+                flush=True,
+            )
         finally:
             self._telemetry.append(
                 AgentInvocationRecord(
@@ -462,6 +497,16 @@ class ReproLabOrchestrator:
                     error_message=error_message,
                     usage=usage,
                 )
+            )
+        if fallback_runtime is not None:
+            return await self._invoke_agent(
+                agent_id,
+                task_prompt,
+                cwd=cwd,
+                max_turns=max_turns,
+                _runtime_override=fallback_runtime,
+                _allow_claude_limit_fallback=False,
+                _structured_prompt=True,
             )
         result = "\n".join(collected_text)
         if not result.strip():
@@ -505,6 +550,74 @@ class ReproLabOrchestrator:
         if agent_id == "supervisor-verifier":
             return self._verification_runtime
         return self._runtime
+
+    def _claude_limit_fallback_for(
+        self,
+        runtime: AgentRuntime,
+        exc: Exception,
+        observed_text: str,
+    ) -> AgentRuntime | None:
+        if runtime.provider_name != "anthropic":
+            return None
+        if not _looks_like_claude_limit_failure(exc, observed_text):
+            return None
+        if self._claude_limit_fallback_runtime is None:
+            self._claude_limit_fallback_runtime = make_runtime("openai")
+        return self._claude_limit_fallback_runtime
+
+    def _enrich_workspace(
+        self,
+        variable_name: str,
+        value_payload: dict[str, Any],
+        agent_id: str,
+    ) -> None:
+        """Write an agent's structured output back to the workspace as a variable.
+
+        No-op if workspace integration is not configured.
+        """
+        if self._workspace_service is None or self._workspace_id is None:
+            return
+        try:
+            citation = Citation(
+                source_id=f"agent:{agent_id}",
+                chunk_id=None,
+                quote=f"Output from {agent_id} agent for project {self.project_id}",
+                locator=f"{agent_id}@{self.project_id}",
+                confidence=0.9,
+            )
+            self._workspace_service.enrich_variable(
+                workspace_id=self._workspace_id,
+                variable_name=variable_name,
+                value_payload=value_payload,
+                citations=(citation,),
+                enriched_by=agent_id,
+            )
+            logger.info(
+                "Workspace enriched: %s from %s", variable_name, agent_id
+            )
+        except Exception:
+            logger.warning(
+                "Failed to enrich workspace variable %s from %s",
+                variable_name,
+                agent_id,
+                exc_info=True,
+            )
+
+    def _close_workspace(self, reason: str = "pipeline_complete") -> None:
+        """Close the workspace when pipeline finishes. No-op if not configured."""
+        if self._workspace_service is None or self._workspace_id is None:
+            return
+        try:
+            self._workspace_service.close_workspace(
+                workspace_id=self._workspace_id, reason=reason
+            )
+            logger.info("Workspace %s closed: %s", self._workspace_id, reason)
+        except Exception:
+            logger.warning(
+                "Failed to close workspace %s",
+                self._workspace_id,
+                exc_info=True,
+            )
 
     def _normalize_verifier_scores(self, data: dict[str, Any]) -> dict[str, Any]:
         """Normalize LLM-generated verification data to match schema expectations."""
@@ -790,6 +903,11 @@ class ReproLabOrchestrator:
             target="paper-understanding",
             structured_output=state.paper_claim_map.model_dump(),
         )
+        self._enrich_workspace(
+            "paper_claim_map_agent",
+            state.paper_claim_map.model_dump(),
+            "paper-understanding",
+        )
         state.stage = PipelineStage.PAPER_UNDERSTOOD
         return state
 
@@ -810,6 +928,9 @@ class ReproLabOrchestrator:
             state,
             target="artifact-discovery",
             structured_output=state.artifact_index,
+        )
+        self._enrich_workspace(
+            "artifact_index", state.artifact_index, "artifact-discovery"
         )
         state.stage = PipelineStage.ARTIFACTS_DISCOVERED
         return state
@@ -839,6 +960,11 @@ class ReproLabOrchestrator:
             target="environment-detective",
             structured_output=state.environment_spec.model_dump(),
         )
+        self._enrich_workspace(
+            "environment_spec",
+            state.environment_spec.model_dump(),
+            "environment-detective",
+        )
         state.stage = PipelineStage.ENVIRONMENT_BUILT
         return state
 
@@ -866,6 +992,11 @@ class ReproLabOrchestrator:
             state,
             target="reproduction-planner",
             structured_output=state.reproduction_contract.model_dump(),
+        )
+        self._enrich_workspace(
+            "reproduction_contract",
+            state.reproduction_contract.model_dump(),
+            "reproduction-planner",
         )
         state.stage = PipelineStage.PLAN_CREATED
         return state
@@ -901,6 +1032,9 @@ class ReproLabOrchestrator:
         )
         state.gate_1 = self._apply_checkpoint_report_to_gate(state, checkpoint_report, state.gate_1)
         state.decision_log.append(report.decision_log_entry)
+        self._enrich_workspace(
+            "gate_1", state.gate_1.model_dump(), "supervisor-verifier"
+        )
         state.stage = PipelineStage.GATE_1_PASSED
         state.save_checkpoint(self.runs_root)
         return state
@@ -934,6 +1068,11 @@ class ReproLabOrchestrator:
             target="baseline-implementation",
             structured_output=state.baseline_result.model_dump(),
         )
+        self._enrich_workspace(
+            "baseline_result",
+            state.baseline_result.model_dump(),
+            "baseline-implementation",
+        )
         state.stage = PipelineStage.BASELINE_IMPLEMENTED
         return state
 
@@ -944,6 +1083,7 @@ class ReproLabOrchestrator:
             raise ValueError("Cannot run experiment before baseline implementation")
         from backend.agents.experiment_runner import (
             run_with_local_process,
+            run_with_runpod,
             run_with_runtime,
         )
 
@@ -956,6 +1096,14 @@ class ReproLabOrchestrator:
                 command_timeout=self.execution_profile.command_timeout_seconds,
                 gpu_mode=self.execution_profile.gpu_mode.value,
                 extra_environment=self.execution_profile.sandbox_environment,
+            )
+        elif self.sandbox_mode is SandboxMode.runpod:
+            state.experiment_artifacts = await run_with_runpod(
+                self.project_id,
+                self.runs_root,
+                state.baseline_result,
+                state.reproduction_contract,
+                command_timeout=self.execution_profile.command_timeout_seconds,
             )
         else:
             state.experiment_artifacts = await run_with_runtime(
@@ -975,6 +1123,11 @@ class ReproLabOrchestrator:
             state,
             target="experiment-runner",
             structured_output=state.experiment_artifacts.model_dump(),
+        )
+        self._enrich_workspace(
+            "experiment_artifacts",
+            state.experiment_artifacts.model_dump(),
+            "experiment-runner",
         )
         state.stage = PipelineStage.BASELINE_RUN
         return state
@@ -1011,6 +1164,9 @@ class ReproLabOrchestrator:
         )
         state.gate_2 = self._apply_checkpoint_report_to_gate(state, checkpoint_report, state.gate_2)
         state.decision_log.append(report.decision_log_entry)
+        self._enrich_workspace(
+            "gate_2", state.gate_2.model_dump(), "supervisor-verifier"
+        )
         state.stage = PipelineStage.GATE_2_PASSED
         state.save_checkpoint(self.runs_root)
         return state
@@ -1043,10 +1199,16 @@ class ReproLabOrchestrator:
         state.improvement_hypotheses = [
             ImprovementHypothesis(**h) for h in hypotheses_raw
         ]
+        hypotheses_payload = {"hypotheses": [hypothesis.model_dump() for hypothesis in state.improvement_hypotheses]}
         self._audit_step(
             state,
             target="improvement-orchestrator",
-            structured_output={"hypotheses": [hypothesis.model_dump() for hypothesis in state.improvement_hypotheses]},
+            structured_output=hypotheses_payload,
+        )
+        self._enrich_workspace(
+            "improvement_hypotheses",
+            hypotheses_payload,
+            "improvement-orchestrator",
         )
         state.stage = PipelineStage.IMPROVEMENTS_SELECTED
 
@@ -1085,6 +1247,11 @@ class ReproLabOrchestrator:
                     )
                 )
         state.stage = PipelineStage.IMPROVEMENTS_RUN
+        self._enrich_workspace(
+            "path_results",
+            {"results": [r.model_dump() for r in state.path_results]},
+            "improvement-path",
+        )
         return state
 
     async def run_gate_3(self, state: PipelineState) -> PipelineState:
@@ -1118,6 +1285,9 @@ class ReproLabOrchestrator:
         )
         state.gate_3 = self._apply_checkpoint_report_to_gate(state, checkpoint_report, state.gate_3)
         state.decision_log.append(report.decision_log_entry)
+        self._enrich_workspace(
+            "gate_3", state.gate_3.model_dump(), "supervisor-verifier"
+        )
         state.stage = PipelineStage.GATE_3_PASSED
         state.save_checkpoint(self.runs_root)
         return state
@@ -1157,6 +1327,21 @@ class ReproLabOrchestrator:
             trace_text=output,
         )
         self._apply_research_map_intervention(state, checkpoint_report)
+        self._enrich_workspace(
+            "research_map",
+            state.research_map.model_dump(),
+            "research-map-generator",
+        )
+        self._enrich_workspace(
+            "assumption_ledger",
+            {"entries": state.assumption_ledger},
+            "orchestrator",
+        )
+        self._enrich_workspace(
+            "decision_log",
+            {"entries": state.decision_log},
+            "orchestrator",
+        )
         state.stage = PipelineStage.RESEARCH_MAP_GENERATED
         # Write final artifacts
         (self._project_dir / "research_map.json").write_text(
@@ -1253,5 +1438,6 @@ class ReproLabOrchestrator:
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)
 
+        self._close_workspace("pipeline_complete")
         logger.info("Pipeline complete for project %s", self.project_id)
         return state
