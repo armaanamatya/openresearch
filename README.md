@@ -51,6 +51,31 @@ PDF / arXiv / DOI
 | **Tavily** | AI-native web search for artifact discovery (falls back to DuckDuckGo) | Discovery tool |
 | **DeepEval** | Reproduction + innovation evaluation framework | Eval suite (`backend/evals/`) |
 
+## Research Foundation
+
+ReproLab's context management layer is built on the **Recursive Language Model (RLM)** paper ([arXiv:2512.24601](https://arxiv.org/abs/2512.24601), Zhang/Kraska/Khattab, MIT CSAIL). Instead of stuffing context into prompts or embedding everything in a vector store, agents store context as **typed Python variables in per-agent workspaces** and programmatically explore, filter, and drill into them — ~2-3k tokens per query vs 95k+ for naive prompt stuffing.
+
+### Three-Layer Context Strategy
+
+| Layer | Role | Implementation |
+|-------|------|----------------|
+| **Layer 1 — RLM workspace** | Variables + programmatic exploration. Precise, structured queries. | Event-sourced workspace with `Cited[T]` invariant, 5 workspace tools (`LookupTool`, `SemanticSearchTool`, `ListVariablesTool`, `InspectVariableTool`, `RlmQueryTool`) |
+| **Layer 2 — Semantic search** | Fuzzy similarity, discovery of things the agent didn't know to look for | ChromaDB vector embeddings (all-MiniLM-L6-v2) + BM25 fallback |
+| **Layer 3 — Knowledge Graph** | Structural code/doc navigation via AST | `graph_query()` for cross-project structural exploration |
+
+Every variable and tool result is wrapped in `Cited[T]` — you cannot construct one without evidence. This is the architectural keystone that enforces assumption transparency across the entire pipeline.
+
+### Docker Sandboxes
+
+Every paper gets its own isolated execution environment. The **Environment Detective** agent analyzes paper dependencies and generates a per-paper Dockerfile, and the **Experiment Runner** executes inside a sandboxed container with enforced resource limits:
+
+- **Per-paper Dockerfile generation** — The Environment Detective parses dependency requirements from the paper, associated repos, and configs, then produces a reproducible Dockerfile
+- **Container isolation** — Network, memory (default 4 GB), and CPU limits enforced via Docker runtime constraints
+- **Dual sandbox backends** — `LocalDockerBackend` for local execution, `RunPodBackend` for remote GPU workloads (with owned-pod allowlist + name-prefix safety guardrails)
+- **Event-sourced lifecycle** — `SandboxRequested → SandboxCreated → CommandExecuted → ArtifactsCollected → SandboxDestroyed`, fully auditable
+- **Artifact extraction** — `copy_out` / `copy_in` for moving code, datasets, and results between host and sandbox
+- **Local process fallback** — `LocalProcessBackend` for environments where Docker is unavailable (no isolation boundary, development only)
+
 ## Key Features
 
 - **Provider resilience** — Typed failure classification (`QuotaExhausted`, `RateLimited`, `TransientError`), bidirectional Anthropic/OpenAI fallback, provider health cooldowns, cost ledger, budget enforcement (`--max-usd`, `--max-wall-clock`)
