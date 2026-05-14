@@ -6,6 +6,15 @@ const BACKEND_BASE = process.env.LAB_BACKEND_URL ?? "http://127.0.0.1:8001";
 const PROXY_BASE = process.env.LAB_BASE_URL ?? "http://localhost:3001";
 const PDF_PATH = path.resolve(__dirname, "..", "..", "demo_paper.pdf");
 
+// Sandbox for e2e runs: the lab UI hardcodes sandbox=runpod. To exercise the
+// full pipeline against a local/docker sandbox instead (e.g. when RunPod is
+// unavailable or for a cheaper end-to-end pass with Sonnet), start the
+// backend with REPROLAB_FORCE_SANDBOX set — it overrides the UI's request
+// deployment-wide:
+//   REPROLAB_FORCE_SANDBOX=local \
+//     .venv/bin/python -m uvicorn backend.app:create_app --factory --port 8001
+// (use =docker for the docker sandbox). The UI and these specs are unchanged.
+
 const NODE_AGENTS = [
   "Paper",
   "Reader",
@@ -215,8 +224,9 @@ test.describe("Lab pipeline — fixture run shared session", () => {
     expect(consoleErrors.filter((e) => e.startsWith("pageerror"))).toEqual([]);
   });
 
-  test("C. navigation — brand resets, Library/Hermes nav, return to lab", async () => {
-    // Click brand → upload screen
+  test("C. navigation — brand resets, Library/Hermes nav, URL restore", async () => {
+    // Click brand → resetToUpload clears the run, the ?projectId= URL, and
+    // the localStorage run pointer → upload screen.
     await page.locator(".brand-row").click();
     await expect(page.locator(".upload-zone")).toBeVisible({ timeout: 10_000 });
 
@@ -229,26 +239,22 @@ test.describe("Lab pipeline — fixture run shared session", () => {
     await page.getByRole("link", { name: /hermes/i }).click();
     await page.waitForURL(/\/hermes/, { timeout: 15_000 });
 
-    // Return to Lab — repro-lab-client.tsx does NOT auto-restore from FastAPI;
-    // it always remounts to the upload view. Document this explicitly.
+    // Bare /lab after a brand reset → upload view: the brand reset cleared
+    // the localStorage run pointer, so there is nothing to auto-resume.
     await page.goto("/lab");
-    const upload = page.locator(".upload-zone");
-    const workflow = page.locator(".workflow-header");
-    const which = await Promise.race([
-      upload
-        .waitFor({ state: "visible", timeout: 8_000 })
-        .then(() => "upload")
-        .catch(() => null),
-      workflow
-        .waitFor({ state: "visible", timeout: 8_000 })
-        .then(() => "workflow")
-        .catch(() => null)
-    ]);
+    await expect(page.locator(".upload-zone")).toBeVisible({ timeout: 10_000 });
+
+    // ?projectId= is the source of truth — /lab?projectId=<id> restores the
+    // exact run server-side (the WS1 persistence behavior; pre-WS1 this
+    // always remounted to the upload view).
+    await page.goto(`/lab?projectId=${encodeURIComponent(projectId)}`);
+    await expect(page.locator(".workflow-header")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".workflow-header .eyebrow")).toContainText(projectId);
     test.info().annotations.push({
-      type: "C.return_to_lab",
-      description: `view after return: ${which ?? "neither"}`
+      type: "C.url_restore",
+      description: `restored workflow for ${projectId}`
     });
-    expect(which).not.toBeNull();
+
     expect(consoleErrors.filter((e) => e.startsWith("pageerror"))).toEqual([]);
   });
 
