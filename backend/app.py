@@ -62,6 +62,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             executionMode=_form_value(form, "executionMode", "efficient"),
             sandbox=_form_value(form, "sandbox", settings.default_sandbox),
             gpuMode=_form_value(form, "gpuMode", "auto"),
+            model=_form_value(form, "model", "sonnet"),
         )
         return await service.start_uploaded_run(
             run_request,

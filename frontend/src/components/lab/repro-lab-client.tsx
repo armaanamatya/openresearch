@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import { AgentTimelineRail, type DashboardLiveEvent } from "./agent-timeline-rail";
 
 const MAX_DASHBOARD_EVENTS = 200;
@@ -705,18 +705,22 @@ function UploadView({
   arxiv,
   busy,
   error,
+  model,
   onArxivChange,
   onArxivSubmit,
   onFileSelected,
+  onModelChange,
   over,
   setOver
 }: {
   arxiv: string;
   busy: boolean;
   error: string | null;
+  model: DemoModelChoice;
   onArxivChange: (value: string) => void;
   onArxivSubmit: () => void;
   onFileSelected: (file: File) => void;
+  onModelChange: (value: DemoModelChoice) => void;
   over: boolean;
   setOver: (value: boolean) => void;
 }) {
@@ -790,6 +794,19 @@ function UploadView({
           {busy ? "Starting..." : "Begin ->"}
         </button>
       </form>
+      <div className="upload-config-row">
+        <label className="upload-config-label" htmlFor="model-select">Model</label>
+        <select
+          id="model-select"
+          className="upload-config-select"
+          value={model}
+          disabled={busy}
+          onChange={(event) => onModelChange(event.target.value as DemoModelChoice)}
+        >
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+        </select>
+      </div>
       {error ? <p className="upload-error">{error}</p> : null}
     </div>
   );
@@ -2001,6 +2018,34 @@ function PrototypeStyles() {
         font-size: 13px;
         color: var(--err);
       }
+      .reproLab .upload-config-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .reproLab .upload-config-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .reproLab .upload-config-select {
+        font: inherit;
+        font-size: 13px;
+        padding: 5px 10px;
+        border: 1px solid var(--line-2);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        cursor: pointer;
+        outline: none;
+      }
+      .reproLab .upload-config-select:focus {
+        border-color: var(--accent);
+      }
       .reproLab .workflow-header {
         display: flex;
         align-items: flex-end;
@@ -3008,6 +3053,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState(false);
+  const [model, setModel] = useState<DemoModelChoice>("sonnet");
   const [dashboardEvents, setDashboardEvents] = useState<DashboardLiveEvent[]>([]);
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
@@ -3135,7 +3181,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(DEFAULT_RUN_QUERY, { method: "POST" });
+      const response = await fetch(`${DEFAULT_RUN_QUERY}&model=${encodeURIComponent(model)}`, { method: "POST" });
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(payload?.error ?? "Unable to start run");
@@ -3159,6 +3205,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       formData.set("executionMode", "efficient");
       formData.set("sandbox", "runpod");
       formData.set("gpuMode", "auto");
+      formData.set("model", model);
       formData.set("paper", file);
       const response = await fetch("/api/demo", {
         method: "POST",
@@ -3222,9 +3269,11 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
               arxiv={arxiv}
               busy={busy}
               error={error}
+              model={model}
               onArxivChange={setArxiv}
               onArxivSubmit={() => void startFixtureRun()}
               onFileSelected={(file) => void startUploadedRun(file)}
+              onModelChange={setModel}
               over={over}
               setOver={setOver}
             />

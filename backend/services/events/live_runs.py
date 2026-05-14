@@ -26,7 +26,13 @@ Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
+ModelChoice = Literal["sonnet", "opus"]
 RunStatus = Literal["queued", "running", "stopped", "completed", "failed"]
+
+_MODEL_IDS: dict[str, str] = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-7",
+}
 
 
 class StartRunRequest(BaseModel):
@@ -36,6 +42,7 @@ class StartRunRequest(BaseModel):
     executionMode: ExecutionMode = "efficient"
     sandbox: SandboxMode = "runpod"
     gpuMode: GpuMode = "auto"
+    model: ModelChoice = "sonnet"
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -84,6 +91,7 @@ class LiveRunState(BaseModel):
     executionMode: ExecutionMode | None = None
     sandboxMode: SandboxMode | None = None
     gpuMode: GpuMode | None = None
+    model: ModelChoice | None = None
     status: RunStatus
     sourceKind: Literal["workspace_fixture", "uploaded_pdf"] | None = None
     sourceLabel: str | None = None
@@ -873,6 +881,7 @@ def _initial_status(
         "executionMode": request.executionMode,
         "sandboxMode": request.sandbox,
         "gpuMode": request.gpuMode,
+        "model": request.model,
         "sourcePdf": source_pdf,
         "benchmark": benchmark,
         "status": "queued",
@@ -923,6 +932,7 @@ def _python_script(
         "execution_mode": request.executionMode,
         "sandbox": request.sandbox,
         "gpu_mode": request.gpuMode,
+        "model": _MODEL_IDS.get(request.model, _MODEL_IDS["sonnet"]),
         "runs_root": str(runs_root),
         "database_url": get_settings().database_url,
         "uploaded_paper": uploaded_paper,
@@ -949,7 +959,7 @@ DEMO_WORKSPACE = {{
     "project_id": "prj_e2e_test",
     "entries": [
         {{"source_id": "src_1", "title": "Abstract", "excerpt": "We propose a new family of policy gradient methods for reinforcement learning, which alternate between sampling data and optimizing a surrogate objective."}},
-        {{"source_id": "src_2", "title": "Experiments", "excerpt": "We test on CartPole-v1 environment. We use Adam optimizer with learning rate 3e-4 and batch size 64. We report mean reward over 100 episodes after 500000 timesteps."}},
+        {{"source_id": "src_2", "title": "Experiments", "excerpt": "We test on CartPole-v1 environment. We use Adam optimizer with learning rate 3e-4 and batch size 64. We report a mean reward of 475.0 over 100 episodes after 500000 timesteps."}},
         {{"source_id": "src_3", "title": "Conclusion", "excerpt": "We have introduced proximal policy optimization, a family of methods that use multiple epochs of stochastic gradient ascent."}},
     ],
 }}
@@ -1026,7 +1036,7 @@ try:
             source_kind="pdf_path",
             agent="default",
             mode=config["run_mode"],
-            model=None,
+            model=config["model"],
             provider=config["provider"] if config["run_mode"] == "sdk" else None,
             verification_provider=config["verification_provider"] if config["run_mode"] == "sdk" else None,
             execution_mode=config["execution_mode"],
@@ -1053,6 +1063,7 @@ try:
                 DEMO_WORKSPACE,
                 provider=config["provider"],
                 verification_provider=config["verification_provider"],
+                model=config["model"],
                 user_hints=["Keep this as a lightweight smoke test"],
                 n_improvement_paths=1,
                 execution_profile=profile,

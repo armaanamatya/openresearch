@@ -170,3 +170,32 @@ def test_fastapi_can_stop_run_and_stream_sse() -> None:
 
     assert "event: run_state" in text
     assert json.dumps("prj_api") in text
+
+
+# ---------------------------------------------------------------------------
+# Task 1 — model choice field
+# ---------------------------------------------------------------------------
+
+def test_start_run_request_defaults_model_to_sonnet() -> None:
+    from backend.services.events.live_runs import StartRunRequest
+
+    req = StartRunRequest()
+    assert req.model == "sonnet"
+
+
+def test_start_run_request_accepts_opus() -> None:
+    from backend.services.events.live_runs import StartRunRequest
+
+    req = StartRunRequest(model="opus")
+    assert req.model == "opus"
+
+
+def test_python_script_contains_model_id_and_config_key() -> None:
+    from pathlib import Path
+
+    from backend.services.events.live_runs import StartRunRequest, _python_script
+
+    req = StartRunRequest(mode="sdk", model="opus")
+    script = _python_script(req, project_id="p", runs_root=Path("/tmp/r"), uploaded_paper=None)
+    assert "claude-opus-4-7" in script
+    assert 'model=config["model"]' in script

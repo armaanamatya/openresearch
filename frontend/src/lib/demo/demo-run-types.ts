@@ -10,6 +10,8 @@ export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
+export type DemoModelChoice = "sonnet" | "opus";
+
 export type DemoRunStatus =
   | "queued"
   | "running"
@@ -50,6 +52,7 @@ export interface LiveDemoRunState {
   executionMode?: DemoExecutionMode;
   sandboxMode?: DemoSandboxMode;
   gpuMode?: DemoGpuMode;
+  model?: DemoModelChoice;
   status: DemoRunStatus;
   sourceKind?: "workspace_fixture" | "uploaded_pdf";
   sourceLabel?: string;

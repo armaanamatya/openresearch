@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import type {
   DemoExecutionMode,
   DemoGpuMode,
+  DemoModelChoice,
   DemoProvider,
   LiveDemoRunState,
   DemoRunMode,
@@ -55,6 +56,11 @@ function toGpuMode(request: Request): DemoGpuMode | undefined {
   return value === "off" || value === "auto" || value === "prefer" || value === "max"
     ? value
     : undefined;
+}
+
+function toModelChoice(request: Request): DemoModelChoice | undefined {
+  const value = search(request).get("model");
+  return value === "sonnet" || value === "opus" ? value : undefined;
 }
 
 function backendQuery(request: Request): URLSearchParams {
@@ -179,7 +185,8 @@ export async function POST(request: Request) {
           verificationProvider: toVerificationProvider(request),
           executionMode: toExecutionMode(request) ?? "efficient",
           sandbox: toSandboxMode(request) ?? "runpod",
-          gpuMode: toGpuMode(request) ?? "auto"
+          gpuMode: toGpuMode(request) ?? "auto",
+          model: toModelChoice(request) ?? "sonnet"
         })
       })
     );
