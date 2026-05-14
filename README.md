@@ -1,140 +1,202 @@
 # ReproLab
 
-**Autonomous research agent that reproduces ML papers, then improves them.**
+**Autonomous agent pipeline that reproduces ML papers and explores improvements.**
 
-ReproLab takes a paper (PDF upload, arXiv URL, or DOI), reconstructs its implementation environment inside a Docker sandbox, reproduces the core algorithm on the same dataset, launches multiple improvement agents, and independently verifies every result. The output is a reproducible experiment workspace: Docker image, codebase, metrics, plots, diffs, an assumption ledger, and a research map of promising directions and dead ends.
+ReproLab takes a paper (PDF upload, arXiv ID, or DOI), reconstructs its implementation environment inside a Docker or RunPod sandbox, reproduces the core algorithm on the same dataset, launches parallel improvement agents through three verification gates, and emits a scientific benchmark report — a computed PaperBench-style rubric plus a statistical comparison against the paper's claimed results.
 
 ---
 
 ## Architecture
 
-```
-PDF / arXiv / DOI
-        |
-  [Ingestion Pipeline]    ---- PyMuPDF parser, arXiv/DOI fetchers
-        |
-  [Event-Sourced Store]   ---- SQLite event store, CQRS projections
-        |
-  [9-Stage Agent Pipeline]
-        |
-        +-- 1. Paper Understanding           -- extracts claims, methods, metrics
-        +-- 2. Artifact Discovery             -- finds repos, datasets, configs
-        +-- 3. Environment Detective          -- generates Dockerfile + deps
-        +-- 4. Reproduction Planner           -- defines contract + eval plan
-        +-- [Gate 1: Plan Verification]
-        +-- 5. Baseline Implementation        -- adapts repo or generates from paper
-        +-- 6. Experiment Runner              -- executes in Docker/RunPod sandbox
-        +-- [Gate 2: Baseline Verification]
-        +-- 7. Improvement Orchestrator       -- selects N improvement hypotheses
-        +-- 8. Path Agents (parallel)         -- each explores one improvement
-        +-- [Gate 3: Improvement Verification]
-        +-- 9. Research Map                   -- summarizes directions + dead ends
-        |
-  [Outputs]
-        +-- Docker image, reproduction code, metrics, plots
-        +-- Assumption ledger, decision log, provenance manifest
-        +-- Research map with promising paths + negative results
-        +-- Verified baseline report + improvement branch diffs
-```
+- **FastAPI backend** (`backend/`) — REST API + SSE event stream, agent orchestration, sandbox lifecycle
+- **Next.js lab frontend** (`frontend/`) — live pipeline progress strip, agent timeline, gate chips, final report view
+- **14-stage agent pipeline** — writes checkpoints to `runs/<project_id>/pipeline_state.json`; stages: ingest → paper-understanding → artifact-discovery → environment-detective → reproduction-planner → Gate 1 → baseline-implementation → experiment-runner → Gate 2 → improvement-selection → improvement-paths (parallel) → Gate 3 → research-map → complete
+- **Three verification gates** — structured pass/fail with dynamic confidence thresholds and supervisor verification
+- **Sandbox execution** — Docker (local, network/memory/CPU controlled) or RunPod GPU pods (remote, configurable GPU type/count/region)
+- **Event-sourced state** — SQLite event store + CQRS projections; pipeline state persisted atomically at each stage
 
-## Partner Integrations
+---
 
-| Partner | Integration | Depth |
-|---------|-------------|-------|
-| **Claude Agent SDK** | Primary agent orchestration runtime — subagent spawning, tool execution, streaming, structured outputs | Core runtime (`backend/agents/runtime/claude_runtime.py`) |
-| **OpenAI Agents SDK** | Full secondary runtime with transparent Claude-to-OpenAI fallback on quota exhaustion | Core runtime (`backend/agents/runtime/openai_runtime.py`) |
-| **Nous Hermes** | Self-learning audit chain for independent verification — persists provider memory, quarantines failures, falls through Hermes -> Anthropic -> OpenAI -> Codex CLI | Audit layer (`backend/hermes_audit/`) |
-| **OpenAI Codex CLI** | Last-resort audit fallback via `codex exec` using ChatGPT OAuth session | Audit fallback (`backend/hermes_audit/providers.py`) |
-| **RunPod** | Remote GPU sandbox execution with pod-lifecycle guardrails (owned-pod allowlist + name-prefix safety) | Sandbox backend (`backend/services/runtime/`) |
-| **Docker** | Primary sandbox: per-paper Dockerfile generation, container lifecycle, network/memory/CPU limits | Sandbox backend + Dockerfile generation |
-| **ChromaDB** | Optional Layer 2 semantic search with vector embeddings + BM25 fallback | Context layer (`backend/services/context/semantic/`) |
-| **Tavily** | AI-native web search for artifact discovery (falls back to DuckDuckGo) | Discovery tool |
-| **DeepEval** | Reproduction + innovation evaluation framework | Eval suite (`backend/evals/`) |
+## Prerequisites
 
-## Key Features
+| Requirement | Version |
+|---|---|
+| Python | 3.11 or newer |
+| Node.js | >=20.19.0 and <21, OR >=22.12.0 (Node 21 is excluded by `engines` in `package.json`) |
+| Docker | Engine 26+ / Desktop 4.30+ |
+| RunPod account | Required only for `--sandbox runpod` |
 
-- **Provider resilience** — Typed failure classification (`QuotaExhausted`, `RateLimited`, `TransientError`), bidirectional Anthropic/OpenAI fallback, provider health cooldowns, cost ledger, budget enforcement (`--max-usd`, `--max-wall-clock`)
-- **3 verification gates** — Structured pass/fail with dynamic confidence thresholds, supervisor verification, and verifier scoring
-- **Assumption transparency** — Every agent decision is citation-backed; ambiguities are logged in a persistent assumption ledger
-- **PaperBench head-to-head** — Weight-aware rubric scorer, seeded multi-attempt runner, score-vs-baseline comparison grid
-- **Eval framework** — Reproduction scoring, innovation scoring, Bayesian A/B testing, Elo tournaments for comparing agent versions
-- **Research workspace** — AST-backed knowledge graph (`graph_query()`), cross-project memory, Git worktree isolation for improvement paths
-- **Lab UI** — Live progress strip, agent timeline with per-invocation cards, debug bundle export for triage
-- **Dual execution modes** — Full LLM-powered SDK pipeline for any paper; deterministic offline mode for CI/testing
+API keys required (at minimum one of):
+
+- `ANTHROPIC_API_KEY` — for the Anthropic/Claude provider
+- `OPENAI_API_KEY` — for the OpenAI provider
+
+---
 
 ## Quick Start
 
-### Docker (recommended)
+### Option A — Docker Compose (recommended)
 
 ```bash
 cp .env.example .env
-# Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY to .env
-
+# Edit .env: set ANTHROPIC_API_KEY and/or OPENAI_API_KEY
 docker compose up --build
 ```
 
 - Lab UI: http://localhost:3000/lab
-- PaperBench: http://localhost:3000/paperbench
-- API health: http://localhost:8000/health
+- PaperBench UI: http://localhost:3000/paperbench
+- Backend health: http://localhost:8000/health
 
-### Local Development
+### Option B — Local development
+
+**Backend**
 
 ```bash
-python -m venv .venv
-.venv/Scripts/pip install -e ".[dev,evals,semantic,websearch]"     # Windows
-# .venv/bin/pip install -e ".[dev,evals,semantic,websearch]"       # Linux/macOS
-
-cd frontend && npm ci && npm run dev &
-uvicorn backend.app:create_app --factory --reload --port 8000
+python3.11 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r backend/requirements.txt
 ```
 
-### CLI
+Required environment variables (copy from `.env.example` or set in shell):
 
 ```bash
-# Ingest + reproduce a paper (SDK mode, uses LLM)
-python -m backend.cli reproduce paper.pdf --provider anthropic
+# Minimum required
+export ANTHROPIC_API_KEY=sk-ant-...    # or OPENAI_API_KEY for OpenAI provider
 
-# Offline deterministic pipeline (no LLM, for testing)
-python -m backend.cli reproduce paper.pdf --mode offline
+# Optional but strongly recommended
+export REPROLAB_DEFAULT_SANDBOX=docker  # or runpod / local
+export REPROLAB_RUNPOD_API_KEY=...      # required when sandbox=runpod
+export REPROLAB_RUNPOD_SSH_KEY_PATH=~/.ssh/id_ed25519
 
-# Ingest a paper from arXiv
-python -m backend.cli ingest 2512.24601
+# Database (SQLite default — no setup needed)
+# export REPROLAB_DATABASE_URL=sqlite:///reprolab.db
+```
+
+Launch the backend:
+
+```bash
+.venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
+# Or use the preflight-aware launcher (runs RunPod checks if sandbox=runpod):
+./start.sh
+```
+
+**Frontend**
+
+```bash
+cd frontend
+npm ci
+
+# Point the frontend at your running backend
+export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+
+npm run dev        # starts on http://localhost:3000 (default Next.js port)
+```
+
+---
+
+## Running a Reproduction
+
+### Via the Lab UI
+
+1. Open http://localhost:3000/lab
+2. Upload a paper PDF (or paste an arXiv/DOI URL)
+3. Choose provider (Anthropic / OpenAI), execution mode (efficient / max), and sandbox (docker / runpod / local)
+4. Click **Start Run** — the pipeline strip shows each stage advancing in real time
+5. Gate chips turn green (pass) or red (fail) as the three verification gates resolve
+6. When the run reaches `complete`, click **View Report** to read the final benchmark report
+
+_Screenshots: `localhost_3000_lab.png` and `Screenshot 2026-05-10 093252.png` at the repo root show the lab UI mid-run._
+
+### Via the CLI
+
+```bash
+# Full SDK pipeline (uses LLM) — PDF, arXiv ID, or DOI all work
+python -m backend.cli reproduce paper.pdf --provider anthropic --sandbox docker
+
+# Key flags
+#   --mode offline          deterministic, no LLM (for testing)
+#   --mode sdk              LLM-powered (default)
+#   --provider anthropic|openai
+#   --verification-provider anthropic|openai   (separate model for gate verification)
+#   --sandbox auto|local|docker|runpod
+#   --execution-mode efficient|max
+#   --n-paths 3             number of parallel improvement hypotheses
+#   --max-usd 5.00          hard spend cap
+#   --max-wall-clock 3600   wall-clock limit in seconds
+#   --model claude-sonnet-4-6   override model
+#   --seed 42               reproducible run
+
+# Ingest only (no agent pipeline)
+python -m backend.cli ingest 2512.24601          # arXiv ID
+python -m backend.cli ingest paper.pdf
 
 # Evaluate a completed run
 python -m backend.cli eval <project_id> --paper-metrics '{"mean_reward": 500}'
-
-# PaperBench head-to-head
-python -m backend.cli paperbench run --bundle ftrl --seed 42
 ```
 
-## Project Structure
+---
+
+## Where Results Land
+
+Each run writes to `runs/<project_id>/`:
+
+| File / Dir | Contents |
+|---|---|
+| `pipeline_state.json` | Full serialized pipeline state including all gate decisions |
+| `final_report.json` | Computed benchmark report (structured) |
+| `final_report.md` | Human-readable benchmark report |
+| `assumption_ledger.json` | Every agent assumption with citations |
+| `agent_telemetry.jsonl` | Per-invocation timing and token counts |
+| `cost_ledger.jsonl` | Per-agent USD spend and token ledger |
+| `Dockerfile` | Generated environment Dockerfile |
+| `code/` | Reproduced baseline implementation |
+| `hermes/` | Verification gate audit chain checkpoints |
+| `raw_paper.pdf` | Stored copy of the input paper |
+
+The **final report** (`final_report.md`) contains: reproduction fidelity score, paper-vs-reproduction metric delta table, computed PaperBench rubric (weight-aware), statistical rigor assessment, improvement path summaries, and a research map of promising directions and negative results.
+
+---
+
+## Testing
+
+**Backend**
+
+```bash
+# All tests
+.venv/bin/python -m pytest tests/
+
+# With dev dependencies (parallel execution, rerun flaky tests)
+pip install -r backend/requirements-dev.txt
+.venv/bin/python -m pytest tests/ -n auto
+```
+
+**Frontend**
+
+```bash
+cd frontend
+
+# Type-check (no Node version constraints)
+npx tsc --noEmit
+
+# Unit tests (requires Node >=20.19 <21 or >=22.12)
+npm test
+```
+
+---
+
+## Project Layout
 
 ```
-backend/
-    agents/                   # 9 pipeline agents + orchestrator + resilience engine
-        runtime/              # Provider-agnostic runtime (Claude SDK, OpenAI SDK)
-        resilience/           # Failure classification, fallback, cost tracking
-        prompts/              # Structured agent prompts
-    services/                 # Domain services (ingestion, context, runtime, verification, ...)
-    hermes_audit/             # Nous Hermes audit chain with self-learning provider memory
-    evals/                    # Reproduction + innovation scoring, A/B testing, Elo
-    persistence/              # SQLite repositories
-    eventstore/               # Event-sourced store + subscriptions
-    messaging/                # Command/event bus, idempotency, envelopes
-frontend/
-    src/app/                  # Next.js pages: landing, /lab, /paperbench
-    src/components/           # Dashboard, lab timeline, paperbench client
-    src/lib/                  # Event contracts, demo runners, state normalization
-tests/                        # 66 test files — unit, integration, e2e
-third_party/                  # Vendored PaperBench bundles
-docker/                       # Entrypoint script for the full-stack image
+backend/          FastAPI app, 14-stage agent pipeline, sandbox runtimes, evals
+frontend/         Next.js lab UI: pipeline dashboard, agent timeline, report viewer
+tests/            Python test suite (unit, integration, e2e)
+docs/             Architecture notes, setup guide, deployment plan
+runs/             Per-run artifact directories (gitignored, mount as volume in prod)
+third_party/      Vendored PaperBench bundles
+docker/           Container entrypoint script
+scripts/          RunPod preflight and utility scripts
 ```
 
-## Codebase Stats
+---
 
-| Layer | Files | Lines |
-|-------|-------|-------|
-| Backend (Python) | 195 | ~29,000 |
-| Frontend (TypeScript) | 52 | ~8,800 |
-| Tests (Python) | 66 | ~12,700 |
-| **Total** | **313** | **~50,500** |
+See [`docs/deployment.md`](docs/deployment.md) for production deployment instructions.
