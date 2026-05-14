@@ -11,6 +11,26 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — A stage-ordering test froze the pipeline at 15 stages after it became 14
+
+**Symptom.** `tests/test_issue22_orchestrator.py::test_pipeline_stages_are_ordered`
+failed on `claw_demo` (and on its parent commit): the test's `expected_order` placed
+`composition_tested` between `improvements_run` and `gate_3_passed`; the real
+`PipelineStage` enum had no such stage.
+
+**Root cause.** `composition_tested` was removed from `backend/agents/orchestrator.py`
+when the pipeline became 14 stages, but the ordering test still hard-coded the old
+15-stage list — it re-typed the enum as a literal and then drifted from it.
+
+**Fix.** Dropped `"composition_tested"` from the test's `expected_order`.
+
+**Lesson.** A test that re-types an enum as a literal sequence is a second source of
+truth; it goes stale silently the moment the enum legitimately changes.
+
+**Guardrail.** Derive the expectation from the enum (`[s.value for s in PipelineStage]`)
+and assert the *properties* that matter (no gaps, each gate after its prerequisites,
+`complete` last) instead of re-typing the sequence.
+
 ## 2026-05-10 — Pipeline SIGINT dumped a 50-line stack trace and left status="running"
 
 **Symptom.** Killing the `python -m backend.cli reproduce` subprocess (Ctrl-C
