@@ -725,9 +725,7 @@ export function LiveDemoClient({ initialRun }: LiveDemoClientProps) {
               {currentPayload?.summary.sourceLabel ?? run?.sourceLabel ?? "No run yet"}
             </p>
             <p className="mt-2 text-sm leading-6 text-stone-400">
-              {currentPayload?.sourceNote ??
-                run?.sourceNote ??
-                "Start a run to populate the dashboard from a real pipeline execution."}
+              Start a run to populate the dashboard from a real pipeline execution.
             </p>
           </div>
 

@@ -234,7 +234,6 @@ def write_status(status, error=None, completed_at=None):
         "gpuMode": gpu_mode,
         "sourceKind": "uploaded_pdf",
         "sourceLabel": uploaded_file_name,
-        "sourceNote": "This run started from a PDF uploaded directly in the lab. The backend copied it into the generated code root as paper.pdf before running reproduction.",
         "status": status,
         "startedAt": started_at,
         "updatedAt": now(),
