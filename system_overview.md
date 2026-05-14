@@ -31,6 +31,17 @@ The pipeline is a **14-stage state machine** — `PipelineStage` in
 advances the stage and checkpoints `pipeline_state.json` after each. Each stage has an
 agent under `backend/agents/`.
 
+**Rubric verification + self-improvement (Track 3).** A `rubric-verifier` agent scores
+the reproduction against a PaperBench-style weighted rubric at two checkpoints — within
+Gate 2 (`baseline_verification`) and Gate 3 (`improved_verification`). The canonical
+rubric is resolved once per run (a vendored bundle's `rubric.json`, or LLM-generated) and
+persisted in `PipelineState.rubric_spec`, so the checkpoints stay comparable. When the
+improved score is below `rubric_target_score`, the orchestrator loops back through
+improvement-selection + Gate 3 — capped by `rubric_max_improvement_iterations`, reusing
+the existing stages (the enum stays at 14). It is opt-in (`rubric_verifier_enabled`),
+fail-closed (a verifier error degrades to the heuristic rubric), and surfaced in the UI
+by the `CompletionSummary` popup plus a live re-iteration badge.
+
 ## The run lifecycle (UI ↔ backend)
 
 This is the part worth knowing up front — the rest you can read directly.
@@ -42,7 +53,9 @@ This is the part worth knowing up front — the rest you can read directly.
    (`/api/demo/events` → backend `/runs/<id>/events`).
 4. SSE frames: `run_state` (full state + stage), `agent_log` (incremental log),
    `dashboard_event`. `stateMapForRun()` maps the backend stage → graph node states.
-5. On `complete`, the computed `final_report` replaces the placeholder benchmark.
+5. On `complete`, the computed `final_report` (with the rubric verification and the
+   honest `comparison_summary`) replaces the placeholder benchmark; the `CompletionSummary`
+   popup shows the rubric breakdown and the PaperBench-vs-ours verdict.
 
 **Which run is "current" is the URL.** `/lab?projectId=<id>` is the source of
 truth — `app/lab/page.tsx` (async server component) restores that run as

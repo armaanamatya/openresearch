@@ -9,6 +9,118 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Track 3 Phase F.5 — Codex review #2 hardening.** Folded the genuinely
+  actionable findings from the final Codex review (the remainder were verified
+  false positives — hallucinated code structure, conflated schemas, a test/doc
+  it claimed missing that exists). The re-iteration loop now breaks early when a
+  round's verifier produces no new result, instead of burning the remaining
+  capped rounds against a dead verifier. `_run_rubric_verifier` gained a
+  *mechanical* honesty backstop: when the orchestrator knows the reproduction
+  did not execute successfully (`experiment_artifacts.success` is false), every
+  area score is hard-capped at 0.35 — the prompt's "code never ran" cap is no
+  longer merely advisory. The completion summary's dispersion stat is relabelled
+  "SD across N areas" — it was mislabelled "SE", which implies a sampling
+  distribution over runs that does not exist for a single run's per-area scores.
+- **Track 3 Phase E — completion summary popup + live re-iteration indicator.**
+  New `CompletionSummary` component (`repro-lab-client.tsx`) — a floating,
+  dismissible, re-openable popup shown on `run.status === "completed"`, matching
+  the existing `.agent-window` / `.benchmark-card` design language. It leads
+  with the honest 2-line verdict and a headline ("PaperBench X → Ours Y" when a
+  published baseline exists, else "Our rubric score Y, +Δ over baseline across N
+  iterations"), a meets/below-target chip, a `mean ± SE` stat line over the
+  rubric areas (computed client-side), and a truthful per-area breakdown — full
+  0-1 bars with a baseline ghost tick so the improvement is visible. It degrades
+  to a minimal card when the verifier did not run. A **live re-iteration badge**
+  in the workflow header surfaces `improvement_iteration` + the latest verifier
+  score while the loop runs, plumbed `pipeline_state.json` →
+  `PipelineStateDocument` → `buildLiveDemoDashboard` → `payload.summary`.
+  `finalize_benchmark` also emits `baselineRubricAreas`, and the backend
+  `BenchmarkSummary` model now carries every Track 3 field so they survive the
+  `LiveRunState` round-trip into the UI instead of being dropped by pydantic's
+  `extra="ignore"`.
+- **Track 3 Phase C.5 — rubric hardening (Codex review #1).** The canonical
+  rubric is now resolved **once per run** — a vendored PaperBench bundle's
+  rubric for `paperbench_<id>` runs (wiring `BundleRubricSource` via the
+  project-id seam), or LLM-generated on the first verifier call — then persisted
+  in `PipelineState.rubric_spec` and reused at every checkpoint, so
+  `baseline_verification` and `improved_verification` are measured on the same
+  rubric. Per-area **weights now come from the persisted spec**; the verifier
+  LLM supplies scores only, closing the score+weight gaming hole. A verifier
+  failure no longer clobbers a prior good verification (`if x is not None` guard
+  at both gates). The verifier context now includes `baseline_result` (the
+  code / Dockerfile / command paths it is told to inspect). The rubric-verifier
+  prompt was rewritten to score *submitted artifacts* — method/code fidelity,
+  data fidelity, execution, evaluation, result-match, provenance — with explicit
+  honesty hard caps (no code → ≤0.20, code never ran → ≤0.35, …) instead of
+  process/effort areas. Re-iteration rounds namespace their `path_id`s
+  (`r<N>_path_<k>`) so workspaces and `path_results` never collide.
+  `resolve_rubric_source` degrades on malformed/unreadable bundles, not just
+  missing ones. `rubric_target_score` is documented as a heuristic on the
+  verifier's own scale (per-version calibration deferred).
+- **Track 3 Phase D — completion-report fields + benchmark payload.**
+  `FinalReport` gained `rubric_verification`, `baseline_rubric_verification`,
+  `paperbench_baseline`, `verification_delta`, `improvement_iterations`, and a
+  deterministic, honest `comparison_summary` (`backend/agents/schemas.py`).
+  `generate_final_report` populates them from the orchestrator's verification
+  state; `_build_comparison_summary` states plainly when self-improvement did
+  not help or the target was not met (it never inflates), and
+  `_resolve_paperbench_baseline` surfaces the published PaperBench score for
+  vendored-bundle runs (`paperbench_<id>` project ids) — `None` for uploaded
+  papers. `finalize_benchmark` (`backend/services/events/live_runs.py`) maps the
+  new fields onto the UI `benchmark` object (`paperbenchBaseline`,
+  `ourRubricScore`, `verificationDelta`, `improvementIterations`, `meetsTarget`,
+  `comparisonSummary`, `rubricAreas`), and `DemoBenchmarkSummary` (plus
+  `DemoRubricArea` / `DemoPaperbenchBaseline`) was extended to match. Every new
+  field is optional and defaults empty — a run with the verifier disabled
+  produces a byte-identical report and benchmark.
+- **Track 3 Phase C — capped self-improvement re-iteration loop.** After Gate 3,
+  `ReproLabOrchestrator` now loops back through improvement-selection + Gate 3
+  while the rubric verifier reports below `rubric_target_score`, up to
+  `rubric_max_improvement_iterations` rounds
+  (`_run_improvement_reiteration_loop`). Termination is guaranteed by the pure
+  `_should_reiterate` guard plus the per-round `improvement_iteration`
+  increment — no infinite loop. Fail-closed: a disabled verifier, an already-met
+  target, a missing verification, an exhausted run budget, or any re-iteration
+  error stops the loop and lets the run finish with the best verification so
+  far. The loop reuses the existing improvements_selected / improvements_run /
+  gate_3_passed stages — the `PipelineStage` enum is unchanged.
+  `improvement-orchestrator` is now fed the *latest* verification (the improved
+  one on a re-iteration round, the baseline one on the first pass), and
+  `improvement_iteration` is checkpointed after each round for crash-resume.
+  Target calibration is the single `rubric_target_score` applied identically at
+  every checkpoint; the PaperBench published baseline (a different judge on a
+  different scale) is surfaced as informational context in the completion
+  summary in Phase D, not used as the loop's stopping target.
+- **Track 3 Phase B — rubric-verifier wired into the pipeline.** The
+  `rubric-verifier` agent now runs at two checkpoints — within Gate 2
+  (post-`baseline_run`) producing `baseline_verification`, and within Gate 3
+  (post-`improvements_run`) producing `improved_verification`
+  (`backend/agents/orchestrator.py`). `PipelineState` gained
+  `baseline_verification`, `improved_verification`, `verification_history`, and
+  `improvement_iteration`, all round-tripped through the checkpoint; a run with
+  the verifier disabled checkpoints byte-for-byte as before. The baseline
+  verification's weak rubric areas now feed `improvement-orchestrator` as an
+  explicit objective. Fail-closed by contract: a verifier error logs and falls
+  back to the heuristic rubric — the run is never blocked. New opt-in config
+  keys (`backend/config.py`): `rubric_verifier_enabled` (default on),
+  `rubric_verifier_model` (empty = inherit the run model), `rubric_target_score`
+  (0.70), `rubric_max_improvement_iterations` (2) — the last two are consumed by
+  the Phase C re-iteration loop. `_invoke_agent` gained an optional
+  `model_override`. The capped re-iteration loop and bundle/published-baseline
+  target calibration land in Phase C.
+- **Track 3 Phase A — rubric-verifier scaffold (no pipeline wiring).** Added the
+  `rubric-verifier` agent to `AGENT_REGISTRY` with a two-phase prompt
+  (`backend/agents/prompts/rubric_verifier.py`): Phase 1 establishes the rubric
+  (from a vendored PaperBench bundle or generated from the claim map); Phase 2
+  scores each area against actual artifacts with concrete weak-point lists.
+  Added `RubricAreaScore` and `RubricVerification` schemas
+  (`backend/agents/schemas.py`) — `RubricVerification.from_areas` computes
+  `overall_score` and `meets_target` deterministically from per-area scores and
+  weights; the LLM-reported values are never trusted. Added the `RubricSource`
+  abstraction (`backend/agents/rubric_source.py`) with `BundleRubricSource`,
+  `GeneratedRubricSource`, and `resolve_rubric_source` — degrades cleanly to
+  `GeneratedRubricSource` when no validated bundle is found. Orchestrator wiring
+  is Phase B; nothing in the existing pipeline is changed.
 - **Persistent, URL-addressable lab runs.** The active run is now keyed
   by the `?projectId=` query param — `app/lab/page.tsx` is an async
   server component that restores the run server-side, so a refresh or a

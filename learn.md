@@ -11,6 +11,88 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — A "hard cap" that lived only in a prompt was advisory, not enforced
+
+**Symptom.** The rubric-verifier prompt told the model "no executable code →
+score ≤ 0.20", "code never ran → ≤ 0.35", etc., and the plan/changelog called
+these "honesty hard caps" — but nothing checked them. A model that returned 0.9
+for a run that never executed would be accepted verbatim.
+
+**Root cause.** Load-bearing invariants were expressed *only* as natural-language
+instructions to an LLM. A capable model usually follows them, but "usually" is
+not a guarantee, and the reported score is a metric users act on.
+
+**Fix.** Added a mechanical backstop in `_run_rubric_verifier`: the orchestrator
+already knows `experiment_artifacts.success`, so when the reproduction did not
+execute it clamps every area score before aggregation — independent of what the
+model returned. The prompt still states the caps (so the model cooperates).
+
+**Lesson.** A guarantee a prompt makes is only as strong as the model's
+compliance. If an invariant is load-bearing — a safety gate, a reported metric,
+a stopping criterion — enforce it in code at the boundary; let the prompt *also*
+state it, not *only* state it.
+
+**Guardrail.** `tests/test_rubric_verifier.py::test_run_rubric_verifier_caps_score_when_run_did_not_succeed`
+feeds a high model score for a failed run and asserts it is capped.
+
+## 2026-05-14 — A self-improvement loop compared scores from regenerated rubrics
+
+**Symptom.** The rubric verifier ran at Gate 2 and Gate 3, and the re-iteration
+loop stopped when `improved_verification.overall_score` met the target — but the
+baseline and improved verifications were not actually comparable.
+
+**Root cause.** Each checkpoint created a fresh `GeneratedRubricSource()` and
+passed `rubric: null`, so the verifier LLM generated *new* areas and weights
+every time. `baseline_verification` and `improved_verification` were scored
+against different rubrics; their delta — and the loop's stop criterion —
+measured rubric churn, not reproduction progress.
+
+**Fix.** Resolve the canonical rubric once per run (a vendored bundle's rubric,
+or LLM-generated on the first call), persist it in `PipelineState.rubric_spec`,
+and pass it back at every later checkpoint. Weights come from the persisted
+spec; the LLM supplies per-area scores only.
+
+**Lesson.** A metric you compare across time must be *defined* once. If the
+judge is free to redefine the rubric at each measurement, the series of scores
+is not a series — it is noise wearing a trend's clothes.
+
+**Guardrail.** `tests/test_rubric_verifier.py` asserts the first verifier call
+persists `rubric_spec` and a later call reuses its weights verbatim — a model
+that returns different weights is overridden, not trusted.
+
+---
+
+## 2026-05-14 — A `backend.agents` module eager-importing `backend.evals` was a circular import
+
+**Symptom.** Adding `from backend.agents.rubric_source import GeneratedRubricSource`
+to `backend/agents/orchestrator.py` broke *every* import of the orchestrator:
+`ImportError: cannot import name 'PipelineState' from partially initialized
+module 'backend.agents.orchestrator'`.
+
+**Root cause.** `rubric_source.py` had a module-level
+`from backend.evals.paperbench.bundle import ...`. Importing any
+`backend.evals.*` submodule runs `backend/evals/__init__.py`, which eagerly
+imports `backend.evals.runner` → which imports `backend.agents.orchestrator`.
+While `orchestrator` was *mid-import* (at the new `rubric_source` line, before
+`PipelineState` was defined), `runner` tried to import `PipelineState` from it.
+Phase A didn't hit this because nothing in the main import graph pulled in
+`rubric_source` — only the tests did, and by then `orchestrator` was complete.
+
+**Fix.** Made `rubric_source.py` import the `bundle` loader **lazily**, inside
+the two functions that actually load a bundle. The cycle is broken because by
+call time `orchestrator` is fully initialized.
+
+**Lesson.** A package `__init__.py` that eagerly imports heavy submodules turns
+*every* `from that_package.x import y` into a transitive import of the whole
+package graph. A leaf-looking module (`bundle.py` only imports stdlib) is not
+leaf if its package `__init__` is not.
+
+**Guardrail.** A `backend.agents.*` module that needs `backend.evals.*` (or any
+package whose `__init__` reaches back into `backend.agents`) imports it lazily
+inside the function that needs it — never at module scope.
+
+---
+
 ## 2026-05-14 — A timed-out enrichment frame silently blanked the live graph
 
 **Symptom.** Mid-run, the workflow graph's per-path improvement nodes
