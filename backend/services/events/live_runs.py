@@ -971,6 +971,19 @@ def _python_script(
     runs_root: Path,
     uploaded_paper: dict[str, str] | None,
 ) -> str:
+    _settings = get_settings()
+    if request.provider == "openai":
+        _model_id = (
+            _settings.openai_reasoning_model
+            if request.model == "opus"
+            else _settings.openai_default_model
+        )
+    else:
+        _model_id = (
+            _settings.anthropic_reasoning_model
+            if request.model == "opus"
+            else _settings.anthropic_default_model
+        )
     common = {
         "project_id": project_id,
         "run_mode": request.mode,
@@ -979,9 +992,9 @@ def _python_script(
         "execution_mode": request.executionMode,
         "sandbox": request.sandbox,
         "gpu_mode": request.gpuMode,
-        "model": _MODEL_IDS.get(request.model, _MODEL_IDS["sonnet"]),
+        "model": _model_id,
         "runs_root": str(runs_root),
-        "database_url": get_settings().database_url,
+        "database_url": _settings.database_url,
         "uploaded_paper": uploaded_paper,
     }
     return f"""
