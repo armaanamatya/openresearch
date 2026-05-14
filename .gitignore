@@ -58,6 +58,14 @@ runs/
 # Frontend build artifacts
 frontend/tsconfig.tsbuildinfo
 
+# Test runner output (Playwright traces, screenshots, JSON artifacts)
+test-results/
+frontend/test-results/
+frontend/playwright-report/
+
+# Stray root-level node_modules (the real one is frontend/node_modules/)
+/node_modules/
+
 # Local-only test logs and DB backups
 _test_logs/
 reprolab.db.offline_backup
