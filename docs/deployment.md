@@ -186,6 +186,96 @@ For Kubernetes or cloud deployments, mount a persistent volume at `/app/runs`.
 
 ---
 
+## Railway deployment
+
+Railway runs the bundled single-image build (backend + frontend in one container).
+`railway.json` at the repo root pins the build to the `Dockerfile` and healthchecks
+`/health`.
+
+### One-time setup
+
+1. **Volume** — create a Railway volume mounted at `/app/runs`. It holds both the
+   SQLite DB and all run artifacts. Railway allows one volume per service and blocks
+   two deployments mounting it at once, so redeploys cause a brief outage and the
+   service must stay at `numReplicas: 1` (already set in `railway.json`).
+2. **Target port** — set the service variable `PORT=3000` and the public networking
+   target port to `3000`. The entrypoint binds the frontend to `$PORT`; the backend
+   stays internal on `8000`.
+
+### Environment variables
+
+In addition to the variables in the *Required environment variables* section above:
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | your key | LLM provider — runs default to real SDK mode |
+| `REPROLAB_DATABASE_URL` | `sqlite:////app/runs/reprolab.db` | DB on the persistent volume (four slashes — absolute path) |
+| `REPROLAB_DEMO_SECRET` | a long random string | the access gate — see below |
+| `REPROLAB_BACKEND_URL` | `http://127.0.0.1:8000` | frontend → backend, same container |
+| `PORT` | `3000` | public frontend port |
+| `REPROLAB_FORCE_SANDBOX` | *unset* (RunPod) or `local` | compute mode — see below |
+
+### Compute: RunPod (preferred) vs local
+
+The lab UI requests `sandbox=runpod` for every run. `REPROLAB_FORCE_SANDBOX` is the
+deployment-level override that pins the sandbox regardless of what the client asks for:
+
+- **RunPod-backed (preferred)** — leave `REPROLAB_FORCE_SANDBOX` unset and provide the
+  RunPod credentials from the *RunPod (remote GPU)* section above. Real GPU compute;
+  handles heavy papers.
+- **`local` (no GPU, $0 compute)** — set `REPROLAB_FORCE_SANDBOX=local`. The
+  reproduction pipeline then runs inside the Railway container itself — CPU-only,
+  memory/disk-limited. Fine for the built-in fixture and lightweight papers; a heavy
+  uploaded paper can OOM or run long.
+
+`REPROLAB_DEFAULT_SANDBOX` does **not** help here — it is only a fallback for requests
+that omit the sandbox, and the UI never does. `REPROLAB_FORCE_SANDBOX` is the real lever.
+
+### The access gate — `REPROLAB_DEMO_SECRET`
+
+When `REPROLAB_DEMO_SECRET` is set, the deployment is gated end to end:
+
+- **Front door** — a Next.js proxy (`frontend/src/proxy.ts`) requires a valid session
+  for every page and API route. Visitors land on an unlock screen (`/unlock`), enter
+  the secret, and `POST /api/unlock` validates it (constant-time) and sets an HttpOnly,
+  12-hour cookie holding `sha256(secret)` — never the raw value.
+- **Back door** — `POST /runs` and `/runs/upload` independently require a matching
+  `X-Demo-Secret` header (`backend/app.py: _enforce_demo_gate`); the `/api/demo` proxy
+  attaches it for authenticated sessions. Defense in depth: the backend can't be driven
+  even if reached directly.
+
+When `REPROLAB_DEMO_SECRET` is **unset**, both gates are disabled — the local-dev
+default, unchanged.
+
+**Using it:**
+
+```bash
+openssl rand -hex 24   # generate a high-entropy secret, then set it in Railway
+```
+
+The variable is shared by both processes in the container. Share the Railway URL and
+the secret with the demo owner (ideally via separate channels); they visit the URL →
+unlock screen → paste the secret → 12-hour session. Rotate by changing the variable
+(invalidates all existing sessions). Use a long, random value — `/api/unlock` adds a
+fixed failure delay, but entropy is the real defense.
+
+### Verify
+
+- `GET /health` → `200` (the frontend proxies the backend probe; `503` if the backend is down)
+- `GET /lab` with no session → redirect to `/unlock`
+- `POST /api/unlock` with the wrong code → `401`; correct → `200` + `Set-Cookie`
+- a run started from the UI reaches `POST /runs` with `X-Demo-Secret` and executes in the configured sandbox
+
+### Limitations
+
+- SQLite on a single volume → `numReplicas: 1`, brief redeploy downtime. Postgres is
+  the scaling path (see the *Database* section).
+- The unlock cookie is a static `sha256(secret)` token (no rotation/expiry signing) —
+  adequate for an owner-only demo, not a general auth system.
+- `local` sandbox capacity is bounded by the Railway container; see *Compute* above.
+
+---
+
 ## Pre-Production Checklist
 
 - [ ] **Schema consolidation** — audit and remove unused SQLite tables; consolidate migration init; harden WAL behavior (see Database section above)
