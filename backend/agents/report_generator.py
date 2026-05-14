@@ -581,21 +581,39 @@ def generate_final_report(
     # Path summaries
     paths = _build_path_summaries(path_results, improvement_hypotheses, baseline_metrics)
 
-    # Identify primary metric: first paper metric that has both a target and a baseline value
+    # Identify primary metric: first paper metric that has both a target and a
+    # baseline value. When the spec name matches several deltas (e.g. "reward"
+    # substring-matches both `mean_reward` and the derived `baseline_reward`
+    # key), prefer the metric the baseline actually measured, then an exact
+    # name match, then the shortest name — so the headline names the real
+    # claimed metric rather than an incidental derived key.
+    def _norm(name: str) -> str:
+        return name.lower().replace(" ", "_").replace("-", "_")
+
+    baseline_keys_norm = {_norm(k) for k in baseline_metrics}
     primary_metric: str | None = None
     for spec in paper_metrics:
         target = _parse_target_value(spec.target_value)
-        if target is not None:
-            baseline_val = _find_metric_value(spec.name, baseline_metrics)
-            if baseline_val is not None:
-                for md in metric_deltas:
-                    spec_norm = spec.name.lower().replace(" ", "_").replace("-", "_")
-                    key_norm = md.metric_name.lower().replace(" ", "_").replace("-", "_")
-                    if spec_norm == key_norm or key_norm in spec_norm or spec_norm in key_norm:
-                        primary_metric = md.metric_name
-                        break
-            if primary_metric:
-                break
+        if target is None:
+            continue
+        if _find_metric_value(spec.name, baseline_metrics) is None:
+            continue
+        spec_norm = _norm(spec.name)
+        candidates = [
+            md for md in metric_deltas
+            if _norm(md.metric_name) == spec_norm
+            or _norm(md.metric_name) in spec_norm
+            or spec_norm in _norm(md.metric_name)
+        ]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda md: (
+            _norm(md.metric_name) not in baseline_keys_norm,
+            _norm(md.metric_name) != spec_norm,
+            len(md.metric_name),
+        ))
+        primary_metric = candidates[0].metric_name
+        break
 
     # Aggregate stats
     total = len(path_results)
