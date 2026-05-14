@@ -1018,12 +1018,16 @@ function Canvas({
   onSelect,
   run,
   selectedId,
-  stateMap
+  stateMap,
+  dashboardEvents,
+  decisions
 }: {
   onSelect: (id: string | null) => void;
   run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
+  dashboardEvents: DashboardLiveEvent[];
+  decisions: string[];
 }) {
   function edgeState(from: string, to: string) {
     const source = stateMap[from];
@@ -1090,6 +1094,7 @@ function Canvas({
         />
       ))}
       <GateChips run={run} />
+      <FloatingAgentWindow events={dashboardEvents} decisions={decisions} stateMap={stateMap} />
     </div>
   );
 }
@@ -1175,12 +1180,16 @@ function PanCanvas({
   onSelect,
   run,
   selectedId,
-  stateMap
+  stateMap,
+  dashboardEvents,
+  decisions
 }: {
   onSelect: (id: string | null) => void;
   run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
+  dashboardEvents: DashboardLiveEvent[];
+  decisions: string[];
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef({ active: false, moved: false, slx: 0, sx: 0, sty: 0, sy: 0 });
@@ -1249,6 +1258,8 @@ function PanCanvas({
         run={run}
         stateMap={stateMap}
         selectedId={selectedId}
+        dashboardEvents={dashboardEvents}
+        decisions={decisions}
         onSelect={(id) => {
           if (!dragRef.current.moved) {
             onSelect(id);
@@ -1743,22 +1754,17 @@ function ChevronGlyph({ dir }: { dir: "left" | "right" }) {
   );
 }
 
-// A panel docked to the right viewport edge. Collapsed it is a labelled
-// tab; expanded it slides out as an overlay drawer ON TOP of the graph —
-// the canvas never reflows. Controlled by WorkflowView so the two
-// drawers behave as an accordion (at most one open at a time).
+// The node-details panel, docked to the right viewport edge. Collapsed it
+// is a labelled tab; expanded it slides out as an overlay drawer ON TOP of
+// the graph — the canvas never reflows.
 function EdgeDrawer({
   label,
-  tabIndex,
   open,
-  tabShifted,
   onToggle,
   children
 }: {
   label: string;
-  tabIndex: 0 | 1;
   open: boolean;
-  tabShifted: boolean;
   onToggle: () => void;
   children: ReactNode;
 }) {
@@ -1767,7 +1773,7 @@ function EdgeDrawer({
       {!open && (
         <button
           type="button"
-          className={`edge-drawer-tab edge-drawer-tab-${tabIndex}${tabShifted ? " shifted" : ""}`}
+          className="edge-drawer-tab"
           onClick={onToggle}
           aria-expanded={false}
         >
@@ -1793,6 +1799,145 @@ function EdgeDrawer({
   );
 }
 
+const AGENT_WINDOW_KEY = "reprolab:agentWindow";
+const AGENT_WINDOW_MIN = { w: 264, h: 208 };
+const AGENT_WINDOW_DEFAULT = { w: 350, h: 320 };
+
+// A draggable / resizable / scrollable live-agent feed that floats inside
+// the canvas surface and anchors next to whichever node is currently
+// running — it "follows" the pipeline as the active agent advances. Once
+// the user drags it, it stays put; an "anchor" control snaps it back to
+// following. Size is persisted; position resets to following each session.
+function FloatingAgentWindow({
+  events,
+  decisions,
+  stateMap
+}: {
+  events: DashboardLiveEvent[];
+  decisions: string[];
+  stateMap: Record<string, NodeState>;
+}) {
+  const activeNode = useMemo(() => {
+    const running = NODES.find((node) => stateMap[node.id] === "running");
+    if (running) return running;
+    const lastDone = [...NODES].reverse().find((node) => stateMap[node.id] === "done");
+    return lastDone ?? NODES[0];
+  }, [stateMap]);
+
+  const [size, setSize] = useState(AGENT_WINDOW_DEFAULT);
+  const [manualPos, setManualPos] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<
+    { mode: "drag" | "resize"; px: number; py: number; ox: number; oy: number; ow: number; oh: number } | null
+  >(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(AGENT_WINDOW_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { w?: number; h?: number };
+      if (typeof saved.w === "number" && typeof saved.h === "number") {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSize({
+          w: Math.max(AGENT_WINDOW_MIN.w, saved.w),
+          h: Math.max(AGENT_WINDOW_MIN.h, saved.h)
+        });
+      }
+    } catch {
+      // ignore — fall back to the default size
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AGENT_WINDOW_KEY, JSON.stringify(size));
+    } catch {
+      // non-fatal
+    }
+  }, [size]);
+
+  // Anchor to the right of the active node; flip left when it would spill
+  // off the 1740x720 canvas surface, and clamp within it.
+  const anchorRight = activeNode.x + NODE_W + 28;
+  const anchorX =
+    anchorRight + size.w > 1740 ? Math.max(8, activeNode.x - size.w - 28) : anchorRight;
+  const anchorY = Math.min(Math.max(8, activeNode.y - 14), 720 - size.h - 8);
+  const x = manualPos?.x ?? anchorX;
+  const y = manualPos?.y ?? anchorY;
+  const following = manualPos === null;
+
+  const beginPointer = useCallback(
+    (mode: "drag" | "resize") => (event: React.MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragRef.current = {
+        mode,
+        px: event.clientX,
+        py: event.clientY,
+        ox: x,
+        oy: y,
+        ow: size.w,
+        oh: size.h
+      };
+      const move = (moveEvent: MouseEvent) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        const dx = moveEvent.clientX - drag.px;
+        const dy = moveEvent.clientY - drag.py;
+        if (drag.mode === "drag") {
+          setManualPos({ x: drag.ox + dx, y: drag.oy + dy });
+        } else {
+          setSize({
+            w: Math.max(AGENT_WINDOW_MIN.w, drag.ow + dx),
+            h: Math.max(AGENT_WINDOW_MIN.h, drag.oh + dy)
+          });
+        }
+      };
+      const end = () => {
+        dragRef.current = null;
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", end);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", end);
+    },
+    [x, y, size.w, size.h]
+  );
+
+  return (
+    <aside
+      className={`agent-window${following ? " following" : ""}`}
+      style={{ left: x, top: y, width: size.w, height: size.h }}
+    >
+      <header className="agent-window-head" onMouseDown={beginPointer("drag")}>
+        <span className="agent-window-dot" aria-hidden="true" />
+        <span className="agent-window-title">Live agents</span>
+        <span className="agent-window-active" title={`Active agent: ${activeNode.agent}`}>
+          {activeNode.agent}
+        </span>
+        {!following && (
+          <button
+            type="button"
+            className="agent-window-anchor"
+            onClick={() => setManualPos(null)}
+            onMouseDown={(event) => event.stopPropagation()}
+            title="Re-anchor to the active agent"
+          >
+            anchor
+          </button>
+        )}
+      </header>
+      <div className="agent-window-body">
+        <AgentTimelineRail events={events} decisions={decisions} />
+      </div>
+      <span
+        className="agent-window-resize"
+        onMouseDown={beginPointer("resize")}
+        aria-hidden="true"
+      />
+    </aside>
+  );
+}
+
 function WorkflowView({
   busy,
   dashboardEvents,
@@ -1807,28 +1952,29 @@ function WorkflowView({
   run: LiveDemoRunState;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [openDrawer, setOpenDrawer] = useState<"details" | "agents" | null>(null);
+  // Node details is presented open by default — it is the primary panel.
+  const [detailsOpen, setDetailsOpen] = useState(true);
 
   useEffect(() => {
     // Post-mount read of a browser-only preference: it cannot run during
     // render (the server has no localStorage and would hydrate-mismatch),
-    // so the one-shot setState here is intentional, not a cascade.
+    // so the one-shot setState here is intentional, not a cascade. Only an
+    // explicit "closed" overrides the default-open panel.
     try {
-      const stored = window.localStorage.getItem(DRAWER_KEY);
-      if (stored === "details" || stored === "agents") {
+      if (window.localStorage.getItem(DRAWER_KEY) === "closed") {
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        setOpenDrawer(stored);
+        setDetailsOpen(false);
       }
     } catch {
-      // localStorage unavailable — start with both drawers collapsed.
+      // localStorage unavailable — keep the default-open panel.
     }
   }, []);
 
-  const toggleDrawer = useCallback((key: "details" | "agents") => {
-    setOpenDrawer((prev) => {
-      const next = prev === key ? null : key;
+  const toggleDetails = useCallback(() => {
+    setDetailsOpen((prev) => {
+      const next = !prev;
       try {
-        window.localStorage.setItem(DRAWER_KEY, next ?? "");
+        window.localStorage.setItem(DRAWER_KEY, next ? "open" : "closed");
       } catch {
         // non-fatal
       }
@@ -1870,25 +2016,17 @@ function WorkflowView({
       </div>
       <div className="workflow-stage">
         <div className="canvas-wrap canvas-wrap-full">
-          <PanCanvas run={run} stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} />
+          <PanCanvas
+            run={run}
+            stateMap={stateMap}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            dashboardEvents={dashboardEvents}
+            decisions={decisions}
+          />
         </div>
-        <EdgeDrawer
-          label="Node details"
-          tabIndex={0}
-          open={openDrawer === "details"}
-          tabShifted={openDrawer !== null}
-          onToggle={() => toggleDrawer("details")}
-        >
+        <EdgeDrawer label="Node details" open={detailsOpen} onToggle={toggleDetails}>
           <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
-        </EdgeDrawer>
-        <EdgeDrawer
-          label="Live agents"
-          tabIndex={1}
-          open={openDrawer === "agents"}
-          tabShifted={openDrawer !== null}
-          onToggle={() => toggleDrawer("agents")}
-        >
-          <AgentTimelineRail events={dashboardEvents} decisions={decisions} />
         </EdgeDrawer>
       </div>
     </>
@@ -2338,6 +2476,7 @@ function PrototypeStyles() {
       .reproLab .edge-drawer-tab {
         position: fixed;
         right: 0;
+        top: calc(50% - 66px);
         z-index: 45;
         display: flex;
         flex-direction: column;
@@ -2353,24 +2492,11 @@ function PrototypeStyles() {
         color: var(--ink-2);
         cursor: pointer;
         box-shadow: -8px 0 24px -16px rgba(0, 0, 0, 0.3);
-        transition: background 0.18s ease, color 0.18s ease,
-          right 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: background 0.18s ease, color 0.18s ease;
       }
       .reproLab .edge-drawer-tab:hover {
         background: var(--chip);
         color: var(--ink);
-      }
-      .reproLab .edge-drawer-tab-0 {
-        top: calc(50% - 140px);
-      }
-      .reproLab .edge-drawer-tab-1 {
-        top: calc(50% + 8px);
-      }
-      .reproLab .edge-drawer-tab.shifted {
-        /* Track the open drawer's actual left edge — the drawer is
-           width 384px but max-width 92vw, so on a narrow viewport a
-           fixed 384px shift would push the tab off-screen. */
-        right: min(384px, 92vw);
       }
       .reproLab .edge-drawer-tab-label {
         writing-mode: vertical-rl;
@@ -2448,6 +2574,114 @@ function PrototypeStyles() {
         position: static;
         border: none;
         border-radius: 0;
+      }
+      /* Floating live-agent window — drifts inside the canvas surface and
+         anchors to the active node; draggable, resizable, scrollable. */
+      .reproLab .agent-window {
+        position: absolute;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border: 1px solid var(--line-2);
+        border-radius: 14px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05),
+          0 22px 48px -20px rgba(0, 0, 0, 0.32);
+        overflow: hidden;
+        min-width: 264px;
+        min-height: 208px;
+      }
+      .reproLab .agent-window.following {
+        transition: left 0.42s cubic-bezier(0.32, 0.72, 0, 1),
+          top 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+      }
+      .reproLab .agent-window-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 10px 9px 12px;
+        background: var(--ink);
+        color: #fff;
+        cursor: grab;
+        user-select: none;
+        flex-shrink: 0;
+      }
+      .reproLab .agent-window-head:active {
+        cursor: grabbing;
+      }
+      .reproLab .agent-window-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px rgba(22, 178, 92, 0.25);
+        animation: pulseDot 1.6s ease-in-out infinite;
+        flex-shrink: 0;
+      }
+      .reproLab .agent-window-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .reproLab .agent-window-active {
+        margin-left: auto;
+        max-width: 132px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
+        font-weight: 600;
+        color: #fff;
+        background: rgba(255, 255, 255, 0.16);
+        padding: 2px 9px;
+        border-radius: 999px;
+      }
+      .reproLab .agent-window-anchor {
+        flex-shrink: 0;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--ink);
+        background: #fff;
+        border: none;
+        border-radius: 999px;
+        padding: 3px 9px;
+        cursor: pointer;
+      }
+      .reproLab .agent-window-anchor:hover {
+        background: var(--accent-soft);
+        color: var(--accent-ink);
+      }
+      .reproLab .agent-window-body {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .reproLab .agent-window-body > .timeline-rail {
+        flex: 1;
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        border: none;
+        border-radius: 0;
+      }
+      .reproLab .agent-window-resize {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: 20px;
+        height: 20px;
+        cursor: nwse-resize;
+        background: linear-gradient(
+          135deg,
+          transparent 0 44%,
+          var(--line-2) 44% 52%,
+          transparent 52% 66%,
+          var(--line-2) 66% 74%,
+          transparent 74%
+        );
       }
       .reproLab .timeline-rail {
         background: var(--panel);
