@@ -85,6 +85,7 @@ class Figure(BaseModel):
     project_id: str
     caption: str
     page: int
+    description: str | None = None
 
 
 __all__ = [
