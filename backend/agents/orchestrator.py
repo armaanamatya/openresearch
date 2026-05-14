@@ -58,6 +58,7 @@ from backend.agents.schemas import (
     ResearchMap,
     VerificationReport,
 )
+from backend.agents.report_generator import generate_final_report, write_final_report
 from backend.agents.structured_output import append_structured_output_instruction
 from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.telemetry import (
@@ -136,6 +137,19 @@ class PipelineState:
     run_group_id: str | None = None
     blacklist_terms: list[str] = field(default_factory=list)
 
+    def advance_stage(self, stage: PipelineStage, runs_root: Path) -> Path:
+        """Transition to ``stage`` and persist the checkpoint atomically.
+
+        This is the *only* sanctioned way to move the pipeline forward. Bare
+        ``state.stage = X`` assignments are rejected by
+        ``tests/test_pipeline_state_persistence.py`` because they desync the
+        on-disk checkpoint from in-memory state: the Next.js bridge
+        (`server-payload.ts`) reads `pipeline_state.json` to populate
+        `payload.summary.stage`, so a missed write strands the UI counter.
+        """
+        self.stage = stage
+        return self.save_checkpoint(runs_root)
+
     def save_checkpoint(self, runs_root: Path) -> Path:
         """Persist pipeline state to disk for crash-resume."""
         checkpoint_dir = runs_root / self.project_id
@@ -185,7 +199,12 @@ class PipelineState:
             }
         if self.hermes_interventions:
             data["hermes_interventions"] = self.hermes_interventions
-        path.write_text(json.dumps(data, indent=2))
+        # Atomic write: every stage transition persists here, and the Next.js
+        # bridge polls this file concurrently. Write-then-rename guarantees a
+        # reader never observes a truncated checkpoint.
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.replace(path)
         logger.info("Checkpoint saved: stage=%s path=%s", self.stage.value, path)
         return path
 
@@ -894,7 +913,7 @@ class ReproLabOrchestrator:
             state.paper_claim_map.model_dump(),
             "paper-understanding",
         )
-        state.stage = PipelineStage.PAPER_UNDERSTOOD
+        state.advance_stage(PipelineStage.PAPER_UNDERSTOOD, self.runs_root)
         return state
 
     async def run_artifact_discovery(self, state: PipelineState) -> PipelineState:
@@ -918,7 +937,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "artifact_index", state.artifact_index, "artifact-discovery"
         )
-        state.stage = PipelineStage.ARTIFACTS_DISCOVERED
+        state.advance_stage(PipelineStage.ARTIFACTS_DISCOVERED, self.runs_root)
         return state
 
     async def run_environment_detective(self, state: PipelineState) -> PipelineState:
@@ -951,7 +970,7 @@ class ReproLabOrchestrator:
             state.environment_spec.model_dump(),
             "environment-detective",
         )
-        state.stage = PipelineStage.ENVIRONMENT_BUILT
+        state.advance_stage(PipelineStage.ENVIRONMENT_BUILT, self.runs_root)
         return state
 
     async def run_reproduction_planner(self, state: PipelineState) -> PipelineState:
@@ -984,7 +1003,7 @@ class ReproLabOrchestrator:
             state.reproduction_contract.model_dump(),
             "reproduction-planner",
         )
-        state.stage = PipelineStage.PLAN_CREATED
+        state.advance_stage(PipelineStage.PLAN_CREATED, self.runs_root)
         return state
 
     async def run_gate_1(self, state: PipelineState) -> PipelineState:
@@ -1026,8 +1045,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_1", state.gate_1.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_1_PASSED
-        state.save_checkpoint(self.runs_root)
+        state.advance_stage(PipelineStage.GATE_1_PASSED, self.runs_root)
         return state
 
     async def run_baseline_implementation(self, state: PipelineState) -> PipelineState:
@@ -1064,7 +1082,7 @@ class ReproLabOrchestrator:
             state.baseline_result.model_dump(),
             "baseline-implementation",
         )
-        state.stage = PipelineStage.BASELINE_IMPLEMENTED
+        state.advance_stage(PipelineStage.BASELINE_IMPLEMENTED, self.runs_root)
         return state
 
     async def run_experiment(self, state: PipelineState) -> PipelineState:
@@ -1120,7 +1138,7 @@ class ReproLabOrchestrator:
             state.experiment_artifacts.model_dump(),
             "experiment-runner",
         )
-        state.stage = PipelineStage.BASELINE_RUN
+        state.advance_stage(PipelineStage.BASELINE_RUN, self.runs_root)
         return state
 
     async def run_gate_2(self, state: PipelineState) -> PipelineState:
@@ -1163,8 +1181,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_2", state.gate_2.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_2_PASSED
-        state.save_checkpoint(self.runs_root)
+        state.advance_stage(PipelineStage.GATE_2_PASSED, self.runs_root)
         return state
 
     async def run_improvements(
@@ -1206,7 +1223,7 @@ class ReproLabOrchestrator:
             hypotheses_payload,
             "improvement-orchestrator",
         )
-        state.stage = PipelineStage.IMPROVEMENTS_SELECTED
+        state.advance_stage(PipelineStage.IMPROVEMENTS_SELECTED, self.runs_root)
 
         # Run path agents with bounded concurrency. Results are applied to
         # state in hypothesis order after all invocations finish so checkpoints,
@@ -1277,7 +1294,7 @@ class ReproLabOrchestrator:
                 target=f"improvement-path:{hypothesis.path_id}",
                 structured_output=path_result.model_dump(),
             )
-        state.stage = PipelineStage.IMPROVEMENTS_RUN
+        state.advance_stage(PipelineStage.IMPROVEMENTS_RUN, self.runs_root)
         self._enrich_workspace(
             "path_results",
             {"results": [r.model_dump() for r in state.path_results]},
@@ -1387,8 +1404,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_3", state.gate_3.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_3_PASSED
-        state.save_checkpoint(self.runs_root)
+        state.advance_stage(PipelineStage.GATE_3_PASSED, self.runs_root)
         return state
 
     async def generate_research_map(self, state: PipelineState) -> PipelineState:
@@ -1441,7 +1457,7 @@ class ReproLabOrchestrator:
             {"entries": state.decision_log},
             "orchestrator",
         )
-        state.stage = PipelineStage.RESEARCH_MAP_GENERATED
+        state.advance_stage(PipelineStage.RESEARCH_MAP_GENERATED, self.runs_root)
         # Write final artifacts
         (self._project_dir / "research_map.json").write_text(
             state.research_map.model_dump_json(indent=2)
@@ -1452,8 +1468,34 @@ class ReproLabOrchestrator:
         (self._project_dir / "decision_log.json").write_text(
             json.dumps(state.decision_log, indent=2)
         )
-        state.stage = PipelineStage.COMPLETE
-        state.save_checkpoint(self.runs_root)
+        # Synthesize the deterministic final report — computed PaperBench-style
+        # rubric, statistical rigor, and paper-vs-baseline-vs-improved deltas.
+        # This is the single source of truth the UI bridge and PaperBench
+        # surface both consume; failures here must not abort a finished run.
+        try:
+            final_report = generate_final_report(
+                self.project_id,
+                state.paper_claim_map,
+                state.experiment_artifacts,
+                state.improvement_hypotheses,
+                state.path_results,
+                state.research_map,
+                environment_spec=state.environment_spec,
+                baseline_result=state.baseline_result,
+                gate_1=state.gate_1,
+                gate_2=state.gate_2,
+                gate_3=state.gate_3,
+                project_dir=self._project_dir,
+            )
+            write_final_report(final_report, self._project_dir)
+            self._enrich_workspace(
+                "final_report",
+                final_report.model_dump(),
+                "final-report-generator",
+            )
+        except Exception:
+            logger.warning("Final report generation failed", exc_info=True)
+        state.advance_stage(PipelineStage.COMPLETE, self.runs_root)
         return state
 
     async def run(
