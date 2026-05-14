@@ -565,6 +565,33 @@ export function stateMapForRun(run: LiveDemoRunState | null): Record<string, Nod
   return map;
 }
 
+// Merge a freshly-received run_state frame onto the current one. The GET
+// route (750 ms) and the SSE route (250 ms) both cap payload enrichment
+// and fall back to the *un-enriched* backend state on timeout — that
+// frame carries no `payload`/`telemetry`. Applied raw it would blank the
+// graph's per-path nodes (stateMapForRun reads `payload.pathStates`).
+// Carry the last good values forward until the next enriched frame
+// instead of letting the UI regress.
+function coalesceRunState(
+  prev: LiveDemoRunState | null,
+  next: LiveDemoRunState
+): LiveDemoRunState {
+  if (!prev || prev.projectId !== next.projectId) {
+    return next;
+  }
+  if (!next.payload && prev.payload && process.env.NODE_ENV !== "production") {
+    console.warn(
+      "[reprolab] un-enriched run_state frame (no payload) — retaining the last enriched payload so the graph does not regress"
+    );
+  }
+  return {
+    ...next,
+    payload: next.payload ?? prev.payload,
+    telemetry: next.telemetry?.length ? next.telemetry : prev.telemetry,
+    log: next.log || prev.log
+  };
+}
+
 function parseLogEntries(run: LiveDemoRunState | null) {
   if (!run?.log) {
     return [];
@@ -574,12 +601,14 @@ function parseLogEntries(run: LiveDemoRunState | null) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(-20)
+    .slice(-80)
     .reverse()
     .map((line, index) => ({
       id: `${run.projectId}-${index}`,
       time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      msg: issueText(line)
+      // Log lines render verbatim — euphemising "failed" to "needs
+      // attention" here hid real failures from anyone reading the log.
+      msg: line
     }));
 }
 
@@ -3422,7 +3451,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       source.addEventListener("run_state", (event) => {
         try {
           const next = JSON.parse((event as MessageEvent).data) as LiveDemoRunState;
-          setRun(next);
+          setRun((current) => coalesceRunState(current, next));
           if (next.status === "failed") {
             setError(next.error ? issueText(next.error) : "Run needs attention");
             setBusy(false);
@@ -3493,7 +3522,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
         }
         const next = (await response.json()) as LiveDemoRunState | null;
         if (next) {
-          setRun(next);
+          setRun((current) => coalesceRunState(current, next));
         }
       } catch (pollError) {
         setError(pollError instanceof Error ? pollError.message : "Unable to refresh run");
