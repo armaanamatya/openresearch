@@ -1680,7 +1680,11 @@ function RightPanel({
           {logEntries.length > 0 ? (
             logEntries.map((entry, index) => (
               <div key={entry.id} className="event fadeup" style={{ animationDelay: `${index * 30}ms` }}>
-                <span className="mono event-time">{entry.time}</span>
+                {/* Locale/timezone-formatted on both server and client now
+                    that a run can be SSR'd — suppress the hydration diff. */}
+                <span className="mono event-time" suppressHydrationWarning>
+                  {entry.time}
+                </span>
                 <span className="event-dot" />
                 <div className="mono event-message">{entry.msg}</div>
               </div>
@@ -2332,7 +2336,10 @@ function PrototypeStyles() {
         top: calc(50% + 8px);
       }
       .reproLab .edge-drawer-tab.shifted {
-        right: 384px;
+        /* Track the open drawer's actual left edge — the drawer is
+           width 384px but max-width 92vw, so on a narrow viewport a
+           fixed 384px shift would push the tab off-screen. */
+        right: min(384px, 92vw);
       }
       .reproLab .edge-drawer-tab-label {
         writing-mode: vertical-rl;
@@ -3380,44 +3387,49 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       return;
     }
 
+    // Try the ?projectId= in the URL first, then the localStorage
+    // pointer. Both resolve through the same client-side fetch: a
+    // server-side initialRun of null is ambiguous (deleted run OR a
+    // transient SSR backend hiccup), so we re-check on the client and
+    // only a definitive "not found" clears the pointer / URL — a 504 or
+    // a network error is left intact so the next visit retries.
     const urlPid = new URLSearchParams(window.location.search).get("projectId");
-    if (urlPid) {
-      // ?projectId= was in the URL but the server could not load it
-      // (deleted / expired) — clear the stale link and stay on upload.
-      clearLastRun();
-      setRunUrl(null);
-      return;
-    }
-
-    const stored = readLastRun();
-    if (!stored) {
+    const candidate = urlPid ?? readLastRun();
+    if (!candidate) {
       return;
     }
 
     void (async () => {
       try {
-        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(stored)}`, {
+        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(candidate)}`, {
           cache: "no-store"
         });
         if (response.status === 504) {
-          // Transient backend outage — keep the pointer so the next
-          // visit retries instead of discarding a live run.
+          // Transient backend outage — keep the pointer and the URL so
+          // the next visit retries instead of discarding a live run.
           return;
         }
         if (!response.ok) {
+          // Definitively gone (404 etc.) — clear the stale pointer/URL.
           clearLastRun();
+          if (urlPid) {
+            setRunUrl(null);
+          }
           return;
         }
         const restored = (await response.json()) as LiveDemoRunState | null;
         if (!restored || !restored.projectId) {
           clearLastRun();
+          if (urlPid) {
+            setRunUrl(null);
+          }
           return;
         }
         setRun(restored);
         setRunUrl(restored.projectId);
         writeLastRun(restored.projectId);
       } catch {
-        // Network error — keep the pointer; the next visit retries.
+        // Network error — keep the pointer/URL; the next visit retries.
       }
     })();
     // Mount-only: initialRun is server-rendered and stable for this
