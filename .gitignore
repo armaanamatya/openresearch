@@ -84,9 +84,10 @@ reprolab.db-wal
 /package-lock.json
 
 # Local planning prompts, ad-hoc screenshots, and corrupt DB recovery snapshots.
+# Root-level PNGs are ad-hoc screenshots; intentional doc assets live in docs/.
 /claude_plan_*.md
 /claude_review_*.md
 /codex_prompt*.md
 /conflicts.md
-/localhost_*.png
+/*.png
 /reprolab.db.corrupt-*
