@@ -80,6 +80,18 @@ class BenchmarkSummary(BaseModel):
     reportPath: str
     comparisonPath: str
     logPath: str
+    # Track 3 — rubric-verifier comparison. All optional/defaulted so old
+    # demo_status.json files (and offline-demo runs) still parse — and, crucially,
+    # so these survive the LiveRunState(**status) round-trip instead of being
+    # dropped by pydantic's default extra="ignore" before they reach the UI.
+    paperbenchBaseline: dict[str, Any] | None = None
+    ourRubricScore: float | None = None
+    verificationDelta: float | None = None
+    improvementIterations: int = 0
+    meetsTarget: bool | None = None
+    comparisonSummary: str = ""
+    rubricAreas: list[dict[str, Any]] = Field(default_factory=list)
+    baselineRubricAreas: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LiveRunState(BaseModel):
@@ -1042,6 +1054,8 @@ def finalize_benchmark():
                 (output_dir / "final_report.md").write_text(report_md.read_text())
         existing = json.loads(status_path.read_text()) if status_path.exists() else {{}}
         bench = dict(existing.get("benchmark") or {{}})
+        rv = fr.get("rubric_verification") or {{}}
+        base_rv = fr.get("baseline_rubric_verification") or {{}}
         bench.update({{
             "overallScore": round((fr.get("rubric_overall_score") or 0.0) * 100, 1),
             "targetMetric": fr.get("primary_metric") or bench.get("targetMetric"),
@@ -1056,6 +1070,14 @@ def finalize_benchmark():
             "reportPath": str((output_dir / "final_report.md").resolve()),
             "comparisonPath": str((output_dir / "final_report.json").resolve()),
             "source": "computed_final_report",
+            "paperbenchBaseline": fr.get("paperbench_baseline"),
+            "ourRubricScore": rv.get("overall_score"),
+            "verificationDelta": fr.get("verification_delta"),
+            "improvementIterations": fr.get("improvement_iterations") or 0,
+            "meetsTarget": rv.get("meets_target"),
+            "comparisonSummary": fr.get("comparison_summary") or "",
+            "rubricAreas": rv.get("areas") or [],
+            "baselineRubricAreas": base_rv.get("areas") or [],
         }})
         existing["benchmark"] = bench
         status_path.write_text(json.dumps(existing, indent=2))
