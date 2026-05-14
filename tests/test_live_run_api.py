@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
@@ -14,9 +15,15 @@ from backend.services.events.live_runs import (
 
 
 class FakeRunService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        source_pdf_path: Path | None = None,
+        final_report_path: Path | None = None,
+    ) -> None:
         self.started: StartRunRequest | None = None
         self.stopped_project_id: str | None = None
+        self.source_pdf_path = source_pdf_path
+        self.final_report_path = final_report_path
         self.state = LiveRunState(
             projectId="prj_api",
             outputDir="runs/prj_api",
@@ -47,6 +54,16 @@ class FakeRunService:
         if project_id != self.state.projectId:
             return None
         return self.state
+
+    async def get_source_pdf_path(self, project_id: str) -> Path | None:
+        if project_id != self.state.projectId:
+            return None
+        return self.source_pdf_path
+
+    async def get_final_report_path(self, project_id: str) -> Path | None:
+        if project_id != self.state.projectId:
+            return None
+        return self.final_report_path
 
     async def latest_run(
         self,
@@ -111,6 +128,32 @@ def test_fastapi_upload_route_starts_uploaded_pdf_run() -> None:
     assert body["sourceLabel"] == "paper.pdf"
 
 
+def test_fastapi_serves_stored_source_pdf(tmp_path: Path) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-demo\n")
+    service = FakeRunService(source_pdf_path=pdf)
+    client = TestClient(create_app(run_service=service))
+
+    response = client.get("/runs/prj_api/source-pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.content.startswith(b"%PDF-demo")
+
+
+def test_fastapi_serves_final_report_markdown(tmp_path: Path) -> None:
+    report = tmp_path / "final_benchmark_report.md"
+    report.write_text("# Final Benchmark Report\n\nready\n", encoding="utf-8")
+    service = FakeRunService(final_report_path=report)
+    client = TestClient(create_app(run_service=service))
+
+    response = client.get("/runs/prj_api/final-report")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "Final Benchmark Report" in response.text
+
+
 def test_fastapi_can_stop_run_and_stream_sse() -> None:
     service = FakeRunService()
     client = TestClient(create_app(run_service=service))
@@ -127,4 +170,3 @@ def test_fastapi_can_stop_run_and_stream_sse() -> None:
 
     assert "event: run_state" in text
     assert json.dumps("prj_api") in text
-
