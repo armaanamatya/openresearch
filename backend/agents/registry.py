@@ -1,4 +1,4 @@
-"""Agent registry — all 13 ReproLab agent definitions.
+"""Agent registry — all 14 ReproLab agent definitions.
 
 Usage:
     from backend.agents.registry import get_agent_definitions
@@ -23,6 +23,7 @@ from backend.agents.prompts import (
     METHOD_FIDELITY_VERIFIER_PROMPT,
     PAPER_UNDERSTANDING_PROMPT,
     REPRODUCTION_PLANNER_PROMPT,
+    RUBRIC_VERIFIER_PROMPT,
     SUPERVISOR_VERIFIER_PROMPT,
 )
 from backend.agents.runtime.base import AgentRuntimeSpec, ProviderName, ToolSpec
@@ -86,7 +87,7 @@ class AgentSpec:
 
 
 # ---------------------------------------------------------------------------
-# The 13 PRD agents
+# The 14 PRD agents
 # ---------------------------------------------------------------------------
 
 AGENT_REGISTRY: dict[str, AgentSpec] = {
@@ -176,6 +177,14 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         role="verifier",
         description="Verifies all required artifacts exist and prove the claim.",
         prompt=ARTIFACT_DIFF_VERIFIER_PROMPT,
+        tools=["Read", "Bash"],
+        default_model_openai="o4-mini",
+    ),
+    "rubric-verifier": AgentSpec(
+        agent_id="rubric-verifier",
+        role="verifier",
+        description="Derives or loads a PaperBench-style rubric and scores the reproduction against it.",
+        prompt=RUBRIC_VERIFIER_PROMPT,
         tools=["Read", "Bash"],
         default_model_openai="o4-mini",
     ),

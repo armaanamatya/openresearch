@@ -17,6 +17,7 @@ from backend.agents.prompts.improvement import (
     IMPROVEMENT_PATH_PROMPT,
 )
 from backend.agents.prompts.artifact_discovery import ARTIFACT_DISCOVERY_PROMPT
+from backend.agents.prompts.rubric_verifier import RUBRIC_VERIFIER_PROMPT
 
 __all__ = [
     "PAPER_UNDERSTANDING_PROMPT",
@@ -32,4 +33,5 @@ __all__ = [
     "SUPERVISOR_VERIFIER_PROMPT",
     "IMPROVEMENT_ORCHESTRATOR_PROMPT",
     "IMPROVEMENT_PATH_PROMPT",
+    "RUBRIC_VERIFIER_PROMPT",
 ]
