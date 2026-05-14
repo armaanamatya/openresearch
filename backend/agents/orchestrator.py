@@ -979,9 +979,37 @@ class ReproLabOrchestrator:
         out_file = self._project_dir / "paper_claim_map.json"
         prompt = (
             f"Analyze the paper for project {self.project_id}.\n"
-            f"The parsed paper content is in: {self._project_dir}\n"
-            f"Read the parsed sections and extract the full PaperClaimMap.\n"
-            f"Return the JSON in your response AND write it to {out_file}"
+            f"The parsed paper content is in: {self._project_dir}\n\n"
+            f"Read the parsed sections and produce a PaperClaimMap. "
+            f"Return ONLY a single JSON object matching this exact schema, with no surrounding prose:\n\n"
+            "{\n"
+            '  "core_contribution": "<one-paragraph description>",\n'
+            '  "claims": [\n'
+            '    {"method": "...", "dataset": "...", "metric": "...", "expected_result": "..."}\n'
+            "  ],\n"
+            '  "datasets": [\n'
+            '    {"name": "...", "source": "", "download_method": "", "size_estimate": "", "notes": ""}\n'
+            "  ],\n"
+            '  "metrics": [\n'
+            '    {"name": "...", "definition": "...", "target_value": null, "source_section": null}\n'
+            "  ],\n"
+            '  "model_architecture": "...",\n'
+            '  "training_recipe": {\n'
+            '    "optimizer": "", "learning_rate": "", "batch_size": "",\n'
+            '    "epochs_or_steps": "", "scheduler": "", "other_hparams": {}\n'
+            "  },\n"
+            '  "evaluation_protocol": "...",\n'
+            '  "hardware_clues": ["..."],\n'
+            '  "ambiguities": [\n'
+            '    {"assumption_id": "A001", "detail": "...", "chosen_value": null, "evidence": [], "risk": "medium"}\n'
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Every entry in `datasets`, `metrics`, and `ambiguities` MUST be an OBJECT with the fields shown — NEVER a bare string.\n"
+            "- `risk` must be one of: \"low\", \"medium\", \"high\", \"critical\".\n"
+            "- `assumption_id` follows the pattern A001, A002, ... (one per ambiguity).\n"
+            "- If a field is unknown, use an empty string \"\" (or [] for lists, {} for dicts), not null, unless the schema above shows null.\n"
+            f"- Return the JSON in your response AND write the same JSON to {out_file}.\n"
         )
         output = await self._invoke_agent("paper-understanding", prompt)
         data = self._extract_json(output, fallback_file=str(out_file))

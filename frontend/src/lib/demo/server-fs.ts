@@ -130,9 +130,7 @@ export function buildUploadedPaperMeta(
     executionMode,
     sandboxMode,
     gpuMode,
-    sourceLabel: fileName,
-    sourceNote:
-      "This run started from a PDF uploaded directly in the lab. The backend copied it into the generated code root as paper.pdf before running reproduction."
+    sourceLabel: fileName
   };
 }
 

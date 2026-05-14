@@ -50,7 +50,7 @@ type ReproLabClientProps = {
 };
 
 const DEFAULT_RUN_QUERY =
-  "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=runpod&gpuMode=auto";
+  "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=docker&gpuMode=auto";
 const POLL_INTERVAL_MS = 3000;
 const NODE_W = 200;
 const NODE_H = 80;
@@ -1840,7 +1840,7 @@ function RunOverview({
       <div className="overview-copy">
         {run.payload?.summary.stage
           ? `Current backend stage: ${run.payload.summary.stage}`
-          : run.sourceNote ?? "Waiting for the first backend update."}
+          : "Waiting for the first backend update."}
       </div>
       <div className="overview-grid">
         <Stat label="Done" value={totals.done} dot="var(--ink)" />
@@ -4511,9 +4511,9 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       formData.set("mode", "sdk");
       formData.set("provider", "anthropic");
       formData.set("executionMode", "efficient");
-      formData.set("sandbox", "runpod");
+      formData.set("sandbox", "docker");
       formData.set("gpuMode", "auto");
-      formData.set("model", model);
+      formData.set("model", "opus");
       formData.set("paper", file);
       const response = await postRunRequest("/api/demo", {
         method: "POST",
