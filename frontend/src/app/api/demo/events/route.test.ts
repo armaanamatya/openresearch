@@ -2,6 +2,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 describe("GET /api/demo/events", () => {
   beforeEach(() => {
     vi.stubEnv("REPROLAB_BACKEND_URL", "http://backend.test");

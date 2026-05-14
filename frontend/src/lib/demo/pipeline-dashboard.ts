@@ -69,7 +69,7 @@ interface ExperimentArtifactsLike {
   error_message?: string;
 }
 
-interface PathResultLike {
+export interface PathResultLike {
   path_id?: string;
   hypothesis?: string;
   success?: boolean;
@@ -122,6 +122,39 @@ interface HermesAuditReportLike {
   error_message?: string;
 }
 
+export interface GateView {
+  passed?: boolean;
+  status?: string;
+  detail?: string;
+  chipStatus?: "pending" | "running" | "passed" | "caveat" | "failed";
+}
+
+export interface HermesAuditView {
+  target?: string;
+  scope?: string;
+  status?: string;
+  summary?: string;
+  findings?: string[];
+  unsupportedClaims?: string[];
+  recommendedIntervention?: string;
+  confidence?: string;
+  provider?: string;
+}
+
+export interface HermesInterventionView {
+  target?: string;
+  scope?: string;
+  action?: string;
+  reason?: string;
+  status?: string;
+}
+
+export interface HermesPanelView {
+  title?: string;
+  summary?: string;
+  overallStatus?: string;
+}
+
 export interface PipelineStateDocument {
   project_id: string;
   stage: string;
@@ -167,6 +200,20 @@ export interface LiveDemoPayload extends LiveDemoMeta {
   log: string;
   initialSnapshot: DashboardSnapshot;
   events: DashboardEvent[];
+  pathStates: Record<PathNodeId, PathNodeState>;
+  decisionLog: string[];
+  assumptionCount: number;
+  gates: {
+    gate_1?: GateView;
+    gate_2?: GateView;
+    gate_3?: GateView;
+  };
+  hermes: {
+    stepReports: Record<string, HermesAuditView[]>;
+    checkpointReports: Record<string, HermesAuditView[]>;
+    interventions: HermesInterventionView[];
+    latestPanel?: HermesPanelView;
+  };
   summary: {
     stage: string;
     meanReward: number | null;
@@ -1114,6 +1161,25 @@ export function buildLiveDemoDashboard(
     log,
     initialSnapshot: buildInitialSnapshot(meta, state),
     events,
+    pathStates: pathStateMap(pathResults, state.stage),
+    decisionLog: state.decision_log ?? [],
+    assumptionCount: state.assumption_ledger?.length ?? 0,
+    gates: {
+      gate_1: gateView(state.gate_1),
+      gate_2: gateView(state.gate_2),
+      gate_3: gateView(state.gate_3)
+    },
+    hermes: {
+      stepReports: hermesReportMap(state.hermes_step_reports),
+      checkpointReports: hermesReportMap(state.hermes_checkpoint_reports),
+      interventions: (state.hermes_interventions ?? []).map((i) => ({
+        target: i.target,
+        scope: i.scope,
+        action: i.action,
+        reason: i.reason,
+        status: i.status
+      }))
+    },
     summary: {
       stage: state.stage,
       meanReward: Number.isFinite(meanReward) ? meanReward : null,
@@ -1127,4 +1193,151 @@ export function buildLiveDemoDashboard(
       sourceLabel: meta.sourceLabel
     }
   };
+}
+
+// Map backend GateStatus enum (verified/verified_with_caveats/partial_reproduction/
+// failed_reproduction/blocked_requires_human/invalid_claim) onto a small UI vocabulary
+// so the chip render switch covers every case.
+export type GateChipStatus = "pending" | "running" | "passed" | "caveat" | "failed";
+
+export function normalizeGateStatus(
+  raw: string | undefined,
+  passed: boolean | undefined
+): GateChipStatus {
+  if (passed === true) return "passed";
+  if (passed === false && !raw) return "failed";
+  switch (raw) {
+    case "verified":
+      return "passed";
+    case "verified_with_caveats":
+    case "partial_reproduction":
+      return "caveat";
+    case "failed_reproduction":
+    case "blocked_requires_human":
+    case "invalid_claim":
+      return "failed";
+    case "running":
+    case "pending":
+    case "passed":
+    case "caveat":
+    case "failed":
+      return raw;
+    default:
+      return "pending";
+  }
+}
+
+function gateView(gate: GateDecisionLike | undefined): GateView | undefined {
+  if (!gate) return undefined;
+  return {
+    passed: gate.passed,
+    status: gate.status,
+    chipStatus: normalizeGateStatus(gate.status, gate.passed)
+  };
+}
+
+function hermesReportMap(
+  raw: Record<string, HermesAuditReportLike[]> | undefined
+): Record<string, HermesAuditView[]> {
+  const out: Record<string, HermesAuditView[]> = {};
+  if (!raw) return out;
+  for (const [key, reports] of Object.entries(raw)) {
+    out[key] = reports.map((r) => ({
+      target: r.target,
+      scope: r.scope,
+      status: r.status,
+      summary: r.summary,
+      findings: r.findings,
+      unsupportedClaims: r.unsupported_claims,
+      recommendedIntervention: r.recommended_intervention,
+      confidence: r.confidence,
+      provider: r.provider
+    }));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Per-path stage map for opt/bb/aug/hor/div nodes.
+//
+// Backend `path_results` is a free-form list of PathResult records — backend
+// runs N paths per round (default n_improvement_paths=1 for the demo). The 5 UI
+// nodes are keyword-bucketed slots (optimizer / backbone / augmentation /
+// horizon / diffusion). Paths that don't match any keyword fall through to the
+// next still-`upcoming` slot in display order.
+// ---------------------------------------------------------------------------
+
+export type PathNodeId = "opt" | "bb" | "aug" | "hor" | "div";
+export type PathNodeState = "upcoming" | "running" | "done" | "attention" | "skipped";
+
+const PATH_KEYWORDS: Record<PathNodeId, string[]> = {
+  opt: ["optimizer", "lr", "learning rate", "scheduler", "hyperparameter"],
+  bb: ["backbone", "architecture", "encoder", "model arch"],
+  aug: ["augmentation", "data aug", "regularization", "dropout"],
+  hor: ["horizon", "rollout", "n_steps", "trajectory"],
+  div: ["diffusion", "ddim", "ddpm", "sampler"]
+};
+
+const PATH_DISPLAY_ORDER: PathNodeId[] = ["opt", "bb", "aug", "hor", "div"];
+
+function bestNodeForPath(path: PathResultLike): PathNodeId | null {
+  const haystack = `${path.path_id ?? ""} ${path.hypothesis ?? ""}`.toLowerCase();
+  let best: PathNodeId | null = null;
+  let bestScore = 0;
+  for (const node of PATH_DISPLAY_ORDER) {
+    let score = 0;
+    for (const keyword of PATH_KEYWORDS[node]) {
+      if (haystack.includes(keyword)) score += 1;
+    }
+    if (score > bestScore) {
+      best = node;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function nodeStateForPath(path: PathResultLike): PathNodeState {
+  if (typeof path.success !== "boolean") return "running";
+  if (path.success) return "done";
+  return "attention";
+}
+
+/**
+ * Map `path_results` onto the 5 improvement-path UI nodes.
+ *
+ * @param paths      `state.path_results` (free-form per-path records).
+ * @param stage      Current pipeline stage; controls whether unmatched nodes
+ *                   stay `upcoming` (still might run) or become `skipped` (the
+ *                   round finished without one matching them).
+ */
+export function pathStateMap(
+  paths: PathResultLike[],
+  stage: string
+): Record<PathNodeId, PathNodeState> {
+  const map: Record<PathNodeId, PathNodeState> = {
+    opt: "upcoming", bb: "upcoming", aug: "upcoming",
+    hor: "upcoming", div: "upcoming"
+  };
+  const fallbackQueue: PathNodeId[] = [...PATH_DISPLAY_ORDER];
+
+  for (const path of paths) {
+    let target = bestNodeForPath(path);
+    if (!target || map[target] !== "upcoming") {
+      target = fallbackQueue.find((id) => map[id] === "upcoming") ?? null;
+    }
+    if (!target) continue;
+    map[target] = nodeStateForPath(path);
+  }
+
+  const roundFinished =
+    stage === "gate_3_passed" ||
+    stage === "research_map_generated" ||
+    stage === "complete";
+  if (roundFinished) {
+    for (const id of PATH_DISPLAY_ORDER) {
+      if (map[id] === "upcoming") map[id] = "skipped";
+    }
+  }
+  return map;
 }

@@ -12,16 +12,45 @@ import type {
   DemoGpuMode,
   DemoProvider,
   DemoRunMode,
-  DemoRunStatus,
   DemoSandboxMode,
   LiveDemoRunState
 } from "./demo-run-types";
 import { isStaleDemoRun, summarizeRunFailure } from "./run-staleness";
+import { buildLiveDemoDashboard } from "./pipeline-dashboard";
 import {
-  buildLiveDemoDashboard,
-  type LiveDemoMeta,
-  type PipelineStateDocument
-} from "./pipeline-dashboard";
+  buildFixtureMeta,
+  buildUploadedPaperMeta,
+  logPath,
+  metaFromStatus,
+  readLogTail,
+  readPipelineState,
+  readStatus,
+  readTelemetryTail,
+  repoRoot,
+  runDir,
+  runsRoot,
+  statusPath,
+  type DemoRunStatusFile
+} from "./server-fs";
+
+export {
+  buildFixtureMeta,
+  buildUploadedPaperMeta,
+  logPath,
+  metaFromStatus,
+  pipelineStatePath,
+  readJsonFile,
+  readLogTail,
+  readPipelineState,
+  readStatus,
+  readTelemetryTail,
+  repoRoot,
+  runDir,
+  runsRoot,
+  statusPath,
+  telemetryPath
+} from "./server-fs";
+export type { DemoRunStatusFile, TelemetryRecord } from "./server-fs";
 
 const DEMO_WORKSPACE = {
   project_id: "prj_e2e_test",
@@ -46,26 +75,6 @@ const DEMO_WORKSPACE = {
     }
   ]
 };
-
-interface DemoRunStatusFile {
-  projectId: string;
-  outputDir: string;
-  runMode: DemoRunMode;
-  llmProvider?: DemoProvider;
-  verificationProvider?: DemoProvider;
-  executionMode?: DemoExecutionMode;
-  sandboxMode?: DemoSandboxMode;
-  gpuMode?: DemoGpuMode;
-  status: DemoRunStatus;
-  sourceKind?: "workspace_fixture" | "uploaded_pdf";
-  sourceLabel?: string;
-  sourceNote?: string;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  error?: string;
-  pid?: number;
-}
 
 interface UploadedPaperInput {
   fileName: string;
@@ -93,14 +102,6 @@ export class DemoPreflightError extends Error {
     super(message);
     this.name = "DemoPreflightError";
   }
-}
-
-function repoRoot(): string {
-  const override = process.env.REPROLAB_REPO_ROOT?.trim();
-  if (override) {
-    return override;
-  }
-  return path.join(process.cwd(), "..");
 }
 
 function pythonStringLiteral(value: string): string {
@@ -139,204 +140,9 @@ function pythonBinary(): string {
   return process.platform === "win32" ? "py" : "python3";
 }
 
-function runsRoot(): string {
-  return path.join(repoRoot(), "runs");
-}
-
-function runDir(projectId: string): string {
-  return path.join(runsRoot(), projectId);
-}
-
-function statusPath(projectId: string): string {
-  return path.join(runDir(projectId), "demo_status.json");
-}
-
-function logPath(projectId: string): string {
-  return path.join(runDir(projectId), "runner.stderr.log");
-}
-
-function pipelineStatePath(projectId: string): string {
-  return path.join(runDir(projectId), "pipeline_state.json");
-}
-
-function buildFixtureMeta(
-  projectId: string,
-  outputDir: string,
-  runMode: DemoRunMode,
-  llmProvider?: DemoProvider,
-  verificationProvider?: DemoProvider,
-  executionMode: DemoExecutionMode = "efficient",
-  sandboxMode: DemoSandboxMode = "runpod",
-  gpuMode: DemoGpuMode = "auto"
-): LiveDemoMeta {
-  return {
-    projectId,
-    outputDir,
-    sourceKind: "workspace_fixture",
-    runMode,
-    llmProvider,
-    verificationProvider,
-    executionMode,
-    sandboxMode,
-    gpuMode,
-    sourceLabel: "In-repo PPO workspace fixture",
-    sourceNote:
-      "The repo currently does not contain a checked-in paper PDF, so this UI demo uses the deterministic PPO workspace fixture that already drives the end-to-end pipeline tests."
-  };
-}
-
-function buildUploadedPaperMeta(
-  projectId: string,
-  outputDir: string,
-  runMode: DemoRunMode,
-  llmProvider: DemoProvider | undefined,
-  verificationProvider: DemoProvider | undefined,
-  executionMode: DemoExecutionMode,
-  sandboxMode: DemoSandboxMode,
-  gpuMode: DemoGpuMode,
-  fileName: string
-): LiveDemoMeta {
-  return {
-    projectId,
-    outputDir,
-    sourceKind: "uploaded_pdf",
-    runMode,
-    llmProvider,
-    verificationProvider,
-    executionMode,
-    sandboxMode,
-    gpuMode,
-    sourceLabel: fileName,
-    sourceNote:
-      "This run started from a PDF uploaded directly in the lab. The backend routed it through the repo's paper ingestion pipeline before running reproduction."
-  };
-}
-
-async function readJsonFile<T>(filePath: string): Promise<T | null> {
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function readPipelineState(projectId: string): Promise<PipelineStateDocument | null> {
-  return readJsonFile<PipelineStateDocument>(pipelineStatePath(projectId));
-}
-
-async function readStatus(projectId: string): Promise<DemoRunStatusFile | null> {
-  return readJsonFile<DemoRunStatusFile>(statusPath(projectId));
-}
-
 async function writeStatus(projectId: string, status: DemoRunStatusFile): Promise<void> {
   await fs.mkdir(runDir(projectId), { recursive: true });
   await fs.writeFile(statusPath(projectId), JSON.stringify(status, null, 2), "utf8");
-}
-
-async function readLogTail(projectId: string, maxChars = 12000): Promise<string> {
-  try {
-    const raw = await fs.readFile(logPath(projectId), "utf8");
-    return raw.length > maxChars ? raw.slice(-maxChars) : raw;
-  } catch {
-    return "";
-  }
-}
-
-function telemetryPath(projectId: string): string {
-  return path.join(runDir(projectId), "agent_telemetry.jsonl");
-}
-
-/** Streamed-append JSONL files: tail without loading entire file into RAM. */
-export async function readTelemetryTail(
-  projectId: string,
-  maxRecords = 50
-): Promise<TelemetryRecord[]> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(telemetryPath(projectId), "utf8");
-  } catch {
-    return [];
-  }
-  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  const tail = lines.slice(-maxRecords);
-  const records: TelemetryRecord[] = [];
-  for (const line of tail) {
-    try {
-      records.push(JSON.parse(line) as TelemetryRecord);
-    } catch {
-      // Skip partial / corrupt JSONL lines silently.
-    }
-  }
-  return records;
-}
-
-/** Single agent invocation as recorded by AgentTelemetryRecorder. */
-export interface TelemetryRecord {
-  agent_id?: string;
-  model?: string;
-  started_at?: string;
-  finished_at?: string;
-  duration_seconds?: number;
-  message_count?: number;
-  output_chars?: number;
-  success?: boolean;
-  error_message?: string | null;
-  usage?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-function metaFromStatus(
-  projectId: string,
-  outputDir: string,
-  runMode: DemoRunMode,
-  status?: Pick<
-    DemoRunStatusFile,
-    | "llmProvider"
-    | "verificationProvider"
-    | "executionMode"
-    | "sandboxMode"
-    | "gpuMode"
-    | "sourceKind"
-    | "sourceLabel"
-    | "sourceNote"
-  >
-): LiveDemoMeta {
-  const executionMode = status?.executionMode ?? "efficient";
-  const sandboxMode = status?.sandboxMode ?? "runpod";
-  const verificationProvider = status?.verificationProvider;
-  const gpuMode = status?.gpuMode ?? "auto";
-
-  if (
-    status?.sourceKind === "uploaded_pdf" &&
-    status.sourceLabel &&
-    status.sourceNote
-  ) {
-    return {
-      projectId,
-      outputDir,
-      runMode,
-      llmProvider: status.llmProvider,
-      verificationProvider,
-      executionMode,
-      sandboxMode,
-      gpuMode,
-      sourceKind: "uploaded_pdf",
-      sourceLabel: status.sourceLabel,
-      sourceNote: status.sourceNote
-    };
-  }
-
-  return buildFixtureMeta(
-    projectId,
-    outputDir,
-    runMode,
-    status?.llmProvider,
-    verificationProvider,
-    executionMode,
-    sandboxMode,
-    gpuMode
-  );
 }
 
 async function payloadForProject(
@@ -428,7 +234,7 @@ def write_status(status, error=None, completed_at=None):
         "gpuMode": gpu_mode,
         "sourceKind": "uploaded_pdf",
         "sourceLabel": uploaded_file_name,
-        "sourceNote": "This run started from a PDF uploaded directly in the lab. The backend routed it through the repo's paper ingestion pipeline before running reproduction.",
+        "sourceNote": "This run started from a PDF uploaded directly in the lab. The backend copied it into the generated code root as paper.pdf before running reproduction.",
         "status": status,
         "startedAt": started_at,
         "updatedAt": now(),
@@ -650,6 +456,8 @@ async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
       sourceKind: status.sourceKind,
       sourceLabel: status.sourceLabel,
       sourceNote: status.sourceNote,
+      sourcePdf: status.sourcePdf,
+      benchmark: status.benchmark,
       startedAt: status.startedAt,
       updatedAt: status.updatedAt,
       completedAt: status.completedAt,
