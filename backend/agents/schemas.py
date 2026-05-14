@@ -311,6 +311,28 @@ class MetricDelta(BaseModel):
     delta_vs_baseline: float | None = Field(default=None, description="best_improved - baseline")
     pct_change_vs_baseline: float | None = Field(default=None, description="Percent improvement over baseline")
     direction: str = Field(default="higher_is_better", description="higher_is_better or lower_is_better")
+    # Statistical rigor — populated only when the runner emits the underlying data.
+    n_eval_episodes: int | None = Field(default=None, description="Evaluation sample size (episodes)")
+    relative_error_vs_paper: float | None = Field(default=None, description="|reproduced - paper_target| / |paper_target|")
+    baseline_std: float | None = Field(default=None, description="Std-dev of the baseline metric, if emitted by the runner")
+    improved_std: float | None = Field(default=None, description="Std-dev of the best improved metric, if emitted by the runner")
+    effect_size: float | None = Field(default=None, description="Cohen's d (best improved vs baseline), if std available")
+    ci95_half_width: float | None = Field(default=None, description="Half-width of the 95% CI around the reproduced value")
+
+
+class RubricArea(BaseModel):
+    """One PaperBench-style rubric dimension, scored deterministically from artifacts.
+
+    Unlike a hardcoded score, every value here is derived from concrete pipeline
+    state — claim-map completeness, environment spec fields, execution artifacts
+    on disk, and verifier gate decisions — so a degenerate run scores low and an
+    honest run scores exactly what it earned.
+    """
+    area: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    weight: float = Field(default=0.0, ge=0.0, le=1.0, description="Contribution to the weighted overall score")
+    evidence: list[str] = Field(default_factory=list, description="Artifact files / state fields backing the score")
+    rationale: str = ""
 
 
 class PathSummary(BaseModel):
@@ -336,8 +358,22 @@ class FinalReport(BaseModel):
     reproduction_score: float = Field(default=0.0, ge=0.0, le=1.0, description="How close baseline matched paper targets (0-1)")
     reproduction_status: str = Field(default="", description="verified, partial, or failed")
 
+    # Headline paper-vs-reproduction comparison (the primary claimed metric)
+    primary_metric: str | None = Field(default=None, description="Primary claimed metric used for the headline comparison")
+    paper_primary_target: float | None = Field(default=None, description="Paper-reported target for the primary metric")
+    reproduction_primary_value: float | None = Field(default=None, description="Our reproduced value for the primary metric (best of baseline/improved)")
+    reproduction_delta_vs_paper: float | None = Field(default=None, description="reproduced - paper target (numerical)")
+    reproduction_pct_vs_paper: float | None = Field(default=None, description="Signed percentage gap of the reproduced value vs the paper target")
+
     # Metric deltas
     metric_deltas: list[MetricDelta] = Field(default_factory=list)
+
+    # Computed PaperBench-style rubric (scored from artifacts, never hardcoded)
+    rubric: list[RubricArea] = Field(default_factory=list)
+    rubric_overall_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Weighted aggregate of rubric area scores")
+
+    # Statistical rigor
+    statistical_notes: str = Field(default="", description="Honest summary of the statistical basis and its limitations")
 
     # Parallel improvement paths
     paths: list[PathSummary] = Field(default_factory=list)
