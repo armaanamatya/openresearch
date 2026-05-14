@@ -1556,6 +1556,236 @@ function ScriptPanel({ run }: { run: LiveDemoRunState }) {
   );
 }
 
+function CompletionSummary({ run }: { run: LiveDemoRunState }) {
+  const [open, setOpen] = useState(true);
+  const benchmark = run.benchmark;
+
+  const hasRubricData =
+    benchmark != null &&
+    (!!benchmark.comparisonSummary || benchmark.ourRubricScore != null);
+
+  const areas = useMemo(() => benchmark?.rubricAreas ?? [], [benchmark]);
+  const baselineAreas = useMemo(() => benchmark?.baselineRubricAreas ?? [], [benchmark]);
+
+  const rubricStats = useMemo(() => {
+    if (areas.length === 0) return null;
+    const n = areas.length;
+    const mean = areas.reduce((sum, a) => sum + a.score, 0) / n;
+    const variance =
+      n >= 2
+        ? areas.reduce((sum, a) => sum + (a.score - mean) ** 2, 0) / (n - 1)
+        : 0;
+    // SD *across the rubric areas* of a single run — deliberately not a
+    // standard error: there is no sampling over independent runs to take an
+    // SE of, so labelling it "SE" would misrepresent what it measures.
+    const sd = Math.sqrt(variance);
+    return { mean, sd, n };
+  }, [areas]);
+
+  const baselineMean = useMemo(() => {
+    if (baselineAreas.length === 0) return null;
+    return baselineAreas.reduce((sum, a) => sum + a.score, 0) / baselineAreas.length;
+  }, [baselineAreas]);
+
+  const reportUrl = finalReportUrl(run);
+
+  const delta =
+    benchmark && benchmark.reproducedValue > 0
+      ? `${benchmark.deltaValue >= 0 ? "+" : ""}${benchmark.deltaValue.toFixed(1)}`
+      : "pending";
+
+  if (!open) {
+    return (
+      <button
+        className="completion-summary-pill"
+        onClick={() => setOpen(true)}
+        type="button"
+        aria-label="Open run summary"
+      >
+        Run summary ↑
+      </button>
+    );
+  }
+
+  return (
+    <div className="completion-summary" role="dialog" aria-label="Run completion summary">
+      <div className="completion-summary-head">
+        <div className="completion-summary-eyebrow">Run complete · rubric verification</div>
+        <div className="completion-summary-title">
+          {benchmark?.benchmarkName ?? "PaperBench-style final benchmark"}
+        </div>
+        <button
+          className="completion-summary-close"
+          onClick={() => setOpen(false)}
+          type="button"
+          aria-label="Close summary"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="completion-summary-body">
+        {hasRubricData ? (
+          <>
+            {/* Headline metrics */}
+            <div className="cs-headline">
+              {benchmark?.paperbenchBaseline ? (
+                <>
+                  <div className="cs-headline-score">
+                    <span className="cs-score-label">PaperBench</span>
+                    <span className="cs-score-val">
+                      {benchmark.paperbenchBaseline.score.toFixed(2)}
+                    </span>
+                    <span className="cs-score-arrow">→</span>
+                    <span className="cs-score-label">Ours</span>
+                    <span className="cs-score-val cs-score-ours">
+                      {benchmark.ourRubricScore?.toFixed(2) ?? "—"}
+                    </span>
+                  </div>
+                  <div className="cs-score-sub">{benchmark.paperbenchBaseline.model}</div>
+                </>
+              ) : benchmark?.ourRubricScore != null ? (
+                <>
+                  <div className="cs-headline-score">
+                    <span className="cs-score-label">Our rubric score</span>
+                    <span className="cs-score-val cs-score-ours">
+                      {benchmark.ourRubricScore.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="cs-score-sub">
+                    {benchmark.verificationDelta != null
+                      ? `${benchmark.verificationDelta >= 0 ? "+" : ""}${benchmark.verificationDelta.toFixed(2)} over baseline`
+                      : ""}
+                    {benchmark.verificationDelta != null && benchmark.improvementIterations != null
+                      ? " · "
+                      : ""}
+                    {benchmark.improvementIterations != null
+                      ? `${benchmark.improvementIterations} iteration${benchmark.improvementIterations === 1 ? "" : "s"}`
+                      : ""}
+                  </div>
+                </>
+              ) : null}
+              {benchmark?.meetsTarget != null && (
+                <span
+                  className={`cs-target-chip ${benchmark.meetsTarget ? "cs-target-chip--meets" : "cs-target-chip--below"}`}
+                >
+                  {benchmark.meetsTarget ? "meets target" : "below target"}
+                </span>
+              )}
+            </div>
+
+            {/* Comparison summary — verbatim */}
+            {benchmark?.comparisonSummary && (
+              <p className="cs-verdict">{benchmark.comparisonSummary}</p>
+            )}
+
+            {/* Stat line */}
+            {rubricStats && (
+              <div className="cs-stat-line">
+                {`mean ${rubricStats.mean.toFixed(3)} (SD ${rubricStats.sd.toFixed(3)} across ${rubricStats.n} area${rubricStats.n === 1 ? "" : "s"})`}
+                {baselineMean != null
+                  ? ` · Δ vs baseline ${(rubricStats.mean - baselineMean) >= 0 ? "+" : ""}${(rubricStats.mean - baselineMean).toFixed(3)}`
+                  : ""}
+              </div>
+            )}
+
+            {/* Per-area breakdown */}
+            {areas.length > 0 && (
+              <div className="cs-areas">
+                {areas.map((area) => {
+                  const baselineArea = baselineAreas.find((b) => b.area === area.area);
+                  const weakCount = area.weak_points.length;
+                  return (
+                    <div
+                      key={area.area}
+                      className="cs-area-row"
+                      title={area.justification}
+                    >
+                      <div className="cs-area-meta">
+                        <span className="cs-area-name">{area.area}</span>
+                        <span className="cs-area-weight">
+                          w {area.weight.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="cs-area-bar-wrap">
+                        <div className="cs-area-bar">
+                          <div
+                            className="cs-area-bar-fill"
+                            style={{ width: `${area.score * 100}%` }}
+                          />
+                          {baselineArea != null && (
+                            <div
+                              className="cs-area-bar-baseline"
+                              style={{ left: `${baselineArea.score * 100}%` }}
+                            />
+                          )}
+                        </div>
+                        <span className="cs-area-score mono">
+                          {area.score.toFixed(2)}
+                        </span>
+                      </div>
+                      {weakCount > 0 && (
+                        <div className="cs-area-weak">
+                          {area.weak_points[0]}
+                          {weakCount > 1 && (
+                            <span className="cs-area-weak-more">
+                              {" "}+{weakCount - 1} more
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : (
+          /* Degraded: no rubric data */
+          <div className="cs-degraded">
+            <div className="cs-degraded-title">Run complete</div>
+            {benchmark?.verdict && (
+              <div className="cs-degraded-verdict">{verdictLabel(benchmark.verdict)}</div>
+            )}
+          </div>
+        )}
+
+        {/* Footer — always present */}
+        <div className="cs-footer">
+          <a
+            className="cs-footer-report"
+            href={reportUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open final report
+          </a>
+          {benchmark && (
+            <div className="cs-footer-metrics">
+              <span>
+                <span className="cs-footer-label">target</span>{" "}
+                <span className="mono">{benchmark.targetValue.toFixed(1)}</span>
+              </span>
+              <span>
+                <span className="cs-footer-label">reproduced</span>{" "}
+                <span className="mono">
+                  {benchmark.reproducedValue > 0
+                    ? benchmark.reproducedValue.toFixed(1)
+                    : "n/a"}
+                </span>
+              </span>
+              <span>
+                <span className="cs-footer-label">delta</span>{" "}
+                <span className="mono">{delta}</span>
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RunOverview({
   error,
   logEntries,
@@ -2006,6 +2236,20 @@ function WorkflowView({
             <StatusPill status={liveStatus} />
             <span className="workflow-meta-sep">.</span>
             <span className="mono">{doneCount}/{NODES.length} agents complete</span>
+            {(run.payload?.summary.improvementIteration ?? 0) > 0 && (
+              <>
+                <span className="workflow-meta-sep">.</span>
+                <span className="reiteration-badge">
+                  Improvement iteration {run.payload!.summary.improvementIteration}
+                  {run.payload?.summary.latestRubricScore != null && (
+                    <> · rubric {run.payload.summary.latestRubricScore.toFixed(2)}
+                    {run.payload?.summary.rubricTargetScore != null
+                      ? ` → target ${run.payload.summary.rubricTargetScore.toFixed(2)}`
+                      : ""}</>
+                  )}
+                </span>
+              </>
+            )}
           </div>
         </div>
         <div className="workflow-actions">
@@ -2029,6 +2273,7 @@ function WorkflowView({
           <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
         </EdgeDrawer>
       </div>
+      {run.status === "completed" && <CompletionSummary run={run} />}
     </>
   );
 }
@@ -3605,6 +3850,406 @@ function PrototypeStyles() {
         .reproLab .upload-title {
           font-size: 40px;
         }
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* Reiteration badge                                                     */
+      /* ------------------------------------------------------------------ */
+      .reproLab .reiteration-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--accent-ink);
+        background: var(--accent-soft);
+        padding: 2px 8px;
+        border-radius: 999px;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* CompletionSummary popup                                               */
+      /* ------------------------------------------------------------------ */
+      @keyframes csSlideFadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .reproLab .completion-summary {
+        position: fixed;
+        bottom: 28px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(460px, calc(100vw - 32px));
+        max-height: 72vh;
+        z-index: 60;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border: 1px solid var(--line-2);
+        border-radius: 14px;
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.05),
+          0 4px 12px -4px rgba(0, 0, 0, 0.12),
+          0 24px 52px -20px rgba(0, 0, 0, 0.28);
+        overflow: hidden;
+        animation: csSlideFadeIn 0.24s cubic-bezier(0.22, 0.68, 0, 1.2) both;
+      }
+
+      .reproLab .completion-summary-head {
+        flex-shrink: 0;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 11px 12px 11px 14px;
+        background: var(--ink);
+        color: #fff;
+      }
+
+      .reproLab .completion-summary-eyebrow {
+        flex: 1;
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.52);
+        margin-bottom: 2px;
+      }
+
+      .reproLab .completion-summary-title {
+        flex: none;
+        width: 100%;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: -0.015em;
+        color: #fff;
+        line-height: 1.25;
+        order: 2;
+      }
+
+      .reproLab .completion-summary-head {
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .reproLab .completion-summary-eyebrow {
+        flex: 1 1 auto;
+        order: 1;
+      }
+
+      .reproLab .completion-summary-close {
+        order: 3;
+        flex-shrink: 0;
+        margin-left: auto;
+        align-self: flex-start;
+        width: 22px;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.14);
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 0.14s ease;
+      }
+
+      .reproLab .completion-summary-close:hover {
+        background: rgba(255, 255, 255, 0.26);
+        color: #fff;
+      }
+
+      .reproLab .completion-summary-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      /* Headline metrics */
+      .reproLab .cs-headline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 10px;
+      }
+
+      .reproLab .cs-headline-score {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .reproLab .cs-score-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .reproLab .cs-score-val {
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        color: var(--ink);
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-feature-settings: "tnum" 1;
+      }
+
+      .reproLab .cs-score-ours {
+        color: var(--accent-ink);
+      }
+
+      .reproLab .cs-score-arrow {
+        font-size: 14px;
+        color: var(--muted-2);
+        align-self: center;
+      }
+
+      .reproLab .cs-score-sub {
+        width: 100%;
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+
+      .reproLab .cs-target-chip {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 2px 9px;
+        border-radius: 999px;
+        align-self: center;
+      }
+
+      .reproLab .cs-target-chip--meets {
+        background: var(--accent-soft);
+        color: var(--accent-ink);
+      }
+
+      .reproLab .cs-target-chip--below {
+        background: var(--warn-soft);
+        color: var(--warn-ink);
+      }
+
+      /* Verdict */
+      .reproLab .cs-verdict {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.55;
+        color: var(--ink-2);
+        white-space: pre-wrap;
+        padding: 10px 11px;
+        border-radius: 9px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+      }
+
+      /* Stat line */
+      .reproLab .cs-stat-line {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted);
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-feature-settings: "tnum" 1;
+        letter-spacing: 0;
+      }
+
+      /* Per-area breakdown */
+      .reproLab .cs-areas {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .reproLab .cs-area-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .reproLab .cs-area-meta {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .reproLab .cs-area-name {
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--ink-2);
+        letter-spacing: -0.01em;
+      }
+
+      .reproLab .cs-area-weight {
+        font-size: 10px;
+        color: var(--muted-2);
+        font-weight: 600;
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-feature-settings: "tnum" 1;
+        flex-shrink: 0;
+      }
+
+      .reproLab .cs-area-bar-wrap {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .reproLab .cs-area-bar {
+        position: relative;
+        flex: 1;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--line);
+        overflow: visible;
+      }
+
+      .reproLab .cs-area-bar-fill {
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--accent);
+        min-width: 2px;
+        transition: width 0.4s cubic-bezier(0.22, 0.68, 0, 1);
+      }
+
+      .reproLab .cs-area-bar-baseline {
+        position: absolute;
+        top: -3px;
+        width: 2px;
+        height: 12px;
+        border-radius: 1px;
+        background: var(--muted-2);
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+
+      .reproLab .cs-area-score {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+        flex-shrink: 0;
+        width: 28px;
+        text-align: right;
+      }
+
+      .reproLab .cs-area-weak {
+        font-size: 10.5px;
+        color: var(--muted);
+        line-height: 1.4;
+        padding-left: 2px;
+      }
+
+      .reproLab .cs-area-weak-more {
+        color: var(--muted-2);
+      }
+
+      /* Degraded state */
+      .reproLab .cs-degraded {
+        padding: 6px 0 2px;
+      }
+
+      .reproLab .cs-degraded-title {
+        font-size: 14px;
+        font-weight: 800;
+        color: var(--ink);
+        letter-spacing: -0.015em;
+        margin-bottom: 4px;
+      }
+
+      .reproLab .cs-degraded-verdict {
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+
+      /* Footer */
+      .reproLab .cs-footer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+        margin-top: 2px;
+      }
+
+      .reproLab .cs-footer-report {
+        font-size: 11px;
+        font-weight: 700;
+        padding: 5px 11px;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff;
+        text-decoration: none;
+        white-space: nowrap;
+        transition: background 0.14s ease;
+      }
+
+      .reproLab .cs-footer-report:hover {
+        background: var(--ink-2);
+      }
+
+      .reproLab .cs-footer-metrics {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .reproLab .cs-footer-label {
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 9.5px;
+        color: var(--muted-2);
+      }
+
+      /* Re-open pill */
+      .reproLab .completion-summary-pill {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 60;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent-ink);
+        background: var(--accent-soft);
+        border: 1px solid rgba(22, 178, 92, 0.25);
+        padding: 6px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+        box-shadow: 0 2px 12px -4px rgba(0, 0, 0, 0.18);
+        transition: background 0.14s ease, box-shadow 0.14s ease;
+        white-space: nowrap;
+      }
+
+      .reproLab .completion-summary-pill:hover {
+        background: #d0f0e0;
+        box-shadow: 0 4px 18px -6px rgba(0, 0, 0, 0.24);
       }
     `}</style>
   );

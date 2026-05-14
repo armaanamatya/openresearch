@@ -179,6 +179,12 @@ export interface PipelineStateDocument {
     reason?: string;
     status?: HermesAuditStatusLike;
   }>;
+  improvement_iteration?: number;
+  verification_history?: Array<{
+    overall_score: number;
+    target_score: number;
+    meets_target: boolean;
+  }>;
 }
 
 export interface LiveDemoMeta {
@@ -225,6 +231,9 @@ export interface LiveDemoPayload extends LiveDemoMeta {
     sandboxMode?: DemoSandboxMode;
     gpuMode?: DemoGpuMode;
     sourceLabel: string;
+    improvementIteration?: number;
+    latestRubricScore?: number | null;
+    rubricTargetScore?: number | null;
   };
 }
 
@@ -1190,7 +1199,14 @@ export function buildLiveDemoDashboard(
       executionMode: meta.executionMode,
       sandboxMode: meta.sandboxMode,
       gpuMode: meta.gpuMode,
-      sourceLabel: meta.sourceLabel
+      sourceLabel: meta.sourceLabel,
+      improvementIteration: state.improvement_iteration ?? 0,
+      latestRubricScore:
+        state.verification_history?.[state.verification_history.length - 1]
+          ?.overall_score ?? null,
+      rubricTargetScore:
+        state.verification_history?.[state.verification_history.length - 1]
+          ?.target_score ?? null
     }
   };
 }
