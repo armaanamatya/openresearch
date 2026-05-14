@@ -67,6 +67,7 @@ class DashboardEmitter:
         line = json.dumps(event, default=str) + "\n"
         with self._path.open("a", encoding="utf-8") as f:
             f.write(line)
+            f.flush()
 
     def _agent_node(
         self,
