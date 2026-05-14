@@ -9,6 +9,26 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Persistent, URL-addressable lab runs.** The active run is now keyed
+  by the `?projectId=` query param — `app/lab/page.tsx` is an async
+  server component that restores the run server-side, so a refresh or a
+  shared link reopens the exact run instead of dropping to the upload
+  view. A per-browser `localStorage` pointer (`reprolab:lastRun`)
+  auto-resumes an in-flight run when the tab is reopened on a bare
+  `/lab` URL; a stale link, a deleted run, and a transient 504 are each
+  handled without discarding a live run. New `lib/demo/server-run.ts`
+  holds the shared server-only run-fetch helper.
+- **Hybrid vision-leaning paper extraction.** A modular `PaperExtractor`
+  augmentation pass runs after the base PyMuPDF parser
+  (`backend/services/ingestion/parser/extractor.py`). In `hybrid` mode
+  (`REPROLAB_PAPER_EXTRACTION_MODE`, default `hybrid`) it renders
+  scanned / figure-heavy pages to images and calls Claude vision
+  (`vision.py`) for figure / table / equation descriptions and OCR
+  text, enriching the parsed `full_text` that downstream agents
+  consume. Fail-soft by contract: `extract()` never raises and degrades
+  to text-only when vision is unavailable, so `text` mode and the
+  behaviour for ordinary text PDFs are unchanged. `ParserAppService`
+  now also emits the (pre-existing) `FigureExtracted` event.
 - **Apify ArXiv MCP server integration.** When `APIFY_API_TOKEN` is set,
   the Claude agent runtime registers `https://jakub-kopecky--arxiv-mcp-
   server.apify.actor/sse` as an MCP server named `apify-arxiv` (SSE
@@ -143,6 +163,13 @@ version + date and start a new `[Unreleased]` block above it.
   from `list` → `summary` → `--no-pipeline` dry → real run + UI link.
 
 ### Changed
+- **Graph-first lab layout — edge-docked drawers.** The workflow view's
+  3-column grid (`graph | 360px | 320px`) is replaced by a full-bleed
+  node graph with the node-details panel and the agent timeline as
+  collapsible drawers docked to the right viewport edge. Collapsed they
+  are labelled tabs; expanded they overlay the graph without reflowing
+  it, behave as an accordion, and persist their open state. The header
+  action is now a prominent primary "Start New Run" button.
 - `RuntimeGuard.find_blocked_term` no longer URL-parses arbitrary agent
   output. Lower-cases the haystack only and substring-matches against
   pre-canonicalised terms — fixes the `Invalid IPv6 URL` crash on
@@ -164,6 +191,28 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **Live logs surface subprocess stdout, not just stderr.**
+  `FileLiveRunService._read_log` read only `runner.stderr.log`, so agent
+  activity on stdout was invisible in the UI. It now reads and combines
+  both `runner.stdout.log` and `runner.stderr.log` under the existing
+  tail cap.
+- **Live log lines render verbatim.** `parseLogEntries` piped every line
+  through `issueText`, rewriting `failed` → `needs attention` — that hid
+  real failures from anyone reading the log. Log lines are now
+  unmodified, and the window grew from the last 20 to 80 lines.
+- **An un-enriched `run_state` frame no longer regresses the graph.**
+  The GET (750 ms) and SSE (250 ms) routes both cap payload enrichment
+  and fall back to the un-enriched backend state on timeout; applied
+  raw, a payload-less frame blanked the graph's per-path nodes. A new
+  `coalesceRunState` carries the last enriched payload / telemetry / log
+  forward until the next enriched frame. (Track 2 §5.4 originally
+  attributed this to a missing orchestrator emit — the orchestrator
+  never builds a payload at all; the frontend reconstructs `pathStates`
+  from `path_results` during enrichment.)
+- **Dashboard / telemetry JSONL writes flush immediately.**
+  `DashboardEmitter._emit` and `AgentTelemetryRecorder.append` relied on
+  the context-manager close to flush; an explicit `flush()` makes each
+  completed event durable if the run subprocess is killed before close.
 - **SIGINT/CancelledError no longer dumps a 50-line stack trace.**
   `backend/cli.py:cmd_reproduce` catches `(KeyboardInterrupt,
   asyncio.CancelledError)` around `asyncio.run`, flips

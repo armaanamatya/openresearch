@@ -44,6 +44,14 @@ This is the part worth knowing up front — the rest you can read directly.
    `dashboard_event`. `stateMapForRun()` maps the backend stage → graph node states.
 5. On `complete`, the computed `final_report` replaces the placeholder benchmark.
 
+**Which run is "current" is the URL.** `/lab?projectId=<id>` is the source of
+truth — `app/lab/page.tsx` (async server component) restores that run as
+`initialRun`, so a refresh or a shared link reopens it; a per-browser
+`localStorage` pointer auto-resumes an in-flight run on a bare `/lab`. Payload
+enrichment is timeout-capped on both the GET and SSE routes, so the client's
+`coalesceRunState` keeps the last enriched frame — a timed-out, payload-less
+frame never regresses the graph.
+
 ## Where to look
 
 - **Backend entry points** — `app.py` (HTTP), `cli.py` (CLI / non-UI runs),
@@ -58,6 +66,10 @@ This is the part worth knowing up front — the rest you can read directly.
 
 - **Run modes** — `sdk` (real LLM agents) vs `offline` (deterministic, no keys). The
   refactored lab UI is SDK-only.
+- **Paper extraction** — the PDF parser has an optional `PaperExtractor`
+  augmentation pass (`REPROLAB_PAPER_EXTRACTION_MODE`, default `hybrid`):
+  Claude-vision OCR + figure/table descriptions for scanned or figure-heavy
+  pages, enriching `full_text`. Fail-soft — degrades to embedded text only.
 - **Sandbox** — `local` / `docker` / `runpod`. The UI requests `runpod`;
   `REPROLAB_FORCE_SANDBOX` pins it deployment-wide. `REPROLAB_DEFAULT_SANDBOX` does *not*
   override an explicit request — only `FORCE_SANDBOX` does.

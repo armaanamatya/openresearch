@@ -11,6 +11,33 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — A timed-out enrichment frame silently blanked the live graph
+
+**Symptom.** Mid-run, the workflow graph's per-path improvement nodes
+(`opt/bb/aug/hor/div`) intermittently dropped back to "upcoming" for a tick,
+then recovered on the next frame.
+
+**Root cause.** Both `/api/demo` GET (750 ms) and `/api/demo/events` SSE
+(250 ms) cap payload enrichment and, on timeout, forward the *un-enriched*
+backend run state — which carries no `payload`. `stateMapForRun` reads
+`run.payload.pathStates`; with `payload` undefined every path node fell
+through to "upcoming". The UI overwrote good state with a strictly poorer
+frame.
+
+**Fix.** `coalesceRunState` merges an incoming `run_state` frame onto the
+current one, carrying the last `payload`/`telemetry`/`log` forward when the
+new frame lacks them. Both the SSE handler and the poll fallback route
+through it; it warns in dev when it has to coalesce.
+
+**Lesson.** A frame that arrives with *less* information than the one it
+replaces must not be applied verbatim — partial frames are an expected
+steady-state condition here (enrichment timeouts), not an error.
+
+**Guardrail.** State updates fed from a stream/poll should be **monotonic in
+information**: merge-don't-replace when the transport can legitimately
+deliver a degraded frame. (`stateMapForRun` already encoded this for stage
+progress; `coalesceRunState` extends the same rule to the payload.)
+
 ## 2026-05-14 — A stage-ordering test froze the pipeline at 15 stages after it became 14
 
 **Symptom.** `tests/test_issue22_orchestrator.py::test_pipeline_stages_are_ordered`
