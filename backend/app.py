@@ -66,7 +66,13 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         paper = form.get("paper")
         if paper is None or not hasattr(paper, "read"):
             raise HTTPException(status_code=400, detail="Upload a PDF before starting a lab run.")
-        file_name = str(getattr(paper, "filename", "") or "paper.pdf")
+        # Normalize the reported filename to a bare basename. A client may
+        # send a path-qualified name — Windows browsers/tools can include
+        # `C:\\...\\file.pdf` or backslash separators — and downstream code
+        # (_stage_upload) treats it as a POSIX path. Strip both separators
+        # so staging is platform-agnostic regardless of the upload source.
+        raw_name = str(getattr(paper, "filename", "") or "paper.pdf")
+        file_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip() or "paper.pdf"
         if not file_name.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
         content = await paper.read()

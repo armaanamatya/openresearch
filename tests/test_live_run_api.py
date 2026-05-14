@@ -128,6 +128,26 @@ def test_fastapi_upload_route_starts_uploaded_pdf_run() -> None:
     assert body["sourceLabel"] == "paper.pdf"
 
 
+def test_fastapi_upload_route_normalizes_path_qualified_filenames() -> None:
+    """A path-qualified filename (Windows `C:\\...` or `\\`-separated) is
+    reduced to its basename so downstream POSIX path handling is safe."""
+    for raw, expected in [
+        ("C:\\Users\\14698\\Downloads\\2402.02868v3.pdf", "2402.02868v3.pdf"),
+        ("/home/abheekp/Downloads/paper.pdf", "paper.pdf"),
+        ("subdir\\nested\\report.PDF", "report.PDF"),
+        ("plain.pdf", "plain.pdf"),
+    ]:
+        service = FakeRunService()
+        client = TestClient(create_app(run_service=service))
+        response = client.post(
+            "/runs/upload",
+            data={"mode": "sdk", "provider": "anthropic"},
+            files={"paper": (raw, b"%PDF-demo", "application/pdf")},
+        )
+        assert response.status_code == 202, f"{raw!r} -> {response.status_code}"
+        assert response.json()["sourceLabel"] == expected, raw
+
+
 def test_fastapi_serves_stored_source_pdf(tmp_path: Path) -> None:
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF-demo\n")
