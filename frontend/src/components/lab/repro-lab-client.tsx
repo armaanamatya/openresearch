@@ -87,6 +87,37 @@ function readLastRun(): string | null {
   }
 }
 
+// fetch() rejects with a TypeError on a network-level failure — the
+// connection dropped before the request completed (DNS, reset, a flaky
+// localhost relay on WSL2 choking on a large upload body). That is
+// distinct from an HTTP error *response*. A single quick retry recovers
+// a genuine transient without masking a real server error.
+async function postRunRequest(
+  input: string,
+  init: RequestInit,
+  attempts = 2
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetch(input, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
+function describeStartError(error: unknown, fallback: string): string {
+  if (error instanceof TypeError) {
+    return "Couldn't reach the server — the connection dropped before the request finished. Check your connection and try again.";
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 const NAV: NavItem[] = [
   { id: "lab", label: "Lab", icon: "lab", href: "/lab" },
   { id: "papers", label: "Library", icon: "papers", href: "/papers" },
@@ -3560,7 +3591,10 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${DEFAULT_RUN_QUERY}&model=${encodeURIComponent(model)}`, { method: "POST" });
+      const response = await postRunRequest(
+        `${DEFAULT_RUN_QUERY}&model=${encodeURIComponent(model)}`,
+        { method: "POST" }
+      );
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: string } | null;
         throw new Error(payload?.error ?? "Unable to start run");
@@ -3571,7 +3605,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       setRunUrl(next.projectId);
       writeLastRun(next.projectId);
     } catch (startError) {
-      setError(startError instanceof Error ? startError.message : "Unable to start run");
+      setError(describeStartError(startError, "Unable to start run"));
       setBusy(false);
     }
   }
@@ -3588,7 +3622,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       formData.set("gpuMode", "auto");
       formData.set("model", model);
       formData.set("paper", file);
-      const response = await fetch("/api/demo", {
+      const response = await postRunRequest("/api/demo", {
         method: "POST",
         body: formData
       });
@@ -3601,7 +3635,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       setRunUrl(next.projectId);
       writeLastRun(next.projectId);
     } catch (startError) {
-      setError(startError instanceof Error ? startError.message : "Unable to start uploaded run");
+      setError(describeStartError(startError, "Unable to start uploaded run"));
       setBusy(false);
     }
   }
