@@ -1,5 +1,8 @@
-// Server-only. Never import this from a client component — it reads the
-// REPROLAB_DEMO_SECRET server env var, which must not reach the client bundle.
+import "server-only";
+
+// Reads the REPROLAB_DEMO_SECRET server env var, which must never reach the
+// client bundle. The `server-only` import above turns an accidental client
+// import into a build error instead of a silent failure.
 
 export const COOKIE_NAME = "reprolab_session";
 export const COOKIE_MAX_AGE = 60 * 60 * 12; // 12 hours
