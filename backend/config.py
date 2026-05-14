@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 
+    # Paper extraction mode. "hybrid" uses vision (Claude) to enrich scanned
+    # pages and figure descriptions; falls back to text-only when no API key
+    # is set, so the default is safe. "text" forces the text-only path.
+    paper_extraction_mode: Literal["text", "hybrid"] = "hybrid"
+    paper_extraction_vision_model: str = "claude-sonnet-4-6"
+
     # Default sandbox mode for the dashboard's "start a run" form.
     # CLI defaults remain controlled separately by argparse flags.
     default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
