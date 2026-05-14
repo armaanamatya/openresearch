@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend import __version__
@@ -96,6 +96,38 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if state is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return state
+
+    @app.get("/runs/{project_id}/source-pdf")
+    async def get_source_pdf(project_id: str):
+        getter = getattr(service, "get_source_pdf_path", None)
+        if not callable(getter):
+            raise HTTPException(status_code=404, detail="Source PDF not found")
+        path = await getter(project_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Source PDF not found")
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename="paper.pdf",
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/runs/{project_id}/final-report")
+    async def get_final_report(project_id: str):
+        getter = getattr(service, "get_final_report_path", None)
+        if not callable(getter):
+            raise HTTPException(status_code=404, detail="Final report not found")
+        path = await getter(project_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Final report not found")
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            filename="final_benchmark_report.md",
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.delete("/runs/{project_id}")
     async def stop_run(project_id: str):
