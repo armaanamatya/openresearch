@@ -182,9 +182,11 @@ def _extract_datasets(sections: dict[str, str]) -> list[DatasetRequirement]:
 
 
 def _extract_metrics(sections: dict[str, str]) -> list[MetricSpec]:
-    """Find metric definitions."""
+    """Find metric definitions, capturing nearby numeric target values."""
+    import re
+
     metrics: list[MetricSpec] = []
-    all_text = " ".join(sections.values()).lower()
+    all_text_lower = " ".join(sections.values()).lower()
 
     known_metrics = [
         ("reward", "Mean episode reward"),
@@ -194,9 +196,58 @@ def _extract_metrics(sections: dict[str, str]) -> list[MetricSpec]:
         ("error rate", "Error rate"),
     ]
 
+    # Match a standalone decimal number (integer or float).
+    # Must be preceded by a non-word character (space, punctuation, or
+    # start-of-string) and must not be immediately followed by a letter or
+    # digit, so "v1", "CartPole-v1", "3e-4" etc. are excluded.
+    # We only accept positive numbers here (no leading sign) to stay
+    # conservative and avoid matching subtracted quantities or version suffixes.
+    _NUMBER_RE = re.compile(r"(?:^|(?<=[\s=(:,]))(\d+(?:\.\d+)?)(?=[\s).,;%]|$)")
+    _WINDOW = 120  # characters to search on each side of keyword
+
     for keyword, definition in known_metrics:
-        if keyword in all_text:
-            metrics.append(MetricSpec(name=keyword, definition=definition))
+        if keyword not in all_text_lower:
+            continue
+
+        target_value: str | None = None
+        found_section: str | None = None
+
+        # Search each section's original-case text for the keyword and a
+        # nearby number. We use original-case so we don't fabricate values.
+        # Priority: search the RIGHT side of the keyword first (values
+        # typically follow the metric name), then fall back to the left side.
+        for title, text in sections.items():
+            if keyword not in text.lower():
+                continue
+            # Find all occurrences of the keyword (case-insensitive) in text
+            for match in re.finditer(re.escape(keyword), text, re.IGNORECASE):
+                kw_end = match.end()
+                kw_start = match.start()
+                # 1. Try the right side first (after keyword)
+                right_window = text[kw_end:min(len(text), kw_end + _WINDOW)]
+                num_match = _NUMBER_RE.search(right_window)
+                if num_match:
+                    target_value = num_match.group(1)
+                    found_section = title
+                    break
+                # 2. Fall back to left side (before keyword)
+                left_window = text[max(0, kw_start - _WINDOW):kw_start]
+                num_match = _NUMBER_RE.search(left_window)
+                if num_match:
+                    target_value = num_match.group(1)
+                    found_section = title
+                    break
+            if target_value is not None:
+                break
+
+        metrics.append(
+            MetricSpec(
+                name=keyword,
+                definition=definition,
+                target_value=target_value,
+                source_section=found_section,
+            )
+        )
 
     return metrics
 

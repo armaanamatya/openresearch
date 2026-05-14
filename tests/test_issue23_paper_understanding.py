@@ -225,3 +225,45 @@ class TestIntegrationWithIngestionPipeline:
         result = run_offline("prj_empty", tmp_path, empty)
         assert isinstance(result, PaperClaimMap)
         assert result.core_contribution != ""
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — _extract_metrics captures nearby numeric target values
+# ---------------------------------------------------------------------------
+
+class TestExtractMetricsTargetValue:
+    """_extract_metrics must capture a numeric target_value near the keyword."""
+
+    def test_extracts_target_value_for_reward(self):
+        """With a numeric value near 'reward', target_value is populated."""
+        sections = {"experiments": "we report a mean reward of 475.0 over 100 episodes"}
+        result = _extract_metrics(sections)
+        assert len(result) >= 1
+        reward_spec = next((m for m in result if m.name == "reward"), None)
+        assert reward_spec is not None, "Expected a MetricSpec with name='reward'"
+        assert reward_spec.target_value is not None
+        assert "475" in reward_spec.target_value
+
+    def test_source_section_is_set_when_value_found(self):
+        sections = {"experiments": "we report a mean reward of 475.0 over 100 episodes"}
+        result = _extract_metrics(sections)
+        reward_spec = next((m for m in result if m.name == "reward"), None)
+        assert reward_spec is not None
+        assert reward_spec.source_section == "experiments"
+
+    def test_no_target_value_when_no_number_near_keyword(self):
+        """If no number appears within ~120 chars, target_value stays None."""
+        sections = {"abstract": "We discuss reward in qualitative terms only."}
+        result = _extract_metrics(sections)
+        reward_spec = next((m for m in result if m.name == "reward"), None)
+        assert reward_spec is not None
+        assert reward_spec.target_value is None
+
+    def test_does_not_fabricate_value_from_distant_number(self):
+        """A number far from the keyword (>120 chars away) should not be captured."""
+        far_text = "reward" + " " * 150 + "42.0"
+        sections = {"experiments": far_text}
+        result = _extract_metrics(sections)
+        reward_spec = next((m for m in result if m.name == "reward"), None)
+        assert reward_spec is not None
+        assert reward_spec.target_value is None
