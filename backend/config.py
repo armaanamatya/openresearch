@@ -93,12 +93,18 @@ class Settings(BaseSettings):
 
     # Default sandbox mode for the dashboard's "start a run" form.
     # CLI defaults remain controlled separately by argparse flags.
-    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
+    # RunPod is disabled — Docker is the supported execution sandbox — so this
+    # defaults to "docker" rather than "runpod".
+    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "docker"
 
-    # When set, every run is forced onto this sandbox mode regardless of what
-    # the client requested. Deployments without a GPU or Docker daemon (e.g.
-    # Railway) pin this to "local". Empty = no override (default).
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
+    # Every run is forced onto this sandbox mode regardless of what the client
+    # requested — this is the single point that *guarantees* docker-only
+    # execution: the UI and the request model still carry legacy "runpod"
+    # defaults, and apply_sandbox_override rewrites them here. Defaults to
+    # "docker" because RunPod is disabled; a Docker-less deployment (e.g.
+    # Railway) sets REPROLAB_FORCE_SANDBOX=local to override. Empty disables
+    # the override entirely.
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = "docker"
 
     # Shared secret gating the run-start endpoints on public deployments.
     # Empty = gate disabled (local dev). When set, POST /runs and
