@@ -28,7 +28,7 @@ BACKEND_PID=$!
 
 # --- Frontend: Next.js production server ------------------------------------
 # Bound to 0.0.0.0 so the host can hit it through the published port.
-(cd /app/frontend && npx next start --hostname 0.0.0.0 --port 3000) &
+(cd /app/frontend && npx next start --hostname 0.0.0.0 --port "${PORT:-3000}") &
 FRONTEND_PID=$!
 
 # --- Signal forwarding ------------------------------------------------------
