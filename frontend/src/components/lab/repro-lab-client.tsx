@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 
 import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import { AgentTimelineRail, type DashboardLiveEvent } from "./agent-timeline-rail";
@@ -53,6 +54,38 @@ const DEFAULT_RUN_QUERY =
 const POLL_INTERVAL_MS = 3000;
 const NODE_W = 200;
 const NODE_H = 80;
+
+// Per-browser pointer to the most recent run. Lets a closed tab or a
+// fresh page load auto-resume an in-flight run; localStorage is
+// per-browser, so a genuinely new browser still starts clean.
+const LAST_RUN_KEY = "reprolab:lastRun";
+// Which workflow drawer is expanded, persisted so the layout choice
+// survives a refresh.
+const DRAWER_KEY = "reprolab:openDrawer";
+
+function writeLastRun(projectId: string): void {
+  try {
+    window.localStorage.setItem(LAST_RUN_KEY, projectId);
+  } catch {
+    // localStorage can throw in private mode / disabled storage — non-fatal.
+  }
+}
+
+function clearLastRun(): void {
+  try {
+    window.localStorage.removeItem(LAST_RUN_KEY);
+  } catch {
+    // non-fatal
+  }
+}
+
+function readLastRun(): string | null {
+  try {
+    return window.localStorage.getItem(LAST_RUN_KEY);
+  } catch {
+    return null;
+  }
+}
 
 const NAV: NavItem[] = [
   { id: "lab", label: "Lab", icon: "lab", href: "/lab" },
@@ -1632,6 +1665,70 @@ function RightPanel({
   );
 }
 
+function ChevronGlyph({ dir }: { dir: "left" | "right" }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d={dir === "left" ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"}
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// A panel docked to the right viewport edge. Collapsed it is a labelled
+// tab; expanded it slides out as an overlay drawer ON TOP of the graph —
+// the canvas never reflows. Controlled by WorkflowView so the two
+// drawers behave as an accordion (at most one open at a time).
+function EdgeDrawer({
+  label,
+  tabIndex,
+  open,
+  tabShifted,
+  onToggle,
+  children
+}: {
+  label: string;
+  tabIndex: 0 | 1;
+  open: boolean;
+  tabShifted: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {!open && (
+        <button
+          type="button"
+          className={`edge-drawer-tab edge-drawer-tab-${tabIndex}${tabShifted ? " shifted" : ""}`}
+          onClick={onToggle}
+          aria-expanded={false}
+        >
+          <ChevronGlyph dir="left" />
+          <span className="edge-drawer-tab-label">{label}</span>
+        </button>
+      )}
+      <aside className={`edge-drawer${open ? " open" : ""}`} aria-hidden={!open} inert={!open}>
+        <div className="edge-drawer-head">
+          <span className="edge-drawer-head-label">{label}</span>
+          <button
+            type="button"
+            className="edge-drawer-close"
+            onClick={onToggle}
+            aria-label={`Collapse ${label}`}
+          >
+            <ChevronGlyph dir="right" />
+          </button>
+        </div>
+        <div className="edge-drawer-body">{children}</div>
+      </aside>
+    </>
+  );
+}
+
 function WorkflowView({
   busy,
   dashboardEvents,
@@ -1646,6 +1743,35 @@ function WorkflowView({
   run: LiveDemoRunState;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [openDrawer, setOpenDrawer] = useState<"details" | "agents" | null>(null);
+
+  useEffect(() => {
+    // Post-mount read of a browser-only preference: it cannot run during
+    // render (the server has no localStorage and would hydrate-mismatch),
+    // so the one-shot setState here is intentional, not a cascade.
+    try {
+      const stored = window.localStorage.getItem(DRAWER_KEY);
+      if (stored === "details" || stored === "agents") {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setOpenDrawer(stored);
+      }
+    } catch {
+      // localStorage unavailable — start with both drawers collapsed.
+    }
+  }, []);
+
+  const toggleDrawer = useCallback((key: "details" | "agents") => {
+    setOpenDrawer((prev) => {
+      const next = prev === key ? null : key;
+      try {
+        window.localStorage.setItem(DRAWER_KEY, next ?? "");
+      } catch {
+        // non-fatal
+      }
+      return next;
+    });
+  }, []);
+
   const stateMap = useMemo(() => stateMapForRun(run), [run]);
   const doneCount = NODES.filter((node) => stateMap[node.id] === "done").length;
   const liveStatus: Status =
@@ -1673,17 +1799,33 @@ function WorkflowView({
           </div>
         </div>
         <div className="workflow-actions">
-          <button className="btn btn-sm" onClick={() => void onClear()} type="button" disabled={busy}>
-            {busy ? "Stopping..." : "New paper"}
+          <button className="btn btn-primary" onClick={() => void onClear()} type="button" disabled={busy}>
+            {busy ? "Stopping…" : "Start New Run"}
           </button>
         </div>
       </div>
-      <div className="workflow-layout">
-        <div className="canvas-wrap">
+      <div className="workflow-stage">
+        <div className="canvas-wrap canvas-wrap-full">
           <PanCanvas run={run} stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
-        <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
-        <AgentTimelineRail events={dashboardEvents} decisions={decisions} />
+        <EdgeDrawer
+          label="Node details"
+          tabIndex={0}
+          open={openDrawer === "details"}
+          tabShifted={openDrawer !== null}
+          onToggle={() => toggleDrawer("details")}
+        >
+          <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
+        </EdgeDrawer>
+        <EdgeDrawer
+          label="Live agents"
+          tabIndex={1}
+          open={openDrawer === "agents"}
+          tabShifted={openDrawer !== null}
+          onToggle={() => toggleDrawer("agents")}
+        >
+          <AgentTimelineRail events={dashboardEvents} decisions={decisions} />
+        </EdgeDrawer>
       </div>
     </>
   );
@@ -2105,20 +2247,140 @@ function PrototypeStyles() {
         padding: 0 11px;
         font-size: 12.5px;
       }
-      .reproLab .workflow-layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 360px 320px;
-        gap: 16px;
-        align-items: flex-start;
+      .reproLab .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
       }
-      @media (max-width: 1280px) {
-        .reproLab .workflow-layout {
-          grid-template-columns: minmax(0, 1fr) 360px;
-        }
-        .reproLab .timeline-rail {
-          grid-column: 1 / -1;
-          max-height: 320px;
-        }
+      .reproLab .btn-primary:hover {
+        background: var(--accent-ink);
+        border-color: var(--accent-ink);
+      }
+      .reproLab .btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .reproLab .workflow-stage {
+        position: relative;
+      }
+      .reproLab .canvas-wrap-full {
+        width: 100%;
+      }
+      /* Edge-docked drawers — the graph stays full-bleed; a drawer slides
+         in as an overlay on top of it and never reflows the canvas. The
+         closed drawer's tab shifts to the open drawer's edge so it stays
+         reachable (accordion-style switching). */
+      .reproLab .edge-drawer-tab {
+        position: fixed;
+        right: 0;
+        z-index: 45;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 9px;
+        width: 34px;
+        min-height: 132px;
+        padding: 16px 0;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-right: none;
+        border-radius: 12px 0 0 12px;
+        color: var(--ink-2);
+        cursor: pointer;
+        box-shadow: -8px 0 24px -16px rgba(0, 0, 0, 0.3);
+        transition: background 0.18s ease, color 0.18s ease,
+          right 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .reproLab .edge-drawer-tab:hover {
+        background: var(--chip);
+        color: var(--ink);
+      }
+      .reproLab .edge-drawer-tab-0 {
+        top: calc(50% - 140px);
+      }
+      .reproLab .edge-drawer-tab-1 {
+        top: calc(50% + 8px);
+      }
+      .reproLab .edge-drawer-tab.shifted {
+        right: 384px;
+      }
+      .reproLab .edge-drawer-tab-label {
+        writing-mode: vertical-rl;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .reproLab .edge-drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 384px;
+        max-width: 92vw;
+        z-index: 55;
+        background: var(--panel);
+        border-left: 1px solid var(--line-2);
+        display: flex;
+        flex-direction: column;
+        box-shadow: -24px 0 60px -24px rgba(0, 0, 0, 0.34);
+        transform: translateX(100%);
+        transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+        will-change: transform;
+      }
+      .reproLab .edge-drawer.open {
+        transform: translateX(0);
+      }
+      .reproLab .edge-drawer-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        flex-shrink: 0;
+      }
+      .reproLab .edge-drawer-head-label {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+      }
+      .reproLab .edge-drawer-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 27px;
+        height: 27px;
+        border-radius: 999px;
+        background: var(--chip);
+        border: 1px solid var(--line);
+        color: var(--ink-2);
+        cursor: pointer;
+        transition: background 0.16s ease, color 0.16s ease;
+      }
+      .reproLab .edge-drawer-close:hover {
+        background: var(--line-2);
+        color: var(--ink);
+      }
+      .reproLab .edge-drawer-body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      /* The wrapped panels were sized for the old 3-column grid — strip
+         their standalone geometry so they fill the drawer body instead. */
+      .reproLab .edge-drawer-body > .side-panel,
+      .reproLab .edge-drawer-body > .timeline-rail {
+        flex: 1;
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        position: static;
+        border: none;
+        border-radius: 0;
       }
       .reproLab .timeline-rail {
         background: var(--panel);
@@ -3058,6 +3320,82 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
   const dashboardProjectIdRef = useRef<string | null>(null);
+  const router = useRouter();
+  const didAutoResume = useRef(false);
+
+  // Keep the URL in sync with the active run so a refresh or a shared
+  // link restores it. `replace` (not `push`) avoids a history pile-up;
+  // `scroll: false` keeps the viewport steady.
+  const setRunUrl = useCallback(
+    (projectId: string | null) => {
+      router.replace(projectId ? `/lab?projectId=${encodeURIComponent(projectId)}` : "/lab", {
+        scroll: false
+      });
+    },
+    [router]
+  );
+
+  // Restore an in-flight run on mount so closing the tab or refreshing
+  // doesn't lose progress. Precedence: a server-provided initialRun
+  // (from ?projectId=) wins; otherwise fall back to the per-browser
+  // localStorage pointer. A genuinely new browser has neither and lands
+  // on the fresh upload view.
+  useEffect(() => {
+    if (didAutoResume.current) {
+      return;
+    }
+    didAutoResume.current = true;
+
+    if (initialRun) {
+      writeLastRun(initialRun.projectId);
+      return;
+    }
+
+    const urlPid = new URLSearchParams(window.location.search).get("projectId");
+    if (urlPid) {
+      // ?projectId= was in the URL but the server could not load it
+      // (deleted / expired) — clear the stale link and stay on upload.
+      clearLastRun();
+      setRunUrl(null);
+      return;
+    }
+
+    const stored = readLastRun();
+    if (!stored) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(stored)}`, {
+          cache: "no-store"
+        });
+        if (response.status === 504) {
+          // Transient backend outage — keep the pointer so the next
+          // visit retries instead of discarding a live run.
+          return;
+        }
+        if (!response.ok) {
+          clearLastRun();
+          return;
+        }
+        const restored = (await response.json()) as LiveDemoRunState | null;
+        if (!restored || !restored.projectId) {
+          clearLastRun();
+          return;
+        }
+        setRun(restored);
+        setRunUrl(restored.projectId);
+        writeLastRun(restored.projectId);
+      } catch {
+        // Network error — keep the pointer; the next visit retries.
+      }
+    })();
+    // Mount-only: initialRun is server-rendered and stable for this
+    // mount. The didAutoResume ref makes this idempotent under
+    // StrictMode's double-invoke without stranding the in-flight fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (run?.projectId !== dashboardProjectIdRef.current) {
@@ -3189,6 +3527,8 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       const next = (await response.json()) as LiveDemoRunState;
       setRun(next);
       setArxiv("");
+      setRunUrl(next.projectId);
+      writeLastRun(next.projectId);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "Unable to start run");
       setBusy(false);
@@ -3217,6 +3557,8 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       }
       const next = (await response.json()) as LiveDemoRunState;
       setRun(next);
+      setRunUrl(next.projectId);
+      writeLastRun(next.projectId);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "Unable to start uploaded run");
       setBusy(false);
@@ -3248,6 +3590,8 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
       window.clearTimeout(pollTimer.current);
       pollTimer.current = null;
     }
+    clearLastRun();
+    setRunUrl(null);
   }
 
   return (
