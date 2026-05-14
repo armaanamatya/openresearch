@@ -56,7 +56,14 @@ from backend.agents.schemas import (
     PathResult,
     ReproductionContract,
     ResearchMap,
+    RubricAreaScore,
+    RubricVerification,
     VerificationReport,
+)
+from backend.agents.rubric_source import (
+    GeneratedRubricSource,
+    RubricSource,
+    resolve_rubric_source,
 )
 from backend.agents.report_generator import generate_final_report, write_final_report
 from backend.agents.structured_output import append_structured_output_instruction
@@ -76,8 +83,52 @@ from backend.hermes_audit import (
     build_step_audit_payload,
 )
 from backend.schemas.citations import Citation
+from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp01(value: Any) -> float:
+    """Clamp an LLM-supplied number into [0, 1]; non-numeric -> 0.0."""
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _should_reiterate(
+    verification: RubricVerification | None,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Whether the self-improvement loop should run another round.
+
+    Returns False — terminating the loop — when there is no verification, the
+    rubric target is already met, or the iteration cap is reached. The cap
+    guarantees termination: every loop body increments ``iteration``.
+    """
+    if verification is None or verification.meets_target:
+        return False
+    return iteration < max_iterations
+
+
+def _paperbench_root() -> Path:
+    """Repo's third_party/paperbench directory (orchestrator.py -> repo root)."""
+    return Path(__file__).resolve().parents[2] / "third_party" / "paperbench"
+
+
+def _resolve_run_rubric_source(project_id: str) -> RubricSource:
+    """Pick the rubric source for a run.
+
+    A vendored-bundle run carries its paper id in the project id
+    (``paperbench_<id>``, set by ``bundle_to_workspace_claim_map``) — that gets a
+    BundleRubricSource. Everything else (uploaded papers) generates its rubric.
+    """
+    prefix = "paperbench_"
+    if project_id.startswith(prefix):
+        return resolve_rubric_source(_paperbench_root(), project_id[len(prefix):])
+    return GeneratedRubricSource()
+
 
 @dataclass
 class AgentExecutionTrace:
@@ -127,6 +178,11 @@ class PipelineState:
     path_results: list[PathResult] = field(default_factory=list)
     gate_3: GateDecision | None = None
     research_map: ResearchMap | None = None
+    baseline_verification: RubricVerification | None = None
+    improved_verification: RubricVerification | None = None
+    verification_history: list[RubricVerification] = field(default_factory=list)
+    improvement_iteration: int = 0
+    rubric_spec: dict[str, Any] | None = None
     assumption_ledger: list[dict[str, Any]] = field(default_factory=list)
     decision_log: list[str] = field(default_factory=list)
     hermes_step_reports: dict[str, list[HermesAuditReport]] = field(default_factory=dict)
@@ -177,6 +233,18 @@ class PipelineState:
             data["experiment_artifacts"] = self.experiment_artifacts.model_dump()
         if self.research_map:
             data["research_map"] = self.research_map.model_dump()
+        if self.baseline_verification:
+            data["baseline_verification"] = self.baseline_verification.model_dump()
+        if self.improved_verification:
+            data["improved_verification"] = self.improved_verification.model_dump()
+        if self.verification_history:
+            data["verification_history"] = [
+                v.model_dump() for v in self.verification_history
+            ]
+        if self.improvement_iteration:
+            data["improvement_iteration"] = self.improvement_iteration
+        if self.rubric_spec:
+            data["rubric_spec"] = self.rubric_spec
         if self.gate_1:
             data["gate_1"] = self.gate_1.model_dump()
         if self.gate_2:
@@ -235,6 +303,20 @@ class PipelineState:
             state.experiment_artifacts = ExperimentArtifacts(**data["experiment_artifacts"])
         if "research_map" in data:
             state.research_map = ResearchMap(**data["research_map"])
+        if "baseline_verification" in data:
+            state.baseline_verification = RubricVerification(
+                **data["baseline_verification"]
+            )
+        if "improved_verification" in data:
+            state.improved_verification = RubricVerification(
+                **data["improved_verification"]
+            )
+        if "verification_history" in data:
+            state.verification_history = [
+                RubricVerification(**v) for v in data["verification_history"]
+            ]
+        state.improvement_iteration = data.get("improvement_iteration", 0)
+        state.rubric_spec = data.get("rubric_spec")
         if "gate_1" in data:
             state.gate_1 = GateDecision(**data["gate_1"])
         if "gate_2" in data:
@@ -364,6 +446,7 @@ class ReproLabOrchestrator:
         "experiment-runner": ExperimentArtifacts,
         "supervisor-verifier": VerificationReport,
         "improvement-path": PathResult,
+        "rubric-verifier": RubricVerification,
     }
 
     def _build_runtime_spec(
@@ -373,6 +456,7 @@ class ReproLabOrchestrator:
         runtime: AgentRuntime,
         cwd: str | Path | None = None,
         max_turns: int | None,
+        model_override: str | None = None,
     ) -> AgentRuntimeSpec:
         spec = AGENT_REGISTRY[agent_id]
         provider = runtime.provider_name
@@ -387,7 +471,7 @@ class ReproLabOrchestrator:
         )
         runtime_spec = spec.to_runtime_spec(
             provider,
-            model_override=self.model,
+            model_override=model_override or self.model,
             max_turns=max_turns,
             working_directory=Path(cwd or self._project_dir),
             sub_agents=sub_agents,
@@ -405,6 +489,7 @@ class ReproLabOrchestrator:
         *,
         cwd: str | Path | None = None,
         max_turns: int | None = None,
+        model_override: str | None = None,
         _runtime_override: AgentRuntime | None = None,
         _allow_claude_limit_fallback: bool = True,
         _structured_prompt: bool = False,
@@ -441,6 +526,7 @@ class ReproLabOrchestrator:
                 runtime=runtime,
                 cwd=cwd_path,
                 max_turns=attempt_max_turns,
+                model_override=model_override,
             )
 
         self._dashboard.agent_started(agent_id, task_prompt[:120])
@@ -1141,6 +1227,172 @@ class ReproLabOrchestrator:
         state.advance_stage(PipelineStage.BASELINE_RUN, self.runs_root)
         return state
 
+    async def _run_rubric_verifier(
+        self,
+        state: PipelineState,
+        *,
+        checkpoint: str,
+        target_score: float | None = None,
+    ) -> RubricVerification | None:
+        """Score the reproduction against a PaperBench-style rubric.
+
+        Opt-in via ``rubric_verifier_enabled``. The canonical rubric is resolved
+        ONCE per run (a vendored bundle's rubric, or LLM-generated on the first
+        call) and persisted in ``state.rubric_spec``; every later checkpoint
+        scores against that same rubric with the same weights, so
+        ``baseline_verification`` and ``improved_verification`` are comparable.
+        Weights come from the persisted spec — the LLM supplies scores only.
+
+        Fail-closed: any error logs and returns ``None`` — the run is never
+        blocked, and the heuristic rubric in the final report stays the
+        fallback. ``overall_score`` / ``meets_target`` are recomputed by
+        ``RubricVerification.from_areas`` — never trusted from the model.
+
+        ``checkpoint`` is ``"baseline"`` (within Gate 2) or ``"improved"``
+        (within Gate 3 and each re-iteration round).
+        """
+        settings = get_settings()
+        if not settings.rubric_verifier_enabled:
+            return None
+        resolved_target = (
+            settings.rubric_target_score if target_score is None else target_score
+        )
+
+        # Resolve the canonical rubric once per run, then reuse it at every
+        # checkpoint so the verifications are mutually comparable.
+        spec = state.rubric_spec
+        spec_weights: dict[str, float] | None = None
+        if spec is None:
+            rubric_source = _resolve_run_rubric_source(self.project_id)
+            try:
+                canonical_rubric: Any = rubric_source.load_rubric()
+            except Exception as exc:  # malformed bundle etc. -> generate instead
+                logger.warning("rubric source load failed (%s); generating", exc)
+                rubric_source = GeneratedRubricSource()
+                canonical_rubric = None
+            rubric_source_kind = rubric_source.kind
+        else:
+            canonical_rubric = spec.get("areas")
+            rubric_source_kind = spec.get("source", "generated")
+            spec_weights = {
+                str(area["area"]): float(area["weight"])
+                for area in spec.get("areas", [])
+            }
+
+        context = {
+            "paper_claim_map": (
+                state.paper_claim_map.model_dump() if state.paper_claim_map else {}
+            ),
+            "baseline_result": (
+                state.baseline_result.model_dump() if state.baseline_result else {}
+            ),
+            "reproduction_contract": (
+                state.reproduction_contract.model_dump()
+                if state.reproduction_contract
+                else {}
+            ),
+            "experiment_artifacts": (
+                state.experiment_artifacts.model_dump()
+                if state.experiment_artifacts
+                else {}
+            ),
+            "path_results": [r.model_dump() for r in state.path_results],
+            "canonical_rubric": canonical_rubric,
+            "rubric_source": rubric_source_kind,
+            "target_score": resolved_target,
+        }
+        prompt = (
+            f"Score the {checkpoint} reproduction for project {self.project_id} "
+            f"against a PaperBench-style rubric.\n"
+            f"This is the {checkpoint} verification checkpoint.\n"
+            f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        )
+        try:
+            output = await self._invoke_agent(
+                "rubric-verifier",
+                prompt,
+                model_override=settings.rubric_verifier_model or None,
+            )
+            data = self._extract_json(output)
+            areas: list[RubricAreaScore] = []
+            for item in data.get("areas", []):
+                area_name = str(item.get("area", ""))
+                # Once the canonical rubric is fixed, weights come from the
+                # persisted spec — the LLM only scores, it cannot reweight.
+                weight = (
+                    spec_weights.get(area_name, 0.0)
+                    if spec_weights is not None
+                    else _clamp01(item.get("weight", 0.0))
+                )
+                areas.append(
+                    RubricAreaScore(
+                        area=area_name,
+                        weight=weight,
+                        score=_clamp01(item.get("score", 0.0)),
+                        justification=str(item.get("justification", "")),
+                        weak_points=[
+                            str(w) for w in (item.get("weak_points") or [])
+                        ],
+                    )
+                )
+            if not areas:
+                raise ValueError("rubric-verifier returned no rubric areas")
+            # Honesty backstop: the prompt instructs the verifier to cap scores
+            # when the reproduction did not execute successfully, but that is
+            # advisory. The orchestrator knows the ground truth — enforce it
+            # mechanically so a non-executing run can never score high.
+            run_succeeded = (
+                state.experiment_artifacts is not None
+                and state.experiment_artifacts.success
+            )
+            if not run_succeeded:
+                areas = [
+                    area.model_copy(update={"score": min(area.score, 0.35)})
+                    for area in areas
+                ]
+            verification = RubricVerification.from_areas(
+                areas,
+                rubric_source=rubric_source_kind,
+                target_score=resolved_target,
+                confidence=_clamp01(data.get("confidence", 0.0)),
+                verified_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "rubric-verifier (%s checkpoint) failed, falling back to the "
+                "heuristic rubric: %s",
+                checkpoint,
+                exc,
+            )
+            self._dashboard.agent_failed(
+                "rubric-verifier", f"rubric-verifier ({checkpoint}) failed: {exc}"
+            )
+            return None
+        # The first successful verification fixes the canonical rubric — its
+        # areas + weights are reused (and enforced) at every later checkpoint.
+        if state.rubric_spec is None:
+            state.rubric_spec = {
+                "source": rubric_source_kind,
+                "areas": [
+                    {"area": area.area, "weight": area.weight}
+                    for area in verification.areas
+                ],
+            }
+        state.verification_history.append(verification)
+        self._enrich_workspace(
+            f"{checkpoint}_verification",
+            verification.model_dump(),
+            "rubric-verifier",
+        )
+        logger.info(
+            "rubric-verifier (%s): overall=%.3f target=%.3f meets_target=%s",
+            checkpoint,
+            verification.overall_score,
+            verification.target_score,
+            verification.meets_target,
+        )
+        return verification
+
     async def run_gate_2(self, state: PipelineState) -> PipelineState:
         """Gate 2: Baseline Verification."""
         logger.info("[Gate 2] Running Baseline Verification")
@@ -1181,6 +1433,11 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_2", state.gate_2.model_dump(), "supervisor-verifier"
         )
+        baseline_verification = await self._run_rubric_verifier(
+            state, checkpoint="baseline"
+        )
+        if baseline_verification is not None:
+            state.baseline_verification = baseline_verification
         state.advance_stage(PipelineStage.GATE_2_PASSED, self.runs_root)
         return state
 
@@ -1190,6 +1447,7 @@ class ReproLabOrchestrator:
         *,
         user_hints: list[str] | None = None,
         n_paths: int = 3,
+        round_index: int = 0,
     ) -> PipelineState:
         """Steps 7-8: Improvement Orchestrator + Path Agents."""
         logger.info("[7/9] Running Improvement Orchestrator")
@@ -1199,11 +1457,38 @@ class ReproLabOrchestrator:
             "baseline_result": state.baseline_result.model_dump() if state.baseline_result else {},
             "assumption_ledger": state.assumption_ledger,
         }
+        objective_str = ""
+        # The latest verification drives improvement selection: the improved
+        # verification on a re-iteration round, else the baseline one.
+        latest_verification = (
+            state.improved_verification or state.baseline_verification
+        )
+        if latest_verification:
+            context["rubric_verification"] = {
+                "overall_score": latest_verification.overall_score,
+                "target_score": latest_verification.target_score,
+                "meets_target": latest_verification.meets_target,
+                "areas": [
+                    {
+                        "area": area.area,
+                        "score": area.score,
+                        "weight": area.weight,
+                        "weak_points": area.weak_points,
+                    }
+                    for area in latest_verification.areas
+                ],
+            }
+            objective_str = (
+                "\nObjective: prioritise hypotheses that lift the weakest rubric "
+                "areas (see rubric_verification.areas[].weak_points) toward "
+                f"target_score {latest_verification.target_score:.2f}."
+            )
         hints_str = ""
         if user_hints:
             hints_str = f"\nUser hints: {', '.join(user_hints)}"
         prompt = (
-            f"Select {n_paths} improvement hypotheses for project {self.project_id}.{hints_str}\n"
+            f"Select {n_paths} improvement hypotheses for project {self.project_id}."
+            f"{hints_str}{objective_str}\n"
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
         )
         output = await self._invoke_agent("improvement-orchestrator", prompt)
@@ -1212,6 +1497,11 @@ class ReproLabOrchestrator:
         state.improvement_hypotheses = [
             ImprovementHypothesis(**h) for h in hypotheses_raw
         ]
+        if round_index > 0:
+            # Re-iteration rounds namespace their path ids so workspaces and
+            # path_results never collide with an earlier round's `path_N`.
+            for hypothesis in state.improvement_hypotheses:
+                hypothesis.path_id = f"r{round_index}_{hypothesis.path_id}"
         hypotheses_payload = {"hypotheses": [hypothesis.model_dump() for hypothesis in state.improvement_hypotheses]}
         self._audit_step(
             state,
@@ -1404,7 +1694,92 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_3", state.gate_3.model_dump(), "supervisor-verifier"
         )
+        improved_verification = await self._run_rubric_verifier(
+            state, checkpoint="improved"
+        )
+        if improved_verification is not None:
+            state.improved_verification = improved_verification
         state.advance_stage(PipelineStage.GATE_3_PASSED, self.runs_root)
+        return state
+
+    async def _run_improvement_reiteration_loop(
+        self,
+        state: PipelineState,
+        *,
+        user_hints: list[str] | None,
+        n_improvement_paths: int,
+    ) -> PipelineState:
+        """Loop improvement-selection + Gate 3 until the rubric target is met.
+
+        Hard-capped by ``rubric_max_improvement_iterations`` and fail-closed: a
+        disabled verifier, a missing or already-passing verification, an
+        exhausted run budget, or any re-iteration error all simply stop the loop
+        and let the run finish with the best verification so far. The
+        ``PipelineStage`` enum is unchanged — each round reuses the existing
+        improvements_selected / improvements_run / gate_3_passed stages.
+        ``improvement_iteration`` counts completed re-iteration rounds and is
+        checkpointed after each one.
+        """
+        settings = get_settings()
+        if not settings.rubric_verifier_enabled:
+            return state
+        max_iterations = max(0, settings.rubric_max_improvement_iterations)
+        while _should_reiterate(
+            state.improved_verification,
+            state.improvement_iteration,
+            max_iterations,
+        ):
+            verification = state.improved_verification
+            assert verification is not None  # guaranteed by _should_reiterate
+            next_iteration = state.improvement_iteration + 1
+            logger.info(
+                "[re-iteration %d/%d] verifier %.3f < target %.3f — looping back "
+                "through improvement selection",
+                next_iteration,
+                max_iterations,
+                verification.overall_score,
+                verification.target_score,
+            )
+            self._dashboard.agent_started(
+                "root-orchestrator",
+                (
+                    f"Improvement re-iteration {next_iteration}/{max_iterations} "
+                    f"(verifier {verification.overall_score:.2f} -> "
+                    f"target {verification.target_score:.2f})"
+                ),
+                parent_id=None,
+            )
+            history_len = len(state.verification_history)
+            try:
+                state = await self.run_improvements(
+                    state,
+                    user_hints=user_hints,
+                    n_paths=n_improvement_paths,
+                    round_index=next_iteration,
+                )
+                state = await self.run_gate_3(state)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "re-iteration %d failed (%s) — stopping the loop, keeping the "
+                    "last good verification",
+                    next_iteration,
+                    exc,
+                )
+                break
+            if len(state.verification_history) == history_len:
+                # The verifier produced no fresh result this round (it failed and
+                # fell back to None). Don't burn the remaining capped rounds
+                # running expensive improvement passes against a dead verifier.
+                logger.warning(
+                    "re-iteration %d: rubric-verifier produced no new result — "
+                    "stopping the loop",
+                    next_iteration,
+                )
+                break
+            state.improvement_iteration = next_iteration
+            state.save_checkpoint(self.runs_root)
         return state
 
     async def generate_research_map(self, state: PipelineState) -> PipelineState:
@@ -1486,6 +1861,9 @@ class ReproLabOrchestrator:
                 gate_2=state.gate_2,
                 gate_3=state.gate_3,
                 project_dir=self._project_dir,
+                baseline_verification=state.baseline_verification,
+                improved_verification=state.improved_verification,
+                improvement_iterations=state.improvement_iteration,
             )
             write_final_report(final_report, self._project_dir)
             self._enrich_workspace(
@@ -1600,6 +1978,16 @@ class ReproLabOrchestrator:
         if current_idx < stages_order.index(PipelineStage.GATE_3_PASSED):
             state = await self.run_gate_3(state)
             current_idx = stages_order.index(state.stage)
+
+        # Track 3 — capped self-improvement re-iteration loop. Reuses the
+        # improvements_selected / improvements_run / gate_3_passed stages, so
+        # the PipelineStage enum is unchanged.
+        state = await self._run_improvement_reiteration_loop(
+            state,
+            user_hints=user_hints,
+            n_improvement_paths=n_improvement_paths,
+        )
+        current_idx = stages_order.index(state.stage)
 
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)

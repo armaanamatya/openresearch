@@ -80,6 +80,17 @@ class Settings(BaseSettings):
     paper_extraction_mode: Literal["text", "hybrid"] = "hybrid"
     paper_extraction_vision_model: str = "claude-sonnet-4-6"
 
+    # Track 3 — rubric verifier + self-improvement loop. Opt-in surface: with
+    # these defaults the verifier runs for new runs and degrades cleanly on
+    # error; existing runs under existing configs are otherwise unaffected.
+    rubric_verifier_enabled: bool = True
+    rubric_verifier_model: str = ""  # empty -> inherit the run's model
+    # Heuristic target on the verifier's own 0-1 rubric scale — NOT calibrated
+    # against PaperBench's judge (a different scale). Per-version calibration is
+    # future work.
+    rubric_target_score: float = 0.70
+    rubric_max_improvement_iterations: int = 2
+
     # Default sandbox mode for the dashboard's "start a run" form.
     # CLI defaults remain controlled separately by argparse flags.
     default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
