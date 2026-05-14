@@ -31,6 +31,7 @@ from backend.agents.schemas import (
     PathSummary,
     ResearchMap,
     RubricArea,
+    RubricVerification,
 )
 
 logger = logging.getLogger(__name__)
@@ -550,6 +551,93 @@ def _statistical_notes(metric_deltas: list[MetricDelta]) -> str:
     )
 
 
+def _resolve_paperbench_baseline(project_id: str) -> dict[str, Any] | None:
+    """Look up the published PaperBench score for a vendored-bundle run.
+
+    Bundle runs carry the paper id in the project id (``paperbench_<id>`` — set
+    by ``bundle_to_workspace_claim_map``). Uploaded-paper runs (``prj_*``) have
+    no published baseline, so this returns None. Fail-soft: any lookup error
+    degrades to None rather than blocking the report.
+    """
+    prefix = "paperbench_"
+    if not project_id.startswith(prefix):
+        return None
+    paper_id = project_id[len(prefix):]
+    try:
+        # Lazy import — `cli_paperbench` is a CLI module; keep it off the
+        # report-generation import path unless a bundle run actually needs it.
+        from backend.cli_paperbench import PUBLISHED_BASELINES
+
+        entry = PUBLISHED_BASELINES.get(paper_id)
+        if not entry:
+            return None
+        # Surface the strongest published agent — "match the best known result".
+        model, scores = max(entry.items(), key=lambda kv: kv[1].get("mean", 0.0))
+        return {
+            "score": float(scores.get("mean", 0.0)),
+            "source": "paperbench_published",
+            "model": model,
+        }
+    except Exception:
+        logger.warning(
+            "PaperBench baseline lookup failed for %s", project_id, exc_info=True
+        )
+        return None
+
+
+def _build_comparison_summary(
+    improved: RubricVerification | None,
+    baseline: RubricVerification | None,
+    paperbench_baseline: dict[str, Any] | None,
+    improvement_iterations: int,
+) -> str:
+    """A short, honest verdict comparing our rubric score to its references.
+
+    Deterministic — no LLM call. States plainly when self-improvement did NOT
+    help or the target was NOT met; never inflates the outcome.
+    """
+    if improved is None:
+        return ""
+    ours = improved.overall_score
+    target = improved.target_score
+    # Line 1 — our score against its most relevant reference.
+    if paperbench_baseline:
+        pb = float(paperbench_baseline.get("score", 0.0))
+        rel = "above" if ours >= pb else "below"
+        line1 = (
+            f"Our rubric score {ours:.2f} is {rel} the published PaperBench "
+            f"baseline {pb:.2f} ({paperbench_baseline.get('model', 'unknown')}) — "
+            "different judges, read as directional."
+        )
+    elif baseline is not None:
+        delta = ours - baseline.overall_score
+        if delta > 0:
+            line1 = (
+                f"Self-improvement lifted our rubric score to {ours:.2f}, "
+                f"+{delta:.2f} over the baseline {baseline.overall_score:.2f} "
+                f"across {improvement_iterations} re-iteration round(s)."
+            )
+        elif delta < 0:
+            line1 = (
+                f"Self-improvement did not help: our rubric score {ours:.2f} fell "
+                f"{delta:.2f} below the baseline {baseline.overall_score:.2f}."
+            )
+        else:
+            line1 = (
+                f"Our rubric score {ours:.2f} matched the baseline with no net "
+                f"gain across {improvement_iterations} re-iteration round(s)."
+            )
+    else:
+        line1 = f"Our rubric score is {ours:.2f}."
+    # Line 2 — the honest target verdict.
+    line2 = (
+        f"Meets the {target:.2f} target."
+        if improved.meets_target
+        else f"Still below the {target:.2f} target."
+    )
+    return f"{line1} {line2}"
+
+
 def generate_final_report(
     project_id: str,
     paper_claim_map: PaperClaimMap | None,
@@ -564,6 +652,9 @@ def generate_final_report(
     gate_2: GateDecision | None = None,
     gate_3: GateDecision | None = None,
     project_dir: Path | None = None,
+    baseline_verification: RubricVerification | None = None,
+    improved_verification: RubricVerification | None = None,
+    improvement_iterations: int = 0,
 ) -> FinalReport:
     """Deterministically compute the final report from pipeline state.
 
@@ -720,6 +811,24 @@ def generate_final_report(
     rubric_overall = _rubric_overall_score(rubric)
     statistical_notes = _statistical_notes(metric_deltas)
 
+    # Track 3 — rubric-verifier assessment + honest self-improvement summary.
+    paperbench_baseline = _resolve_paperbench_baseline(project_id)
+    verification_delta = (
+        round(
+            improved_verification.overall_score
+            - baseline_verification.overall_score,
+            4,
+        )
+        if improved_verification is not None and baseline_verification is not None
+        else None
+    )
+    comparison_summary = _build_comparison_summary(
+        improved_verification,
+        baseline_verification,
+        paperbench_baseline,
+        improvement_iterations,
+    )
+
     return FinalReport(
         project_id=project_id,
         paper_title=paper_claim_map.core_contribution[:120] if paper_claim_map else "",
@@ -734,6 +843,12 @@ def generate_final_report(
         metric_deltas=metric_deltas,
         rubric=rubric,
         rubric_overall_score=rubric_overall,
+        rubric_verification=improved_verification,
+        baseline_rubric_verification=baseline_verification,
+        paperbench_baseline=paperbench_baseline,
+        verification_delta=verification_delta,
+        improvement_iterations=improvement_iterations,
+        comparison_summary=comparison_summary,
         statistical_notes=statistical_notes,
         paths=paths,
         best_path_id=best_path_id,
