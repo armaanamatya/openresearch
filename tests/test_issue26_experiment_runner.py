@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import anyio
 
 from backend.agents.experiment_runner import (
+    _normalize_commands,
     run_offline,
     run_offline_failure,
     run_with_local_process,
@@ -242,3 +243,41 @@ class FakeRuntimeBackend(RuntimeBackend):
 
     async def destroy(self, sandbox: Sandbox) -> None:
         return None
+
+
+class TestNormalizeCommands:
+    """_normalize_commands strips repo-root / absolute prefixes so commands
+    resolve inside the docker sandbox, which mounts code_dir at /work (cwd /work)."""
+
+    def test_strips_repo_root_relative_prefix(self, tmp_path: Path):
+        code_dir = tmp_path / "runs" / "prj_abc123" / "code"
+        out = _normalize_commands(
+            ["python runs/prj_abc123/code/train.py --smoke-test"], code_dir
+        )
+        assert out == ["python train.py --smoke-test"]
+
+    def test_strips_absolute_code_dir_prefix(self, tmp_path: Path):
+        code_dir = tmp_path / "runs" / "prj_abc123" / "code"
+        code_dir.mkdir(parents=True)
+        abs_cmd = f"python {code_dir.resolve()}/train.py"
+        assert _normalize_commands([abs_cmd], code_dir) == ["python train.py"]
+
+    def test_leaves_already_relative_commands_unchanged(self, tmp_path: Path):
+        code_dir = tmp_path / "runs" / "prj_abc123" / "code"
+        cmds = [
+            "bash run_smoke.sh",
+            "python train.py --env CartPole-v1",
+            "python evaluate.py",
+        ]
+        assert _normalize_commands(cmds, code_dir) == cmds
+
+    def test_strips_prefix_from_every_arg_path(self, tmp_path: Path):
+        code_dir = tmp_path / "runs" / "prj_xyz" / "code"
+        out = _normalize_commands(
+            [
+                "python runs/prj_xyz/code/evaluate.py "
+                "--config runs/prj_xyz/code/config.json"
+            ],
+            code_dir,
+        )
+        assert out == ["python evaluate.py --config config.json"]
