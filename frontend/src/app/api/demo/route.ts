@@ -14,6 +14,11 @@ import { backendBaseUrl, BACKEND_GET_TIMEOUT_MS, enrichOrTimeout } from "@/lib/d
 
 export const runtime = "nodejs";
 
+// Hard cap on an uploaded PDF — mirrors the "max 50 MB" the lab UI
+// advertises. Checked from the Content-Length header so an oversized
+// upload is rejected before any body is streamed.
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 function demoSecretHeaders(): Record<string, string> {
   const secret = gateSecret();
   return secret ? { "x-demo-secret": secret } : {};
@@ -130,28 +135,31 @@ export async function POST(request: Request) {
   try {
     const contentType = request.headers.get("content-type") ?? "";
     if (contentType.includes("multipart/form-data")) {
-      const formData = await request.formData();
-      const paper = formData.get("paper");
-      if (!(paper instanceof File) || paper.size === 0) {
+      // Stream the multipart body straight through to the backend. We do
+      // NOT call request.formData() here: undici's multipart parser
+      // (Node 21) throws "Failed to parse body as FormData" on real-size
+      // browser uploads, and it throws *fast* — responding before the
+      // browser has finished sending the body, which leaves the HTTP
+      // connection half-written and poisons it (Chrome then reports
+      // ERR_ALPN_NEGOTIATION_FAILED on reuse). A proxy has no business
+      // parsing a body it only forwards: stream request.body through, so
+      // the body is fully drained before we respond. The backend's
+      // /runs/upload validates the PDF (missing / non-.pdf / empty ->
+      // 400) and that response passes straight back via jsonFromBackend.
+      const declaredBytes = Number(request.headers.get("content-length") ?? 0);
+      if (declaredBytes > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
-          { error: "Upload a PDF before starting a lab run." },
-          { status: 400 }
-        );
-      }
-      const looksLikePdf =
-        paper.type === "application/pdf" || paper.name.toLowerCase().endsWith(".pdf");
-      if (!looksLikePdf) {
-        return NextResponse.json(
-          { error: "Only PDF uploads are supported in the lab right now." },
-          { status: 400 }
+          { error: "PDF is too large — the lab accepts uploads up to 50 MB." },
+          { status: 413 }
         );
       }
       return jsonFromBackend(
         await fetch(`${backendBaseUrl()}/runs/upload`, {
           method: "POST",
-          headers: demoSecretHeaders(),
-          body: formData
-        })
+          headers: { "content-type": contentType, ...demoSecretHeaders() },
+          body: request.body,
+          duplex: "half"
+        } as RequestInit & { duplex: "half" })
       );
     }
 
