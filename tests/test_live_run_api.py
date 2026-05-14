@@ -199,3 +199,76 @@ def test_python_script_contains_model_id_and_config_key() -> None:
     script = _python_script(req, project_id="p", runs_root=Path("/tmp/r"), uploaded_paper=None)
     assert "claude-opus-4-7" in script
     assert 'model=config["model"]' in script
+
+
+# ---------------------------------------------------------------------------
+# Task B — _read_log reads stdout + stderr
+# ---------------------------------------------------------------------------
+
+def test_read_log_combines_stdout_and_stderr(tmp_path: Path) -> None:
+    from backend.services.events.live_runs import FileLiveRunService
+
+    project_id = "prj_test_logs"
+    run_dir = tmp_path / project_id
+    run_dir.mkdir(parents=True)
+
+    (run_dir / "runner.stdout.log").write_text("agent output line\n", encoding="utf-8")
+    (run_dir / "runner.stderr.log").write_text("runner error line\n", encoding="utf-8")
+
+    service = FileLiveRunService(runs_root=tmp_path)
+    result = service._read_log(project_id)
+
+    assert "agent output line" in result
+    assert "runner error line" in result
+
+
+def test_read_log_returns_empty_when_neither_file_exists(tmp_path: Path) -> None:
+    from backend.services.events.live_runs import FileLiveRunService
+
+    service = FileLiveRunService(runs_root=tmp_path)
+    assert service._read_log("prj_no_logs") == ""
+
+
+def test_read_log_returns_stdout_only_when_stderr_missing(tmp_path: Path) -> None:
+    from backend.services.events.live_runs import FileLiveRunService
+
+    project_id = "prj_stdout_only"
+    run_dir = tmp_path / project_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "runner.stdout.log").write_text("only stdout\n", encoding="utf-8")
+
+    service = FileLiveRunService(runs_root=tmp_path)
+    result = service._read_log(project_id)
+
+    assert "only stdout" in result
+    assert "stderr" not in result
+
+
+def test_read_log_returns_stderr_only_when_stdout_missing(tmp_path: Path) -> None:
+    from backend.services.events.live_runs import FileLiveRunService
+
+    project_id = "prj_stderr_only"
+    run_dir = tmp_path / project_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "runner.stderr.log").write_text("only stderr\n", encoding="utf-8")
+
+    service = FileLiveRunService(runs_root=tmp_path)
+    result = service._read_log(project_id)
+
+    assert "only stderr" in result
+
+
+def test_read_log_tail_cap_applied_to_combined(tmp_path: Path) -> None:
+    from backend.services.events.live_runs import FileLiveRunService
+
+    project_id = "prj_cap_test"
+    run_dir = tmp_path / project_id
+    run_dir.mkdir(parents=True)
+
+    (run_dir / "runner.stdout.log").write_text("A" * 200, encoding="utf-8")
+    (run_dir / "runner.stderr.log").write_text("B" * 200, encoding="utf-8")
+
+    service = FileLiveRunService(runs_root=tmp_path)
+    result = service._read_log(project_id, max_chars=100)
+
+    assert len(result) <= 100

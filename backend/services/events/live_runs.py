@@ -659,11 +659,26 @@ class FileLiveRunService:
         return events
 
     def _read_log(self, project_id: str, max_chars: int = 12000) -> str:
-        path = self.runs_root / project_id / "runner.stderr.log"
-        if not path.exists():
+        stdout_path = self.runs_root / project_id / "runner.stdout.log"
+        stderr_path = self.runs_root / project_id / "runner.stderr.log"
+        stdout_text = (
+            stdout_path.read_text(encoding="utf-8", errors="replace")
+            if stdout_path.exists()
+            else None
+        )
+        stderr_text = (
+            stderr_path.read_text(encoding="utf-8", errors="replace")
+            if stderr_path.exists()
+            else None
+        )
+        if stdout_text is None and stderr_text is None:
             return ""
-        value = path.read_text(encoding="utf-8", errors="replace")
-        return value[-max_chars:]
+        if stdout_text is None:
+            return stderr_text[-max_chars:]
+        if stderr_text is None:
+            return stdout_text[-max_chars:]
+        combined = stdout_text + "\n--- runner.stderr.log ---\n" + stderr_text
+        return combined[-max_chars:]
 
     def _stage_upload(self, file_name: str, content: bytes) -> Path:
         uploads_root = self.runs_root / ".lab_uploads"
