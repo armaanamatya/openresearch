@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import { AgentTimelineRail, type DashboardLiveEvent } from "./agent-timeline-rail";
+
+const MAX_DASHBOARD_EVENTS = 200;
 
 type NavItem = {
   accent?: boolean;
@@ -17,7 +20,7 @@ type NodeState = "done" | "running" | "upcoming";
 type Status =
   | "auditing"
   | "completed"
-  | "failed"
+  | "attention"
   | "queued"
   | "running"
   | "shipped"
@@ -366,22 +369,74 @@ function statusTone(status: Status) {
       return { bg: "var(--hermes-soft)", fg: "#5a3fd1", dot: "var(--hermes)", pulse: true };
     case "completed":
       return { bg: "var(--chip)", fg: "var(--ink-2)", dot: "var(--ink)", pulse: false };
-    case "failed":
-      return { bg: "var(--err-soft)", fg: "var(--err)", dot: "var(--err)", pulse: false };
+    case "attention":
+      return { bg: "var(--warn-soft)", fg: "var(--warn-ink)", dot: "var(--warn)", pulse: false };
     default:
       return { bg: "var(--chip)", fg: "var(--muted)", dot: "var(--muted-2)", pulse: false };
   }
+}
+
+function statusLabel(status: Status) {
+  if (status === "attention") {
+    return "Needs attention";
+  }
+  return status;
+}
+
+function issueText(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  return value
+    .replace(/\bfailed\b/gi, "needs attention")
+    .replace(/\bfailure\b/gi, "issue");
 }
 
 function sourceTitle(run: LiveDemoRunState) {
   return run.sourceLabel || run.projectId;
 }
 
+function sourcePdfUrl(run: LiveDemoRunState) {
+  return `/api/demo/source-pdf?projectId=${encodeURIComponent(run.projectId)}`;
+}
+
+function finalReportUrl(run: LiveDemoRunState) {
+  return `/api/demo/final-report?projectId=${encodeURIComponent(run.projectId)}`;
+}
+
+function formatBytes(bytes?: number | null) {
+  if (!bytes || bytes <= 0) {
+    return "n/a";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function shortHash(value?: string | null) {
+  return value ? value.slice(0, 12) : "pending";
+}
+
+function verdictLabel(value?: string) {
+  if (!value) {
+    return "Pending";
+  }
+  return value
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function deriveStage(run: LiveDemoRunState | null): string | null {
   return run?.payload?.summary.stage ?? null;
 }
 
-function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState> {
+export function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState> {
   const map = Object.fromEntries(NODES.map((node) => [node.id, "upcoming"])) as Record<
     string,
     NodeState
@@ -405,6 +460,11 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
     return map;
   }
 
+  if (status === "completed") {
+    mark(NODES.map((node) => node.id), "done");
+    return map;
+  }
+
   mark(["src"], "done");
 
   if (!stage) {
@@ -417,9 +477,24 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
     return map;
   }
 
-  if (["plan_created", "gate_1_passed"].includes(stage)) {
+  if (["paper_understood", "artifacts_discovered"].includes(stage)) {
     mark(["read"], "done");
-    mark(["env", "plan"], stage === "gate_1_passed" ? "done" : "running");
+    mark(["env", "plan"], "running");
+    return map;
+  }
+
+  if (stage === "environment_built") {
+    mark(["read"], "done");
+    mark(["env"], "done");
+    mark(["plan"], "running");
+    return map;
+  }
+
+  if (["plan_created", "gate_1_passed"].includes(stage)) {
+    // `env` finished at `environment_built` (an earlier stage) — it must stay
+    // `done` here so the workflow counter never regresses (monotonic progress).
+    mark(["read", "env"], "done");
+    mark(["plan"], stage === "gate_1_passed" ? "done" : "running");
     return map;
   }
 
@@ -431,10 +506,14 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
 
   if (["improvements_selected", "improvements_run", "gate_3_passed"].includes(stage)) {
     mark(["read", "env", "plan", "impl"], "done");
-    mark(
-      ["opt", "bb", "aug", "hor", "div"],
-      stage === "gate_3_passed" ? "done" : "running"
-    );
+    const perPath = run.payload?.pathStates;
+    for (const id of ["opt", "bb", "aug", "hor", "div"] as const) {
+      const node = perPath?.[id];
+      map[id] = node === "done" ? "done"
+        : node === "running" || node === "attention" ? "running"
+        : stage === "gate_3_passed" ? "done"
+        : "upcoming";
+    }
     return map;
   }
 
@@ -444,7 +523,7 @@ function stateMapForRun(run: LiveDemoRunState | null): Record<string, NodeState>
     return map;
   }
 
-  if (stage === "complete" || status === "completed") {
+  if (stage === "complete") {
     mark(NODES.map((node) => node.id), "done");
     return map;
   }
@@ -467,7 +546,7 @@ function parseLogEntries(run: LiveDemoRunState | null) {
     .map((line, index) => ({
       id: `${run.projectId}-${index}`,
       time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      msg: line
+      msg: issueText(line)
     }));
 }
 
@@ -477,11 +556,23 @@ function telemetryForSelectedNode(run: LiveDemoRunState | null, selectedId: stri
   }
 
   const agentMatchers: Record<string, string[]> = {
-    read: ["paper-understanding"],
-    env: ["environment-detective"],
-    plan: ["paper-understanding", "root-orchestrator"],
-    impl: ["baseline-implementation", "experiment-runner"],
-    audit: ["supervisor-verifier"]
+    read: ["paper-understanding", "artifact-discovery"],
+    env: ["environment-detective", "environment-verifier"],
+    plan: ["reproduction-planner", "root-orchestrator"],
+    impl: [
+      "baseline-implementation",
+      "experiment-runner",
+      "method-fidelity-verifier",
+      "data-metrics-verifier",
+      "artifact-diff-verifier"
+    ],
+    opt: ["improvement-orchestrator", "improvement-path"],
+    bb: ["improvement-orchestrator", "improvement-path"],
+    aug: ["improvement-orchestrator", "improvement-path"],
+    hor: ["improvement-orchestrator", "improvement-path"],
+    div: ["improvement-orchestrator", "improvement-path"],
+    audit: ["supervisor-verifier", "verifier", "hermes"],
+    report: ["supervisor-verifier", "root-orchestrator"]
   };
 
   const matches = agentMatchers[selectedId] ?? [];
@@ -489,6 +580,24 @@ function telemetryForSelectedNode(run: LiveDemoRunState | null, selectedId: stri
     .filter((record) => matches.some((match) => record.agent_id?.includes(match)))
     .slice(-6)
     .reverse();
+}
+
+function failedNodeIdForRun(run: LiveDemoRunState, stateMap: Record<string, NodeState>) {
+  if (run.status !== "failed") {
+    return null;
+  }
+
+  const runningNode = NODES.find((node) => stateMap[node.id] === "running");
+  if (runningNode) {
+    return runningNode.id;
+  }
+
+  const firstUpcoming = NODES.find((node) => stateMap[node.id] === "upcoming");
+  if (firstUpcoming) {
+    return firstUpcoming.id;
+  }
+
+  return "report";
 }
 
 function buildEdgePath(from: WorkflowNode, to: WorkflowNode) {
@@ -550,14 +659,14 @@ function Sidebar({ active, onBrandClick }: { active: string; onBrandClick: () =>
       {[
         { t: "Diffusion Policy", s: "running" },
         { t: "ACT Transformer", s: "shipped" },
-        { t: "PerAct", s: "failed" }
+        { t: "PerAct", s: "attention" }
       ].map((item) => (
         <a key={item.t} href="/lab" className="navitem navitem-small">
           <span
             className="nav-icon nav-status-dot"
             style={{
               background:
-                item.s === "running" ? "var(--accent)" : item.s === "failed" ? "var(--err)" : "var(--muted-2)"
+                item.s === "running" ? "var(--accent)" : item.s === "attention" ? "var(--warn)" : "var(--muted-2)"
             }}
           />
           <span className="nav-label">{item.t}</span>
@@ -587,7 +696,7 @@ function StatusPill({ status }: { status: Status }) {
   return (
     <span className="status-pill" style={{ background: tone.bg, color: tone.fg }}>
       <span className={`status-dot${tone.pulse ? " pulse-dot" : ""}`} style={{ background: tone.dot }} />
-      {status}
+      {statusLabel(status)}
     </span>
   );
 }
@@ -797,10 +906,12 @@ function NodeCard({
 
 function Canvas({
   onSelect,
+  run,
   selectedId,
   stateMap
 }: {
   onSelect: (id: string | null) => void;
+  run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
 }) {
@@ -868,16 +979,96 @@ function Canvas({
           }
         />
       ))}
+      <GateChips run={run} />
     </div>
+  );
+}
+
+function gateChipState(
+  gate: { passed?: boolean; status?: string; chipStatus?: string } | undefined,
+  stage: string | null,
+  passedStages: string[],
+  runningStages: string[]
+): { state: "pending" | "running" | "passed" | "caveat" | "failed"; label: string } {
+  // Prefer the pre-normalized chipStatus from buildLiveDemoDashboard (handles
+  // backend GateStatus enum values like "verified_with_caveats").
+  const normalized = gate?.chipStatus;
+  if (normalized === "caveat") return { state: "caveat", label: "caveat" };
+  if (normalized === "failed") return { state: "failed", label: issueText("failed") };
+  if (normalized === "passed" || (stage && passedStages.includes(stage))) {
+    return { state: "passed", label: "passed" };
+  }
+  if (normalized === "running" || (stage && runningStages.includes(stage))) {
+    return { state: "running", label: "checking" };
+  }
+  return { state: "pending", label: "pending" };
+}
+
+// Edge midpoints in the 1740x720 SVG. Computed from NODES coordinates
+// (NODE_W=200, NODE_H=80): right-edge of source node + left-edge of target node.
+//   Gate 1: plan(500,420)→impl(740,310)  midpoint (720, 405)
+//   Gate 2: impl(740,310)→bb(1020,200)   midpoint (980, 295)  [impl right edge = 940]
+//   Gate 3: bb(1020,200)→audit(1300,310) midpoint (1260, 295) [paths converge here]
+const GATE_COORDS: Record<"gate_1" | "gate_2" | "gate_3", { x: number; y: number; label: string }> = {
+  gate_1: { x: 720, y: 405, label: "Gate 1" },
+  gate_2: { x: 980, y: 295, label: "Gate 2" },
+  gate_3: { x: 1260, y: 295, label: "Gate 3" }
+};
+
+function GateChips({ run }: { run: LiveDemoRunState }) {
+  const gates = run.payload?.gates;
+  const stage = run.payload?.summary.stage ?? null;
+
+  const g1 = gateChipState(
+    gates?.gate_1,
+    stage,
+    ["gate_1_passed", "baseline_implemented", "baseline_run", "gate_2_passed",
+     "improvements_selected", "improvements_run", "gate_3_passed",
+     "research_map_generated", "complete"],
+    ["plan_created"]
+  );
+  const g2 = gateChipState(
+    gates?.gate_2,
+    stage,
+    ["gate_2_passed", "improvements_selected", "improvements_run",
+     "gate_3_passed", "research_map_generated", "complete"],
+    ["baseline_run"]
+  );
+  const g3 = gateChipState(
+    gates?.gate_3,
+    stage,
+    ["gate_3_passed", "research_map_generated", "complete"],
+    ["improvements_run"]
+  );
+
+  return (
+    <>
+      {[
+        { id: "gate_1" as const, ...GATE_COORDS.gate_1, view: g1, detail: gates?.gate_1?.detail },
+        { id: "gate_2" as const, ...GATE_COORDS.gate_2, view: g2, detail: gates?.gate_2?.detail },
+        { id: "gate_3" as const, ...GATE_COORDS.gate_3, view: g3, detail: gates?.gate_3?.detail }
+      ].map(({ id, x, y, label, view, detail }) => (
+        <div
+          key={id}
+          className={`gate-chip gate-chip-${view.state}`}
+          style={{ left: x, top: y }}
+          title={detail ?? undefined}
+        >
+          {label} · {view.label}
+        </div>
+      ))}
+    </>
   );
 }
 
 function PanCanvas({
   onSelect,
+  run,
   selectedId,
   stateMap
 }: {
   onSelect: (id: string | null) => void;
+  run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
 }) {
@@ -945,6 +1136,7 @@ function PanCanvas({
       }}
     >
       <Canvas
+        run={run}
         stateMap={stateMap}
         selectedId={selectedId}
         onSelect={(id) => {
@@ -958,12 +1150,14 @@ function PanCanvas({
 }
 
 function AgentInfo({
+  failedNodeId,
   logEntries,
   node,
   run,
   state,
   telemetry
 }: {
+  failedNodeId: string | null;
   logEntries: Array<{ id: string; msg: string; time: string }>;
   node: WorkflowNode;
   run: LiveDemoRunState;
@@ -978,8 +1172,8 @@ function AgentInfo({
   } as const;
   const tone = tones[node.tone];
   const status: Status =
-    run.status === "failed"
-      ? "failed"
+    failedNodeId === node.id
+      ? "attention"
       : state === "done"
         ? "completed"
         : state === "running"
@@ -987,6 +1181,7 @@ function AgentInfo({
             ? "auditing"
             : "running"
           : "queued";
+  const showFinalPackage = node.id === "report";
 
   return (
     <div>
@@ -1041,9 +1236,201 @@ function AgentInfo({
       {logEntries.length > 0 ? (
         <div className="agent-section">
           <div className="eyebrow">Latest log</div>
-          <div className="agent-detail">{logEntries[0].msg}</div>
+          <ul className="agent-log-list">
+            {logEntries.slice(0, 6).map((entry) => (
+              <li key={entry.id} className="agent-log-item">
+                <span className="mono agent-log-time">{entry.time}</span>
+                <span className="agent-log-msg">{entry.msg}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
+      {node.id === "audit" ? <HermesAuditPanel run={run} /> : null}
+      {showFinalPackage ? <ScriptPanel run={run} /> : null}
+    </div>
+  );
+}
+
+function HermesAuditPanel({ run }: { run: LiveDemoRunState }) {
+  const hermes = run.payload?.hermes;
+  if (!hermes) {
+    return (
+      <div className="agent-section">
+        <div className="eyebrow">Hermes audit</div>
+        <div className="agent-detail">No audit findings yet.</div>
+      </div>
+    );
+  }
+  // Defensive defaults: backend Hermes payload can ship with missing keys
+  // when an early-stage agent fails, an offline run skips audit, or an old
+  // pipeline_state.json predates these fields. Don't crash the UI on it.
+  const stepReports = hermes.stepReports && typeof hermes.stepReports === "object" ? hermes.stepReports : {};
+  const checkpointReports = hermes.checkpointReports && typeof hermes.checkpointReports === "object" ? hermes.checkpointReports : {};
+  const interventions = Array.isArray(hermes.interventions) ? hermes.interventions : [];
+  const stepEntries = Object.entries(stepReports);
+  const checkpointEntries = Object.entries(checkpointReports);
+
+  return (
+    <div className="agent-section hermes-panel">
+      <div className="eyebrow">Hermes audit timeline</div>
+      {stepEntries.length === 0 && checkpointEntries.length === 0 ? (
+        <div className="agent-detail">No audit findings yet.</div>
+      ) : null}
+      {stepEntries.map(([stage, reports]) => {
+        const latest = reports[reports.length - 1];
+        if (!latest) return null;
+        return (
+          <div key={`step-${stage}`} className="hermes-row">
+            <div className="hermes-row-head">
+              <span className="hermes-row-stage">step / {stage}</span>
+              <span className={`hermes-status hermes-status-${latest.status ?? "unknown"}`}>
+                {latest.status ?? "unknown"}
+              </span>
+            </div>
+            {latest.summary ? <div className="hermes-row-summary">{latest.summary}</div> : null}
+            {latest.findings && latest.findings.length > 0 ? (
+              <ul className="hermes-findings">
+                {latest.findings.slice(0, 3).map((finding, idx) => (
+                  <li key={idx}>{finding}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        );
+      })}
+      {checkpointEntries.map(([stage, reports]) => {
+        const latest = reports[reports.length - 1];
+        if (!latest) return null;
+        return (
+          <div key={`ckpt-${stage}`} className="hermes-row">
+            <div className="hermes-row-head">
+              <span className="hermes-row-stage">checkpoint / {stage}</span>
+              <span className={`hermes-status hermes-status-${latest.status ?? "unknown"}`}>
+                {latest.status ?? "unknown"}
+              </span>
+            </div>
+            {latest.summary ? <div className="hermes-row-summary">{latest.summary}</div> : null}
+          </div>
+        );
+      })}
+      {interventions.length > 0 ? (
+        <>
+          <div className="eyebrow hermes-section-eyebrow">Interventions</div>
+          <ul className="hermes-interventions">
+            {interventions.slice(-5).reverse().map((intervention, idx) => (
+              <li key={idx} className="hermes-intervention">
+                <span className="hermes-intervention-action">{intervention.action ?? "action"}</span>
+                <span className="hermes-intervention-target">on {intervention.target ?? "target"}</span>
+                {intervention.reason ? (
+                  <div className="hermes-intervention-reason">{intervention.reason}</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ScriptPanel({ run }: { run: LiveDemoRunState }) {
+  const pdf = run.sourcePdf;
+  const benchmark = run.benchmark;
+  const pdfUrl = sourcePdfUrl(run);
+  const reportUrl = finalReportUrl(run);
+  const score =
+    benchmark && benchmark.overallScore > 0 ? `${benchmark.overallScore.toFixed(1)}%` : "Pending";
+  const delta =
+    benchmark && benchmark.reproducedValue > 0
+      ? `${benchmark.deltaValue >= 0 ? "+" : ""}${benchmark.deltaValue.toFixed(1)}`
+      : "pending";
+
+  return (
+    <div className="agent-section script-panel">
+      <div className="script-panel-head">
+        <div>
+          <div className="eyebrow">Script panel</div>
+          <div className="agent-task">Source PDF and final benchmark</div>
+        </div>
+        <span className="script-chip">code root</span>
+      </div>
+
+      <div className="pdf-card">
+        <div className="pdf-preview" aria-hidden="true">
+          {pdf ? (
+            <object data={`${pdfUrl}#toolbar=0&navpanes=0`} type="application/pdf">
+              <div className="pdf-fallback">{ICONS.doc}</div>
+            </object>
+          ) : (
+            <div className="pdf-fallback">{ICONS.doc}</div>
+          )}
+        </div>
+        <div className="pdf-copy">
+          <div className="pdf-title">{pdf?.title ?? sourceTitle(run)}</div>
+          <div className="pdf-meta">
+            {pdf?.fileName ?? "paper.pdf"} · {formatBytes(pdf?.sizeBytes)}
+            {pdf?.pageCount ? ` · ${pdf.pageCount} pages` : ""}
+          </div>
+          <div className="pdf-hash mono">sha256:{shortHash(pdf?.sha256)}</div>
+          <div className="pdf-actions">
+            <a className="btn btn-sm btn-dark" href={pdfUrl} target="_blank" rel="noreferrer">
+              Preview PDF
+            </a>
+            <a className="btn btn-sm" href={pdfUrl} download="paper.pdf">
+              Download
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div className="code-root-row">
+        <span className="code-root-label">Generated root</span>
+        <span className="mono code-root-path">{pdf?.codePath ?? `${run.outputDir}/code/paper.pdf`}</span>
+      </div>
+
+      <a className="final-report-link" href={reportUrl} target="_blank" rel="noreferrer">
+        <span className="final-report-kicker">Final report</span>
+        <span className="final-report-title">
+          {benchmark ? verdictLabel(benchmark.verdict) : "Benchmark report"}
+        </span>
+        <span className="final-report-copy">
+          Open the formatted Markdown report generated alongside the codebase.
+        </span>
+        <span className="final-report-action">Open final report</span>
+      </a>
+
+      <div className="benchmark-card">
+        <div className="benchmark-head">
+          <div>
+            <div className="benchmark-title">
+              {benchmark?.benchmarkName ?? "PaperBench-style final benchmark"}
+            </div>
+            <div className="benchmark-subtitle">
+              {benchmark?.paperbenchTaskId ?? "pending evaluator output"}
+            </div>
+          </div>
+          <div className="benchmark-score">{score}</div>
+        </div>
+        <div className="metric-compare">
+          <div>
+            <span className="metric-label">Paper target</span>
+            <strong>{benchmark ? benchmark.targetValue.toFixed(1) : "n/a"}</strong>
+          </div>
+          <div>
+            <span className="metric-label">Reproduced</span>
+            <strong>{benchmark && benchmark.reproducedValue > 0 ? benchmark.reproducedValue.toFixed(1) : "n/a"}</strong>
+          </div>
+          <div>
+            <span className="metric-label">Delta</span>
+            <strong>{delta}</strong>
+          </div>
+        </div>
+        <div className="benchmark-verdict">
+          <span className="status-dot" />
+          {verdictLabel(benchmark?.verdict)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1078,7 +1465,7 @@ function RunOverview({
     run.status === "completed"
       ? "Run complete"
       : run.status === "failed"
-        ? "Run failed"
+        ? "Run needs attention"
         : "Reproducing live backend run";
 
   return (
@@ -1099,7 +1486,7 @@ function RunOverview({
       {error || run.error ? (
         <div className="agent-section">
           <div className="eyebrow">Issue</div>
-          <div className="agent-detail">{error ?? run.error}</div>
+          <div className="agent-detail">{issueText(error ?? run.error)}</div>
         </div>
       ) : null}
       {logEntries.length > 0 ? (
@@ -1108,6 +1495,7 @@ function RunOverview({
           <div className="agent-detail">{logEntries[0].msg}</div>
         </div>
       ) : null}
+      <ScriptPanel run={run} />
       <div className="agent-section">
         <div className="eyebrow">Improvement sub-agents</div>
         <div className="subagent-list">
@@ -1181,6 +1569,7 @@ function RightPanel({
   const selected = selectedId ? NODES.find((node) => node.id === selectedId) ?? null : null;
   const logEntries = parseLogEntries(run);
   const telemetry = telemetryForSelectedNode(run, selectedId);
+  const failedNodeId = failedNodeIdForRun(run, stateMap);
 
   return (
     <aside className="card side-panel">
@@ -1188,6 +1577,7 @@ function RightPanel({
         <div key={selectedId ?? "overview"} className="rp-pane side-panel-scroll">
           {selected ? (
             <AgentInfo
+              failedNodeId={failedNodeId}
               node={selected}
               state={stateMap[selected.id]}
               run={run}
@@ -1227,11 +1617,13 @@ function RightPanel({
 
 function WorkflowView({
   busy,
+  dashboardEvents,
   error,
   onClear,
   run
 }: {
   busy: boolean;
+  dashboardEvents: DashboardLiveEvent[];
   error: string | null;
   onClear: () => Promise<void>;
   run: LiveDemoRunState;
@@ -1241,7 +1633,7 @@ function WorkflowView({
   const doneCount = NODES.filter((node) => stateMap[node.id] === "done").length;
   const liveStatus: Status =
     run.status === "failed"
-      ? "failed"
+      ? "attention"
       : run.status === "completed"
         ? "completed"
         : deriveStage(run) === "research_map_generated"
@@ -1249,6 +1641,7 @@ function WorkflowView({
           : run.status === "stopped"
             ? "stopped"
             : "running";
+  const decisions = run.payload?.decisionLog ?? [];
 
   return (
     <>
@@ -1270,9 +1663,10 @@ function WorkflowView({
       </div>
       <div className="workflow-layout">
         <div className="canvas-wrap">
-          <PanCanvas stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} />
+          <PanCanvas run={run} stateMap={stateMap} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
         <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
+        <AgentTimelineRail events={dashboardEvents} decisions={decisions} />
       </div>
     </>
   );
@@ -1297,6 +1691,9 @@ function PrototypeStyles() {
         --accent-ink: #0e7a3d;
         --err: #dc3545;
         --err-soft: #fde7ea;
+        --warn: #d89500;
+        --warn-soft: #fff3c4;
+        --warn-ink: #8a5b00;
         --info-soft: #ecedff;
         --hermes: #7c5cff;
         --hermes-soft: #ede8ff;
@@ -1664,9 +2061,277 @@ function PrototypeStyles() {
         font-size: 12.5px;
       }
       .reproLab .workflow-layout {
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 360px 320px;
         gap: 16px;
         align-items: flex-start;
+      }
+      @media (max-width: 1280px) {
+        .reproLab .workflow-layout {
+          grid-template-columns: minmax(0, 1fr) 360px;
+        }
+        .reproLab .timeline-rail {
+          grid-column: 1 / -1;
+          max-height: 320px;
+        }
+      }
+      .reproLab .timeline-rail {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        height: calc(100vh - 180px);
+        overflow-y: auto;
+        font-size: 12.5px;
+        color: var(--ink);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .reproLab .timeline-rail-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 6px;
+      }
+      .reproLab .timeline-rail-count {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .reproLab .timeline-list {
+        list-style: none;
+        margin: 0 0 4px 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .reproLab .timeline-empty {
+        color: var(--muted);
+        font-size: 11.5px;
+        padding: 4px 0;
+      }
+      .reproLab .timeline-agent {
+        display: grid;
+        grid-template-columns: 8px minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: start;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: var(--chip);
+        cursor: pointer;
+      }
+      .reproLab .timeline-agent[role="button"]:hover {
+        background: var(--line);
+      }
+      .reproLab .timeline-agent-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-top: 4px;
+      }
+      .reproLab .timeline-agent-running .timeline-agent-dot {
+        animation: pulseDot 1.4s ease-in-out infinite;
+      }
+      @keyframes pulseDot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .reproLab .timeline-agent-label {
+        font-weight: 600;
+        font-size: 12.5px;
+      }
+      .reproLab .timeline-agent-task {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .reproLab .timeline-agent-time {
+        font-size: 11px;
+        color: var(--muted-2);
+        font-variant-numeric: tabular-nums;
+      }
+      .reproLab .timeline-reason,
+      .reproLab .timeline-context {
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+      }
+      .reproLab .timeline-reason-head,
+      .reproLab .timeline-context-head {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 2px;
+      }
+      .reproLab .timeline-reason-agent,
+      .reproLab .timeline-context-route {
+        font-weight: 600;
+        color: var(--ink-2);
+      }
+      .reproLab .timeline-reason-type,
+      .reproLab .timeline-context-type {
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+      }
+      .reproLab .timeline-reason-time {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .reproLab .timeline-reason-title,
+      .reproLab .timeline-context-title {
+        font-weight: 500;
+        font-size: 12.5px;
+      }
+      .reproLab .timeline-reason-detail,
+      .reproLab .timeline-context-detail {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 2px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .reproLab .timeline-decision {
+        font-size: 12px;
+        color: var(--ink);
+        padding: 4px 0;
+        border-bottom: 1px dashed var(--line);
+      }
+      .reproLab .timeline-decision:last-child {
+        border-bottom: none;
+      }
+      .reproLab .agent-log-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .reproLab .agent-log-item {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr);
+        gap: 8px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .reproLab .agent-log-time {
+        color: var(--muted-2);
+        font-variant-numeric: tabular-nums;
+      }
+      .reproLab .agent-log-msg {
+        color: var(--ink-2);
+        word-break: break-word;
+      }
+      .reproLab .hermes-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .reproLab .hermes-row {
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: var(--chip);
+        border: 1px solid var(--line);
+      }
+      .reproLab .hermes-row-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .reproLab .hermes-row-stage {
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-weight: 600;
+      }
+      .reproLab .hermes-status {
+        font-size: 10.5px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: var(--bg);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .reproLab .hermes-status-grounded { background: var(--info-soft); color: #2e3a8c; }
+      .reproLab .hermes-status-caveat { background: var(--warn-soft); color: var(--warn-ink); }
+      .reproLab .hermes-status-unsupported,
+      .reproLab .hermes-status-system_error { background: var(--err-soft); color: var(--err); }
+      .reproLab .hermes-row-summary {
+        font-size: 12.5px;
+        color: var(--ink-2);
+      }
+      .reproLab .hermes-findings {
+        margin: 6px 0 0 16px;
+        padding: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .reproLab .hermes-section-eyebrow {
+        margin-top: 4px;
+      }
+      .reproLab .hermes-interventions {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .reproLab .hermes-intervention {
+        font-size: 12.5px;
+      }
+      .reproLab .hermes-intervention-action {
+        font-weight: 600;
+        margin-right: 6px;
+      }
+      .reproLab .hermes-intervention-target {
+        color: var(--muted);
+      }
+      .reproLab .hermes-intervention-reason {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .reproLab .gate-chip {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--muted);
+        pointer-events: auto;
+        white-space: nowrap;
+        cursor: default;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      }
+      .reproLab .gate-chip-running {
+        color: var(--accent-ink);
+        border-color: var(--accent-soft);
+      }
+      .reproLab .gate-chip-passed {
+        color: #2c7a4a;
+        border-color: #b9e0c8;
+        background: #f0faf4;
+      }
+      .reproLab .gate-chip-caveat {
+        color: var(--warn-ink);
+        border-color: var(--warn-soft);
+        background: var(--warn-soft);
+      }
+      .reproLab .gate-chip-failed {
+        color: var(--err);
+        border-color: var(--err-soft);
+        background: var(--err-soft);
       }
       .reproLab .canvas-wrap {
         flex: 1;
@@ -1874,6 +2539,227 @@ function PrototypeStyles() {
         font-size: 11.5px;
         color: var(--ink-2);
         line-height: 1.55;
+      }
+      .reproLab .script-panel {
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: linear-gradient(180deg, #fff, #fafafb);
+      }
+      .reproLab .script-panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .reproLab .script-chip {
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .reproLab .pdf-card {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 12px;
+        align-items: stretch;
+      }
+      .reproLab .pdf-preview {
+        min-height: 128px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(22, 178, 92, 0.08), transparent 45%),
+          #fff;
+      }
+      .reproLab .pdf-preview object {
+        width: 100%;
+        height: 100%;
+        min-height: 128px;
+        display: block;
+      }
+      .reproLab .pdf-fallback {
+        height: 100%;
+        min-height: 128px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent-ink);
+      }
+      .reproLab .pdf-copy {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 6px;
+      }
+      .reproLab .pdf-title {
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        line-height: 1.25;
+      }
+      .reproLab .pdf-meta,
+      .reproLab .pdf-hash {
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+      .reproLab .pdf-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      .reproLab .btn-dark {
+        background: var(--ink);
+        color: #fff;
+        border-color: var(--ink);
+      }
+      .reproLab .code-root-row {
+        margin-top: 12px;
+        padding: 9px 10px;
+        border-radius: 10px;
+        background: var(--bg);
+      }
+      .reproLab .code-root-label {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted-2);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .reproLab .code-root-path {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--ink-2);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .reproLab .final-report-link {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(14, 14, 16, 0.1);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 244, 245, 0.96)),
+          var(--panel);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 4px 12px;
+        align-items: center;
+        transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+      }
+      .reproLab .final-report-link:hover {
+        border-color: rgba(14, 14, 16, 0.24);
+        box-shadow: 0 10px 28px -20px rgba(14, 14, 16, 0.45);
+        transform: translateY(-1px);
+      }
+      .reproLab .final-report-kicker {
+        grid-column: 1 / -1;
+        color: var(--muted-2);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .reproLab .final-report-title {
+        min-width: 0;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+      }
+      .reproLab .final-report-copy {
+        grid-column: 1 / -1;
+        color: var(--muted);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .reproLab .final-report-action {
+        padding: 6px 9px;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff;
+        font-size: 10.5px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .reproLab .benchmark-card {
+        margin-top: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #101113;
+        color: #fff;
+      }
+      .reproLab .benchmark-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .reproLab .benchmark-title {
+        font-size: 12.5px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .reproLab .benchmark-subtitle {
+        margin-top: 3px;
+        color: rgba(255, 255, 255, 0.58);
+        font-size: 10.5px;
+      }
+      .reproLab .benchmark-score {
+        font-size: 24px;
+        line-height: 1;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+        color: #7df2a8;
+      }
+      .reproLab .metric-compare {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .reproLab .metric-compare > div {
+        padding: 8px;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.08);
+        min-width: 0;
+      }
+      .reproLab .metric-label {
+        display: block;
+        margin-bottom: 4px;
+        color: rgba(255, 255, 255, 0.52);
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .reproLab .metric-compare strong {
+        font-size: 13px;
+        letter-spacing: -0.02em;
+      }
+      .reproLab .benchmark-verdict {
+        margin-top: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: rgba(255, 255, 255, 0.74);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .reproLab .benchmark-verdict .status-dot {
+        background: #7df2a8;
       }
       .reproLab .overview-grid {
         display: grid;
@@ -2122,10 +3008,17 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [over, setOver] = useState(false);
+  const [dashboardEvents, setDashboardEvents] = useState<DashboardLiveEvent[]>([]);
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
+  const dashboardProjectIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (run?.projectId !== dashboardProjectIdRef.current) {
+      dashboardProjectIdRef.current = run?.projectId ?? null;
+      setDashboardEvents([]);
+    }
+
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     if (pollTimer.current) {
@@ -2147,7 +3040,7 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
           const next = JSON.parse((event as MessageEvent).data) as LiveDemoRunState;
           setRun(next);
           if (next.status === "failed") {
-            setError(next.error ?? "Run failed");
+            setError(next.error ? issueText(next.error) : "Run needs attention");
             setBusy(false);
           }
           if (next.status === "completed" || next.status === "stopped") {
@@ -2176,6 +3069,19 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
           );
         } catch {
           setError("Unable to parse live log update");
+        }
+      });
+      source.addEventListener("dashboard_event", (event) => {
+        try {
+          const evt = JSON.parse((event as MessageEvent).data) as DashboardLiveEvent;
+          setDashboardEvents((prev) => {
+            const next = [...prev, evt];
+            return next.length > MAX_DASHBOARD_EVENTS
+              ? next.slice(next.length - MAX_DASHBOARD_EVENTS)
+              : next;
+          });
+        } catch {
+          // Malformed dashboard events should never break the live UI.
         }
       });
       source.onerror = () => {
@@ -2216,7 +3122,14 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
         pollTimer.current = null;
       }
     };
-  }, [run]);
+    // We intentionally depend ONLY on the stable identifiers (projectId,
+    // status). Depending on the full `run` object would tear down and recreate
+    // the EventSource on every run_state/agent_log event, causing a continuous
+    // reconnect loop and dropping mid-flight events. Listener closures only
+    // reference run.projectId for filtering, which is stable for the lifetime
+    // of this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run?.projectId, run?.status]);
 
   async function startFixtureRun() {
     setBusy(true);
@@ -2297,7 +3210,13 @@ export function ReproLabClient({ initialRun = null }: ReproLabClientProps) {
         <Sidebar active="lab" onBrandClick={resetToUpload} />
         <main className="content">
           {run ? (
-            <WorkflowView run={run} onClear={clearRun} busy={busy} error={error} />
+            <WorkflowView
+              run={run}
+              onClear={clearRun}
+              busy={busy}
+              error={error}
+              dashboardEvents={dashboardEvents}
+            />
           ) : (
             <UploadView
               arxiv={arxiv}
