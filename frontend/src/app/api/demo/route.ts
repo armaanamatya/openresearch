@@ -10,13 +10,10 @@ import type {
   DemoRunMode,
   DemoSandboxMode
 } from "@/lib/demo/demo-run-types";
-import { enrichRunStateWithPayload } from "@/lib/demo/server-payload";
+import { backendBaseUrl, BACKEND_GET_TIMEOUT_MS, enrichOrTimeout } from "@/lib/demo/server-run";
 
 export const runtime = "nodejs";
 
-function backendBaseUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-}
 function demoSecretHeaders(): Record<string, string> {
   const secret = gateSecret();
   return secret ? { "x-demo-secret": secret } : {};
@@ -93,29 +90,6 @@ async function jsonFromBackend(response: Response): Promise<NextResponse> {
       "content-type": response.headers.get("content-type") ?? "application/json"
     }
   });
-}
-
-// Backend GET timeout for the lab page's status polling. Single-worker
-// uvicorn (--reload) blocks on long SSE streams, so we cap how long the
-// browser waits and let the client retry with backoff.
-const BACKEND_GET_TIMEOUT_MS = 4000;
-// Soft cap on payload enrichment so a slow filesystem read or
-// buildLiveDemoDashboard pass cannot stall the GET response. On timeout
-// we return the un-enriched state and let the next poll/SSE frame retry.
-const ENRICH_TIMEOUT_MS = 750;
-
-async function enrichOrTimeout(state: LiveDemoRunState): Promise<LiveDemoRunState> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race<LiveDemoRunState>([
-      enrichRunStateWithPayload(state),
-      new Promise<LiveDemoRunState>((resolve) => {
-        timer = setTimeout(() => resolve(state), ENRICH_TIMEOUT_MS);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 export async function GET(request: Request) {
