@@ -677,8 +677,15 @@ class FileLiveRunService:
             return stderr_text[-max_chars:]
         if stderr_text is None:
             return stdout_text[-max_chars:]
-        combined = stdout_text + "\n--- runner.stderr.log ---\n" + stderr_text
-        return combined[-max_chars:]
+        # Tail-cap each stream independently so a noisy stderr cannot
+        # evict the agent's stdout entirely — surfacing stdout is the
+        # whole point of reading both files.
+        half = max_chars // 2
+        return (
+            stdout_text[-half:]
+            + "\n--- runner.stderr.log ---\n"
+            + stderr_text[-half:]
+        )
 
     def _stage_upload(self, file_name: str, content: bytes) -> Path:
         uploads_root = self.runs_root / ".lab_uploads"

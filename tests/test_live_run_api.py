@@ -271,4 +271,8 @@ def test_read_log_tail_cap_applied_to_combined(tmp_path: Path) -> None:
     service = FileLiveRunService(runs_root=tmp_path)
     result = service._read_log(project_id, max_chars=100)
 
-    assert len(result) <= 100
+    # Each stream is tail-capped to its own half of the budget, so a
+    # noisy stderr cannot evict stdout entirely.
+    assert "A" in result and "B" in result
+    assert result.count("A") == 50 and result.count("B") == 50
+    assert len(result) <= 100 + len("\n--- runner.stderr.log ---\n")
