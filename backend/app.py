@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
+
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -18,6 +20,19 @@ from backend.services.datasets import DatasetCacheService
 from backend.services.diagnostics import FailureDiagnosisService
 from backend.services.events.live_runs import FileLiveRunService, StartRunRequest
 from backend.services.research_workspace import ResearchWorkspaceService
+
+
+def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> None:
+    """Require a matching X-Demo-Secret header on the run-start endpoints.
+
+    When ``configured_secret`` is empty the gate is disabled (local dev).
+    When set, the caller must present a matching secret; a mismatch or a
+    missing secret raises 403. The comparison is constant-time.
+    """
+    if not configured_secret:
+        return
+    if not provided_secret or not hmac.compare_digest(provided_secret, configured_secret):
+        raise HTTPException(status_code=403, detail="A valid demo access secret is required.")
 
 
 def create_app(*, run_service: Any | None = None) -> FastAPI:
@@ -40,11 +55,13 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # ------------------------------------------------------------------ #
 
     @app.post("/runs", status_code=202)
-    async def start_run(request: StartRunRequest):
+    async def start_run(request: StartRunRequest, x_demo_secret: str | None = Header(default=None)):
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         return await service.start_run(request)
 
     @app.post("/runs/upload", status_code=202)
-    async def start_uploaded_run(request: Request):
+    async def start_uploaded_run(request: Request, x_demo_secret: str | None = Header(default=None)):
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         form = await request.form()
         paper = form.get("paper")
         if paper is None or not hasattr(paper, "read"):

@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Railway) pin this to "local". Empty = no override (default).
     force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
 
+    # Shared secret gating the run-start endpoints on public deployments.
+    # Empty = gate disabled (local dev). When set, POST /runs and
+    # POST /runs/upload require a matching X-Demo-Secret header.
+    demo_secret: str = ""
+
     runpod_api_key: str = Field(
         default="",
         validation_alias=AliasChoices(
