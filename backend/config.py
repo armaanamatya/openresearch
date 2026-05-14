@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # CLI defaults remain controlled separately by argparse flags.
     default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
 
+    # When set, every run is forced onto this sandbox mode regardless of what
+    # the client requested. Deployments without a GPU or Docker daemon (e.g.
+    # Railway) pin this to "local". Empty = no override (default).
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
+
     runpod_api_key: str = Field(
         default="",
         validation_alias=AliasChoices(

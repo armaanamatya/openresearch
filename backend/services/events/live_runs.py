@@ -113,6 +113,18 @@ def sse_event(event: str, data: Any, *, event_id: str | None = None) -> str:
     return f"{prefix}event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> StartRunRequest:
+    """Force the sandbox mode for all runs when REPROLAB_FORCE_SANDBOX is set.
+
+    Deployments without a GPU or Docker daemon (e.g. Railway) must pin every
+    run to ``local`` regardless of what the client requested. An empty force
+    value leaves the request unchanged.
+    """
+    if not force_sandbox:
+        return request
+    return request.model_copy(update={"sandbox": force_sandbox})
+
+
 class FileLiveRunService:
     """Runs pipelines in subprocesses and exposes their file-backed state."""
 
@@ -257,6 +269,7 @@ class FileLiveRunService:
         project_id: str,
         uploaded_paper: dict[str, str] | None,
     ) -> LiveRunState:
+        request = apply_sandbox_override(request, get_settings().force_sandbox)
         existing = await self.get_run(project_id)
         if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
             return existing
