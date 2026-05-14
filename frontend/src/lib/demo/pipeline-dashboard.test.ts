@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildLiveDemoDashboard } from "./pipeline-dashboard";
+import { buildLiveDemoDashboard, pathStateMap } from "./pipeline-dashboard";
 
 describe("buildLiveDemoDashboard", () => {
   it("converts a completed pipeline state into replayable dashboard data", () => {
@@ -279,5 +279,51 @@ describe("buildLiveDemoDashboard", () => {
 
     expect(data.summary.sourceLabel).toBe("ppo-paper.pdf");
     expect(data.initialSnapshot.dataPanels[1]?.items).toContain("Uploaded from the lab page.");
+  });
+});
+
+describe("pathStateMap", () => {
+  it("routes a path to its keyword bucket via hypothesis text", () => {
+    const map = pathStateMap(
+      [{ path_id: "p1", hypothesis: "swap optimizer for AdamW", success: true }],
+      "improvements_run"
+    );
+    expect(map.opt).toBe("done");
+    expect(map.bb).toBe("upcoming");
+  });
+
+  it("marks a failed path as attention", () => {
+    const map = pathStateMap(
+      [{ path_id: "p1", hypothesis: "diffusion sampler swap", success: false }],
+      "improvements_run"
+    );
+    expect(map.div).toBe("attention");
+  });
+
+  it("falls back to round-robin when no keywords match", () => {
+    const map = pathStateMap(
+      [{ path_id: "p1", hypothesis: "novel hand-crafted reward shaping" }],
+      "improvements_run"
+    );
+    // first non-matching slot in display order: opt
+    expect(map.opt).toBe("running");
+  });
+
+  it("marks unmatched nodes as skipped after the round finishes", () => {
+    const map = pathStateMap(
+      [{ path_id: "p1", hypothesis: "backbone resnet swap", success: true }],
+      "complete"
+    );
+    expect(map.bb).toBe("done");
+    expect(map.opt).toBe("skipped");
+    expect(map.aug).toBe("skipped");
+  });
+
+  it("returns running while a path has no success field yet", () => {
+    const map = pathStateMap(
+      [{ path_id: "p1", hypothesis: "augmentation dropout sweep" }],
+      "improvements_run"
+    );
+    expect(map.aug).toBe("running");
   });
 });

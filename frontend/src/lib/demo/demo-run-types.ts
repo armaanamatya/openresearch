@@ -17,6 +17,30 @@ export type DemoRunStatus =
   | "completed"
   | "failed";
 
+export interface SourcePdfArtifact {
+  fileName: string;
+  title: string;
+  sizeBytes: number;
+  sha256: string;
+  pageCount?: number | null;
+  runPath: string;
+  codePath: string;
+}
+
+export interface DemoBenchmarkSummary {
+  benchmarkName: string;
+  paperbenchTaskId: string;
+  overallScore: number;
+  targetMetric: string;
+  targetValue: number;
+  reproducedValue: number;
+  deltaValue: number;
+  verdict: string;
+  reportPath: string;
+  comparisonPath: string;
+  logPath: string;
+}
+
 export interface LiveDemoRunState {
   projectId: string;
   outputDir: string;
@@ -30,6 +54,8 @@ export interface LiveDemoRunState {
   sourceKind?: "workspace_fixture" | "uploaded_pdf";
   sourceLabel?: string;
   sourceNote?: string;
+  sourcePdf?: SourcePdfArtifact | null;
+  benchmark?: DemoBenchmarkSummary | null;
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
