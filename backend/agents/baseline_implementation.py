@@ -23,6 +23,14 @@ from backend.agents.schemas import (
 logger = logging.getLogger(__name__)
 
 
+def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Path) -> None:
+    source_pdf = Path(runs_root) / project_id / "raw_paper.pdf"
+    target_pdf = code_dir / "paper.pdf"
+    if target_pdf.exists() or not source_pdf.exists():
+        return
+    target_pdf.write_bytes(source_pdf.read_bytes())
+
+
 # ---------------------------------------------------------------------------
 # PPO CartPole-v1 implementation template
 # ---------------------------------------------------------------------------
@@ -368,6 +376,7 @@ def run_offline(
     """
     code_dir = Path(runs_root) / project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+    _copy_source_pdf_to_code_root(Path(runs_root), project_id, code_dir)
 
     # Write implementation files
     (code_dir / "train.py").write_text(PPO_TRAIN_PY)
@@ -423,6 +432,7 @@ async def run_with_sdk(
     project_dir = Path(runs_root) / project_id
     code_dir = project_dir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+    _copy_source_pdf_to_code_root(Path(runs_root), project_id, code_dir)
 
     context = {
         "paper_claim_map": paper_claim_map.model_dump(),
