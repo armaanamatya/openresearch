@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { gateSecret } from "@/lib/auth/demo-gate";
 import type {
   DemoExecutionMode,
   DemoGpuMode,
@@ -15,6 +16,10 @@ export const runtime = "nodejs";
 
 function backendBaseUrl(): string {
   return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+}
+function demoSecretHeaders(): Record<string, string> {
+  const secret = gateSecret();
+  return secret ? { "x-demo-secret": secret } : {};
 }
 function search(request: Request): URLSearchParams {
   return new URL(request.url).searchParams;
@@ -170,6 +175,7 @@ export async function POST(request: Request) {
       return jsonFromBackend(
         await fetch(`${backendBaseUrl()}/runs/upload`, {
           method: "POST",
+          headers: demoSecretHeaders(),
           body: formData
         })
       );
@@ -178,7 +184,7 @@ export async function POST(request: Request) {
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...demoSecretHeaders() },
         body: JSON.stringify({
           mode: toRunMode(request) ?? "offline",
           provider: toProvider(request) ?? "anthropic",
