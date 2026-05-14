@@ -40,6 +40,10 @@ def test_validate_provider_credentials_checks_matching_env(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    # The Anthropic check also passes when the `claude` CLI is on PATH (it
+    # inherits subscription auth); pin it absent so this test deterministically
+    # exercises the missing-credentials path regardless of the host environment.
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: SimpleNamespace(

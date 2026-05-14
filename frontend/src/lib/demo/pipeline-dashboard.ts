@@ -198,7 +198,7 @@ export interface LiveDemoMeta {
   sandboxMode?: DemoSandboxMode;
   gpuMode?: DemoGpuMode;
   sourceLabel: string;
-  sourceNote: string;
+  sourceNote?: string;
 }
 
 export interface LiveDemoPayload extends LiveDemoMeta {
@@ -564,7 +564,7 @@ function buildInitialSnapshot(
           `Run mode: ${runModeLabel(meta.runMode, meta.llmProvider)}`,
           `Execution: ${meta.executionMode ?? "efficient"} / ${sandboxLabel(meta.sandboxMode)} / ${gpuLabel(meta.gpuMode)}`,
           `Verifier: ${meta.verificationProvider ? runModeLabel("sdk", meta.verificationProvider) : "Same provider as builder"}`,
-          meta.sourceNote
+          meta.sourceNote ?? ""
         ]
       },
       {
