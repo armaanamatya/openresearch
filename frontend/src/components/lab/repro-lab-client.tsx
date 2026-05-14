@@ -623,10 +623,14 @@ function coalesceRunState(
   };
 }
 
+const ELAPSED_RE = /\((\d+)s\)/;
+
 function parseLogEntries(run: LiveDemoRunState | null) {
   if (!run?.log) {
     return [];
   }
+
+  const startedAt = run.startedAt ? new Date(run.startedAt).getTime() : null;
 
   return run.log
     .split(/\r?\n/)
@@ -634,13 +638,23 @@ function parseLogEntries(run: LiveDemoRunState | null) {
     .filter(Boolean)
     .slice(-80)
     .reverse()
-    .map((line, index) => ({
-      id: `${run.projectId}-${index}`,
-      time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      // Log lines render verbatim — euphemising "failed" to "needs
-      // attention" here hid real failures from anyone reading the log.
-      msg: line
-    }));
+    .map((line, index) => {
+      let time = "--:--";
+      const match = ELAPSED_RE.exec(line);
+      if (match && startedAt !== null) {
+        const elapsedMs = parseInt(match[1], 10) * 1000;
+        time = new Date(startedAt + elapsedMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      } else if (startedAt !== null) {
+        time = new Date(startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return {
+        id: `${run.projectId}-${index}`,
+        time,
+        // Log lines render verbatim — euphemising "failed" to "needs
+        // attention" here hid real failures from anyone reading the log.
+        msg: line
+      };
+    });
 }
 
 function telemetryForSelectedNode(run: LiveDemoRunState | null, selectedId: string | null) {
