@@ -42,6 +42,18 @@ the existing stages (the enum stays at 14). It is opt-in (`rubric_verifier_enabl
 fail-closed (a verifier error degrades to the heuristic rubric), and surfaced in the UI
 by the `CompletionSummary` popup plus a live re-iteration badge.
 
+**Environment build-and-repair (Track 4).** The reproduction Dockerfile is built — and
+repaired on failure — at the `ENVIRONMENT_BUILT` stage, not tens of minutes later inside
+`run_experiment`. `_run_environment_build_loop` runs `docker build` via the build-only
+`build_image()` primitive; a broken Dockerfile feeds its build error back to
+`environment-detective` in repair mode and retries, capped by
+`environment_build_max_attempts`. It is opt-in (`environment_build_validation_enabled`),
+docker-sandbox only, and **fail-soft**: when the cap is spent the run does not halt on
+`blocked_requires_human` — Gate 2's failure is allowed through and the run completes with
+an honest partial-reproduction verdict. Like Track 3's loops it runs *within* an existing
+stage (the enum stays at 14) and is resume-safe via checkpointed `environment_build_*`
+fields.
+
 ## The run lifecycle (UI ↔ backend)
 
 This is the part worth knowing up front — the rest you can read directly.
