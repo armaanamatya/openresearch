@@ -11,6 +11,40 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — The reproduction Dockerfile was never built until it was too late to fix
+
+**Symptom.** `environment-detective` generated the Dockerfile one-shot at the
+`ENVIRONMENT_BUILT` stage, but nothing ran `docker build` until `run_experiment`
+at `BASELINE_RUN` — five stages and tens of minutes later. A broken Dockerfile
+(missing system lib, a non-existent pin like `ale-py 0.8.1`, base-image
+mismatch) burned all that work, then dead-ended the run at Gate 2 with
+`blocked_requires_human`. No run had ever reached the Track 3 flow live.
+
+**Root cause.** The pipeline had a *judge* for the environment
+(`environment-verifier` at Gate 1) but no *builder*. The first real validation
+of the generated artifact happened far downstream from where it was produced,
+so the feedback loop that could fix it never existed — and the terminal state
+for that failure was a human-required halt, not an autonomous recovery.
+
+**Fix.** Build the Dockerfile at the stage that produces it. A build-only
+`build_image()` primitive runs `docker build` at `ENVIRONMENT_BUILT`; on failure
+the build error is fed back to `environment-detective` in a repair mode and the
+build is retried, hard-capped at `environment_build_max_attempts`. After the cap
+the run is **fail-soft** — it proceeds and completes with an honest
+partial-reproduction verdict instead of halting for a human.
+
+**Lesson.** Validate a generated artifact at the stage that generates it, not at
+the stage that first consumes it — the distance between the two is wasted time
+and a feedback loop you don't have. And an autonomous pipeline's terminal state
+for a *recoverable* failure should be an honest verdict, not a halt: a bounded
+repair loop plus fail-soft beats `blocked_requires_human`.
+
+**Guardrail.** `tests/test_track4_environment_build_repair.py` — `build_image`
+returns `(False, …)` for a broken Dockerfile but raises for an infrastructure
+failure; `_run_environment_build_loop` is bounded (capped attempts, repair
+invoked between them) and fail-soft (cap spent → `environment_build_ok` false,
+no raise).
+
 ## 2026-05-14 — A "hard cap" that lived only in a prompt was advisory, not enforced
 
 **Symptom.** The rubric-verifier prompt told the model "no executable code →

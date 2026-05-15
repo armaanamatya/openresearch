@@ -9,6 +9,29 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Track 4 — environment build-and-repair loop.** The reproduction Dockerfile
+  is now built — and repaired on failure — at the `ENVIRONMENT_BUILT` stage
+  instead of failing tens of minutes later inside `run_experiment`. A build-only
+  `build_image()` primitive (`backend/services/runtime/local_docker.py`)
+  compiles the Dockerfile and returns `(ok, tag, error_text)` for a broken
+  Dockerfile (repairable) or raises `SandboxRuntimeError` for an infrastructure
+  failure (docker daemon down — not repairable). `_run_environment_build_loop`
+  in the orchestrator mirrors the Track 3 re-iteration loop: build → on failure
+  feed the build error back to `environment-detective` in a new **repair mode**
+  → bounded retry, capped by `environment_build_max_attempts` (default 3). When
+  the cap is spent without a buildable image the run does **not** dead-end on
+  `blocked_requires_human` — it is **fail-soft**: `environment_build_ok` stays
+  false, Gate 2's failure is allowed through, and the run completes with an
+  honest partial-reproduction verdict. Opt-in via
+  `environment_build_validation_enabled` (default on); with it disabled, or on a
+  non-docker sandbox, the run behaves exactly as before. The loop runs *within*
+  the `ENVIRONMENT_BUILT` stage (the `PipelineStage` enum stays at 14) and is
+  resume-safe — `environment_build_attempts` / `environment_build_ok` /
+  `environment_build_error` are checkpointed, so a run that died mid-loop picks
+  up where it left off. The `environment-detective` prompt also gained
+  Dockerfile-hardening rules (slim base + one curated apt layer, per-package pip
+  layers, never `COPY` source — reproduction code is volume-mounted) to shrink
+  the loop's workload by avoiding the common "missing system lib" failure class.
 - **Track 3 Phase F.5 — Codex review #2 hardening.** Folded the genuinely
   actionable findings from the final Codex review (the remainder were verified
   false positives — hallucinated code structure, conflated schemas, a test/doc
