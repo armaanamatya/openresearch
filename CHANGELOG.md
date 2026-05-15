@@ -9,6 +9,24 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Sandbox execution contract — single source of truth for the agent↔runtime
+  interface.** The reproduction sandbox mounts the project read-only at the
+  container working dir and a separate writable volume at `$OUTPUT_DIR` — but
+  this contract used to live only in the runtime code and the env-var names,
+  not in the agent prompts. So `baseline-implementation` and `improvement-path`
+  routinely wrote scripts that `mkdir results/` and `tee > log.txt` in the
+  read-only mount, and the experiment died on a "Read-only file system" error
+  before any code ran. A new `backend/agents/prompts/_sandbox_contract.py`
+  defines `SANDBOX_EXECUTION_CONTRACT` — a single brace-free, domain-agnostic
+  block stating the mount model, the env vars, and the required write
+  patterns (every output under `$OUTPUT_DIR`; cache-hungry tools redirected via
+  `HF_HOME`/`TRANSFORMERS_CACHE`/`TRITON_CACHE_DIR`/etc.; `metrics.json` under
+  `$OUTPUT_DIR/metrics.json`). The contract is spliced into the three prompts
+  that emit sandbox-executable code (`BASELINE_IMPLEMENTATION_PROMPT`,
+  `IMPROVEMENT_PATH_PROMPT`, `COMPOSITION_AGENT_PROMPT`) right before each
+  `# Output` section — at peak attention as the agent commits to its
+  `commands_to_run`. Identical across the docker, local, and runpod sandbox
+  modes — write to the contract, it works on all three.
 - **Track 4 — environment build-and-repair loop.** The reproduction Dockerfile
   is now built — and repaired on failure — at the `ENVIRONMENT_BUILT` stage
   instead of failing tens of minutes later inside `run_experiment`. A build-only

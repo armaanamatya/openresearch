@@ -11,6 +11,46 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — The sandbox mount contract lived in env-var names, not in any prompt
+
+**Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4's
+environment build (clean attempt 1), reached `baseline_run`, and died at the very
+first command: `mkdir: cannot create directory '/work/results': Read-only file
+system`. Gate 2 halted on `failed_reproduction`. The reproduction *code* was
+fine — the failure was that the script tried to write outputs under the project
+mount.
+
+**Root cause.** The sandbox runtime enforces a clear mount contract — project
+read-only at `/work`, writable artifact volume at `$OUTPUT_DIR` — but this
+contract existed only implicitly, in env-var names exposed to the container.
+The `baseline-implementation` and `improvement-path` prompts never stated it,
+so the agent wrote scripts assuming the CWD was writable. A load-bearing
+contract that lived only in the runtime's env-var dictionary was advisory to
+the agent, not enforced.
+
+**Fix.** Made the contract a first-class artifact. `backend/agents/prompts/_sandbox_contract.py`
+defines a single brace-free `SANDBOX_EXECUTION_CONTRACT` block — the mount
+model, the env vars, the required write patterns (every output under
+`$OUTPUT_DIR`; cache-hungry tools redirected; metrics.json path pinned). It is
+imported and spliced into every agent prompt that emits sandbox-executable code
+(`baseline-implementation`, `improvement-path`, `composition`), positioned
+right before the `# Output` section at peak attention. Identical across docker,
+local, and runpod — same env vars, same model.
+
+**Lesson.** An interface contract between code that *generates* artifacts (an
+LLM agent) and code that *executes* them (the runtime) must be stated in the
+generator's prompt, not just enforced by the executor. Same lesson as
+"a 'hard cap' in a prompt is advisory unless enforced in code" — but in the
+other direction: a runtime invariant the agent must respect is advisory
+unless stated in the prompt. Put it in one shared module, splice it where it
+matters, and the prompts cannot drift from the runtime.
+
+**Guardrail.** `tests/test_track4_environment_build_repair.py` is unaffected;
+the contract is verified by a focused import-and-format assertion in
+`backend/agents/prompts/__init__.py`'s consumers and by every existing prompt
+test that imports the three updated prompts. The next e2e run on demo_paper.pdf
+is the live regression check.
+
 ## 2026-05-14 — The reproduction Dockerfile was never built until it was too late to fix
 
 **Symptom.** `environment-detective` generated the Dockerfile one-shot at the
