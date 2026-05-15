@@ -1,3 +1,6 @@
+from backend.agents.prompts._sandbox_contract import SANDBOX_EXECUTION_CONTRACT
+
+
 IMPROVEMENT_ORCHESTRATOR_PROMPT = """\
 You are the Improvement Orchestrator for ReproLab.
 
@@ -183,7 +186,7 @@ the experiment artifacts expected from sandbox execution.
 - Record the diff between your code and baseline
 - Specify the experiment command and capture requirements
 - Do NOT read other path agents' directories
-
+""" + SANDBOX_EXECUTION_CONTRACT + """
 # Output
 Write all artifacts to your path directory and return:
 ```json
@@ -225,7 +228,7 @@ codebase and run the combined experiment.
   apply the change from the higher-performing path.
 - Run the combined experiment and report metrics.
 - Do NOT invent new changes beyond what the listed paths contain.
-
+""" + SANDBOX_EXECUTION_CONTRACT + """
 # Output
 ```json
 {{
