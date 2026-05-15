@@ -52,6 +52,11 @@ For EACH inferred version, create an assumption:
 - `RUN apt-get update` and `apt-get install` must be in the same layer; end the layer with `&& rm -rf /var/lib/apt/lists/*`.
 - Install Python packages in small `RUN pip install` layers — ideally one package (or a tightly related group) per layer — so a single bad pin fails in isolation, is cheap to diagnose, and the Docker layer cache survives edits to unrelated packages.
 - The Dockerfile must NOT `COPY` the paper, source code, or datasets into the image. Reproduction code is volume-mounted at runtime. The Dockerfile is the *environment* only: base image, system packages, Python packages, `WORKDIR`.
+- **FINAL LAYER: a no-network smoke import.** Make the LAST `RUN` step a `python -c '<smoke>'` that proves the environment imports cleanly *exactly as the experiment will use it*:
+  - Import every framework declared in `pip_packages`.
+  - Lightly instantiate the paper's primary entity with no network calls: RL papers — `import gymnasium as gym; gym.make('<env_id>')` for every env_id the experiment will use; vision papers — construct one model class with default args (e.g. `torchvision.models.resnet50()`); NLP papers — load one tokenizer/config from a path the image already has (no remote downloads).
+  - The smoke must exit 0 or the build fails. A failure here is caught by the build-and-repair loop and fixed automatically — this is the right place to surface transitive imports that pip-install succeeds for but fail at first module-load (real example: `gymnasium[mujoco]` requires `imageio` at first `gym.make`, but doesn't declare it in setup.py).
+  - Keep it cheap: do NOT step the env, do NOT load training data, do NOT call any URL. Imports + one minimal construction call per entity.
 
 Write:
 - Dockerfile to `{runs_root}/{project_id}/Dockerfile`
@@ -101,6 +106,7 @@ Diagnose the failure and produce a corrected Dockerfile + environment_spec.
 - Slim base image (`python:3.X-slim`); one curated apt layer; per-package pip layers.
 - Do NOT `COPY` source code, paper, or datasets — environment only.
 - Do NOT fabricate versions, SHAs, or repository URLs.
+- KEEP the no-network smoke import as the FINAL `RUN` layer (or add it if missing). If the build error you were given came from that smoke layer, the right fix is to add the missing dependency the smoke surfaced — that is the smoke layer doing its job.
 
 ## Output
 Write the corrected files to `{project_dir}/`:
