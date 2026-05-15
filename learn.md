@@ -11,6 +11,48 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — A "successful" docker build can still ship a broken environment
+
+**Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4
+(env built clean attempt 1), got past the sandbox-mount contract fix (script
+wrote correctly to `$OUTPUT_DIR`), and died at the very first `gym.make`:
+`ModuleNotFoundError: No module named 'imageio'` from
+`gymnasium/envs/mujoco/mujoco_rendering.py`. The Dockerfile pinned
+`gymnasium[mujoco]` but `imageio` isn't in gymnasium's `setup.py` for the
+mujoco extra — it's imported at first env load. The build had no way to know.
+
+**Root cause.** Track 4 validates that `docker build` *exits 0*. That only
+proves "pip install didn't crash" — not "every Python module in this image
+actually imports." Lots of pip packages have *transitive runtime imports*
+(here: `imageio` for gymnasium-mujoco; in other papers, `cv2` wanting
+`libGL.so.1`, torch wanting a specific CUDA runtime, etc.) that pass at
+install time and explode at module-load time. Track 4 had no trigger for
+runtime-import failures — so they died downstream at `baseline_run`, with
+no repair feedback.
+
+**Fix.** Force the runtime-import failure into the build phase by making
+the FINAL Dockerfile layer a no-network smoke: `RUN python -c '<imports + a
+minimal instantiation of the paper's primary entity>'`. A failure there is
+a build failure — and Track 4's build-and-repair loop already knows how to
+fix build failures (add the missing dep via env-detective repair mode,
+rebuild). Zero new code; just a prompt rule.
+
+**Lesson.** A repair loop's *trigger event* is as load-bearing as its
+*repair mechanism*. Track 4 had the repair mechanism (env-detective in
+repair mode) but only fired it on `docker build`'s exit code. The
+import-time class of failures was invisible to that trigger. The
+generalization: whenever you have a recovery mechanism, audit *every*
+failure mode it should cover and make sure each has a trigger pointing at
+it — not just the one that motivated building the mechanism in the first
+place.
+
+**Guardrail.** No new tests — the smoke layer is verified by the e2e run
+(if it's missing, the prompt change is in but the agent ignored it; the
+existing prompt-format tests catch import + brace regressions). The next
+demo-paper run is the live regression check — the imageio failure should
+now appear at *build* time, get repaired automatically, and the experiment
+should reach `baseline_run` with a working environment.
+
 ## 2026-05-14 — The sandbox mount contract lived in env-var names, not in any prompt
 
 **Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4's
