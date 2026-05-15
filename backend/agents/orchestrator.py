@@ -112,6 +112,16 @@ def _should_reiterate(
     return iteration < max_iterations
 
 
+def _should_rebuild(build_ok: bool, attempts: int, max_attempts: int) -> bool:
+    """Whether the environment build-repair loop should run another attempt.
+
+    Returns False — terminating the loop — once the build succeeds or the
+    attempt cap is reached. The cap guarantees termination: every loop body
+    increments ``attempts``.
+    """
+    return not build_ok and attempts < max_attempts
+
+
 def _paperbench_root() -> Path:
     """Repo's third_party/paperbench directory (orchestrator.py -> repo root)."""
     return Path(__file__).resolve().parents[2] / "third_party" / "paperbench"
@@ -169,6 +179,9 @@ class PipelineState:
     paper_claim_map: PaperClaimMap | None = None
     artifact_index: dict[str, Any] | None = None
     environment_spec: EnvironmentSpec | None = None
+    environment_build_attempts: int = 0
+    environment_build_ok: bool = False
+    environment_build_error: str = ""
     reproduction_contract: ReproductionContract | None = None
     gate_1: GateDecision | None = None
     baseline_result: BaselineResult | None = None
@@ -220,6 +233,7 @@ class PipelineState:
             "attempt_id": self.attempt_id,
             "run_group_id": self.run_group_id,
             "blacklist_terms": self.blacklist_terms,
+            "environment_build_ok": self.environment_build_ok,
         }
         if self.paper_claim_map:
             data["paper_claim_map"] = self.paper_claim_map.model_dump()
@@ -243,6 +257,10 @@ class PipelineState:
             ]
         if self.improvement_iteration:
             data["improvement_iteration"] = self.improvement_iteration
+        if self.environment_build_attempts:
+            data["environment_build_attempts"] = self.environment_build_attempts
+        if self.environment_build_error:
+            data["environment_build_error"] = self.environment_build_error
         if self.rubric_spec:
             data["rubric_spec"] = self.rubric_spec
         if self.gate_1:
@@ -316,6 +334,9 @@ class PipelineState:
                 RubricVerification(**v) for v in data["verification_history"]
             ]
         state.improvement_iteration = data.get("improvement_iteration", 0)
+        state.environment_build_attempts = data.get("environment_build_attempts", 0)
+        state.environment_build_ok = data.get("environment_build_ok", False)
+        state.environment_build_error = data.get("environment_build_error", "")
         state.rubric_spec = data.get("rubric_spec")
         if "gate_1" in data:
             state.gate_1 = GateDecision(**data["gate_1"])
@@ -1085,6 +1106,219 @@ class ReproLabOrchestrator:
             "environment-detective",
         )
         state.advance_stage(PipelineStage.ENVIRONMENT_BUILT, self.runs_root)
+        state = await self._run_environment_build_loop(state)
+        return state
+
+    def _write_environment_dockerfile(self, state: PipelineState) -> Path | None:
+        """Materialise the reproduction Dockerfile from the parsed spec.
+
+        The parsed ``environment_spec.dockerfile`` is canonical and is written
+        to ``{project_dir}/Dockerfile`` — where ``run_experiment``'s
+        ``_resolve_dockerfile_path`` later looks for it. When the spec carries
+        no Dockerfile text but the agent wrote the file directly, that file is
+        used as-is. Returns ``None`` when no Dockerfile content exists at all;
+        the caller treats that as a build failure with an actionable message.
+        """
+        dockerfile_path = self._project_dir / "Dockerfile"
+        spec = state.environment_spec
+        content = spec.dockerfile.strip() if spec and spec.dockerfile else ""
+        if content:
+            dockerfile_path.write_text(content + "\n")
+            return dockerfile_path
+        if dockerfile_path.exists() and dockerfile_path.read_text().strip():
+            return dockerfile_path
+        return None
+
+    async def _repair_environment(
+        self, state: PipelineState, build_error: str
+    ) -> PipelineState:
+        """Re-invoke environment-detective in repair mode with the build error.
+
+        Produces a fresh ``environment_spec``; new assumptions are merged into
+        the ledger de-duped by ``assumption_id`` so a repair round never
+        double-counts an assumption the first pass already recorded.
+        """
+        from backend.agents.prompts.environment_detective import (
+            ENVIRONMENT_DETECTIVE_REPAIR_PROMPT,
+        )
+
+        prior_dockerfile = ""
+        if state.environment_spec and state.environment_spec.dockerfile:
+            prior_dockerfile = state.environment_spec.dockerfile
+        else:
+            dockerfile_path = self._project_dir / "Dockerfile"
+            if dockerfile_path.exists():
+                prior_dockerfile = dockerfile_path.read_text()
+
+        prompt = ENVIRONMENT_DETECTIVE_REPAIR_PROMPT.format(
+            project_id=self.project_id,
+            project_dir=self._project_dir,
+            prior_dockerfile=prior_dockerfile,
+            build_error=build_error,
+        )
+        output = await self._invoke_agent("environment-detective", prompt)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "environment_spec.json"),
+        )
+        state.environment_spec = EnvironmentSpec(**data)
+        seen_ids = {
+            entry.get("assumption_id")
+            for entry in state.assumption_ledger
+            if isinstance(entry, dict) and entry.get("assumption_id")
+        }
+        for assumption in state.environment_spec.assumptions:
+            dumped = assumption.model_dump()
+            if dumped.get("assumption_id") in seen_ids:
+                continue
+            state.assumption_ledger.append(dumped)
+        self._audit_step(
+            state,
+            target="environment-detective",
+            structured_output=state.environment_spec.model_dump(),
+        )
+        self._enrich_workspace(
+            "environment_spec",
+            state.environment_spec.model_dump(),
+            "environment-detective",
+        )
+        return state
+
+    async def _run_environment_build_loop(self, state: PipelineState) -> PipelineState:
+        """Build the reproduction Dockerfile at ENVIRONMENT_BUILT; on failure,
+        repair it via environment-detective and retry, hard-capped.
+
+        Mirrors ``_run_improvement_reiteration_loop``: opt-in
+        (``environment_build_validation_enabled``), bounded
+        (``environment_build_max_attempts``), and fail-soft. A broken
+        Dockerfile is caught here in minutes instead of ~30 min later at
+        BASELINE_RUN. Once the attempt cap is spent without a buildable image
+        the loop leaves ``environment_build_ok`` False and returns WITHOUT
+        halting — ``run()`` then lets Gate 2 complete with an honest
+        partial-reproduction verdict. Only the docker sandbox builds images;
+        local/runpod runs are a no-op. Resume-safe: the attempt counter is
+        checkpointed, so a run that died mid-loop picks up where it left off.
+        """
+        settings = get_settings()
+        if not settings.environment_build_validation_enabled:
+            return state
+        if self.sandbox_mode is not SandboxMode.docker:
+            return state
+        if state.environment_build_ok:
+            # Already validated on a prior (resumed) pass — nothing to do.
+            return state
+
+        from backend.services.runtime import build_image
+        from backend.services.runtime.interface import SandboxRuntimeError
+
+        max_attempts = max(1, settings.environment_build_max_attempts)
+        tag = f"reprolab/{self.project_id}:env-check"
+
+        while _should_rebuild(
+            state.environment_build_ok,
+            state.environment_build_attempts,
+            max_attempts,
+        ):
+            attempt = state.environment_build_attempts + 1
+            dockerfile_path = self._write_environment_dockerfile(state)
+            if dockerfile_path is None:
+                error_text = (
+                    "environment-detective produced no Dockerfile: the "
+                    "`dockerfile` field of environment_spec.json was empty and "
+                    "no Dockerfile was written to the project directory."
+                )
+            else:
+                self._dashboard.agent_started(
+                    "root-orchestrator",
+                    f"Environment build attempt {attempt}/{max_attempts}",
+                    parent_id=None,
+                )
+                try:
+                    ok, _image_tag, error_text = await build_image(
+                        dockerfile_path, self._project_dir, tag
+                    )
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except SandboxRuntimeError as exc:
+                    # Infrastructure failure (daemon down, SDK missing) — not the
+                    # Dockerfile's fault, so a repair would not help. Degrade to
+                    # un-buildable and let the run continue fail-soft.
+                    logger.warning(
+                        "environment build attempt %d hit a docker infrastructure "
+                        "error (%s) — marking the environment un-buildable",
+                        attempt,
+                        exc,
+                    )
+                    state.environment_build_attempts = attempt
+                    state.environment_build_error = str(exc)
+                    state.save_checkpoint(self.runs_root)
+                    self._dashboard.agent_failed(
+                        "root-orchestrator",
+                        f"Environment build blocked by docker infrastructure: {exc}",
+                    )
+                    return state
+                if ok:
+                    state.environment_build_attempts = attempt
+                    state.environment_build_ok = True
+                    state.environment_build_error = ""
+                    state.save_checkpoint(self.runs_root)
+                    self._dashboard.agent_completed(
+                        "root-orchestrator",
+                        f"Environment build succeeded on attempt "
+                        f"{attempt}/{max_attempts}",
+                    )
+                    logger.info(
+                        "environment build succeeded on attempt %d/%d",
+                        attempt,
+                        max_attempts,
+                    )
+                    return state
+
+            # The build failed (broken Dockerfile, or no Dockerfile content).
+            state.environment_build_attempts = attempt
+            state.environment_build_error = error_text
+            state.save_checkpoint(self.runs_root)
+            stripped = error_text.strip()
+            last_line = stripped.splitlines()[-1] if stripped else ""
+            logger.warning(
+                "environment build attempt %d/%d failed: %s",
+                attempt,
+                max_attempts,
+                last_line,
+            )
+            self._dashboard.agent_failed(
+                "root-orchestrator",
+                f"Environment build attempt {attempt}/{max_attempts} failed",
+            )
+            if attempt >= max_attempts:
+                break
+            try:
+                state = await self._repair_environment(state, error_text)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "environment repair after attempt %d failed (%s) — stopping "
+                    "the build loop",
+                    attempt,
+                    exc,
+                )
+                break
+
+        # The attempt cap is spent (or repair errored) without a buildable
+        # image. Fail-soft: the run proceeds and Gate 2 completes with an honest
+        # partial-reproduction verdict instead of halting for a human.
+        state.environment_build_ok = False
+        state.save_checkpoint(self.runs_root)
+        logger.warning(
+            "environment un-buildable after %d attempt(s) — continuing fail-soft "
+            "toward an honest partial-reproduction verdict",
+            state.environment_build_attempts,
+        )
+        self._dashboard.agent_failed(
+            "root-orchestrator",
+            f"Environment un-buildable after {state.environment_build_attempts} "
+            "attempt(s) — continuing fail-soft toward an honest verdict",
+        )
         return state
 
     async def run_reproduction_planner(self, state: PipelineState) -> PipelineState:
@@ -1953,6 +2187,18 @@ class ReproLabOrchestrator:
             (PipelineStage.GATE_2_PASSED, self.run_gate_2),
         ]
 
+        # Resume-safe re-entry into the Track 4 environment build-repair loop:
+        # a run that died inside the loop has stage ENVIRONMENT_BUILT with the
+        # build not yet ok. Resume it here — the pipeline `for` below skips
+        # run_environment_detective once that stage has been reached, so the
+        # loop would otherwise never get a second chance. Idempotent: it returns
+        # immediately when the build already succeeded or validation is off.
+        if (
+            state.stage is PipelineStage.ENVIRONMENT_BUILT
+            and not state.environment_build_ok
+        ):
+            state = await self._run_environment_build_loop(state)
+
         current_idx = stages_order.index(state.stage)
 
         for target_stage, step_fn in pipeline:
@@ -1993,8 +2239,21 @@ class ReproLabOrchestrator:
                 print(f"  X Gate 1 FAILED: {state.gate_1.status.value}", file=sys.stderr, flush=True)
                 return state
             if state.gate_2 and not state.gate_2.passed:
-                print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
-                return state
+                if state.environment_build_attempts > 0 and not state.environment_build_ok:
+                    # Track 4 fail-soft: the environment build-repair loop spent
+                    # its attempt cap without a buildable image. Don't dead-end
+                    # on the Gate 2 failure — let the run complete with an honest
+                    # partial-reproduction verdict instead of halting for a human.
+                    print(
+                        f"  ! Gate 2 failed on an un-buildable environment "
+                        f"({state.environment_build_attempts} build attempt(s)) "
+                        f"-- continuing fail-soft toward an honest verdict",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
+                    return state
 
         # Improvement phase
         if current_idx < stages_order.index(PipelineStage.IMPROVEMENTS_RUN):
