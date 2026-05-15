@@ -21,6 +21,99 @@ from backend.services.runtime.interface import (
 )
 
 
+DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
+
+
+def _resolve_build_context(dockerfile_path: Path, context_dir: Path | None) -> tuple[Path, str]:
+    """Resolve (build_context, dockerfile_arg) for a docker build.
+
+    dockerfile_arg is the Dockerfile path relative to the context; falls back
+    to building from the Dockerfile's own parent when it lives outside the
+    requested context.
+    """
+    dockerfile = dockerfile_path.resolve()
+    context = (context_dir or dockerfile.parent).resolve()
+    try:
+        return context, str(dockerfile.relative_to(context))
+    except ValueError:
+        return dockerfile.parent, dockerfile.name
+
+
+async def build_image(
+    dockerfile_path: Path,
+    context_dir: Path,
+    tag: str,
+    *,
+    timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    client: Any | None = None,
+) -> tuple[bool, str, str]:
+    """Build a Dockerfile (build-only — no container is run).
+
+    Returns ``(ok, image_tag, error_text)``:
+      - success            -> ``(True, tag, "")``
+      - docker BuildError  -> ``(False, tag, <tail of the build log>)``  (the
+        Dockerfile is broken — the caller may repair and retry)
+      - build timeout      -> ``(False, tag, "Build exceeded ...")``
+
+    Raises ``SandboxRuntimeError`` for *infrastructure* failures (Docker SDK
+    missing, daemon unreachable, non-build API errors) — those are NOT the
+    Dockerfile's fault and must not trigger a repair.
+    """
+    docker_client = client if client is not None else _make_docker_client()
+    context, dockerfile_arg = _resolve_build_context(dockerfile_path, context_dir)
+    build_kwargs: dict[str, Any] = {
+        "path": str(context),
+        "dockerfile": dockerfile_arg,
+        "tag": tag,
+        "rm": True,
+    }
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(docker_client.images.build, **build_kwargs),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return (
+            False,
+            tag,
+            f"Build exceeded {timeout:.0f}s wall-clock — likely too-heavy dependencies; "
+            "split pip install into per-package layers or lighten the image.",
+        )
+    except Exception as exc:
+        build_exc = _as_build_error(exc)
+        if build_exc is not None:
+            return (False, tag, _extract_build_error(exc))
+        raise _map_docker_error(exc, RuntimeCauseKind.build_failed) from exc
+    return (True, tag, "")
+
+
+def _as_build_error(exc: Exception) -> Exception | None:
+    """Return exc if it is a docker BuildError, else None (BuildError means
+    the Dockerfile is at fault and is repairable)."""
+    try:
+        from docker.errors import BuildError  # type: ignore[import-untyped]
+    except Exception:
+        return None
+    return exc if isinstance(exc, BuildError) else None
+
+
+def _extract_build_error(exc: Exception) -> str:
+    """Pull a useful error string from a docker BuildError: the message plus
+    the tail (~40 lines) of the streamed build log."""
+    lines: list[str] = []
+    for entry in getattr(exc, "build_log", None) or []:
+        if isinstance(entry, dict):
+            text = entry.get("stream") or entry.get("error") or ""
+        else:
+            text = str(entry)
+        text = text.rstrip()
+        if text:
+            lines.append(text)
+    tail = lines[-40:]
+    msg = getattr(exc, "msg", None) or str(exc)
+    return msg + "\n" + "\n".join(tail) if tail else msg
+
+
 class LocalDockerBackend(RuntimeBackend):
     """RuntimeBackend implementation backed by the Docker SDK.
 
@@ -209,13 +302,7 @@ class LocalDockerBackend(RuntimeBackend):
                 )
             return config.image
 
-        dockerfile = config.dockerfile_path.resolve()
-        context = (config.build_context or dockerfile.parent).resolve()
-        try:
-            dockerfile_arg = str(dockerfile.relative_to(context))
-        except ValueError:
-            context = dockerfile.parent
-            dockerfile_arg = dockerfile.name
+        context, dockerfile_arg = _resolve_build_context(config.dockerfile_path, config.build_context)
         tag = config.image or f"reprolab/{config.project_id}:{config.run_id}"
         try:
             build_kwargs: dict[str, Any] = {
@@ -369,4 +456,9 @@ def _map_docker_error(exc: Exception, default: RuntimeCauseKind) -> SandboxRunti
     return SandboxRuntimeError(cause, text, retryable=cause != RuntimeCauseKind.build_failed)
 
 
-__all__ = ["LocalDockerBackend", "ensure_local_docker_available"]
+__all__ = [
+    "DEFAULT_BUILD_TIMEOUT_SECONDS",
+    "LocalDockerBackend",
+    "build_image",
+    "ensure_local_docker_available",
+]
