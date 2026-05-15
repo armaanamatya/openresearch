@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     rubric_target_score: float = 0.70
     rubric_max_improvement_iterations: int = 2
 
+    # Track 4 — environment build-and-repair loop. Opt-in surface: with these
+    # defaults the Dockerfile is built (and repaired on failure) at
+    # ENVIRONMENT_BUILT instead of failing ~30 min later at BASELINE_RUN. With
+    # validation disabled the run behaves exactly as it did before Track 4.
+    environment_build_validation_enabled: bool = True
+    environment_build_max_attempts: int = 3
+
     # Default sandbox mode for the dashboard's "start a run" form.
     # CLI defaults remain controlled separately by argparse flags.
     # RunPod is disabled — Docker is the supported execution sandbox — so this
