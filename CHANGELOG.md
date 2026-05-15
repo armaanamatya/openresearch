@@ -9,6 +9,23 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Dockerfile smoke-import layer — closes the build/runtime visibility gap.**
+  Track 4 validates `docker build` succeeds, but build-success isn't
+  runtime-success: packages can install cleanly and still fail on first
+  `import` (transitive deps that aren't declared in setup.py — e.g.
+  `gymnasium[mujoco]` needing `imageio`, observed live on the demo paper).
+  The `environment-detective` prompts now require the FINAL Dockerfile layer
+  to be a no-network `RUN python -c '<smoke>'` step that imports every
+  declared framework and lightly instantiates the paper's primary entity
+  exactly as the experiment will use it (`gym.make('<env_id>')`, model
+  construction, tokenizer load from local-only path). A failure in that
+  layer surfaces as a build error → **Track 4's existing repair loop fires
+  → env-detective adds the missing dep → rebuild**. Zero new orchestrator
+  code; reuses the build-and-repair loop as the engine. Catches the
+  import-time class of runtime failures at the right stage instead of dying
+  at `baseline_run` minutes later. Reflected in both
+  `ENVIRONMENT_DETECTIVE_PROMPT` (base) and `ENVIRONMENT_DETECTIVE_REPAIR_PROMPT`
+  (repair) so a repair round that touches the smoke layer keeps it intact.
 - **Sandbox execution contract — single source of truth for the agent↔runtime
   interface.** The reproduction sandbox mounts the project read-only at the
   container working dir and a separate writable volume at `$OUTPUT_DIR` — but
