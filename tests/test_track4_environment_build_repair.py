@@ -198,6 +198,39 @@ def test_build_loop_fails_to_cap_no_exception(tmp_path: Path, monkeypatch: pytes
     assert len(repair_calls) == 2
 
 
+def test_build_loop_idempotent_after_cap_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second call once the cap is spent is a pure no-op — no re-build, no
+    duplicate fail-soft signal. Regression test for run()'s resume hook
+    re-entering a fresh run that already exhausted the cap."""
+    orc = _make_orchestrator(tmp_path)
+    state = _make_state_with_dockerfile(orc)
+    tag = f"reprolab/{orc.project_id}:env-check"
+
+    build_calls: list[Any] = []
+
+    async def always_fail(*_args: Any, **_kwargs: Any) -> tuple[bool, str, str]:
+        build_calls.append(True)
+        return (False, tag, "build failed every time")
+
+    async def fake_repair(s: PipelineState, error_text: str) -> PipelineState:
+        return s
+
+    monkeypatch.setattr("backend.services.runtime.build_image", always_fail)
+    monkeypatch.setattr(orc, "_repair_environment", fake_repair)
+
+    # First call exhausts the cap.
+    state = asyncio.run(orc._run_environment_build_loop(state))
+    assert state.environment_build_attempts == 3
+    first_call_builds = len(build_calls)
+
+    # Second call (as run()'s resume hook would make) must be a pure no-op.
+    state = asyncio.run(orc._run_environment_build_loop(state))
+    assert state.environment_build_attempts == 3
+    assert len(build_calls) == first_call_builds  # build_image NOT called again
+
+
 def test_build_loop_infrastructure_error_returns_without_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1149,6 +1149,11 @@ class ReproLabOrchestrator:
             dockerfile_path = self._project_dir / "Dockerfile"
             if dockerfile_path.exists():
                 prior_dockerfile = dockerfile_path.read_text()
+        if not prior_dockerfile.strip():
+            logger.warning(
+                "environment repair has no prior Dockerfile content to show the "
+                "agent — it will regenerate from the paper/artifact context alone"
+            )
 
         prompt = ENVIRONMENT_DETECTIVE_REPAIR_PROMPT.format(
             project_id=self.project_id,
@@ -1211,6 +1216,12 @@ class ReproLabOrchestrator:
         from backend.services.runtime.interface import SandboxRuntimeError
 
         max_attempts = max(1, settings.environment_build_max_attempts)
+        if state.environment_build_attempts >= max_attempts:
+            # The attempt cap was already spent on a prior pass — e.g. a fresh
+            # run that exhausted it, after which run()'s resume hook re-enters.
+            # The loop is idempotent at a terminal state: return without
+            # re-emitting the un-buildable log + dashboard event.
+            return state
         tag = f"reprolab/{self.project_id}:env-check"
 
         while _should_rebuild(
