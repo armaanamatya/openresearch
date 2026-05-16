@@ -31,10 +31,10 @@ function formatPercent(value: number | null | undefined, digits = 1): string {
 
 function StatusPill({ status }: { status: PaperBenchRunStatus["status"] }) {
   const palette: Record<PaperBenchRunStatus["status"], string> = {
-    pending: "bg-zinc-200 text-zinc-700",
-    running: "bg-amber-100 text-amber-800",
-    succeeded: "bg-emerald-100 text-emerald-800",
-    failed: "bg-rose-100 text-rose-800",
+    pending: "bg-chip text-muted",
+    running: "bg-warn-soft text-warn-ink",
+    succeeded: "bg-accent-soft text-accent-ink",
+    failed: "bg-err-soft text-err",
   };
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${palette[status]}`}>
@@ -63,10 +63,10 @@ function BaselineRow({
       <span
         className={
           margin === null
-            ? "text-zinc-400"
+            ? "text-muted-2"
             : margin >= 0
-              ? "text-emerald-600"
-              : "text-rose-600"
+              ? "text-accent-ink"
+              : "text-err"
         }
       >
         {margin === null ? "—" : `${margin >= 0 ? "+" : ""}${formatPercent(margin)}`}

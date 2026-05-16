@@ -1,0 +1,50 @@
+/* Resizable split between the canvas (left) and node-details (right).
+ * Lives inside .workflow-stage; the parent owns the height so both
+ * panes stretch to fill it. Class names :global to match the project's
+ * side-effect-import CSS pattern. */
+.resizable-split {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+.resizable-split-pane {
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.resizable-split-divider {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.resizable-split-divider:hover,
+.resizable-split-divider:active {
+  background: var(--accent-soft);
+}
+
+/* Inside the split-pane the side-panel was sized for the old 3-column
+ * grid (fixed 360px width, sticky positioning). Strip those so the
+ * panel fills the right pane the user has dragged out. */
+.resizable-split-pane > .side-panel {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  position: static;
+  border: none;
+  border-radius: 0;
+  flex: 1;
+}
+/* And the canvas-wrap on the left should fill the pane, not carry
+ * the old 3-column calc-height that fights the parent flex. */
+.resizable-split-pane > .canvas-wrap {
+  flex: 1;
+  width: 100%;
+  height: auto;
+}

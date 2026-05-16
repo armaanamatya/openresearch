@@ -1,0 +1,244 @@
+/* Library table — dense, scannable, lab-notebook aesthetic.
+ *
+ * Visual contract (from advisor + the plan):
+ *   - Row height ~36px (not 48). Density is the point.
+ *   - JetBrains Mono on technical columns only (project, reward, score, cost),
+ *     not on Source — long titles read better in the sans face.
+ *   - Hairline row separators, no zebra striping.
+ *   - Forest accent for completed status only; other statuses neutral.
+ *   - Right-align numeric columns so digits stack.
+ */
+
+.header {
+  padding: 4px 0 16px;
+}
+.title {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 4px 0 6px;
+  color: var(--ink);
+}
+.subtitle {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin: 0;
+}
+
+.filters {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-3) 0 var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.pills {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--chip);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+}
+.pill {
+  background: transparent;
+  border: 0;
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.4;
+}
+.pill:hover {
+  color: var(--ink-2);
+}
+.pillActive {
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+
+.search {
+  flex: 1;
+  min-width: 200px;
+  max-width: 360px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: inherit;
+}
+.search::placeholder {
+  color: var(--muted-2);
+}
+.search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.sort {
+  height: 30px;
+  padding: 0 8px;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+.sort:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.error {
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  background: var(--err-soft);
+  color: var(--err);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+}
+
+.tableWrap {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.table thead tr {
+  background: var(--chip);
+  border-bottom: 1px solid var(--line);
+}
+.table th {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 8px 12px;
+}
+.thLeft {
+  text-align: left;
+}
+.thRight {
+  text-align: right;
+}
+
+.row {
+  border-bottom: 1px solid var(--line);
+  height: 36px;
+  transition: background-color 80ms ease;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.row:hover {
+  background: var(--chip);
+}
+
+.tdLeft {
+  text-align: left;
+  padding: 6px 12px;
+  color: var(--ink);
+  vertical-align: middle;
+}
+.tdRight {
+  text-align: right;
+  padding: 6px 12px;
+  color: var(--ink);
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+}
+.tdMono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.tdMuted {
+  color: var(--muted);
+}
+
+.projectLink {
+  text-decoration: none;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.projectLink:hover .projectId {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+.projectId {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+
+.source {
+  display: inline-block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.status {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  text-transform: lowercase;
+  letter-spacing: 0;
+  font-family: var(--font-mono);
+}
+.statusCompleted {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.statusRunning {
+  background: var(--info-soft);
+  color: var(--info-ink);
+  border-color: transparent;
+}
+.statusFailed {
+  background: var(--err-soft);
+  color: var(--err);
+  border-color: transparent;
+}
+.statusStopped {
+  background: var(--chip);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.emptyCell {
+  text-align: center;
+  padding: var(--sp-5) var(--sp-3);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}

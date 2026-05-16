@@ -2,6 +2,8 @@
 
 import React, { useMemo } from "react";
 
+import "./agent-timeline-rail.css";
+
 export type DashboardLiveEvent = {
   event: string;
   timestamp?: string;

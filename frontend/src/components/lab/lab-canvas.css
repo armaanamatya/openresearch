@@ -1,0 +1,38 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  height: calc(100vh - 180px);
+  background: #fafafb;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  position: relative;
+}
+.canvas-wrap-full {
+  width: 100%;
+}
+.pan-wrap {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  cursor: grab;
+  user-select: none;
+}
+.canvas-surface {
+  /* Width and height are set inline by lab-canvas.tsx from
+     layoutTopology(topology).width / .height so the surface re-flows
+     when the topology gains or loses nodes. The fixed 1200×640 that
+     used to live here is gone — the SVG, pan-wrap, and floating-agent
+     anchor clamps all read from the same layout. */
+  position: relative;
+  background-color: var(--canvas-bg);
+  background-image:
+    linear-gradient(to right, var(--canvas-grid) 0.5px, transparent 0.5px);
+  background-size: 22px 22px;
+}
+.canvas-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

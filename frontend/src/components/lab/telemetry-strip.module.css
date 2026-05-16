@@ -1,0 +1,46 @@
+/* Telemetry strip — persistent bottom bar inside the run view.
+ *
+ * Sticks to the bottom of the content area with a hairline top border.
+ * Values are JetBrains Mono (technical numbers); labels are sans, muted.
+ * Cells are evenly spaced so the eye can pick out any one of them
+ * without re-scanning the row.
+ */
+
+.strip {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 8px var(--sp-3);
+  margin-top: var(--sp-4);
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.cell {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

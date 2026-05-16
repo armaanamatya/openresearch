@@ -1294,7 +1294,10 @@ const PATH_KEYWORDS: Record<PathNodeId, string[]> = {
   div: ["diffusion", "ddim", "ddpm", "sampler"]
 };
 
-const PATH_DISPLAY_ORDER: PathNodeId[] = ["opt", "bb", "aug", "hor", "div"];
+// Display order is the insertion order of PATH_KEYWORDS — the keyword map
+// is the semantic source of truth; the display order is just its keys.
+// (ES2015+ guarantees insertion order for string keys on object literals.)
+const PATH_DISPLAY_ORDER: PathNodeId[] = Object.keys(PATH_KEYWORDS) as PathNodeId[];
 
 function bestNodeForPath(path: PathResultLike): PathNodeId | null {
   const haystack = `${path.path_id ?? ""} ${path.hypothesis ?? ""}`.toLowerCase();

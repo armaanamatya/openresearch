@@ -32,6 +32,10 @@ export async function proxy(request: NextRequest) {
   return NextResponse.redirect(url);
 }
 
+// As of Phase B Week 6 (Task 6.2) the unlock gate is scoped to the demo
+// surface only. `/lab` and `/library` are open for internal use; `/demo`
+// and `/api/demo/*` require the unlock cookie when REPROLAB_DEMO_SECRET
+// is set.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icon.svg).*)"],
+  matcher: ["/demo/:path*", "/api/demo/:path*"],
 };

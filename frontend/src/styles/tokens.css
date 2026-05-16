@@ -1,0 +1,81 @@
+/* Design tokens for the Replix frontend.
+ *
+ * Single source of truth for color, typography, spacing, radii, shadows.
+ * Imported once in app/layout.tsx and consumed everywhere via var(--*).
+ * Tailwind utilities consume the same tokens via the theme extension
+ * in tailwind.config.ts.
+ *
+ * Visual direction: "lab notebook, not SaaS dashboard"
+ *   - Light theme; dense
+ *   - Forest accent (#1d7a3c), not Stripe-green
+ *   - JetBrains Mono for technical values
+ *   - Tighter radii (8/10 over 14/16)
+ *   - Hairline grid on the canvas (not dots)
+ */
+
+:root {
+  /* === Inks / surfaces === */
+  --ink: #0e0e10;
+  --ink-2: #1f2024;
+  --muted: #6b6e74;
+  --muted-2: #9aa0a6;
+  --line: #e6e7ea;
+  --line-2: #cfd2d6;
+  --chip: #f1f1f3;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --canvas-bg: #fafafb;
+  --canvas-grid: #dcdce0;
+
+  /* === Accent (forest, not Stripe-green) === */
+  --accent: #1d7a3c;
+  --accent-soft: #e2f1e8;
+  --accent-ink: #0b5024;
+
+  /* === Info / secondary === */
+  --info-soft: #e5e9ff;
+  --info-ink: #2e3a8c;
+
+  /* === Hermes (distinctive purple — kept) === */
+  --hermes: #7c5cff;
+  --hermes-soft: #ede8ff;
+  --hermes-ink: #3f2bb3;
+
+  /* === Warning === */
+  --warn: #d97706;
+  --warn-soft: #fff3e0;
+  --warn-ink: #92480a;
+
+  /* === Error === */
+  --err: #c81e1e;
+  --err-soft: #fde8e8;
+
+  /* === Typography === */
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-base: 13.5px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+
+  /* === Spacing === */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* === Radii (tighter than before) === */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* === Shadows === */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 4px 12px -6px rgba(14, 14, 16, 0.18);
+  --shadow-3: 0 16px 36px -18px rgba(14, 14, 16, 0.5);
+}

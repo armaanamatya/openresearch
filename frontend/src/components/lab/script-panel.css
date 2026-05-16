@@ -1,0 +1,251 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.script-panel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fff, #fafafb);
+}
+.script-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.script-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pdf-card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.pdf-preview {
+  min-height: 128px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(22, 178, 92, 0.08), transparent 45%),
+    #fff;
+}
+.pdf-preview object {
+  width: 100%;
+  height: 100%;
+  min-height: 128px;
+  display: block;
+}
+.pdf-fallback {
+  height: 100%;
+  min-height: 128px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-ink);
+}
+.pdf-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+.pdf-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+.pdf-meta,
+.pdf-hash {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.pdf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Button system — base .btn / .btn-sm / .btn-dark variants. The
+ * .btn-primary variant for the workflow header lives in
+ * lab-shell.css since that's where it's consumed.
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+.btn-sm {
+  height: 30px;
+  padding: 0 11px;
+  font-size: 12.5px;
+}
+.btn-dark {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.code-root-row {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--bg);
+}
+.code-root-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.code-root-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.final-report-link {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(14, 14, 16, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 244, 245, 0.96)),
+    var(--panel);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+.final-report-link:hover {
+  border-color: rgba(14, 14, 16, 0.24);
+  box-shadow: 0 10px 28px -20px rgba(14, 14, 16, 0.45);
+  transform: translateY(-1px);
+}
+.final-report-kicker {
+  grid-column: 1 / -1;
+  color: var(--muted-2);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.final-report-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.final-report-copy {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.final-report-action {
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.benchmark-card {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #101113;
+  color: #fff;
+}
+.benchmark-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.benchmark-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.benchmark-subtitle {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10.5px;
+}
+.benchmark-score {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: #7df2a8;
+}
+.metric-compare {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 12px;
+}
+.metric-compare > div {
+  padding: 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  min-width: 0;
+}
+.metric-label {
+  display: block;
+  margin-bottom: 4px;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.metric-compare strong {
+  font-size: 13px;
+  letter-spacing: -0.02em;
+}
+.benchmark-verdict {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.74);
+  font-size: 11px;
+  font-weight: 600;
+}
+.benchmark-verdict .status-dot {
+  background: #7df2a8;
+}

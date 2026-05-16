@@ -2,16 +2,26 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Reset and base styling only. Design tokens live in src/styles/tokens.css.
+   Component styling lives in CSS modules co-located with each component
+   (see frontend/src/components/lab/*.css). The Week 3 migration
+   extracted ~1,571 lines of <style jsx global> from lab-shell.tsx into
+   those modules.
+
+   The utility classes below are shared across 3+ components in the lab
+   surface; keeping them as plain global classes avoids re-importing the
+   same module from every consumer. */
+
 html {
-  background: #ffffff;
+  background: var(--bg);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: #ffffff;
-  color: #000000;
-  font-family: "Inter", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
 }
 
 * {
@@ -27,335 +37,206 @@ button {
   font: inherit;
 }
 
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
+/* ---------------------------------------------------------------------------
+ * Page shell — shared by /lab, /library, /demo. Hoisted here because Next.js
+ * code-splits CSS per route; importing lab-shell.css from lab-shell.tsx would
+ * mean /library doesn't load these rules on direct navigation.
+ * ------------------------------------------------------------------------ */
 
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.reproLab {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
 }
 
-.animate-fade-in-up {
-  animation: fadeInUp 0.6s ease-out forwards;
-}
-
-@keyframes fadeInOverlay {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-.animate-fade-in-overlay {
-  animation: fadeInOverlay 0.4s ease-out forwards;
-}
-
-@keyframes fadeInDialog {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
-}
-
-.animate-slide-up-overlay {
-  animation: fadeInDialog 0.5s ease-out forwards;
-  transform: translate(-50%, -50%);
-}
-
-.dashboard-shell {
-  margin: 0 auto;
-  max-width: 88rem;
-  display: grid;
-  gap: 1.5rem;
-}
-
-.hero-panel,
-.panel {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(23, 23, 23, 0.72);
-  border-radius: 1.75rem;
-  padding: 1.5rem;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
-}
-
-.hero-panel {
+.layout {
   display: flex;
-  justify-content: space-between;
-  gap: 1.5rem;
-  align-items: end;
+  min-height: 100vh;
+  background: var(--bg);
 }
 
-.hero-panel h1,
-.panel h2,
-.panel-card h3,
-.agent-card h3,
-.progress-card h3,
-.hermes-check-item h3,
-.depiction-milestone h3 {
+.content {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 28px 40px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Cross-cut utilities used by 3+ components in the lab surface.
+ * ------------------------------------------------------------------------ */
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1, "zero" 1;
+  letter-spacing: 0;
+}
+
+.eyebrow {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
   margin: 0;
 }
 
-.hero-copy,
-.card-copy,
-.panel-card ul,
-.stream-item p,
-.citation-list p,
-.approval-card p,
-.hermes-check-item p,
-.depiction-milestone p {
-  color: rgba(231, 229, 228, 0.8);
-  line-height: 1.6;
-}
-
-.hero-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  min-width: 18rem;
-}
-
-.hero-stats > div {
-  display: grid;
-  gap: 0.2rem;
-}
-
-.stat-value {
-  font-size: 1.8rem;
-  font-weight: 700;
-}
-
-.stat-label,
-.muted,
-.eyebrow,
-.kicker {
-  color: rgba(214, 211, 209, 0.62);
-}
-
-.eyebrow,
-.kicker {
-  margin: 0 0 0.35rem;
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  font-size: 0.72rem;
-}
-
-.dashboard-highlights,
-.dashboard-grid,
-.agent-grid,
-.progress-grid,
-.panel-grid,
-.depiction-evidence-grid {
-  display: grid;
-  gap: 1.5rem;
-}
-
-.dashboard-highlights {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.dashboard-grid {
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-}
-
-.panel {
-  grid-column: span 4;
-}
-
-.panel-wide {
-  grid-column: span 8;
-}
-
-.panel-header,
-.card-heading,
-.stream-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: start;
-}
-
-.agent-grid,
-.progress-grid,
-.panel-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.agent-card,
-.progress-card,
-.panel-card,
-.approval-card,
-.stream-item,
-.citation-list li,
-.hermes-check-item,
-.depiction-milestone {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 1.25rem;
-  padding: 1rem;
-}
-
-.agent-meta {
-  display: grid;
-  gap: 0.75rem;
-  margin: 1rem 0 0;
-}
-
-.agent-meta dt {
-  color: rgba(214, 211, 209, 0.58);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-}
-
-.agent-meta dd {
-  margin: 0.2rem 0 0;
+.card {
+  background: var(--panel);
+  border-radius: 16px;
+  border: 1px solid var(--line);
 }
 
 .status-pill {
-  border-radius: 999px;
-  padding: 0.35rem 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.status-positive {
-  background: rgba(52, 211, 153, 0.14);
-  color: #a7f3d0;
-}
-
-.status-negative {
-  background: rgba(251, 113, 133, 0.14);
-  color: #fecdd3;
-}
-
-.status-caution {
-  background: rgba(251, 191, 36, 0.14);
-  color: #fde68a;
-}
-
-.status-neutral {
-  background: rgba(255, 255, 255, 0.08);
-  color: #e7e5e4;
-}
-
-.stream-list,
-.citation-list,
-.panel-card ul,
-.hermes-checklist {
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
-  display: grid;
-  gap: 0.9rem;
-}
-
-.tag-row {
-  margin-top: 0.8rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.citation-tag,
-.hermes-evidence {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.2rem 0.6rem;
-  font-size: 0.72rem;
-  color: rgba(214, 211, 209, 0.88);
+  font-size: 11px;
+  font-weight: 600;
 }
 
-.approval-callout {
-  margin-top: 1rem;
-  display: grid;
-  gap: 0.8rem;
-}
-
-.hermes-panel,
-.depiction-panel {
-  min-height: 100%;
-}
-
-.depiction-milestones {
-  display: grid;
-  gap: 0.75rem;
-  margin-top: 1rem;
-}
-
-.depiction-milestone {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.85rem;
-  align-items: start;
-}
-
-.depiction-dot {
-  width: 0.9rem;
-  height: 0.9rem;
+.status-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
-  margin-top: 0.35rem;
-  background: rgba(255, 255, 255, 0.25);
+  display: inline-block;
 }
 
-.depiction-dot.status-positive {
-  background: #34d399;
+.pulse-dot {
+  position: relative;
+}
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: inherit;
+  animation: rl-pulse 1.6s ease-out infinite;
+  opacity: 0.45;
 }
 
-.depiction-dot.status-caution {
-  background: #fbbf24;
+/* Activity-feed rows (RightPanel + AgentInfoPanel both render these). */
+.event {
+  display: grid;
+  grid-template-columns: 60px 8px 1fr;
+  gap: 10px;
+  padding: 10px 18px;
+  align-items: flex-start;
+  transition: background 0.12s ease;
+}
+.event:hover {
+  background: #fafafb;
+}
+.event-time {
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+.event-dot {
+  margin-top: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  display: inline-block;
+  background: var(--ink);
+}
+.event-message {
+  font-size: 11px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.empty-activity {
+  padding: 20px;
+  font-size: 12px;
+  color: var(--muted-2);
+  text-align: center;
 }
 
-.depiction-dot.status-neutral {
-  background: rgba(255, 255, 255, 0.25);
+/* Animation utilities + keyframes — referenced from multiple modules. */
+.fadeup {
+  animation: fadeup 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.wf-pop {
+  animation: wfPop 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.wf-ring {
+  animation: wfRing 1.6s ease-out infinite;
+}
+.wf-flow {
+  animation: wfFlow 0.8s linear infinite;
+}
+.rp-pane {
+  animation: rpFade 0.32s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
-.depiction-evidence-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 1rem;
-}
-
-@media (max-width: 1100px) {
-  .dashboard-highlights,
-  .panel-wide,
-  .panel,
-  .dashboard-grid {
-    grid-template-columns: 1fr;
+@keyframes rl-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
   }
-
-  .panel,
-  .panel-wide {
-    grid-column: span 1;
+  80% {
+    transform: scale(2.4);
+    opacity: 0;
   }
-
-  .agent-grid,
-  .progress-grid,
-  .panel-grid,
-  .depiction-evidence-grid {
-    grid-template-columns: 1fr;
+  100% {
+    opacity: 0;
   }
 }
-
-@media (max-width: 800px) {
-  .hero-panel {
-    flex-direction: column;
-    align-items: stretch;
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes fadeup {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
-
-  .hero-stats {
-    min-width: auto;
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes wfPop {
+  from {
+    opacity: 0;
+    transform: scale(0.6) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes wfRing {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  80%,
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+@keyframes wfFlow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+@keyframes rpFade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }

@@ -1,0 +1,65 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.node-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.node-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.node-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 11px;
+  border: 1.5px solid currentColor;
+  opacity: 0.5;
+}
+.node-copy {
+  min-width: 0;
+  flex: 1;
+}
+.node-agent {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.node-step {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.node-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.node-progress {
+  height: 3px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: auto;
+}
+.wf-bar {
+  height: 100%;
+  border-radius: 999px;
+}

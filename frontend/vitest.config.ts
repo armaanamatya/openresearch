@@ -12,6 +12,10 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    setupFiles: ["./src/test/setup.ts"]
+    setupFiles: ["./src/test/setup.ts"],
+    // Playwright specs live under frontend/e2e/ and must not be picked up
+    // by vitest — they import @playwright/test which can't load in jsdom.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    exclude: ["e2e/**", "node_modules/**", ".next/**"]
   }
 });

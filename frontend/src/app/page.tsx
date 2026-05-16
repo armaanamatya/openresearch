@@ -1,11 +1,5 @@
-import { StellarHero } from "../components/landing/stellar-hero";
-import { StellarNavigation } from "../components/landing/stellar-navigation";
+import { redirect } from "next/navigation";
 
-export default function HomePage() {
-  return (
-    <main className="min-h-screen bg-white">
-      <StellarNavigation />
-      <StellarHero />
-    </main>
-  );
+export default function HomePage(): never {
+  redirect("/lab");
 }

@@ -1,0 +1,126 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.timeline-rail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  height: calc(100vh - 180px);
+  overflow-y: auto;
+  font-size: 12.5px;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.timeline-rail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+}
+.timeline-rail-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+.timeline-list {
+  list-style: none;
+  margin: 0 0 4px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.timeline-empty {
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 4px 0;
+}
+.timeline-agent {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--chip);
+  cursor: pointer;
+}
+.timeline-agent[role="button"]:hover {
+  background: var(--line);
+}
+.timeline-agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 4px;
+}
+.timeline-agent-running .timeline-agent-dot {
+  animation: pulseDot 1.4s ease-in-out infinite;
+}
+.timeline-agent-label {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.timeline-agent-task {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.timeline-agent-time {
+  font-size: 11px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.timeline-reason,
+.timeline-context {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+.timeline-reason-head,
+.timeline-context-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.timeline-reason-agent,
+.timeline-context-route {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.timeline-reason-type,
+.timeline-context-type {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.timeline-reason-time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-reason-title,
+.timeline-context-title {
+  font-weight: 500;
+  font-size: 12.5px;
+}
+.timeline-reason-detail,
+.timeline-context-detail {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.timeline-decision {
+  font-size: 12px;
+  color: var(--ink);
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.timeline-decision:last-child {
+  border-bottom: none;
+}
