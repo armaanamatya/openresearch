@@ -1,0 +1,150 @@
+/* All class names in this module are declared :global so cross-module
+ * compound rules (e.g. lab-shell.css's @media reach) keep
+ * working with literal classNames in JSX. Module file is purely for
+ * co-location of component-owned styles, not name scoping. */
+.sidebar {
+  width: 212px;
+  flex-shrink: 0;
+  padding: 22px 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  transition: width 0.32s cubic-bezier(0.2, 0.7, 0.2, 1);
+  overflow: visible;
+}
+.sidebar.collapsed {
+  width: 64px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.sidebar.collapsed .navitem {
+  justify-content: center;
+  padding: 9px 0;
+  gap: 0;
+  overflow: visible;
+}
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .nav-aside,
+.sidebar.collapsed .brand-text,
+.sidebar.collapsed .nav-section-title,
+.sidebar.collapsed .dotted {
+  display: none;
+}
+.sidebar.collapsed .brand-row {
+  justify-content: center;
+  padding: 4px 0 12px;
+}
+.sidebar.collapsed .navitem.active {
+  background: var(--ink);
+  color: #fff;
+}
+.sidebar.collapsed .navitem.active .nav-icon {
+  color: #fff !important;
+}
+.sb-toggle {
+  position: absolute;
+  top: 24px;
+  right: -12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--line-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  z-index: 10;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 10px rgba(0, 0, 0, 0.04);
+}
+.sidebar.collapsed .sb-toggle {
+  transform: rotate(180deg);
+}
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 4px 11px 12px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.brand-row:hover .brand-text {
+  color: var(--ink);
+}
+.brand-text {
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: -0.025em;
+}
+.dotted {
+  height: 1px;
+  background-image: linear-gradient(
+    to right,
+    rgba(155, 155, 163, 0.5) 50%,
+    transparent 50%
+  );
+  background-size: 6px 1px;
+  background-repeat: repeat-x;
+  margin: 14px 0;
+}
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  font-weight: 500;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.navitem:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.navitem.active {
+  background: #fff;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.nav-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.nav-aside {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--hermes-soft);
+  color: var(--hermes);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.nav-section-title {
+  padding: 0 10px 6px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.navitem-small {
+  padding: 6px 11px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.nav-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+.sidebar-footer {
+  margin-top: auto;
+}

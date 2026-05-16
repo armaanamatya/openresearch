@@ -1,0 +1,88 @@
+/* Command palette — Cmd/Ctrl-K modal.
+ *
+ * All class names declared :global — see lab-sidebar.css note.
+ * Visual direction: matches the rest of the lab — forest accent, tighter
+ * radii (var(--r-md)), JetBrains Mono for the input. */
+.cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(14, 14, 16, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+}
+.cmdk-dialog {
+  width: 600px;
+  max-width: calc(100vw - 32px);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.cmdk-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.cmdk-input::placeholder {
+  color: var(--muted-2);
+}
+.cmdk-list {
+  max-height: 56vh;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.cmdk-empty {
+  padding: 18px 16px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.cmdk-group-heading {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 10px 16px 4px;
+}
+.cmdk-item {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.cmdk-item[data-selected="true"],
+.cmdk-item[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.cmdk-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.cmdk-item-kind {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.cmdk-item-id {
+  font-family: var(--font-mono);
+  color: var(--muted);
+  font-size: 11px;
+}

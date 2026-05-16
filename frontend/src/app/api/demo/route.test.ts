@@ -52,11 +52,19 @@ describe("/api/demo backend proxy", () => {
     );
 
     expect(response.status).toBe(202);
+    // Production streams `request.body` (ReadableStream) straight through —
+    // it does NOT call request.formData() (undici's parser throws on real
+    // browser uploads; see the route comment). Assert on the passthrough
+    // contract, not the body shape: route + multipart content-type
+    // forwarded, method POST, duplex: "half" set for streaming.
     expect(fetch).toHaveBeenCalledWith(
       "http://backend.test/runs/upload",
       expect.objectContaining({
         method: "POST",
-        body: expect.any(FormData)
+        headers: expect.objectContaining({
+          "content-type": expect.stringContaining("multipart/form-data")
+        }),
+        duplex: "half"
       })
     );
   });
@@ -76,36 +84,31 @@ describe("/api/demo backend proxy", () => {
       "http://backend.test/runs",
       expect.objectContaining({
         method: "POST",
+        headers: expect.objectContaining({ "content-type": "application/json" }),
         body: JSON.stringify({
           mode: "sdk",
           provider: "openai",
           verificationProvider: "anthropic",
           executionMode: "max",
           sandbox: "docker",
-          gpuMode: "prefer"
+          gpuMode: "prefer",
+          // Production adds the model field (defaulted to "sonnet" by the
+          // upload-view dropdown) to every run-start payload. Test must
+          // assert it — earlier baseline was drift.
+          model: "sonnet"
         })
       })
     );
   });
 
-  it("rejects multipart requests without a pdf file before proxying", async () => {
-    const { POST } = await import("./route");
-    const formData = new FormData();
-    formData.set("mode", "offline");
-
-    const response = await POST(
-      new Request("http://localhost:3000/api/demo", {
-        method: "POST",
-        body: formData
-      })
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "Upload a PDF before starting a lab run."
-    });
-    expect(fetch).not.toHaveBeenCalled();
-  });
+  // The earlier "rejects multipart requests without a pdf file before
+  // proxying" test was deleted with Task C.4.1 (frontend-polish-pass).
+  // The validation moved to the backend: the proxy now streams the body
+  // through unconditionally (calling request.formData() in the proxy
+  // throws on real-size browser uploads — see the route comment) and the
+  // backend's /runs/upload returns 400 for empty/missing PDF. That
+  // contract is verified end-to-end by the Playwright e2e spec, not by
+  // a unit test of this proxy.
 
   it("surfaces sandbox preflight failures with a setup status", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(

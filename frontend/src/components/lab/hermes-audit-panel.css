@@ -1,0 +1,82 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.hermes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hermes-row {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--chip);
+  border: 1px solid var(--line);
+}
+.hermes-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.hermes-row-stage {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.hermes-status {
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.hermes-status-grounded {
+  background: var(--info-soft);
+  color: #2e3a8c;
+}
+.hermes-status-caveat {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+.hermes-status-unsupported,
+.hermes-status-system_error {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.hermes-row-summary {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.hermes-findings {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.hermes-section-eyebrow {
+  margin-top: 4px;
+}
+.hermes-interventions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hermes-intervention {
+  font-size: 12.5px;
+}
+.hermes-intervention-action {
+  font-weight: 600;
+  margin-right: 6px;
+}
+.hermes-intervention-target {
+  color: var(--muted);
+}
+.hermes-intervention-reason {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}

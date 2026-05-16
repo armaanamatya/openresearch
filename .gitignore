@@ -48,8 +48,9 @@ Thumbs.db
 # Claude Code local state
 .claude/
 
-# Local run outputs
-runs/
+# Local run outputs (anchored to repo root — must not match nested
+# source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/)
+/runs/
 
 # Windows artifacts
 %APPDATA%/
@@ -91,3 +92,6 @@ reprolab.db-wal
 /conflicts.md
 /*.png
 /reprolab.db.corrupt-*
+
+# Playwright MCP screenshot artifacts
+.playwright-mcp/

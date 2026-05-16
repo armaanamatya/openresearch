@@ -203,6 +203,16 @@ class FileLiveRunService:
             gpu_mode,
         )
 
+    async def list_runs(
+        self,
+        *,
+        limit: int = 10,
+        status: str | None = None,
+        q: str | None = None,
+        order_by: str = "updated_at",
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._list_runs, limit, status, q, order_by)
+
     async def stop_run(self, project_id: str) -> LiveRunState | None:
         status = await asyncio.to_thread(self._read_status, project_id)
         if status is None:
@@ -403,6 +413,54 @@ class FileLiveRunService:
             return None
         _, project_id = sorted(candidates, reverse=True)[0]
         return self._load_run(project_id)
+
+    def _list_runs(
+        self,
+        limit: int,
+        status_filter: str | None,
+        q: str | None = None,
+        order_by: str = "updated_at",
+    ) -> list[dict[str, Any]]:
+        """Walk runs_root for demo_status.json files; return at most `limit`,
+        newest first by the chosen timestamp with file mtime as a tiebreaker.
+
+        `q` is a case-insensitive substring match against `sourceLabel`.
+        Rows whose `sourceLabel` is missing or empty are excluded when `q`
+        is provided — an absent label cannot contain the query.
+
+        `order_by` selects the sort key:
+          - "updated_at" (default): `updatedAt` → `startedAt` → mtime
+          - "completed_at": `completedAt` → 0 (still-running rows sort last)
+        Any other value falls back to "updated_at"."""
+        if not self.runs_root.exists():
+            return []
+        order_key = order_by if order_by in ("updated_at", "completed_at") else "updated_at"
+        needle = q.lower().strip() if isinstance(q, str) and q.strip() else None
+        entries: list[tuple[float, dict[str, Any]]] = []
+        for status_path in self.runs_root.glob("*/demo_status.json"):
+            data = _read_json(status_path)
+            if not data:
+                continue
+            if status_filter is not None and data.get("status") != status_filter:
+                continue
+            if needle is not None:
+                label = data.get("sourceLabel")
+                if not isinstance(label, str) or needle not in label.lower():
+                    continue
+            if order_key == "completed_at":
+                # Treat missing completedAt as 0 → those rows sort last
+                # (matches the "still-running goes to the bottom" intent).
+                timestamp = _parse_time(data.get("completedAt"))
+            else:
+                timestamp = _parse_time(data.get("updatedAt") or data.get("startedAt"))
+                if timestamp == 0.0:
+                    try:
+                        timestamp = status_path.stat().st_mtime
+                    except OSError:
+                        pass
+            entries.append((timestamp, data))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return [data for _, data in entries[: max(0, limit)]]
 
     def _read_status(self, project_id: str) -> dict[str, Any] | None:
         return _read_json(self.runs_root / project_id / "demo_status.json")

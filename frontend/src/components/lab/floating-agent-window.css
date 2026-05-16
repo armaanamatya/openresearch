@@ -1,0 +1,111 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+/* Floating live-agent window — drifts inside the canvas surface and
+ * anchors to the active node; draggable, resizable, scrollable. */
+.agent-window {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05),
+    0 22px 48px -20px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+  min-width: 264px;
+  min-height: 208px;
+}
+.agent-window.following {
+  transition: left 0.42s cubic-bezier(0.32, 0.72, 0, 1),
+    top 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.agent-window-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  background: var(--ink);
+  color: #fff;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+.agent-window-head:active {
+  cursor: grabbing;
+}
+.agent-window-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(22, 178, 92, 0.25);
+  animation: pulseDot 1.6s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.agent-window-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.agent-window-active {
+  margin-left: auto;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.agent-window-anchor {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.agent-window-anchor:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.agent-window-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* The wrapped timeline-rail inside the agent window: kill its
+ * standalone geometry. */
+.agent-window-body > .timeline-rail {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+}
+.agent-window-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 0 44%,
+    var(--line-2) 44% 52%,
+    transparent 52% 66%,
+    var(--line-2) 66% 74%,
+    transparent 74%
+  );
+}
