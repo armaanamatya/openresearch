@@ -48,8 +48,9 @@ Thumbs.db
 # Claude Code local state
 .claude/
 
-# Local run outputs
-runs/
+# Local run outputs (anchored to repo root — must not match nested
+# source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/)
+/runs/
 
 # Windows artifacts
 %APPDATA%/
@@ -57,6 +58,14 @@ runs/
 
 # Frontend build artifacts
 frontend/tsconfig.tsbuildinfo
+
+# Test runner output (Playwright traces, screenshots, JSON artifacts)
+test-results/
+frontend/test-results/
+frontend/playwright-report/
+
+# Stray root-level node_modules (the real one is frontend/node_modules/)
+/node_modules/
 
 # Local-only test logs and DB backups
 _test_logs/
@@ -76,9 +85,13 @@ reprolab.db-wal
 /package-lock.json
 
 # Local planning prompts, ad-hoc screenshots, and corrupt DB recovery snapshots.
+# Root-level PNGs are ad-hoc screenshots; intentional doc assets live in docs/.
 /claude_plan_*.md
 /claude_review_*.md
 /codex_prompt*.md
 /conflicts.md
-/localhost_*.png
+/*.png
 /reprolab.db.corrupt-*
+
+# Playwright MCP screenshot artifacts
+.playwright-mcp/

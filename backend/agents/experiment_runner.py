@@ -190,7 +190,10 @@ async def run_with_runtime(
         code_dir,
         baseline_result.dockerfile_path,
     )
-    commands = baseline_result.commands_to_run or ["python train.py"]
+    commands = _normalize_commands(
+        baseline_result.commands_to_run or ["python train.py"],
+        code_dir,
+    )
 
     service = runtime or RuntimeAppService(LocalDockerBackend())
     if not code_dir.exists():
@@ -562,6 +565,30 @@ def _provenance_payload(
             else {}
         ),
     }
+
+
+def _normalize_commands(commands: list[str], code_dir: Path) -> list[str]:
+    """Strip repo-root-relative prefixes so commands run correctly inside the sandbox.
+
+    The sandbox mounts ``code_dir`` at ``/work`` and executes commands with cwd
+    ``/work``.  If the LLM agent emits an absolute host path or a repo-root-relative
+    path such as ``runs/<project_id>/code/train.py``, the command will fail because
+    that path does not exist inside the container.  This function rewrites any token
+    that is a path under ``code_dir`` to its relative form.
+    """
+    import re
+
+    code_dir_str = str(code_dir.resolve())
+    # Also handle forward-slash variants produced on all platforms.
+    normalized: list[str] = []
+    for cmd in commands:
+        # Replace every occurrence of the absolute code_dir prefix.
+        cleaned = cmd.replace(code_dir_str + "/", "").replace(code_dir_str, ".")
+        # Replace relative repo-root paths like runs/<id>/code/<rest>.
+        # Pattern: runs/<word>/<word>/<path>  →  <path>
+        cleaned = re.sub(r"runs/\w+/code/", "", cleaned)
+        normalized.append(cleaned)
+    return normalized
 
 
 def _resolve_code_dir(project_dir: Path, baseline_result: BaselineResult) -> Path:

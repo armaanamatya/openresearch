@@ -56,8 +56,16 @@ from backend.agents.schemas import (
     PathResult,
     ReproductionContract,
     ResearchMap,
+    RubricAreaScore,
+    RubricVerification,
     VerificationReport,
 )
+from backend.agents.rubric_source import (
+    GeneratedRubricSource,
+    RubricSource,
+    resolve_rubric_source,
+)
+from backend.agents.report_generator import generate_final_report, write_final_report
 from backend.agents.structured_output import append_structured_output_instruction
 from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.telemetry import (
@@ -75,8 +83,62 @@ from backend.hermes_audit import (
     build_step_audit_payload,
 )
 from backend.schemas.citations import Citation
+from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp01(value: Any) -> float:
+    """Clamp an LLM-supplied number into [0, 1]; non-numeric -> 0.0."""
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _should_reiterate(
+    verification: RubricVerification | None,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    """Whether the self-improvement loop should run another round.
+
+    Returns False — terminating the loop — when there is no verification, the
+    rubric target is already met, or the iteration cap is reached. The cap
+    guarantees termination: every loop body increments ``iteration``.
+    """
+    if verification is None or verification.meets_target:
+        return False
+    return iteration < max_iterations
+
+
+def _should_rebuild(build_ok: bool, attempts: int, max_attempts: int) -> bool:
+    """Whether the environment build-repair loop should run another attempt.
+
+    Returns False — terminating the loop — once the build succeeds or the
+    attempt cap is reached. The cap guarantees termination: every loop body
+    increments ``attempts``.
+    """
+    return not build_ok and attempts < max_attempts
+
+
+def _paperbench_root() -> Path:
+    """Repo's third_party/paperbench directory (orchestrator.py -> repo root)."""
+    return Path(__file__).resolve().parents[2] / "third_party" / "paperbench"
+
+
+def _resolve_run_rubric_source(project_id: str) -> RubricSource:
+    """Pick the rubric source for a run.
+
+    A vendored-bundle run carries its paper id in the project id
+    (``paperbench_<id>``, set by ``bundle_to_workspace_claim_map``) — that gets a
+    BundleRubricSource. Everything else (uploaded papers) generates its rubric.
+    """
+    prefix = "paperbench_"
+    if project_id.startswith(prefix):
+        return resolve_rubric_source(_paperbench_root(), project_id[len(prefix):])
+    return GeneratedRubricSource()
+
 
 @dataclass
 class AgentExecutionTrace:
@@ -117,6 +179,9 @@ class PipelineState:
     paper_claim_map: PaperClaimMap | None = None
     artifact_index: dict[str, Any] | None = None
     environment_spec: EnvironmentSpec | None = None
+    environment_build_attempts: int = 0
+    environment_build_ok: bool = False
+    environment_build_error: str = ""
     reproduction_contract: ReproductionContract | None = None
     gate_1: GateDecision | None = None
     baseline_result: BaselineResult | None = None
@@ -126,6 +191,11 @@ class PipelineState:
     path_results: list[PathResult] = field(default_factory=list)
     gate_3: GateDecision | None = None
     research_map: ResearchMap | None = None
+    baseline_verification: RubricVerification | None = None
+    improved_verification: RubricVerification | None = None
+    verification_history: list[RubricVerification] = field(default_factory=list)
+    improvement_iteration: int = 0
+    rubric_spec: dict[str, Any] | None = None
     assumption_ledger: list[dict[str, Any]] = field(default_factory=list)
     decision_log: list[str] = field(default_factory=list)
     hermes_step_reports: dict[str, list[HermesAuditReport]] = field(default_factory=dict)
@@ -135,6 +205,19 @@ class PipelineState:
     attempt_id: str | None = None
     run_group_id: str | None = None
     blacklist_terms: list[str] = field(default_factory=list)
+
+    def advance_stage(self, stage: PipelineStage, runs_root: Path) -> Path:
+        """Transition to ``stage`` and persist the checkpoint atomically.
+
+        This is the *only* sanctioned way to move the pipeline forward. Bare
+        ``state.stage = X`` assignments are rejected by
+        ``tests/test_pipeline_state_persistence.py`` because they desync the
+        on-disk checkpoint from in-memory state: the Next.js bridge
+        (`server-payload.ts`) reads `pipeline_state.json` to populate
+        `payload.summary.stage`, so a missed write strands the UI counter.
+        """
+        self.stage = stage
+        return self.save_checkpoint(runs_root)
 
     def save_checkpoint(self, runs_root: Path) -> Path:
         """Persist pipeline state to disk for crash-resume."""
@@ -150,6 +233,7 @@ class PipelineState:
             "attempt_id": self.attempt_id,
             "run_group_id": self.run_group_id,
             "blacklist_terms": self.blacklist_terms,
+            "environment_build_ok": self.environment_build_ok,
         }
         if self.paper_claim_map:
             data["paper_claim_map"] = self.paper_claim_map.model_dump()
@@ -163,6 +247,22 @@ class PipelineState:
             data["experiment_artifacts"] = self.experiment_artifacts.model_dump()
         if self.research_map:
             data["research_map"] = self.research_map.model_dump()
+        if self.baseline_verification:
+            data["baseline_verification"] = self.baseline_verification.model_dump()
+        if self.improved_verification:
+            data["improved_verification"] = self.improved_verification.model_dump()
+        if self.verification_history:
+            data["verification_history"] = [
+                v.model_dump() for v in self.verification_history
+            ]
+        if self.improvement_iteration:
+            data["improvement_iteration"] = self.improvement_iteration
+        if self.environment_build_attempts:
+            data["environment_build_attempts"] = self.environment_build_attempts
+        if self.environment_build_error:
+            data["environment_build_error"] = self.environment_build_error
+        if self.rubric_spec:
+            data["rubric_spec"] = self.rubric_spec
         if self.gate_1:
             data["gate_1"] = self.gate_1.model_dump()
         if self.gate_2:
@@ -185,7 +285,12 @@ class PipelineState:
             }
         if self.hermes_interventions:
             data["hermes_interventions"] = self.hermes_interventions
-        path.write_text(json.dumps(data, indent=2))
+        # Atomic write: every stage transition persists here, and the Next.js
+        # bridge polls this file concurrently. Write-then-rename guarantees a
+        # reader never observes a truncated checkpoint.
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.replace(path)
         logger.info("Checkpoint saved: stage=%s path=%s", self.stage.value, path)
         return path
 
@@ -216,6 +321,23 @@ class PipelineState:
             state.experiment_artifacts = ExperimentArtifacts(**data["experiment_artifacts"])
         if "research_map" in data:
             state.research_map = ResearchMap(**data["research_map"])
+        if "baseline_verification" in data:
+            state.baseline_verification = RubricVerification(
+                **data["baseline_verification"]
+            )
+        if "improved_verification" in data:
+            state.improved_verification = RubricVerification(
+                **data["improved_verification"]
+            )
+        if "verification_history" in data:
+            state.verification_history = [
+                RubricVerification(**v) for v in data["verification_history"]
+            ]
+        state.improvement_iteration = data.get("improvement_iteration", 0)
+        state.environment_build_attempts = data.get("environment_build_attempts", 0)
+        state.environment_build_ok = data.get("environment_build_ok", False)
+        state.environment_build_error = data.get("environment_build_error", "")
+        state.rubric_spec = data.get("rubric_spec")
         if "gate_1" in data:
             state.gate_1 = GateDecision(**data["gate_1"])
         if "gate_2" in data:
@@ -345,6 +467,7 @@ class ReproLabOrchestrator:
         "experiment-runner": ExperimentArtifacts,
         "supervisor-verifier": VerificationReport,
         "improvement-path": PathResult,
+        "rubric-verifier": RubricVerification,
     }
 
     def _build_runtime_spec(
@@ -354,6 +477,7 @@ class ReproLabOrchestrator:
         runtime: AgentRuntime,
         cwd: str | Path | None = None,
         max_turns: int | None,
+        model_override: str | None = None,
     ) -> AgentRuntimeSpec:
         spec = AGENT_REGISTRY[agent_id]
         provider = runtime.provider_name
@@ -368,7 +492,7 @@ class ReproLabOrchestrator:
         )
         runtime_spec = spec.to_runtime_spec(
             provider,
-            model_override=self.model,
+            model_override=model_override or self.model,
             max_turns=max_turns,
             working_directory=Path(cwd or self._project_dir),
             sub_agents=sub_agents,
@@ -386,6 +510,7 @@ class ReproLabOrchestrator:
         *,
         cwd: str | Path | None = None,
         max_turns: int | None = None,
+        model_override: str | None = None,
         _runtime_override: AgentRuntime | None = None,
         _allow_claude_limit_fallback: bool = True,
         _structured_prompt: bool = False,
@@ -422,6 +547,7 @@ class ReproLabOrchestrator:
                 runtime=runtime,
                 cwd=cwd_path,
                 max_turns=attempt_max_turns,
+                model_override=model_override,
             )
 
         self._dashboard.agent_started(agent_id, task_prompt[:120])
@@ -872,21 +998,40 @@ class ReproLabOrchestrator:
         """Step 1: Paper Understanding Agent."""
         logger.info("[1/9] Running Paper Understanding Agent")
         out_file = self._project_dir / "paper_claim_map.json"
-        claim_map_file = self._project_dir / "workspace_claim_map.json"
-        if claim_map_file.exists():
-            prompt = (
-                f"Analyze the paper for project {self.project_id}.\n"
-                f"The parsed paper sections are in: {claim_map_file}\n"
-                f"Read that JSON file to understand the paper content, then extract the full PaperClaimMap.\n"
-                f"Return the JSON in your response AND write it to {out_file}"
-            )
-        else:
-            prompt = (
-                f"Analyze the paper for project {self.project_id}.\n"
-                f"The parsed paper content is in: {self._project_dir}\n"
-                f"Read any available files (workspace_claim_map.json, raw_paper.pdf) and extract the full PaperClaimMap.\n"
-                f"Return the JSON in your response AND write it to {out_file}"
-            )
+        prompt = (
+            f"Analyze the paper for project {self.project_id}.\n"
+            f"The parsed paper content is in: {self._project_dir}\n\n"
+            f"Read the parsed sections and produce a PaperClaimMap. "
+            f"Return ONLY a single JSON object matching this exact schema, with no surrounding prose:\n\n"
+            "{\n"
+            '  "core_contribution": "<one-paragraph description>",\n'
+            '  "claims": [\n'
+            '    {"method": "...", "dataset": "...", "metric": "...", "expected_result": "..."}\n'
+            "  ],\n"
+            '  "datasets": [\n'
+            '    {"name": "...", "source": "", "download_method": "", "size_estimate": "", "notes": ""}\n'
+            "  ],\n"
+            '  "metrics": [\n'
+            '    {"name": "...", "definition": "...", "target_value": null, "source_section": null}\n'
+            "  ],\n"
+            '  "model_architecture": "...",\n'
+            '  "training_recipe": {\n'
+            '    "optimizer": "", "learning_rate": "", "batch_size": "",\n'
+            '    "epochs_or_steps": "", "scheduler": "", "other_hparams": {}\n'
+            "  },\n"
+            '  "evaluation_protocol": "...",\n'
+            '  "hardware_clues": ["..."],\n'
+            '  "ambiguities": [\n'
+            '    {"assumption_id": "A001", "detail": "...", "chosen_value": null, "evidence": [], "risk": "medium"}\n'
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Every entry in `datasets`, `metrics`, and `ambiguities` MUST be an OBJECT with the fields shown — NEVER a bare string.\n"
+            "- `risk` must be one of: \"low\", \"medium\", \"high\", \"critical\".\n"
+            "- `assumption_id` follows the pattern A001, A002, ... (one per ambiguity).\n"
+            "- If a field is unknown, use an empty string \"\" (or [] for lists, {} for dicts), not null, unless the schema above shows null.\n"
+            f"- Return the JSON in your response AND write the same JSON to {out_file}.\n"
+        )
         output = await self._invoke_agent("paper-understanding", prompt)
         data = self._extract_json(output, fallback_file=str(out_file))
         state.paper_claim_map = PaperClaimMap(**data)
@@ -903,7 +1048,7 @@ class ReproLabOrchestrator:
             state.paper_claim_map.model_dump(),
             "paper-understanding",
         )
-        state.stage = PipelineStage.PAPER_UNDERSTOOD
+        state.advance_stage(PipelineStage.PAPER_UNDERSTOOD, self.runs_root)
         return state
 
     async def run_artifact_discovery(self, state: PipelineState) -> PipelineState:
@@ -927,7 +1072,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "artifact_index", state.artifact_index, "artifact-discovery"
         )
-        state.stage = PipelineStage.ARTIFACTS_DISCOVERED
+        state.advance_stage(PipelineStage.ARTIFACTS_DISCOVERED, self.runs_root)
         return state
 
     async def run_environment_detective(self, state: PipelineState) -> PipelineState:
@@ -960,7 +1105,231 @@ class ReproLabOrchestrator:
             state.environment_spec.model_dump(),
             "environment-detective",
         )
-        state.stage = PipelineStage.ENVIRONMENT_BUILT
+        state.advance_stage(PipelineStage.ENVIRONMENT_BUILT, self.runs_root)
+        state = await self._run_environment_build_loop(state)
+        return state
+
+    def _write_environment_dockerfile(self, state: PipelineState) -> Path | None:
+        """Materialise the reproduction Dockerfile from the parsed spec.
+
+        The parsed ``environment_spec.dockerfile`` is canonical and is written
+        to ``{project_dir}/Dockerfile`` — where ``run_experiment``'s
+        ``_resolve_dockerfile_path`` later looks for it. When the spec carries
+        no Dockerfile text but the agent wrote the file directly, that file is
+        used as-is. Returns ``None`` when no Dockerfile content exists at all;
+        the caller treats that as a build failure with an actionable message.
+        """
+        dockerfile_path = self._project_dir / "Dockerfile"
+        spec = state.environment_spec
+        content = spec.dockerfile.strip() if spec and spec.dockerfile else ""
+        if content:
+            dockerfile_path.write_text(content + "\n")
+            return dockerfile_path
+        if dockerfile_path.exists() and dockerfile_path.read_text().strip():
+            return dockerfile_path
+        return None
+
+    async def _repair_environment(
+        self, state: PipelineState, build_error: str
+    ) -> PipelineState:
+        """Re-invoke environment-detective in repair mode with the build error.
+
+        Produces a fresh ``environment_spec``; new assumptions are merged into
+        the ledger de-duped by ``assumption_id`` so a repair round never
+        double-counts an assumption the first pass already recorded.
+        """
+        from backend.agents.prompts.environment_detective import (
+            ENVIRONMENT_DETECTIVE_REPAIR_PROMPT,
+        )
+
+        prior_dockerfile = ""
+        if state.environment_spec and state.environment_spec.dockerfile:
+            prior_dockerfile = state.environment_spec.dockerfile
+        else:
+            dockerfile_path = self._project_dir / "Dockerfile"
+            if dockerfile_path.exists():
+                prior_dockerfile = dockerfile_path.read_text()
+        if not prior_dockerfile.strip():
+            logger.warning(
+                "environment repair has no prior Dockerfile content to show the "
+                "agent — it will regenerate from the paper/artifact context alone"
+            )
+
+        prompt = ENVIRONMENT_DETECTIVE_REPAIR_PROMPT.format(
+            project_id=self.project_id,
+            project_dir=self._project_dir,
+            prior_dockerfile=prior_dockerfile,
+            build_error=build_error,
+        )
+        output = await self._invoke_agent("environment-detective", prompt)
+        data = self._extract_json(
+            output, fallback_file=str(self._project_dir / "environment_spec.json"),
+        )
+        state.environment_spec = EnvironmentSpec(**data)
+        seen_ids = {
+            entry.get("assumption_id")
+            for entry in state.assumption_ledger
+            if isinstance(entry, dict) and entry.get("assumption_id")
+        }
+        for assumption in state.environment_spec.assumptions:
+            dumped = assumption.model_dump()
+            if dumped.get("assumption_id") in seen_ids:
+                continue
+            state.assumption_ledger.append(dumped)
+        self._audit_step(
+            state,
+            target="environment-detective",
+            structured_output=state.environment_spec.model_dump(),
+        )
+        self._enrich_workspace(
+            "environment_spec",
+            state.environment_spec.model_dump(),
+            "environment-detective",
+        )
+        return state
+
+    async def _run_environment_build_loop(self, state: PipelineState) -> PipelineState:
+        """Build the reproduction Dockerfile at ENVIRONMENT_BUILT; on failure,
+        repair it via environment-detective and retry, hard-capped.
+
+        Mirrors ``_run_improvement_reiteration_loop``: opt-in
+        (``environment_build_validation_enabled``), bounded
+        (``environment_build_max_attempts``), and fail-soft. A broken
+        Dockerfile is caught here in minutes instead of ~30 min later at
+        BASELINE_RUN. Once the attempt cap is spent without a buildable image
+        the loop leaves ``environment_build_ok`` False and returns WITHOUT
+        halting — ``run()`` then lets Gate 2 complete with an honest
+        partial-reproduction verdict. Only the docker sandbox builds images;
+        local/runpod runs are a no-op. Resume-safe: the attempt counter is
+        checkpointed, so a run that died mid-loop picks up where it left off.
+        """
+        settings = get_settings()
+        if not settings.environment_build_validation_enabled:
+            return state
+        if self.sandbox_mode is not SandboxMode.docker:
+            return state
+        if state.environment_build_ok:
+            # Already validated on a prior (resumed) pass — nothing to do.
+            return state
+
+        from backend.services.runtime import build_image
+        from backend.services.runtime.interface import SandboxRuntimeError
+
+        max_attempts = max(1, settings.environment_build_max_attempts)
+        if state.environment_build_attempts >= max_attempts:
+            # The attempt cap was already spent on a prior pass — e.g. a fresh
+            # run that exhausted it, after which run()'s resume hook re-enters.
+            # The loop is idempotent at a terminal state: return without
+            # re-emitting the un-buildable log + dashboard event.
+            return state
+        tag = f"reprolab/{self.project_id}:env-check"
+
+        while _should_rebuild(
+            state.environment_build_ok,
+            state.environment_build_attempts,
+            max_attempts,
+        ):
+            attempt = state.environment_build_attempts + 1
+            dockerfile_path = self._write_environment_dockerfile(state)
+            if dockerfile_path is None:
+                error_text = (
+                    "environment-detective produced no Dockerfile: the "
+                    "`dockerfile` field of environment_spec.json was empty and "
+                    "no Dockerfile was written to the project directory."
+                )
+            else:
+                self._dashboard.agent_started(
+                    "root-orchestrator",
+                    f"Environment build attempt {attempt}/{max_attempts}",
+                    parent_id=None,
+                )
+                try:
+                    ok, _image_tag, error_text = await build_image(
+                        dockerfile_path, self._project_dir, tag
+                    )
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except SandboxRuntimeError as exc:
+                    # Infrastructure failure (daemon down, SDK missing) — not the
+                    # Dockerfile's fault, so a repair would not help. Degrade to
+                    # un-buildable and let the run continue fail-soft.
+                    logger.warning(
+                        "environment build attempt %d hit a docker infrastructure "
+                        "error (%s) — marking the environment un-buildable",
+                        attempt,
+                        exc,
+                    )
+                    state.environment_build_attempts = attempt
+                    state.environment_build_error = str(exc)
+                    state.save_checkpoint(self.runs_root)
+                    self._dashboard.agent_failed(
+                        "root-orchestrator",
+                        f"Environment build blocked by docker infrastructure: {exc}",
+                    )
+                    return state
+                if ok:
+                    state.environment_build_attempts = attempt
+                    state.environment_build_ok = True
+                    state.environment_build_error = ""
+                    state.save_checkpoint(self.runs_root)
+                    self._dashboard.agent_completed(
+                        "root-orchestrator",
+                        f"Environment build succeeded on attempt "
+                        f"{attempt}/{max_attempts}",
+                    )
+                    logger.info(
+                        "environment build succeeded on attempt %d/%d",
+                        attempt,
+                        max_attempts,
+                    )
+                    return state
+
+            # The build failed (broken Dockerfile, or no Dockerfile content).
+            state.environment_build_attempts = attempt
+            state.environment_build_error = error_text
+            state.save_checkpoint(self.runs_root)
+            stripped = error_text.strip()
+            last_line = stripped.splitlines()[-1] if stripped else ""
+            logger.warning(
+                "environment build attempt %d/%d failed: %s",
+                attempt,
+                max_attempts,
+                last_line,
+            )
+            self._dashboard.agent_failed(
+                "root-orchestrator",
+                f"Environment build attempt {attempt}/{max_attempts} failed",
+            )
+            if attempt >= max_attempts:
+                break
+            try:
+                state = await self._repair_environment(state, error_text)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "environment repair after attempt %d failed (%s) — stopping "
+                    "the build loop",
+                    attempt,
+                    exc,
+                )
+                break
+
+        # The attempt cap is spent (or repair errored) without a buildable
+        # image. Fail-soft: the run proceeds and Gate 2 completes with an honest
+        # partial-reproduction verdict instead of halting for a human.
+        state.environment_build_ok = False
+        state.save_checkpoint(self.runs_root)
+        logger.warning(
+            "environment un-buildable after %d attempt(s) — continuing fail-soft "
+            "toward an honest partial-reproduction verdict",
+            state.environment_build_attempts,
+        )
+        self._dashboard.agent_failed(
+            "root-orchestrator",
+            f"Environment un-buildable after {state.environment_build_attempts} "
+            "attempt(s) — continuing fail-soft toward an honest verdict",
+        )
         return state
 
     async def run_reproduction_planner(self, state: PipelineState) -> PipelineState:
@@ -993,7 +1362,7 @@ class ReproLabOrchestrator:
             state.reproduction_contract.model_dump(),
             "reproduction-planner",
         )
-        state.stage = PipelineStage.PLAN_CREATED
+        state.advance_stage(PipelineStage.PLAN_CREATED, self.runs_root)
         return state
 
     async def run_gate_1(self, state: PipelineState) -> PipelineState:
@@ -1035,8 +1404,7 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_1", state.gate_1.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_1_PASSED
-        state.save_checkpoint(self.runs_root)
+        state.advance_stage(PipelineStage.GATE_1_PASSED, self.runs_root)
         return state
 
     async def run_baseline_implementation(self, state: PipelineState) -> PipelineState:
@@ -1073,7 +1441,7 @@ class ReproLabOrchestrator:
             state.baseline_result.model_dump(),
             "baseline-implementation",
         )
-        state.stage = PipelineStage.BASELINE_IMPLEMENTED
+        state.advance_stage(PipelineStage.BASELINE_IMPLEMENTED, self.runs_root)
         return state
 
     async def run_experiment(self, state: PipelineState) -> PipelineState:
@@ -1129,8 +1497,174 @@ class ReproLabOrchestrator:
             state.experiment_artifacts.model_dump(),
             "experiment-runner",
         )
-        state.stage = PipelineStage.BASELINE_RUN
+        state.advance_stage(PipelineStage.BASELINE_RUN, self.runs_root)
         return state
+
+    async def _run_rubric_verifier(
+        self,
+        state: PipelineState,
+        *,
+        checkpoint: str,
+        target_score: float | None = None,
+    ) -> RubricVerification | None:
+        """Score the reproduction against a PaperBench-style rubric.
+
+        Opt-in via ``rubric_verifier_enabled``. The canonical rubric is resolved
+        ONCE per run (a vendored bundle's rubric, or LLM-generated on the first
+        call) and persisted in ``state.rubric_spec``; every later checkpoint
+        scores against that same rubric with the same weights, so
+        ``baseline_verification`` and ``improved_verification`` are comparable.
+        Weights come from the persisted spec — the LLM supplies scores only.
+
+        Fail-closed: any error logs and returns ``None`` — the run is never
+        blocked, and the heuristic rubric in the final report stays the
+        fallback. ``overall_score`` / ``meets_target`` are recomputed by
+        ``RubricVerification.from_areas`` — never trusted from the model.
+
+        ``checkpoint`` is ``"baseline"`` (within Gate 2) or ``"improved"``
+        (within Gate 3 and each re-iteration round).
+        """
+        settings = get_settings()
+        if not settings.rubric_verifier_enabled:
+            return None
+        resolved_target = (
+            settings.rubric_target_score if target_score is None else target_score
+        )
+
+        # Resolve the canonical rubric once per run, then reuse it at every
+        # checkpoint so the verifications are mutually comparable.
+        spec = state.rubric_spec
+        spec_weights: dict[str, float] | None = None
+        if spec is None:
+            rubric_source = _resolve_run_rubric_source(self.project_id)
+            try:
+                canonical_rubric: Any = rubric_source.load_rubric()
+            except Exception as exc:  # malformed bundle etc. -> generate instead
+                logger.warning("rubric source load failed (%s); generating", exc)
+                rubric_source = GeneratedRubricSource()
+                canonical_rubric = None
+            rubric_source_kind = rubric_source.kind
+        else:
+            canonical_rubric = spec.get("areas")
+            rubric_source_kind = spec.get("source", "generated")
+            spec_weights = {
+                str(area["area"]): float(area["weight"])
+                for area in spec.get("areas", [])
+            }
+
+        context = {
+            "paper_claim_map": (
+                state.paper_claim_map.model_dump() if state.paper_claim_map else {}
+            ),
+            "baseline_result": (
+                state.baseline_result.model_dump() if state.baseline_result else {}
+            ),
+            "reproduction_contract": (
+                state.reproduction_contract.model_dump()
+                if state.reproduction_contract
+                else {}
+            ),
+            "experiment_artifacts": (
+                state.experiment_artifacts.model_dump()
+                if state.experiment_artifacts
+                else {}
+            ),
+            "path_results": [r.model_dump() for r in state.path_results],
+            "canonical_rubric": canonical_rubric,
+            "rubric_source": rubric_source_kind,
+            "target_score": resolved_target,
+        }
+        prompt = (
+            f"Score the {checkpoint} reproduction for project {self.project_id} "
+            f"against a PaperBench-style rubric.\n"
+            f"This is the {checkpoint} verification checkpoint.\n"
+            f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        )
+        try:
+            output = await self._invoke_agent(
+                "rubric-verifier",
+                prompt,
+                model_override=settings.rubric_verifier_model or None,
+            )
+            data = self._extract_json(output)
+            areas: list[RubricAreaScore] = []
+            for item in data.get("areas", []):
+                area_name = str(item.get("area", ""))
+                # Once the canonical rubric is fixed, weights come from the
+                # persisted spec — the LLM only scores, it cannot reweight.
+                weight = (
+                    spec_weights.get(area_name, 0.0)
+                    if spec_weights is not None
+                    else _clamp01(item.get("weight", 0.0))
+                )
+                areas.append(
+                    RubricAreaScore(
+                        area=area_name,
+                        weight=weight,
+                        score=_clamp01(item.get("score", 0.0)),
+                        justification=str(item.get("justification", "")),
+                        weak_points=[
+                            str(w) for w in (item.get("weak_points") or [])
+                        ],
+                    )
+                )
+            if not areas:
+                raise ValueError("rubric-verifier returned no rubric areas")
+            # Honesty backstop: the prompt instructs the verifier to cap scores
+            # when the reproduction did not execute successfully, but that is
+            # advisory. The orchestrator knows the ground truth — enforce it
+            # mechanically so a non-executing run can never score high.
+            run_succeeded = (
+                state.experiment_artifacts is not None
+                and state.experiment_artifacts.success
+            )
+            if not run_succeeded:
+                areas = [
+                    area.model_copy(update={"score": min(area.score, 0.35)})
+                    for area in areas
+                ]
+            verification = RubricVerification.from_areas(
+                areas,
+                rubric_source=rubric_source_kind,
+                target_score=resolved_target,
+                confidence=_clamp01(data.get("confidence", 0.0)),
+                verified_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "rubric-verifier (%s checkpoint) failed, falling back to the "
+                "heuristic rubric: %s",
+                checkpoint,
+                exc,
+            )
+            self._dashboard.agent_failed(
+                "rubric-verifier", f"rubric-verifier ({checkpoint}) failed: {exc}"
+            )
+            return None
+        # The first successful verification fixes the canonical rubric — its
+        # areas + weights are reused (and enforced) at every later checkpoint.
+        if state.rubric_spec is None:
+            state.rubric_spec = {
+                "source": rubric_source_kind,
+                "areas": [
+                    {"area": area.area, "weight": area.weight}
+                    for area in verification.areas
+                ],
+            }
+        state.verification_history.append(verification)
+        self._enrich_workspace(
+            f"{checkpoint}_verification",
+            verification.model_dump(),
+            "rubric-verifier",
+        )
+        logger.info(
+            "rubric-verifier (%s): overall=%.3f target=%.3f meets_target=%s",
+            checkpoint,
+            verification.overall_score,
+            verification.target_score,
+            verification.meets_target,
+        )
+        return verification
 
     async def run_gate_2(self, state: PipelineState) -> PipelineState:
         """Gate 2: Baseline Verification."""
@@ -1172,8 +1706,12 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_2", state.gate_2.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_2_PASSED
-        state.save_checkpoint(self.runs_root)
+        baseline_verification = await self._run_rubric_verifier(
+            state, checkpoint="baseline"
+        )
+        if baseline_verification is not None:
+            state.baseline_verification = baseline_verification
+        state.advance_stage(PipelineStage.GATE_2_PASSED, self.runs_root)
         return state
 
     async def run_improvements(
@@ -1182,6 +1720,7 @@ class ReproLabOrchestrator:
         *,
         user_hints: list[str] | None = None,
         n_paths: int = 3,
+        round_index: int = 0,
     ) -> PipelineState:
         """Steps 7-8: Improvement Orchestrator + Path Agents."""
         logger.info("[7/9] Running Improvement Orchestrator")
@@ -1191,11 +1730,38 @@ class ReproLabOrchestrator:
             "baseline_result": state.baseline_result.model_dump() if state.baseline_result else {},
             "assumption_ledger": state.assumption_ledger,
         }
+        objective_str = ""
+        # The latest verification drives improvement selection: the improved
+        # verification on a re-iteration round, else the baseline one.
+        latest_verification = (
+            state.improved_verification or state.baseline_verification
+        )
+        if latest_verification:
+            context["rubric_verification"] = {
+                "overall_score": latest_verification.overall_score,
+                "target_score": latest_verification.target_score,
+                "meets_target": latest_verification.meets_target,
+                "areas": [
+                    {
+                        "area": area.area,
+                        "score": area.score,
+                        "weight": area.weight,
+                        "weak_points": area.weak_points,
+                    }
+                    for area in latest_verification.areas
+                ],
+            }
+            objective_str = (
+                "\nObjective: prioritise hypotheses that lift the weakest rubric "
+                "areas (see rubric_verification.areas[].weak_points) toward "
+                f"target_score {latest_verification.target_score:.2f}."
+            )
         hints_str = ""
         if user_hints:
             hints_str = f"\nUser hints: {', '.join(user_hints)}"
         prompt = (
-            f"Select {n_paths} improvement hypotheses for project {self.project_id}.{hints_str}\n"
+            f"Select {n_paths} improvement hypotheses for project {self.project_id}."
+            f"{hints_str}{objective_str}\n"
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
         )
         output = await self._invoke_agent("improvement-orchestrator", prompt)
@@ -1204,6 +1770,11 @@ class ReproLabOrchestrator:
         state.improvement_hypotheses = [
             ImprovementHypothesis(**h) for h in hypotheses_raw
         ]
+        if round_index > 0:
+            # Re-iteration rounds namespace their path ids so workspaces and
+            # path_results never collide with an earlier round's `path_N`.
+            for hypothesis in state.improvement_hypotheses:
+                hypothesis.path_id = f"r{round_index}_{hypothesis.path_id}"
         hypotheses_payload = {"hypotheses": [hypothesis.model_dump() for hypothesis in state.improvement_hypotheses]}
         self._audit_step(
             state,
@@ -1215,7 +1786,7 @@ class ReproLabOrchestrator:
             hypotheses_payload,
             "improvement-orchestrator",
         )
-        state.stage = PipelineStage.IMPROVEMENTS_SELECTED
+        state.advance_stage(PipelineStage.IMPROVEMENTS_SELECTED, self.runs_root)
 
         # Run path agents with bounded concurrency. Results are applied to
         # state in hypothesis order after all invocations finish so checkpoints,
@@ -1286,7 +1857,7 @@ class ReproLabOrchestrator:
                 target=f"improvement-path:{hypothesis.path_id}",
                 structured_output=path_result.model_dump(),
             )
-        state.stage = PipelineStage.IMPROVEMENTS_RUN
+        state.advance_stage(PipelineStage.IMPROVEMENTS_RUN, self.runs_root)
         self._enrich_workspace(
             "path_results",
             {"results": [r.model_dump() for r in state.path_results]},
@@ -1396,8 +1967,92 @@ class ReproLabOrchestrator:
         self._enrich_workspace(
             "gate_3", state.gate_3.model_dump(), "supervisor-verifier"
         )
-        state.stage = PipelineStage.GATE_3_PASSED
-        state.save_checkpoint(self.runs_root)
+        improved_verification = await self._run_rubric_verifier(
+            state, checkpoint="improved"
+        )
+        if improved_verification is not None:
+            state.improved_verification = improved_verification
+        state.advance_stage(PipelineStage.GATE_3_PASSED, self.runs_root)
+        return state
+
+    async def _run_improvement_reiteration_loop(
+        self,
+        state: PipelineState,
+        *,
+        user_hints: list[str] | None,
+        n_improvement_paths: int,
+    ) -> PipelineState:
+        """Loop improvement-selection + Gate 3 until the rubric target is met.
+
+        Hard-capped by ``rubric_max_improvement_iterations`` and fail-closed: a
+        disabled verifier, a missing or already-passing verification, an
+        exhausted run budget, or any re-iteration error all simply stop the loop
+        and let the run finish with the best verification so far. The
+        ``PipelineStage`` enum is unchanged — each round reuses the existing
+        improvements_selected / improvements_run / gate_3_passed stages.
+        ``improvement_iteration`` counts completed re-iteration rounds and is
+        checkpointed after each one.
+        """
+        settings = get_settings()
+        if not settings.rubric_verifier_enabled:
+            return state
+        max_iterations = max(0, settings.rubric_max_improvement_iterations)
+        while _should_reiterate(
+            state.improved_verification,
+            state.improvement_iteration,
+            max_iterations,
+        ):
+            verification = state.improved_verification
+            assert verification is not None  # guaranteed by _should_reiterate
+            next_iteration = state.improvement_iteration + 1
+            logger.info(
+                "[re-iteration %d/%d] verifier %.3f < target %.3f — looping back "
+                "through improvement selection",
+                next_iteration,
+                max_iterations,
+                verification.overall_score,
+                verification.target_score,
+            )
+            self._dashboard.agent_started(
+                "root-orchestrator",
+                (
+                    f"Improvement re-iteration {next_iteration}/{max_iterations} "
+                    f"(verifier {verification.overall_score:.2f} -> "
+                    f"target {verification.target_score:.2f})"
+                ),
+                parent_id=None,
+            )
+            history_len = len(state.verification_history)
+            try:
+                state = await self.run_improvements(
+                    state,
+                    user_hints=user_hints,
+                    n_paths=n_improvement_paths,
+                    round_index=next_iteration,
+                )
+                state = await self.run_gate_3(state)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "re-iteration %d failed (%s) — stopping the loop, keeping the "
+                    "last good verification",
+                    next_iteration,
+                    exc,
+                )
+                break
+            if len(state.verification_history) == history_len:
+                # The verifier produced no fresh result this round (it failed and
+                # fell back to None). Don't burn the remaining capped rounds
+                # running expensive improvement passes against a dead verifier.
+                logger.warning(
+                    "re-iteration %d: rubric-verifier produced no new result — "
+                    "stopping the loop",
+                    next_iteration,
+                )
+                break
+            state.improvement_iteration = next_iteration
+            state.save_checkpoint(self.runs_root)
         return state
 
     async def generate_research_map(self, state: PipelineState) -> PipelineState:
@@ -1450,7 +2105,7 @@ class ReproLabOrchestrator:
             {"entries": state.decision_log},
             "orchestrator",
         )
-        state.stage = PipelineStage.RESEARCH_MAP_GENERATED
+        state.advance_stage(PipelineStage.RESEARCH_MAP_GENERATED, self.runs_root)
         # Write final artifacts
         (self._project_dir / "research_map.json").write_text(
             state.research_map.model_dump_json(indent=2)
@@ -1461,8 +2116,37 @@ class ReproLabOrchestrator:
         (self._project_dir / "decision_log.json").write_text(
             json.dumps(state.decision_log, indent=2)
         )
-        state.stage = PipelineStage.COMPLETE
-        state.save_checkpoint(self.runs_root)
+        # Synthesize the deterministic final report — computed PaperBench-style
+        # rubric, statistical rigor, and paper-vs-baseline-vs-improved deltas.
+        # This is the single source of truth the UI bridge and PaperBench
+        # surface both consume; failures here must not abort a finished run.
+        try:
+            final_report = generate_final_report(
+                self.project_id,
+                state.paper_claim_map,
+                state.experiment_artifacts,
+                state.improvement_hypotheses,
+                state.path_results,
+                state.research_map,
+                environment_spec=state.environment_spec,
+                baseline_result=state.baseline_result,
+                gate_1=state.gate_1,
+                gate_2=state.gate_2,
+                gate_3=state.gate_3,
+                project_dir=self._project_dir,
+                baseline_verification=state.baseline_verification,
+                improved_verification=state.improved_verification,
+                improvement_iterations=state.improvement_iteration,
+            )
+            write_final_report(final_report, self._project_dir)
+            self._enrich_workspace(
+                "final_report",
+                final_report.model_dump(),
+                "final-report-generator",
+            )
+        except Exception:
+            logger.warning("Final report generation failed", exc_info=True)
+        state.advance_stage(PipelineStage.COMPLETE, self.runs_root)
         return state
 
     async def run(
@@ -1514,6 +2198,18 @@ class ReproLabOrchestrator:
             (PipelineStage.GATE_2_PASSED, self.run_gate_2),
         ]
 
+        # Resume-safe re-entry into the Track 4 environment build-repair loop:
+        # a run that died inside the loop has stage ENVIRONMENT_BUILT with the
+        # build not yet ok. Resume it here — the pipeline `for` below skips
+        # run_environment_detective once that stage has been reached, so the
+        # loop would otherwise never get a second chance. Idempotent: it returns
+        # immediately when the build already succeeded or validation is off.
+        if (
+            state.stage is PipelineStage.ENVIRONMENT_BUILT
+            and not state.environment_build_ok
+        ):
+            state = await self._run_environment_build_loop(state)
+
         current_idx = stages_order.index(state.stage)
 
         for target_stage, step_fn in pipeline:
@@ -1554,8 +2250,21 @@ class ReproLabOrchestrator:
                 print(f"  X Gate 1 FAILED: {state.gate_1.status.value}", file=sys.stderr, flush=True)
                 return state
             if state.gate_2 and not state.gate_2.passed:
-                print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
-                return state
+                if state.environment_build_attempts > 0 and not state.environment_build_ok:
+                    # Track 4 fail-soft: the environment build-repair loop spent
+                    # its attempt cap without a buildable image. Don't dead-end
+                    # on the Gate 2 failure — let the run complete with an honest
+                    # partial-reproduction verdict instead of halting for a human.
+                    print(
+                        f"  ! Gate 2 failed on an un-buildable environment "
+                        f"({state.environment_build_attempts} build attempt(s)) "
+                        f"-- continuing fail-soft toward an honest verdict",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
+                    return state
 
         # Improvement phase
         if current_idx < stages_order.index(PipelineStage.IMPROVEMENTS_RUN):
@@ -1567,6 +2276,16 @@ class ReproLabOrchestrator:
         if current_idx < stages_order.index(PipelineStage.GATE_3_PASSED):
             state = await self.run_gate_3(state)
             current_idx = stages_order.index(state.stage)
+
+        # Track 3 — capped self-improvement re-iteration loop. Reuses the
+        # improvements_selected / improvements_run / gate_3_passed stages, so
+        # the PipelineStage enum is unchanged.
+        state = await self._run_improvement_reiteration_loop(
+            state,
+            user_hints=user_hints,
+            n_improvement_paths=n_improvement_paths,
+        )
+        current_idx = stages_order.index(state.stage)
 
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)

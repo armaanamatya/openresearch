@@ -74,9 +74,49 @@ class Settings(BaseSettings):
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 
+    # Paper extraction mode. "hybrid" uses vision (Claude) to enrich scanned
+    # pages and figure descriptions; falls back to text-only when no API key
+    # is set, so the default is safe. "text" forces the text-only path.
+    paper_extraction_mode: Literal["text", "hybrid"] = "hybrid"
+    paper_extraction_vision_model: str = "claude-sonnet-4-6"
+
+    # Track 3 — rubric verifier + self-improvement loop. Opt-in surface: with
+    # these defaults the verifier runs for new runs and degrades cleanly on
+    # error; existing runs under existing configs are otherwise unaffected.
+    rubric_verifier_enabled: bool = True
+    rubric_verifier_model: str = ""  # empty -> inherit the run's model
+    # Heuristic target on the verifier's own 0-1 rubric scale — NOT calibrated
+    # against PaperBench's judge (a different scale). Per-version calibration is
+    # future work.
+    rubric_target_score: float = 0.70
+    rubric_max_improvement_iterations: int = 2
+
+    # Track 4 — environment build-and-repair loop. Opt-in surface: with these
+    # defaults the Dockerfile is built (and repaired on failure) at
+    # ENVIRONMENT_BUILT instead of failing ~30 min later at BASELINE_RUN. With
+    # validation disabled the run behaves exactly as it did before Track 4.
+    environment_build_validation_enabled: bool = True
+    environment_build_max_attempts: int = 3
+
     # Default sandbox mode for the dashboard's "start a run" form.
     # CLI defaults remain controlled separately by argparse flags.
-    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
+    # RunPod is disabled — Docker is the supported execution sandbox — so this
+    # defaults to "docker" rather than "runpod".
+    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "docker"
+
+    # Every run is forced onto this sandbox mode regardless of what the client
+    # requested — this is the single point that *guarantees* docker-only
+    # execution: the UI and the request model still carry legacy "runpod"
+    # defaults, and apply_sandbox_override rewrites them here. Defaults to
+    # "docker" because RunPod is disabled; a Docker-less deployment (e.g.
+    # Railway) sets REPROLAB_FORCE_SANDBOX=local to override. Empty disables
+    # the override entirely.
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = "docker"
+
+    # Shared secret gating the run-start endpoints on public deployments.
+    # Empty = gate disabled (local dev). When set, POST /runs and
+    # POST /runs/upload require a matching X-Demo-Secret header.
+    demo_secret: str = ""
 
     runpod_api_key: str = Field(
         default="",

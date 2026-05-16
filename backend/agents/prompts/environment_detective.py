@@ -47,6 +47,17 @@ For EACH inferred version, create an assumption:
 - When pinning `git+https://...@<ref>`, prefer tags or branch names over SHAs unless you have verified the SHA from `git ls-remote` output.
 - If a dependency is ambiguous, pin to a recent release tag rather than fabricating a specific commit.
 
+## DOCKERFILE HARDENING RULES
+- Use a slim official base image (`python:3.X-slim`). Add ONE curated `apt-get` layer covering common ML system libraries: `build-essential git curl ca-certificates pkg-config libgl1 libglib2.0-0 ffmpeg`. Add domain-specific system libs on top only when the paper explicitly requires them.
+- `RUN apt-get update` and `apt-get install` must be in the same layer; end the layer with `&& rm -rf /var/lib/apt/lists/*`.
+- Install Python packages in small `RUN pip install` layers — ideally one package (or a tightly related group) per layer — so a single bad pin fails in isolation, is cheap to diagnose, and the Docker layer cache survives edits to unrelated packages.
+- The Dockerfile must NOT `COPY` the paper, source code, or datasets into the image. Reproduction code is volume-mounted at runtime. The Dockerfile is the *environment* only: base image, system packages, Python packages, `WORKDIR`.
+- **FINAL LAYER: a no-network smoke import.** Make the LAST `RUN` step a `python -c '<smoke>'` that proves the environment imports cleanly *exactly as the experiment will use it*:
+  - Import every framework declared in `pip_packages`.
+  - Lightly instantiate the paper's primary entity with no network calls: RL papers — `import gymnasium as gym; gym.make('<env_id>')` for every env_id the experiment will use; vision papers — construct one model class with default args (e.g. `torchvision.models.resnet50()`); NLP papers — load one tokenizer/config from a path the image already has (no remote downloads).
+  - The smoke must exit 0 or the build fails. A failure here is caught by the build-and-repair loop and fixed automatically — this is the right place to surface transitive imports that pip-install succeeds for but fail at first module-load (real example: `gymnasium[mujoco]` requires `imageio` at first `gym.make`, but doesn't declare it in setup.py).
+  - Keep it cheap: do NOT step the env, do NOT load training data, do NOT call any URL. Imports + one minimal construction call per entity.
+
 Write:
 - Dockerfile to `{runs_root}/{project_id}/Dockerfile`
 - Environment spec to `{runs_root}/{project_id}/environment_spec.json`
@@ -64,4 +75,57 @@ Return JSON:
   "compatibility_notes": "..."
 }
 ```
+"""
+
+ENVIRONMENT_DETECTIVE_REPAIR_PROMPT = """\
+You are the Environment Detective Agent for ReproLab operating in REPAIR MODE.
+
+## Situation
+The Dockerfile generated in a prior attempt FAILED `docker build` for project `{project_id}`.
+
+**Prior Dockerfile:**
+```dockerfile
+{prior_dockerfile}
+```
+
+**Build error:**
+```
+{build_error}
+```
+
+## Your Task
+Diagnose the failure and produce a corrected Dockerfile + environment_spec.
+
+**Common fixes — apply whichever the error points to:**
+- Missing system library: add the required package to the `apt-get install` layer (keep it in the same layer as `apt-get update`; end with `&& rm -rf /var/lib/apt/lists/*`).
+- Non-existent or conflicting pip version pin: correct to a real released version, or relax the pin to a compatible range. Never invent a version.
+- Brittle multi-package `pip install`: split into per-package `RUN pip install` layers to isolate the offender.
+- Base-image / Python-version mismatch: switch to a compatible `python:3.X-slim` tag.
+
+**Re-apply all hardening and anti-hallucination rules from the base system prompt:**
+- Slim base image (`python:3.X-slim`); one curated apt layer; per-package pip layers.
+- Do NOT `COPY` source code, paper, or datasets — environment only.
+- Do NOT fabricate versions, SHAs, or repository URLs.
+- KEEP the no-network smoke import as the FINAL `RUN` layer (or add it if missing). If the build error you were given came from that smoke layer, the right fix is to add the missing dependency the smoke surfaced — that is the smoke layer doing its job.
+
+## Output
+Write the corrected files to `{project_dir}/`:
+- `{project_dir}/Dockerfile`
+- `{project_dir}/environment_spec.json`
+
+Return the same JSON schema as the base prompt. The `dockerfile` field MUST contain the full corrected Dockerfile text:
+```json
+{{
+  "dockerfile": "FROM python:3.11-slim\\n...",
+  "python_version": "3.11",
+  "framework": "...",
+  "framework_version": "...",
+  "system_packages": [],
+  "pip_packages": {{}},
+  "assumptions": [],
+  "compatibility_notes": "Brief note on what was fixed and why."
+}}
+```
+
+Make a real, minimal correction that targets the specific error — do not return the prior Dockerfile unchanged.
 """

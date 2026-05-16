@@ -1,0 +1,35 @@
+/* All class names declared :global — see lab-sidebar.css note. */
+.gate-chip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  pointer-events: auto;
+  white-space: nowrap;
+  cursor: default;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.gate-chip-running {
+  color: var(--accent-ink);
+  border-color: var(--accent-soft);
+}
+.gate-chip-passed {
+  color: #2c7a4a;
+  border-color: #b9e0c8;
+  background: #f0faf4;
+}
+.gate-chip-caveat {
+  color: var(--warn-ink);
+  border-color: var(--warn-soft);
+  background: var(--warn-soft);
+}
+.gate-chip-failed {
+  color: var(--err);
+  border-color: var(--err-soft);
+  background: var(--err-soft);
+}

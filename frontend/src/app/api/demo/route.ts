@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
 
+import { gateSecret } from "@/lib/auth/demo-gate";
 import type {
   DemoExecutionMode,
   DemoGpuMode,
+  DemoModelChoice,
   DemoProvider,
+  LiveDemoRunState,
   DemoRunMode,
   DemoSandboxMode
 } from "@/lib/demo/demo-run-types";
+import { backendBaseUrl, BACKEND_GET_TIMEOUT_MS, enrichOrTimeout } from "@/lib/demo/server-run";
 
 export const runtime = "nodejs";
 
-function backendBaseUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+// Hard cap on an uploaded PDF — mirrors the "max 50 MB" the lab UI
+// advertises. Checked from the Content-Length header so an oversized
+// upload is rejected before any body is streamed.
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+function demoSecretHeaders(): Record<string, string> {
+  const secret = gateSecret();
+  return secret ? { "x-demo-secret": secret } : {};
 }
 function search(request: Request): URLSearchParams {
   return new URL(request.url).searchParams;
@@ -55,6 +65,11 @@ function toGpuMode(request: Request): DemoGpuMode | undefined {
     : undefined;
 }
 
+function toModelChoice(request: Request): DemoModelChoice | undefined {
+  const value = search(request).get("model");
+  return value === "sonnet" || value === "opus" ? value : undefined;
+}
+
 function backendQuery(request: Request): URLSearchParams {
   const params = new URLSearchParams();
   const mode = toRunMode(request);
@@ -82,11 +97,6 @@ async function jsonFromBackend(response: Response): Promise<NextResponse> {
   });
 }
 
-// Backend GET timeout for the lab page's status polling. Single-worker
-// uvicorn (--reload) blocks on long SSE streams, so we cap how long the
-// browser waits and let the client retry with backoff.
-const BACKEND_GET_TIMEOUT_MS = 4000;
-
 export async function GET(request: Request) {
   const projectId = toProjectId(request);
   const params = backendQuery(request);
@@ -96,9 +106,16 @@ export async function GET(request: Request) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), BACKEND_GET_TIMEOUT_MS);
   try {
-    return jsonFromBackend(
-      await fetch(endpoint, { cache: "no-store", signal: controller.signal })
-    );
+    const response = await fetch(endpoint, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) {
+      return jsonFromBackend(response);
+    }
+    const state = (await response.json()) as LiveDemoRunState | null;
+    if (!state || !state.projectId) {
+      return NextResponse.json(state, { status: response.status });
+    }
+    const enriched = await enrichOrTimeout(state);
+    return NextResponse.json(enriched, { status: response.status });
   } catch (error) {
     const aborted =
       error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
@@ -118,41 +135,46 @@ export async function POST(request: Request) {
   try {
     const contentType = request.headers.get("content-type") ?? "";
     if (contentType.includes("multipart/form-data")) {
-      const formData = await request.formData();
-      const paper = formData.get("paper");
-      if (!(paper instanceof File) || paper.size === 0) {
+      // Stream the multipart body straight through to the backend. We do
+      // NOT call request.formData() here: undici's multipart parser
+      // (Node 21) throws "Failed to parse body as FormData" on real-size
+      // browser uploads, and it throws *fast* — responding before the
+      // browser has finished sending the body, which leaves the HTTP
+      // connection half-written and poisons it (Chrome then reports
+      // ERR_ALPN_NEGOTIATION_FAILED on reuse). A proxy has no business
+      // parsing a body it only forwards: stream request.body through, so
+      // the body is fully drained before we respond. The backend's
+      // /runs/upload validates the PDF (missing / non-.pdf / empty ->
+      // 400) and that response passes straight back via jsonFromBackend.
+      const declaredBytes = Number(request.headers.get("content-length") ?? 0);
+      if (declaredBytes > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
-          { error: "Upload a PDF before starting a lab run." },
-          { status: 400 }
-        );
-      }
-      const looksLikePdf =
-        paper.type === "application/pdf" || paper.name.toLowerCase().endsWith(".pdf");
-      if (!looksLikePdf) {
-        return NextResponse.json(
-          { error: "Only PDF uploads are supported in the lab right now." },
-          { status: 400 }
+          { error: "PDF is too large — the lab accepts uploads up to 50 MB." },
+          { status: 413 }
         );
       }
       return jsonFromBackend(
         await fetch(`${backendBaseUrl()}/runs/upload`, {
           method: "POST",
-          body: formData
-        })
+          headers: { "content-type": contentType, ...demoSecretHeaders() },
+          body: request.body,
+          duplex: "half"
+        } as RequestInit & { duplex: "half" })
       );
     }
 
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...demoSecretHeaders() },
         body: JSON.stringify({
           mode: toRunMode(request) ?? "offline",
           provider: toProvider(request) ?? "anthropic",
           verificationProvider: toVerificationProvider(request),
           executionMode: toExecutionMode(request) ?? "efficient",
           sandbox: toSandboxMode(request) ?? "runpod",
-          gpuMode: toGpuMode(request) ?? "auto"
+          gpuMode: toGpuMode(request) ?? "auto",
+          model: toModelChoice(request) ?? "sonnet"
         })
       })
     );

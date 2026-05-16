@@ -59,6 +59,7 @@ from backend.services.ingestion.parser import (
     ParserAppService,
     StartParsing,
 )
+from backend.services.ingestion.parser.extractor import extractor_from_settings
 from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
 
 # Force-import event modules so all @register_event decorators run.
@@ -143,7 +144,10 @@ def _make_services(
         },
     )
     parser = ParserAppService(
-        store=store, parser=PyMuPdfParser(), runs_root=runs_root
+        store=store,
+        parser=PyMuPdfParser(),
+        runs_root=runs_root,
+        extractor=extractor_from_settings(get_settings()),
     )
     discovery = ArtifactDiscoveryAppService(
         store=store,

@@ -31,7 +31,9 @@ from backend.services.runtime.interface import (
     SandboxRuntimeError,
 )
 from backend.services.runtime.local_docker import (
+    DEFAULT_BUILD_TIMEOUT_SECONDS,
     LocalDockerBackend,
+    build_image,
     ensure_local_docker_available,
 )
 from backend.services.runtime.local_process import LocalProcessBackend
@@ -48,6 +50,7 @@ __all__ = [
     "CommandFailed",
     "CommandLogEntry",
     "CreateSandbox",
+    "DEFAULT_BUILD_TIMEOUT_SECONDS",
     "DestroySandbox",
     "ExecResult",
     "ExecuteCommand",
@@ -68,6 +71,7 @@ __all__ = [
     "SandboxRuntimeError",
     "SandboxState",
     "append_command_log",
+    "build_image",
     "ensure_local_docker_available",
     "ensure_runpod_available",
     "initialize_run_artifacts",

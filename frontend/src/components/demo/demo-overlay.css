@@ -1,0 +1,89 @@
+/* Step-through tour overlay shown on /demo only. The card is absolutely
+ * positioned at canvas-derived (x, y) coords — see demo-overlay.tsx for
+ * the positioning logic. All class names declared :global to match the
+ * project's side-effect-import CSS pattern. */
+.demo-overlay-card {
+  position: fixed;
+  width: 268px;
+  z-index: 80;
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  padding: 14px 16px 12px;
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+.demo-overlay-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.demo-overlay-close:hover {
+  background: var(--chip);
+  color: var(--ink);
+}
+.demo-overlay-step {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.demo-overlay-caption {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  margin-bottom: 12px;
+}
+.demo-overlay-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.demo-overlay-btn {
+  border-radius: var(--r-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.demo-overlay-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.demo-overlay-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+.demo-overlay-btn-secondary:hover:not(:disabled) {
+  background: var(--chip);
+  border-color: var(--line-2);
+}
+.demo-overlay-btn-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+.demo-overlay-btn-primary:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}

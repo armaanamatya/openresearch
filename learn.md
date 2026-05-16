@@ -11,6 +11,251 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-14 — A "successful" docker build can still ship a broken environment
+
+**Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4
+(env built clean attempt 1), got past the sandbox-mount contract fix (script
+wrote correctly to `$OUTPUT_DIR`), and died at the very first `gym.make`:
+`ModuleNotFoundError: No module named 'imageio'` from
+`gymnasium/envs/mujoco/mujoco_rendering.py`. The Dockerfile pinned
+`gymnasium[mujoco]` but `imageio` isn't in gymnasium's `setup.py` for the
+mujoco extra — it's imported at first env load. The build had no way to know.
+
+**Root cause.** Track 4 validates that `docker build` *exits 0*. That only
+proves "pip install didn't crash" — not "every Python module in this image
+actually imports." Lots of pip packages have *transitive runtime imports*
+(here: `imageio` for gymnasium-mujoco; in other papers, `cv2` wanting
+`libGL.so.1`, torch wanting a specific CUDA runtime, etc.) that pass at
+install time and explode at module-load time. Track 4 had no trigger for
+runtime-import failures — so they died downstream at `baseline_run`, with
+no repair feedback.
+
+**Fix.** Force the runtime-import failure into the build phase by making
+the FINAL Dockerfile layer a no-network smoke: `RUN python -c '<imports + a
+minimal instantiation of the paper's primary entity>'`. A failure there is
+a build failure — and Track 4's build-and-repair loop already knows how to
+fix build failures (add the missing dep via env-detective repair mode,
+rebuild). Zero new code; just a prompt rule.
+
+**Lesson.** A repair loop's *trigger event* is as load-bearing as its
+*repair mechanism*. Track 4 had the repair mechanism (env-detective in
+repair mode) but only fired it on `docker build`'s exit code. The
+import-time class of failures was invisible to that trigger. The
+generalization: whenever you have a recovery mechanism, audit *every*
+failure mode it should cover and make sure each has a trigger pointing at
+it — not just the one that motivated building the mechanism in the first
+place.
+
+**Guardrail.** No new tests — the smoke layer is verified by the e2e run
+(if it's missing, the prompt change is in but the agent ignored it; the
+existing prompt-format tests catch import + brace regressions). The next
+demo-paper run is the live regression check — the imageio failure should
+now appear at *build* time, get repaired automatically, and the experiment
+should reach `baseline_run` with a working environment.
+
+## 2026-05-14 — The sandbox mount contract lived in env-var names, not in any prompt
+
+**Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4's
+environment build (clean attempt 1), reached `baseline_run`, and died at the very
+first command: `mkdir: cannot create directory '/work/results': Read-only file
+system`. Gate 2 halted on `failed_reproduction`. The reproduction *code* was
+fine — the failure was that the script tried to write outputs under the project
+mount.
+
+**Root cause.** The sandbox runtime enforces a clear mount contract — project
+read-only at `/work`, writable artifact volume at `$OUTPUT_DIR` — but this
+contract existed only implicitly, in env-var names exposed to the container.
+The `baseline-implementation` and `improvement-path` prompts never stated it,
+so the agent wrote scripts assuming the CWD was writable. A load-bearing
+contract that lived only in the runtime's env-var dictionary was advisory to
+the agent, not enforced.
+
+**Fix.** Made the contract a first-class artifact. `backend/agents/prompts/_sandbox_contract.py`
+defines a single brace-free `SANDBOX_EXECUTION_CONTRACT` block — the mount
+model, the env vars, the required write patterns (every output under
+`$OUTPUT_DIR`; cache-hungry tools redirected; metrics.json path pinned). It is
+imported and spliced into every agent prompt that emits sandbox-executable code
+(`baseline-implementation`, `improvement-path`, `composition`), positioned
+right before the `# Output` section at peak attention. Identical across docker,
+local, and runpod — same env vars, same model.
+
+**Lesson.** An interface contract between code that *generates* artifacts (an
+LLM agent) and code that *executes* them (the runtime) must be stated in the
+generator's prompt, not just enforced by the executor. Same lesson as
+"a 'hard cap' in a prompt is advisory unless enforced in code" — but in the
+other direction: a runtime invariant the agent must respect is advisory
+unless stated in the prompt. Put it in one shared module, splice it where it
+matters, and the prompts cannot drift from the runtime.
+
+**Guardrail.** `tests/test_track4_environment_build_repair.py` is unaffected;
+the contract is verified by a focused import-and-format assertion in
+`backend/agents/prompts/__init__.py`'s consumers and by every existing prompt
+test that imports the three updated prompts. The next e2e run on demo_paper.pdf
+is the live regression check.
+
+## 2026-05-14 — The reproduction Dockerfile was never built until it was too late to fix
+
+**Symptom.** `environment-detective` generated the Dockerfile one-shot at the
+`ENVIRONMENT_BUILT` stage, but nothing ran `docker build` until `run_experiment`
+at `BASELINE_RUN` — five stages and tens of minutes later. A broken Dockerfile
+(missing system lib, a non-existent pin like `ale-py 0.8.1`, base-image
+mismatch) burned all that work, then dead-ended the run at Gate 2 with
+`blocked_requires_human`. No run had ever reached the Track 3 flow live.
+
+**Root cause.** The pipeline had a *judge* for the environment
+(`environment-verifier` at Gate 1) but no *builder*. The first real validation
+of the generated artifact happened far downstream from where it was produced,
+so the feedback loop that could fix it never existed — and the terminal state
+for that failure was a human-required halt, not an autonomous recovery.
+
+**Fix.** Build the Dockerfile at the stage that produces it. A build-only
+`build_image()` primitive runs `docker build` at `ENVIRONMENT_BUILT`; on failure
+the build error is fed back to `environment-detective` in a repair mode and the
+build is retried, hard-capped at `environment_build_max_attempts`. After the cap
+the run is **fail-soft** — it proceeds and completes with an honest
+partial-reproduction verdict instead of halting for a human.
+
+**Lesson.** Validate a generated artifact at the stage that generates it, not at
+the stage that first consumes it — the distance between the two is wasted time
+and a feedback loop you don't have. And an autonomous pipeline's terminal state
+for a *recoverable* failure should be an honest verdict, not a halt: a bounded
+repair loop plus fail-soft beats `blocked_requires_human`.
+
+**Guardrail.** `tests/test_track4_environment_build_repair.py` — `build_image`
+returns `(False, …)` for a broken Dockerfile but raises for an infrastructure
+failure; `_run_environment_build_loop` is bounded (capped attempts, repair
+invoked between them) and fail-soft (cap spent → `environment_build_ok` false,
+no raise).
+
+## 2026-05-14 — A "hard cap" that lived only in a prompt was advisory, not enforced
+
+**Symptom.** The rubric-verifier prompt told the model "no executable code →
+score ≤ 0.20", "code never ran → ≤ 0.35", etc., and the plan/changelog called
+these "honesty hard caps" — but nothing checked them. A model that returned 0.9
+for a run that never executed would be accepted verbatim.
+
+**Root cause.** Load-bearing invariants were expressed *only* as natural-language
+instructions to an LLM. A capable model usually follows them, but "usually" is
+not a guarantee, and the reported score is a metric users act on.
+
+**Fix.** Added a mechanical backstop in `_run_rubric_verifier`: the orchestrator
+already knows `experiment_artifacts.success`, so when the reproduction did not
+execute it clamps every area score before aggregation — independent of what the
+model returned. The prompt still states the caps (so the model cooperates).
+
+**Lesson.** A guarantee a prompt makes is only as strong as the model's
+compliance. If an invariant is load-bearing — a safety gate, a reported metric,
+a stopping criterion — enforce it in code at the boundary; let the prompt *also*
+state it, not *only* state it.
+
+**Guardrail.** `tests/test_rubric_verifier.py::test_run_rubric_verifier_caps_score_when_run_did_not_succeed`
+feeds a high model score for a failed run and asserts it is capped.
+
+## 2026-05-14 — A self-improvement loop compared scores from regenerated rubrics
+
+**Symptom.** The rubric verifier ran at Gate 2 and Gate 3, and the re-iteration
+loop stopped when `improved_verification.overall_score` met the target — but the
+baseline and improved verifications were not actually comparable.
+
+**Root cause.** Each checkpoint created a fresh `GeneratedRubricSource()` and
+passed `rubric: null`, so the verifier LLM generated *new* areas and weights
+every time. `baseline_verification` and `improved_verification` were scored
+against different rubrics; their delta — and the loop's stop criterion —
+measured rubric churn, not reproduction progress.
+
+**Fix.** Resolve the canonical rubric once per run (a vendored bundle's rubric,
+or LLM-generated on the first call), persist it in `PipelineState.rubric_spec`,
+and pass it back at every later checkpoint. Weights come from the persisted
+spec; the LLM supplies per-area scores only.
+
+**Lesson.** A metric you compare across time must be *defined* once. If the
+judge is free to redefine the rubric at each measurement, the series of scores
+is not a series — it is noise wearing a trend's clothes.
+
+**Guardrail.** `tests/test_rubric_verifier.py` asserts the first verifier call
+persists `rubric_spec` and a later call reuses its weights verbatim — a model
+that returns different weights is overridden, not trusted.
+
+---
+
+## 2026-05-14 — A `backend.agents` module eager-importing `backend.evals` was a circular import
+
+**Symptom.** Adding `from backend.agents.rubric_source import GeneratedRubricSource`
+to `backend/agents/orchestrator.py` broke *every* import of the orchestrator:
+`ImportError: cannot import name 'PipelineState' from partially initialized
+module 'backend.agents.orchestrator'`.
+
+**Root cause.** `rubric_source.py` had a module-level
+`from backend.evals.paperbench.bundle import ...`. Importing any
+`backend.evals.*` submodule runs `backend/evals/__init__.py`, which eagerly
+imports `backend.evals.runner` → which imports `backend.agents.orchestrator`.
+While `orchestrator` was *mid-import* (at the new `rubric_source` line, before
+`PipelineState` was defined), `runner` tried to import `PipelineState` from it.
+Phase A didn't hit this because nothing in the main import graph pulled in
+`rubric_source` — only the tests did, and by then `orchestrator` was complete.
+
+**Fix.** Made `rubric_source.py` import the `bundle` loader **lazily**, inside
+the two functions that actually load a bundle. The cycle is broken because by
+call time `orchestrator` is fully initialized.
+
+**Lesson.** A package `__init__.py` that eagerly imports heavy submodules turns
+*every* `from that_package.x import y` into a transitive import of the whole
+package graph. A leaf-looking module (`bundle.py` only imports stdlib) is not
+leaf if its package `__init__` is not.
+
+**Guardrail.** A `backend.agents.*` module that needs `backend.evals.*` (or any
+package whose `__init__` reaches back into `backend.agents`) imports it lazily
+inside the function that needs it — never at module scope.
+
+---
+
+## 2026-05-14 — A timed-out enrichment frame silently blanked the live graph
+
+**Symptom.** Mid-run, the workflow graph's per-path improvement nodes
+(`opt/bb/aug/hor/div`) intermittently dropped back to "upcoming" for a tick,
+then recovered on the next frame.
+
+**Root cause.** Both `/api/demo` GET (750 ms) and `/api/demo/events` SSE
+(250 ms) cap payload enrichment and, on timeout, forward the *un-enriched*
+backend run state — which carries no `payload`. `stateMapForRun` reads
+`run.payload.pathStates`; with `payload` undefined every path node fell
+through to "upcoming". The UI overwrote good state with a strictly poorer
+frame.
+
+**Fix.** `coalesceRunState` merges an incoming `run_state` frame onto the
+current one, carrying the last `payload`/`telemetry`/`log` forward when the
+new frame lacks them. Both the SSE handler and the poll fallback route
+through it; it warns in dev when it has to coalesce.
+
+**Lesson.** A frame that arrives with *less* information than the one it
+replaces must not be applied verbatim — partial frames are an expected
+steady-state condition here (enrichment timeouts), not an error.
+
+**Guardrail.** State updates fed from a stream/poll should be **monotonic in
+information**: merge-don't-replace when the transport can legitimately
+deliver a degraded frame. (`stateMapForRun` already encoded this for stage
+progress; `coalesceRunState` extends the same rule to the payload.)
+
+## 2026-05-14 — A stage-ordering test froze the pipeline at 15 stages after it became 14
+
+**Symptom.** `tests/test_issue22_orchestrator.py::test_pipeline_stages_are_ordered`
+failed on `claw_demo` (and on its parent commit): the test's `expected_order` placed
+`composition_tested` between `improvements_run` and `gate_3_passed`; the real
+`PipelineStage` enum had no such stage.
+
+**Root cause.** `composition_tested` was removed from `backend/agents/orchestrator.py`
+when the pipeline became 14 stages, but the ordering test still hard-coded the old
+15-stage list — it re-typed the enum as a literal and then drifted from it.
+
+**Fix.** Dropped `"composition_tested"` from the test's `expected_order`.
+
+**Lesson.** A test that re-types an enum as a literal sequence is a second source of
+truth; it goes stale silently the moment the enum legitimately changes.
+
+**Guardrail.** Derive the expectation from the enum (`[s.value for s in PipelineStage]`)
+and assert the *properties* that matter (no gaps, each gate after its prerequisites,
+`complete` last) instead of re-typing the sequence.
+
 ## 2026-05-10 — Pipeline SIGINT dumped a 50-line stack trace and left status="running"
 
 **Symptom.** Killing the `python -m backend.cli reproduce` subprocess (Ctrl-C

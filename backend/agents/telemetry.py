@@ -39,6 +39,7 @@ class AgentTelemetryRecorder:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record.model_dump(), sort_keys=True) + "\n")
+            handle.flush()
 
 
 def coerce_usage(raw: Any) -> dict[str, Any]:

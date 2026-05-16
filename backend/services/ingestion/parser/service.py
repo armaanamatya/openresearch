@@ -38,12 +38,14 @@ from backend.services.ingestion.parser.aggregate import (
     ParsedPaperState,
 )
 from backend.services.ingestion.parser.events import (
+    FigureExtracted,
     ParsingCompleted,
     ParsingFailed,
     ParsingStarted,
     ReferenceExtracted,
     SectionExtracted,
 )
+from backend.services.ingestion.parser.extractor import NullExtractor, PaperExtractor
 from backend.services.ingestion.parser.interface import Parser, ParseError
 
 
@@ -65,10 +67,17 @@ def _aggregate_id(project_id: str, suffix: str) -> AggregateId:
 class ParserAppService:
     """The IO orchestrator for parsing."""
 
-    def __init__(self, store: EventStore, parser: Parser, runs_root: Path = Path("runs")) -> None:
+    def __init__(
+        self,
+        store: EventStore,
+        parser: Parser,
+        runs_root: Path = Path("runs"),
+        extractor: PaperExtractor = NullExtractor(),
+    ) -> None:
         self._store = store
         self._parser = parser
         self._runs_root = runs_root
+        self._extractor = extractor
 
     # --- Public ------------------------------------------------------------
 
@@ -128,7 +137,20 @@ class ParserAppService:
             self._append(parsed, parsed_agg_id, [failure], cid)
             return False
 
-        # Step 3: emit one event per section / reference.
+        # Step 2b: augmentation pass (fail-soft by contract).
+        try:
+            result = self._extractor.extract(
+                project_id=project_id, paper_path=paper_path, base=result
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).exception(
+                "Extractor %r raised unexpectedly for project %s; continuing with base result",
+                self._extractor.name,
+                project_id,
+            )
+
+        # Step 3: emit one event per section / reference / figure.
         events: List[DomainEvent] = []
         for section in result.sections:
             events.append(
@@ -137,6 +159,10 @@ class ParserAppService:
         for reference in result.references:
             events.append(
                 ReferenceExtracted(project_id=project_id, reference=reference)
+            )
+        for figure in result.figures:
+            events.append(
+                FigureExtracted(project_id=project_id, figure=figure)
             )
         if events:
             self._append(parsed, parsed_agg_id, events, cid)

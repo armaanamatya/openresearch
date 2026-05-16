@@ -61,8 +61,8 @@ EXPECTED_AGENTS = [
 
 
 def test_registry_has_all_13_agents():
-    """PRD specifies exactly 13 agents."""
-    assert len(AGENT_REGISTRY) == 13
+    """PRD specifies exactly 14 agents (13 original + rubric-verifier from Track 3)."""
+    assert len(AGENT_REGISTRY) == 14
     for name in EXPECTED_AGENTS:
         assert name in AGENT_REGISTRY, f"Missing agent: {name}"
 
@@ -108,7 +108,7 @@ def test_improvement_orchestrator_has_agent_tool():
 def test_get_agent_definitions_returns_sdk_format():
     """get_agent_definitions() should produce claude-agent-sdk AgentDefinition objects."""
     defs = get_agent_definitions()
-    assert len(defs) == 13
+    assert len(defs) == 14
     for name, defn in defs.items():
         assert hasattr(defn, "description")
         assert hasattr(defn, "prompt")
@@ -312,7 +312,6 @@ def test_pipeline_stages_are_ordered():
         "gate_2_passed",
         "improvements_selected",
         "improvements_run",
-        "composition_tested",
         "gate_3_passed",
         "research_map_generated",
         "complete",

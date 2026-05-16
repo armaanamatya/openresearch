@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -38,15 +39,20 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
     resolved = selected_provider(provider)
     settings = get_settings(_force_reload=True)
     if resolved == "anthropic":
-        if not (
+        has_api_key = bool(
             os.getenv("ANTHROPIC_API_KEY")
             or getattr(settings, "anthropic_api_key", "")
-        ):
+        )
+        # claude-agent-sdk spawns the `claude` CLI as a subprocess and inherits
+        # its subscription login — no API key needed when the CLI is on PATH.
+        has_claude_cli = shutil.which("claude") is not None
+        if not (has_api_key or has_claude_cli):
             raise ProviderConfigurationError(
                 provider=resolved,
                 reason=(
                     "Anthropic credentials are missing; set ANTHROPIC_API_KEY "
-                    "or REPROLAB_ANTHROPIC_API_KEY"
+                    "or REPROLAB_ANTHROPIC_API_KEY, or install and log in to "
+                    "the Claude Code CLI (`claude login`)."
                 ),
             )
         return resolved

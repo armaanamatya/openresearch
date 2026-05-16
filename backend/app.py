@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hmac
+
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend import __version__
+from backend.agents.topology import PipelineTopology, default_topology
 from backend.config import get_settings
 from backend.persistence.database import Database
 from backend.services.approval import ApprovalAction, ApprovalService, ApprovalState
@@ -18,6 +21,19 @@ from backend.services.datasets import DatasetCacheService
 from backend.services.diagnostics import FailureDiagnosisService
 from backend.services.events.live_runs import FileLiveRunService, StartRunRequest
 from backend.services.research_workspace import ResearchWorkspaceService
+
+
+def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> None:
+    """Require a matching X-Demo-Secret header on the run-start endpoints.
+
+    When ``configured_secret`` is empty the gate is disabled (local dev).
+    When set, the caller must present a matching secret; a mismatch or a
+    missing secret raises 403. The comparison is constant-time.
+    """
+    if not configured_secret:
+        return
+    if not provided_secret or not hmac.compare_digest(provided_secret, configured_secret):
+        raise HTTPException(status_code=403, detail="A valid demo access secret is required.")
 
 
 def create_app(*, run_service: Any | None = None) -> FastAPI:
@@ -40,16 +56,24 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # ------------------------------------------------------------------ #
 
     @app.post("/runs", status_code=202)
-    async def start_run(request: StartRunRequest):
+    async def start_run(request: StartRunRequest, x_demo_secret: str | None = Header(default=None)):
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         return await service.start_run(request)
 
     @app.post("/runs/upload", status_code=202)
-    async def start_uploaded_run(request: Request):
+    async def start_uploaded_run(request: Request, x_demo_secret: str | None = Header(default=None)):
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         form = await request.form()
         paper = form.get("paper")
         if paper is None or not hasattr(paper, "read"):
             raise HTTPException(status_code=400, detail="Upload a PDF before starting a lab run.")
-        file_name = str(getattr(paper, "filename", "") or "paper.pdf")
+        # Normalize the reported filename to a bare basename. A client may
+        # send a path-qualified name — Windows browsers/tools can include
+        # `C:\\...\\file.pdf` or backslash separators — and downstream code
+        # (_stage_upload) treats it as a POSIX path. Strip both separators
+        # so staging is platform-agnostic regardless of the upload source.
+        raw_name = str(getattr(paper, "filename", "") or "paper.pdf")
+        file_name = raw_name.replace("\\", "/").rsplit("/", 1)[-1].strip() or "paper.pdf"
         if not file_name.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
         content = await paper.read()
@@ -62,11 +86,26 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             executionMode=_form_value(form, "executionMode", "efficient"),
             sandbox=_form_value(form, "sandbox", settings.default_sandbox),
             gpuMode=_form_value(form, "gpuMode", "auto"),
+            model=_form_value(form, "model", "sonnet"),
         )
         return await service.start_uploaded_run(
             run_request,
             file_name=file_name,
             content=content,
+        )
+
+    @app.get("/runs")
+    async def list_runs(
+        limit: int = 10,
+        status: str | None = None,
+        q: str | None = None,
+        order_by: str = "updated_at",
+    ) -> list[dict]:
+        return await service.list_runs(
+            limit=limit,
+            status=status,
+            q=q,
+            order_by=order_by,
         )
 
     @app.get("/runs/latest")
@@ -97,6 +136,38 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Run not found")
         return state
 
+    @app.get("/runs/{project_id}/source-pdf")
+    async def get_source_pdf(project_id: str):
+        getter = getattr(service, "get_source_pdf_path", None)
+        if not callable(getter):
+            raise HTTPException(status_code=404, detail="Source PDF not found")
+        path = await getter(project_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Source PDF not found")
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename="paper.pdf",
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/runs/{project_id}/final-report")
+    async def get_final_report(project_id: str):
+        getter = getattr(service, "get_final_report_path", None)
+        if not callable(getter):
+            raise HTTPException(status_code=404, detail="Final report not found")
+        path = await getter(project_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Final report not found")
+        return FileResponse(
+            path,
+            media_type="text/markdown; charset=utf-8",
+            filename="final_benchmark_report.md",
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.delete("/runs/{project_id}")
     async def stop_run(project_id: str):
         state = await service.stop_run(project_id)
@@ -115,6 +186,25 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # Pipeline topology (canonical graph metadata for the frontend)
+    # ------------------------------------------------------------------ #
+
+    @app.get("/pipeline/topology", response_model=PipelineTopology)
+    async def pipeline_topology() -> PipelineTopology:
+        return default_topology()
+
+    # ------------------------------------------------------------------ #
+    # Models (LLM choices surfaced in the upload-view dropdown)
+    # ------------------------------------------------------------------ #
+
+    @app.get("/models")
+    async def list_models() -> list[dict[str, str]]:
+        return [
+            {"id": "sonnet", "label": "Sonnet", "provider": "anthropic"},
+            {"id": "opus", "label": "Opus", "provider": "anthropic"},
+        ]
 
     # ------------------------------------------------------------------ #
     # Phase 2 workspace services (HEAD)

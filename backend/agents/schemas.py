@@ -7,7 +7,7 @@ These Pydantic models define the contract between agents.
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -297,6 +297,78 @@ class ResearchMap(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rubric Verifier (Track 3)
+# ---------------------------------------------------------------------------
+
+class RubricAreaScore(BaseModel):
+    """One area of the rubric-verifier's PaperBench-style assessment.
+
+    Distinct from ``RubricArea`` (the heuristic, artifact-derived rubric in the
+    final report): this is the LLM rubric-verifier's *judged* score for one
+    weighted area, including the weak points that feed improvement selection.
+    """
+    model_config = {"extra": "ignore"}
+    area: str
+    weight: float = Field(default=0.0, ge=0.0, le=1.0, description="Contribution to the weighted overall score")
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    justification: str = ""
+    weak_points: list[str] = Field(
+        default_factory=list,
+        description="Concrete, actionable gaps lowering this area — consumed by improvement-orchestrator",
+    )
+
+
+class RubricVerification(BaseModel):
+    """Structured output of the rubric-verifier agent for one checkpoint.
+
+    ``overall_score`` / ``meets_target`` are computed deterministically by
+    ``from_areas`` from the per-area score+weight the LLM supplies — they are
+    never taken on trust from the model.
+    """
+    model_config = {"extra": "ignore"}
+    areas: list[RubricAreaScore] = Field(default_factory=list)
+    overall_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Weight-normalized aggregate of area scores")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Verifier's self-rated confidence in the assessment")
+    rubric_source: Literal["paperbench_bundle", "generated"] = "generated"
+    target_score: float = Field(default=0.0, ge=0.0, le=1.0, description="PaperBench-equivalent target this run is graded against")
+    meets_target: bool = False
+    verified_at: str = Field(default="", description="ISO-8601 UTC timestamp of the verification")
+
+    @classmethod
+    def from_areas(
+        cls,
+        areas: list[RubricAreaScore],
+        *,
+        rubric_source: Literal["paperbench_bundle", "generated"],
+        target_score: float,
+        confidence: float = 0.0,
+        verified_at: str = "",
+    ) -> RubricVerification:
+        """Build a verification with ``overall_score`` computed, not trusted.
+
+        ``overall_score`` is the weight-normalized mean of area scores (a plain
+        mean when no weights are set); ``meets_target`` is derived from it. The
+        LLM supplies only per-area ``score`` and ``weight``.
+        """
+        total_weight = sum(area.weight for area in areas)
+        if total_weight > 0:
+            overall = sum(area.score * area.weight for area in areas) / total_weight
+        elif areas:
+            overall = sum(area.score for area in areas) / len(areas)
+        else:
+            overall = 0.0
+        return cls(
+            areas=areas,
+            overall_score=overall,
+            confidence=confidence,
+            rubric_source=rubric_source,
+            target_score=target_score,
+            meets_target=overall >= target_score,
+            verified_at=verified_at,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Final Report (#30)
 # ---------------------------------------------------------------------------
 
@@ -311,6 +383,28 @@ class MetricDelta(BaseModel):
     delta_vs_baseline: float | None = Field(default=None, description="best_improved - baseline")
     pct_change_vs_baseline: float | None = Field(default=None, description="Percent improvement over baseline")
     direction: str = Field(default="higher_is_better", description="higher_is_better or lower_is_better")
+    # Statistical rigor — populated only when the runner emits the underlying data.
+    n_eval_episodes: int | None = Field(default=None, description="Evaluation sample size (episodes)")
+    relative_error_vs_paper: float | None = Field(default=None, description="|reproduced - paper_target| / |paper_target|")
+    baseline_std: float | None = Field(default=None, description="Std-dev of the baseline metric, if emitted by the runner")
+    improved_std: float | None = Field(default=None, description="Std-dev of the best improved metric, if emitted by the runner")
+    effect_size: float | None = Field(default=None, description="Cohen's d (best improved vs baseline), if std available")
+    ci95_half_width: float | None = Field(default=None, description="Half-width of the 95% CI around the reproduced value")
+
+
+class RubricArea(BaseModel):
+    """One PaperBench-style rubric dimension, scored deterministically from artifacts.
+
+    Unlike a hardcoded score, every value here is derived from concrete pipeline
+    state — claim-map completeness, environment spec fields, execution artifacts
+    on disk, and verifier gate decisions — so a degenerate run scores low and an
+    honest run scores exactly what it earned.
+    """
+    area: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    weight: float = Field(default=0.0, ge=0.0, le=1.0, description="Contribution to the weighted overall score")
+    evidence: list[str] = Field(default_factory=list, description="Artifact files / state fields backing the score")
+    rationale: str = ""
 
 
 class PathSummary(BaseModel):
@@ -336,8 +430,50 @@ class FinalReport(BaseModel):
     reproduction_score: float = Field(default=0.0, ge=0.0, le=1.0, description="How close baseline matched paper targets (0-1)")
     reproduction_status: str = Field(default="", description="verified, partial, or failed")
 
+    # Headline paper-vs-reproduction comparison (the primary claimed metric)
+    primary_metric: str | None = Field(default=None, description="Primary claimed metric used for the headline comparison")
+    paper_primary_target: float | None = Field(default=None, description="Paper-reported target for the primary metric")
+    reproduction_primary_value: float | None = Field(default=None, description="Our reproduced value for the primary metric (best of baseline/improved)")
+    reproduction_delta_vs_paper: float | None = Field(default=None, description="reproduced - paper target (numerical)")
+    reproduction_pct_vs_paper: float | None = Field(default=None, description="Signed percentage gap of the reproduced value vs the paper target")
+
     # Metric deltas
     metric_deltas: list[MetricDelta] = Field(default_factory=list)
+
+    # Computed PaperBench-style rubric (scored from artifacts, never hardcoded)
+    rubric: list[RubricArea] = Field(default_factory=list)
+    rubric_overall_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Weighted aggregate of rubric area scores")
+
+    # Track 3 — LLM rubric-verifier assessment + self-improvement summary. All
+    # optional: a run with the verifier disabled leaves these at None/0/"" and
+    # the report is byte-identical to before Track 3.
+    rubric_verification: RubricVerification | None = Field(
+        default=None,
+        description="Authoritative rubric-verifier assessment of the improved reproduction",
+    )
+    baseline_rubric_verification: RubricVerification | None = Field(
+        default=None,
+        description="Rubric-verifier assessment of the baseline, before improvement",
+    )
+    paperbench_baseline: dict[str, Any] | None = Field(
+        default=None,
+        description="Published PaperBench score for this paper if known: {score, source, model}",
+    )
+    verification_delta: float | None = Field(
+        default=None,
+        description="improved overall_score - baseline overall_score (None when either is missing)",
+    )
+    improvement_iterations: int = Field(
+        default=0,
+        description="Completed self-improvement re-iteration rounds",
+    )
+    comparison_summary: str = Field(
+        default="",
+        description="Honest 2-line verdict comparing our rubric score to the baseline / PaperBench",
+    )
+
+    # Statistical rigor
+    statistical_notes: str = Field(default="", description="Honest summary of the statistical basis and its limitations")
 
     # Parallel improvement paths
     paths: list[PathSummary] = Field(default_factory=list)
