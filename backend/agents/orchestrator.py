@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.execution import (
     DEFAULT_SANDBOX_MODE,
@@ -1767,9 +1769,22 @@ class ReproLabOrchestrator:
         output = await self._invoke_agent("improvement-orchestrator", prompt)
         data = self._extract_json(output)
         hypotheses_raw = data.get("hypotheses", [])
-        state.improvement_hypotheses = [
-            ImprovementHypothesis(**h) for h in hypotheses_raw
-        ]
+        # Fail-soft: drop malformed hypotheses instead of crashing the run.
+        # The LLM occasionally emits invalid shapes (e.g. trailing rationale in
+        # an enum field) and we'd rather proceed with the survivors than abort
+        # after the baseline already succeeded.
+        parsed_hypotheses: list[ImprovementHypothesis] = []
+        for idx, h in enumerate(hypotheses_raw):
+            try:
+                parsed_hypotheses.append(ImprovementHypothesis(**h))
+            except (ValidationError, TypeError) as exc:
+                logger.warning(
+                    "Dropping malformed improvement hypothesis [%d] for project %s: %s",
+                    idx,
+                    self.project_id,
+                    exc,
+                )
+        state.improvement_hypotheses = parsed_hypotheses
         if round_index > 0:
             # Re-iteration rounds namespace their path ids so workspaces and
             # path_results never collide with an earlier round's `path_N`.
