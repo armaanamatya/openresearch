@@ -500,6 +500,7 @@ export function LabShell({
     dashboardEvents,
     startFixtureRun,
     startUploadedRun,
+    startArxivRun,
     clearRun,
     resetToUpload: resetRun
   } = useRun(initialRun);
@@ -545,7 +546,11 @@ export function LabShell({
           model={model}
           models={initialModels}
           onArxivChange={setArxiv}
-          onArxivSubmit={() => void startFixtureRun(model)}
+          onArxivSubmit={() =>
+            arxiv.trim().length > 0
+              ? void startArxivRun(arxiv, model)
+              : void startFixtureRun(model)
+          }
           onFileSelected={(file) => void startUploadedRun(file, model)}
           onModelChange={(value) => {
             setModel(value);

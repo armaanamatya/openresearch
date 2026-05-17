@@ -106,6 +106,7 @@ export interface UseRunResult {
   dashboardEvents: DashboardLiveEvent[];
   startFixtureRun: (model: DemoModelChoice) => Promise<void>;
   startUploadedRun: (file: File, model: DemoModelChoice) => Promise<void>;
+  startArxivRun: (url: string, model: DemoModelChoice) => Promise<void>;
   clearRun: () => Promise<void>;
   resetToUpload: () => void;
 }
@@ -375,6 +376,53 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
   }, [setRunUrl]);
 
+  const startArxivRun = useCallback(async (url: string, model: DemoModelChoice) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const prefs = readUserPrefs();
+      // The backend fetches the paper server-side; we just hand it the URL
+      // and run-config knobs. arXiv-style paths get rewritten to /pdf on the
+      // backend so users can paste either /abs/ or /pdf/ links.
+      const normalisedUrl = /^https?:\/\//i.test(url.trim())
+        ? url.trim()
+        : `https://${url.trim()}`;
+      const response = await postRunRequest("/api/demo/arxiv", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: normalisedUrl,
+          mode: "sdk",
+          provider: "anthropic",
+          executionMode: prefs.executionMode ?? "efficient",
+          sandbox: prefs.sandbox ?? "runpod",
+          gpuMode: "auto",
+          model
+        })
+      });
+      if (!response.ok) {
+        // The backend returns plain-text error bodies for httpx/PDF
+        // validation failures; degrade gracefully when there's no JSON.
+        const raw = await response.text().catch(() => "");
+        let message = raw || "Unable to start arXiv run";
+        try {
+          const payload = JSON.parse(raw) as { error?: string; detail?: string };
+          message = payload.error ?? payload.detail ?? message;
+        } catch {
+          /* keep raw text */
+        }
+        throw new Error(message);
+      }
+      const next = (await response.json()) as LiveDemoRunState;
+      setRun(next);
+      setRunUrl(next.projectId);
+      writeLastRun(next.projectId);
+    } catch (startError) {
+      setError(describeStartError(startError, "Unable to start arXiv run"));
+      setBusy(false);
+    }
+  }, [setRunUrl]);
+
   const clearRun = useCallback(async () => {
     setBusy(true);
     try {
@@ -388,5 +436,5 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
   }, [run, resetToUpload]);
 
-  return { run, busy, error, dashboardEvents, startFixtureRun, startUploadedRun, clearRun, resetToUpload };
+  return { run, busy, error, dashboardEvents, startFixtureRun, startUploadedRun, startArxivRun, clearRun, resetToUpload };
 }

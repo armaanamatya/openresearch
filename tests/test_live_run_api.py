@@ -296,3 +296,113 @@ def test_read_log_tail_cap_applied_to_combined(tmp_path: Path) -> None:
     assert "A" in result and "B" in result
     assert result.count("A") == 50 and result.count("B") == 50
     assert len(result) <= 100 + len("\n--- runner.stderr.log ---\n")
+
+
+# ---------------------------------------------------------------------------
+# /runs/arxiv — server-side paper fetch + reuse of the upload pipeline.
+# Previously the UI's arxiv input was wired to the demo-fixture handler and
+# every URL paste silently became a CartPole-PPO fixture run; the new
+# endpoint fetches the URL with httpx and routes the bytes through the
+# existing start_uploaded_run path so the rest of the pipeline is unchanged.
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+class _FakeHttpxResponse:
+    def __init__(self, status_code: int, content: bytes, content_type: str = "application/pdf") -> None:
+        self.status_code = status_code
+        self.content = content
+        self.headers = {"content-type": content_type}
+
+
+class _FakeHttpxClient:
+    def __init__(self, response: _FakeHttpxResponse, *, raise_on_get: Exception | None = None) -> None:
+        self._response = response
+        self._raise = raise_on_get
+        self.requested_urls: list[str] = []
+
+    async def __aenter__(self) -> "_FakeHttpxClient":
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+    async def get(self, url: str) -> _FakeHttpxResponse:
+        self.requested_urls.append(url)
+        if self._raise is not None:
+            raise self._raise
+        return self._response
+
+
+def _patch_httpx(monkeypatch, response, *, raise_on_get=None):
+    fake = _FakeHttpxClient(response, raise_on_get=raise_on_get)
+    def _factory(*_a, **_kw):
+        return fake
+    import backend.app as app_module
+    monkeypatch.setattr(app_module.httpx, "AsyncClient", _factory)
+    return fake
+
+
+def test_runs_arxiv_fetches_and_starts_upload(monkeypatch) -> None:
+    fake_response = _FakeHttpxResponse(200, b"%PDF-1.7 fake bytes")
+    fake_client = _patch_httpx(monkeypatch, fake_response)
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+
+    response = client.post(
+        "/runs/arxiv",
+        json={"url": "https://arxiv.org/abs/2512.24601", "mode": "sdk", "provider": "anthropic"},
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["sourceKind"] == "uploaded_pdf"
+    # arxiv.org/abs/N gets rewritten to /pdf/N so we receive the PDF, not the
+    # abstract page. The derived filename includes an "arxiv_" prefix.
+    assert "/pdf/" in fake_client.requested_urls[0]
+    assert body["sourceLabel"].startswith("arxiv_")
+    assert body["sourceLabel"].endswith(".pdf")
+
+
+def test_runs_arxiv_rejects_missing_url() -> None:
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/arxiv", json={"url": ""})
+    assert response.status_code == 400
+
+
+def test_runs_arxiv_rejects_non_http_scheme() -> None:
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/arxiv", json={"url": "ftp://example.com/paper.pdf"})
+    assert response.status_code == 400
+
+
+def test_runs_arxiv_rejects_non_pdf_content(monkeypatch) -> None:
+    _patch_httpx(monkeypatch, _FakeHttpxResponse(200, b"<html>not a pdf</html>", "text/html"))
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/arxiv", json={"url": "https://example.com/page.html"})
+    assert response.status_code == 415
+
+
+def test_runs_arxiv_passes_through_upstream_failure(monkeypatch) -> None:
+    _patch_httpx(monkeypatch, _FakeHttpxResponse(404, b""))
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/arxiv", json={"url": "https://arxiv.org/abs/nope"})
+    assert response.status_code == 502
+
+
+def test_runs_arxiv_accepts_pdf_with_octet_stream_content_type(monkeypatch) -> None:
+    # Some mirrors serve PDFs with application/octet-stream; the magic-byte
+    # check (%PDF- header) is what makes the validation tolerant.
+    _patch_httpx(
+        monkeypatch,
+        _FakeHttpxResponse(200, b"%PDF-1.4 bytes", content_type="application/octet-stream"),
+    )
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/arxiv", json={"url": "https://example.com/paper"})
+    assert response.status_code == 202

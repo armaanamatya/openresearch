@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hmac
+import re
 
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -59,6 +61,75 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     async def start_run(request: StartRunRequest, x_demo_secret: str | None = Header(default=None)):
         _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         return await service.start_run(request)
+
+    @app.post("/runs/arxiv", status_code=202)
+    async def start_arxiv_run(request: StartArxivRunRequest, x_demo_secret: str | None = Header(default=None)):
+        """Fetch a paper from a URL (arXiv/openreview/etc) and start a run.
+
+        Server-side fetch sidesteps browser CORS and the multipart upload
+        gymnastics that the file path requires. The bytes are handed to the
+        same ``start_uploaded_run`` service as a real upload — no second code
+        path to keep in sync.
+        """
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
+        normalized_url = (request.url or "").strip()
+        if not normalized_url:
+            raise HTTPException(status_code=400, detail="An arXiv (or other paper) URL is required.")
+        if not re.match(r"^https?://", normalized_url, re.IGNORECASE):
+            raise HTTPException(status_code=400, detail="URL must start with http:// or https://.")
+        # arxiv.org/abs/1234.5678 → arxiv.org/pdf/1234.5678 so the response is
+        # the PDF rather than the HTML abstract page.
+        fetch_url = re.sub(r"^(https?://arxiv\.org)/abs/", r"\1/pdf/", normalized_url, flags=re.IGNORECASE)
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                headers={"user-agent": "ReproLab/0.1 (+https://github.com/anthropics/openresearch)"},
+            ) as client:
+                response = await client.get(fetch_url)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Could not fetch paper from {fetch_url!r}: {exc}") from exc
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream returned HTTP {response.status_code} for {fetch_url!r}.",
+            )
+        content = response.content
+        if not content:
+            raise HTTPException(status_code=502, detail="Upstream returned an empty body.")
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Fetched paper exceeds 50 MB limit.")
+        # Validate it's actually a PDF — content-type or magic bytes. arxiv
+        # serves application/pdf; we also accept the %PDF- header as a
+        # secondary check because some mirrors advertise octet-stream.
+        looks_like_pdf = content[:5] == b"%PDF-" or "pdf" in (response.headers.get("content-type") or "").lower()
+        if not looks_like_pdf:
+            raise HTTPException(
+                status_code=415,
+                detail="Fetched content does not appear to be a PDF (no %PDF- header and content-type is not pdf-ish).",
+            )
+        # Derive a stable, safe filename from the URL's last path segment.
+        # `2512.24601` → `arxiv_2512_24601.pdf` so the manifest renders nicely.
+        last_segment = re.split(r"[/?#]", normalized_url.rstrip("/"))[-1] or "paper"
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", last_segment).strip("._-") or "paper"
+        if "arxiv.org" in normalized_url.lower() and not safe_stem.lower().startswith("arxiv"):
+            safe_stem = f"arxiv_{safe_stem}"
+        if not safe_stem.lower().endswith(".pdf"):
+            safe_stem = f"{safe_stem}.pdf"
+        run_request = StartRunRequest(
+            mode=request.mode or "offline",
+            provider=request.provider or "anthropic",
+            verificationProvider=request.verificationProvider,
+            executionMode=request.executionMode or "efficient",
+            sandbox=request.sandbox or settings.default_sandbox,
+            gpuMode=request.gpuMode or "auto",
+            model=request.model or "sonnet",
+        )
+        return await service.start_uploaded_run(
+            run_request,
+            file_name=safe_stem,
+            content=content,
+        )
 
     @app.post("/runs/upload", status_code=202)
     async def start_uploaded_run(request: Request, x_demo_secret: str | None = Header(default=None)):
@@ -346,6 +417,24 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
 # --------------------------------------------------------------------------- #
 # Phase 2 request models (HEAD)
 # --------------------------------------------------------------------------- #
+
+class StartArxivRunRequest(BaseModel):
+    """Body for ``POST /runs/arxiv``.
+
+    All run-config fields are optional so the client only has to send the URL.
+    Defaults are resolved server-side to mirror what the multipart upload path
+    provides (mode=offline, provider=anthropic, sandbox=<settings default>, …).
+    """
+
+    url: str = ""
+    mode: str | None = None
+    provider: str | None = None
+    verificationProvider: str | None = None
+    executionMode: str | None = None
+    sandbox: str | None = None
+    gpuMode: str | None = None
+    model: str | None = None
+
 
 class ApprovalEvaluateRequest(BaseModel):
     project_id: str
