@@ -1,8 +1,9 @@
 # Unified Logging Launcher — Design
 
-**Status:** Draft · 2026-05-17
+**Status:** Tier 1 implemented + verified · 2026-05-17
 **Launchers:** `scripts/dev.ps1` (Windows-native, primary) · `scripts/dev.sh` (macOS / Linux / git-bash sibling). Both write the same `logs/<TS>/` layout.
 **Goal:** One reviewable, verifiable folder per launch that captures frontend, backend, pipeline, agent, and sub-agent activity — without breaking existing `dev.sh` callers.
+**Backend wire-up:** Tier 1 also required wiring `REPROLAB_RUNS_ROOT` through `backend/config.py` Settings → `FileLiveRunService` constructor → CLI argparse defaults. Without this, the launcher's env-var export was cosmetic (see §11).
 
 ### Why two launchers
 
@@ -158,8 +159,31 @@ These are **additive**. Existing `bash scripts/dev.sh` keeps working.
 
 ## 10. Validation checklist (run before merging Tier 1)
 
-- [ ] `bash scripts/dev.sh` still produces a runnable backend + frontend.
+- [ ] `.\scripts\dev.ps1` (or `bash scripts/dev.sh` on Unix) produces a runnable backend + frontend.
 - [ ] `logs/<TS>/meta.json` exists with `started_at` and `ended_at` after a clean Ctrl-C.
+- [ ] `logs/<TS>/meta.json` `runs_root` is a Windows-native path (no `/mnt/c/...`).
 - [ ] `logs/<TS>/manifest.json` lists every non-empty file with size + sha256.
-- [ ] A full pipeline run produces a `prj_*/` sibling under `logs/<TS>/`, unchanged from today.
-- [ ] Existing absolute paths that prior tooling expected (if §9-Q1 says yes) still resolve.
+- [ ] A full pipeline run from the lab UI produces a `prj_<id>/` sibling under `logs/<TS>/` (**not** under `./runs/`).
+- [ ] After restart, a stale `localStorage["reprolab:lastRun"]` pointing at a project from the previous launch results in `GET /api/demo?projectId=...` returning 404 and the upload view rendering.
+
+---
+
+## 11. Backend wire-up (discovered during verification, 2026-05-17)
+
+The launcher script alone was not sufficient to honor the `logs/<TS>/` layout. During end-to-end testing, repeated pipeline runs kept landing under `./runs/` despite `dev.ps1` correctly exporting `REPROLAB_RUNS_ROOT` to a Windows-native absolute path. Investigation traced the cause to three missing reads of the env var at the backend layer:
+
+| File | Symptom |
+|---|---|
+| `backend/services/events/live_runs.py:169` | `self.runs_root = (runs_root or self.repo_root / "runs").resolve()` — constructor takes an arg or falls back to `repo_root/runs`. No `os.environ.get` anywhere. |
+| `backend/app.py:42` | `FileLiveRunService()` constructed with no `runs_root` argument, so it always fell through to the `repo_root/runs` default above. |
+| `backend/cli.py:374, 633` | `_REPRODUCE_DEFAULTS["runs_root"] = "runs"` and the argparse `--runs-root` default hard-coded to `"runs"`. CLI invocations ignored env entirely. |
+
+**Fix (one feature, three files):**
+
+1. `backend/config.py` — added a `runs_root: Path | None = None` field on `Settings`. Because the existing `model_config` sets `env_prefix="REPROLAB_"`, this field is automatically populated from `REPROLAB_RUNS_ROOT` whenever the env var is set. No new env-var parsing code; pydantic-settings already does the work.
+2. `backend/app.py` — `FileLiveRunService(runs_root=settings.runs_root)` at startup. `None` (the default) preserves the previous behavior; a set value flows through.
+3. `backend/cli.py` — both the argparse `--runs-root` default and the `_REPRODUCE_DEFAULTS` dict pull from `get_settings().runs_root`, identical pattern to `--database-url` next door.
+
+**Why this matters for the design:** the launcher's "co-locate everything under `logs/<TS>/`" promise is the headline feature of Tier 1. Without these three wire-up lines, that promise was satisfied for the *server* streams (uvicorn + Next.js stdout) but silently failed for the *pipeline* workspaces. The repeat appearance of stale `prj_*` directories under `./runs/` and the corresponding localStorage hijack of `/lab` were the user-visible signal. Documenting it here so the PR description names both the launcher and the wire-up as part of one feature, not two unrelated changes.
+
+**Knock-on benefit:** once `REPROLAB_RUNS_ROOT` is set, the backend's `runs_root.glob("*/demo_status.json")` no longer sees pre-existing projects under `./runs/`. That means `clearLastRun()` in `frontend/src/hooks/use-run.ts:163` fires automatically on the next `/lab` load — the localStorage self-cleans without DevTools intervention.

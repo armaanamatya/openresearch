@@ -39,7 +39,10 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
 def create_app(*, run_service: Any | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
-    service = run_service or FileLiveRunService()
+    # Honor REPROLAB_RUNS_ROOT (via Settings.runs_root) so dev.ps1 / dev.sh
+    # actually colocate pipeline workspaces with the launch's server logs.
+    # When unset, FileLiveRunService falls back to <repo>/runs as before.
+    service = run_service or FileLiveRunService(runs_root=settings.runs_root)
 
     app = FastAPI(
         title="ReproLab Agent",
