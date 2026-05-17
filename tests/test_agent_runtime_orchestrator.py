@@ -367,3 +367,95 @@ def test_orchestrator_converts_sdk_turn_cap_message_to_typed_exception(
         assert "Halfway" in exc.partial_output
     else:
         raise AssertionError("Expected AgentLimitExceeded")
+
+
+# ---------------------------------------------------------------------------
+# _provider_chain — only include the cross-provider fallback when its
+# credentials are configured. Regression: a run with only ANTHROPIC_API_KEY
+# died with a misleading openai 401 because the chain unconditionally
+# appended openai as a fallback and the engine tried it on the first
+# transient anthropic blip.
+# ---------------------------------------------------------------------------
+
+def test_provider_chain_omits_openai_when_no_openai_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant-xyz", "openai_api_key": "", "openai_admin_key": ""})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_anthropic_only",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
+def test_provider_chain_omits_anthropic_when_no_anthropic_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    # claude CLI absent so anthropic has no credentials
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_openai_only",
+        tmp_path,
+        runtime=FakeRuntime("openai"),
+    )
+
+    assert orchestrator._provider_chain("openai") == ["openai"]
+
+
+def test_provider_chain_includes_both_when_both_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_both",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+
+def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Explicit claude_limit_fallback_runtime injection bypasses the env-cred
+    # check — callers wiring this are saying "trust me, this runtime works"
+    # (e.g. tests, or a hosted environment with a service-account harness).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "", "openai_admin_key": ""})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_explicit_fallback",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+        claude_limit_fallback_runtime=FakeRuntime("openai"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]

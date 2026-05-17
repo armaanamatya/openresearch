@@ -38,6 +38,7 @@ from backend.agents.runtime import (
     AgentRuntimeSpec,
     ProviderName,
     RuntimeGuard,
+    has_provider_credentials,
     make_runtime,
 )
 from backend.agents.resilience import ProviderHealthMonitor, RunBudget, RunCostLedger
@@ -637,11 +638,30 @@ class ReproLabOrchestrator:
         return self._runtime
 
     def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
+        # Only include the cross-provider fallback when its credentials are
+        # actually configured. Previously the chain was always
+        # [primary, other] — if anthropic hit a transient error and openai
+        # had no (or an invalid) key, the engine would fall over to openai
+        # and surface a misleading 401 that killed the run. Filtering here
+        # keeps the chain honest: no fallback to a provider the operator
+        # never set up.
         other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
         chain: list[ProviderName] = []
         for provider in (primary, other):
-            if provider not in chain:
-                chain.append(provider)
+            if provider in chain:
+                continue
+            if provider != primary and not has_provider_credentials(provider):
+                # Pre-cached fallback runtimes (e.g. ``claude_limit_fallback_runtime``
+                # passed by the caller) remain valid even when env creds are absent;
+                # honour them so explicit wiring isn't silently dropped.
+                if provider not in self._fallback_runtimes:
+                    logger.info(
+                        "Provider %s excluded from %s fallback chain (no credentials configured)",
+                        provider,
+                        primary,
+                    )
+                    continue
+            chain.append(provider)
         return chain
 
     def _runtime_for_provider(
