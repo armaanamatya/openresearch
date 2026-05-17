@@ -27,7 +27,10 @@ class HermesAuditStorage:
 
     def save_report(self, report: HermesAuditReport) -> Path:
         path = self._report_path(report)
-        path.write_text(report.model_dump_json(indent=2))
+        # Explicit UTF-8 on every write — audit reports routinely contain
+        # arrows, em-dashes, Greek letters, etc., and Path.write_text() on
+        # Windows defaults to cp1252 (charmap), which crashes on those.
+        path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         index = self.load_index()
         key = f"{report.scope.value}:{report.target}"
         index[key] = {
@@ -36,10 +39,10 @@ class HermesAuditStorage:
             "recommended_intervention": report.recommended_intervention.value,
             "summary": report.summary,
         }
-        self._index_path.write_text(json.dumps(index, indent=2))
+        self._index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
         return path
 
     def load_index(self) -> dict[str, Any]:
         if not self._index_path.exists():
             return {}
-        return json.loads(self._index_path.read_text())
+        return json.loads(self._index_path.read_text(encoding="utf-8"))

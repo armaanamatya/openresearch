@@ -289,7 +289,7 @@ class PipelineState:
         # bridge polls this file concurrently. Write-then-rename guarantees a
         # reader never observes a truncated checkpoint.
         tmp_path = path.with_name(f"{path.name}.tmp")
-        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp_path.replace(path)
         logger.info("Checkpoint saved: stage=%s path=%s", self.stage.value, path)
         return path
@@ -300,7 +300,7 @@ class PipelineState:
         path = runs_root / project_id / "pipeline_state.json"
         if not path.exists():
             return None
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         state = cls(project_id=data["project_id"])
         state.stage = PipelineStage(data["stage"])
         state.assumption_ledger = data.get("assumption_ledger", [])
@@ -803,17 +803,17 @@ class ReproLabOrchestrator:
             fpath = Path(fallback_file)
             if fpath.exists():
                 logger.info("Reading agent output from file: %s", fpath)
-                return json.loads(fpath.read_text())
+                return json.loads(fpath.read_text(encoding="utf-8"))
             # Also check if agent used relative path from its cwd
             # (creates nested runs/project_id/runs/project_id/file)
             nested = self._project_dir / fpath.name
             if nested.exists():
                 logger.info("Reading agent output from nested file: %s", nested)
-                return json.loads(nested.read_text())
+                return json.loads(nested.read_text(encoding="utf-8"))
             # Search recursively for the file
             for found in self._project_dir.rglob(fpath.name):
                 logger.info("Reading agent output from found file: %s", found)
-                return json.loads(found.read_text())
+                return json.loads(found.read_text(encoding="utf-8"))
 
         raise ValueError(f"No JSON found in agent output: {text[:200]}")
 
@@ -1123,9 +1123,9 @@ class ReproLabOrchestrator:
         spec = state.environment_spec
         content = spec.dockerfile.strip() if spec and spec.dockerfile else ""
         if content:
-            dockerfile_path.write_text(content + "\n")
+            dockerfile_path.write_text(content + "\n", encoding="utf-8")
             return dockerfile_path
-        if dockerfile_path.exists() and dockerfile_path.read_text().strip():
+        if dockerfile_path.exists() and dockerfile_path.read_text(encoding="utf-8").strip():
             return dockerfile_path
         return None
 
@@ -1148,7 +1148,7 @@ class ReproLabOrchestrator:
         else:
             dockerfile_path = self._project_dir / "Dockerfile"
             if dockerfile_path.exists():
-                prior_dockerfile = dockerfile_path.read_text()
+                prior_dockerfile = dockerfile_path.read_text(encoding="utf-8")
         if not prior_dockerfile.strip():
             logger.warning(
                 "environment repair has no prior Dockerfile content to show the "
@@ -2108,13 +2108,13 @@ class ReproLabOrchestrator:
         state.advance_stage(PipelineStage.RESEARCH_MAP_GENERATED, self.runs_root)
         # Write final artifacts
         (self._project_dir / "research_map.json").write_text(
-            state.research_map.model_dump_json(indent=2)
+            state.research_map.model_dump_json(indent=2), encoding="utf-8"
         )
         (self._project_dir / "assumption_ledger.json").write_text(
-            json.dumps(state.assumption_ledger, indent=2)
+            json.dumps(state.assumption_ledger, indent=2), encoding="utf-8"
         )
         (self._project_dir / "decision_log.json").write_text(
-            json.dumps(state.decision_log, indent=2)
+            json.dumps(state.decision_log, indent=2), encoding="utf-8"
         )
         # Synthesize the deterministic final report — computed PaperBench-style
         # rubric, statistical rigor, and paper-vs-baseline-vs-improved deltas.

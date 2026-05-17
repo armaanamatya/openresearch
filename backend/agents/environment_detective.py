@@ -20,6 +20,7 @@ from backend.agents.schemas import (
     PaperClaimMap,
     RiskLevel,
 )
+from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,10 @@ def run_offline(
     # Write to disk
     out_dir = Path(runs_root) / project_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "Dockerfile").write_text(dockerfile)
-    (out_dir / "environment_spec.json").write_text(spec.model_dump_json(indent=2))
+    (out_dir / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+    (out_dir / "environment_spec.json").write_text(
+        spec.model_dump_json(indent=2), encoding="utf-8"
+    )
     logger.info("Environment spec written to %s", out_dir)
 
     return spec
@@ -136,15 +139,15 @@ async def run_with_sdk(
     # Try to read the written spec
     spec_path = project_dir / "environment_spec.json"
     if spec_path.exists():
-        data = json.loads(spec_path.read_text())
+        data = read_json(spec_path)
         return EnvironmentSpec(**data)
 
     # Parse from output
     data = _extract_json(full_text)
     spec = EnvironmentSpec(**data)
     project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "Dockerfile").write_text(spec.dockerfile)
-    spec_path.write_text(spec.model_dump_json(indent=2))
+    (project_dir / "Dockerfile").write_text(spec.dockerfile, encoding="utf-8")
+    spec_path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
     return spec
 
 
