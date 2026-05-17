@@ -51,24 +51,93 @@ type LabShellProps = {
   presentationMode?: PresentationMode;
 };
 
+// Build agent_id → started_at(ms) map from telemetry so per-line timestamps
+// can be computed as `agent_start + (Ns)`. The (Ns) marker that backend
+// log lines carry is elapsed-since-agent-start, not since-run-start; using
+// the run-level updatedAt stamped every line with one frozen time and made
+// the live feed look paused. Regression of commit 33ddc51, which lived in
+// the now-split repro-lab-client.tsx.
+function agentStartIndex(run: LiveDemoRunState | null): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const record of run?.telemetry ?? []) {
+    const id = record.agent_id;
+    const startedAt = record.started_at;
+    if (!id || !startedAt) continue;
+    const ms = new Date(startedAt).getTime();
+    if (!Number.isFinite(ms)) continue;
+    // Keep the earliest start per agent so re-invoked agents anchor to
+    // their first appearance — matches the log's chronological ordering.
+    if (!index.has(id) || ms < (index.get(id) ?? Infinity)) {
+      index.set(id, ms);
+    }
+  }
+  return index;
+}
+
+// Lines with the elapsed marker: `[agent] (Ns) message`
+const LOG_LINE_RE = /^\[([^\]]+)\]\s+\((\d+)s\)/;
+// Agent-completion lines: `[agent] completed in Ns (...)`
+const COMPLETED_LINE_RE = /^\[([^\]]+)\]\s+completed\s+in\s+(\d+)s/;
+
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function parseLogEntries(run: LiveDemoRunState | null) {
   if (!run?.log) {
     return [];
   }
 
-  return run.log
+  const agentStarts = agentStartIndex(run);
+  const runStart = run.startedAt ? new Date(run.startedAt).getTime() : null;
+  const runUpdated = run.updatedAt ? new Date(run.updatedAt).getTime() : null;
+
+  const lines = run.log
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-80)
-    .reverse()
-    .map((line, index) => ({
-      id: `${run.projectId}-${index}`,
-      time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      // Log lines render verbatim — euphemising "failed" to "needs
-      // attention" here hid real failures from anyone reading the log.
-      msg: line
-    }));
+    .filter(Boolean);
+
+  // Two-pass: stamp in original order so unmatched lines (separators,
+  // transition markers like `> Starting: ...`, multi-line tool args)
+  // can carry the timestamp forward from the most recent matched line.
+  // Without this, ~half the feed reverted to runUpdated which is
+  // essentially frozen — making the live view look stuck.
+  let lastKnownMs: number | null = runStart;
+  const stamped = lines.map((line, index) => {
+    const match = line.match(LOG_LINE_RE) ?? line.match(COMPLETED_LINE_RE);
+    let ms: number | null = null;
+    if (match) {
+      const agentId = match[1];
+      const elapsedMs = Number(match[2]) * 1000;
+      const anchor = agentStarts.get(agentId) ?? runStart;
+      if (anchor != null && Number.isFinite(elapsedMs)) {
+        ms = anchor + elapsedMs;
+      }
+    }
+    if (ms == null) ms = lastKnownMs;
+    if (ms != null) lastKnownMs = ms;
+    return { line, ms, index };
+  });
+
+  return stamped.slice(-80).reverse().map((entry) => ({
+    id: `${run.projectId}-${entry.index}`,
+    time:
+      entry.ms != null
+        ? formatTime(entry.ms)
+        : runUpdated != null
+          ? formatTime(runUpdated)
+          : "--:--",
+    // Log lines render verbatim — euphemising "failed" to "needs
+    // attention" here hid real failures from anyone reading the log.
+    msg: entry.line
+  }));
+}
+
+// Humanise a snake_case stage id for display: `gate_2_passed` -> `Gate 2 Passed`.
+function humanizeStage(stageId: string): string {
+  return stageId
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function telemetryForSelectedNode(
@@ -150,14 +219,26 @@ function RunOverview({
         ? "Run needs attention"
         : "Reproducing live backend run";
 
+  // Translate `paper_understood` -> `Stage 2 of 14: Paper Understood` so a
+  // glance at the header tells you where the pipeline is, not just the raw
+  // enum value the backend ships. Falls back to the raw id if the stage
+  // isn't in topology yet (defensive — topology is the source of truth).
+  const currentStageId = run.payload?.summary.stage;
+  const stageEntry = currentStageId
+    ? topology.stages.find((s) => s.id === currentStageId)
+    : undefined;
+  const stageCopy = currentStageId
+    ? stageEntry != null
+      ? `Stage ${stageEntry.order + 1} of ${topology.stages.length}: ${humanizeStage(currentStageId)}`
+      : `Current backend stage: ${humanizeStage(currentStageId)}`
+    : null;
+
   return (
     <div>
       <div className="eyebrow">Run</div>
       <div className="overview-title">{title}</div>
       <div className="overview-copy">
-        {run.payload?.summary.stage
-          ? `Current backend stage: ${run.payload.summary.stage}`
-          : run.sourceNote ?? "Waiting for the first backend update."}
+        {stageCopy ?? run.sourceNote ?? "Waiting for the first backend update."}
       </div>
       <div className="overview-grid">
         <Stat label="Done" value={totals.done} dot="var(--ink)" />
