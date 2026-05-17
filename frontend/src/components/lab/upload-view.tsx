@@ -94,7 +94,16 @@ export function UploadView({
         <span className="mono upload-prefix">https://</span>
         <input
           value={arxiv}
-          onChange={(event) => onArxivChange(event.target.value)}
+          onChange={(event) => {
+            // Strip a leading scheme so a user who pastes a full URL doesn't
+            // get `https://https://arxiv.org/...` rendered — the prefix span
+            // is the visual scheme, the input is the path. Trim whitespace
+            // too since clipboard pastes often carry trailing newlines.
+            const normalised = event.target.value
+              .replace(/^\s*https?:\/\//i, "")
+              .trimStart();
+            onArxivChange(normalised);
+          }}
           placeholder="arxiv.org/abs/2303.04137"
           className="upload-text-input mono"
           disabled={busy}
