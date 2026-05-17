@@ -371,7 +371,8 @@ def _resolve_sdk_providers(
 
 _REPRODUCE_DEFAULTS = {
     "database_url": get_settings().database_url,
-    "runs_root": "runs",
+    # Honor REPROLAB_RUNS_ROOT via Settings — see backend/config.py.
+    "runs_root": str(get_settings().runs_root) if get_settings().runs_root else "runs",
     "source_kind": "auto",
     "agent": "default",
     "mode": "sdk",
@@ -630,8 +631,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--runs-root",
-        default="runs",
-        help="Per-project blob directory root (default: ./runs).",
+        default=str(get_settings().runs_root) if get_settings().runs_root else "runs",
+        help="Per-project blob directory root (defaults to REPROLAB_RUNS_ROOT or ./runs).",
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)

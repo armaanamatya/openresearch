@@ -102,8 +102,31 @@ function Free-Port {
 function Stop-Tree {
     param([int]$ProcId)
     if ($ProcId -le 0) { return }
-    # /T kills children; /F is forceful. Suppress noise on already-dead PIDs.
-    & taskkill.exe /F /T /PID $ProcId *> $null
+    # Gate on liveness — taskkill against a dead PID writes to stderr which
+    # PS 5.1 wraps as a NativeCommandError and surfaces despite redirection.
+    if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+    try {
+        # Invoking taskkill via Start-Process keeps its native stderr out of
+        # the PowerShell error stream entirely. /T tree-kills python/node
+        # grandchildren spawned by the .cmd shim.
+        Start-Process -FilePath taskkill.exe `
+            -ArgumentList '/F','/T','/PID',$ProcId `
+            -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+function Write-CmdShim {
+    # Writes a .cmd file we can hand to Start-Process. Bypasses the
+    # PowerShell-to-cmd quoting layer that made earlier attempts fail with
+    # "The filename, directory name, or volume label syntax is incorrect."
+    param(
+        [string]$Path,
+        [string]$WorkDir,
+        [string]$Command,
+        [string]$LogPath
+    )
+    $body = "@echo off`r`ncd /d `"$WorkDir`"`r`n$Command > `"$LogPath`" 2>&1`r`n"
+    [System.IO.File]::WriteAllText($Path, $body, (New-Object System.Text.ASCIIEncoding))
 }
 
 function Write-Meta {
@@ -164,19 +187,21 @@ $backendProc  = $null
 $frontendProc = $null
 
 if (-not $NoBackend) {
-    # Single-quoted template + -f keeps redirection operators literal so the
-    # PowerShell parser doesn't try to apply them itself.
-    $backendCmd = '"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload > "{1}\backend.log" 2>&1' -f $pyBin, $serverDir
-    $backendProc = Start-Process -FilePath 'cmd.exe' `
-        -ArgumentList '/c', $backendCmd `
+    $backendShim = Join-Path $serverDir 'backend.cmd'
+    Write-CmdShim -Path $backendShim -WorkDir $repoRoot `
+        -Command ('"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload' -f $pyBin) `
+        -LogPath (Join-Path $serverDir 'backend.log')
+    $backendProc = Start-Process -FilePath $backendShim `
         -WorkingDirectory $repoRoot `
         -NoNewWindow -PassThru
 }
 
 if (-not $NoFrontend) {
-    $frontendCmd = 'npm run dev > "{0}\frontend.log" 2>&1' -f $serverDir
-    $frontendProc = Start-Process -FilePath 'cmd.exe' `
-        -ArgumentList '/c', $frontendCmd `
+    $frontendShim = Join-Path $serverDir 'frontend.cmd'
+    Write-CmdShim -Path $frontendShim -WorkDir (Join-Path $repoRoot 'frontend') `
+        -Command 'npm.cmd run dev' `
+        -LogPath (Join-Path $serverDir 'frontend.log')
+    $frontendProc = Start-Process -FilePath $frontendShim `
         -WorkingDirectory (Join-Path $repoRoot 'frontend') `
         -NoNewWindow -PassThru
 }
