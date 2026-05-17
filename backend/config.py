@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-4o"
     openai_reasoning_model: str = "o4-mini"
     agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
+    # Force the orchestrator's provider chain to [primary] only — no
+    # cross-provider fallback. Useful when the operator only has working
+    # credentials for one provider and the other key in env is invalid
+    # (common: a leftover sk-svcacct-* in the shell that 401s on chat
+    # completions). Without this, a transient anthropic blip can trigger
+    # an openai fallback attempt that surfaces a misleading 401 and kills
+    # the run. Default keeps existing behaviour for users with two valid
+    # keys.
+    provider_fallback_disabled: bool = False
 
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,

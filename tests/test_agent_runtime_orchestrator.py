@@ -437,6 +437,35 @@ def test_provider_chain_includes_both_when_both_configured(
     assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
 
 
+def test_provider_chain_collapses_to_primary_when_fallback_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # REPROLAB_PROVIDER_FALLBACK_DISABLED=1 forces [primary] only. The
+    # operator's intent: "do not try the other provider, even if it has
+    # credentials". This is the right knob when env has a leftover invalid
+    # second key that would surface a misleading 401 mid-run.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    # Patch the orchestrator-side settings lookup separately because
+    # _provider_chain reads its own get_settings().
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": True})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_fallback_off",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
 def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds(
     tmp_path: Path, monkeypatch
 ) -> None:

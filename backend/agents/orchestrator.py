@@ -645,6 +645,14 @@ class ReproLabOrchestrator:
         # and surface a misleading 401 that killed the run. Filtering here
         # keeps the chain honest: no fallback to a provider the operator
         # never set up.
+        from backend.config import get_settings as _get_settings  # local: avoid cycle
+        if _get_settings().provider_fallback_disabled:
+            # Operator explicitly opted out of cross-provider fallback. This
+            # is the right knob when the env has an invalid second key that
+            # would only kill runs (set-but-rejected, e.g. service-account
+            # keys without chat-completion scope). Pre-cached fallback
+            # runtimes are also dropped because the intent is "no fallback".
+            return [primary]
         other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
         chain: list[ProviderName] = []
         for provider in (primary, other):
