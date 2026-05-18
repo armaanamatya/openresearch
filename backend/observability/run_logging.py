@@ -99,8 +99,12 @@ def configure_root_logger() -> Optional[Path]:
 
         root = logging.getLogger()
 
+        # delay=True means the file is opened lazily on the first emit. Without
+        # it, FileHandler pre-creates a 0-byte file at construction — verifier
+        # checks then flag it as a zero-byte text file even when no agent run
+        # ever happened.
         text_handler = logging.FileHandler(
-            run_dir / "pipeline.log", encoding="utf-8"
+            run_dir / "pipeline.log", encoding="utf-8", delay=True
         )
         text_handler.setFormatter(
             logging.Formatter(
@@ -111,7 +115,7 @@ def configure_root_logger() -> Optional[Path]:
         text_handler.setLevel(logging.INFO)
 
         jsonl_handler = logging.FileHandler(
-            run_dir / "pipeline.jsonl", encoding="utf-8"
+            run_dir / "pipeline.jsonl", encoding="utf-8", delay=True
         )
         jsonl_handler.setFormatter(_JsonlFormatter())
         jsonl_handler.setLevel(logging.INFO)
