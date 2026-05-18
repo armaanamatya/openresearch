@@ -1285,6 +1285,12 @@ class ReproLabOrchestrator:
                     return state
 
             # The build failed (broken Dockerfile, or no Dockerfile content).
+            # Defensive: build_image's error_text should be a string, but
+            # docker BuildError.msg has been seen as a dict in the wild —
+            # coerce here so checkpoint serialization and downstream
+            # `.strip()` / repair-prompt embedding never trip on it.
+            if not isinstance(error_text, str):
+                error_text = str(error_text)
             state.environment_build_attempts = attempt
             state.environment_build_error = error_text
             state.save_checkpoint(self.runs_root)
