@@ -33,11 +33,16 @@ function formatDuration(ms: number): string {
  * completes, the interval is unnecessary and the effect tears down.
  */
 export function TelemetryStrip({ run }: { run: LiveDemoRunState | null }) {
-  const [now, setNow] = useState(() => Date.now());
+  // `now` is null until the client mounts. Initialising it from Date.now()
+  // at module load runs once at SSR time and again on the client a moment
+  // later — the two diverge by ~1s and trigger a hydration mismatch on the
+  // wall-clock cell. Defer to useEffect so SSR sees a stable placeholder.
+  const [now, setNow] = useState<number | null>(null);
 
   const isLive = Boolean(run && !run.completedAt && run.status !== "completed" && run.status !== "failed" && run.status !== "stopped");
 
   useEffect(() => {
+    setNow(Date.now());
     if (!isLive) return undefined;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
@@ -55,7 +60,10 @@ export function TelemetryStrip({ run }: { run: LiveDemoRunState | null }) {
 
   const startedAt = run.startedAt ? new Date(run.startedAt).getTime() : 0;
   const referenceEnd = run.completedAt ? new Date(run.completedAt).getTime() : now;
-  const wall = startedAt && Number.isFinite(startedAt) ? referenceEnd - startedAt : 0;
+  const wall =
+    startedAt && Number.isFinite(startedAt) && referenceEnd != null
+      ? referenceEnd - startedAt
+      : null;
 
   return (
     <div className={styles.strip} role="status" aria-label="Run telemetry">
@@ -69,7 +77,7 @@ export function TelemetryStrip({ run }: { run: LiveDemoRunState | null }) {
       </div>
       <div className={styles.cell}>
         <span className={styles.label}>Wall</span>
-        <span className={styles.value}>{formatDuration(wall)}</span>
+        <span className={styles.value} suppressHydrationWarning>{wall == null ? "—" : formatDuration(wall)}</span>
       </div>
       <div className={styles.cell}>
         <span className={styles.label}>Project</span>

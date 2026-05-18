@@ -19,10 +19,29 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
   const benchmark = run.benchmark;
   const pdfUrl = sourcePdfUrl(run);
   const reportUrl = finalReportUrl(run);
+  // Benchmark numbers are only authoritative once the pipeline reaches the
+  // `complete` stage — the final report-generator agent is what writes the
+  // real `overallScore`/`reproducedValue`. The workspace_fixture's demo_status
+  // template ships with preset success values (91.4% / 492.3) so that the
+  // empty-state UI looks populated; if a real run halts at Gate 2 we'd
+  // otherwise display those preset numbers as if the reproduction succeeded.
+  // Lesson from a real misleading display: a run that FAILED at Gate 2 showed
+  // "Reproduced With Caveats / 91.4% / 492.3" because nobody overwrote the
+  // template. Gate on the actual pipeline stage.
+  const pipelineComplete = run.payload?.summary.stage === "complete";
+  const verdictText = pipelineComplete
+    ? verdictLabel(benchmark?.verdict)
+    : run.status === "failed"
+      ? "Run halted"
+      : run.status === "stopped"
+        ? "Run stopped"
+        : "Pending — pipeline in progress";
   const score =
-    benchmark && benchmark.overallScore > 0 ? `${benchmark.overallScore.toFixed(1)}%` : "Pending";
+    pipelineComplete && benchmark && benchmark.overallScore > 0
+      ? `${benchmark.overallScore.toFixed(1)}%`
+      : "Pending";
   const delta =
-    benchmark && benchmark.reproducedValue > 0
+    pipelineComplete && benchmark && benchmark.reproducedValue > 0
       ? `${benchmark.deltaValue >= 0 ? "+" : ""}${benchmark.deltaValue.toFixed(1)}`
       : "pending";
 
@@ -71,11 +90,11 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
 
       <a className="final-report-link" href={reportUrl} target="_blank" rel="noreferrer">
         <span className="final-report-kicker">Final report</span>
-        <span className="final-report-title">
-          {benchmark ? verdictLabel(benchmark.verdict) : "Benchmark report"}
-        </span>
+        <span className="final-report-title">{verdictText}</span>
         <span className="final-report-copy">
-          Open the formatted Markdown report generated alongside the codebase.
+          {pipelineComplete
+            ? "Open the formatted Markdown report generated alongside the codebase."
+            : "The pipeline has not produced a final benchmark yet — the report link opens whatever artifacts exist so far."}
         </span>
         <span className="final-report-action">Open final report</span>
       </a>
@@ -95,11 +114,11 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
         <div className="metric-compare">
           <div>
             <span className="metric-label">Paper target</span>
-            <strong>{benchmark ? benchmark.targetValue.toFixed(1) : "n/a"}</strong>
+            <strong>{pipelineComplete && benchmark ? benchmark.targetValue.toFixed(1) : "n/a"}</strong>
           </div>
           <div>
             <span className="metric-label">Reproduced</span>
-            <strong>{benchmark && benchmark.reproducedValue > 0 ? benchmark.reproducedValue.toFixed(1) : "n/a"}</strong>
+            <strong>{pipelineComplete && benchmark && benchmark.reproducedValue > 0 ? benchmark.reproducedValue.toFixed(1) : "n/a"}</strong>
           </div>
           <div>
             <span className="metric-label">Delta</span>
@@ -108,7 +127,7 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
         </div>
         <div className="benchmark-verdict">
           <span className="status-dot" />
-          {verdictLabel(benchmark?.verdict)}
+          {verdictText}
         </div>
       </div>
     </div>

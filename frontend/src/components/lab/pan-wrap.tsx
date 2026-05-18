@@ -21,10 +21,10 @@ export function PanWrap({
   dashboardEvents: DashboardLiveEvent[];
   decisions: string[];
 }) {
-  const { wrapRef, dragRef, onMouseDown } = usePan();
+  const { wrapRef, dragRef, onPointerDown } = usePan();
 
   return (
-    <div ref={wrapRef} className="pan-wrap" onMouseDown={onMouseDown}>
+    <div ref={wrapRef} className="pan-wrap" onPointerDown={onPointerDown}>
       <LabCanvas
         run={run}
         stateMap={stateMap}

@@ -37,6 +37,7 @@ import { TopologyProvider, useTopologyContext } from "@/lib/pipeline/topology-co
 import { PresentationModeProvider, usePresentationMode, type PresentationMode } from "@/lib/presentation-mode";
 import { readUserPrefs, writeUserPref } from "@/lib/user-prefs";
 import { issueText } from "./shared-helpers";
+import { summariseFailure } from "./failure-summary";
 
 import "./lab-shell.css";
 
@@ -51,24 +52,93 @@ type LabShellProps = {
   presentationMode?: PresentationMode;
 };
 
+// Build agent_id → started_at(ms) map from telemetry so per-line timestamps
+// can be computed as `agent_start + (Ns)`. The (Ns) marker that backend
+// log lines carry is elapsed-since-agent-start, not since-run-start; using
+// the run-level updatedAt stamped every line with one frozen time and made
+// the live feed look paused. Regression of commit 33ddc51, which lived in
+// the now-split repro-lab-client.tsx.
+function agentStartIndex(run: LiveDemoRunState | null): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const record of run?.telemetry ?? []) {
+    const id = record.agent_id;
+    const startedAt = record.started_at;
+    if (!id || !startedAt) continue;
+    const ms = new Date(startedAt).getTime();
+    if (!Number.isFinite(ms)) continue;
+    // Keep the earliest start per agent so re-invoked agents anchor to
+    // their first appearance — matches the log's chronological ordering.
+    if (!index.has(id) || ms < (index.get(id) ?? Infinity)) {
+      index.set(id, ms);
+    }
+  }
+  return index;
+}
+
+// Lines with the elapsed marker: `[agent] (Ns) message`
+const LOG_LINE_RE = /^\[([^\]]+)\]\s+\((\d+)s\)/;
+// Agent-completion lines: `[agent] completed in Ns (...)`
+const COMPLETED_LINE_RE = /^\[([^\]]+)\]\s+completed\s+in\s+(\d+)s/;
+
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function parseLogEntries(run: LiveDemoRunState | null) {
   if (!run?.log) {
     return [];
   }
 
-  return run.log
+  const agentStarts = agentStartIndex(run);
+  const runStart = run.startedAt ? new Date(run.startedAt).getTime() : null;
+  const runUpdated = run.updatedAt ? new Date(run.updatedAt).getTime() : null;
+
+  const lines = run.log
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-80)
-    .reverse()
-    .map((line, index) => ({
-      id: `${run.projectId}-${index}`,
-      time: run.updatedAt ? new Date(run.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--:--",
-      // Log lines render verbatim — euphemising "failed" to "needs
-      // attention" here hid real failures from anyone reading the log.
-      msg: line
-    }));
+    .filter(Boolean);
+
+  // Two-pass: stamp in original order so unmatched lines (separators,
+  // transition markers like `> Starting: ...`, multi-line tool args)
+  // can carry the timestamp forward from the most recent matched line.
+  // Without this, ~half the feed reverted to runUpdated which is
+  // essentially frozen — making the live view look stuck.
+  let lastKnownMs: number | null = runStart;
+  const stamped = lines.map((line, index) => {
+    const match = line.match(LOG_LINE_RE) ?? line.match(COMPLETED_LINE_RE);
+    let ms: number | null = null;
+    if (match) {
+      const agentId = match[1];
+      const elapsedMs = Number(match[2]) * 1000;
+      const anchor = agentStarts.get(agentId) ?? runStart;
+      if (anchor != null && Number.isFinite(elapsedMs)) {
+        ms = anchor + elapsedMs;
+      }
+    }
+    if (ms == null) ms = lastKnownMs;
+    if (ms != null) lastKnownMs = ms;
+    return { line, ms, index };
+  });
+
+  return stamped.slice(-80).reverse().map((entry) => ({
+    id: `${run.projectId}-${entry.index}`,
+    time:
+      entry.ms != null
+        ? formatTime(entry.ms)
+        : runUpdated != null
+          ? formatTime(runUpdated)
+          : "--:--",
+    // Log lines render verbatim — euphemising "failed" to "needs
+    // attention" here hid real failures from anyone reading the log.
+    msg: entry.line
+  }));
+}
+
+// Humanise a snake_case stage id for display: `gate_2_passed` -> `Gate 2 Passed`.
+function humanizeStage(stageId: string): string {
+  return stageId
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function telemetryForSelectedNode(
@@ -108,13 +178,17 @@ function failedNodeIdForRun(
 }
 
 function RunOverview({
+  busy,
   error,
   logEntries,
+  onResume,
   run,
   stateMap
 }: {
+  busy: boolean;
   error: string | null;
   logEntries: Array<{ id: string; msg: string; time: string }>;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
   stateMap: Record<string, NodeState>;
 }) {
@@ -150,14 +224,26 @@ function RunOverview({
         ? "Run needs attention"
         : "Reproducing live backend run";
 
+  // Translate `paper_understood` -> `Stage 2 of 14: Paper Understood` so a
+  // glance at the header tells you where the pipeline is, not just the raw
+  // enum value the backend ships. Falls back to the raw id if the stage
+  // isn't in topology yet (defensive — topology is the source of truth).
+  const currentStageId = run.payload?.summary.stage;
+  const stageEntry = currentStageId
+    ? topology.stages.find((s) => s.id === currentStageId)
+    : undefined;
+  const stageCopy = currentStageId
+    ? stageEntry != null
+      ? `Stage ${stageEntry.order + 1} of ${topology.stages.length}: ${humanizeStage(currentStageId)}`
+      : `Current backend stage: ${humanizeStage(currentStageId)}`
+    : null;
+
   return (
     <div>
       <div className="eyebrow">Run</div>
       <div className="overview-title">{title}</div>
       <div className="overview-copy">
-        {run.payload?.summary.stage
-          ? `Current backend stage: ${run.payload.summary.stage}`
-          : run.sourceNote ?? "Waiting for the first backend update."}
+        {stageCopy ?? run.sourceNote ?? "Waiting for the first backend update."}
       </div>
       <div className="overview-grid">
         <Stat label="Done" value={totals.done} dot="var(--ink)" />
@@ -166,10 +252,11 @@ function RunOverview({
         <Stat label="Agents" value={layout.nodes.length} dot="var(--muted-2)" />
       </div>
       {error || run.error ? (
-        <div className="agent-section">
-          <div className="eyebrow">Issue</div>
-          <div className="agent-detail">{issueText(error ?? run.error)}</div>
-        </div>
+        <FailurePanel
+          rawError={error ?? run.error ?? ""}
+          busy={busy}
+          onResume={onResume}
+        />
       ) : null}
       {logEntries.length > 0 ? (
         <div className="agent-section">
@@ -238,12 +325,16 @@ function Stat({
 }
 
 function RightPanel({
+  busy,
   error,
+  onResume,
   run,
   selectedId,
   stateMap
 }: {
+  busy: boolean;
   error: string | null;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
@@ -276,7 +367,14 @@ function RightPanel({
               logEntries={logEntries}
             />
           ) : (
-            <RunOverview run={run} stateMap={stateMap} logEntries={logEntries} error={error} />
+            <RunOverview
+              run={run}
+              stateMap={stateMap}
+              logEntries={logEntries}
+              error={error}
+              busy={busy}
+              onResume={onResume}
+            />
           )}
         </div>
       </div>
@@ -315,17 +413,108 @@ function RightPanel({
 // running — it "follows" the pipeline as the active agent advances. Once
 // the user drags it, it stays put; an "anchor" control snaps it back to
 // following. Size is persisted; position resets to following each session.
+/**
+ * Renders a failed/halted run's error in a way the operator can act on:
+ * plain-English headline + explanation + remedy + (when applicable) a
+ * button that calls /api/demo/resume with the right config overrides.
+ * Raw error text is preserved behind a "Show technical details"
+ * disclosure so power users still have it.
+ *
+ * Replaces the prior bare `<div>{issueText(error)}</div>` which forced
+ * the operator to read a Python stack trace and figure out what to do.
+ */
+function FailurePanel({
+  rawError,
+  busy,
+  onResume
+}: {
+  rawError: string;
+  busy: boolean;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
+}) {
+  const summary = summariseFailure(rawError);
+  const [showRaw, setShowRaw] = useState(false);
+  if (!summary) {
+    return (
+      <div className="agent-section">
+        <div className="eyebrow">Issue</div>
+        <div className="agent-detail">{issueText(rawError)}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="agent-section" data-testid="failure-panel">
+      <div className="eyebrow">Issue · {summary.kind.replace(/_/g, " ")}</div>
+      {/* issueText keeps the existing "failed -> needs attention" euphemism
+          contract for user-visible copy. Raw error stays verbatim under
+          the technical-details disclosure for power users. */}
+      <div className="agent-task" style={{ marginTop: 4 }}>{issueText(summary.headline)}</div>
+      <div className="agent-detail" style={{ marginTop: 6 }}>{issueText(summary.explanation)}</div>
+      <div className="agent-detail" style={{ marginTop: 6, fontWeight: 500 }}>
+        Suggested fix: {summary.remedy}
+      </div>
+      {summary.action ? (
+        <div style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => {
+              if (summary.action) {
+                void onResume(summary.action.overrides);
+              }
+            }}
+            data-testid="failure-action"
+          >
+            {busy ? "Working…" : summary.action.label}
+          </button>
+        </div>
+      ) : null}
+      <div style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => setShowRaw((prev) => !prev)}
+          data-testid="failure-toggle-raw"
+        >
+          {showRaw ? "Hide technical details" : "Show technical details"}
+        </button>
+        {showRaw ? (
+          <pre
+            className="mono"
+            style={{
+              marginTop: 8,
+              padding: 10,
+              background: "var(--bg-2, #f6f6f7)",
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+              maxHeight: 240,
+              overflowY: "auto",
+              fontSize: 12
+            }}
+          >
+            {rawError}
+          </pre>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function WorkflowView({
   busy,
   dashboardEvents,
   error,
   onClear,
+  onResume,
   run
 }: {
   busy: boolean;
   dashboardEvents: DashboardLiveEvent[];
   error: string | null;
   onClear: () => Promise<void>;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
 }) {
   const { topology, layout } = useTopologyContext();
@@ -392,7 +581,14 @@ function WorkflowView({
             </div>
           }
           right={
-            <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
+            <RightPanel
+              run={run}
+              selectedId={selectedId}
+              stateMap={stateMap}
+              error={error}
+              busy={busy}
+              onResume={onResume}
+            />
           }
         />
       </div>
@@ -419,6 +615,8 @@ export function LabShell({
     dashboardEvents,
     startFixtureRun,
     startUploadedRun,
+    startArxivRun,
+    resumeRun,
     clearRun,
     resetToUpload: resetRun
   } = useRun(initialRun);
@@ -443,6 +641,7 @@ export function LabShell({
           <WorkflowView
             run={run}
             onClear={clearRun}
+            onResume={(overrides) => resumeRun(run.projectId, overrides)}
             busy={busy}
             error={error}
             dashboardEvents={dashboardEvents}
@@ -464,7 +663,11 @@ export function LabShell({
           model={model}
           models={initialModels}
           onArxivChange={setArxiv}
-          onArxivSubmit={() => void startFixtureRun(model)}
+          onArxivSubmit={() =>
+            arxiv.trim().length > 0
+              ? void startArxivRun(arxiv, model)
+              : void startFixtureRun(model)
+          }
           onFileSelected={(file) => void startUploadedRun(file, model)}
           onModelChange={(value) => {
             setModel(value);

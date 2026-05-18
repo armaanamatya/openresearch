@@ -7,9 +7,9 @@ These Pydantic models define the contract between agents.
 from __future__ import annotations
 
 import enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 # ---------------------------------------------------------------------------
@@ -23,13 +23,28 @@ class RiskLevel(str, enum.Enum):
     critical = "critical"
 
 
+def _coerce_risk_level(value: Any) -> Any:
+    # LLMs sometimes emit "low — scripts already…" or "low: rationale" instead
+    # of the bare enum value. Take the first token before whitespace, em/en-dash,
+    # or colon, lowercased. Non-strings pass through to Pydantic's normal handling.
+    if not isinstance(value, str):
+        return value
+    token = value
+    for sep in ("—", "–", ":", " ", "\t", "\n"):
+        token = token.split(sep, 1)[0]
+    return token.strip().lower()
+
+
+RiskLevelField = Annotated[RiskLevel, BeforeValidator(_coerce_risk_level)]
+
+
 class Ambiguity(BaseModel):
     """A detail missing or under-specified in the paper."""
     assumption_id: str = Field(description="e.g. A001")
     detail: str
     chosen_value: str | None = None
     evidence: list[str] = Field(default_factory=list)
-    risk: RiskLevel = RiskLevel.medium
+    risk: RiskLevelField = RiskLevel.medium
 
 
 class Assumption(BaseModel):
@@ -38,7 +53,7 @@ class Assumption(BaseModel):
     detail: str
     chosen_value: str
     evidence: list[str] = Field(default_factory=list)
-    risk: RiskLevel = RiskLevel.medium
+    risk: RiskLevelField = RiskLevel.medium
     verified_by: str | None = None
 
 
@@ -211,7 +226,7 @@ class ImprovementHypothesis(BaseModel):
     rationale: str
     expected_outcome: str
     compute_estimate: str = ""
-    risk: RiskLevel = RiskLevel.medium
+    risk: RiskLevelField = RiskLevel.medium
     expected_value_score: float = Field(
         default=0.5,
         ge=0.0,

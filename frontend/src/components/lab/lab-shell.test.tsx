@@ -30,14 +30,27 @@ describe("LabShell", () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true,
+        text: async () =>
+          JSON.stringify({
+            projectId: "ui_sdk_arxiv_demo_1",
+            outputDir: "runs/ui_sdk_arxiv_demo_1",
+            runMode: "sdk",
+            llmProvider: "anthropic",
+            sourceKind: "uploaded_pdf",
+            sourceLabel: "arxiv_2303.04137.pdf",
+            sourceNote: "fetched from arXiv URL",
+            status: "queued",
+            payload: null,
+            log: ""
+          }),
         json: async () => ({
-          projectId: "ui_sdk_fixture_demo_1",
-          outputDir: "runs/ui_sdk_fixture_demo_1",
+          projectId: "ui_sdk_arxiv_demo_1",
+          outputDir: "runs/ui_sdk_arxiv_demo_1",
           runMode: "sdk",
           llmProvider: "anthropic",
-          sourceKind: "workspace_fixture",
-          sourceLabel: "In-repo PPO workspace fixture",
-          sourceNote: "fixture",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "arxiv_2303.04137.pdf",
+          sourceNote: "fetched from arXiv URL",
           status: "queued",
           payload: null,
           log: ""
@@ -55,15 +68,25 @@ describe("LabShell", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /begin/i }));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/demo?mode=sdk&provider=anthropic&executionMode=efficient&sandbox=runpod&gpuMode=auto&model=sonnet",
-        { method: "POST" }
-      )
-    );
+    // The arxiv path now hits the dedicated /api/demo/arxiv proxy with a
+    // JSON body — the backend fetches the paper server-side (avoids browser
+    // CORS) and threads the bytes into the same upload pipeline as a real
+    // file drop. Regression: previously the handler ignored the URL and
+    // started the demo fixture instead.
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls;
+      const arxivCall = calls.find((c) => c[0] === "/api/demo/arxiv");
+      expect(arxivCall, JSON.stringify(calls)).toBeDefined();
+      const init = arxivCall![1] as RequestInit;
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body as string) as { url: string; mode: string; provider: string };
+      expect(body.url).toBe("https://arxiv.org/abs/2303.04137");
+      expect(body.mode).toBe("sdk");
+      expect(body.provider).toBe("anthropic");
+    });
 
     expect(
-      await screen.findByRole("heading", { name: /in-repo ppo workspace fixture/i })
+      await screen.findByRole("heading", { name: /arxiv_2303\.04137\.pdf/i })
     ).toBeInTheDocument();
     expect(screen.getByText(/agents complete/i)).toBeInTheDocument();
     expect(screen.getByText("Live activity")).toBeInTheDocument();
@@ -201,7 +224,12 @@ describe("LabShell", () => {
             logPath: "runs/prj_demo/code/logs/paperbench_eval.log"
           },
           status: "completed",
-          payload: null,
+          // ScriptPanel only trusts benchmark numbers once the pipeline
+          // reaches the `complete` stage (the final report-generator agent
+          // is what writes the real overallScore/reproducedValue). Without
+          // this signal the panel shows "Pending" to avoid the fixture's
+          // pre-baked success values leaking onto a halted run.
+          payload: { summary: { stage: "complete" } } as never,
           log: ""
         }}
       />
@@ -230,6 +258,66 @@ describe("LabShell", () => {
 
     expect(screen.getByText("report-generator activity")).toBeInTheDocument();
     expect(screen.getByText("Source PDF and final benchmark")).toBeInTheDocument();
+  });
+
+  it("does not leak the fixture's preset benchmark numbers when the pipeline halts before complete", () => {
+    // Regression: a real SDK run on the demo fixture halted at Gate 2
+    // (failed_reproduction) but the UI displayed the workspace_fixture's
+    // pre-baked success numbers (91.4% / 492.3 / "Reproduced With Caveats")
+    // because the demo_status.benchmark template was never overwritten.
+    // The fix gates the score render on payload.summary.stage === "complete".
+    render(
+      <LabShell
+        initialTopology={defaultTopologyFixture}
+        initialRun={{
+          projectId: "prj_halted",
+          outputDir: "runs/prj_halted",
+          runMode: "sdk",
+          llmProvider: "anthropic",
+          sourceKind: "workspace_fixture",
+          sourceLabel: "ReproLab PPO demo paper",
+          sourceNote: "demo",
+          sourcePdf: {
+            fileName: "reprolab-demo-paper.pdf",
+            title: "ReproLab PPO Reproducibility Demo",
+            sizeBytes: 2048,
+            sha256: "abcdef1234567890",
+            pageCount: 6,
+            runPath: "runs/prj_halted/raw_paper.pdf",
+            codePath: "runs/prj_halted/code/paper.pdf"
+          },
+          // Fixture's pre-baked success values — these are the template
+          // defaults, NOT the actual run's outcome.
+          benchmark: {
+            benchmarkName: "PaperBench-style final benchmark",
+            paperbenchTaskId: "reprolab-demo/ppo-cartpole-v1",
+            overallScore: 91.4,
+            targetMetric: "mean_reward",
+            targetValue: 475,
+            reproducedValue: 492.3,
+            deltaValue: 17.3,
+            verdict: "reproduced_with_caveats",
+            reportPath: "runs/prj_halted/code/final_benchmark_report.md",
+            comparisonPath: "runs/prj_halted/code/paperbench_comparison.json",
+            logPath: "runs/prj_halted/code/logs/paperbench_eval.log"
+          },
+          status: "completed",
+          // Pipeline halted before `complete` — these preset numbers must
+          // be suppressed.
+          payload: { summary: { stage: "gate_2_passed" } } as never,
+          log: ""
+        }}
+      />
+    );
+
+    // The misleading number must NOT appear anywhere.
+    expect(screen.queryByText("91.4%")).not.toBeInTheDocument();
+    expect(screen.queryByText("492.3")).not.toBeInTheDocument();
+    expect(screen.queryByText("+17.3")).not.toBeInTheDocument();
+    // The fixture's pre-baked verdict label must NOT leak either.
+    expect(screen.queryByText("Reproduced With Caveats")).not.toBeInTheDocument();
+    // Instead the score cell + benchmark row show "Pending"/"n/a".
+    expect(screen.getAllByText(/Pending/i).length).toBeGreaterThan(0);
   });
 
   it("uses needs-attention language for interrupted run states", () => {
@@ -449,5 +537,39 @@ describe("LabShell", () => {
     ).toBe("done");
     // Sanity: a completed run shows all 12 nodes done.
     expect(doneCount("complete")).toBe(12);
+  });
+
+  it("does not show '12/12 agents complete' when status=completed but stage halted before the final stage", () => {
+    // Regression: orchestrator sets status=completed whenever it exits to a
+    // verdict — including an honest Gate 2 failure at stage gate_2_passed
+    // (8/14). The old short-circuit "if status === 'completed' mark all done"
+    // misled users with a "12/12 agents complete" badge on runs that actually
+    // halted mid-pipeline. The fix gates the short-circuit on
+    // stage === "complete".
+    const nodes = defaultTopologyFixture.nodes.map((n) => ({ ...n, x: 0, y: 0 }));
+    const haltedAtGate2: LiveDemoRunState = {
+      projectId: "prj_halted_g2",
+      outputDir: "runs/prj_halted_g2",
+      runMode: "sdk",
+      sourceKind: "uploaded_pdf",
+      sourceLabel: "paper.pdf",
+      sourceNote: "",
+      status: "completed",
+      payload: { summary: { stage: "gate_2_passed" } } as never,
+      log: ""
+    };
+    const map = stateMapForRun(
+      haltedAtGate2,
+      nodes,
+      defaultTopologyFixture.improvement_path_ids
+    );
+    const doneCount = Object.values(map).filter((s) => s === "done").length;
+    // At gate_2_passed the upstream nodes (src/read/env/plan/impl) finished;
+    // improvement-path nodes + audit/report stay upcoming. Must NOT be 12.
+    expect(doneCount).toBeLessThan(nodes.length);
+    // Improvement-path nodes specifically must not be marked done.
+    for (const pathId of defaultTopologyFixture.improvement_path_ids) {
+      expect(map[pathId]).not.toBe("done");
+    }
   });
 });

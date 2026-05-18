@@ -59,7 +59,14 @@ export function stateMapForRun(
     return map;
   }
 
-  if (status === "completed") {
+  // `status === "completed"` means "the orchestrator exited to a verdict" —
+  // which fires for BOTH a successful full run AND an honest gate failure
+  // partway through (e.g. Gate 2 failed_reproduction at stage gate_2_passed,
+  // 8/14). Only short-circuit every node to "done" when the pipeline
+  // actually reached the final stage. Otherwise fall through to the
+  // per-stage logic so the workflow counter reflects real progress
+  // ("8/12 agents complete", not a misleading 12/12).
+  if (status === "completed" && stage === "complete") {
     mark(nodes.map((node) => node.id), "done");
     return map;
   }

@@ -269,8 +269,15 @@ def test_orchestrator_routes_supervisor_to_verification_runtime(tmp_path: Path) 
 
 
 def test_orchestrator_falls_back_to_openai_when_claude_limit_is_hit(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
+    # The .env may set REPROLAB_PROVIDER_FALLBACK_DISABLED=true for local
+    # dev; pin to False for this test which is specifically exercising the
+    # claude-limit -> openai fallback contract.
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
+    )
     claude_runtime = FailingRuntime(
         "anthropic",
         message="Claude Code returned an error result: success",
@@ -367,3 +374,229 @@ def test_orchestrator_converts_sdk_turn_cap_message_to_typed_exception(
         assert "Halfway" in exc.partial_output
     else:
         raise AssertionError("Expected AgentLimitExceeded")
+
+
+# ---------------------------------------------------------------------------
+# _provider_chain — only include the cross-provider fallback when its
+# credentials are configured. Regression: a run with only ANTHROPIC_API_KEY
+# died with a misleading openai 401 because the chain unconditionally
+# appended openai as a fallback and the engine tried it on the first
+# transient anthropic blip.
+# ---------------------------------------------------------------------------
+
+def test_provider_chain_omits_openai_when_no_openai_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant-xyz", "openai_api_key": "", "openai_admin_key": ""})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_anthropic_only",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
+def test_provider_chain_omits_anthropic_when_no_anthropic_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    # claude CLI absent so anthropic has no credentials
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_openai_only",
+        tmp_path,
+        runtime=FakeRuntime("openai"),
+    )
+
+    assert orchestrator._provider_chain("openai") == ["openai"]
+
+
+def test_provider_chain_includes_both_when_both_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    # The orchestrator-side settings lookup (for provider_fallback_disabled)
+    # is separate from the factory's; pin it to False so this test is
+    # robust against .env having the knob enabled.
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_both",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+
+def test_provider_chain_collapses_to_primary_when_fallback_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # REPROLAB_PROVIDER_FALLBACK_DISABLED=1 forces [primary] only. The
+    # operator's intent: "do not try the other provider, even if it has
+    # credentials". This is the right knob when env has a leftover invalid
+    # second key that would surface a misleading 401 mid-run.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    # Patch the orchestrator-side settings lookup separately because
+    # _provider_chain reads its own get_settings().
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": True, "agent_wall_clock_overrides": {}})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_fallback_off",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
+def test_provider_chain_excludes_runtime_marked_dead_providers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Runtime credential health (Track C): when the engine marks a
+    # provider dead after AuthenticationError on a fallback attempt,
+    # subsequent invocations within the same run must exclude it from
+    # the chain. The ProviderHealthMonitor is shared across all
+    # invocations of one orchestrator instance.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_dead_after_auth",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Before mark_dead: both providers in chain.
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+    orchestrator._provider_health.mark_dead("openai", reason="authentication: bad key")
+
+    # After mark_dead: openai dropped.
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
+def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Explicit claude_limit_fallback_runtime injection bypasses the env-cred
+    # check — callers wiring this are saying "trust me, this runtime works"
+    # (e.g. tests, or a hosted environment with a service-account harness).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "", "openai_admin_key": ""})(),
+    )
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_explicit_fallback",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+        claude_limit_fallback_runtime=FakeRuntime("openai"),
+    )
+
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+
+def test_wall_clock_for_returns_profile_default_when_no_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_default",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Efficient profile default is 1200s per agent.
+    assert orchestrator._wall_clock_for("baseline-implementation") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds
+
+
+def test_wall_clock_for_applies_per_agent_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {"baseline-implementation": 2400.0},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_override",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    assert orchestrator._wall_clock_for("baseline-implementation") == 2400.0
+    # Other agents still use the profile default.
+    assert orchestrator._wall_clock_for("paper-understanding") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds
+
+
+def test_wall_clock_for_falls_back_on_non_numeric_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {"baseline-implementation": "not-a-number"},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_bad",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Bad value -> log warning and fall back to profile default rather than crash.
+    assert orchestrator._wall_clock_for("baseline-implementation") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds

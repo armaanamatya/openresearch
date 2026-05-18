@@ -177,6 +177,68 @@ class FileLiveRunService:
             uploaded_paper=None,
         )
 
+    async def resume_run(
+        self,
+        project_id: str,
+        *,
+        request_overrides: dict[str, Any] | None = None,
+    ) -> LiveRunState | None:
+        """Re-spawn an orchestrator subprocess for an existing project_id.
+
+        The orchestrator's ``run(resume=True)`` is the default and auto-
+        resumes from the persisted pipeline_state.json checkpoint, so the
+        subprocess picks up at the last completed stage rather than
+        restarting from scratch. The original run config is read back from
+        the existing demo_status.json; ``request_overrides`` lets callers
+        bump knobs like ``executionMode=max`` to push past whatever caused
+        the original failure (e.g. a wall-clock timeout on baseline-
+        implementation).
+
+        Returns None if the project doesn't exist. Refuses to re-spawn
+        if the original process is still alive.
+        """
+        existing = await self.get_run(project_id)
+        if existing is None:
+            return None
+        if _pid_exists(existing.pid):
+            return existing
+        status = await asyncio.to_thread(self._read_status, project_id)
+        if status is None:
+            return None
+        merged = {
+            "mode": status.get("runMode", "offline"),
+            "provider": status.get("llmProvider", "anthropic"),
+            "verificationProvider": status.get("verificationProvider"),
+            "executionMode": status.get("executionMode", "efficient"),
+            "sandbox": status.get("sandboxMode", get_settings().default_sandbox),
+            "gpuMode": status.get("gpuMode", "auto"),
+            "model": status.get("model", "sonnet"),
+        }
+        if request_overrides:
+            for key in (
+                "mode", "provider", "verificationProvider",
+                "executionMode", "sandbox", "gpuMode", "model",
+            ):
+                value = request_overrides.get(key)
+                if value is not None:
+                    merged[key] = value
+        request = StartRunRequest(**{k: v for k, v in merged.items() if v is not None})
+        # Re-derive uploaded_paper from the persisted source-pdf record so
+        # _start_python_run can hand the same artifact back to the orchestrator
+        # without re-staging the upload.
+        uploaded_paper: dict[str, str] | None = None
+        src_pdf = status.get("sourcePdf") or {}
+        if status.get("sourceKind") == "uploaded_pdf" and src_pdf.get("runPath"):
+            uploaded_paper = {
+                "path": str(src_pdf["runPath"]),
+                "fileName": str(src_pdf.get("fileName") or "paper.pdf"),
+            }
+        return await self._start_python_run(
+            request,
+            project_id=project_id,
+            uploaded_paper=uploaded_paper,
+        )
+
     async def start_uploaded_run(
         self,
         request: StartRunRequest,
