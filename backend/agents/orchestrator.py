@@ -671,11 +671,46 @@ class ReproLabOrchestrator:
         return self._runtime
 
     def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
+        """Build the failover chain, dropping providers without credentials.
+
+        Previously this returned both providers unconditionally. When the
+        primary (e.g. anthropic) hit a transient rate limit, the resilience
+        engine failed over to the secondary (openai) and immediately died
+        inside `run_agent_with_resilience` with
+        ``ProviderConfigurationError: Provider 'openai' is not configured``,
+        ending the run instead of retrying on the primary after the limit
+        reset.
+
+        Filter at chain-construction time so the engine only retries on
+        providers we know are usable. The primary is always preserved (even
+        if its own credentials are missing) so the surfaced error message
+        names the actual misconfiguration rather than degenerating to "no
+        providers available."
+        """
+        from backend.agents.runtime.base import ProviderConfigurationError
+        from backend.agents.runtime.factory import validate_provider_credentials
+
         other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
         chain: list[ProviderName] = []
         for provider in (primary, other):
-            if provider not in chain:
-                chain.append(provider)
+            if provider in chain:
+                continue
+            try:
+                validate_provider_credentials(provider)
+            except ProviderConfigurationError as exc:
+                if provider == primary:
+                    # Keep the primary so the run fails with the precise
+                    # "primary not configured" error rather than an opaque
+                    # empty-chain error.
+                    chain.append(provider)
+                else:
+                    logger.info(
+                        "provider %r dropped from fallback chain (%s)",
+                        provider,
+                        exc,
+                    )
+                continue
+            chain.append(provider)
         return chain
 
     def _runtime_for_provider(
