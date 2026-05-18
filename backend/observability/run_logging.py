@@ -19,13 +19,14 @@ See docs/design/tier2-observability-plan.md for the broader plan.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 _LOGGING_CONFIGURED = False
@@ -130,3 +131,232 @@ def configure_root_logger() -> Optional[Path]:
 
         _LOGGING_CONFIGURED = True
         return run_dir
+
+
+# ---------------------------------------------------------------------------
+# Tier 2b — per-agent-invocation transcript recorder
+#
+# Captures the StreamText / StreamToolCall / StreamUsage events that
+# resilience/engine.py already produces during `runtime.run_agent(...)`,
+# and fans them into
+#
+#   <project_dir>/agents/<NN>-<agent_id>/
+#       prompt.md          # exact user_input passed to the runtime
+#       trace.log          # concatenated StreamText events
+#       tool_calls.jsonl   # one StreamToolCall per line
+#       usage.json         # latest StreamUsage frame
+#       result.txt         # final consolidated agent output
+#       meta.json          # agent_id, seq, started_at, ended_at, status, retries
+#
+# Threaded through the orchestrator + resilience engine via a contextvar so
+# we don't have to alter any public signatures. All recorder calls are
+# best-effort: an I/O failure inside the recorder must never bubble up
+# into the agent execution path.
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _safe_jsonable(x: Any) -> Any:
+    try:
+        json.dumps(x, ensure_ascii=False)
+        return x
+    except (TypeError, ValueError):
+        return repr(x)
+
+
+class AgentTranscriptRecorder:
+    """Owns one ``agents/<NN>-<agent_id>/`` directory for one invocation.
+
+    Use as a context manager so retries / cancellations / exceptions all
+    close the trace and tool_calls handles deterministically::
+
+        with AgentTranscriptRecorder(project_dir, "paper-understanding", 1, prompt) as rec:
+            set_recorder(rec)
+            ...                       # runtime.run_agent streams here
+            rec.finalize(output, "ok")
+    """
+
+    def __init__(
+        self,
+        project_dir: Path,
+        agent_id: str,
+        seq: int,
+        prompt: str,
+    ) -> None:
+        self.agent_id = agent_id
+        self.seq = seq
+        self.dir = project_dir / "agents" / f"{seq:02d}-{agent_id}"
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            (self.dir / "prompt.md").write_text(prompt, encoding="utf-8")
+            self._trace = (self.dir / "trace.log").open("a", encoding="utf-8")
+            self._tools = (self.dir / "tool_calls.jsonl").open(
+                "a", encoding="utf-8"
+            )
+            self._enabled = True
+        except OSError:
+            # Disk full, perms — degrade silently. The agent path keeps
+            # running; we just don't capture this invocation.
+            self._enabled = False
+            self._trace = None  # type: ignore[assignment]
+            self._tools = None  # type: ignore[assignment]
+        self.started_at = _now_iso()
+        self.msg_count = 0
+        self.tool_call_count = 0
+        self.text_chars = 0
+        self.retries = 0
+        self._finalized = False
+
+    # ---- context manager ----
+    def __enter__(self) -> "AgentTranscriptRecorder":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        # If finalize() wasn't called (e.g. exception escaped), record a
+        # best-effort "interrupted" outcome so the directory isn't an
+        # ambiguous half-state on disk.
+        if not self._finalized:
+            error = f"{exc_type.__name__}: {exc}" if exc_type else None
+            self.finalize(result="", status="interrupted", error=error)
+
+    # ---- streaming hooks (called from resilience/engine.py event loop) ----
+    def record_text(self, text: str) -> None:
+        if not self._enabled or not text:
+            return
+        try:
+            self._trace.write(text)
+            self._trace.flush()
+            self.text_chars += len(text)
+            self.msg_count += 1
+        except OSError:
+            pass
+
+    def record_tool(
+        self,
+        *,
+        tool_id: str,
+        tool_name: str,
+        tool_input: Any,
+    ) -> None:
+        if not self._enabled:
+            return
+        try:
+            line = json.dumps(
+                {
+                    "ts": _now_iso(),
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "tool_input": _safe_jsonable(tool_input),
+                },
+                ensure_ascii=False,
+            )
+            self._tools.write(line + "\n")
+            self._tools.flush()
+            self.tool_call_count += 1
+            self.msg_count += 1
+        except OSError:
+            pass
+
+    def record_usage(self, usage: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+        try:
+            (self.dir / "usage.json").write_text(
+                json.dumps(usage, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def record_retry(self, attempt: int, reason: str) -> None:
+        if not self._enabled:
+            return
+        try:
+            self._trace.write(f"\n--- retry {attempt} ({reason}) ---\n")
+            self._trace.flush()
+            self.retries += 1
+        except OSError:
+            pass
+
+    # ---- finalize (called from orchestrator._invoke_agent finally block) ----
+    def finalize(
+        self,
+        result: str,
+        status: str,
+        error: Optional[str] = None,
+    ) -> None:
+        if self._finalized:
+            return
+        self._finalized = True
+        if not self._enabled:
+            return
+        try:
+            (self.dir / "result.txt").write_text(result or "", encoding="utf-8")
+            (self.dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "agent_id": self.agent_id,
+                        "seq": self.seq,
+                        "started_at": self.started_at,
+                        "ended_at": _now_iso(),
+                        "status": status,
+                        "error": error,
+                        "msg_count": self.msg_count,
+                        "tool_call_count": self.tool_call_count,
+                        "text_chars": self.text_chars,
+                        "retries": self.retries,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        # Always close handles, even if writes failed.
+        for handle in (self._trace, self._tools):
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+
+
+# ----- contextvar plumbing ---------------------------------------------------
+
+_RECORDER_VAR: contextvars.ContextVar[Optional[AgentTranscriptRecorder]] = (
+    contextvars.ContextVar("reprolab_agent_recorder", default=None)
+)
+
+
+def get_recorder() -> Optional[AgentTranscriptRecorder]:
+    """Return the recorder for the current asyncio task, if any.
+
+    Returns ``None`` outside an active ``_invoke_agent`` scope OR when
+    REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is unset. Callers in
+    resilience/engine.py should treat ``None`` as "don't record" and
+    branch silently.
+    """
+    return _RECORDER_VAR.get()
+
+
+def set_recorder(rec: Optional[AgentTranscriptRecorder]) -> contextvars.Token:
+    """Install ``rec`` as the active recorder. Returns a token; pass it to
+    ``reset_recorder`` from the orchestrator's finally block to restore."""
+    return _RECORDER_VAR.set(rec)
+
+
+def reset_recorder(token: contextvars.Token) -> None:
+    _RECORDER_VAR.reset(token)
+
+
+def recording_enabled() -> bool:
+    """Whether per-agent transcripts should be captured.
+
+    Mirrors the configure_root_logger() gate — when no run_dir is set, we
+    skip all the recorder bookkeeping in the orchestrator hot path.
+    """
+    return _resolve_run_dir() is not None

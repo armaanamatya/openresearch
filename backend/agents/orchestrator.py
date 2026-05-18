@@ -449,6 +449,10 @@ class ReproLabOrchestrator:
         self._pipeline_started_at = datetime.now(timezone.utc)
         self._fallback_summary_path = self._project_dir / "fallback_summary.json"
         self._latest_agent_traces: dict[str, AgentExecutionTrace] = {}
+        # Tier 2b — monotonic counter for per-agent transcript directories.
+        # Reset to 0 here so the same orchestrator instance numbers
+        # 01-paper-understanding, 02-artifact-discovery, ... within a run.
+        self._agent_seq: int = 0
         self._hermes_audit_service = hermes_audit_service or HermesAuditService(
             client=NousHermesClient(runs_root=self.runs_root),
             storage=HermesAuditStorage(self.runs_root, project_id),
@@ -552,6 +556,30 @@ class ReproLabOrchestrator:
 
         self._dashboard.agent_started(agent_id, task_prompt[:120])
 
+        # Tier 2b — start a per-invocation transcript recorder. Best-effort:
+        # the recorder is env-gated (no-op when REPROLAB_LOG_DIR /
+        # REPROLAB_RUNS_ROOT is unset) and all its I/O is wrapped in
+        # try/except, so it can never break the agent path. The contextvar
+        # is what resilience/engine.py reads to fan StreamText / StreamToolCall
+        # / StreamUsage events into the dir.
+        from backend.observability.run_logging import (
+            AgentTranscriptRecorder,
+            recording_enabled,
+            set_recorder,
+            reset_recorder,
+        )
+        recorder: AgentTranscriptRecorder | None = None
+        recorder_token = None
+        if recording_enabled():
+            self._agent_seq += 1
+            recorder = AgentTranscriptRecorder(
+                project_dir=self._project_dir,
+                agent_id=agent_id,
+                seq=self._agent_seq,
+                prompt=task_prompt,
+            )
+            recorder_token = set_recorder(recorder)
+
         try:
             result_obj = await run_agent_with_resilience(
                 agent_id=agent_id,
@@ -577,9 +605,17 @@ class ReproLabOrchestrator:
                     summary_path=self._fallback_summary_path,
                 ),
             )
-        except Exception:
+        except Exception as exc:
+            if recorder is not None:
+                recorder.finalize(result="", status="error", error=f"{type(exc).__name__}: {exc}")
             self._dashboard.agent_failed(agent_id, f"Agent {agent_id} encountered an error")
             raise
+        finally:
+            if recorder_token is not None:
+                reset_recorder(recorder_token)
+
+        if recorder is not None:
+            recorder.finalize(result=result_obj.output_text, status="ok")
 
         result = result_obj.output_text
         if not result.strip():
