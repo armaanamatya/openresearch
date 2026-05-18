@@ -569,7 +569,7 @@ class ReproLabOrchestrator:
                 runtime_kwargs=RuntimeKwargs(
                     cwd=cwd_path,
                     max_turns=max_turns,
-                    wall_clock_seconds=self.execution_profile.agent_wall_clock_seconds,
+                    wall_clock_seconds=self._wall_clock_for(agent_id),
                     build_runtime_spec=build_runtime_spec,
                     telemetry=self._telemetry,
                     run_started_at=self._pipeline_started_at,
@@ -636,6 +636,30 @@ class ReproLabOrchestrator:
         if agent_id == "supervisor-verifier":
             return self._verification_runtime
         return self._runtime
+
+    def _wall_clock_for(self, agent_id: str) -> float | None:
+        """Per-agent wall-clock cap with settings override.
+
+        The execution profile's blanket cap (1200s for efficient, 3600s for
+        max) is too tight for some agents on complex papers — baseline-
+        implementation on the RLM paper hit 1200s with 1129 chars of
+        useful partial output. The per-agent override lets operators bump
+        only the heavy agent without paying the whole-run cost of
+        executionMode=max. Falls back to the profile default when no
+        override is configured.
+        """
+        from backend.config import get_settings as _get_settings
+        overrides = _get_settings().agent_wall_clock_overrides
+        if agent_id in overrides:
+            try:
+                return float(overrides[agent_id])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring non-numeric wall-clock override for %s: %r",
+                    agent_id,
+                    overrides[agent_id],
+                )
+        return self.execution_profile.agent_wall_clock_seconds
 
     def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
         # Only include the cross-provider fallback when its credentials are

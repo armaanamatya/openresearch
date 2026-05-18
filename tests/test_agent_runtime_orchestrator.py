@@ -276,7 +276,7 @@ def test_orchestrator_falls_back_to_openai_when_claude_limit_is_hit(
     # claude-limit -> openai fallback contract.
     monkeypatch.setattr(
         "backend.config.get_settings",
-        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
     )
     claude_runtime = FailingRuntime(
         "anthropic",
@@ -439,7 +439,7 @@ def test_provider_chain_includes_both_when_both_configured(
     # robust against .env having the knob enabled.
     monkeypatch.setattr(
         "backend.config.get_settings",
-        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
     )
 
     orchestrator = ReproLabOrchestrator(
@@ -468,7 +468,7 @@ def test_provider_chain_collapses_to_primary_when_fallback_disabled(
     # _provider_chain reads its own get_settings().
     monkeypatch.setattr(
         "backend.config.get_settings",
-        lambda **_: type("S", (), {"provider_fallback_disabled": True})(),
+        lambda **_: type("S", (), {"provider_fallback_disabled": True, "agent_wall_clock_overrides": {}})(),
     )
 
     orchestrator = ReproLabOrchestrator(
@@ -496,7 +496,7 @@ def test_provider_chain_excludes_runtime_marked_dead_providers(
     )
     monkeypatch.setattr(
         "backend.config.get_settings",
-        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
     )
 
     orchestrator = ReproLabOrchestrator(
@@ -528,7 +528,7 @@ def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds
     )
     monkeypatch.setattr(
         "backend.config.get_settings",
-        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+        lambda **_: type("S", (), {"provider_fallback_disabled": False, "agent_wall_clock_overrides": {}})(),
     )
 
     orchestrator = ReproLabOrchestrator(
@@ -539,3 +539,64 @@ def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds
     )
 
     assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+
+def test_wall_clock_for_returns_profile_default_when_no_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_default",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Efficient profile default is 1200s per agent.
+    assert orchestrator._wall_clock_for("baseline-implementation") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds
+
+
+def test_wall_clock_for_applies_per_agent_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {"baseline-implementation": 2400.0},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_override",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    assert orchestrator._wall_clock_for("baseline-implementation") == 2400.0
+    # Other agents still use the profile default.
+    assert orchestrator._wall_clock_for("paper-understanding") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds
+
+
+def test_wall_clock_for_falls_back_on_non_numeric_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {
+            "agent_wall_clock_overrides": {"baseline-implementation": "not-a-number"},
+            "provider_fallback_disabled": False,
+        })(),
+    )
+    orchestrator = ReproLabOrchestrator(
+        "prj_wc_bad",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Bad value -> log warning and fall back to profile default rather than crash.
+    assert orchestrator._wall_clock_for("baseline-implementation") == \
+        orchestrator.execution_profile.agent_wall_clock_seconds

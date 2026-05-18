@@ -62,6 +62,28 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         return await service.start_run(request)
 
+    @app.post("/runs/{project_id}/resume", status_code=202)
+    async def resume_run(
+        project_id: str,
+        request: ResumeRunRequest | None = None,
+        x_demo_secret: str | None = Header(default=None),
+    ):
+        """Re-spawn the orchestrator subprocess for an existing project.
+
+        The orchestrator's resume-from-checkpoint logic picks up at the
+        last completed stage. ``request_overrides`` (optional body) lets
+        callers bump e.g. executionMode=max to push past a wall-clock
+        failure without losing the work already done.
+        """
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
+        overrides: dict[str, Any] | None = None
+        if request is not None:
+            overrides = request.model_dump(exclude_none=True) or None
+        state = await service.resume_run(project_id, request_overrides=overrides)
+        if state is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return state
+
     @app.post("/runs/arxiv", status_code=202)
     async def start_arxiv_run(request: StartArxivRunRequest, x_demo_secret: str | None = Header(default=None)):
         """Fetch a paper from a URL (arXiv/openreview/etc) and start a run.
@@ -417,6 +439,23 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
 # --------------------------------------------------------------------------- #
 # Phase 2 request models (HEAD)
 # --------------------------------------------------------------------------- #
+
+class ResumeRunRequest(BaseModel):
+    """Body for ``POST /runs/{project_id}/resume``.
+
+    All fields optional — when None, the resumed run inherits the
+    original run's config (read from demo_status.json). Set fields
+    override that inheritance per-key.
+    """
+
+    mode: str | None = None
+    provider: str | None = None
+    verificationProvider: str | None = None
+    executionMode: str | None = None
+    sandbox: str | None = None
+    gpuMode: str | None = None
+    model: str | None = None
+
 
 class StartArxivRunRequest(BaseModel):
     """Body for ``POST /runs/arxiv``.

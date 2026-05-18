@@ -406,3 +406,58 @@ def test_runs_arxiv_accepts_pdf_with_octet_stream_content_type(monkeypatch) -> N
     client = TestClient(create_app(run_service=service))
     response = client.post("/runs/arxiv", json={"url": "https://example.com/paper"})
     assert response.status_code == 202
+
+
+# ---------------------------------------------------------------------------
+# /runs/{id}/resume — re-spawn orchestrator subprocess for an existing
+# project so the user can push past a wall-clock failure without losing
+# every earlier stage. The orchestrator auto-resumes from its on-disk
+# checkpoint, so the subprocess picks up at the last completed stage.
+# ---------------------------------------------------------------------------
+
+class _ResumableFakeService(FakeRunService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.resumed_project_id: str | None = None
+        self.resumed_overrides: dict | None = None
+
+    async def resume_run(
+        self,
+        project_id: str,
+        *,
+        request_overrides: dict | None = None,
+    ) -> LiveRunState | None:
+        if project_id != self.state.projectId:
+            return None
+        self.resumed_project_id = project_id
+        self.resumed_overrides = request_overrides
+        self.state.status = "queued"
+        return self.state
+
+
+def test_runs_resume_returns_state_when_project_exists() -> None:
+    service = _ResumableFakeService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/prj_api/resume", json={"executionMode": "max"})
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["projectId"] == "prj_api"
+    assert service.resumed_project_id == "prj_api"
+    assert service.resumed_overrides == {"executionMode": "max"}
+
+
+def test_runs_resume_accepts_empty_body() -> None:
+    # No overrides at all -> resume with the original config inherited.
+    service = _ResumableFakeService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/prj_api/resume")
+    assert response.status_code == 202
+    # Empty body collapses to None (no overrides field present).
+    assert service.resumed_overrides is None
+
+
+def test_runs_resume_404s_for_unknown_project() -> None:
+    service = _ResumableFakeService()
+    client = TestClient(create_app(run_service=service))
+    response = client.post("/runs/prj_does_not_exist/resume", json={})
+    assert response.status_code == 404

@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-4o"
     openai_reasoning_model: str = "o4-mini"
     agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
+    # Per-agent wall-clock cap overrides (seconds). Bumps the
+    # ExecutionProfile.agent_wall_clock_seconds for a specific agent so
+    # heavy stages like baseline-implementation on complex papers don't
+    # die at the profile's blanket 1200s. Example .env:
+    #   REPROLAB_AGENT_WALL_CLOCK_OVERRIDES='{"baseline-implementation": 2400}'
+    # Unset agents continue to use the profile default. Avoids forcing the
+    # whole run to executionMode=max when only one agent needs more time.
+    agent_wall_clock_overrides: dict[str, float] = Field(default_factory=dict)
     # Force the orchestrator's provider chain to [primary] only — no
     # cross-provider fallback. Useful when the operator only has working
     # credentials for one provider and the other key in env is invalid
