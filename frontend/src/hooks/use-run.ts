@@ -107,6 +107,7 @@ export interface UseRunResult {
   startFixtureRun: (model: DemoModelChoice) => Promise<void>;
   startUploadedRun: (file: File, model: DemoModelChoice) => Promise<void>;
   startArxivRun: (url: string, model: DemoModelChoice) => Promise<void>;
+  resumeRun: (projectId: string, overrides?: Record<string, string>) => Promise<void>;
   clearRun: () => Promise<void>;
   resetToUpload: () => void;
 }
@@ -423,6 +424,46 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
   }, [setRunUrl]);
 
+  const resumeRun = useCallback(
+    async (projectId: string, overrides: Record<string, string> = {}) => {
+      // Resume an existing run from its on-disk checkpoint — the orchestrator
+      // skips already-completed stages and only re-runs from the failure
+      // point. Overrides (e.g. {executionMode: "max"}) let the operator push
+      // past a wall-clock cap without losing the earlier agents' work.
+      setBusy(true);
+      setError(null);
+      try {
+        const response = await postRunRequest(
+          `/api/demo/resume?projectId=${encodeURIComponent(projectId)}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(overrides)
+          }
+        );
+        if (!response.ok) {
+          const raw = await response.text().catch(() => "");
+          let message = raw || "Unable to resume run";
+          try {
+            const payload = JSON.parse(raw) as { error?: string; detail?: string };
+            message = payload.error ?? payload.detail ?? message;
+          } catch {
+            /* keep raw text */
+          }
+          throw new Error(message);
+        }
+        const next = (await response.json()) as LiveDemoRunState;
+        setRun(next);
+        setRunUrl(next.projectId);
+        writeLastRun(next.projectId);
+      } catch (resumeError) {
+        setError(describeStartError(resumeError, "Unable to resume run"));
+        setBusy(false);
+      }
+    },
+    [setRunUrl]
+  );
+
   const clearRun = useCallback(async () => {
     setBusy(true);
     try {
@@ -436,5 +477,5 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
   }, [run, resetToUpload]);
 
-  return { run, busy, error, dashboardEvents, startFixtureRun, startUploadedRun, startArxivRun, clearRun, resetToUpload };
+  return { run, busy, error, dashboardEvents, startFixtureRun, startUploadedRun, startArxivRun, resumeRun, clearRun, resetToUpload };
 }

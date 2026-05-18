@@ -37,6 +37,7 @@ import { TopologyProvider, useTopologyContext } from "@/lib/pipeline/topology-co
 import { PresentationModeProvider, usePresentationMode, type PresentationMode } from "@/lib/presentation-mode";
 import { readUserPrefs, writeUserPref } from "@/lib/user-prefs";
 import { issueText } from "./shared-helpers";
+import { summariseFailure } from "./failure-summary";
 
 import "./lab-shell.css";
 
@@ -177,13 +178,17 @@ function failedNodeIdForRun(
 }
 
 function RunOverview({
+  busy,
   error,
   logEntries,
+  onResume,
   run,
   stateMap
 }: {
+  busy: boolean;
   error: string | null;
   logEntries: Array<{ id: string; msg: string; time: string }>;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
   stateMap: Record<string, NodeState>;
 }) {
@@ -247,10 +252,11 @@ function RunOverview({
         <Stat label="Agents" value={layout.nodes.length} dot="var(--muted-2)" />
       </div>
       {error || run.error ? (
-        <div className="agent-section">
-          <div className="eyebrow">Issue</div>
-          <div className="agent-detail">{issueText(error ?? run.error)}</div>
-        </div>
+        <FailurePanel
+          rawError={error ?? run.error ?? null}
+          busy={busy}
+          onResume={onResume}
+        />
       ) : null}
       {logEntries.length > 0 ? (
         <div className="agent-section">
@@ -319,12 +325,16 @@ function Stat({
 }
 
 function RightPanel({
+  busy,
   error,
+  onResume,
   run,
   selectedId,
   stateMap
 }: {
+  busy: boolean;
   error: string | null;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
   selectedId: string | null;
   stateMap: Record<string, NodeState>;
@@ -357,7 +367,14 @@ function RightPanel({
               logEntries={logEntries}
             />
           ) : (
-            <RunOverview run={run} stateMap={stateMap} logEntries={logEntries} error={error} />
+            <RunOverview
+              run={run}
+              stateMap={stateMap}
+              logEntries={logEntries}
+              error={error}
+              busy={busy}
+              onResume={onResume}
+            />
           )}
         </div>
       </div>
@@ -396,17 +413,108 @@ function RightPanel({
 // running — it "follows" the pipeline as the active agent advances. Once
 // the user drags it, it stays put; an "anchor" control snaps it back to
 // following. Size is persisted; position resets to following each session.
+/**
+ * Renders a failed/halted run's error in a way the operator can act on:
+ * plain-English headline + explanation + remedy + (when applicable) a
+ * button that calls /api/demo/resume with the right config overrides.
+ * Raw error text is preserved behind a "Show technical details"
+ * disclosure so power users still have it.
+ *
+ * Replaces the prior bare `<div>{issueText(error)}</div>` which forced
+ * the operator to read a Python stack trace and figure out what to do.
+ */
+function FailurePanel({
+  rawError,
+  busy,
+  onResume
+}: {
+  rawError: string;
+  busy: boolean;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
+}) {
+  const summary = summariseFailure(rawError);
+  const [showRaw, setShowRaw] = useState(false);
+  if (!summary) {
+    return (
+      <div className="agent-section">
+        <div className="eyebrow">Issue</div>
+        <div className="agent-detail">{issueText(rawError)}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="agent-section" data-testid="failure-panel">
+      <div className="eyebrow">Issue · {summary.kind.replace(/_/g, " ")}</div>
+      {/* issueText keeps the existing "failed -> needs attention" euphemism
+          contract for user-visible copy. Raw error stays verbatim under
+          the technical-details disclosure for power users. */}
+      <div className="agent-task" style={{ marginTop: 4 }}>{issueText(summary.headline)}</div>
+      <div className="agent-detail" style={{ marginTop: 6 }}>{issueText(summary.explanation)}</div>
+      <div className="agent-detail" style={{ marginTop: 6, fontWeight: 500 }}>
+        Suggested fix: {summary.remedy}
+      </div>
+      {summary.action ? (
+        <div style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={() => {
+              if (summary.action) {
+                void onResume(summary.action.overrides);
+              }
+            }}
+            data-testid="failure-action"
+          >
+            {busy ? "Working…" : summary.action.label}
+          </button>
+        </div>
+      ) : null}
+      <div style={{ marginTop: 10 }}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => setShowRaw((prev) => !prev)}
+          data-testid="failure-toggle-raw"
+        >
+          {showRaw ? "Hide technical details" : "Show technical details"}
+        </button>
+        {showRaw ? (
+          <pre
+            className="mono"
+            style={{
+              marginTop: 8,
+              padding: 10,
+              background: "var(--bg-2, #f6f6f7)",
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+              maxHeight: 240,
+              overflowY: "auto",
+              fontSize: 12
+            }}
+          >
+            {rawError}
+          </pre>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function WorkflowView({
   busy,
   dashboardEvents,
   error,
   onClear,
+  onResume,
   run
 }: {
   busy: boolean;
   dashboardEvents: DashboardLiveEvent[];
   error: string | null;
   onClear: () => Promise<void>;
+  onResume: (overrides: Record<string, string>) => Promise<void>;
   run: LiveDemoRunState;
 }) {
   const { topology, layout } = useTopologyContext();
@@ -473,7 +581,14 @@ function WorkflowView({
             </div>
           }
           right={
-            <RightPanel run={run} selectedId={selectedId} stateMap={stateMap} error={error} />
+            <RightPanel
+              run={run}
+              selectedId={selectedId}
+              stateMap={stateMap}
+              error={error}
+              busy={busy}
+              onResume={onResume}
+            />
           }
         />
       </div>
@@ -501,6 +616,7 @@ export function LabShell({
     startFixtureRun,
     startUploadedRun,
     startArxivRun,
+    resumeRun,
     clearRun,
     resetToUpload: resetRun
   } = useRun(initialRun);
@@ -525,6 +641,7 @@ export function LabShell({
           <WorkflowView
             run={run}
             onClear={clearRun}
+            onResume={(overrides) => resumeRun(run.projectId, overrides)}
             busy={busy}
             error={error}
             dashboardEvents={dashboardEvents}
