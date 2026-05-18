@@ -253,7 +253,7 @@ function RunOverview({
       </div>
       {error || run.error ? (
         <FailurePanel
-          rawError={error ?? run.error ?? null}
+          rawError={error ?? run.error ?? ""}
           busy={busy}
           onResume={onResume}
         />
