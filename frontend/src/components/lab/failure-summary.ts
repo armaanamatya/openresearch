@@ -22,6 +22,7 @@ export type FailureKind =
   | "budget"
   | "disk_full"
   | "rate_limit"
+  | "docker_unreachable"
   | "unknown";
 
 export interface FailureAction {
@@ -51,6 +52,7 @@ const VALIDATION_RE = /ValidationError|pydantic_core/i;
 const BUDGET_RE = /BudgetExhausted|budget cap/i;
 const DISK_RE = /no space left on device|ENOSPC/i;
 const RATE_LIMIT_RE = /RateLimited|rate.limit|429\b|insufficient_quota/i;
+const DOCKER_UNREACHABLE_RE = /Docker daemon is not reachable|Cannot connect to the Docker daemon|docker.*FileNotFoundError.*docker\.sock|Error while fetching server API version/i;
 
 export function summariseFailure(rawError: string | null | undefined): FailureSummary | null {
   if (!rawError) return null;
@@ -141,6 +143,23 @@ export function summariseFailure(rawError: string | null | undefined): FailureSu
       remedy:
         `Bump REPROLAB_RUN_BUDGET_USD or run-budget settings, restart the ` +
         `backend, and resume.`,
+      action: null
+    };
+  }
+
+  if (DOCKER_UNREACHABLE_RE.test(error)) {
+    return {
+      kind: "docker_unreachable",
+      headline: "Docker daemon is not reachable from the backend",
+      explanation:
+        `The orchestrator subprocess couldn't open the Docker socket — usually ` +
+        `this means the daemon isn't running, OR the default socket symlink at ` +
+        `/var/run/docker.sock points at a runtime (OrbStack/colima) that isn't ` +
+        `currently up while another runtime (Docker Desktop) is.`,
+      remedy:
+        `Start the runtime your shell uses (open Docker Desktop or OrbStack), ` +
+        `OR set DOCKER_HOST to the live socket and restart the backend. On ` +
+        `macOS Docker Desktop's socket is usually ~/.docker/run/docker.sock.`,
       action: null
     };
   }

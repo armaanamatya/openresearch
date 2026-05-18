@@ -54,6 +54,17 @@ describe("summariseFailure", () => {
     expect(summary?.action?.endpoint).toBe("resume");
   });
 
+  it("recognises Docker-unreachable failures from the sandbox preflight", () => {
+    const raw =
+      "Sandbox preflight failed: Docker daemon is not reachable from this Python environment. ... " +
+      "Original error: Error while fetching server API version: ('Connection aborted.', FileNotFoundError(2, 'No such file or directory'))";
+    const summary = summariseFailure(raw);
+    expect(summary?.kind).toBe("docker_unreachable");
+    expect(summary?.remedy).toMatch(/Docker Desktop|OrbStack|DOCKER_HOST/);
+    // No automated action — restart the daemon / fix env is operator work.
+    expect(summary?.action).toBeNull();
+  });
+
   it("recognises disk-full from Docker build", () => {
     const summary = summariseFailure(
       "docker: failed to register layer: no space left on device"
