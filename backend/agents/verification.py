@@ -92,7 +92,7 @@ def verify_environment(
     if baseline_result.dockerfile_path:
         df_path = Path(baseline_result.dockerfile_path)
         if df_path.exists():
-            content = df_path.read_text()
+            content = df_path.read_text(encoding="utf-8")
             evidence_refs.append(str(df_path))
             if "FROM " in content:
                 findings.append("Valid Dockerfile with base image")
@@ -346,7 +346,7 @@ def run_improvement_gate_offline(
 def _load_command_log(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     entries: list[dict[str, Any]] = []
     mismatches: list[str] = []
-    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         try:
@@ -369,7 +369,7 @@ def _load_command_log(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 def _load_provenance(path: Path) -> tuple[dict[str, Any], list[str]]:
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}, ["provenance.json is not valid JSON"]
     if not isinstance(payload, dict):

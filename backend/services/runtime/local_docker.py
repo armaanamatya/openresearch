@@ -99,18 +99,28 @@ def _as_build_error(exc: Exception) -> Exception | None:
 
 def _extract_build_error(exc: Exception) -> str:
     """Pull a useful error string from a docker BuildError: the message plus
-    the tail (~40 lines) of the streamed build log."""
+    the tail (~40 lines) of the streamed build log.
+
+    Defensive: BuildError.msg is sometimes a dict (docker SDK has shipped
+    variants where the structured error payload leaks through as `.msg`)
+    and a `stream`/`error` entry in build_log can be a dict too. Coerce
+    every candidate to str so the returned value is always a string — the
+    orchestrator's repair loop does `error_text.strip()`, which would
+    AttributeError on a dict.
+    """
     lines: list[str] = []
     for entry in getattr(exc, "build_log", None) or []:
         if isinstance(entry, dict):
-            text = entry.get("stream") or entry.get("error") or ""
+            raw = entry.get("stream") or entry.get("error") or ""
         else:
-            text = str(entry)
-        text = text.rstrip()
+            raw = entry
+        text = str(raw).rstrip() if raw else ""
         if text:
             lines.append(text)
     tail = lines[-40:]
     msg = getattr(exc, "msg", None) or str(exc)
+    if not isinstance(msg, str):
+        msg = str(msg)
     return msg + "\n" + "\n".join(tail) if tail else msg
 
 

@@ -73,7 +73,7 @@ def run_offline(
         f"[INFO] Mean reward: {metrics.get('mean_reward', 0)}\n"
         f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment completed\n"
     )
-    (baseline_dir / "logs" / "run.log").write_text(log_content)
+    (baseline_dir / "logs" / "run.log").write_text(log_content, encoding="utf-8")
 
     # Write structured commands.log (JSONL)
     commands = baseline_result.commands_to_run or ["python train.py"]
@@ -133,7 +133,7 @@ def run_offline_failure(
 
     # Write partial log
     (baseline_dir / "logs" / "run.log").write_text(
-        f"[ERROR] {error_message}\n"
+        f"[ERROR] {error_message}\n", encoding="utf-8"
     )
     for command in baseline_result.commands_to_run or ["python train.py"]:
         append_command_log(
@@ -246,7 +246,7 @@ async def run_with_runtime(
     sandbox = None
     command_results: list[dict[str, Any]] = []
     run_log_path = logs_dir / "run.log"
-    run_log_path.write_text("")
+    run_log_path.write_text("", encoding="utf-8")
     try:
         sandbox = await service.create_sandbox(CreateSandbox(config=config))
         for idx, command in enumerate(commands, start=1):
@@ -259,8 +259,8 @@ async def run_with_runtime(
             )
             stdout_path = logs_dir / f"command_{idx:03d}.stdout.log"
             stderr_path = logs_dir / f"command_{idx:03d}.stderr.log"
-            stdout_path.write_text(result.stdout)
-            stderr_path.write_text(result.stderr)
+            stdout_path.write_text(result.stdout, encoding="utf-8")
+            stderr_path.write_text(result.stderr, encoding="utf-8")
             with run_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(f"$ {command}\n")
                 if result.stdout:
@@ -301,7 +301,7 @@ async def run_with_runtime(
                 )
 
         metrics_path = baseline_dir / "metrics.json"
-        metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
         plots = sorted(str(path) for path in (baseline_dir / "plots").glob("*") if path.is_file())
         provenance = _provenance_payload(
             project_id,
@@ -472,11 +472,11 @@ async def run_with_sdk(
     # Try to read artifacts
     artifacts_path = baseline_dir / "artifacts.json"
     if artifacts_path.exists():
-        return ExperimentArtifacts(**json.loads(artifacts_path.read_text()))
+        return ExperimentArtifacts(**json.loads(artifacts_path.read_text(encoding="utf-8")))
 
     metrics_path = baseline_dir / "metrics.json"
     if metrics_path.exists():
-        metrics = json.loads(metrics_path.read_text())
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         return ExperimentArtifacts(
             metrics=metrics,
             log_path=str(baseline_dir / "logs" / "run.log"),

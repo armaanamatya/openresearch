@@ -218,6 +218,13 @@ async def _run_single_attempt(
     success = False
     error_message = ""
 
+    # Tier 2b — fan stream events into the per-agent transcript recorder
+    # (set by orchestrator._invoke_agent via contextvar). Returns None when
+    # REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is unset, in which case the
+    # rec.record_* branches no-op. Imported once outside the hot loop.
+    from backend.observability.run_logging import get_recorder
+    rec = get_recorder()
+
     print(f"  [{agent_id}] starting ({runtime.provider_name})...", file=sys.stderr, flush=True)
     try:
         timeout_ctx = (
@@ -232,6 +239,8 @@ async def _run_single_attempt(
                 if isinstance(event, StreamText):
                     collected_text.append(event.text)
                     trace_lines.append(event.text)
+                    if rec is not None:
+                        rec.record_text(event.text)
                     snippet = event.text[:120].replace("\n", " ").strip()
                     if snippet:
                         print(
@@ -255,13 +264,22 @@ async def _run_single_attempt(
                     tool_info = _tool_info(event)
                     tool_calls.append(tool_info)
                     trace_lines.append(f"tool: {tool_info}")
+                    if rec is not None:
+                        rec.record_tool(
+                            tool_id=event.tool_id,
+                            tool_name=event.tool_name,
+                            tool_input=event.tool_input,
+                        )
                     print(
                         f"  [{agent_id}] ({elapsed:.0f}s) tool: {tool_info}",
                         file=sys.stderr,
                         flush=True,
                     )
                 elif isinstance(event, StreamUsage):
-                    usage.update(coerce_usage(event.as_dict()))
+                    coerced = coerce_usage(event.as_dict())
+                    usage.update(coerced)
+                    if rec is not None:
+                        rec.record_usage(coerced)
         success = True
         health.record_success(runtime.provider_name)
         output = "\n".join(collected_text)

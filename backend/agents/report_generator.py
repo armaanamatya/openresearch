@@ -1028,10 +1028,10 @@ def write_final_report(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = output_dir / "final_report.json"
-    json_path.write_text(report.model_dump_json(indent=2))
+    json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
 
     md_path = output_dir / "final_report.md"
-    md_path.write_text(render_report_markdown(report))
+    md_path.write_text(render_report_markdown(report), encoding="utf-8")
 
     logger.info("Final report written: %s, %s", json_path, md_path)
     return json_path, md_path

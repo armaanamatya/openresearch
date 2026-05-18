@@ -38,8 +38,56 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
 
 def create_app(*, run_service: Any | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
+    import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
     settings = get_settings()
-    service = run_service or FileLiveRunService()
+    # Tier 2a — install pipeline.log + pipeline.jsonl on the root logger when
+    # REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is set. No-op otherwise.
+    from backend.observability.run_logging import configure_root_logger
+    configure_root_logger()
+
+    # Resolve runs_root with a direct os.environ.get fallback. The Settings
+    # singleton (`_settings_cache`) is per-process; under uvicorn --reload on
+    # Windows the reloader and the worker are SEPARATE processes and the
+    # worker's get_settings() apparently returned None earlier despite the
+    # env var being baked into the cmd shim. Reading os.environ directly
+    # here removes Settings as a possible failure point, and we still benefit
+    # from Settings when env is unset (e.g. tests).
+    env_runs_root = _os.environ.get("REPROLAB_RUNS_ROOT")
+    effective_runs_root = settings.runs_root
+    if effective_runs_root is None and env_runs_root:
+        effective_runs_root = _Path(env_runs_root)
+
+    # Diagnostic + marker. The print goes to backend.log; the marker file
+    # captures the FULL story per-process so we can compare reloader vs
+    # worker. backend.log only seems to capture stdout from one of them.
+    print(
+        f"[reprolab] runs_root: settings={settings.runs_root!r} "
+        f"env={env_runs_root!r} effective={effective_runs_root!r} "
+        f"pid={_os.getpid()} cwd={_os.getcwd()!r}",
+        flush=True,
+    )
+    try:
+        marker_root = (
+            effective_runs_root if effective_runs_root else _Path("logs") / "_no_runs_root"
+        )
+        marker_root.mkdir(parents=True, exist_ok=True)
+        (marker_root / f"_create_app_pid{_os.getpid()}.txt").write_text(
+            f"settings.runs_root={settings.runs_root!r}\n"
+            f"env REPROLAB_RUNS_ROOT={env_runs_root!r}\n"
+            f"effective={effective_runs_root!r}\n"
+            f"cwd={_os.getcwd()}\n"
+            f"argv={_sys.argv}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    # Honor REPROLAB_RUNS_ROOT so dev.ps1 / dev.sh actually colocate pipeline
+    # workspaces with the launch's server logs. When unset, FileLiveRunService
+    # falls back to <repo>/runs as before.
+    service = run_service or FileLiveRunService(runs_root=effective_runs_root)
 
     app = FastAPI(
         title="ReproLab Agent",
