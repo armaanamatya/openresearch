@@ -20,6 +20,7 @@ from backend.agents.resilience.context import (
 )
 from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
 from backend.agents.resilience.failures import (
+    AuthenticationError,
     BudgetExhausted,
     FatalRuntimeFailure,
     RuntimeFailure,
@@ -153,6 +154,31 @@ async def run_agent_with_resilience(
                 agent_id=agent_id,
             )
         if isinstance(failure, (FatalRuntimeFailure, BudgetExhausted)):
+            # AuthenticationError on a NON-primary provider is a config
+            # error the operator can't fix mid-run (wrong key in env), but
+            # the run itself can still succeed on the primary. Mark the
+            # provider dead for the rest of this monitor's lifetime so we
+            # don't surface a misleading 401 as the run's terminal error,
+            # then reset to primary and continue. The same error on the
+            # PRIMARY provider is fatal — there's nothing left to try.
+            if (
+                isinstance(failure, AuthenticationError)
+                and current_provider != primary_provider
+                and not health.is_dead(primary_provider)
+            ):
+                health.mark_dead(
+                    current_provider,
+                    reason=f"authentication: {str(failure)[:120]}",
+                )
+                _mark_last_attempt(
+                    context,
+                    "provider_dead_skip",
+                    RecoveryDecision(action="fail", target_provider=None),
+                )
+                current_provider = primary_provider
+                current_max_turns = runtime_kwargs.max_turns
+                _write_summary(runtime_kwargs.summary_path, context, ledger, health)
+                continue
             raise failure
 
         handled = False

@@ -658,6 +658,19 @@ class ReproLabOrchestrator:
         for provider in (primary, other):
             if provider in chain:
                 continue
+            # Runtime-acquired deadness: when a prior agent invocation in
+            # this run hit AuthenticationError on this provider, the engine
+            # marks it dead via ProviderHealthMonitor. Future invocations
+            # then exclude it from the chain so we don't keep paying for
+            # the same 401. Primary stays in the chain even if dead so the
+            # engine can surface a clean fatal rather than an empty chain.
+            if provider != primary and self._provider_health.is_dead(provider):
+                logger.info(
+                    "Provider %s excluded from %s fallback chain (marked dead this run)",
+                    provider,
+                    primary,
+                )
+                continue
             if provider != primary and not has_provider_credentials(provider):
                 # Pre-cached fallback runtimes (e.g. ``claude_limit_fallback_runtime``
                 # passed by the caller) remain valid even when env creds are absent;

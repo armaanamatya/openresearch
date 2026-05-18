@@ -269,8 +269,15 @@ def test_orchestrator_routes_supervisor_to_verification_runtime(tmp_path: Path) 
 
 
 def test_orchestrator_falls_back_to_openai_when_claude_limit_is_hit(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
+    # The .env may set REPROLAB_PROVIDER_FALLBACK_DISABLED=true for local
+    # dev; pin to False for this test which is specifically exercising the
+    # claude-limit -> openai fallback contract.
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+    )
     claude_runtime = FailingRuntime(
         "anthropic",
         message="Claude Code returned an error result: success",
@@ -427,6 +434,13 @@ def test_provider_chain_includes_both_when_both_configured(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
     )
+    # The orchestrator-side settings lookup (for provider_fallback_disabled)
+    # is separate from the factory's; pin it to False so this test is
+    # robust against .env having the knob enabled.
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+    )
 
     orchestrator = ReproLabOrchestrator(
         "prj_chain_both",
@@ -466,6 +480,39 @@ def test_provider_chain_collapses_to_primary_when_fallback_disabled(
     assert orchestrator._provider_chain("anthropic") == ["anthropic"]
 
 
+def test_provider_chain_excludes_runtime_marked_dead_providers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Runtime credential health (Track C): when the engine marks a
+    # provider dead after AuthenticationError on a fallback attempt,
+    # subsequent invocations within the same run must exclude it from
+    # the chain. The ProviderHealthMonitor is shared across all
+    # invocations of one orchestrator instance.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "sk-openai", "openai_admin_key": ""})(),
+    )
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
+    )
+
+    orchestrator = ReproLabOrchestrator(
+        "prj_chain_dead_after_auth",
+        tmp_path,
+        runtime=FakeRuntime("anthropic"),
+    )
+    # Before mark_dead: both providers in chain.
+    assert orchestrator._provider_chain("anthropic") == ["anthropic", "openai"]
+
+    orchestrator._provider_health.mark_dead("openai", reason="authentication: bad key")
+
+    # After mark_dead: openai dropped.
+    assert orchestrator._provider_chain("anthropic") == ["anthropic"]
+
+
 def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -478,6 +525,10 @@ def test_provider_chain_honours_explicit_fallback_runtime_even_without_env_creds
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: type("S", (), {"anthropic_api_key": "sk-ant", "openai_api_key": "", "openai_admin_key": ""})(),
+    )
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda **_: type("S", (), {"provider_fallback_disabled": False})(),
     )
 
     orchestrator = ReproLabOrchestrator(
