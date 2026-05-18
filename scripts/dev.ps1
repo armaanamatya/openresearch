@@ -88,14 +88,22 @@ function Write-Utf8NoBom {
 }
 
 function Free-Port {
+    # Tree-kill via taskkill /F /T because Stop-Process -Force can silently
+    # fail (e.g., process in a weird state, elevated children) and leave
+    # zombie listeners that hold the port. Verified on Windows 11 / PS 5.1:
+    # an old uvicorn worker can survive Stop-Process and keep serving
+    # requests on :8000 — and dev.ps1's new backend then silently binds
+    # nothing and the user's lab UI talks to the zombie with stale state.
     param([int]$Port)
     try {
-        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                try {
-                    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
-                } catch {}
-            }
+        $owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+        foreach ($procId in $owners) {
+            if ($procId -le 0) { continue }
+            Start-Process -FilePath taskkill.exe `
+                -ArgumentList '/F','/T','/PID',$procId `
+                -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+        }
     } catch {}
 }
 
