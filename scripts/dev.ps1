@@ -119,13 +119,31 @@ function Write-CmdShim {
     # Writes a .cmd file we can hand to Start-Process. Bypasses the
     # PowerShell-to-cmd quoting layer that made earlier attempts fail with
     # "The filename, directory name, or volume label syntax is incorrect."
+    #
+    # Also bakes REPROLAB_RUNS_ROOT and friends into the .cmd body. In
+    # principle PowerShell's $env:X should propagate through Start-Process
+    # to a cmd.exe child, but in practice (verified on Windows 11 / PS 5.1)
+    # the inheritance is unreliable: a backend launched via this shim
+    # observed self.runs_root resolved to .\runs instead of the launcher's
+    # logs\<TS>\ even though the parent PowerShell had $env:REPROLAB_RUNS_ROOT
+    # set. Setting the vars inside the shim removes that whole class of bug
+    # and makes the .cmd a fully self-describing artifact.
     param(
         [string]$Path,
         [string]$WorkDir,
         [string]$Command,
         [string]$LogPath
     )
-    $body = "@echo off`r`ncd /d `"$WorkDir`"`r`n$Command > `"$LogPath`" 2>&1`r`n"
+    $env_block = ""
+    foreach ($name in @('REPROLAB_RUNS_ROOT','PYTHONUTF8','PYTHONIOENCODING','REPROLAB_BACKEND_URL')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($null -ne $value -and $value -ne '') {
+            # cmd `set "VAR=value"` quoting handles spaces and special chars
+            # in $value safely (the inner quotes scope the assignment).
+            $env_block += "set `"$name=$value`"`r`n"
+        }
+    }
+    $body = "@echo off`r`n" + $env_block + "cd /d `"$WorkDir`"`r`n$Command > `"$LogPath`" 2>&1`r`n"
     [System.IO.File]::WriteAllText($Path, $body, (New-Object System.Text.ASCIIEncoding))
 }
 
