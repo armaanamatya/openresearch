@@ -30,7 +30,11 @@ export function usePan() {
   }, []);
 
   useEffect(() => {
-    function onMove(event: MouseEvent) {
+    // PointerEvent unifies mouse / trackpad / touch / pen so the canvas pans
+    // reliably across input types. Previously only MouseEvent was wired
+    // which broke on devices where pointer-only events fire (trackpads in
+    // certain modes, tablets, some browser configurations).
+    function onMove(event: PointerEvent) {
       const drag = dragRef.current;
       if (!drag.active || !wrapRef.current) return;
       wrapRef.current.scrollLeft = drag.slx - (event.clientX - drag.sx);
@@ -45,16 +49,20 @@ export function usePan() {
         wrapRef.current.style.cursor = "grab";
       }
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, []);
 
-  function onMouseDown(event: React.MouseEvent<HTMLDivElement>) {
+  function onPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if ((event.target as HTMLElement).closest("[data-node]")) return;
+    // Ignore secondary buttons so right-click doesn't grab the canvas.
+    if (event.button !== 0 && event.pointerType === "mouse") return;
     const wrap = wrapRef.current;
     if (!wrap) return;
     dragRef.current = {
@@ -68,5 +76,5 @@ export function usePan() {
     wrap.style.cursor = "grabbing";
   }
 
-  return { wrapRef, dragRef, onMouseDown };
+  return { wrapRef, dragRef, onPointerDown };
 }

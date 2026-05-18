@@ -77,7 +77,12 @@ export function FloatingAgentWindow({
   const following = manualPos === null;
 
   const beginPointer = useCallback(
-    (mode: "drag" | "resize") => (event: React.MouseEvent) => {
+    (mode: "drag" | "resize") => (event: React.PointerEvent) => {
+      // PointerEvents fire for mouse, trackpad, touch, and pen — unifying
+      // the input handling so the window drags on every device without a
+      // separate touchstart code path. The pointer capture also keeps the
+      // drag glued to this element if the cursor leaves the canvas.
+      if (event.button !== 0 && event.pointerType === "mouse") return;
       event.preventDefault();
       event.stopPropagation();
       dragRef.current = {
@@ -89,7 +94,7 @@ export function FloatingAgentWindow({
         ow: size.w,
         oh: size.h
       };
-      const move = (moveEvent: MouseEvent) => {
+      const move = (moveEvent: PointerEvent) => {
         const drag = dragRef.current;
         if (!drag) return;
         const dx = moveEvent.clientX - drag.px;
@@ -105,11 +110,13 @@ export function FloatingAgentWindow({
       };
       const end = () => {
         dragRef.current = null;
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", end);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
       };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", end);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
     },
     [x, y, size.w, size.h]
   );
@@ -119,7 +126,7 @@ export function FloatingAgentWindow({
       className={`agent-window${following ? " following" : ""}`}
       style={{ left: x, top: y, width: size.w, height: size.h }}
     >
-      <header className="agent-window-head" onMouseDown={beginPointer("drag")}>
+      <header className="agent-window-head" onPointerDown={beginPointer("drag")}>
         <span className="agent-window-dot" aria-hidden="true" />
         <span className="agent-window-title">Live agents</span>
         <span className="agent-window-active" title={`Active agent: ${activeLabel}`}>
@@ -130,7 +137,7 @@ export function FloatingAgentWindow({
             type="button"
             className="agent-window-anchor"
             onClick={() => setManualPos(null)}
-            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
             title="Re-anchor to the active agent"
           >
             anchor
@@ -142,7 +149,7 @@ export function FloatingAgentWindow({
       </div>
       <span
         className="agent-window-resize"
-        onMouseDown={beginPointer("resize")}
+        onPointerDown={beginPointer("resize")}
         aria-hidden="true"
       />
     </aside>
