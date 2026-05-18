@@ -38,11 +38,22 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
 
 def create_app(*, run_service: Any | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
+    import os as _os
     settings = get_settings()
     # Tier 2a — install pipeline.log + pipeline.jsonl on the root logger when
     # REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is set. No-op otherwise.
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
+    # Diagnostic: print env-vs-settings on startup so it's trivial to tell
+    # from backend.log whether the launcher's REPROLAB_RUNS_ROOT actually
+    # propagated through the uvicorn reload boundary on Windows. Visible in
+    # logs/<TS>/server/backend.log right after "Application startup".
+    print(
+        f"[reprolab] runs_root: settings={settings.runs_root!r} "
+        f"env={_os.environ.get('REPROLAB_RUNS_ROOT')!r} "
+        f"cwd={_os.getcwd()!r}",
+        flush=True,
+    )
     # Honor REPROLAB_RUNS_ROOT (via Settings.runs_root) so dev.ps1 / dev.sh
     # actually colocate pipeline workspaces with the launch's server logs.
     # When unset, FileLiveRunService falls back to <repo>/runs as before.

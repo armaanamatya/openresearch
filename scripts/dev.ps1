@@ -206,8 +206,13 @@ $frontendProc = $null
 
 if (-not $NoBackend) {
     $backendShim = Join-Path $serverDir 'backend.cmd'
+    # --reload-dir backend: only watch backend/ source for hot-reload. The
+    # default watches cwd, which includes runs/ and logs/ — when the pipeline
+    # writes generated code (e.g. ppo_cartpole.py) WatchFiles triggers a
+    # reload, killing uvicorn mid-run. Restrict to source so writes from
+    # pipeline runs don't trip the reloader.
     Write-CmdShim -Path $backendShim -WorkDir $repoRoot `
-        -Command ('"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload' -f $pyBin) `
+        -Command ('"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload --reload-dir backend' -f $pyBin) `
         -LogPath (Join-Path $serverDir 'backend.log')
     $backendProc = Start-Process -FilePath $backendShim `
         -WorkingDirectory $repoRoot `
