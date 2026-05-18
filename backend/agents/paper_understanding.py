@@ -23,6 +23,7 @@ from backend.agents.schemas import (
     RiskLevel,
     TrainingRecipe,
 )
+from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def run_offline(
     out_dir = Path(runs_root) / project_id
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "paper_claim_map.json"
-    out_path.write_text(claim_map.model_dump_json(indent=2))
+    out_path.write_text(claim_map.model_dump_json(indent=2), encoding="utf-8")
     logger.info("Paper claim map written to %s", out_path)
 
     return claim_map
@@ -113,13 +114,13 @@ async def run_with_sdk(
     # Try to read the written file first
     out_path = project_dir / "paper_claim_map.json"
     if out_path.exists():
-        data = json.loads(out_path.read_text())
+        data = read_json(out_path)
         return PaperClaimMap(**data)
 
     # Fall back to parsing from agent output
     data = _extract_json(full_text)
     claim_map = PaperClaimMap(**data)
-    out_path.write_text(claim_map.model_dump_json(indent=2))
+    out_path.write_text(claim_map.model_dump_json(indent=2), encoding="utf-8")
     return claim_map
 
 

@@ -34,7 +34,7 @@ def initialize_run_artifacts(run_dir: Path) -> Path:
     for name in ("commands.log", "report.md"):
         path = run_dir / name
         if not path.exists():
-            path.write_text("")
+            path.write_text("", encoding="utf-8")
     return run_dir
 
 
@@ -55,7 +55,13 @@ def write_provenance(run_dir: Path, provenance: dict[str, Any]) -> Path:
 
 def write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    # Explicit utf-8 — defense in depth. json.dumps default ensure_ascii=True
+    # produces ASCII, so this works today even on Windows cp1252, but adding
+    # encoding= ensures correctness if anyone flips ensure_ascii=False.
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return path
 
 

@@ -177,7 +177,10 @@ echo "[dev.sh] sandbox -> $SANDBOX"
 echo "[dev.sh] runs    -> $REPROLAB_RUNS_ROOT"
 
 if [ "$WANT_BACKEND" = "1" ]; then
-    "$PY_BIN" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload \
+    # --reload-dir backend: only watch backend/ source for hot-reload. The
+    # default watches cwd, which includes runs/ and logs/ — when the pipeline
+    # writes generated code WatchFiles would trigger a reload mid-run.
+    "$PY_BIN" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload --reload-dir backend \
         > "$SERVER_DIR/backend.log" 2>&1 &
     BACKEND_PID=$!
 fi

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field
@@ -26,6 +27,13 @@ class Settings(BaseSettings):
     debug: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
+
+    # Per-project blob directory root. Bound to REPROLAB_RUNS_ROOT via the
+    # REPROLAB_ env_prefix above. None = use the call-site default (usually
+    # ``<repo>/runs``). The dev launchers (scripts/dev.ps1, scripts/dev.sh)
+    # export REPROLAB_RUNS_ROOT to colocate pipeline workspaces with each
+    # launch's server logs; without this field, that export was cosmetic.
+    runs_root: Path | None = None
     llm_provider: Literal["anthropic", "openai"] = "anthropic"
     anthropic_default_model: str = "claude-sonnet-4-6"
     anthropic_reasoning_model: str = "claude-opus-4-7"

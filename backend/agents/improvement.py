@@ -19,6 +19,7 @@ from backend.agents.schemas import (
     PathResult,
     RiskLevel,
 )
+from backend.utils.io import write_json
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def run_path_offline(
             "baseline_reward": baseline_reward,
             "improvement": result_data["mean_reward"] - baseline_reward,
         }
-        (path_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        write_json(path_dir / "metrics.json", metrics)
 
         return PathResult(
             path_id=hypothesis.path_id,

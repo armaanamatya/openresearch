@@ -371,7 +371,8 @@ def _resolve_sdk_providers(
 
 _REPRODUCE_DEFAULTS = {
     "database_url": get_settings().database_url,
-    "runs_root": "runs",
+    # Honor REPROLAB_RUNS_ROOT via Settings — see backend/config.py.
+    "runs_root": str(get_settings().runs_root) if get_settings().runs_root else "runs",
     "source_kind": "auto",
     "agent": "default",
     "mode": "sdk",
@@ -409,6 +410,13 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
+    # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
+    # module gets a chance to emit. This is the *subprocess* hot path
+    # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),
+    # so configuring here ensures the agent logs land in logs/<TS>/ alongside
+    # the server logs. No-op when REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT unset.
+    from backend.observability.run_logging import configure_root_logger
+    configure_root_logger()
     runs_root = Path(args.runs_root)
     from backend.agents.runtime import ProviderConfigurationError
 
@@ -630,8 +638,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--runs-root",
-        default="runs",
-        help="Per-project blob directory root (default: ./runs).",
+        default=str(get_settings().runs_root) if get_settings().runs_root else "runs",
+        help="Per-project blob directory root (defaults to REPROLAB_RUNS_ROOT or ./runs).",
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)

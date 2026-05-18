@@ -289,7 +289,7 @@ class PipelineState:
         # bridge polls this file concurrently. Write-then-rename guarantees a
         # reader never observes a truncated checkpoint.
         tmp_path = path.with_name(f"{path.name}.tmp")
-        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp_path.replace(path)
         logger.info("Checkpoint saved: stage=%s path=%s", self.stage.value, path)
         return path
@@ -300,7 +300,7 @@ class PipelineState:
         path = runs_root / project_id / "pipeline_state.json"
         if not path.exists():
             return None
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         state = cls(project_id=data["project_id"])
         state.stage = PipelineStage(data["stage"])
         state.assumption_ledger = data.get("assumption_ledger", [])
@@ -449,6 +449,10 @@ class ReproLabOrchestrator:
         self._pipeline_started_at = datetime.now(timezone.utc)
         self._fallback_summary_path = self._project_dir / "fallback_summary.json"
         self._latest_agent_traces: dict[str, AgentExecutionTrace] = {}
+        # Tier 2b — monotonic counter for per-agent transcript directories.
+        # Reset to 0 here so the same orchestrator instance numbers
+        # 01-paper-understanding, 02-artifact-discovery, ... within a run.
+        self._agent_seq: int = 0
         self._hermes_audit_service = hermes_audit_service or HermesAuditService(
             client=NousHermesClient(runs_root=self.runs_root),
             storage=HermesAuditStorage(self.runs_root, project_id),
@@ -552,6 +556,30 @@ class ReproLabOrchestrator:
 
         self._dashboard.agent_started(agent_id, task_prompt[:120])
 
+        # Tier 2b — start a per-invocation transcript recorder. Best-effort:
+        # the recorder is env-gated (no-op when REPROLAB_LOG_DIR /
+        # REPROLAB_RUNS_ROOT is unset) and all its I/O is wrapped in
+        # try/except, so it can never break the agent path. The contextvar
+        # is what resilience/engine.py reads to fan StreamText / StreamToolCall
+        # / StreamUsage events into the dir.
+        from backend.observability.run_logging import (
+            AgentTranscriptRecorder,
+            recording_enabled,
+            set_recorder,
+            reset_recorder,
+        )
+        recorder: AgentTranscriptRecorder | None = None
+        recorder_token = None
+        if recording_enabled():
+            self._agent_seq += 1
+            recorder = AgentTranscriptRecorder(
+                project_dir=self._project_dir,
+                agent_id=agent_id,
+                seq=self._agent_seq,
+                prompt=task_prompt,
+            )
+            recorder_token = set_recorder(recorder)
+
         try:
             result_obj = await run_agent_with_resilience(
                 agent_id=agent_id,
@@ -577,9 +605,17 @@ class ReproLabOrchestrator:
                     summary_path=self._fallback_summary_path,
                 ),
             )
-        except Exception:
+        except Exception as exc:
+            if recorder is not None:
+                recorder.finalize(result="", status="error", error=f"{type(exc).__name__}: {exc}")
             self._dashboard.agent_failed(agent_id, f"Agent {agent_id} encountered an error")
             raise
+        finally:
+            if recorder_token is not None:
+                reset_recorder(recorder_token)
+
+        if recorder is not None:
+            recorder.finalize(result=result_obj.output_text, status="ok")
 
         result = result_obj.output_text
         if not result.strip():
@@ -635,11 +671,46 @@ class ReproLabOrchestrator:
         return self._runtime
 
     def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
+        """Build the failover chain, dropping providers without credentials.
+
+        Previously this returned both providers unconditionally. When the
+        primary (e.g. anthropic) hit a transient rate limit, the resilience
+        engine failed over to the secondary (openai) and immediately died
+        inside `run_agent_with_resilience` with
+        ``ProviderConfigurationError: Provider 'openai' is not configured``,
+        ending the run instead of retrying on the primary after the limit
+        reset.
+
+        Filter at chain-construction time so the engine only retries on
+        providers we know are usable. The primary is always preserved (even
+        if its own credentials are missing) so the surfaced error message
+        names the actual misconfiguration rather than degenerating to "no
+        providers available."
+        """
+        from backend.agents.runtime.base import ProviderConfigurationError
+        from backend.agents.runtime.factory import validate_provider_credentials
+
         other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
         chain: list[ProviderName] = []
         for provider in (primary, other):
-            if provider not in chain:
-                chain.append(provider)
+            if provider in chain:
+                continue
+            try:
+                validate_provider_credentials(provider)
+            except ProviderConfigurationError as exc:
+                if provider == primary:
+                    # Keep the primary so the run fails with the precise
+                    # "primary not configured" error rather than an opaque
+                    # empty-chain error.
+                    chain.append(provider)
+                else:
+                    logger.info(
+                        "provider %r dropped from fallback chain (%s)",
+                        provider,
+                        exc,
+                    )
+                continue
+            chain.append(provider)
         return chain
 
     def _runtime_for_provider(
@@ -803,17 +874,17 @@ class ReproLabOrchestrator:
             fpath = Path(fallback_file)
             if fpath.exists():
                 logger.info("Reading agent output from file: %s", fpath)
-                return json.loads(fpath.read_text())
+                return json.loads(fpath.read_text(encoding="utf-8"))
             # Also check if agent used relative path from its cwd
             # (creates nested runs/project_id/runs/project_id/file)
             nested = self._project_dir / fpath.name
             if nested.exists():
                 logger.info("Reading agent output from nested file: %s", nested)
-                return json.loads(nested.read_text())
+                return json.loads(nested.read_text(encoding="utf-8"))
             # Search recursively for the file
             for found in self._project_dir.rglob(fpath.name):
                 logger.info("Reading agent output from found file: %s", found)
-                return json.loads(found.read_text())
+                return json.loads(found.read_text(encoding="utf-8"))
 
         raise ValueError(f"No JSON found in agent output: {text[:200]}")
 
@@ -1123,9 +1194,9 @@ class ReproLabOrchestrator:
         spec = state.environment_spec
         content = spec.dockerfile.strip() if spec and spec.dockerfile else ""
         if content:
-            dockerfile_path.write_text(content + "\n")
+            dockerfile_path.write_text(content + "\n", encoding="utf-8")
             return dockerfile_path
-        if dockerfile_path.exists() and dockerfile_path.read_text().strip():
+        if dockerfile_path.exists() and dockerfile_path.read_text(encoding="utf-8").strip():
             return dockerfile_path
         return None
 
@@ -1148,7 +1219,7 @@ class ReproLabOrchestrator:
         else:
             dockerfile_path = self._project_dir / "Dockerfile"
             if dockerfile_path.exists():
-                prior_dockerfile = dockerfile_path.read_text()
+                prior_dockerfile = dockerfile_path.read_text(encoding="utf-8")
         if not prior_dockerfile.strip():
             logger.warning(
                 "environment repair has no prior Dockerfile content to show the "
@@ -1285,6 +1356,12 @@ class ReproLabOrchestrator:
                     return state
 
             # The build failed (broken Dockerfile, or no Dockerfile content).
+            # Defensive: build_image's error_text should be a string, but
+            # docker BuildError.msg has been seen as a dict in the wild —
+            # coerce here so checkpoint serialization and downstream
+            # `.strip()` / repair-prompt embedding never trip on it.
+            if not isinstance(error_text, str):
+                error_text = str(error_text)
             state.environment_build_attempts = attempt
             state.environment_build_error = error_text
             state.save_checkpoint(self.runs_root)
@@ -2108,13 +2185,13 @@ class ReproLabOrchestrator:
         state.advance_stage(PipelineStage.RESEARCH_MAP_GENERATED, self.runs_root)
         # Write final artifacts
         (self._project_dir / "research_map.json").write_text(
-            state.research_map.model_dump_json(indent=2)
+            state.research_map.model_dump_json(indent=2), encoding="utf-8"
         )
         (self._project_dir / "assumption_ledger.json").write_text(
-            json.dumps(state.assumption_ledger, indent=2)
+            json.dumps(state.assumption_ledger, indent=2), encoding="utf-8"
         )
         (self._project_dir / "decision_log.json").write_text(
-            json.dumps(state.decision_log, indent=2)
+            json.dumps(state.decision_log, indent=2), encoding="utf-8"
         )
         # Synthesize the deterministic final report — computed PaperBench-style
         # rubric, statistical rigor, and paper-vs-baseline-vs-improved deltas.

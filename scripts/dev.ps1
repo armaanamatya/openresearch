@@ -88,22 +88,71 @@ function Write-Utf8NoBom {
 }
 
 function Free-Port {
+    # Tree-kill via taskkill /F /T because Stop-Process -Force can silently
+    # fail (e.g., process in a weird state, elevated children) and leave
+    # zombie listeners that hold the port. Verified on Windows 11 / PS 5.1:
+    # an old uvicorn worker can survive Stop-Process and keep serving
+    # requests on :8000 — and dev.ps1's new backend then silently binds
+    # nothing and the user's lab UI talks to the zombie with stale state.
     param([int]$Port)
     try {
-        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                try {
-                    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
-                } catch {}
-            }
+        $owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+        foreach ($procId in $owners) {
+            if ($procId -le 0) { continue }
+            Start-Process -FilePath taskkill.exe `
+                -ArgumentList '/F','/T','/PID',$procId `
+                -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+        }
     } catch {}
 }
 
 function Stop-Tree {
     param([int]$ProcId)
     if ($ProcId -le 0) { return }
-    # /T kills children; /F is forceful. Suppress noise on already-dead PIDs.
-    & taskkill.exe /F /T /PID $ProcId *> $null
+    # Gate on liveness — taskkill against a dead PID writes to stderr which
+    # PS 5.1 wraps as a NativeCommandError and surfaces despite redirection.
+    if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+    try {
+        # Invoking taskkill via Start-Process keeps its native stderr out of
+        # the PowerShell error stream entirely. /T tree-kills python/node
+        # grandchildren spawned by the .cmd shim.
+        Start-Process -FilePath taskkill.exe `
+            -ArgumentList '/F','/T','/PID',$ProcId `
+            -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+function Write-CmdShim {
+    # Writes a .cmd file we can hand to Start-Process. Bypasses the
+    # PowerShell-to-cmd quoting layer that made earlier attempts fail with
+    # "The filename, directory name, or volume label syntax is incorrect."
+    #
+    # Also bakes REPROLAB_RUNS_ROOT and friends into the .cmd body. In
+    # principle PowerShell's $env:X should propagate through Start-Process
+    # to a cmd.exe child, but in practice (verified on Windows 11 / PS 5.1)
+    # the inheritance is unreliable: a backend launched via this shim
+    # observed self.runs_root resolved to .\runs instead of the launcher's
+    # logs\<TS>\ even though the parent PowerShell had $env:REPROLAB_RUNS_ROOT
+    # set. Setting the vars inside the shim removes that whole class of bug
+    # and makes the .cmd a fully self-describing artifact.
+    param(
+        [string]$Path,
+        [string]$WorkDir,
+        [string]$Command,
+        [string]$LogPath
+    )
+    $env_block = ""
+    foreach ($name in @('REPROLAB_RUNS_ROOT','PYTHONUTF8','PYTHONIOENCODING','REPROLAB_BACKEND_URL')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($null -ne $value -and $value -ne '') {
+            # cmd `set "VAR=value"` quoting handles spaces and special chars
+            # in $value safely (the inner quotes scope the assignment).
+            $env_block += "set `"$name=$value`"`r`n"
+        }
+    }
+    $body = "@echo off`r`n" + $env_block + "cd /d `"$WorkDir`"`r`n$Command > `"$LogPath`" 2>&1`r`n"
+    [System.IO.File]::WriteAllText($Path, $body, (New-Object System.Text.ASCIIEncoding))
 }
 
 function Write-Meta {
@@ -164,19 +213,26 @@ $backendProc  = $null
 $frontendProc = $null
 
 if (-not $NoBackend) {
-    # Single-quoted template + -f keeps redirection operators literal so the
-    # PowerShell parser doesn't try to apply them itself.
-    $backendCmd = '"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload > "{1}\backend.log" 2>&1' -f $pyBin, $serverDir
-    $backendProc = Start-Process -FilePath 'cmd.exe' `
-        -ArgumentList '/c', $backendCmd `
+    $backendShim = Join-Path $serverDir 'backend.cmd'
+    # --reload-dir backend: only watch backend/ source for hot-reload. The
+    # default watches cwd, which includes runs/ and logs/ — when the pipeline
+    # writes generated code (e.g. ppo_cartpole.py) WatchFiles triggers a
+    # reload, killing uvicorn mid-run. Restrict to source so writes from
+    # pipeline runs don't trip the reloader.
+    Write-CmdShim -Path $backendShim -WorkDir $repoRoot `
+        -Command ('"{0}" -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port 8000 --reload --reload-dir backend' -f $pyBin) `
+        -LogPath (Join-Path $serverDir 'backend.log')
+    $backendProc = Start-Process -FilePath $backendShim `
         -WorkingDirectory $repoRoot `
         -NoNewWindow -PassThru
 }
 
 if (-not $NoFrontend) {
-    $frontendCmd = 'npm run dev > "{0}\frontend.log" 2>&1' -f $serverDir
-    $frontendProc = Start-Process -FilePath 'cmd.exe' `
-        -ArgumentList '/c', $frontendCmd `
+    $frontendShim = Join-Path $serverDir 'frontend.cmd'
+    Write-CmdShim -Path $frontendShim -WorkDir (Join-Path $repoRoot 'frontend') `
+        -Command 'npm.cmd run dev' `
+        -LogPath (Join-Path $serverDir 'frontend.log')
+    $frontendProc = Start-Process -FilePath $frontendShim `
         -WorkingDirectory (Join-Path $repoRoot 'frontend') `
         -NoNewWindow -PassThru
 }

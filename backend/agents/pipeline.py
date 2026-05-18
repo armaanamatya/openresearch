@@ -479,9 +479,15 @@ def run_pipeline_offline(
 
     # Write final outputs
     out_dir = runs / project_id
-    (out_dir / "research_map.json").write_text(state.research_map.model_dump_json(indent=2))
-    (out_dir / "assumption_ledger.json").write_text(json.dumps(state.assumption_ledger, indent=2))
-    (out_dir / "decision_log.json").write_text(json.dumps(state.decision_log, indent=2))
+    (out_dir / "research_map.json").write_text(
+        state.research_map.model_dump_json(indent=2), encoding="utf-8"
+    )
+    (out_dir / "assumption_ledger.json").write_text(
+        json.dumps(state.assumption_ledger, indent=2), encoding="utf-8"
+    )
+    (out_dir / "decision_log.json").write_text(
+        json.dumps(state.decision_log, indent=2), encoding="utf-8"
+    )
 
     _enrich("research_map", state.research_map.model_dump(), "research-map-generator")
     _enrich("assumption_ledger", {"entries": state.assumption_ledger}, "orchestrator")
