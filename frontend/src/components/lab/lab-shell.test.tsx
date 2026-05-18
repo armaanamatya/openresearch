@@ -538,4 +538,38 @@ describe("LabShell", () => {
     // Sanity: a completed run shows all 12 nodes done.
     expect(doneCount("complete")).toBe(12);
   });
+
+  it("does not show '12/12 agents complete' when status=completed but stage halted before the final stage", () => {
+    // Regression: orchestrator sets status=completed whenever it exits to a
+    // verdict — including an honest Gate 2 failure at stage gate_2_passed
+    // (8/14). The old short-circuit "if status === 'completed' mark all done"
+    // misled users with a "12/12 agents complete" badge on runs that actually
+    // halted mid-pipeline. The fix gates the short-circuit on
+    // stage === "complete".
+    const nodes = defaultTopologyFixture.nodes.map((n) => ({ ...n, x: 0, y: 0 }));
+    const haltedAtGate2: LiveDemoRunState = {
+      projectId: "prj_halted_g2",
+      outputDir: "runs/prj_halted_g2",
+      runMode: "sdk",
+      sourceKind: "uploaded_pdf",
+      sourceLabel: "paper.pdf",
+      sourceNote: "",
+      status: "completed",
+      payload: { summary: { stage: "gate_2_passed" } } as never,
+      log: ""
+    };
+    const map = stateMapForRun(
+      haltedAtGate2,
+      nodes,
+      defaultTopologyFixture.improvement_path_ids
+    );
+    const doneCount = Object.values(map).filter((s) => s === "done").length;
+    // At gate_2_passed the upstream nodes (src/read/env/plan/impl) finished;
+    // improvement-path nodes + audit/report stay upcoming. Must NOT be 12.
+    expect(doneCount).toBeLessThan(nodes.length);
+    // Improvement-path nodes specifically must not be marked done.
+    for (const pathId of defaultTopologyFixture.improvement_path_ids) {
+      expect(map[pathId]).not.toBe("done");
+    }
+  });
 });
