@@ -155,6 +155,20 @@ def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> Star
     return request.model_copy(update={"sandbox": force_sandbox})
 
 
+def apply_provider_override(request: StartRunRequest, force_provider: str) -> StartRunRequest:
+    """Force the LLM provider for all runs when REPROLAB_FORCE_LLM_PROVIDER is set.
+
+    The UI hard-codes ``provider="anthropic"`` in its start-run requests; on
+    deployments where the operator only has credentials for the other side,
+    rewriting at the request edge avoids an unconfigured-provider failure
+    mid-pipeline. Mirrors apply_sandbox_override. An empty or invalid value
+    leaves the request unchanged.
+    """
+    if force_provider not in ("anthropic", "openai"):
+        return request
+    return request.model_copy(update={"provider": force_provider})
+
+
 class FileLiveRunService:
     """Runs pipelines in subprocesses and exposes their file-backed state."""
 
@@ -371,7 +385,9 @@ class FileLiveRunService:
         project_id: str,
         uploaded_paper: dict[str, str] | None,
     ) -> LiveRunState:
-        request = apply_sandbox_override(request, get_settings().force_sandbox)
+        _s = get_settings()
+        request = apply_sandbox_override(request, _s.force_sandbox)
+        request = apply_provider_override(request, _s.force_llm_provider)
         existing = await self.get_run(project_id)
         if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
             return existing

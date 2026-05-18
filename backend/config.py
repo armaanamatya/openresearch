@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     # the override entirely.
     force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = "docker"
 
+    # Force the LLM provider for every run regardless of what the client
+    # requested — analogous to force_sandbox. The UI hard-codes provider=
+    # "anthropic" in the start-run request; on deployments where the operator
+    # only has OpenAI credentials, REPROLAB_FORCE_LLM_PROVIDER=openai rewrites
+    # the request server-side so a stale UI default doesn't trigger an
+    # unconfigured-provider error mid-pipeline. Empty disables the override.
+    force_llm_provider: Literal["", "anthropic", "openai"] = ""
+
     # Shared secret gating the run-start endpoints on public deployments.
     # Empty = gate disabled (local dev). When set, POST /runs and
     # POST /runs/upload require a matching X-Demo-Secret header.

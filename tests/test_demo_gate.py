@@ -4,7 +4,11 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app import _enforce_demo_gate
-from backend.services.events.live_runs import StartRunRequest, apply_sandbox_override
+from backend.services.events.live_runs import (
+    StartRunRequest,
+    apply_provider_override,
+    apply_sandbox_override,
+)
 
 
 def test_no_override_returns_request_unchanged():
@@ -33,6 +37,46 @@ def test_original_request_not_mutated():
     request = StartRunRequest(sandbox="runpod")
     apply_sandbox_override(request, "local")
     assert request.sandbox == "runpod"
+
+
+# --------------------------------------------------------------------------- #
+# apply_provider_override unit tests
+# --------------------------------------------------------------------------- #
+
+
+def test_provider_no_override_returns_request_unchanged():
+    """Empty force_llm_provider leaves the request untouched."""
+    request = StartRunRequest(provider="anthropic")
+    result = apply_provider_override(request, "")
+    assert result.provider == "anthropic"
+
+
+def test_provider_override_replaces_provider():
+    """force_llm_provider='openai' overrides an anthropic request to openai."""
+    request = StartRunRequest(provider="anthropic")
+    result = apply_provider_override(request, "openai")
+    assert result.provider == "openai"
+
+
+def test_provider_override_idempotent():
+    """Applying force_llm_provider='openai' to an openai request still yields openai."""
+    request = StartRunRequest(provider="openai")
+    result = apply_provider_override(request, "openai")
+    assert result.provider == "openai"
+
+
+def test_provider_override_invalid_value_is_ignored():
+    """Unknown force values pass through (defensive — never silently set garbage)."""
+    request = StartRunRequest(provider="anthropic")
+    result = apply_provider_override(request, "groq")
+    assert result.provider == "anthropic"
+
+
+def test_provider_original_request_not_mutated():
+    """The original request object is not mutated by the override."""
+    request = StartRunRequest(provider="anthropic")
+    apply_provider_override(request, "openai")
+    assert request.provider == "anthropic"
 
 
 # --------------------------------------------------------------------------- #
