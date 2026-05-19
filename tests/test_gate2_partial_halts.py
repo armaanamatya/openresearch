@@ -1,25 +1,33 @@
-"""Contract test for Track 3 give-it-a-shot — Option B fix.
+"""Contract test for Gate 2 supervisor verdict handling — Option D (Q1).
 
-When Gate 2 returns ``GateStatus.partial_reproduction`` AND the environment
-build succeeded, the orchestrator must NOT early-return. It must fall through
-to ``run_improvements`` so the rubric-driven improvement loop has a chance to
-lift the score above target before we commit to partial as the verdict.
+Option D inverts the Option-B semantics: ``GateStatus.partial_reproduction``
+at Gate 2 is no longer a "salvageable, try improvements" verdict but a
+terminal supervisor halt — equivalent to ``blocked_requires_human``,
+``failed_reproduction``, and ``invalid_claim``. The supervisor gate becomes
+purely binary: pass (verified / verified_with_caveats) or halt.
 
-The companion negative test pins the other half of the contract:
-``GateStatus.blocked_requires_human`` (or any non-partial failing verdict)
-still halts the run as before. Without that, the supervisor gate's
-"halt for human review" semantics would be silently softened — Option B's
-explicit goal is to only relax `partial_reproduction`, not all gate-2
-failures wholesale.
+Both halting verdicts run through the same code path: the outer Gate 2
+result block in ``orchestrator.run()`` calls ``_finalize_partial`` to write
+``final_report.{json,md}`` and advances the stage to COMPLETE so
+``finalize_benchmark`` in ``live_runs.py`` sees terminal state.
 
-See ``docs/design/option-b-investigation.md`` for the diagnosis and
-``backend/agents/orchestrator.py`` for the implementation (the elif branch
-on ``state.gate_2.status == GateStatus.partial_reproduction``).
+This file pins both halves of the contract:
+
+  1. partial_reproduction → halt, ``_finalize_partial`` called once,
+     ``run_improvements`` NOT called, final stage is COMPLETE.
+  2. blocked_requires_human → identical halt behavior (defense-in-depth so
+     a future refactor can't accidentally split the two cases apart).
+
+The Track 4 fail-soft for un-buildable environments stays as it was —
+it's an environment-build signal, not a supervisor verdict.
+
+See ``docs/design/option-d-q1q2-refactor.md`` for the design.
+``docs/design/option-b-investigation.md`` has the (now superseded)
+historical context.
 """
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,13 +44,10 @@ from backend.agents.schemas import GateDecision, GateStatus
 def _orch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project_id: str
 ) -> ReproLabOrchestrator:
-    # Match the lightweight construction pattern from test_rubric_verifier.py:
-    # a SimpleNamespace settings object short-circuits the rubric reiteration
-    # loop so the test focuses purely on the gate-2 decision branch.
     monkeypatch.setattr(
         "backend.agents.orchestrator.get_settings",
         lambda: SimpleNamespace(
-            rubric_verifier_enabled=False,  # skip the reiteration loop entirely
+            rubric_verifier_enabled=False,  # rubric off — focus on gate-2 decision
             rubric_max_improvement_iterations=0,
             rubric_target_score=0.7,
             rubric_verifier_model="",
@@ -56,14 +61,11 @@ def _orch(
 def _seed_state_at_baseline_run(project_id: str) -> PipelineState:
     """Seed state to the point right before run_gate_2 fires.
 
-    All earlier stages are marked done (their step_fn calls are skipped by the
-    orchestrator's `current_idx >= target_idx` guard), so the test only
-    exercises run_gate_2 + the gate-2 result check + the improvement phase.
+    Track 4 must NOT fire: keep environment_build_ok True so the branch
+    under test (the supervisor halt) is the one that matches.
     """
     state = PipelineState(project_id=project_id)
     state.stage = PipelineStage.BASELINE_RUN
-    # Track 4 must NOT fire: keep environment_build_ok True so the branch
-    # under test (Track 3 partial_reproduction) is the one that matches.
     state.environment_build_ok = True
     state.environment_build_attempts = 0
     return state
@@ -75,13 +77,6 @@ def _install_stage_mocks(
     gate_2_status: GateStatus,
     calls: dict[str, int],
 ) -> None:
-    """Stub every downstream stage so orchestrator.run() returns quickly.
-
-    The stub for run_gate_2 sets state.gate_2 to a fail with the requested
-    status; the stubs for run_improvements / run_gate_3 record that they were
-    reached so the test can assert on the decision flow.
-    """
-
     async def fake_run_gate_2(s: PipelineState) -> PipelineState:
         s.gate_2 = GateDecision(
             gate="gate_2",
@@ -105,15 +100,18 @@ def _install_stage_mocks(
         return s
 
     async def fake_reiteration_loop(s: PipelineState, **kwargs) -> PipelineState:
-        # rubric_verifier_enabled=False in fixture settings already short-
-        # circuits this, but keep an async no-op as belt + suspenders so we
-        # don't accidentally exercise the real loop in this contract test.
+        # rubric off in fixture; this is belt + suspenders.
         return s
 
     async def fake_generate_research_map(s: PipelineState) -> PipelineState:
-        s.advance_stage(PipelineStage.RESEARCH_MAP_GENERATED, orch.runs_root)
+        # If the test ever reaches this, the halt under test did not fire.
+        raise AssertionError(
+            "research_map must NOT run when Gate 2 supervisor verdict halts the run"
+        )
+
+    def fake_finalize_partial(s: PipelineState) -> None:
+        calls["finalize_partial"] += 1
         s.advance_stage(PipelineStage.COMPLETE, orch.runs_root)
-        return s
 
     monkeypatch.setattr(orch, "run_gate_2", fake_run_gate_2)
     monkeypatch.setattr(orch, "run_improvements", fake_run_improvements)
@@ -122,19 +120,23 @@ def _install_stage_mocks(
         orch, "_run_improvement_reiteration_loop", fake_reiteration_loop
     )
     monkeypatch.setattr(orch, "generate_research_map", fake_generate_research_map)
+    monkeypatch.setattr(orch, "_finalize_partial", fake_finalize_partial)
 
 
 @pytest.mark.asyncio
-async def test_gate2_partial_reproduction_falls_through_to_improvements(
+async def test_gate2_partial_reproduction_now_halts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The Track 3 give-it-a-shot branch: partial_reproduction must NOT halt."""
+    """Option D (Q1): partial_reproduction at Gate 2 halts the run.
+
+    Inverts the prior Option-B behavior. Improvements MUST NOT run;
+    _finalize_partial writes the terminal artifact; final stage is COMPLETE.
+    """
     orch = _orch(tmp_path, monkeypatch, project_id="prj_gate2_partial")
     state = _seed_state_at_baseline_run("prj_gate2_partial")
-    # Seed the existing checkpoint on disk so resume picks it up.
     state.save_checkpoint(tmp_path)
 
-    calls = {"improvements": 0, "gate_3": 0}
+    calls = {"improvements": 0, "gate_3": 0, "finalize_partial": 0}
     _install_stage_mocks(
         orch,
         monkeypatch,
@@ -144,16 +146,17 @@ async def test_gate2_partial_reproduction_falls_through_to_improvements(
 
     final_state = await orch.run(resume=True)
 
-    # The decisive assertion: the orchestrator did NOT early-return at the
-    # gate-2 check — proven by run_improvements having been called.
-    assert calls["improvements"] >= 1, (
-        "GateStatus.partial_reproduction must fall through to run_improvements; "
-        "the orchestrator early-returned instead"
+    assert calls["improvements"] == 0, (
+        "Option D (Q1): GateStatus.partial_reproduction must halt the pipeline; "
+        "run_improvements was called when it should not have been"
     )
-    assert calls["gate_3"] >= 1, (
-        "After improvements, run_gate_3 must also be reached"
+    assert calls["gate_3"] == 0, (
+        "Gate 3 must not run after a Gate 2 halt"
     )
-    # And the pipeline finished cleanly all the way to COMPLETE.
+    assert calls["finalize_partial"] == 1, (
+        "Gate 2 halt must call _finalize_partial exactly once so the terminal "
+        "artifact lands regardless of rubric verifier state"
+    )
     assert final_state.stage is PipelineStage.COMPLETE
 
 
@@ -161,18 +164,17 @@ async def test_gate2_partial_reproduction_falls_through_to_improvements(
 async def test_gate2_blocked_requires_human_still_halts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Defense-in-depth: non-partial failing verdicts must still halt.
+    """Defense-in-depth: blocked_requires_human halts identically to partial.
 
-    Option B's deliberate scope is narrow — soften ONLY partial_reproduction.
-    Without this negative test, a future refactor could accidentally let
-    blocked_requires_human fall through too, silently removing the human-
-    review escape that the supervisor gate is built around.
+    Under Option D, both verdicts share the same code path. This test pins
+    that the halt behavior for the canonical "halt for human review" verdict
+    is unchanged from before.
     """
     orch = _orch(tmp_path, monkeypatch, project_id="prj_gate2_blocked")
     state = _seed_state_at_baseline_run("prj_gate2_blocked")
     state.save_checkpoint(tmp_path)
 
-    calls = {"improvements": 0, "gate_3": 0}
+    calls = {"improvements": 0, "gate_3": 0, "finalize_partial": 0}
     _install_stage_mocks(
         orch,
         monkeypatch,
@@ -186,5 +188,7 @@ async def test_gate2_blocked_requires_human_still_halts(
         "GateStatus.blocked_requires_human must halt the pipeline; "
         "run_improvements was called when it should not have been"
     )
-    # The orchestrator returned early at GATE_2_PASSED, before COMPLETE.
-    assert final_state.stage is PipelineStage.GATE_2_PASSED
+    assert calls["finalize_partial"] == 1, (
+        "Gate 2 halt must call _finalize_partial so the terminal artifact lands"
+    )
+    assert final_state.stage is PipelineStage.COMPLETE
