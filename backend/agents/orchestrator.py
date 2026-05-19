@@ -2228,6 +2228,23 @@ class ReproLabOrchestrator:
                     next_iteration,
                 )
                 break
+            if (
+                state.gate_3 is not None
+                and not state.gate_3.passed
+                and state.gate_3.status != GateStatus.partial_reproduction
+            ):
+                # Supervisor returned a halt-for-human verdict (blocked /
+                # failed / invalid_claim). Don't waste the remaining capped
+                # rounds on a path the supervisor declared blocked. The outer
+                # post-loop check in orchestrator.run() will see this same
+                # state.gate_3 and call _finalize_partial to write the
+                # terminal artifact.
+                logger.warning(
+                    "re-iteration %d: Gate 3 returned %s — stopping the loop",
+                    next_iteration,
+                    state.gate_3.status.value,
+                )
+                break
             state.improvement_iteration = next_iteration
             state.save_checkpoint(self.runs_root)
         return state
@@ -2470,6 +2487,26 @@ class ReproLabOrchestrator:
             state = await self.run_gate_3(state)
             current_idx = stages_order.index(state.stage)
 
+        # Gate 3 result check — mirrors Gate 2's handling from PR #44.
+        # `partial_reproduction` falls through to the reiteration loop, which
+        # is the right place to decide whether to retry. Anything else
+        # (blocked_requires_human / failed_reproduction / invalid_claim) is
+        # the supervisor's halt-for-human-review signal; honor it and
+        # finalize a partial report so finalize_benchmark() sees terminal data.
+        # See docs/design/option-c-gate3-result-handling.md.
+        if (
+            state.gate_3 is not None
+            and not state.gate_3.passed
+            and state.gate_3.status != GateStatus.partial_reproduction
+        ):
+            print(
+                f"  X Gate 3 FAILED: {state.gate_3.status.value}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._finalize_partial(state)
+            return state
+
         # Track 3 — capped self-improvement re-iteration loop. Reuses the
         # improvements_selected / improvements_run / gate_3_passed stages, so
         # the PipelineStage enum is unchanged.
@@ -2479,6 +2516,22 @@ class ReproLabOrchestrator:
             n_improvement_paths=n_improvement_paths,
         )
         current_idx = stages_order.index(state.stage)
+
+        # Post-loop Gate 3 check — catches a blocked verdict that broke the
+        # loop early (see the matching break inside _run_improvement_reiteration_loop).
+        if (
+            state.gate_3 is not None
+            and not state.gate_3.passed
+            and state.gate_3.status != GateStatus.partial_reproduction
+        ):
+            print(
+                f"  X Gate 3 FAILED (after improvement re-iteration): "
+                f"{state.gate_3.status.value}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._finalize_partial(state)
+            return state
 
         if current_idx < stages_order.index(PipelineStage.RESEARCH_MAP_GENERATED):
             state = await self.generate_research_map(state)
