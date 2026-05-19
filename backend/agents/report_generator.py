@@ -615,7 +615,7 @@ def _build_comparison_summary(
             line1 = (
                 f"Self-improvement lifted our rubric score to {ours:.2f}, "
                 f"+{delta:.2f} over the baseline {baseline.overall_score:.2f} "
-                f"across {improvement_iterations} re-iteration round(s)."
+                f"across {improvement_iterations} improvement round(s)."
             )
         elif delta < 0:
             line1 = (
@@ -625,7 +625,7 @@ def _build_comparison_summary(
         else:
             line1 = (
                 f"Our rubric score {ours:.2f} matched the baseline with no net "
-                f"gain across {improvement_iterations} re-iteration round(s)."
+                f"gain across {improvement_iterations} improvement round(s)."
             )
     else:
         line1 = f"Our rubric score is {ours:.2f}."
