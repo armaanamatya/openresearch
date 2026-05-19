@@ -1821,7 +1821,62 @@ class ReproLabOrchestrator:
         if baseline_verification is not None:
             state.baseline_verification = baseline_verification
         state.advance_stage(PipelineStage.GATE_2_PASSED, self.runs_root)
+        # When the rubric verifier missed its target, the orchestrator halts
+        # here without ever reaching run_research_map (stage 9) where
+        # final_report.{json,md} are written. The UI's finalize_benchmark()
+        # in live_runs.py depends on final_report.json existing on disk —
+        # without it, demo_status.json.benchmark.verdict stays at
+        # "pending_pipeline_result" forever even though the run is done.
+        # Emit a partial final_report so the UI sees honest terminal state.
+        if (
+            state.baseline_verification is not None
+            and not state.baseline_verification.meets_target
+        ):
+            self._finalize_partial(state)
         return state
+
+    def _finalize_partial(self, state: PipelineState) -> None:
+        """Write final_report.{json,md} for a Gate-2-failed run.
+
+        Mirrors the success-path report writing in run_research_map but with
+        baseline-only state — generate_final_report derives reproduction_status
+        and the verdict deterministically from whatever inputs are present, so
+        no flag is needed: empty path_results + a low rubric score produce a
+        "partial" verdict naturally.
+
+        Best-effort: report generation failures must not abort the halt.
+        Mirrors the try/except around the success-path writer.
+        """
+        try:
+            final_report = generate_final_report(
+                self.project_id,
+                state.paper_claim_map,
+                state.experiment_artifacts,
+                state.improvement_hypotheses,
+                state.path_results,
+                state.research_map,
+                environment_spec=state.environment_spec,
+                baseline_result=state.baseline_result,
+                gate_1=state.gate_1,
+                gate_2=state.gate_2,
+                gate_3=state.gate_3,
+                project_dir=self._project_dir,
+                baseline_verification=state.baseline_verification,
+                improved_verification=state.improved_verification,
+                improvement_iterations=state.improvement_iteration,
+            )
+            write_final_report(final_report, self._project_dir)
+            self._enrich_workspace(
+                "final_report",
+                final_report.model_dump(),
+                "final-report-generator",
+            )
+        except Exception:
+            logger.warning(
+                "Partial final_report generation failed at Gate 2",
+                exc_info=True,
+            )
+        state.advance_stage(PipelineStage.COMPLETE, self.runs_root)
 
     async def run_improvements(
         self,
