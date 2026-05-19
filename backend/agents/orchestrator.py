@@ -100,16 +100,26 @@ def _clamp01(value: Any) -> float:
 
 
 def _should_reiterate(
-    verification: RubricVerification | None,
+    improved: RubricVerification | None,
+    baseline: RubricVerification | None,
     iteration: int,
     max_iterations: int,
 ) -> bool:
-    """Whether the self-improvement loop should run another round.
+    """Whether the rubric-driven improvement loop should run another iteration.
 
-    Returns False — terminating the loop — when there is no verification, the
-    rubric target is already met, or the iteration cap is reached. The cap
-    guarantees termination: every loop body increments ``iteration``.
+    Seeds from ``baseline`` when ``improved`` is None — the first iteration,
+    before any improvement round has populated improved_verification. Once
+    improved exists, it is authoritative and baseline is ignored.
+
+    Returns False — terminating the loop — when there is no verification
+    signal (both None), the active verification already meets its target,
+    or the iteration cap is reached. The cap guarantees termination: every
+    loop body increments ``iteration``.
+
+    Widened 2026-05-19 for Option D (Q2). See
+    ``docs/design/option-d-q1q2-refactor.md``.
     """
+    verification = improved if improved is not None else baseline
     if verification is None or verification.meets_target:
         return False
     return iteration < max_iterations
@@ -2159,16 +2169,27 @@ class ReproLabOrchestrator:
         user_hints: list[str] | None,
         n_improvement_paths: int,
     ) -> PipelineState:
-        """Loop improvement-selection + Gate 3 until the rubric target is met.
+        """Run improvement rounds until the rubric target is met or the cap is reached.
 
-        Hard-capped by ``rubric_max_improvement_iterations`` and fail-closed: a
-        disabled verifier, a missing or already-passing verification, an
-        exhausted run budget, or any re-iteration error all simply stop the loop
-        and let the run finish with the best verification so far. The
-        ``PipelineStage`` enum is unchanged — each round reuses the existing
-        improvements_selected / improvements_run / gate_3_passed stages.
-        ``improvement_iteration`` counts completed re-iteration rounds and is
+        Rubric-driven: only fires when ``rubric_verifier_enabled`` is True. The
+        predicate ``_should_reiterate`` seeds from ``baseline_verification`` on
+        the first iteration (before any improvement round has populated
+        ``improved_verification``); subsequent iterations key on improved.
+
+        Hard-capped by ``rubric_max_improvement_iterations`` and fail-closed:
+        a disabled verifier, a missing or already-passing verification, an
+        exhausted run budget, a Gate 3 non-pass, or any error all stop the
+        loop. The outer post-loop Gate 3 halt check in ``orchestrator.run()``
+        finalizes a partial report when Gate 3 did not pass.
+
+        The ``PipelineStage`` enum is unchanged — each round reuses the
+        existing improvements_selected / improvements_run / gate_3_passed
+        stages. ``improvement_iteration`` counts completed improvement rounds
+        (total, not re-iterations beyond an implicit first) and is
         checkpointed after each one.
+
+        Reshaped 2026-05-19 for Option D (Q1 + Q2). See
+        ``docs/design/option-d-q1q2-refactor.md``.
         """
         settings = get_settings()
         if not settings.rubric_verifier_enabled:
@@ -2176,15 +2197,15 @@ class ReproLabOrchestrator:
         max_iterations = max(0, settings.rubric_max_improvement_iterations)
         while _should_reiterate(
             state.improved_verification,
+            state.baseline_verification,
             state.improvement_iteration,
             max_iterations,
         ):
-            verification = state.improved_verification
+            verification = state.improved_verification or state.baseline_verification
             assert verification is not None  # guaranteed by _should_reiterate
             next_iteration = state.improvement_iteration + 1
             logger.info(
-                "[re-iteration %d/%d] verifier %.3f < target %.3f — looping back "
-                "through improvement selection",
+                "[improvement %d/%d] verifier %.3f < target %.3f — running improvement round",
                 next_iteration,
                 max_iterations,
                 verification.overall_score,
@@ -2193,7 +2214,7 @@ class ReproLabOrchestrator:
             self._dashboard.agent_started(
                 "root-orchestrator",
                 (
-                    f"Improvement re-iteration {next_iteration}/{max_iterations} "
+                    f"Improvement round {next_iteration}/{max_iterations} "
                     f"(verifier {verification.overall_score:.2f} -> "
                     f"target {verification.target_score:.2f})"
                 ),
@@ -2212,7 +2233,7 @@ class ReproLabOrchestrator:
                 raise
             except Exception as exc:
                 logger.warning(
-                    "re-iteration %d failed (%s) — stopping the loop, keeping the "
+                    "improvement round %d failed (%s) — stopping the loop, keeping the "
                     "last good verification",
                     next_iteration,
                     exc,
@@ -2223,24 +2244,19 @@ class ReproLabOrchestrator:
                 # fell back to None). Don't burn the remaining capped rounds
                 # running expensive improvement passes against a dead verifier.
                 logger.warning(
-                    "re-iteration %d: rubric-verifier produced no new result — "
+                    "improvement round %d: rubric-verifier produced no new result — "
                     "stopping the loop",
                     next_iteration,
                 )
                 break
-            if (
-                state.gate_3 is not None
-                and not state.gate_3.passed
-                and state.gate_3.status != GateStatus.partial_reproduction
-            ):
-                # Supervisor returned a halt-for-human verdict (blocked /
-                # failed / invalid_claim). Don't waste the remaining capped
-                # rounds on a path the supervisor declared blocked. The outer
-                # post-loop check in orchestrator.run() will see this same
-                # state.gate_3 and call _finalize_partial to write the
-                # terminal artifact.
+            if state.gate_3 is not None and not state.gate_3.passed:
+                # Option D (Q1): any Gate 3 non-pass — including
+                # partial_reproduction — is a terminal supervisor verdict.
+                # Break the loop; the outer post-loop check in
+                # orchestrator.run() will call ``_finalize_partial`` to write
+                # the terminal artifact.
                 logger.warning(
-                    "re-iteration %d: Gate 3 returned %s — stopping the loop",
+                    "improvement round %d: Gate 3 returned %s — stopping the loop",
                     next_iteration,
                     state.gate_3.status.value,
                 )
@@ -2456,77 +2472,56 @@ class ReproLabOrchestrator:
                         file=sys.stderr,
                         flush=True,
                     )
-                elif state.gate_2.status == GateStatus.partial_reproduction:
-                    # Track 3 give-it-a-shot: the supervisor judged the baseline
-                    # as `partial_reproduction` — semantically "salvageable",
-                    # distinct from `blocked_requires_human`. Fall through to
-                    # the improvement orchestration + the rubric reiteration
-                    # loop so they have a chance to lift the rubric score above
-                    # target before we commit to partial as the verdict. If the
-                    # loop itself fails, _finalize_partial in run_gate_2 (or the
-                    # run_research_map success path) still produces a terminal
-                    # final_report.{json,md} — see docs/design/option-b-investigation.md.
+                else:
+                    # Option D (Q1, 2026-05-19): any Gate 2 non-pass —
+                    # partial_reproduction, blocked_requires_human, failed,
+                    # invalid_claim — is a terminal supervisor verdict. Halt
+                    # and write the terminal artifact via _finalize_partial so
+                    # finalize_benchmark() in live_runs.py sees terminal data
+                    # regardless of whether the rubric verifier ran on this run.
+                    # See docs/design/option-d-q1q2-refactor.md.
                     print(
-                        f"  ! Gate 2 partial_reproduction "
-                        f"-- entering improvement orchestration to try to lift the rubric",
+                        f"  X Gate 2 FAILED: {state.gate_2.status.value}",
                         file=sys.stderr,
                         flush=True,
                     )
-                else:
-                    print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
+                    self._finalize_partial(state)
                     return state
 
-        # Improvement phase
-        if current_idx < stages_order.index(PipelineStage.IMPROVEMENTS_RUN):
-            state = await self.run_improvements(
-                state, user_hints=user_hints, n_paths=n_improvement_paths,
+        # Improvement phase — branch by rubric verifier mode.
+        # See docs/design/option-d-q1q2-refactor.md (Q2): the rubric verifier
+        # drives the loop when enabled; otherwise a single unconditional round
+        # preserves pre-Option-D behavior so research_map has improvement data.
+        settings = get_settings()
+        if settings.rubric_verifier_enabled:
+            # Rubric drives the loop. ``_should_reiterate`` seeds from
+            # ``baseline_verification`` on the first iteration.
+            state = await self._run_improvement_reiteration_loop(
+                state,
+                user_hints=user_hints,
+                n_improvement_paths=n_improvement_paths,
             )
             current_idx = stages_order.index(state.stage)
+        else:
+            # Rubric disabled — single unconditional round so research_map
+            # has improvement data. Preserves pre-Option-D behavior for the
+            # ``rubric_verifier_enabled=False`` config path.
+            if current_idx < stages_order.index(PipelineStage.IMPROVEMENTS_RUN):
+                state = await self.run_improvements(
+                    state, user_hints=user_hints, n_paths=n_improvement_paths,
+                )
+                current_idx = stages_order.index(state.stage)
+            if current_idx < stages_order.index(PipelineStage.GATE_3_PASSED):
+                state = await self.run_gate_3(state)
+                current_idx = stages_order.index(state.stage)
 
-        if current_idx < stages_order.index(PipelineStage.GATE_3_PASSED):
-            state = await self.run_gate_3(state)
-            current_idx = stages_order.index(state.stage)
-
-        # Gate 3 result check — mirrors Gate 2's handling from PR #44.
-        # `partial_reproduction` falls through to the reiteration loop, which
-        # is the right place to decide whether to retry. Anything else
-        # (blocked_requires_human / failed_reproduction / invalid_claim) is
-        # the supervisor's halt-for-human-review signal; honor it and
-        # finalize a partial report so finalize_benchmark() sees terminal data.
-        # See docs/design/option-c-gate3-result-handling.md.
-        if (
-            state.gate_3 is not None
-            and not state.gate_3.passed
-            and state.gate_3.status != GateStatus.partial_reproduction
-        ):
+        # Single Gate 3 halt check — Option D (Q1, 2026-05-19): any non-pass
+        # at Gate 3 (including partial_reproduction) is a terminal supervisor
+        # verdict. Covers both the rubric-driven loop break path and the
+        # rubric-disabled single-round path.
+        if state.gate_3 is not None and not state.gate_3.passed:
             print(
                 f"  X Gate 3 FAILED: {state.gate_3.status.value}",
-                file=sys.stderr,
-                flush=True,
-            )
-            self._finalize_partial(state)
-            return state
-
-        # Track 3 — capped self-improvement re-iteration loop. Reuses the
-        # improvements_selected / improvements_run / gate_3_passed stages, so
-        # the PipelineStage enum is unchanged.
-        state = await self._run_improvement_reiteration_loop(
-            state,
-            user_hints=user_hints,
-            n_improvement_paths=n_improvement_paths,
-        )
-        current_idx = stages_order.index(state.stage)
-
-        # Post-loop Gate 3 check — catches a blocked verdict that broke the
-        # loop early (see the matching break inside _run_improvement_reiteration_loop).
-        if (
-            state.gate_3 is not None
-            and not state.gate_3.passed
-            and state.gate_3.status != GateStatus.partial_reproduction
-        ):
-            print(
-                f"  X Gate 3 FAILED (after improvement re-iteration): "
-                f"{state.gate_3.status.value}",
                 file=sys.stderr,
                 flush=True,
             )

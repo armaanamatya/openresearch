@@ -221,15 +221,19 @@ def _verification(score, target):
 
 
 def test_should_reiterate_boundary():
+    # Option D widened the signature to (improved, baseline, iteration, max).
+    # Baseline-fallback specifics are covered in
+    # tests/test_should_reiterate_baseline_fallback.py; this test pins the
+    # original boundary cases with the improved-verification argument.
     from backend.agents.orchestrator import _should_reiterate
 
     below = _verification(0.1, 0.7)
     meets = _verification(0.9, 0.7)
-    assert _should_reiterate(None, 0, 2) is False     # no verification
-    assert _should_reiterate(meets, 0, 2) is False    # target already met
-    assert _should_reiterate(below, 2, 2) is False    # iteration cap reached
-    assert _should_reiterate(below, 0, 2) is True     # room to improve
-    assert _should_reiterate(below, 0, 0) is False    # cap of 0 disables the loop
+    assert _should_reiterate(None, None, 0, 2) is False    # no verification at all
+    assert _should_reiterate(meets, None, 0, 2) is False   # improved already meets target
+    assert _should_reiterate(below, None, 2, 2) is False   # iteration cap reached
+    assert _should_reiterate(below, None, 0, 2) is True    # room to improve
+    assert _should_reiterate(below, None, 0, 0) is False   # cap of 0 disables the loop
 
 
 def _loop_orchestrator(tmp_path, monkeypatch, *, max_iterations, enabled=True):
