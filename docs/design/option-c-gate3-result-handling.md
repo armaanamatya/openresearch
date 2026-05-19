@@ -1,6 +1,14 @@
 # Gate 3 Result Handling + Improvement-Loop Edge Cases
 
-**Status:** Plan · 2026-05-18
+> **Superseded 2026-05-19 by [`option-d-q1q2-refactor.md`](option-d-q1q2-refactor.md).**
+> Option C kept `partial_reproduction` as a fall-through verdict at Gate 3
+> (the reiteration loop's `!= partial_reproduction` exemption). Option D
+> inverts that: any non-pass at Gate 2 or Gate 3 — including
+> `partial_reproduction` — is a terminal supervisor verdict. This file is
+> retained as historical record for the design conversation that produced
+> commit `263ebbb`; the implementation has been replaced.
+
+**Status:** Plan · 2026-05-18 *(implementation superseded 2026-05-19)*
 **Depends on:** PR #43 (Option A — `_finalize_partial`) and PR #44 (Option B — Gate 2 partial fall-through) — both merged on `main`.
 **Triggering question:** With PR #44 now routing `gate_2.status=partial_reproduction` runs through the improvement orchestration, what happens when **Gate 3** also returns non-success — particularly when an improvement round returns `partial_reproduction` (or worse)?
 

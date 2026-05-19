@@ -78,11 +78,25 @@ Estimated change: ~15 LOC in `orchestrator.run()` + a unit test that pins the ne
 
 **Option A must land first.** B.2 routes Gate-2-failed runs through the improvement loop. If the loop itself fails (LLM errors, run-budget exhausted, etc.), the orchestrator currently still doesn't write a final report. Option A's `_finalize_partial` is the safety net that makes B.2 safe to ship: even if the improvement attempt bombs, the partial report still lands on disk.
 
-## Open questions for the user — ANSWERED (2026-05-18)
+## Open questions for the user — ANSWERED (2026-05-18, REVISED 2026-05-19)
+
+> **Revised 2026-05-19 — see [`option-d-q1q2-refactor.md`](option-d-q1q2-refactor.md).**
+> Both answers below were overturned. The current (Option D) answers are:
+>
+> - **Q1: halt.** `partial_reproduction` at Gate 2 or Gate 3 is a terminal
+>   supervisor verdict, not a "try harder" signal. The supervisor gate is
+>   binary; any non-pass halts and writes a partial final report.
+> - **Q2: yes.** `_should_reiterate` now seeds from `baseline_verification`
+>   when `improved_verification` is None. The unconditional pre-loop pair
+>   is deleted; the rubric verifier drives every improvement round.
+>
+> The reasoning below is preserved as historical context for the design
+> conversation that produced PR #44 (`76a9a2e`) and the loop semantics
+> in commit `263ebbb`. Both are now reverted.
 
 ### Q1: Is `partial_reproduction` "halt" or "try harder"?
 
-**Answer: salvageable, try improvements first. Only commit to partial as a terminal state once Track 3 (the improvement loop) has had its chance.**
+**Answer (2026-05-18, OVERTURNED): salvageable, try improvements first. Only commit to partial as a terminal state once Track 3 (the improvement loop) has had its chance.**
 
 Reasoning from three angles:
 
@@ -94,7 +108,7 @@ Reasoning from three angles:
 
 ### Q2: Should `_should_reiterate` fire on baseline-only state?
 
-**Answer: no — `_should_reiterate` is correct as-is, don't change it.**
+**Answer (2026-05-18, OVERTURNED): no — `_should_reiterate` is correct as-is, don't change it.**
 
 Reasoning:
 
