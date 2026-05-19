@@ -199,4 +199,4 @@ scripts/          RunPod preflight and utility scripts
 
 ---
 
-See [`docs/deployment.md`](docs/deployment.md) for production deployment instructions.
+See [`docs/guides/deployment.md`](docs/guides/deployment.md) for production deployment instructions.

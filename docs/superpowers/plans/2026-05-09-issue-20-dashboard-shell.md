@@ -157,7 +157,7 @@ Expected: PASS
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/setup-guide.md`
+- Modify: `docs/guides/setup-guide.md`
 - Modify: `docs/superpowers/plans/2026-05-09-issue-20-dashboard-shell.md`
 
 - [ ] **Step 1: Update docs for the new frontend workspace**

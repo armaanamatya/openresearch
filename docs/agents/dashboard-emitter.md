@@ -16,4 +16,4 @@ TODO — JSON events on the SSE channel; persisted to the event store (see `back
 ## Source
 - [`backend/agents/dashboard_emitter.py`](../../backend/agents/dashboard_emitter.py)
 - Event store: [`backend/eventstore/`](../../backend/eventstore/)
-- Frontend bridge: [`docs/lab-ui-pipeline-bridge.md`](../lab-ui-pipeline-bridge.md)
+- Frontend bridge: [`docs/product/lab-ui-pipeline-bridge.md`](../product/lab-ui-pipeline-bridge.md)
