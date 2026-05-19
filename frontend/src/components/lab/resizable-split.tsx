@@ -48,7 +48,10 @@ export function ResizableSplit({
   }, []);
 
   useEffect(() => {
-    function onMove(e: MouseEvent) {
+    // PointerEvents so the divider drags reliably across mouse / trackpad /
+    // touch — the old mouse-only handler missed pointer-only inputs on some
+    // device configurations.
+    function onMove(e: PointerEvent) {
       if (!dragRef.current || !wrapRef.current) return;
       const rect = wrapRef.current.getBoundingClientRect();
       const next = (e.clientX - rect.left) / rect.width;
@@ -61,11 +64,13 @@ export function ResizableSplit({
         persistRatio(ratio);
       }
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, [ratio, persistRatio]);
 
@@ -76,7 +81,8 @@ export function ResizableSplit({
       </div>
       <div
         className="resizable-split-divider"
-        onMouseDown={() => {
+        onPointerDown={(event) => {
+          if (event.button !== 0 && event.pointerType === "mouse") return;
           dragRef.current = true;
         }}
         role="separator"

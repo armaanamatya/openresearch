@@ -115,3 +115,47 @@ class TestRunPathOffline:
         )
         result = run_path_offline("prj_ppo", tmp_path, h, {"mean_reward": 487})
         assert result.recommendation != ""
+
+
+class TestRiskLevelCoercion:
+    """Regression: LLM sometimes emits trailing rationale in the enum field.
+
+    A run failed at orchestrator.py with `risk="low — scripts already required
+    for CartPole-v1"`. RiskLevel-typed fields must coerce to the bare token.
+    """
+
+    def _hypothesis_with_risk(self, risk_value):
+        return ImprovementHypothesis(
+            path_id="path_1",
+            hypothesis="h",
+            rationale="r",
+            expected_outcome="o",
+            risk=risk_value,
+        )
+
+    def test_clean_value_passes(self):
+        assert self._hypothesis_with_risk("low").risk == RiskLevel.low
+
+    def test_trailing_em_dash_rationale_coerces(self):
+        h = self._hypothesis_with_risk("low — scripts already required")
+        assert h.risk == RiskLevel.low
+
+    def test_trailing_en_dash_rationale_coerces(self):
+        h = self._hypothesis_with_risk("high – needs new dataset")
+        assert h.risk == RiskLevel.high
+
+    def test_colon_rationale_coerces(self):
+        h = self._hypothesis_with_risk("medium: untested codepath")
+        assert h.risk == RiskLevel.medium
+
+    def test_whitespace_rationale_coerces(self):
+        h = self._hypothesis_with_risk("critical because of GPU memory")
+        assert h.risk == RiskLevel.critical
+
+    def test_uppercase_coerces(self):
+        h = self._hypothesis_with_risk("LOW")
+        assert h.risk == RiskLevel.low
+
+    def test_still_invalid_after_coercion_raises(self):
+        with pytest.raises(Exception):
+            self._hypothesis_with_risk("severe")

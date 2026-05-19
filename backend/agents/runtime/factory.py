@@ -73,6 +73,36 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
     return resolved
 
 
+def has_provider_credentials(provider: ProviderName | str | None = None) -> bool:
+    """Non-raising counterpart to validate_provider_credentials.
+
+    Returns True iff the resolved provider has working credentials in env or
+    settings. Used by the orchestrator to filter the fallback chain so we
+    don't surface a misleading 401 from a provider the operator never
+    configured. ``validate_provider_credentials`` raises on missing creds
+    which is the wrong shape for predicate use.
+    """
+    try:
+        resolved = selected_provider(provider)
+    except ProviderConfigurationError:
+        return False
+    settings = get_settings()
+    if resolved == "anthropic":
+        if os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "anthropic_api_key", ""):
+            return True
+        # claude-agent-sdk inherits a subscription login from the `claude`
+        # CLI subprocess, so its presence on PATH counts as credentials.
+        return shutil.which("claude") is not None
+    if resolved == "openai":
+        return bool(
+            os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENAI_ADMIN_KEY")
+            or getattr(settings, "openai_api_key", "")
+            or getattr(settings, "openai_admin_key", "")
+        )
+    return False
+
+
 def configure_openai_agents_sdk_credentials(
     set_default_openai_key: Callable[..., Any] | None,
 ) -> None:
@@ -133,6 +163,7 @@ def make_runtime(
 
 __all__ = [
     "configure_openai_agents_sdk_credentials",
+    "has_provider_credentials",
     "make_runtime",
     "selected_provider",
     "validate_provider_credentials",

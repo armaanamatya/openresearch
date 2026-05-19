@@ -17,6 +17,13 @@ class ProviderHealth:
     last_quota_failure_at: datetime | None = None
     last_transient_failure_at: datetime | None = None
     cooldown_until: datetime | None = None
+    # "Dead" is stronger than cooldown — it's a permanent mark for this
+    # monitor's lifetime (i.e. for the rest of the run). Used when a
+    # provider returns an unambiguous AuthenticationError on a fallback
+    # attempt: there's no point retrying it for the duration of the
+    # orchestrator instance. ``cooldown_until`` is for temporary backoff;
+    # ``dead_reason`` is for "this is misconfigured, stop trying".
+    dead_reason: str = ""
 
 
 class ProviderHealthMonitor:
@@ -54,8 +61,27 @@ class ProviderHealthMonitor:
 
     def is_healthy(self, provider: ProviderName, *, now: datetime | None = None) -> bool:
         state = self._state(provider)
+        if state.dead_reason:
+            return False
         current = now or datetime.now(timezone.utc)
         return state.cooldown_until is None or state.cooldown_until <= current
+
+    def mark_dead(self, provider: ProviderName, *, reason: str) -> None:
+        """Permanently exclude a provider from this monitor's lifetime.
+
+        Set on hard, unrecoverable failures (auth rejected with a wrong
+        key, missing required env, etc.) — anything where retry has zero
+        chance of succeeding so subsequent attempts on this provider
+        within the same orchestrator run are wasted budget. ``reason``
+        is human-readable and shows up in the fallback summary.
+        """
+        if not reason:
+            raise ValueError("mark_dead requires a non-empty reason")
+        state = self._state(provider)
+        state.dead_reason = reason
+
+    def is_dead(self, provider: ProviderName) -> bool:
+        return bool(self._state(provider).dead_reason)
 
     def cooldown_remaining(
         self,
@@ -77,6 +103,7 @@ class ProviderHealthMonitor:
                 "cooldown_until": (
                     state.cooldown_until.isoformat() if state.cooldown_until else None
                 ),
+                "dead_reason": state.dead_reason or None,
             }
             for provider, state in self._health.items()
         }

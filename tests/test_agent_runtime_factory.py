@@ -9,6 +9,7 @@ import pytest
 
 from backend.agents.runtime import (
     configure_openai_agents_sdk_credentials,
+    has_provider_credentials,
     ProviderConfigurationError,
     make_runtime,
     selected_provider,
@@ -105,3 +106,86 @@ def test_make_runtime_instantiates_without_credentials(monkeypatch) -> None:
 
     assert make_runtime("anthropic").provider_name == "anthropic"
     assert make_runtime("openai").provider_name == "openai"
+
+
+# ---------------------------------------------------------------------------
+# has_provider_credentials — predicate sibling of validate_provider_credentials.
+# Used by the orchestrator to filter the fallback chain so a run with only
+# anthropic credentials never tries to fall over to openai (the symptom: a
+# misleading 401 from openai that kills the run on an unrelated anthropic
+# blip).
+# ---------------------------------------------------------------------------
+
+def test_has_provider_credentials_anthropic_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    assert has_provider_credentials("anthropic") is True
+
+
+def test_has_provider_credentials_anthropic_via_settings(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="sk-from-env-file", openai_api_key="", openai_admin_key=""),
+    )
+    # Without claude CLI in our isolated path the only signal is the settings key.
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+    assert has_provider_credentials("anthropic") is True
+
+
+def test_has_provider_credentials_anthropic_via_claude_cli(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    # Subscription login via the CLI counts as credentials.
+    assert has_provider_credentials("anthropic") is True
+
+
+def test_has_provider_credentials_anthropic_returns_false_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+    assert has_provider_credentials("anthropic") is False
+
+
+def test_has_provider_credentials_openai_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    assert has_provider_credentials("openai") is True
+
+
+def test_has_provider_credentials_openai_via_admin_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", "sk-admin")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    assert has_provider_credentials("openai") is True
+
+
+def test_has_provider_credentials_openai_returns_false_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    assert has_provider_credentials("openai") is False
+
+
+def test_has_provider_credentials_invalid_provider_returns_false() -> None:
+    assert has_provider_credentials("local") is False

@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.execution import (
     DEFAULT_SANDBOX_MODE,
@@ -36,6 +38,7 @@ from backend.agents.runtime import (
     AgentRuntimeSpec,
     ProviderName,
     RuntimeGuard,
+    has_provider_credentials,
     make_runtime,
 )
 from backend.agents.resilience import ProviderHealthMonitor, RunBudget, RunCostLedger
@@ -594,7 +597,7 @@ class ReproLabOrchestrator:
                 runtime_kwargs=RuntimeKwargs(
                     cwd=cwd_path,
                     max_turns=max_turns,
-                    wall_clock_seconds=self.execution_profile.agent_wall_clock_seconds,
+                    wall_clock_seconds=self._wall_clock_for(agent_id),
                     build_runtime_spec=build_runtime_spec,
                     telemetry=self._telemetry,
                     run_started_at=self._pipeline_started_at,
@@ -670,46 +673,75 @@ class ReproLabOrchestrator:
             return self._verification_runtime
         return self._runtime
 
-    def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
-        """Build the failover chain, dropping providers without credentials.
+    def _wall_clock_for(self, agent_id: str) -> float | None:
+        """Per-agent wall-clock cap with settings override.
 
-        Previously this returned both providers unconditionally. When the
-        primary (e.g. anthropic) hit a transient rate limit, the resilience
-        engine failed over to the secondary (openai) and immediately died
-        inside `run_agent_with_resilience` with
-        ``ProviderConfigurationError: Provider 'openai' is not configured``,
-        ending the run instead of retrying on the primary after the limit
-        reset.
-
-        Filter at chain-construction time so the engine only retries on
-        providers we know are usable. The primary is always preserved (even
-        if its own credentials are missing) so the surfaced error message
-        names the actual misconfiguration rather than degenerating to "no
-        providers available."
+        The execution profile's blanket cap (1200s for efficient, 3600s for
+        max) is too tight for some agents on complex papers — baseline-
+        implementation on the RLM paper hit 1200s with 1129 chars of
+        useful partial output. The per-agent override lets operators bump
+        only the heavy agent without paying the whole-run cost of
+        executionMode=max. Falls back to the profile default when no
+        override is configured.
         """
-        from backend.agents.runtime.base import ProviderConfigurationError
-        from backend.agents.runtime.factory import validate_provider_credentials
+        from backend.config import get_settings as _get_settings
+        overrides = _get_settings().agent_wall_clock_overrides
+        if agent_id in overrides:
+            try:
+                return float(overrides[agent_id])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring non-numeric wall-clock override for %s: %r",
+                    agent_id,
+                    overrides[agent_id],
+                )
+        return self.execution_profile.agent_wall_clock_seconds
 
+    def _provider_chain(self, primary: ProviderName) -> list[ProviderName]:
+        # Only include the cross-provider fallback when its credentials are
+        # actually configured. Previously the chain was always
+        # [primary, other] — if anthropic hit a transient error and openai
+        # had no (or an invalid) key, the engine would fall over to openai
+        # and surface a misleading 401 that killed the run. Filtering here
+        # keeps the chain honest: no fallback to a provider the operator
+        # never set up.
+        from backend.config import get_settings as _get_settings  # local: avoid cycle
+        if _get_settings().provider_fallback_disabled:
+            # Operator explicitly opted out of cross-provider fallback. This
+            # is the right knob when the env has an invalid second key that
+            # would only kill runs (set-but-rejected, e.g. service-account
+            # keys without chat-completion scope). Pre-cached fallback
+            # runtimes are also dropped because the intent is "no fallback".
+            return [primary]
         other: ProviderName = "openai" if primary == "anthropic" else "anthropic"
         chain: list[ProviderName] = []
         for provider in (primary, other):
             if provider in chain:
                 continue
-            try:
-                validate_provider_credentials(provider)
-            except ProviderConfigurationError as exc:
-                if provider == primary:
-                    # Keep the primary so the run fails with the precise
-                    # "primary not configured" error rather than an opaque
-                    # empty-chain error.
-                    chain.append(provider)
-                else:
-                    logger.info(
-                        "provider %r dropped from fallback chain (%s)",
-                        provider,
-                        exc,
-                    )
+            # Runtime-acquired deadness: when a prior agent invocation in
+            # this run hit AuthenticationError on this provider, the engine
+            # marks it dead via ProviderHealthMonitor. Future invocations
+            # then exclude it from the chain so we don't keep paying for
+            # the same 401. Primary stays in the chain even if dead so the
+            # engine can surface a clean fatal rather than an empty chain.
+            if provider != primary and self._provider_health.is_dead(provider):
+                logger.info(
+                    "Provider %s excluded from %s fallback chain (marked dead this run)",
+                    provider,
+                    primary,
+                )
                 continue
+            if provider != primary and not has_provider_credentials(provider):
+                # Pre-cached fallback runtimes (e.g. ``claude_limit_fallback_runtime``
+                # passed by the caller) remain valid even when env creds are absent;
+                # honour them so explicit wiring isn't silently dropped.
+                if provider not in self._fallback_runtimes:
+                    logger.info(
+                        "Provider %s excluded from %s fallback chain (no credentials configured)",
+                        provider,
+                        primary,
+                    )
+                    continue
             chain.append(provider)
         return chain
 
@@ -1844,9 +1876,22 @@ class ReproLabOrchestrator:
         output = await self._invoke_agent("improvement-orchestrator", prompt)
         data = self._extract_json(output)
         hypotheses_raw = data.get("hypotheses", [])
-        state.improvement_hypotheses = [
-            ImprovementHypothesis(**h) for h in hypotheses_raw
-        ]
+        # Fail-soft: drop malformed hypotheses instead of crashing the run.
+        # The LLM occasionally emits invalid shapes (e.g. trailing rationale in
+        # an enum field) and we'd rather proceed with the survivors than abort
+        # after the baseline already succeeded.
+        parsed_hypotheses: list[ImprovementHypothesis] = []
+        for idx, h in enumerate(hypotheses_raw):
+            try:
+                parsed_hypotheses.append(ImprovementHypothesis(**h))
+            except (ValidationError, TypeError) as exc:
+                logger.warning(
+                    "Dropping malformed improvement hypothesis [%d] for project %s: %s",
+                    idx,
+                    self.project_id,
+                    exc,
+                )
+        state.improvement_hypotheses = parsed_hypotheses
         if round_index > 0:
             # Re-iteration rounds namespace their path ids so workspaces and
             # path_results never collide with an earlier round's `path_N`.

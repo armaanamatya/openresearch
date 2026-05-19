@@ -40,6 +40,23 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-4o"
     openai_reasoning_model: str = "o4-mini"
     agent_provider_overrides: dict[str, str] = Field(default_factory=dict)
+    # Per-agent wall-clock cap overrides (seconds). Bumps the
+    # ExecutionProfile.agent_wall_clock_seconds for a specific agent so
+    # heavy stages like baseline-implementation on complex papers don't
+    # die at the profile's blanket 1200s. Example .env:
+    #   REPROLAB_AGENT_WALL_CLOCK_OVERRIDES='{"baseline-implementation": 2400}'
+    # Unset agents continue to use the profile default. Avoids forcing the
+    # whole run to executionMode=max when only one agent needs more time.
+    agent_wall_clock_overrides: dict[str, float] = Field(default_factory=dict)
+    # Force the orchestrator's provider chain to [primary] only — no
+    # cross-provider fallback. Useful when the operator only has working
+    # credentials for one provider and the other key in env is invalid
+    # (common: a leftover sk-svcacct-* in the shell that 401s on chat
+    # completions). Without this, a transient anthropic blip can trigger
+    # an openai fallback attempt that surfaces a misleading 401 and kills
+    # the run. Default keeps existing behaviour for users with two valid
+    # keys.
+    provider_fallback_disabled: bool = False
 
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,
@@ -120,6 +137,14 @@ class Settings(BaseSettings):
     # Railway) sets REPROLAB_FORCE_SANDBOX=local to override. Empty disables
     # the override entirely.
     force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = "docker"
+
+    # Force the LLM provider for every run regardless of what the client
+    # requested — analogous to force_sandbox. The UI hard-codes provider=
+    # "anthropic" in the start-run request; on deployments where the operator
+    # only has OpenAI credentials, REPROLAB_FORCE_LLM_PROVIDER=openai rewrites
+    # the request server-side so a stale UI default doesn't trigger an
+    # unconfigured-provider error mid-pipeline. Empty disables the override.
+    force_llm_provider: Literal["", "anthropic", "openai"] = ""
 
     # Shared secret gating the run-start endpoints on public deployments.
     # Empty = gate disabled (local dev). When set, POST /runs and
