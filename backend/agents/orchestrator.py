@@ -2439,6 +2439,22 @@ class ReproLabOrchestrator:
                         file=sys.stderr,
                         flush=True,
                     )
+                elif state.gate_2.status == GateStatus.partial_reproduction:
+                    # Track 3 give-it-a-shot: the supervisor judged the baseline
+                    # as `partial_reproduction` — semantically "salvageable",
+                    # distinct from `blocked_requires_human`. Fall through to
+                    # the improvement orchestration + the rubric reiteration
+                    # loop so they have a chance to lift the rubric score above
+                    # target before we commit to partial as the verdict. If the
+                    # loop itself fails, _finalize_partial in run_gate_2 (or the
+                    # run_research_map success path) still produces a terminal
+                    # final_report.{json,md} — see docs/design/option-b-investigation.md.
+                    print(
+                        f"  ! Gate 2 partial_reproduction "
+                        f"-- entering improvement orchestration to try to lift the rubric",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 else:
                     print(f"  X Gate 2 FAILED: {state.gate_2.status.value}", file=sys.stderr, flush=True)
                     return state
