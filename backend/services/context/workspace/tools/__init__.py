@@ -15,6 +15,7 @@ from backend.services.context.workspace.tools.rlm_query import (
     LlmClient,
     RlmQueryTool,
 )
+from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 from backend.services.context.workspace.tools.web_search import WebSearchTool
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ListVariablesTool",
     "LlmClient",
     "LookupTool",
+    "OpenAILlmClient",
     "RlmQueryTool",
     "WebSearchTool",
     "WorkspaceTool",
