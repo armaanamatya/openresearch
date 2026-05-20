@@ -156,25 +156,16 @@ raise RootIterationCapExceeded
 
 ---
 
-## 6. Open design items for Phase 2
+## 6. Resolved design decisions for Phase 2 (2026-05-20)
 
-These need decisions before Phase 2 starts. Each is genuinely new code, not just renaming.
+Confirmed during Phase 1 review. These are the Phase 2 (#59) defaults — deviation requires re-opening the question.
 
-1. **Sync/async bridge.** `rlm_query.py`'s `LlmClient.complete()` is synchronous; the orchestrator is async. The REPL `exec`s root-written code synchronously, so `llm_query` / `rlm_query` need to call `LlmClient.complete()` *from inside `exec`*. Options:
-   - (a) Run the root loop in a worker thread; the orchestrator's async loop owns the thread-bridge.
-   - (b) Use `asyncio.run_coroutine_threadsafe` inside `llm_query` to dispatch to an event loop running on the orchestrator's thread.
-   - (c) Make `LlmClient` async and run the REPL with `exec(..., {'__builtins__': ...})` wrapping in `nest_asyncio` (fragile on Windows).
-   Recommendation: (a) — simplest; matches the paper's reference impl which is synchronous and blocking.
-
-2. **REPL serialization for resume-safety (brief §10).** `pickle.dumps(globals_dict)` fails on file handles, threads, and large strings. Strategy: store `paper_text` and `supplementary_text` as file refs (only the path is pickled); strip non-picklable entries (`paper_text` → `_paper_text_path`); on resume, re-hydrate.
-
-3. **`Metadata(stdout)` shape.** Brief §9 says "length + short prefix." Concrete proposal: `{length: N, prefix: first 200 chars, has_tracebacks: bool, var_assignments_observed: list[str]}`. Variable assignments observed via `ast.parse(code)` so the root knows what new REPL state exists without seeing values.
-
-4. **Root model selection knob.** Surface `REPROLAB_RLM_ROOT_MODEL` env override; default to a paper-validated root. Existing provider chain (`fd7ff6d feat(config): REPROLAB_FORCE_LLM_PROVIDER server-side override`) is the place to hook in.
-
-5. **`run_experiment` sandbox bridge.** The primitive returns metrics, but the actual run touches Docker/RunPod via `experiment_runner.run_with_runtime/runpod`. The primitive becomes a sync wrapper that schedules the async sandbox call on the orchestrator's loop (option (a) above) and waits.
-
-6. **`propose_improvements` prompt rewrite.** Existing `select_hypotheses_offline` is hardcoded to `PPO_HYPOTHESES[:n_paths]`. The new prompt must produce variable-length lists with free-form proposer-assigned tags. Validation: run on 3 different PaperBench papers, assert candidate list differs in count or content (brief FM#4 / §13 test).
+1. **Sync/async bridge — worker-thread.** Orchestrator's async loop owns a worker thread that runs the synchronous `exec(code, namespace)`. `LlmClient.complete()` stays sync; `llm_query` / `rlm_query` block the worker thread, not the event loop. Matches the paper's reference implementation. Rejected: `nest_asyncio` (fragile on Windows), making `LlmClient` async (larger blast radius).
+2. **REPL serialization — file refs for large strings.** `paper_text`, `supplementary_text`, and other large-string variables are stored on disk; the pickle holds the path under `_paper_text_path`, `_supplementary_text_path`, etc. Non-picklable handles (threads, open files) stripped on serialize, re-issued as pending on resume.
+3. **`Metadata(stdout)` schema — frozen.** `{length: int, prefix: str (≤200 chars), has_traceback: bool, var_assignments: list[str]}`. `var_assignments` extracted by `ast.parse(code)` walking `ast.Assign` / `ast.AugAssign` targets, so the root sees *what* it bound without seeing the value.
+4. **Root model selection — `REPROLAB_RLM_ROOT_MODEL` env var.** Layered on top of existing `REPROLAB_FORCE_LLM_PROVIDER`. Default: a paper-validated root (GPT-5 if OpenAI key present, else Qwen3-Coder-480B). Claude permitted but emits a `root_model_unvalidated` warning at run-start.
+5. **`run_experiment` sandbox bridge — sync wrapper.** The primitive is a sync function that schedules `experiment_runner.run_with_runtime(...)` on the orchestrator's event loop via `asyncio.run_coroutine_threadsafe` (from inside the worker thread), then blocks on the resulting future. Same pattern any async-touching primitive uses.
+6. **`propose_improvements` prompt — full rewrite, FM#4 validated.** Replace hardcoded `PPO_HYPOTHESES[:n_paths]` with an LLM prompt that returns a variable-length list of `{id, title, tag, description, reasoning, expected_delta}` dicts. Tags are proposer-assigned free-form strings — no taxonomy. FM#4 test: run on 3 distinct PaperBench papers, assert candidate lists differ in count or content.
 
 ---
 
