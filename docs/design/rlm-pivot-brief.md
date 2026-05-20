@@ -1,9 +1,10 @@
 # OpenResearch / ReproLab — Full RLM Pivot Implementation Brief
 
 > Committed to `main` 2026-05-19 as the canonical change brief for the RLM pivot.
-> **Read "Status & corrections" first.** The brief body below was drafted from the
-> documented architecture and is stale in places; the corrections are verified
-> against the code and take precedence over the brief body where they conflict.
+> **Read the preamble corrections first.** The brief body below was drafted from
+> the documented architecture and is stale in places; the corrections are verified
+> against the code and the RLM paper (arXiv 2512.24601) and take precedence over
+> the brief body where they conflict.
 
 ## Status & corrections (2026-05-19)
 
@@ -49,6 +50,63 @@
   the orchestrator is async — bridging `sub_LLM`/`sub_RLM` from REPL code is a real
   design item. "Sandboxed namespace" means a controlled `globals` dict for `exec`,
   not a security sandbox; the root model is trusted.
+
+## RLM paper accuracy check (arXiv 2512.24601v3 — verified 2026-05-19)
+
+The brief's RLM claims were checked against the full paper. **Verified accurate:**
+the arXiv ID `2512.24601` (v3, 11 May 2026; Zhang, Kraska, Khattab, MIT CSAIL), the
+Algorithm 1 transcription, the three design properties (prompt-as-environment,
+output-in-variable, programmatic recursion), and the Algorithm 2 contrast.
+Corrections — the first three are material to implementation:
+
+1. **Recursion depth — `sub_RLM` is not a depth-1 primitive.** Section 7 lists
+   `sub_RLM` as "depth-1 per paper default." Wrong: the paper's depth=1 (the
+   default) exposes a sub-*LLM* call only (`llm_query`); the sub-*RLM* call
+   (`rlm_query`) exists only at **depth>1**. The brief's own FM#10 caps at
+   depth-1 — at which `sub_RLM` does not exist. To make `sub_RLM`, the
+   `sub_rlm_spawned` event (§9), and the UI "R" marker (§11) real, **run
+   depth=2** (paper Table 1 shows depth=2 is strong and still cheap). At the
+   depth cap, `rlm_query` falls back to `llm_query`.
+
+2. **`FINAL` / termination — FM#3 is stricter than the paper.** Algorithm 1
+   abstracts termination as `state[Final]`. The reference implementation
+   (Appendix C / B) terminates by parsing `FINAL(...)` / `FINAL_VAR(...)` tags
+   from the model's response: `FINAL(text)` returns model-written text (an
+   autoregressive finish — the thing FM#3 forbids), `FINAL_VAR(name)` returns a
+   REPL variable. The paper itself calls this brittle (Appendix B). Correct
+   design: **terminate when the model emits a `FINAL_VAR`-style tag, then read
+   the answer from the named REPL variable.** FM#3 is right that the final
+   *value* must come from a variable (so it can exceed context); it is wrong
+   that termination must not be detected from parsed output — the tag *is*
+   parsed output.
+
+3. **System-prompt length — FM#6's ~2000-token cap contradicts the paper.**
+   Appendix C's system prompt is long and deliberately carries several
+   in-context decomposition examples. Figure 4(a) shows these "greatly improve
+   both overall performance and the initial decomposition attempt... even if the
+   example is unrelated to the actual task." Keep FM#6's ban on prescribing a
+   rigid workflow, but **include in-context decomposition examples** and drop the
+   token cap.
+
+4. **Reference names.** The paper's implementation uses `context` (the prompt
+   variable), `llm_query`, and `rlm_query`. The brief's `paper_text` / `sub_LLM`
+   / `sub_RLM` are fine domain adaptations — just know that the reference repo
+   (github.com/alexzhang13/rlm) and the repo's own `rlm_query.py` use the
+   paper's names.
+
+5. **Root model.** The paper validates **GPT-5 and Qwen3-Coder-480B as RLM
+   roots**; Claude (Opus 4.1) appears only as a baseline coding agent, never as
+   an RLM root — so Section 3's "Claude Opus" is unverified by the paper.
+   Pattern: a strong root model with a cheaper sub-call model (the paper uses
+   GPT-5 root / GPT-5-mini sub-calls). Roots need strong coding ability and a
+   large output-token budget (Appendix B), and the same system prompt is not
+   safe across models (Qwen needed an explicit anti-over-subcalling line).
+
+6. **Async + sandbox are open problems — confirmed.** The paper (§7, Appendix B)
+   flags asynchronous sub-calls and sandboxed REPLs as unsolved future work; its
+   reference implementation is synchronous and blocking, which matches
+   `rlm_query.py`'s sync `LlmClient`. FM#10's sub-call cost cap is well-motivated
+   — the paper explicitly names "exploding sub-call costs" as a real failure mode.
 
 ---
 
