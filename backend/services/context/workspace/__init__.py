@@ -32,6 +32,7 @@ from backend.services.context.workspace.tools.interface import WorkspaceTool
 from backend.services.context.workspace.tools.graph_query import GraphQueryTool
 from backend.services.context.workspace.tools.list_variables import ListVariablesTool
 from backend.services.context.workspace.tools.lookup import LookupTool
+from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 from backend.services.context.workspace.tools.rlm_query import (
     ClaudeLlmClient,
     LlmClient,
@@ -51,6 +52,7 @@ __all__ = [
     "ListVariablesTool",
     "LlmClient",
     "LookupTool",
+    "OpenAILlmClient",
     "RlmQueryTool",
     "SemanticSearchTool",
     "ToolInvoked",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from typing import Any
 
 from pydantic import ConfigDict
@@ -42,6 +43,7 @@ from backend.services.context.workspace.aggregate import (
     WorkspaceState,
 )
 from backend.services.context.workspace.events import (
+    ToolInvoked,
     VariableEnriched,
     VariableLoaded,
     VariablePromoted,
@@ -289,6 +291,46 @@ class WorkspaceAppService:
             enriched_by=enriched_by,
         )
         self._append(agg, workspace_id, [event], cid)
+
+    def invoke_tool(
+        self,
+        *,
+        workspace_id: str,
+        tool: Any,
+        correlation_id: CorrelationId | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Invoke a WorkspaceTool and record a ToolInvoked event.
+
+        Routes the call through the event store so dashboard telemetry
+        and replay see every tool invocation.  Returns the Cited[Any]
+        result unchanged.
+        """
+        cid = correlation_id or new_correlation_id()
+        agg = self._load_workspace_aggregate(workspace_id)
+        if agg.state not in (WorkspaceState.LOADING, WorkspaceState.READY):
+            raise WorkspaceError(
+                f"Cannot invoke tool in workspace {workspace_id!r}: "
+                f"state is {agg.state.value!r}, must be 'loading' or 'ready'."
+            )
+
+        t0 = time.monotonic()
+        result = tool.call(workspace_id=workspace_id, **kwargs)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        result_payload = (
+            result.value if isinstance(result.value, dict) else {"raw": result.value}
+        )
+        event = ToolInvoked(
+            workspace_id=workspace_id,
+            tool_name=tool.name,
+            arguments=kwargs,
+            result_payload=result_payload,
+            citations=result.citations,
+            duration_ms=duration_ms,
+        )
+        self._append(agg, workspace_id, [event], cid)
+        return result
 
     def close_workspace(
         self,

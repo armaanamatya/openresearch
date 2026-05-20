@@ -86,6 +86,11 @@ from backend.hermes_audit import (
     build_step_audit_payload,
 )
 from backend.schemas.citations import Citation
+from backend.services.context.workspace.model import Cited
+from backend.services.context.workspace.tools.rlm_query import (
+    LlmClient,
+    RlmQueryTool,
+)
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -208,6 +213,7 @@ class PipelineState:
     attempt_id: str | None = None
     run_group_id: str | None = None
     blacklist_terms: list[str] = field(default_factory=list)
+    rlm_calls_remaining: int = 120
 
     def advance_stage(self, stage: PipelineStage, runs_root: Path) -> Path:
         """Transition to ``stage`` and persist the checkpoint atomically.
@@ -237,6 +243,7 @@ class PipelineState:
             "run_group_id": self.run_group_id,
             "blacklist_terms": self.blacklist_terms,
             "environment_build_ok": self.environment_build_ok,
+            "rlm_calls_remaining": self.rlm_calls_remaining,
         }
         if self.paper_claim_map:
             data["paper_claim_map"] = self.paper_claim_map.model_dump()
@@ -364,6 +371,7 @@ class PipelineState:
                 for key, reports in data["hermes_checkpoint_reports"].items()
             }
         state.hermes_interventions = data.get("hermes_interventions", [])
+        state.rlm_calls_remaining = data.get("rlm_calls_remaining", 120)
         logger.info("Checkpoint loaded: stage=%s", state.stage.value)
         return state
 
@@ -464,6 +472,15 @@ class ReproLabOrchestrator:
         self._workspace_id = workspace_id
         self._dashboard = DashboardEmitter(project_id, runs_root)
 
+        # RLM tool — dormant until stages call _rlm_query()
+        self._rlm_tool: RlmQueryTool | None = None
+        if self._workspace_service is not None:
+            llm_client = self._build_rlm_llm_client()
+            self._rlm_tool = RlmQueryTool(
+                view_provider=self._workspace_service,
+                llm_client=llm_client,
+            )
+
     # Agents that write code / run experiments need more turns
     _HEAVY_AGENTS = {"baseline-implementation", "improvement-path", "experiment-runner"}
     _OUTPUT_MODELS = {
@@ -509,6 +526,49 @@ class ReproLabOrchestrator:
             permission_mode=self.permission_mode,
             guard=guard,
         )
+
+    # --- RLM helpers -----------------------------------------------------------
+
+    def _build_rlm_llm_client(self) -> LlmClient:
+        """Pick the RLM LLM client matching the run's primary provider."""
+        if self._runtime.provider_name == "openai":
+            from backend.services.context.workspace.tools.openai_client import (
+                OpenAILlmClient,
+            )
+            return OpenAILlmClient()
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+        return ClaudeLlmClient()
+
+    def _rlm_query(
+        self,
+        state: PipelineState,
+        question: str,
+        variable: str = "paper_text",
+    ) -> Cited[dict[str, Any]] | None:
+        """Issue a single RLM query. Returns None when unavailable or budget exhausted."""
+        if self._rlm_tool is None or self._workspace_id is None:
+            return None
+        if state.rlm_calls_remaining <= 0:
+            return None
+        result = self._workspace_service.invoke_tool(
+            workspace_id=self._workspace_id,
+            tool=self._rlm_tool,
+            question=question,
+            variable_name=variable,
+        )
+        state.rlm_calls_remaining -= result.value.get("llm_calls", 1)
+        return result
+
+    def _rlm_evidence_for_stage(
+        self, state: PipelineState, stage_questions: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Run a batch of RLM queries for a stage. Returns {question: answer_dict}."""
+        evidence: dict[str, dict[str, Any]] = {}
+        for q in stage_questions:
+            ans = self._rlm_query(state, q)
+            if ans is not None:
+                evidence[q] = ans.value
+        return evidence
 
     async def _invoke_agent(
         self,
@@ -2344,6 +2404,7 @@ class ReproLabOrchestrator:
                 attempt_id=self.attempt_id,
                 run_group_id=self.run_group_id,
                 blacklist_terms=list(self.blacklist_terms),
+                rlm_calls_remaining=self._run_budget.rlm_calls_remaining,
             )
         else:
             state.seed = self.seed if self.seed is not None else state.seed
