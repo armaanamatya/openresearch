@@ -14,6 +14,7 @@ class RunBudget:
     max_usd: float | None = None
     max_wall_clock_seconds: float | None = None
     max_invocations_per_agent: dict[str, int] = field(default_factory=dict)
+    rlm_calls_remaining: int = 120
 
     def check(
         self,
