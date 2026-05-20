@@ -57,7 +57,7 @@ The brief's RLM claims were checked against the full paper. **Verified accurate:
 the arXiv ID `2512.24601` (v3, 11 May 2026; Zhang, Kraska, Khattab, MIT CSAIL), the
 Algorithm 1 transcription, the three design properties (prompt-as-environment,
 output-in-variable, programmatic recursion), and the Algorithm 2 contrast.
-Corrections — the first three are material to implementation:
+Corrections — points 1–3 and 7 are the implementation-critical ones:
 
 1. **Recursion depth — `sub_RLM` is not a depth-1 primitive.** Section 7 lists
    `sub_RLM` as "depth-1 per paper default." Wrong: the paper's depth=1 (the
@@ -107,6 +107,35 @@ Corrections — the first three are material to implementation:
    reference implementation is synchronous and blocking, which matches
    `rlm_query.py`'s sync `LlmClient`. FM#10's sub-call cost cap is well-motivated
    — the paper explicitly names "exploding sub-call costs" as a real failure mode.
+
+7. **RLM-as-orchestrator is our extension — and the primitives are where it can
+   quietly become Algorithm 2.** The paper validates RLM as a long-context
+   *inference* scaffold: its REPL holds only the prompt plus
+   `llm_query`/`rlm_query`/`print`, and it returns a string. It does *not*
+   validate RLM driving side-effecting tools — our domain primitives
+   (`build_environment`, `run_experiment`, `implement_baseline`, …) mutate
+   Docker / filesystem / run state and are an extension beyond the paper. The
+   closest paper support is Observation 5 / Appendix C.3 (LongCoT — the RLM
+   decomposes a reasoning graph into nodes, delegates each via sub-calls,
+   memoizes verified results, assembles); use that as the root-prompt template,
+   not a fixed primitive order. FM#1 guards the *root's* payload (no `paper_text`
+   in the root message) — it does not guard the *primitives*: a primitive that
+   receives the whole paper as one argument and feeds it to an LLM re-creates the
+   exact context-window problem RLM exists to eliminate (Algorithm 2's Flaw #1,
+   hidden one level down). Invariant: `paper_text` / `supplementary` /
+   `repo_files` stay offloaded variables; the root navigates them with
+   root-written code and `llm_query`/`rlm_query` over **slices it constructs**;
+   primitives take slices and specs, never the whole corpus. If the root never
+   invokes `llm_query`/`rlm_query` over the paper at all, Property 3 is vestigial
+   and "recursive" is false advertising. Section 1's "Capability" rationale —
+   that RLM is "genuinely better-suited to paper reproduction" — is the team's
+   hypothesis, not a paper result; label it as such.
+
+8. **Add a root-iteration cap.** FM#10 caps sub-calls (50) and cost ($10); the
+   paper also bounds the *root* loop — 20 iterations and ~4096 output tokens per
+   turn in its runs (Appendix A). Add a root-iteration cap. The $10 is a
+   sub-call guard only; the reproduction run budget (Docker builds, experiments)
+   is separate and larger — size it independently.
 
 ---
 
