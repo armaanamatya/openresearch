@@ -1,19 +1,45 @@
 # ReproLab
 
-**Autonomous agent pipeline that reproduces ML papers and explores improvements.**
+**Agent pipeline that reproduces ML papers end-to-end and scores the result.**
 
-ReproLab takes a paper (PDF upload, arXiv ID, or DOI), reconstructs its implementation environment inside a Docker or RunPod sandbox, reproduces the core algorithm on the same dataset, launches parallel improvement agents through three verification gates, and emits a scientific benchmark report — a computed PaperBench-style rubric plus a statistical comparison against the paper's claimed results.
+ReproLab takes a paper (PDF upload, arXiv ID, or DOI), reconstructs its
+implementation environment inside a Docker or RunPod sandbox, reproduces the core
+algorithm on the same dataset, explores improvements, and emits a benchmark
+report — a computed PaperBench-style rubric plus a statistical comparison against
+the paper's claimed results.
+
+> **Architecture pivot in progress (2026-05).** ReproLab is being re-architected
+> from a fixed 14-stage pipeline to an **RLM-based orchestrator** built on the
+> `rlms` library (Recursive Language Models, arXiv 2512.24601). The canonical
+> plan is [`docs/design/rlm-pivot-brief.md`](docs/design/rlm-pivot-brief.md) —
+> read it first. The sections below describe the current (pre-pivot) code;
+> setup, CLI, and deployment instructions remain valid through the pivot.
 
 ---
 
 ## Architecture
 
-- **FastAPI backend** (`backend/`) — REST API + SSE event stream, agent orchestration, sandbox lifecycle
-- **Next.js lab frontend** (`frontend/`) — live pipeline progress strip, agent timeline, gate chips, final report view
-- **14-stage agent pipeline** — writes checkpoints to `runs/<project_id>/pipeline_state.json`; stages: ingest → paper-understanding → artifact-discovery → environment-detective → reproduction-planner → Gate 1 → baseline-implementation → experiment-runner → Gate 2 → improvement-selection → improvement-paths (parallel) → Gate 3 → research-map → complete
-- **Three verification gates** — structured pass/fail with dynamic confidence thresholds and supervisor verification
-- **Sandbox execution** — Docker (local, network/memory/CPU controlled) or RunPod GPU pods (remote, configurable GPU type/count/region)
-- **Event-sourced state** — SQLite event store + CQRS projections; pipeline state persisted atomically at each stage
+**Current (pre-pivot).** A 14-stage agent pipeline driven by a `PipelineStage`
+state machine with three verification gates: ingest → paper-understanding →
+artifact-discovery → environment-detective → reproduction-planner → Gate 1 →
+baseline-implementation → experiment-runner → Gate 2 → improvement-selection →
+improvement-paths → Gate 3 → research-map → complete.
+
+**Target (RLM pivot).** The 14 stages become callable *primitives*. An RLM root
+model — running the `rlms` library's recursive loop — drives them by writing
+Python in a REPL, with the paper offloaded as a REPL variable rather than fed
+into the model's context. No fixed stage order, no gate control-flow. See the
+pivot brief for the full design and build order.
+
+**Shared infrastructure (unchanged by the pivot):**
+
+- **FastAPI backend** (`backend/`) — REST API + SSE event stream, run lifecycle,
+  sandbox management
+- **Next.js lab frontend** (`frontend/`) — live run UI and benchmark report view
+- **Sandbox execution** — Docker (local, network/memory/CPU controlled) or
+  RunPod GPU pods (remote, configurable GPU type/count/region)
+- **File-backed run state** — `runs/<project_id>/`; SQLite event store with CQRS
+  projections, persisted atomically
 
 ---
 
@@ -21,7 +47,7 @@ ReproLab takes a paper (PDF upload, arXiv ID, or DOI), reconstructs its implemen
 
 | Requirement | Version |
 |---|---|
-| Python | 3.11 or newer |
+| Python | 3.14 (3.11+ supported) |
 | Node.js | >=20.19.0 and <21, OR >=22.12.0 (Node 21 is excluded by `engines` in `package.json`) |
 | Docker | Engine 26+ / Desktop 4.30+ |
 | RunPod account | Required only for `--sandbox runpod` |
@@ -52,7 +78,7 @@ docker compose up --build
 **Backend**
 
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r backend/requirements.txt
 ```
@@ -100,12 +126,10 @@ npm run dev        # starts on http://localhost:3000 (default Next.js port)
 
 1. Open http://localhost:3000/lab
 2. Upload a paper PDF (or paste an arXiv/DOI URL)
-3. Choose provider (Anthropic / OpenAI), execution mode (efficient / max), and sandbox (docker / runpod / local)
-4. Click **Start Run** — the pipeline strip shows each stage advancing in real time
-5. Gate chips turn green (pass) or red (fail) as the three verification gates resolve
-6. When the run reaches `complete`, click **View Report** to read the final benchmark report
-
-_Screenshots: `localhost_3000_lab.png` and `Screenshot 2026-05-10 093252.png` at the repo root show the lab UI mid-run._
+3. Choose provider (Anthropic / OpenAI), execution mode (efficient / max), and
+   sandbox (docker / runpod / local)
+4. Click **Start Run** and watch the run progress in real time
+5. When the run reaches `complete`, open the final benchmark report
 
 ### Via the CLI
 
@@ -117,7 +141,7 @@ python -m backend.cli reproduce paper.pdf --provider anthropic --sandbox docker
 #   --mode offline          deterministic, no LLM (for testing)
 #   --mode sdk              LLM-powered (default)
 #   --provider anthropic|openai
-#   --verification-provider anthropic|openai   (separate model for gate verification)
+#   --verification-provider anthropic|openai   (separate model for verification)
 #   --sandbox auto|local|docker|runpod
 #   --execution-mode efficient|max
 #   --n-paths 3             number of parallel improvement hypotheses
@@ -127,8 +151,8 @@ python -m backend.cli reproduce paper.pdf --provider anthropic --sandbox docker
 #   --seed 42               reproducible run
 
 # Ingest only (no agent pipeline)
-python -m backend.cli ingest 2512.24601          # arXiv ID
 python -m backend.cli ingest paper.pdf
+python -m backend.cli ingest 2512.24601          # arXiv ID
 
 # Evaluate a completed run
 python -m backend.cli eval <project_id> --paper-metrics '{"mean_reward": 500}'
@@ -142,7 +166,7 @@ Each run writes to `runs/<project_id>/`:
 
 | File / Dir | Contents |
 |---|---|
-| `pipeline_state.json` | Full serialized pipeline state including all gate decisions |
+| `pipeline_state.json` | Full serialized run state including all checkpoints |
 | `final_report.json` | Computed benchmark report (structured) |
 | `final_report.md` | Human-readable benchmark report |
 | `assumption_ledger.json` | Every agent assumption with citations |
@@ -150,10 +174,13 @@ Each run writes to `runs/<project_id>/`:
 | `cost_ledger.jsonl` | Per-agent USD spend and token ledger |
 | `Dockerfile` | Generated environment Dockerfile |
 | `code/` | Reproduced baseline implementation |
-| `hermes/` | Verification gate audit chain checkpoints |
+| `hermes/` | Verification audit chain checkpoints |
 | `raw_paper.pdf` | Stored copy of the input paper |
 
-The **final report** (`final_report.md`) contains: reproduction fidelity score, paper-vs-reproduction metric delta table, computed PaperBench rubric (weight-aware), statistical rigor assessment, improvement path summaries, and a research map of promising directions and negative results.
+The **final report** (`final_report.md`) contains: reproduction fidelity score,
+paper-vs-reproduction metric delta table, computed PaperBench rubric
+(weight-aware), statistical rigor assessment, improvement summaries, and a
+research map of promising directions and negative results.
 
 ---
 
@@ -187,10 +214,10 @@ npm test
 ## Project Layout
 
 ```
-backend/          FastAPI app, 14-stage agent pipeline, sandbox runtimes, evals
-frontend/         Next.js lab UI: pipeline dashboard, agent timeline, report viewer
+backend/          FastAPI app, agent pipeline, sandbox runtimes, evals
+frontend/         Next.js lab UI: run dashboard, report viewer
 tests/            Python test suite (unit, integration, e2e)
-docs/             Architecture notes, setup guide, deployment plan
+docs/             Pivot brief, design notes, setup + deployment guides
 runs/             Per-run artifact directories (gitignored, mount as volume in prod)
 third_party/      Vendored PaperBench bundles
 docker/           Container entrypoint script
@@ -199,4 +226,6 @@ scripts/          RunPod preflight and utility scripts
 
 ---
 
-See [`docs/guides/deployment.md`](docs/guides/deployment.md) for production deployment instructions.
+See [`docs/design/rlm-pivot-brief.md`](docs/design/rlm-pivot-brief.md) for the
+RLM pivot plan, and [`docs/guides/deployment.md`](docs/guides/deployment.md) for
+production deployment.
