@@ -10,6 +10,16 @@ retired. `dspy.RLM` is evaluated and not adopted.** The brief §3 is
 substantially accurate — this spike confirms it empirically, with one callback
 claim corrected below (see "Verified vs. assumed").
 
+> **Correction (2026-05-21) — `environment="local"`, not `"docker"`.** This
+> report's original Docker-as-deciding-factor argument conflated two things.
+> ReproLab does need Docker for the *paper's reproduction sandbox* — but that
+> work is done by the `build_environment` / `run_experiment` primitives running
+> host-side. The **root RLM REPL must use `environment="local"`**: `rlm` 0.1.1's
+> `DockerREPL` does not inject `custom_tools` (verified, `rlm/environments/docker_repl.py`),
+> so under `environment="docker"` the domain primitives would not exist in the
+> REPL at all. The `rlm`-over-`dspy.RLM` verdict still stands — the reason is the
+> host-side primitive layer, not the root REPL's environment.
+
 ## Evidence
 
 ### Option B — `rlm` library (brief §3) — ADOPT
@@ -17,7 +27,8 @@ claim corrected below (see "Verified vs. assumed").
 - `pip install rlms` → package `rlms 0.1.1`, **import name `rlm`**. Imports clean.
 - `rlm.RLM.__init__` signature matches brief §3's table **exactly**:
   - `environment: Literal['local','docker','modal','prime','daytona','e2b']` —
-    **has `docker`.** ReproLab runs Docker builds + experiments; this is decisive.
+    the root REPL uses **`environment="local"`** (see the correction above);
+    Docker is driven by the primitives host-side, not by the root REPL.
   - `custom_tools: dict` — the domain-primitive injection point.
   - `custom_sub_tools`, `max_depth=1` (set 2 per brief correction #1),
     `max_iterations=30`, `max_budget`, `max_timeout`, `max_tokens`, `max_errors`.
@@ -39,7 +50,8 @@ claim corrected below (see "Verified vs. assumed").
   (`signature, max_iterations, max_llm_calls, tools, sub_lm, interpreter`).
 - **Disqualifier:** its default interpreter is a Deno/Pyodide **WASM sandbox**.
   ReproLab primitives must run Docker image builds and GPU experiments — these
-  cannot run inside Pyodide. `rlm`'s `environment='docker'` is the right model.
+  cannot run inside Pyodide. `rlm` runs Docker host-side from the primitive
+  layer (the root REPL is `environment="local"`) — the right execution model.
 - Also: no live `on_*` callbacks (only post-hoc `trajectory`); no
   `custom_system_prompt` (DSPy drives the prompt via its signature
   abstraction). Both are friction against ReproLab's SSE UI and
