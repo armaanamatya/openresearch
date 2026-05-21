@@ -331,13 +331,54 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         ).result()
 
 
-def verify_against_rubric(results: dict, rubric: dict) -> dict:
-    """Score `results` against the PaperBench-style `rubric`.
+def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
+    """Score `results` against `rubric` via the rubric-verifier prompt.
 
-    Wraps the existing rubric-verifier agent. Replaces fixed Gate 1/2/3
-    checkpoints — the root calls this when it judges appropriate.
+    The LLM scores areas only; weights come verbatim from `rubric`. The honesty
+    backstop is enforced mechanically: every area score is capped at 0.35 when
+    the run did not succeed OR produced no metrics — matching
+    `orchestrator._run_rubric_verifier` (which caps on `success`) and extending
+    it to the metric-less case (`run_experiment` returns `metrics={}` in
+    Phase 2 — see Task 9). `overall_score` / `meets_target` are computed by
+    `RubricVerification.from_areas`, never trusted from the model.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap rubric-verifier agent")
+    import json
+
+    from backend.agents.prompts.rubric_verifier import RUBRIC_VERIFIER_PROMPT
+    from backend.agents.schemas import RubricAreaScore, RubricVerification
+
+    user = (
+        "results:\n" + json.dumps(results, indent=2, default=str)
+        + "\n\nrubric:\n" + json.dumps(rubric, indent=2, default=str)
+        + "\n\nScore each rubric area in [0,1]. Return a JSON object: "
+          '{"areas": [{"area": str, "score": float, "justification": str, '
+          '"weak_points": [str]}], "confidence": float}.'
+    )
+    raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
+    parsed = _extract_json(raw)
+
+    weights = {a["area"]: float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
+    degraded = (not results.get("success")) or (not results.get("metrics"))
+    areas: list[RubricAreaScore] = []
+    for a in parsed.get("areas", []):
+        name = str(a.get("area", ""))
+        score = float(a.get("score", 0.0))
+        if degraded:
+            score = min(score, 0.35)  # honesty backstop
+        areas.append(RubricAreaScore(
+            area=name,
+            weight=weights.get(name, 0.0),
+            score=score,
+            justification=str(a.get("justification", "")),
+            weak_points=[str(w) for w in (a.get("weak_points") or [])],
+        ))
+    verification = RubricVerification.from_areas(
+        areas,
+        rubric_source=rubric.get("source", "generated"),
+        target_score=float(rubric.get("target_score", 0.0)),
+        confidence=float(parsed.get("confidence", 0.0)),
+    )
+    return verification.model_dump()
 
 
 def propose_improvements(
