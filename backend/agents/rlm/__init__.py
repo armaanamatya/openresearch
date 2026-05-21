@@ -11,22 +11,25 @@ implement them following the contract in `docs/rlm-pivot-mapping.md` and
 the brief at `docs/design/rlm-pivot-brief.md`.
 """
 
-# Phase-1 skeleton re-exports kept (repl_host / root_loop / sub_call are
-# superseded by the rlms library but are NOT deleted until Phase 6 cleanup).
-# NOTE: the hand-built ReplHost/RootLoop/llm_query/rlm_query are dead code;
-# they are omitted from re-exports here to keep the public surface clean for
-# the #60 API.  Delete in Phase 6 (#63).
+# Phase-1 skeleton modules (repl_host / root_loop / sub_call) are superseded by
+# the rlms library — dead code, NOT re-exported here; deleted in Phase 6 (#63).
 
-from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY
+# --- primitive layer (#59) --------------------------------------------------
+from backend.agents.rlm.primitives import PRIMITIVE_DESCRIPTIONS, PRIMITIVE_REGISTRY
+from backend.agents.rlm.context import RunContext
+from backend.agents.rlm.binding import build_custom_tools
 
-# --- Phase 3 (#60) public API -----------------------------------------------
+# --- orchestrator (#60) -----------------------------------------------------
 from backend.agents.rlm.models import resolve_root_model
 from backend.agents.rlm.run import RLMRunResult, run_pipeline_rlm
 from backend.agents.rlm.system_prompt import build_system_prompt
 
 __all__ = [
-    # primitives (#59)
+    # primitive layer (#59)
     "PRIMITIVE_REGISTRY",
+    "PRIMITIVE_DESCRIPTIONS",
+    "RunContext",
+    "build_custom_tools",
     # orchestrator (#60)
     "build_system_prompt",
     "resolve_root_model",

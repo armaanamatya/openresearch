@@ -108,14 +108,33 @@ class TestResolveCustomTools:
             assert callable(entry["tool"])
             assert isinstance(entry["description"], str)
 
-    def test_falls_back_to_stub_when_binding_absent(self, tmp_path, make_context, monkeypatch):
-        # binding.py is not on this branch — resolution must degrade to the stub,
-        # not raise ImportError.
+    def test_uses_real_binding_when_present(self, tmp_path, make_context, monkeypatch):
+        """#59's binding.py is merged in — resolution binds the real primitive
+        layer, not the stub. This is the post-#59-merge default path."""
         monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
         assert len(tools) == 9
+        assert label == "real (#59 binding)"
+        for entry in tools.values():
+            assert callable(entry["tool"])
+            assert isinstance(entry["description"], str)
+
+    def test_falls_back_to_stub_when_binding_absent(self, tmp_path, make_context, monkeypatch):
+        """binding.py not importable (e.g. #59 not yet merged) — resolution must
+        degrade to the stub, not raise ImportError. #59's binding.py is present
+        post-merge, so absence is simulated by blocking it in sys.modules."""
+        import sys
+
+        monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
+        # None in sys.modules makes `import backend.agents.rlm.binding` raise ImportError.
+        monkeypatch.setitem(sys.modules, "backend.agents.rlm.binding", None)
+
+        ctx = make_context(tmp_path)
+        tools, label = _resolve_custom_tools(ctx)
+        assert len(tools) == 9
         assert "stub" in label
+        assert "absent" in label
 
     def test_falls_back_to_stub_when_binding_incomplete(self, tmp_path, make_context, monkeypatch):
         """binding.py present but build_custom_tools raises (e.g. #59 mid-build —

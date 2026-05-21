@@ -71,9 +71,9 @@ def build_custom_tools(
 ) -> dict[str, dict]:
     """Return the rlm `custom_tools` dict, every primitive closed over `ctx`."""
     if registry is None or descriptions is None:
-        # Defer the import to the call site so this module does not force
-        # primitives.py to be importable at load time. Callers must pass both
-        # `registry` and `descriptions` explicitly until Task 13 adds the defaults.
+        # Deferred import: keeps this module importable without loading
+        # primitives.py at module-load time. A kwarg left as None falls back
+        # to the module-level PRIMITIVE_REGISTRY / PRIMITIVE_DESCRIPTIONS.
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
