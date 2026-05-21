@@ -301,4 +301,13 @@ def build_system_prompt(
     # the auto-generated primitive tool docs. Without that placeholder the root
     # model would never see the primitive signatures at all.
     body = body.replace("{", "{{").replace("}", "}}")
-    return body.replace("[[REPROLAB_CUSTOM_TOOLS_SECTION]]", "{custom_tools_section}")
+    result = body.replace("[[REPROLAB_CUSTOM_TOOLS_SECTION]]", "{custom_tools_section}")
+    # A1-M4: assert exactly one placeholder so rlm's .format() call never KeyErrors
+    # or silently omits the primitive signatures.
+    count = result.count("{custom_tools_section}")
+    assert count == 1, (  # noqa: S101 — invariant: exactly one injection point
+        f"build_system_prompt: expected exactly 1 {{custom_tools_section}} placeholder "
+        f"after brace-escape, found {count}. Check _PRIMITIVES_SECTION for duplicate or "
+        f"missing [[REPROLAB_CUSTOM_TOOLS_SECTION]] markers."
+    )
+    return result

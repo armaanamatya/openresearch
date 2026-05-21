@@ -67,14 +67,24 @@ class TestResolveByName:
         assert m.key == "gpt-5"
         assert m.rlm_backend == "openai"
 
-    def test_qwen3_coder_resolves(self):
+    def test_qwen3_coder_resolves(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # A1-H1: openrouter model needs it
         from backend.agents.rlm.models import resolve_root_model
 
         m = resolve_root_model("qwen3-coder")
         assert m.key == "qwen3-coder"
         assert m.rlm_backend == "openrouter"
 
-    def test_kimi_resolves(self):
+    def test_openrouter_model_without_key_raises(self, monkeypatch):
+        """A1-H1: an OpenRouter-backed model fails fast when OPENROUTER_API_KEY is absent."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            resolve_root_model("qwen3-coder")
+
+    def test_kimi_resolves(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # A1-H1: openrouter model needs it
         from backend.agents.rlm.models import resolve_root_model
 
         m = resolve_root_model("kimi-k2.5")
@@ -102,6 +112,7 @@ class TestLayeredDefault:
     def test_default_without_openai_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # qwen3-coder default needs it (A1-H1)
         mod = _reload_models()
         result = mod.resolve_root_model(None)
         assert result.key == "qwen3-coder"

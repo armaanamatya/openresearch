@@ -22,6 +22,7 @@ Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-des
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -52,6 +53,7 @@ from backend.agents.rlm.sse_bridge import (
     make_emit,
     make_on_subcall_complete,
     make_on_subcall_start,
+    redact_corpus,
 )
 from backend.agents.rlm.stub_primitives import build_stub_custom_tools
 from backend.agents.rlm.system_prompt import build_system_prompt
@@ -206,6 +208,20 @@ def _context_metadata(context_dict: dict[str, Any]) -> dict[str, dict]:
     return meta
 
 
+def _corpus_sentinels(context_dict: dict[str, Any]) -> list[str]:
+    """Build the M-REDACT sentinel list from ``context_dict`` corpus values.
+
+    Returns the first 200 chars of each string corpus value — enough to detect
+    verbatim leakage at egress (stdout/stderr prefixes, final report summary)
+    without storing the full corpus in memory twice.
+    """
+    sentinels: list[str] = []
+    for value in context_dict.values():
+        if isinstance(value, str) and value:
+            sentinels.append(value[:200])
+    return sentinels
+
+
 def _verdict_to_status(verdict: str) -> str:
     """Map an ``RLMFinalReport`` verdict to a run status."""
     return "completed" if verdict == "reproduced" else verdict
@@ -231,6 +247,9 @@ def _arm_watchdog(
     far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
     it on normal completion.
     """
+    # Capture the status path in the closure so the watchdog can update it
+    # before os._exit — prevents the UI from staying stuck at "running".
+    _demo_status_path = project_dir / "demo_status.json"
 
     def _fire() -> None:
         logger.error(
@@ -239,17 +258,20 @@ def _arm_watchdog(
             deadline_s,
             _WATCHDOG_GRACE_S,
         )
+        done = iteration_count()
+        report = RLMFinalReport(
+            verdict="failed",
+            reproduction_summary=(
+                f"Wall-clock watchdog: the run exceeded {deadline_s:.0f}s "
+                f"and was hard-stopped after {done} iteration(s)."
+            ),
+            iterations=done,
+        )
         try:
-            done = iteration_count()
-            report = RLMFinalReport(
-                verdict="failed",
-                reproduction_summary=(
-                    f"Wall-clock watchdog: the run exceeded {deadline_s:.0f}s "
-                    f"and was hard-stopped after {done} iteration(s)."
-                ),
-                iterations=done,
-            )
             write_final_report_rlm(report, project_dir)
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: watchdog could not write final report")
+        try:
             emit(
                 build_run_complete_event(
                     status="failed",
@@ -259,8 +281,15 @@ def _arm_watchdog(
                     final_report_path=str(project_dir / "final_report.json"),
                 )
             )
-        finally:
-            os._exit(_WATCHDOG_EXIT_CODE)
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: watchdog could not emit run_complete event")
+        try:
+            _tmp = _demo_status_path.with_suffix(".json.tmp")
+            _tmp.write_text(json.dumps({"status": "failed"}), encoding="utf-8")
+            os.replace(_tmp, _demo_status_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: watchdog could not write demo_status.json")
+        os._exit(_WATCHDOG_EXIT_CODE)
 
     timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
     timer.daemon = True
@@ -355,6 +384,8 @@ async def run_pipeline_rlm(
 
     # 6. The offloaded corpus + 7. the system prompt.
     context_dict = _build_context(workspace_claim_map)
+    # M-REDACT: build sentinels once; threaded into logger + _finalize (A1-M2, A1-C1).
+    corpus_sentinels = _corpus_sentinels(context_dict)
     system_prompt = build_system_prompt(
         context_metadata=_context_metadata(context_dict),
         root_model=root_model,
@@ -367,7 +398,17 @@ async def run_pipeline_rlm(
         event_store=event_store,
         snapshot_dir=project_dir / "rlm_state",
     )
-    rlm_logger = ReproLabRLMLogger(emit=emit, checkpointer=checkpointer)
+    rlm_logger = ReproLabRLMLogger(
+        emit=emit,
+        checkpointer=checkpointer,
+        sentinels=corpus_sentinels,
+    )
+
+    # Resolve cost cap — passed directly to RLM(max_budget=...) so the library
+    # itself raises BudgetExceededError between iterations (T2/M-BUDGET).
+    max_usd: float | None = None
+    if run_budget is not None and run_budget.max_usd:
+        max_usd = float(run_budget.max_usd)
 
     # 9. Construct the RLM engine.
     rlm = RLM(
@@ -377,6 +418,7 @@ async def run_pipeline_rlm(
         max_depth=_MAX_DEPTH,
         max_iterations=_MAX_ITERATIONS,
         max_timeout=wall_clock_s,
+        max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
         compaction=True,
         other_backends=[root_model.sub_backend],
         other_backend_kwargs=[root_model.sub_backend_kwargs],
@@ -405,15 +447,22 @@ async def run_pipeline_rlm(
     finally:
         watchdog.cancel()
 
-    # 12. Build, write, and report.
-    return _finalize(
-        result_obj=result_obj,
-        run_failed=run_failed,
-        ctx=ctx,
-        iterations=rlm_logger.iteration_count,
-        project_dir=project_dir,
-        emit=emit,
-    )
+    # 12. Build, write, and report (close event_store in finally — A4-9).
+    try:
+        return _finalize(
+            result_obj=result_obj,
+            run_failed=run_failed,
+            ctx=ctx,
+            iterations=rlm_logger.iteration_count,
+            project_dir=project_dir,
+            emit=emit,
+            corpus_sentinels=corpus_sentinels,
+        )
+    finally:
+        try:
+            event_store.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: could not close SqliteEventStore")
 
 
 def _finalize(
@@ -424,6 +473,7 @@ def _finalize(
     iterations: int,
     project_dir: Path,
     emit: Any,
+    corpus_sentinels: list[str] | None = None,
 ) -> RLMRunResult:
     """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
     if result_obj is not None:
@@ -436,9 +486,17 @@ def _finalize(
 
     # The real iteration count is authoritative over the root's self-report.
     report.iterations = iterations
-    # A crashed run is never an honest clean reproduction.
-    if run_failed and report.verdict == "reproduced":
-        report.verdict = "partial"
+    # A crashed or budget-exhausted run is never a clean completion — force "failed".
+    if run_failed:
+        report.verdict = "failed"
+
+    # M-REDACT (A1-C1): scrub corpus content from the report summary before writing
+    # to disk or streaming — the root model may copy context["paper_text"] slices
+    # verbatim into reproduction_summary.
+    if corpus_sentinels and report.reproduction_summary:
+        report.reproduction_summary = redact_corpus(
+            report.reproduction_summary, corpus_sentinels
+        )
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 

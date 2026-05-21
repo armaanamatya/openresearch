@@ -638,6 +638,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             "execution_mode": execution_profile.mode.value,
             "sandbox": sandbox_mode.value,
         }
+        # A4-6: a budget-exhausted (or otherwise failed) rlm run must exit
+        # non-zero. run_pipeline_rlm never raises on budget breach — it
+        # returns status="failed" (set by Batch O). Return 3 to match the
+        # BudgetExhausted exit code used by the sdk path above.
+        if rlm_result.status == "failed":
+            json.dump(result, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+            return 3
     else:
         result = {
             "project_id": project_id,

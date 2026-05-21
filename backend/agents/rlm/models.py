@@ -177,8 +177,9 @@ def resolve_root_model(name: str | None) -> RootModel:
        ``"gpt-5"`` when ``OPENAI_API_KEY`` is set, else ``"qwen3-coder"``.
 
     Raises:
-        ValueError: If the resolved name does not match any key in ``ROOT_MODELS``.
-            The message lists the valid keys so the operator can correct the config.
+        ValueError: If the resolved name does not match any key in the registry,
+            or if the default selects an OpenRouter model but ``OPENROUTER_API_KEY``
+            is absent (A1-H1 — fail loudly rather than silently pick an unreachable model).
     """
     if not name:
         name = os.environ.get(_ENV_ROOT_MODEL, "").strip() or None
@@ -193,4 +194,14 @@ def resolve_root_model(name: str | None) -> RootModel:
             f"Unknown root model {name!r}. Valid keys: {valid}. "
             f"Set {_ENV_ROOT_MODEL} or pass a valid --model argument."
         )
+
+    # A1-H1: if the resolved model uses OpenRouter, fail fast when the key is absent.
+    if entry.rlm_backend == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise ValueError(
+            f"Root model {name!r} requires the OpenRouter backend but "
+            f"OPENROUTER_API_KEY is not set. "
+            f"Set OPENROUTER_API_KEY or choose a different model via "
+            f"{_ENV_ROOT_MODEL} / --model."
+        )
+
     return entry

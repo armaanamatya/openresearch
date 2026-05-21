@@ -8,7 +8,8 @@ here and is closed over by `backend.agents.rlm.binding.build_custom_tools`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,10 @@ class RunContext:
     `backend/services/context/workspace/tools/rlm_query.py` — `.complete(*,
     system, user) -> str`. `runtime` is an `AgentRuntime`; only
     `implement_baseline` needs it, so it defaults to None.
+
+    `deadline_utc` is set by `run.py` from the wall-clock budget at run start
+    (M-DEADLINE, WS-H Batch P).  Primitives call `remaining_s()` to get seconds
+    left; `None` means no wall-clock budget was configured.
     """
 
     project_id: str
@@ -34,3 +39,17 @@ class RunContext:
     runtime: Any = None       # AgentRuntime — only implement_baseline uses it
     workspace_service: Any = None
     workspace_id: str | None = None
+    deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py
+
+    def remaining_s(self) -> float | None:
+        """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.
+
+        Always returns a timezone-aware comparison: if `deadline_utc` is naive
+        it is treated as UTC.
+        """
+        if self.deadline_utc is None:
+            return None
+        dl = self.deadline_utc
+        if dl.tzinfo is None:
+            dl = dl.replace(tzinfo=timezone.utc)
+        return max(0.0, (dl - datetime.now(tz=timezone.utc)).total_seconds())

@@ -53,7 +53,14 @@ class RLMFinalReport(BaseModel):
     improvements: list[dict] = Field(default_factory=list)
     primitive_trace: dict = Field(default_factory=dict)
     cost: dict = Field(
-        default_factory=lambda: {"llm_usd": 0.0, "root": 0.0, "sub": 0.0, "primitives": 0.0},
+        default_factory=lambda: {"llm_usd": 0.0, "primitives": 0.0},
+        description=(
+            "Honest cost dict. 'llm_usd' = total (root + sub + primitives). "
+            "'primitives' = primitive-internal LLM cost from the cost ledger. "
+            "The false 'root'/'sub' split is dropped (T7/M-BUDGET) because rlm "
+            "does not tag usage by tier — all rlm cost is reported as a single "
+            "honest 'llm_usd' figure."
+        ),
     )
     iterations: int = 0
 
@@ -71,7 +78,7 @@ _HONEST_DEFAULTS: dict[str, Any] = {
     "rubric": {"overall_score": 0.0, "meets_target": False, "areas": []},
     "improvements": [],
     "primitive_trace": {},
-    "cost": {"llm_usd": 0.0, "root": 0.0, "sub": 0.0, "primitives": 0.0},
+    "cost": {"llm_usd": 0.0, "primitives": 0.0},
     "iterations": 0,
 }
 
@@ -122,32 +129,30 @@ def _reconcile_verdict(parsed: dict) -> str:
 def _cost_dict(result: RLMChatCompletion, ctx: RunContext) -> dict:
     """Reconcile LLM cost from the RLMChatCompletion usage + cost_ledger.
 
-    `result.usage_summary` contains root + sub-call LLM totals.
-    `ctx.cost_ledger` records per-primitive LLM charges appended during the run
-    (zero-usage stub rows from #59 are counted for trace but contribute 0 USD).
-    """
-    # --- Root + sub cost from rlm's own usage tracking ---
-    root_usd: float = 0.0
-    sub_usd: float = 0.0
-    if result.usage_summary is not None:
-        for model_key, summary in result.usage_summary.model_usage_summaries.items():
-            cost = summary.total_cost or 0.0
-            # Heuristic: the root model contributes the highest per-call spend;
-            # sub-calls are cheaper.  We keep the split as-reported by rlm.
-            # Since rlm does not tag by tier we attribute all to root_usd;
-            # callers wanting a finer split should inspect usage_summary directly.
-            root_usd += cost
+    T7/M-BUDGET — honest cost reporting: ``rlm`` does not tag usage by tier
+    (root vs sub-call), so the former ``root``/``sub`` split was always ``sub=0``
+    and misleading.  We now report a single honest ``llm_usd`` total drawn from
+    ``result.usage_summary`` (all rlm-tracked LLM spend, root + sub combined)
+    plus ``primitives_usd`` from the cost ledger (primitive-internal LLM calls).
 
-    # --- Primitive-internal LLM cost from the ledger ---
+    When per-primitive usage tracking arrives in a future seam, ``primitives``
+    will carry real values; the ``llm_usd`` field is always the authoritative
+    total.
+    """
+    # All rlm-tracked LLM spend (root + sub-calls combined — rlm does not separate them).
+    rlm_usd: float = 0.0
+    if result.usage_summary is not None:
+        for _model_key, summary in result.usage_summary.model_usage_summaries.items():
+            rlm_usd += summary.total_cost or 0.0
+
+    # Primitive-internal LLM cost from the ledger.
     primitives_usd: float = 0.0
     if ctx.cost_ledger is not None:
         primitives_usd = ctx.cost_ledger.total_usd()
 
-    total = round(root_usd + primitives_usd, 8)
+    total = round(rlm_usd + primitives_usd, 8)
     return {
         "llm_usd": total,
-        "root": round(root_usd, 8),
-        "sub": round(sub_usd, 8),
         "primitives": round(primitives_usd, 8),
     }
 
@@ -374,10 +379,8 @@ def _render_markdown(report: RLMFinalReport) -> str:
     cost = report.cost
     lines.append(f"| Category | USD |")
     lines.append(f"|---|---|")
-    lines.append(f"| Root LLM | ${cost.get('root', 0.0):.6f} |")
-    lines.append(f"| Sub-call LLM | ${cost.get('sub', 0.0):.6f} |")
     lines.append(f"| Primitive-internal LLM | ${cost.get('primitives', 0.0):.6f} |")
-    lines.append(f"| **Total** | **${cost.get('llm_usd', 0.0):.6f}** |")
+    lines.append(f"| **Total LLM** | **${cost.get('llm_usd', 0.0):.6f}** |")
     lines.append("")
     lines.append(f"**Iterations:** {report.iterations}")
     lines.append("")

@@ -174,13 +174,14 @@ class TestCostReconciliation:
     """Tests for cost summing from usage_summary + cost_ledger."""
 
     def test_usage_summary_cost_included(self, make_context, tmp_path):
-        """RLM usage_summary total_cost contributes to report.cost['root']."""
+        """RLM usage_summary total_cost contributes to report.cost['llm_usd']."""
         ctx = make_context(tmp_path)
         result = _make_result(json.dumps(_BASE_REPORT_DICT), total_cost=0.123)
         report = build_final_report(result, ctx=ctx)
 
-        assert report.cost["root"] == pytest.approx(0.123, abs=1e-7)
-        assert report.cost["llm_usd"] >= 0.123
+        # T7/M-BUDGET: the false root/sub split is dropped — llm_usd is the honest total.
+        assert report.cost["llm_usd"] == pytest.approx(0.123, abs=1e-7)
+        assert "root" not in report.cost and "sub" not in report.cost
 
     def test_cost_ledger_entries_summed(self, make_context, tmp_path):
         """Entries in ctx.cost_ledger contribute to cost['primitives'] and 'llm_usd'."""

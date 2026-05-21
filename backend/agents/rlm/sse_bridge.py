@@ -30,6 +30,37 @@ from backend.agents.dashboard_emitter import DashboardEmitter
 _RESPONSE_MAX_CHARS: int = 4_000
 _STDOUT_PREFIX_MAX_CHARS: int = 200
 _PROMPT_PREVIEW_MAX_CHARS: int = 200
+_SENTINEL_LEN: int = 200  # chars from each corpus value used as a leak sentinel
+
+
+# ---------------------------------------------------------------------------
+# M-REDACT corpus-leak guard — applied at every egress point
+# ---------------------------------------------------------------------------
+
+
+def redact_corpus(text: str, sentinels: list[str]) -> str:
+    """Replace any corpus sentinel that appears in *text* with ``[REDACTED]``.
+
+    *sentinels* are the first ``_SENTINEL_LEN`` characters of each corpus value
+    from ``context_dict`` (computed once per run by the caller).  A sentinel
+    appearing verbatim in streamed or persisted text means the Algorithm-2
+    invariant has been violated — we redact rather than crash so the run
+    continues and the leak is visible in the stream without exposing the data.
+
+    Only non-empty sentinels of at least 16 chars are checked to avoid
+    false-positive redactions on short common strings.
+
+    Args:
+        text:      The string to sanitise.
+        sentinels: First ``_SENTINEL_LEN`` chars of each corpus value.
+
+    Returns:
+        The sanitised string with any sentinel occurrence replaced.
+    """
+    for sentinel in sentinels:
+        if len(sentinel) >= 16 and sentinel in text:
+            text = text.replace(sentinel, "[REDACTED]")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +68,11 @@ _PROMPT_PREVIEW_MAX_CHARS: int = 200
 # ---------------------------------------------------------------------------
 
 
-def sanitize_iteration(iteration: RLMIteration, index: int) -> dict:
+def sanitize_iteration(
+    iteration: RLMIteration,
+    index: int,
+    sentinels: list[str] | None = None,
+) -> dict:
     """Return a corpus-free projection of one ``RLMIteration``.
 
     This is the ONLY form of an ``RLMIteration`` that may be streamed (SSE),
@@ -72,18 +107,23 @@ def sanitize_iteration(iteration: RLMIteration, index: int) -> dict:
     Args:
         iteration: The raw ``RLMIteration`` from the ``rlms`` library.
         index:     1-based iteration counter (supplied by ``ReproLabRLMLogger``).
+        sentinels: Optional list of corpus sentinels (first ``_SENTINEL_LEN``
+                   chars of each corpus value).  When provided, stdout/stderr
+                   prefixes are run through :func:`redact_corpus` (M-REDACT /
+                   audit A1-M2) to catch any Algorithm-2 violations at egress.
 
     Returns:
         A sanitized dict that is safe to stream, persist, and snapshot.
     """
+    _sentinels: list[str] = sentinels or []
     clean_blocks: list[dict] = []
     total_sub_calls = 0
 
     for block in iteration.code_blocks:
         result = block.result
 
-        stdout_meta = _stream_metadata(result.stdout)
-        stderr_meta = _stream_metadata(result.stderr)
+        stdout_meta = _stream_metadata(result.stdout, _sentinels)
+        stderr_meta = _stream_metadata(result.stderr, _sentinels)
         vars_meta = _locals_metadata(result.locals)
         block_sub_calls = len(result.rlm_calls) if result.rlm_calls else 0
         total_sub_calls += block_sub_calls
@@ -109,14 +149,21 @@ def sanitize_iteration(iteration: RLMIteration, index: int) -> dict:
     }
 
 
-def _stream_metadata(text: str | None) -> dict:
+def _stream_metadata(text: str | None, sentinels: list[str] | None = None) -> dict:
     """Reduce stdout/stderr to safe metadata only (never the raw content).
+
+    The prefix (≤200 chars) is passed through :func:`redact_corpus` when
+    *sentinels* are provided (M-REDACT / audit A1-M2) — a primitive that
+    echoes corpus content to stdout would otherwise leak the first 200 chars
+    of that content into the SSE stream.
 
     Returns ``{"length": int, "prefix": str (≤200 chars), "has_traceback": bool}``.
     """
     if text is None:
         text = ""
     prefix = text[:_STDOUT_PREFIX_MAX_CHARS]
+    if sentinels:
+        prefix = redact_corpus(prefix, sentinels)
     has_traceback = "Traceback (most recent call last)" in text
     return {
         "length": len(text),
@@ -173,6 +220,11 @@ class ReproLabRLMLogger(RLMLogger):
         checkpointer: An :class:`~backend.agents.rlm.checkpoint.IterationCheckpointer`
                       whose ``record(clean)`` persists the sanitized dict to the
                       event store and snapshot file.
+        sentinels:    Optional corpus sentinels (first ``_SENTINEL_LEN`` chars of
+                      each ``context_dict`` value) threaded into
+                      :func:`sanitize_iteration` for M-REDACT / A1-M2 stdout
+                      prefix hardening.  Computed once at run-start; ``None``
+                      disables the secondary redaction pass.
     """
 
     def __init__(
@@ -180,16 +232,20 @@ class ReproLabRLMLogger(RLMLogger):
         *,
         emit: Callable[[dict], None],
         checkpointer: Any,
+        sentinels: list[str] | None = None,
     ) -> None:
         super().__init__(log_dir=None)
         self._emit = emit
         self._checkpointer = checkpointer
+        self._sentinels: list[str] = sentinels or []
         self._next_index: int = 0
+        self._index_lock = threading.Lock()  # A1-M3: guard concurrent index increments
 
     def next_index(self) -> int:
-        """Return the next 1-based iteration index and advance the counter."""
-        self._next_index += 1
-        return self._next_index
+        """Return the next 1-based iteration index and advance the counter (thread-safe)."""
+        with self._index_lock:
+            self._next_index += 1
+            return self._next_index
 
     @property
     def iteration_count(self) -> int:
@@ -210,7 +266,7 @@ class ReproLabRLMLogger(RLMLogger):
             iteration: The raw ``RLMIteration`` from ``rlms``.  Treated as
                        read-only; never stored or forwarded.
         """
-        clean = sanitize_iteration(iteration, self.next_index())
+        clean = sanitize_iteration(iteration, self.next_index(), self._sentinels)
         self._emit(_repl_iteration_event(clean))
         self._checkpointer.record(clean)
 
@@ -391,5 +447,6 @@ __all__ = [
     "make_emit",
     "make_on_subcall_complete",
     "make_on_subcall_start",
+    "redact_corpus",
     "sanitize_iteration",
 ]

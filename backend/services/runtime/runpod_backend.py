@@ -29,6 +29,10 @@ from backend.services.runtime.interface import (
 
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
 
+# RunPod pod states from which recovery is impossible — raise immediately
+# rather than spinning the full boot_timeout_seconds (A3-5).
+_TERMINAL_POD_STATES: frozenset[str] = frozenset({"EXITED", "FAILED", "DEAD"})
+
 
 @dataclass(frozen=True)
 class _RunpodConnection:
@@ -98,6 +102,10 @@ class RunpodBackend(RuntimeBackend):
         self.pod_id = pod_id.strip()
         self._connections: dict[str, _RunpodConnection] = {}
         self._ssh_clients: dict[str, Any] = {}
+        # Session-scoped host-key pins keyed by (host, port). Populated on
+        # first connect (TOFU), verified on reconnects within the same session
+        # to defend against IP-recycling MITM attacks (A3-4).
+        self._pinned_host_keys: dict[tuple[str, int], Any] = {}
         # Allowlist of pod IDs THIS backend instance created. Any delete
         # call against a pod ID NOT in this set is refused with a typed
         # error — defense in depth on top of ``delete_on_destroy=false``
@@ -357,21 +365,40 @@ class RunpodBackend(RuntimeBackend):
             )
             return
         if self.delete_on_destroy:
-            await self._delete_pod(sandbox.sandbox_id)
+            # asyncio.shield ensures task cancellation cannot abort the
+            # DELETE call — a paid RunPod pod must be terminated even if
+            # the surrounding task is cancelled (e.g. wall-clock timeout).
+            await asyncio.shield(self._delete_pod(sandbox.sandbox_id))
 
     async def _create_pod(self, config: SandboxConfig, image: str) -> dict[str, Any]:
+        # network_disabled is not supported on RunPod: the pod communicates
+        # exclusively over SSH (port 22), so disabling the network would make
+        # the sandbox unreachable. Callers who set network_disabled=True on a
+        # RunPod config should use the local-docker backend instead.
+        if config.network_disabled:
+            _log.warning(
+                "SandboxConfig.network_disabled=True is ignored for RunPod pods: "
+                "RunPod requires network access for SSH. "
+                "Use the local-docker backend if true network isolation is required."
+            )
+
         public_key = self._public_key()
         env = dict(config.environment)
         if public_key:
             env.setdefault("PUBLIC_KEY", public_key)
             env.setdefault("SSH_PUBLIC_KEY", public_key)
+
+        # Map gpu_mode to RunPod compute type.
+        # "off"          → CPU-only pod (no GPU allocation, lower cost).
+        # "prefer"/"max" → GPU pod using the configured gpu_type/count.
+        # "auto" (default) → GPU pod (preserves prior behavior).
+        use_gpu = config.gpu_mode != "off"
+
         payload: dict[str, Any] = {
             "name": _pod_name(config),
             "cloudType": self.cloud_type,
-            "computeType": "GPU",
+            "computeType": "GPU" if use_gpu else "CPU",
             "imageName": image,
-            "gpuTypeIds": [self.gpu_type],
-            "gpuCount": self.gpu_count,
             "containerDiskInGb": self.container_disk_gb,
             "volumeInGb": self.volume_gb,
             "volumeMountPath": self.volume_mount_path,
@@ -379,6 +406,9 @@ class RunpodBackend(RuntimeBackend):
             "supportPublicIp": True,
             "env": env,
         }
+        if use_gpu:
+            payload["gpuTypeIds"] = [self.gpu_type]
+            payload["gpuCount"] = self.gpu_count
         # Official RunPod images (runpod/*) already handle SSH via PUBLIC_KEY
         # env var. Only inject a custom start command for third-party images.
         if not image.startswith("runpod/"):
@@ -398,6 +428,17 @@ class RunpodBackend(RuntimeBackend):
         last_error = ""
         while asyncio.get_running_loop().time() < deadline:
             pod = await self._request_json("GET", f"/pods/{pod_id}")
+            # Detect terminal pod states immediately — no point spinning the
+            # full boot_timeout_seconds on a dead pod (A3-5).
+            desired = str(pod.get("desiredStatus") or "").upper()
+            current = str(pod.get("currentStatus") or "").upper()
+            if desired in _TERMINAL_POD_STATES or current in _TERMINAL_POD_STATES:
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"Runpod pod {pod_id} entered terminal state "
+                    f"(desiredStatus={desired!r}, currentStatus={current!r}) during boot.",
+                    retryable=False,
+                )
             public_ip = pod.get("publicIp") or pod.get("publicIP")
             port = _ssh_port(pod.get("portMappings") or {})
             if public_ip and port:
@@ -504,12 +545,42 @@ class RunpodBackend(RuntimeBackend):
                 RuntimeCauseKind.backend_unavailable,
                 "asyncssh is not installed. Install the 'asyncssh' Python package.",
             ) from exc
+        # Host-key pinning (A3-4): on the first connection to a (host, port)
+        # pair we accept any key and record it; on subsequent reconnections
+        # (e.g. after a dropped connection mid-run) we verify against the
+        # pinned key. This defends against IP-recycling MITM within a session.
+        #
+        # Threat model: RunPod pods are freshly booted per run, so we cannot
+        # pre-populate known_hosts from a trust store. We accept TOFU
+        # (trust-on-first-use) for the first connection, then pin for the
+        # session. A cold-start MITM on the very first connect would not be
+        # detected — acceptable given the RunPod trust boundary (TLS-secured
+        # API issues the IP, and the pod runs our own image).
+        pin_key = (host, port)
+        pinned = self._pinned_host_keys.get(pin_key)
+        if pinned is None:
+            # First connect: accept any key, then pin it.
+            conn = await asyncssh.connect(
+                host,
+                port=port,
+                username=self.ssh_user,
+                client_keys=[str(self.ssh_key_path)],
+                known_hosts=None,
+            )
+            host_key = conn.get_server_host_key()
+            if host_key is not None:
+                self._pinned_host_keys[pin_key] = host_key
+            return conn
+        # Subsequent connects: verify against the pinned host key.
+        # asyncssh accepts a list of SSHKey objects as known_hosts — it will
+        # reject any server presenting a different key, guarding against
+        # IP-recycling MITM on reconnects within the same session.
         return await asyncssh.connect(
             host,
             port=port,
             username=self.ssh_user,
             client_keys=[str(self.ssh_key_path)],
-            known_hosts=None,
+            known_hosts=([pinned], [], []),
         )
 
     async def _request_json(
@@ -534,6 +605,17 @@ class RunpodBackend(RuntimeBackend):
                 if not isinstance(payload, dict):
                     raise ValueError(f"Expected object response, got {type(payload).__name__}")
                 return payload
+        except httpx.HTTPStatusError as exc:
+            # Auth failures must not be retried — looping on a 401/403 wastes
+            # time and quota (A3-6). All other HTTP errors are treated as
+            # transient network/server faults and remain retryable.
+            status = exc.response.status_code
+            retryable = status not in (401, 403)
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.backend_unavailable,
+                f"Runpod API request failed (HTTP {status}): {exc}",
+                retryable=retryable,
+            ) from exc
         except Exception as exc:
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
@@ -718,7 +800,7 @@ def _extract_artifact_tar(data: bytes, destination: Path) -> None:
                     RuntimeCauseKind.copy_failed,
                     f"Runpod artifact archive contains unsafe path: {member.name}",
                 )
-            archive.extract(member, root)
+            archive.extract(member, root, filter="data")
 
 
 def _ssh_port(port_mappings: dict[Any, Any]) -> int | None:

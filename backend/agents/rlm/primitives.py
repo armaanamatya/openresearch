@@ -17,10 +17,26 @@ Phase 2 (#59) implementation.
 
 from __future__ import annotations
 
+import concurrent.futures
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
+
+
+def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
+    """Return the tightest timeout (seconds) for a primitive given the run deadline.
+
+    Takes the lesser of `cap_s` (the primitive's own hard cap) and
+    `ctx.remaining_s()` (time left in the overall wall-clock budget).  Always
+    returns a positive float — callers can pass it directly to
+    `concurrent.futures.Future.result(timeout=...)`.
+    """
+    remaining = ctx.remaining_s()
+    if remaining is None:
+        return cap_s
+    # clamp to at least 1 s so we don't hand a zero/negative timeout to .result()
+    return max(1.0, min(cap_s, remaining))
 
 
 def _extract_json(text: str) -> dict:
@@ -117,7 +133,19 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     `method_spec` is a (possibly partial) PaperClaimMap dict;
     `PaperClaimMap.core_contribution` is its one *required* field, so it is
     defaulted here — `understand_section`'s output omits it.
+
+    Fail-soft (A2-L1): if the REPL passes a non-dict `method_spec` (e.g. a
+    string or None), return an error dict rather than raising.
     """
+    if not isinstance(method_spec, dict):
+        return {
+            "success": False,
+            "error": (
+                f"detect_environment: method_spec must be a dict, "
+                f"got {type(method_spec).__name__!r}"
+            ),
+        }
+
     from backend.agents.environment_detective import run_offline
     from backend.agents.schemas import PaperClaimMap
 
@@ -149,10 +177,17 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     The ONE exception is `SandboxRuntimeError` (Docker daemon down / SDK
     missing): an infrastructure failure, not a Dockerfile problem, so it
     propagates.
+
+    Hardening (WS-H Batch P):
+    - A2-C3: the ThreadPoolExecutor is now created ONCE, outside the repair
+      loop, and each `.result()` uses a per-attempt timeout so the aggregate
+      wall time is bounded.
+    - A2-M1: the repair LLM call also uses a per-attempt timeout via the same
+      pool (it's synchronous so we submit it and bound .result()).
     """
     import asyncio
-    import concurrent.futures
     import tempfile
+    import time
     from pathlib import Path
 
     dockerfile = str(env_spec.get("dockerfile") or "").strip()
@@ -165,25 +200,59 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         from backend.config import get_settings
         from backend.services.runtime.interface import SandboxRuntimeError
 
-        max_attempts = max(1, get_settings().environment_build_max_attempts)
+        settings = get_settings()
+        max_attempts = max(1, settings.environment_build_max_attempts)
+        # Per-attempt budget: 1800 s build + 60 s LLM repair.
+        per_attempt_s = getattr(settings, "environment_build_attempt_s", 1800)
+        llm_repair_s = getattr(settings, "environment_build_llm_repair_s", 60)
+        # Aggregate cap: total time across all repair attempts.
+        aggregate_cap_s = _timeout_for(ctx, per_attempt_s * max_attempts)
+
         tag = f"reprolab/{ctx.project_id}:env-check"
+        deadline_abs = time.monotonic() + aggregate_cap_s
         with tempfile.TemporaryDirectory() as tmp:
             context_dir = Path(tmp)
             dockerfile_path = context_dir / "Dockerfile"
-            while not ok and attempts < max_attempts:
-                attempts += 1
-                dockerfile_path.write_text(dockerfile, encoding="utf-8")
-                # Async bridge: asyncio.run in a fresh worker thread, never
-                # bare (a bare asyncio.run raises inside a running loop).
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    ok, tag, error = pool.submit(
-                        asyncio.run, _build_image(dockerfile_path, context_dir, tag)
-                    ).result()
-                if not ok and attempts < max_attempts:
-                    dockerfile = ctx.llm_client.complete(
-                        system=_ENV_REPAIR_SYSTEM,
-                        user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
-                    ).strip()
+            # A2-C3: single executor for all repair iterations.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                while not ok and attempts < max_attempts:
+                    remaining = deadline_abs - time.monotonic()
+                    if remaining <= 0:
+                        error = "build_environment: aggregate time cap exceeded"
+                        break
+                    attempts += 1
+                    dockerfile_path.write_text(dockerfile, encoding="utf-8")
+                    # Async bridge: asyncio.run in the worker thread; timeout
+                    # bounded by both the per-attempt cap and aggregate remaining.
+                    build_timeout = max(1.0, min(per_attempt_s, remaining))
+                    try:
+                        ok, tag, error = pool.submit(
+                            asyncio.run,
+                            _build_image(dockerfile_path, context_dir, tag),
+                        ).result(timeout=build_timeout)
+                    except concurrent.futures.TimeoutError:
+                        error = (
+                            f"build_environment: Docker build timed out "
+                            f"after {build_timeout:.0f} s (attempt {attempts})"
+                        )
+                        break
+                    if not ok and attempts < max_attempts:
+                        llm_timeout = max(
+                            1.0, min(llm_repair_s, deadline_abs - time.monotonic())
+                        )
+                        try:
+                            # A2-M1: bound the synchronous repair LLM call.
+                            dockerfile = pool.submit(
+                                ctx.llm_client.complete,
+                                system=_ENV_REPAIR_SYSTEM,
+                                user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
+                            ).result(timeout=llm_timeout).strip()
+                        except concurrent.futures.TimeoutError:
+                            error = (
+                                f"build_environment: LLM repair call timed out "
+                                f"after {llm_timeout:.0f} s (attempt {attempts})"
+                            )
+                            break
     except SandboxRuntimeError:
         raise  # infrastructure failure — not a Dockerfile problem; propagate
     except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
@@ -202,6 +271,9 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     instructs a file-writing agent ("write to `{runs_root}/{project_id}/...`"),
     which conflicts with a primitive that must return JSON inline. Returns a
     ReproductionContract dict.
+
+    Fail-soft (A2-H3): `_extract_json` / schema validation failures return an
+    error dict instead of propagating (the D3 pattern).
     """
     import json
 
@@ -211,12 +283,15 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         "method_spec:\n" + json.dumps(method_spec, indent=2, default=str)
         + "\n\nenvironment_spec:\n" + json.dumps(env_spec, indent=2, default=str)
     )
-    raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
-    data = _extract_json(raw)
-    if not any(k in data for k in ReproductionContract.model_fields):
-        raise ValueError(
-            f"LLM response has no ReproductionContract fields: {list(data)}")
-    return ReproductionContract(**data).model_dump()
+    try:
+        raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
+        data = _extract_json(raw)
+        if not any(k in data for k in ReproductionContract.model_fields):
+            raise ValueError(
+                f"LLM response has no ReproductionContract fields: {list(data)}")
+        return ReproductionContract(**data).model_dump()
+    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
+        return {"success": False, "error": f"plan_reproduction: {type(exc).__name__}: {exc}"}
 
 
 def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw):
@@ -225,7 +300,7 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
     return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
 
 
-def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
+def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     """Generate the baseline code from a reproduction plan; return the code path.
 
     `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
@@ -235,9 +310,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
     `baseline_implementation.run_with_sdk` (a code-writing agent) and writes
     `code/commands.json` so `run_experiment` can read the run commands without
     a BaselineResult (design decision D2).
+
+    Hardening (A2-C2): `pool.submit(...).result()` previously blocked the
+    worker thread indefinitely; now bounded by `_timeout_for(ctx, 3600)`.
+    On timeout returns a fail-soft error dict (never raises).
     """
     import asyncio
-    import concurrent.futures
     import json
 
     from backend.agents.schemas import PaperClaimMap, EnvironmentSpec, ReproductionContract
@@ -255,8 +333,17 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
             runtime=ctx.runtime)
 
+    timeout = _timeout_for(ctx, 3600)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        result = pool.submit(asyncio.run, _run()).result()
+        try:
+            result = pool.submit(asyncio.run, _run()).result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return {
+                "success": False,
+                "error": (
+                    f"implement_baseline: timed out after {timeout:.0f} s"
+                ),
+            }
 
     # run_with_sdk writes the generated code to runs_root/project_id/code;
     # derive commands.json's directory the same way (not ctx.project_dir/code)
@@ -283,7 +370,12 @@ async def _execute_in_sandbox(
     sandbox from the existing image (`dockerfile_path=None`, `build_context=None`
     → no rebuild, design decision D1), execute each command, destroy. The
     service methods take `Command` objects. Indirection so tests can patch it.
+
+    Hardening (A2-C1): `asyncio.shield` on destroy so the container is cleaned
+    up even when the outer thread's `.result(timeout=...)` fires and the
+    coroutine is cancelled.
     """
+    import asyncio
     from pathlib import Path
 
     from backend.services.runtime.interface import SandboxConfig
@@ -308,7 +400,9 @@ async def _execute_in_sandbox(
             results.append(await service.execute(
                 ExecuteCommand(sandbox=sandbox, command=command, timeout=3600)))
     finally:
-        await service.destroy(DestroySandbox(sandbox=sandbox))
+        # asyncio.shield: destroy completes even if the surrounding
+        # wait_for / thread-pool timeout cancels this coroutine (A2-C1).
+        await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
     return {
         "success": all(r.succeeded for r in results),
         "metrics": {},  # real metric extraction from artifacts is Phase 5 (#62)
@@ -322,12 +416,27 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     Commands are read from `code_path/commands.json` (written by
     `implement_baseline`). `env_id` is a Docker image tag (design decisions
     D1/D2). Async sandbox work is bridged to sync via a worker thread.
+
+    Hardening (WS-H Batch P):
+    - A2-H2: guard empty `env_id` → fail-soft error dict.
+    - A2-C1: the whole `_execute_in_sandbox` coroutine (N commands × 3600 s
+      each) is now bounded by `_timeout_for(ctx, 7200)`; on timeout the thread
+      pool's `.result()` raises `TimeoutError` → fail-soft error dict.  The
+      sandbox destroy is `asyncio.shield`-ed in `_execute_in_sandbox` so the
+      container is cleaned up even when the coroutine is cancelled.
     """
     import asyncio
-    import concurrent.futures
     import json
     import uuid
     from pathlib import Path
+
+    # A2-H2: guard empty env_id before attempting any Docker work.
+    if not env_id or not str(env_id).strip():
+        return {
+            "success": False,
+            "metrics": {},
+            "error": "env_id empty — build_environment must succeed first",
+        }
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
@@ -336,12 +445,21 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                 "error": f"no commands.json at {manifest}"}
 
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    # A2-C1: bound the entire command loop (not just each individual command).
+    timeout = _timeout_for(ctx, 7200)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(
-            asyncio.run,
-            _execute_in_sandbox(code_path, env_id, commands,
-                                project_id=ctx.project_id, run_id=run_id),
-        ).result()
+        try:
+            return pool.submit(
+                asyncio.run,
+                _execute_in_sandbox(code_path, env_id, commands,
+                                    project_id=ctx.project_id, run_id=run_id),
+            ).result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return {
+                "success": False,
+                "metrics": {},
+                "error": f"run_experiment: timed out after {timeout:.0f} s",
+            }
 
 
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
@@ -354,6 +472,11 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     it to the metric-less case (`run_experiment` returns `metrics={}` in
     Phase 2 — see Task 9). `overall_score` / `meets_target` are computed by
     `RubricVerification.from_areas`, never trusted from the model.
+
+    Hardening (WS-H Batch P):
+    - A2-H3: `_extract_json` / schema failures return a fail-soft error dict.
+    - A2-H4: rubric `weight` and `target_score` coerced via `_clamp01` (handles
+      non-numeric LLM output gracefully, consistent with area-score handling).
     """
     import json
 
@@ -367,10 +490,19 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
           '{"areas": [{"area": str, "score": float, "justification": str, '
           '"weak_points": [str]}], "confidence": float}.'
     )
-    raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
-    parsed = _extract_json(raw)
+    try:
+        raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
+        parsed = _extract_json(raw)
+    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
+        return {"success": False,
+                "error": f"verify_against_rubric: {type(exc).__name__}: {exc}"}
 
-    weights = {a.get("area", ""): float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
+    # A2-H4: use _clamp01 so non-numeric weight values degrade to 0.0 rather
+    # than raising TypeError/ValueError from a bare float() call.
+    weights = {
+        a.get("area", ""): _clamp01(a.get("weight", 0.0))
+        for a in rubric.get("areas", [])
+    }
     degraded = (not results.get("success")) or (not results.get("metrics"))
     areas: list[RubricAreaScore] = []
     for a in parsed.get("areas", []):
@@ -385,12 +517,16 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             justification=str(a.get("justification", "")),
             weak_points=[str(w) for w in (a.get("weak_points") or [])],
         ))
-    verification = RubricVerification.from_areas(
-        areas,
-        rubric_source=rubric.get("source", "generated"),
-        target_score=float(rubric.get("target_score", 0.0)),
-        confidence=_clamp01(parsed.get("confidence")),
-    )
+    try:
+        verification = RubricVerification.from_areas(
+            areas,
+            rubric_source=rubric.get("source", "generated"),
+            target_score=_clamp01(rubric.get("target_score", 0.0)),  # A2-H4
+            confidence=_clamp01(parsed.get("confidence")),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3)
+        return {"success": False,
+                "error": f"verify_against_rubric: schema error: {type(exc).__name__}: {exc}"}
     return verification.model_dump()
 
 
@@ -400,12 +536,21 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
 
     Reuses the `improvement-orchestrator` prompt — no fixed taxonomy. Each item
     is an `ImprovementHypothesis` dict; malformed items are dropped fail-soft.
+
+    Hardening (A2-H1): `k` may arrive as a string (e.g. `"3"`) from
+    LLM-generated REPL code; coerce with `int()`, fall back to default 3.
     """
     import json
 
     from backend.agents.prompts.improvement import IMPROVEMENT_ORCHESTRATOR_PROMPT
     from backend.agents.schemas import ImprovementHypothesis
 
+    # A2-H1: coerce k — LLM REPL code may pass a string like "3".
+    if k is not None:
+        try:
+            k = int(k)
+        except (TypeError, ValueError):
+            k = None
     target = k if k is not None else 3
     user = (
         "current_results:\n" + json.dumps(current_results, indent=2, default=str)
