@@ -14,7 +14,7 @@
 
 The recon (`docs/design/phase2-analysis.md` and a 2026-05-21 codebase sweep) surfaced design forks the stub `primitives.py` did not anticipate. This plan **resolves** them so every task is complete-code. Decisions:
 
-- **D0 — the root RLM REPL runs `environment="local"`, not `"docker"`.** Verified in `rlm` 0.1.1 source: `DockerREPL._build_exec_script` (`rlm/environments/docker_repl.py`) builds the in-container globals as `{__builtins__, __name__, llm_query, llm_query_batched, FINAL_VAR, SHOW_VARS}` — it **never injects `custom_tools`** (and never exposes `rlm_query`). Under `environment="docker"` the 10 primitives would not exist in the REPL namespace at all (`NameError`), and would otherwise execute *inside* the container with no host paths and no host Docker socket. `custom_tools` are plumbed only by `LocalREPL`. Phase 2's primitives are host-side by design; the root REPL **must** use `environment="local"`. Docker is used *by* the `build_environment` / `run_experiment` primitives for the paper's sandbox — never by the root REPL. ⚠ **Upstream conflict:** issue #60 deliverable 2 specifies `environment='docker'` and `rlms-spike-report.md` argues Docker was the deciding factor over `dspy.RLM` — both are inconsistent with this verified fact and need correcting (the spike report's point still holds *for the primitives' sandbox*, just not for the root REPL).
+- **D0 — the root RLM REPL runs `environment="local"`, not `"docker"`.** Verified in `rlm` 0.1.1 source: the module-level function `_build_exec_script` in `rlm/environments/docker_repl.py` (it is a module function, not a `DockerREPL` method) builds the in-container globals as `{__builtins__, __name__, llm_query, llm_query_batched, FINAL_VAR, SHOW_VARS}` — it **never injects `custom_tools`** (and never exposes `rlm_query`). Under `environment="docker"` the 10 primitives would not exist in the REPL namespace at all (`NameError`), and would otherwise execute *inside* the container with no host paths and no host Docker socket. `custom_tools` are plumbed only by `LocalREPL`. Phase 2's primitives are host-side by design; the root REPL **must** use `environment="local"`. Docker is used *by* the `build_environment` / `run_experiment` primitives for the paper's sandbox — never by the root REPL. ⚠ **Upstream conflict:** issue #60 deliverable 2 specifies `environment='docker'` and `rlms-spike-report.md` argues Docker was the deciding factor over `dspy.RLM` — both are inconsistent with this verified fact and need correcting (the spike report's point still holds *for the primitives' sandbox*, just not for the root REPL).
 - **D1 — `env_id` is a Docker image tag.** No `env_id` concept exists today. `build_environment()` returns `{"image_tag": str, ...}`; `run_experiment(code_path, env_id)` treats `env_id` as a prebuilt image tag and runs a container from it with `SandboxConfig(image=env_id, dockerfile_path=None)` — no rebuild.
 - **D2 — run commands travel via `commands.json`.** `run_with_runtime` reads commands from a `BaselineResult` today; the `(code_path, env_id)` signature has none. `implement_baseline()` writes `code/commands.json` (a JSON list of shell commands); `run_experiment()` reads it. The skeleton signatures are preserved.
 - **D3 — `build_environment` does its own retry loop.** It wraps `build_image()` (the clean inner), reconstructs the retry loop (the orchestrator's loop is fused with `PipelineState`), regenerates the Dockerfile on failure via `ctx.llm_client`, caps at `environment_build_max_attempts`, and is **fail-soft** (returns `{"ok": False, ...}`, never raises) — except `SandboxRuntimeError` (Docker daemon down etc.), which is an infrastructure failure and propagates.
@@ -23,7 +23,7 @@ The recon (`docs/design/phase2-analysis.md` and a 2026-05-21 codebase sweep) sur
 - **D6 — LLM-backed primitives use `ctx.llm_client.complete()`** with the existing prompt constants from `backend/agents/prompts/`, returning JSON parsed into existing schemas. `implement_baseline` is the exception — it is a code-*writing* agent, so it wraps `run_with_sdk()` via `ctx.runtime`.
 - **D7 — cost ledger in Phase 2 records a call entry per primitive with zero token usage.** The simple `LlmClient.complete()` protocol returns text only. Phase 3 (`run.py`, #60) supplies a usage-returning client; until then the wrapper appends a `CostLedgerEntry` with `input_tokens=output_tokens=0`, `estimated_usd=None`, so the ledger is a faithful *call* log and real cost attribution slots in later.
 
-**Residual risks** (flagged at the relevant tasks): `build_environment`/`run_experiment` need a Docker daemon to run end-to-end — their unit tests mock the Docker layer; `implement_baseline`'s `run_with_sdk` is a heavier code-writing agent and is exercised against a fake runtime in tests; `REPRODUCTION_PLANNER_PROMPT` carries stale `{project_id}`/`{runs_root}` path placeholders — the primitive overrides them with an explicit "return JSON inline" instruction; the sync↔async bridge (`asyncio.run` inside a worker thread) assumes the REPL host runs primitives off the event loop — re-verify when `run.py` lands.
+**Residual risks** (flagged at the relevant tasks): `build_environment`/`run_experiment` need a Docker daemon to run end-to-end — their unit tests mock the Docker layer; `implement_baseline`'s `run_with_sdk` is a heavier code-writing agent and is exercised against a fake runtime in tests; the sync↔async bridge (`asyncio.run` inside a worker thread) assumes the REPL host runs primitives off the event loop — re-verify when `run.py` lands.
 
 ## File structure
 
@@ -33,7 +33,7 @@ The recon (`docs/design/phase2-analysis.md` and a 2026-05-21 codebase sweep) sur
 | `backend/agents/rlm/context.py` | create | the `RunContext` dataclass |
 | `backend/agents/dashboard_emitter.py` | modify | add a `primitive_call` event method |
 | `backend/agents/rlm/binding.py` | create | `wrap_primitive`, `build_custom_tools`, `PRIMITIVE_DESCRIPTIONS` |
-| `backend/agents/rlm/primitives.py` | modify | implement the 10 primitive bodies (replace the stubs) |
+| `backend/agents/rlm/primitives.py` | modify | implement the 9 primitive bodies; drop the vestigial `set_final` stub |
 | `backend/agents/rlm/__init__.py` | modify | export `RunContext`, `build_custom_tools` |
 | `tests/rlm/conftest.py` | create | `FakeLlmClient`, the `make_context` fixture |
 | `tests/rlm/test_*.py` | create | one test module per task |
@@ -313,8 +313,11 @@ In `backend/agents/dashboard_emitter.py`, add this method to the `DashboardEmitt
         """Emit a `primitive_call` event (RLM Phase 2 — issue #61 schema).
 
         `status` is "start" | "ok" | "error". `iteration` is the root-loop
-        index — a bare primitive wrapper does not know it, so it is None here
-        and the root loop fills it when `run.py` (#60) wires emission.
+        index — a bare primitive wrapper cannot know it, so it is None here.
+        Phase 3 (`run.py`, #60) supplies it via a custom `RLMLogger` subclass
+        passed to `rlm.RLM`: `rlm` calls `logger.log(iteration)` once per loop
+        (the verified per-iteration hook — `on_iteration_*` never fire), and
+        that subclass stashes the index for the wrapper to read.
         `rubric_delta` is not applicable to a primitive call (always None).
         """
         self._emit({
@@ -719,49 +722,52 @@ _ENV_REPAIR_SYSTEM = (
 def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     """Build the Docker image for `env_spec`, repairing the Dockerfile on failure.
 
-    Fail-soft: returns {"ok": False, ...} when the attempt cap is spent. A
-    `SandboxRuntimeError` (Docker daemon unavailable) is an infrastructure
-    failure and propagates. (Design decision D3.)
+    Genuinely fail-soft (design decision D3): any failure — a spent attempt
+    cap, an `llm_client` error, a `write_text` error, a bad import — returns
+    `{"ok": False, "error": ..., "attempts": ...}`; the primitive never raises.
+    The ONE exception is `SandboxRuntimeError` (Docker daemon down / SDK
+    missing): an infrastructure failure, not a Dockerfile problem, so it
+    propagates.
     """
     import asyncio
     import concurrent.futures
     import tempfile
     from pathlib import Path
 
-    from backend.config import get_settings
-    from backend.services.runtime.interface import SandboxRuntimeError
-
     dockerfile = (env_spec.get("dockerfile") or "").strip()
     if not dockerfile:
         return {"ok": False, "image_tag": "", "error": "env_spec.dockerfile is empty",
                 "attempts": 0}
 
-    max_attempts = max(1, get_settings().environment_build_max_attempts)
-    tag = f"reprolab/{ctx.project_id}:env-check"
-    attempts, ok, error = 0, False, ""
+    attempts, ok, tag, error = 0, False, "", ""
+    try:
+        from backend.config import get_settings
+        from backend.services.runtime.interface import SandboxRuntimeError
 
-    with tempfile.TemporaryDirectory() as tmp:
-        context_dir = Path(tmp)
-        dockerfile_path = context_dir / "Dockerfile"
-        while not ok and attempts < max_attempts:
-            attempts += 1
-            dockerfile_path.write_text(dockerfile, encoding="utf-8")
-            try:
-                # Same async bridge as implement_baseline / run_experiment:
-                # asyncio.run in a fresh worker thread, never bare (a bare
-                # asyncio.run raises if a primitive is ever called from inside
-                # a running event loop).
+        max_attempts = max(1, get_settings().environment_build_max_attempts)
+        tag = f"reprolab/{ctx.project_id}:env-check"
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp)
+            dockerfile_path = context_dir / "Dockerfile"
+            while not ok and attempts < max_attempts:
+                attempts += 1
+                dockerfile_path.write_text(dockerfile, encoding="utf-8")
+                # Async bridge: asyncio.run in a fresh worker thread, never
+                # bare (a bare asyncio.run raises inside a running loop).
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     ok, tag, error = pool.submit(
                         asyncio.run, _build_image(dockerfile_path, context_dir, tag)
                     ).result()
-            except SandboxRuntimeError:
-                raise  # infrastructure failure — not a Dockerfile problem
-            if not ok and attempts < max_attempts:
-                dockerfile = ctx.llm_client.complete(
-                    system=_ENV_REPAIR_SYSTEM,
-                    user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
-                ).strip()
+                if not ok and attempts < max_attempts:
+                    dockerfile = ctx.llm_client.complete(
+                        system=_ENV_REPAIR_SYSTEM,
+                        user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
+                    ).strip()
+    except SandboxRuntimeError:
+        raise  # infrastructure failure — not a Dockerfile problem; propagate
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
+        return {"ok": False, "image_tag": "",
+                "error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
 
     return {"ok": ok, "image_tag": tag if ok else "", "error": error,
             "attempts": attempts}
@@ -849,23 +855,34 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
 
+_PLAN_REPRODUCTION_SYSTEM = (
+    "You are the Reproduction Planner for ReproLab. Given a paper's method "
+    "spec and a target environment spec, produce a ReproductionContract: what "
+    "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
+    "the expected output artifacts, a dataset plan, an evaluation plan, and a "
+    "verification checklist. Return exactly ONE JSON object with those fields "
+    "and nothing else. Do NOT write files; do NOT reference any filesystem path."
+)
+
+
 def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -> dict:
     """Generate a reproduction contract from structured specs via the LLM.
 
-    Wraps the `reproduction-planner` prompt. Returns a ReproductionContract dict.
+    Uses a primitive-specific system prompt (`_PLAN_REPRODUCTION_SYSTEM`). The
+    orchestrator's `REPRODUCTION_PLANNER_PROMPT` is deliberately NOT reused: it
+    instructs a file-writing agent ("write to `{runs_root}/{project_id}/...`"),
+    which conflicts with a primitive that must return JSON inline. Returns a
+    ReproductionContract dict.
     """
     import json
 
-    from backend.agents.prompts.reproduction_planner import REPRODUCTION_PLANNER_PROMPT
     from backend.agents.schemas import ReproductionContract
 
     user = (
         "method_spec:\n" + json.dumps(method_spec, indent=2, default=str)
         + "\n\nenvironment_spec:\n" + json.dumps(env_spec, indent=2, default=str)
-        + "\n\nReturn the ReproductionContract as a single JSON object in your "
-          "reply. Do not write files; do not reference any filesystem path."
     )
-    raw = ctx.llm_client.complete(system=REPRODUCTION_PLANNER_PROMPT, user=user)
+    raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
     data = _extract_json(raw)
     return ReproductionContract(**data).model_dump()
 ```
@@ -913,7 +930,8 @@ def test_implement_baseline_writes_commands_manifest(make_context, tmp_path, mon
     ctx = make_context(tmp_path)
     ctx.runtime = object()
 
-    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract, ai, **kw):
+    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
+                                artifact_index, **kw):
         return _FakeBaselineResult()
 
     monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -945,9 +963,13 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
 def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
     """Generate the baseline code from a reproduction plan; return the code path.
 
-    Wraps `baseline_implementation.run_with_sdk` (a code-writing agent) and
-    writes `code/commands.json` so `run_experiment` can read the run commands
-    without a BaselineResult (design decision D2).
+    `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
+    <understand_section output>, "environment_spec": <detect_environment
+    output>, "reproduction_contract": <plan_reproduction output>}` (plus an
+    optional `artifact_index`) — NOT a single producer's output. Wraps
+    `baseline_implementation.run_with_sdk` (a code-writing agent) and writes
+    `code/commands.json` so `run_experiment` can read the run commands without
+    a BaselineResult (design decision D2).
     """
     import asyncio
     import concurrent.futures
@@ -955,7 +977,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
 
     from backend.agents.schemas import PaperClaimMap, EnvironmentSpec, ReproductionContract
 
-    pcm = PaperClaimMap(**plan.get("paper_claim_map", {}))
+    # core_contribution is PaperClaimMap's one required field; default it so a
+    # partial paper_claim_map (e.g. understand_section's output) validates.
+    pcm = PaperClaimMap(**{"core_contribution": "", **plan.get("paper_claim_map", {})})
     env = EnvironmentSpec(**plan.get("environment_spec", {}))
     contract = (ReproductionContract(**plan["reproduction_contract"])
                 if plan.get("reproduction_contract") else None)
@@ -1242,10 +1266,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
 
 Verified signature (`schemas.py:352`): `RubricVerification.from_areas(areas: list[RubricAreaScore], *, rubric_source: Literal["paperbench_bundle","generated"], target_score: float, confidence: float = 0.0, verified_at: str = "")`. It requires **`RubricAreaScore` objects** (not plain dicts) and the keyword-only `rubric_source` + `target_score`; it recomputes `overall_score` / `meets_target` itself — the code above must not pre-set them. `RubricAreaScore` fields (`schemas.py:318`): `area, weight, score, justification, weak_points`.
 
+**Honesty-backstop scope — do not over-build.** The mechanical `min(score, 0.35)` is the *same* backstop `orchestrator._run_rubric_verifier` enforces — one cap, on a non-successful run. `RUBRIC_VERIFIER_PROMPT` (`rubric_verifier.py:52-58`) *additionally* instructs the LLM with finer caps (≤0.20 for no executable code / missing target metric, ≤0.40 for missing provenance); those are enforced **LLM-side via the prompt**, exactly as the orchestrator does it. `min()` only lowers a score, so a prompt-following LLM's stricter score survives the backstop. Do **not** add mechanical 0.20/0.40 caps — that diverges from the canonical orchestrator and needs run-state (executable-code / provenance flags) that Phase 2's `run_experiment` does not produce.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/rlm/test_verify_against_rubric.py -v`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1274,8 +1300,14 @@ import json
 from backend.agents.rlm.primitives import propose_improvements
 
 HYP_JSON = json.dumps({"hypotheses": [
-    {"path_id": "p1", "hypothesis": "Tune the learning rate.", "category": "optimizer"},
-    {"path_id": "p2", "hypothesis": "Swap the backbone.", "category": "architecture"},
+    {"path_id": "p1", "hypothesis": "Tune the learning rate.",
+     "rationale": "Learning rate is the highest-leverage PPO hyperparameter.",
+     "expected_outcome": "Higher mean reward at the same step budget.",
+     "category": "optimizer"},
+    {"path_id": "p2", "hypothesis": "Swap the backbone.",
+     "rationale": "A wider value network may fit the return better.",
+     "expected_outcome": "Lower value loss and faster convergence.",
+     "category": "architecture"},
 ]})
 
 
@@ -1330,7 +1362,7 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     return out
 ```
 
-Before implementing, confirm which `ImprovementHypothesis` fields are required: `.venv/bin/python -c "from backend.agents.schemas import ImprovementHypothesis; print({n: f.is_required() for n, f in ImprovementHypothesis.model_fields.items()})"`. If any required field is absent from the test's `HYP_JSON` items, add it there with a sane value — otherwise the fail-soft `except` silently drops every item and the `len(result) == 2` assertion fails.
+The test's `HYP_JSON` items above include all four **required** `ImprovementHypothesis` fields — `path_id`, `hypothesis`, `rationale`, `expected_outcome` (verified `schemas.py:221`) — plus the free-form `category`. This matters: the implementation drops malformed items fail-soft, so a `HYP_JSON` item missing a required field would be silently discarded and `len(result) == 2` would fail as `0 == 2`. If `ImprovementHypothesis` instead rejects an *extra* key, confirm it has `model_config = {"extra": "ignore"}` (it does — `schemas.py:223`).
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -1346,69 +1378,64 @@ git commit -m "feat(rlm): propose_improvements primitive (variable-length, free-
 
 ---
 
-### Task 12: `set_final` primitive
+### Task 12: Remove the vestigial `set_final` stub
 
 **Files:**
-- Modify: `backend/agents/rlm/primitives.py:104-110`
-- Test: `tests/rlm/test_set_final.py`
+- Modify: `backend/agents/rlm/primitives.py` (delete the `set_final` stub + its `PRIMITIVE_REGISTRY` entry)
+- Modify: `backend/agents/rlm/__init__.py` (only if it imports/exports `set_final`)
+- Test: `tests/rlm/test_registry_count.py`
 
-`set_final` is thin: under the `rlm` engine the root terminates with `FINAL_VAR(report)`; `set_final` is optional sugar that validates the report payload.
+The Phase-1 skeleton's `primitives.py` carries a 10th stub, `set_final`, in `PRIMITIVE_REGISTRY`. The canonical brief §7 lists **nine** primitives and omits `set_final`: under the `rlm` engine the root terminates with `FINAL_VAR(<var>)` — it assigns the report to a REPL variable and emits the tag directly, so no `set_final` helper is needed. `set_final` is vestigial; Phase 2 ships nine primitives. (If a future brief / issue-#59 amendment re-adds it, restore it then — do not keep dead scope now.)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/rlm/test_set_final.py`:
+Create `tests/rlm/test_registry_count.py`:
 
 ```python
-import pytest
+from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY
 
-from backend.agents.rlm.primitives import set_final
-
-
-def test_set_final_returns_validated_report(make_context, tmp_path):
-    ctx = make_context(tmp_path)
-    report = {"rubric_score": 0.8, "summary": "ok"}
-    assert set_final(report, ctx=ctx) == report
+NINE = {
+    "understand_section", "extract_hyperparameters", "detect_environment",
+    "build_environment", "plan_reproduction", "implement_baseline",
+    "run_experiment", "verify_against_rubric", "propose_improvements",
+}
 
 
-def test_set_final_rejects_non_dict(make_context, tmp_path):
-    ctx = make_context(tmp_path)
-    with pytest.raises(TypeError):
-        set_final("not a dict", ctx=ctx)
+def test_registry_has_exactly_the_nine_brief_primitives():
+    assert set(PRIMITIVE_REGISTRY) == NINE
+    assert "set_final" not in PRIMITIVE_REGISTRY
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `.venv/bin/python -m pytest tests/rlm/test_set_final.py -v`
-Expected: FAIL — `NotImplementedError`.
+Run: `.venv/bin/python -m pytest tests/rlm/test_registry_count.py -v`
+Expected: FAIL — the skeleton's `PRIMITIVE_REGISTRY` still contains `set_final` (10 keys).
 
-- [ ] **Step 3: Implement `set_final`**
+- [ ] **Step 3: Remove `set_final`**
 
-Replace the body in `backend/agents/rlm/primitives.py` (note the return type changes from `None` to `dict`):
-
-```python
-def set_final(report: dict, *, ctx: "RunContext") -> dict:
-    """Validate and return the final reproduction report.
-
-    Optional sugar — under the `rlm` engine the root terminates with
-    `FINAL_VAR(<var>)`; `set_final` just validates the payload is a dict so a
-    malformed `report` fails loudly rather than at report-writing time.
-    """
-    if not isinstance(report, dict):
-        raise TypeError(f"set_final expects a dict report, got {type(report).__name__}")
-    return report
-```
+In `backend/agents/rlm/primitives.py`: delete the `set_final` function (the skeleton stub) entirely, and remove its `"set_final": set_final` entry from the `PRIMITIVE_REGISTRY` dict — leave the other nine entries unchanged. Then check `backend/agents/rlm/__init__.py`: if it imports or lists `set_final` in `__all__`, remove those lines too (`grep -n set_final backend/agents/rlm/__init__.py`).
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `.venv/bin/python -m pytest tests/rlm/test_set_final.py -v`
-Expected: PASS (2 tests).
+Run: `.venv/bin/python -m pytest tests/rlm/test_registry_count.py -v`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/agents/rlm/primitives.py tests/rlm/test_set_final.py
-git commit -m "feat(rlm): set_final primitive (report validator)"
+git add backend/agents/rlm/primitives.py tests/rlm/test_registry_count.py
+git commit -F- <<'EOF'
+refactor(rlm): drop the vestigial set_final primitive
+
+The canonical brief §7 lists nine primitives. set_final was a Phase-1
+skeleton stub; under the rlm engine the root terminates with FINAL_VAR(<var>),
+so no set_final helper is needed. Phase 2 ships nine primitives.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+EOF
 ```
+
+(If `__init__.py` changed, add it to the `git add` above.)
 
 ---
 
@@ -1430,7 +1457,7 @@ from backend.agents.rlm.binding import build_custom_tools
 EXPECTED = {
     "understand_section", "extract_hyperparameters", "detect_environment",
     "build_environment", "plan_reproduction", "implement_baseline",
-    "run_experiment", "verify_against_rubric", "propose_improvements", "set_final",
+    "run_experiment", "verify_against_rubric", "propose_improvements",
 }
 
 
@@ -1460,24 +1487,30 @@ Below the existing `PRIMITIVE_REGISTRY` dict in `backend/agents/rlm/primitives.p
 ```python
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
-        "metrics, training recipe, hardware clues, ambiguities from a text slice.",
+        "metrics, training recipe, hardware clues, ambiguities from a text slice. "
+        "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",
     "extract_hyperparameters": "extract_hyperparameters(text_slice) -> dict — "
         "optimizer, learning rate, batch size, epochs from a slice.",
-    "detect_environment": "detect_environment(method_spec) -> dict — infer the "
-        "Python/framework versions, pip packages, and a Dockerfile.",
+    "detect_environment": "detect_environment(method_spec) -> dict — an "
+        "EnvironmentSpec (dockerfile, python_version, framework, pip_packages). "
+        "`method_spec` is a (partial) PaperClaimMap dict.",
     "build_environment": "build_environment(env_spec) -> dict — build the Docker "
-        "image, repairing the Dockerfile on failure; returns {ok, image_tag, ...}.",
+        "image, repairing the Dockerfile on failure. Returns a BUILD RESULT "
+        "{ok, image_tag, error, attempts} — NOT an EnvironmentSpec. Pass "
+        "image_tag to run_experiment as env_id.",
     "plan_reproduction": "plan_reproduction(method_spec, env_spec) -> dict — a "
-        "reproduction contract (smoke test, full run, evaluation plan).",
+        "ReproductionContract (smoke test, full run, evaluation plan).",
     "implement_baseline": "implement_baseline(plan) -> str — generate the "
-        "baseline code; returns the code directory path.",
+        "baseline code; returns the code dir path. `plan` is the aggregate "
+        "{paper_claim_map (from understand_section), environment_spec (from "
+        "detect_environment), reproduction_contract (from plan_reproduction)}.",
     "run_experiment": "run_experiment(code_path, env_id) -> dict — run the "
-        "baseline in a container from image `env_id`; returns metrics.",
+        "baseline in a container from image `env_id` (build_environment's "
+        "image_tag); returns {success, metrics, logs}.",
     "verify_against_rubric": "verify_against_rubric(results, rubric) -> dict — "
         "score the results against a PaperBench-style rubric.",
     "propose_improvements": "propose_improvements(current_results, rubric_scores, "
         "k=None) -> list[dict] — paper-specific improvement hypotheses.",
-    "set_final": "set_final(report) -> dict — validate the final report payload.",
 }
 ```
 
@@ -1587,12 +1620,42 @@ def test_primitives_are_callable_inside_the_rlm_repl(make_context, tmp_path):
               (ctx.project_dir / "dashboard_events.jsonl").read_text().splitlines() if ln]
     names = {e["primitive"] for e in events if e.get("event") == "primitive_call"}
     assert "extract_hyperparameters" in names  # a primitive ran on a slice of `context`
+
+
+def test_every_primitive_binds_and_heuristic_ones_run(make_context, tmp_path):
+    """Every primitive binds into custom_tools and is callable; the three
+    no-dependency heuristic primitives actually run through the wrapper.
+
+    Together with the REPL test above and the Task 6-11 unit tests, this
+    covers issue #59's "every primitive callable from the REPL" done-condition.
+    """
+    from backend.agents.rlm.binding import build_custom_tools
+
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    assert len(tools) == 9  # the nine brief-§7 primitives
+    for entry in tools.values():
+        assert callable(entry["tool"])
+
+    # The heuristic primitives need no monkeypatching — invoke them for real
+    # through the bound custom_tools wrapper.
+    us = tools["understand_section"]["tool"]("Adam, lr 3e-4, batch 64, CartPole-v1.")
+    assert {"datasets", "metrics", "training_recipe"} <= set(us)
+    hp = tools["extract_hyperparameters"]["tool"]("Adam optimizer, batch size 64.")
+    assert "64" in hp["batch_size"]
+    env = tools["detect_environment"]["tool"]({"core_contribution": "A PyTorch agent."})
+    assert env["dockerfile"].startswith("FROM")
+
+    events = [json.loads(ln) for ln in
+              (ctx.project_dir / "dashboard_events.jsonl").read_text().splitlines() if ln]
+    ran = {e["primitive"] for e in events if e.get("event") == "primitive_call"}
+    assert {"understand_section", "extract_hyperparameters", "detect_environment"} <= ran
 ```
 
-- [ ] **Step 2: Run the integration test**
+- [ ] **Step 2: Run the integration tests**
 
 Run: `.venv/bin/python -m pytest tests/rlm/test_integration_custom_tools.py -v`
-Expected: PASS — the primitive ran inside the REPL and emitted a `primitive_call` event.
+Expected: PASS (2 tests) — a primitive runs end-to-end inside the rlm REPL on a slice of `context`, and all nine primitives bind into `custom_tools` with the three heuristic ones running through the wrapper.
 
 - [ ] **Step 3: Run the whole RLM test suite**
 
@@ -1610,12 +1673,12 @@ git commit -m "test(rlm): integration — primitives callable in the rlm REPL"
 
 ## Self-review
 
-**1. Spec coverage (issue #59).** #59 requires: extract each surviving stage agent's core logic into a function in `primitives.py` → Tasks 3–12 (the 10 primitives); each primitive emits a `primitive_call` SSE event → Task 2 wrapper, verified Task 14; each updates `cost_ledger.jsonl` → Task 2 wrapper (D7 — zero-usage call entry in Phase 2); assembled into the `custom_tools` dict → Tasks 2 + 13; "wrap, not rewrite" → every primitive wraps an existing helper/agent/prompt. Done condition (primitives callable from the REPL with correct outputs and events) → Task 14. Covered.
+**1. Spec coverage (issue #59).** #59 requires: extract each surviving stage agent's core logic into a function in `primitives.py` → Tasks 3–11 (the nine brief-§7 primitives; Task 12 removes the vestigial `set_final` skeleton stub); each primitive emits a `primitive_call` SSE event → Task 2 wrapper, verified Task 14; each updates `cost_ledger.jsonl` → Task 2 wrapper (D7 — zero-usage call entry in Phase 2); assembled into the `custom_tools` dict → Tasks 2 + 13; "wrap, not rewrite" → every primitive wraps an existing helper/agent/prompt. Done condition (primitives callable from the REPL with correct outputs and events) → Task 14. Covered.
 
 **2. Placeholder scan.** No "TBD"/"implement later". The two `_build_image` / `_run_baseline_with_sdk` / `_execute_in_sandbox` indirections are real, named module functions (so tests can monkeypatch) — not placeholders. The `metrics: {}` in `run_experiment` is a deliberate, flagged Phase-5 follow-up, not a hidden gap.
 
-**3. Type consistency.** `RunContext` (Task 1) is the keyword arg name `ctx` everywhere. `build_custom_tools(ctx)` (Task 2) is used in Tasks 13–14. `_extract_json` (defined Task 7) is reused in Tasks 10–11. Primitive signatures match `PRIMITIVE_REGISTRY` keys and `PRIMITIVE_DESCRIPTIONS` (Task 13 test asserts the sets are equal). `set_final` return type was corrected from the skeleton's `-> None` to `-> dict`.
+**3. Type consistency.** `RunContext` (Task 1) is the keyword arg name `ctx` everywhere. `build_custom_tools(ctx)` (Task 2) is used in Tasks 13–14. `_extract_json` (defined Task 7) is reused in Tasks 10–11. Primitive signatures match `PRIMITIVE_REGISTRY` keys and `PRIMITIVE_DESCRIPTIONS` (Task 13 test asserts the sets are equal — nine primitives, after Task 12 drops `set_final`).
 
 **Verification commands** are exact (`.venv/bin/python -m pytest tests/rlm/<file> -v`). Several tasks include a one-line introspection command to confirm a real schema/API name before relying on it — these are guards, not placeholders.
 
-**Hyperanalysis corrections (2026-05-21 review pass).** A blocker review caught and fixed: **D0** — the root REPL must be `environment="local"`; `custom_tools` are not plumbed into `rlm`'s `DockerREPL` (verified in source), so issue #60 and `rlms-spike-report.md` (both say `environment='docker'`) need an upstream correction. **Task 1** now pins `python-dotenv>=1.2.1,<2` (`rlms` requires it; the env had 1.0.1). **Task 10** `verify_against_rubric` now builds `RubricAreaScore` objects and passes `from_areas`'s required keyword args (the prior call would have raised `TypeError`), and the honesty backstop also caps a metric-less run. **Task 2** `primitive_call` event field names follow issue #61's schema. **Task 6** `build_environment` uses the same worker-thread async bridge as Tasks 8–9. The build order is corrected to **strictly sequential**; `_extract_json` is now brace-robust. **Known spec deviation:** `set_final` (Task 12) is in the Phase-1 skeleton's `PRIMITIVE_REGISTRY` but is not in the rewritten brief §7's primitive list — it is kept for skeleton-consistency as an optional validator; reconcile when the brief and the skeleton are aligned.
+**Hyperanalysis corrections (2026-05-21 review pass).** A blocker review caught and fixed: **D0** — the root REPL must be `environment="local"`; `custom_tools` are not plumbed into `rlm`'s `DockerREPL` (verified in source), so issue #60 and `rlms-spike-report.md` (both say `environment='docker'`) need an upstream correction. **Task 1** now pins `python-dotenv>=1.2.1,<2` (`rlms` requires it; the env had 1.0.1). **Task 10** `verify_against_rubric` now builds `RubricAreaScore` objects and passes `from_areas`'s required keyword args (the prior call would have raised `TypeError`), and the honesty backstop also caps a metric-less run. **Task 2** `primitive_call` event field names follow issue #61's schema. **Task 6** `build_environment` uses the same worker-thread async bridge as Tasks 8–9. The build order is corrected to **strictly sequential**; `_extract_json` is now brace-robust. **Audit pass (2026-05-21, `phase2-plan-audit.md`).** An independent audit caught and fixed: Task 11's `HYP_JSON` was missing `ImprovementHypothesis`'s required `rationale`/`expected_outcome` (the fail-soft drop would have made the test `0 == 2`); `implement_baseline` now defaults `PaperClaimMap.core_contribution` so a partial `plan["paper_claim_map"]` validates instead of raising; **`set_final` is removed** — Task 12 now deletes the skeleton's vestigial 10th stub, aligning Phase 2 to brief §7's nine primitives (`FINAL_VAR` termination needs no `set_final` helper); `build_environment` is now genuinely fail-soft (D3); `plan_reproduction` uses a primitive-specific system prompt (the orchestrator's `REPRODUCTION_PLANNER_PROMPT` instructs a file-writing agent); Task 14 also verifies all nine primitives bind + the heuristic ones run; the D0 citation, the Task 10 test count, and the `PRIMITIVE_DESCRIPTIONS` precision (`build_environment` returns a build result, not an `EnvironmentSpec`) were corrected. Audit findings #5 (graduated rubric caps) and #9 (`PaperClaimMap.extra="ignore"` drop) were assessed as over-reach — the verify-rubric backstop matches the canonical orchestrator, and `extra="ignore"` is intentional schema behavior.
