@@ -80,18 +80,37 @@ running, completed, or failed on the next bug — if so, diagnose → fix → re
 the bridge (§7). Expect to "fix what breaks" iteratively, one failure class at a
 time (the original handoff's §8 Step 5).
 
+## 5b. Session-3 update — work now on branch `merge`
+Work continued on a new branch `merge` (base `rlm-pivot`). `feat/rlm-phase2-foundation`
+verified fully merged (`git rev-list --count merge..origin/feat/rlm-phase2-foundation` = 0).
+
+DONE this session (each its own commit, pushed to `origin/merge`):
+- ✅ **Featherless root-model backend** — `qwen3-coder-featherless` registry entry;
+  `RootModel.api_key_env` decouples key-source from backend type (`bb2bba5`).
+  The RLM root loop needs a real API key — Featherless (flat-rate, key owned).
+- ✅ **runs_root absolute-path fix** — `Path(runs_root).resolve()`; primitives run
+  in the RLM REPL's CWD, so a relative root broke every artifact write (`a750ea5`).
+- ✅ **Bug A — tolerant `PaperClaimMap`** — `MetricSpec.definition` defaults to `""`;
+  before-validators coerce plain-string claims/metrics; `PRIMITIVE_DESCRIPTIONS`
+  publish the schema. Was causing fabricated mock 0.725 reports.
+- ✅ **Bug B — sub-agent runtime via Claude OAuth** — `_resolve_agent_runtime` in
+  `run.py`: an RLM run has two LLM layers — the root loop (real API key) and the
+  sub-agent runtime (`implement_baseline`), which can run on the Claude Code
+  subscription via OAuth (`claude-agent-sdk` spawns the `claude` CLI). Bypasses
+  `.env`'s dead `REPROLAB_LLM_PROVIDER=openai`.
+
 ## 6. What's LEFT — the plan
-1. **WS-E — finish the run.** If it completed: produce the authoritative PaperBench
+1. ⏳ **WS-E — finish the run.** If it completed: produce the authoritative PaperBench
    score with the leaf scorer —
    `from backend.evals.paperbench.leaf_scorer import score_reproduction, amend_final_report`;
    `score_reproduction(bundle.rubric(), Path("runs/<id>"), llm_client)` then
    `amend_final_report(...)`. If it failed: diagnose, fix, relaunch the bridge.
-2. **2nd paper** — repeat for `ftrl` or `mechanistic-understanding`. **Deliverable:
+2. ☐ **2nd paper** — repeat for `ftrl` or `mechanistic-understanding`. **Deliverable:
    ≥2 papers with real rubric scores in `runs/<id>/final_report.json`.**
-3. **WS-F PR bodies** — #60 PR (`feat/rlm-phase3-orchestrator` → `rlm-pivot`) and
+3. ☐ **WS-F PR bodies** — #60 PR (`feat/rlm-phase3-orchestrator` → `rlm-pivot`) and
    the Phase 5 PR (`feat/rlm-phase5-e2e` → `rlm-pivot`). `gh` not authed — draft
    bodies; the user creates the PRs.
-4. **Follow-up** — `run_experiment` (`backend/agents/rlm/primitives.py:387`)
+4. ☐ **Follow-up** — `run_experiment` (`backend/agents/rlm/primitives.py:387`)
    **hardcodes `LocalDockerBackend`**; `run_pipeline_rlm`'s `sandbox_mode` arg
    never reaches the primitives (`RunContext` has no sandbox field). So the RLM
    reproduction can only use **local Docker** — RunPod/Brev are unreachable for it.
