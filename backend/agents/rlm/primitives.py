@@ -30,17 +30,26 @@ def _extract_json(text: str) -> dict:
     `{` and uses `json.JSONDecoder.raw_decode`, which correctly ignores braces
     inside strings and any trailing text — unlike a naive first-`{`/last-`}`
     span, which over-grabs when the response contains prose braces.
+
+    If a `{` opens a structure that runs off the end of `text` (a truncated
+    response), this raises rather than falling through to a later *inner*
+    `{...}` fragment — a silent wrong parse is worse than a clear failure.
     """
     import json
     decoder = json.JSONDecoder()
+    end_of_text = len(text.rstrip())
     idx = text.find("{")
     while idx != -1:
         try:
             obj, _ = decoder.raw_decode(text, idx)
             if isinstance(obj, dict):
                 return obj
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            # A decode error at end-of-text means a structure opened at `idx`
+            # and was never closed: the response is truncated. Returning a
+            # later inner fragment would be a silent wrong parse — raise.
+            if exc.pos >= end_of_text:
+                raise ValueError("truncated JSON object in LLM response") from exc
         idx = text.find("{", idx + 1)
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
@@ -51,6 +60,29 @@ def _clamp01(val: object) -> float:
         return max(0.0, min(1.0, float(val)))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+
+
+# run_experiment's container stdout is unbounded — a training run can emit
+# megabytes. verify_against_rubric / propose_improvements serialize the whole
+# result (logs included) into an LLM prompt, so an uncapped log re-creates the
+# context-window blow-up the RLM design exists to avoid. Cap to a head+tail
+# window before the logs leave run_experiment.
+_MAX_LOG_CHARS = 16000
+
+# Per-command wall-clock cap for run_experiment's sandbox execution. Container
+# resource bounds (network/memory/cpu) already come from SandboxConfig
+# defaults; this is the time bound. Phase 3 (#60) should source it from
+# settings / ctx rather than this module constant.
+_EXEC_TIMEOUT_SECONDS = 3600
+
+
+def _cap_logs(text: str) -> str:
+    """Bound an unbounded log string to a head+tail window for LLM consumption."""
+    if len(text) <= _MAX_LOG_CHARS:
+        return text
+    half = _MAX_LOG_CHARS // 2
+    omitted = len(text) - 2 * half
+    return f"{text[:half]}\n... [{omitted} chars truncated] ...\n{text[-half:]}"
 
 
 _PLAN_REPRODUCTION_SYSTEM = (
@@ -152,8 +184,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     """
     import asyncio
     import concurrent.futures
+    import hashlib
     import tempfile
     from pathlib import Path
+
+    # SandboxRuntimeError is named in an `except` clause below — bind it
+    # before the try-block so a failed import *inside* the try cannot make
+    # that clause raise NameError and escape (the D3 fail-soft hole).
+    from backend.services.runtime.interface import SandboxRuntimeError
 
     dockerfile = str(env_spec.get("dockerfile") or "").strip()
     if not dockerfile:
@@ -163,10 +201,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     attempts, ok, tag, error = 0, False, "", ""
     try:
         from backend.config import get_settings
-        from backend.services.runtime.interface import SandboxRuntimeError
 
         max_attempts = max(1, get_settings().environment_build_max_attempts)
-        tag = f"reprolab/{ctx.project_id}:env-check"
+        # A Docker tag is a mutable pointer, not an identifier: a fixed tag
+        # lets two build_environment calls in one run collide, after which
+        # run_experiment runs whichever image the tag last pointed at. Key the
+        # tag to the Dockerfile so distinct environments get distinct images.
+        digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
+        tag = f"reprolab/{ctx.project_id}:env-{digest}"
         with tempfile.TemporaryDirectory() as tmp:
             context_dir = Path(tmp)
             dockerfile_path = context_dir / "Dockerfile"
@@ -207,9 +249,17 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
 
     from backend.agents.schemas import ReproductionContract
 
+    # Name the exact JSON keys: ReproductionContract is extra="ignore", so a
+    # response keyed on prose-guessed names is silently dropped to an
+    # all-defaults (near-empty) contract. Derived from the schema so the
+    # prompt cannot drift from the model.
+    fields = list(ReproductionContract.model_fields)
     user = (
         "method_spec:\n" + json.dumps(method_spec, indent=2, default=str)
         + "\n\nenvironment_spec:\n" + json.dumps(env_spec, indent=2, default=str)
+        + "\n\nReturn exactly ONE JSON object with these keys and no others: "
+        + json.dumps(fields)
+        + ". String-valued keys hold prose; list-valued keys hold arrays of strings."
     )
     raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
     data = _extract_json(raw)
@@ -306,13 +356,14 @@ async def _execute_in_sandbox(
     try:
         for command in commands:
             results.append(await service.execute(
-                ExecuteCommand(sandbox=sandbox, command=command, timeout=3600)))
+                ExecuteCommand(sandbox=sandbox, command=command,
+                               timeout=_EXEC_TIMEOUT_SECONDS)))
     finally:
         await service.destroy(DestroySandbox(sandbox=sandbox))
     return {
         "success": all(r.succeeded for r in results),
         "metrics": {},  # real metric extraction from artifacts is Phase 5 (#62)
-        "logs": "\n".join(r.stdout for r in results),
+        "logs": _cap_logs("\n".join(r.stdout for r in results)),
     }
 
 
@@ -373,7 +424,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     weights = {a.get("area", ""): float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
     degraded = (not results.get("success")) or (not results.get("metrics"))
     areas: list[RubricAreaScore] = []
-    for a in parsed.get("areas", []):
+    parsed_areas = parsed.get("areas", [])
+    if not isinstance(parsed_areas, list):
+        parsed_areas = []  # tolerate a malformed LLM payload
+    for a in parsed_areas:
+        if not isinstance(a, dict):
+            continue  # skip a malformed area entry (cf. propose_improvements)
         name = str(a.get("area", ""))
         score = _clamp01(a.get("score"))
         if degraded:
@@ -406,7 +462,7 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     from backend.agents.prompts.improvement import IMPROVEMENT_ORCHESTRATOR_PROMPT
     from backend.agents.schemas import ImprovementHypothesis
 
-    target = k if k is not None else 3
+    target = max(1, k) if k is not None else 3  # clamp: k <= 0 would empty the slice
     user = (
         "current_results:\n" + json.dumps(current_results, indent=2, default=str)
         + "\n\nrubric_scores (prioritise lifting the weakest areas):\n"

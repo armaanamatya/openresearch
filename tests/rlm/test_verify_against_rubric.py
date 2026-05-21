@@ -35,3 +35,14 @@ def test_verify_uses_llm_scores_for_a_real_run(make_context, tmp_path):
         {"success": True, "metrics": {"mean_reward": 200.0}}, RUBRIC, ctx=ctx)
     assert any(a["score"] > 0.35 for a in result["areas"])
     assert result["overall_score"] == pytest.approx(0.86)
+
+
+def test_verify_tolerates_malformed_areas_payload(make_context, tmp_path):
+    # The LLM may return a list with non-dict items; verify_against_rubric must
+    # skip the junk rather than crash on `a.get(...)` (cf. propose_improvements).
+    bad = json.dumps({"areas": ["not-a-dict", {"area": "code", "score": 0.9}],
+                      "confidence": 0.5})
+    ctx = make_context(tmp_path, llm_responses=[bad])
+    result = verify_against_rubric(
+        {"success": True, "metrics": {"r": 1}}, RUBRIC, ctx=ctx)
+    assert [a["area"] for a in result["areas"]] == ["code"]
