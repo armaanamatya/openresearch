@@ -433,3 +433,31 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "verify_against_rubric": verify_against_rubric,
     "propose_improvements": propose_improvements,
 }
+
+PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
+    "understand_section": "understand_section(text_slice) -> dict — datasets, "
+        "metrics, training recipe, hardware clues, ambiguities from a text slice. "
+        "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",
+    "extract_hyperparameters": "extract_hyperparameters(text_slice) -> dict — "
+        "optimizer, learning rate, batch size, epochs from a slice.",
+    "detect_environment": "detect_environment(method_spec) -> dict — an "
+        "EnvironmentSpec (dockerfile, python_version, framework, pip_packages). "
+        "`method_spec` is a (partial) PaperClaimMap dict.",
+    "build_environment": "build_environment(env_spec) -> dict — build the Docker "
+        "image, repairing the Dockerfile on failure. Returns a BUILD RESULT "
+        "{ok, image_tag, error, attempts} — NOT an EnvironmentSpec. Pass "
+        "image_tag to run_experiment as env_id.",
+    "plan_reproduction": "plan_reproduction(method_spec, env_spec) -> dict — a "
+        "ReproductionContract (smoke test, full run, evaluation plan).",
+    "implement_baseline": "implement_baseline(plan) -> str — generate the "
+        "baseline code; returns the code dir path. `plan` is the aggregate "
+        "{paper_claim_map (from understand_section), environment_spec (from "
+        "detect_environment), reproduction_contract (from plan_reproduction)}.",
+    "run_experiment": "run_experiment(code_path, env_id) -> dict — run the "
+        "baseline in a container from image `env_id` (build_environment's "
+        "image_tag); returns {success, metrics, logs}.",
+    "verify_against_rubric": "verify_against_rubric(results, rubric) -> dict — "
+        "score the results against a PaperBench-style rubric.",
+    "propose_improvements": "propose_improvements(current_results, rubric_scores, "
+        "k=None) -> list[dict] — paper-specific improvement hypotheses.",
+}

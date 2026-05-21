@@ -16,6 +16,9 @@ from backend.agents.rlm.repl_host import ReplHost
 from backend.agents.rlm.root_loop import RootLoop, RootIterationCapExceeded
 from backend.agents.rlm.sub_call import llm_query, rlm_query
 from backend.agents.rlm.system_prompt import build_system_prompt
+from backend.agents.rlm.context import RunContext
+from backend.agents.rlm.binding import build_custom_tools
+from backend.agents.rlm.primitives import PRIMITIVE_DESCRIPTIONS
 
 __all__ = [
     "PRIMITIVE_REGISTRY",
@@ -25,4 +28,7 @@ __all__ = [
     "llm_query",
     "rlm_query",
     "build_system_prompt",
+    "RunContext",
+    "build_custom_tools",
+    "PRIMITIVE_DESCRIPTIONS",
 ]
