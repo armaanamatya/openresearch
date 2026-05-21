@@ -26,6 +26,7 @@ class SandboxMode(str, Enum):
     """Experiment execution backend policy."""
 
     auto = "auto"
+    brev = "brev"
     docker = "docker"
     local = "local"
     runpod = "runpod"
@@ -201,6 +202,10 @@ def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
         from backend.services.runtime import ensure_local_docker_available
 
         ensure_local_docker_available()
+    elif resolved is SandboxMode.brev:
+        from backend.services.runtime import ensure_brev_available
+
+        ensure_brev_available()
     elif resolved is SandboxMode.runpod:
         from backend.services.runtime import ensure_runpod_available
 
