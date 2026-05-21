@@ -147,16 +147,25 @@ def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str
       * the **root-model loop** — the ``rlm`` library's backend; makes raw HTTP
         completion calls, so it needs a real API key (Featherless);
       * the **sub-agent runtime** — used by ``implement_baseline`` to drive a
-        code-writing agent. This one can run on the Claude Code subscription via
-        OAuth: ``claude-agent-sdk`` spawns the ``claude`` CLI as a subprocess and
-        inherits its login — no ``ANTHROPIC_API_KEY`` required.
+        code-writing agent.
+
+    For the sub-agent layer, ``claude-agent-sdk`` resolves auth itself, and the
+    same runtime serves both deployment modes:
+
+      * **production / API mode** — ``ANTHROPIC_API_KEY`` takes priority;
+      * **dev** — the Claude Code subscription's OAuth login (no key needed).
+
+    Either way the agent runs on ``settings.anthropic_default_model`` — Sonnet
+    by default, so a heavy code-writing agent stays in a low cost / quota tier
+    rather than burning Opus-rate budget (run 3 exhausted the OAuth quota when
+    the agent defaulted to the CLI's heavier model).
 
     Resolution order (most-preferred first):
 
       1. an explicitly-passed ``runtime`` (caller override — e.g. a test);
-      2. **Claude OAuth** — when the ``claude`` CLI is logged in, the subscription
-         covers the sub-agent layer for free, independent of any ``.env``
-         provider setting that might point at a dead OpenAI key;
+      2. **Claude** — whenever anthropic credentials resolve (API key *or* the
+         logged-in ``claude`` CLI), independent of any ``.env`` provider
+         setting that might point at a dead OpenAI key;
       3. whatever ``make_runtime`` resolves from env/settings.
 
     Returns ``(runtime_or_None, label)``. A ``None`` runtime is not fatal —
@@ -171,7 +180,13 @@ def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str
     )
 
     if has_provider_credentials("anthropic"):
-        return make_runtime("anthropic"), "claude (OAuth subscription / API key)"
+        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
+
+        model = get_settings().anthropic_default_model
+        return (
+            ClaudeAgentRuntime(default_model=model),
+            f"claude / {model} (SDK-resolved auth: API key or OAuth)",
+        )
     try:
         return make_runtime(provider), f"make_runtime({provider or 'env-default'})"
     except Exception as exc:  # noqa: BLE001 — degrade; the primitive fails honestly

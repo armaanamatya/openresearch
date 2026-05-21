@@ -443,25 +443,33 @@ class TestResolveAgentRuntime:
         assert resolved is sentinel
         assert label == "caller-supplied"
 
-    def test_prefers_claude_when_oauth_available(
+    def test_prefers_claude_when_anthropic_creds_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """With the claude CLI logged in, the runtime is Claude — not a dead
-        OpenAI key — regardless of the provider argument."""
+        """With anthropic credentials (an API key OR a logged-in claude CLI),
+        the sub-agent runtime is a ClaudeAgentRuntime pinned to the configured
+        model — not a dead OpenAI key — regardless of the provider argument."""
         from backend.agents.rlm import run as run_mod
+        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
 
         monkeypatch.setattr(
             "backend.agents.runtime.factory.has_provider_credentials",
             lambda provider=None: provider == "anthropic",
         )
-        sentinel = object()
-        monkeypatch.setattr(
-            "backend.agents.runtime.factory.make_runtime",
-            lambda provider=None, **kw: sentinel,
-        )
         resolved, label = run_mod._resolve_agent_runtime(None, "openai")
-        assert resolved is sentinel
+        assert isinstance(resolved, ClaudeAgentRuntime)
+        # Pinned to settings.anthropic_default_model (Sonnet) so a heavy
+        # code-writing agent stays in a low cost / quota tier.
+        assert resolved._default_model
         assert "claude" in label.lower()
+
+    def test_claude_runtime_default_model_falls_back_to_spec_model(self) -> None:
+        """An explicit AgentRuntimeSpec.model wins over the runtime default."""
+        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
+
+        runtime = ClaudeAgentRuntime(default_model="claude-sonnet-4-6")
+        assert runtime._default_model == "claude-sonnet-4-6"
+        assert ClaudeAgentRuntime()._default_model is None
 
 
 # ---------------------------------------------------------------------------
