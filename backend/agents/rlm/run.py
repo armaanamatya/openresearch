@@ -347,7 +347,11 @@ async def run_pipeline_rlm(
     Returns an :class:`RLMRunResult`; never raises for an in-run failure — a
     crashed or timed-out run yields an honest ``partial`` / ``failed`` report.
     """
-    runs_root = Path(runs_root)
+    # Resolve to an absolute path. Primitives execute inside the RLM REPL,
+    # whose working directory is NOT the repo root — a relative runs_root makes
+    # every primitive's artifact write (dashboard_events.jsonl, code/, ...) fail
+    # with FileNotFoundError. Absolute paths are CWD-independent.
+    runs_root = Path(runs_root).resolve()
     project_dir = runs_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
 

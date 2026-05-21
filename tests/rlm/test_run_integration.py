@@ -372,6 +372,65 @@ class TestRunPipelineRlmIntegration:
             payload_text = json.dumps(stored_ev.payload)
             _assert_no_sentinel(payload_text, "SQLite event store payload")
 
+    def test_relative_runs_root_is_resolved_absolute(
+        self,
+        tmp_path: Path,
+        workspace_claim_map: dict,
+        scripted_rlm_backend: _ScriptedLM,
+        integration_db_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A relative ``runs_root`` must be resolved to an absolute path.
+
+        Primitives execute inside the RLM REPL, whose working directory is not
+        the repo root.  If ``runs_root`` stays relative, every primitive
+        artifact write (``dashboard_events.jsonl``, ``code/`` ...) fails with
+        ``FileNotFoundError``.  ``run_pipeline_rlm`` must resolve ``runs_root``
+        at entry so every artifact path is CWD-independent.
+        """
+        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
+
+        from backend.config import Settings
+
+        fake_settings = Settings(
+            database_url=integration_db_url,
+            anthropic_api_key="fake-key-not-used",
+        )
+        monkeypatch.setattr(
+            "backend.agents.rlm.run.get_settings", lambda: fake_settings
+        )
+
+        # CWD is tmp_path; runs_root is passed RELATIVE. Pre-fix it would stay
+        # relative and every artifact path would be CWD-dependent.
+        monkeypatch.chdir(tmp_path)
+
+        from backend.agents.rlm.run import run_pipeline_rlm
+
+        result = asyncio.run(
+            run_pipeline_rlm(
+                project_id="rel-runs-root-test",
+                runs_root=Path("relative_runs"),
+                workspace_claim_map=workspace_claim_map,
+                model="gpt-5",
+                provider="anthropic",
+            )
+        )
+
+        # The fix: run_pipeline_rlm resolves runs_root → all artifact paths
+        # are absolute and CWD-independent.
+        assert result.final_report_path is not None
+        assert Path(result.final_report_path).is_absolute(), (
+            f"final_report_path is relative ({result.final_report_path!r}); "
+            f"run artifacts are CWD-dependent and primitives running in the "
+            f"RLM REPL's working directory will fail with FileNotFoundError"
+        )
+        # Artifacts landed at the resolved absolute location.
+        resolved = tmp_path / "relative_runs" / "rel-runs-root-test"
+        assert (resolved / "final_report.json").exists()
+        assert (resolved / "dashboard_events.jsonl").exists()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
