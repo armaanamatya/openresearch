@@ -592,7 +592,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "optimizer, learning rate, batch size, epochs from a slice.",
     "detect_environment": "detect_environment(method_spec) -> dict — an "
         "EnvironmentSpec (dockerfile, python_version, framework, pip_packages). "
-        "`method_spec` is a (partial) PaperClaimMap dict.",
+        "`method_spec` is a (partial) PaperClaimMap dict with keys: "
+        "core_contribution (str, required), claims (list of dicts — each with "
+        "keys like method/dataset/metric/expected_result), metrics (list of "
+        "{name, definition} dicts), plus datasets, model_architecture, "
+        "training_recipe.",
     "build_environment": "build_environment(env_spec) -> dict — build the Docker "
         "image, repairing the Dockerfile on failure. Returns a BUILD RESULT "
         "{ok, image_tag, error, attempts} — NOT an EnvironmentSpec. Pass "
@@ -602,7 +606,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
     "implement_baseline": "implement_baseline(plan) -> str — generate the "
         "baseline code; returns the code dir path. `plan` is the aggregate "
         "{paper_claim_map (from understand_section), environment_spec (from "
-        "detect_environment), reproduction_contract (from plan_reproduction)}.",
+        "detect_environment), reproduction_contract (from plan_reproduction)}. "
+        "paper_claim_map must include core_contribution (str), claims (list of "
+        "dicts with keys like method/dataset/metric/expected_result), and "
+        "metrics (list of {name, definition} dicts).",
     "run_experiment": "run_experiment(code_path, env_id) -> dict — run the "
         "baseline in a container from image `env_id` (build_environment's "
         "image_tag); returns {success, metrics, logs}.",
