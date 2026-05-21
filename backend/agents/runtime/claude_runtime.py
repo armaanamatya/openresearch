@@ -21,18 +21,6 @@ from backend.agents.telemetry import coerce_usage
 class ClaudeAgentRuntime:
     """AgentRuntime implementation backed by ``claude-agent-sdk``."""
 
-    def __init__(self, *, default_model: str | None = None) -> None:
-        """``default_model`` is used when an ``AgentRuntimeSpec`` carries no
-        model of its own — it lets the caller pin a cost tier (e.g. Sonnet for
-        a heavy code-writing agent) without every agent spec naming a model.
-
-        Auth is independent of the model: the claude-agent-sdk resolves
-        ``ANTHROPIC_API_KEY`` (production API mode) with priority, else the
-        Claude Code subscription's OAuth login — so the same runtime serves
-        both deployment modes.
-        """
-        self._default_model = default_model
-
     @property
     def provider_name(self) -> ProviderName:
         return "anthropic"
@@ -73,7 +61,7 @@ class ClaudeAgentRuntime:
         }
 
         options = ClaudeAgentOptions(
-            model=agent.model or self._default_model or None,
+            model=agent.model or None,
             permission_mode=agent.permission_mode,
             max_turns=agent.max_turns,
             agents=sub_agents,

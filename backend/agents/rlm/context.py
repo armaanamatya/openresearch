@@ -21,7 +21,9 @@ class RunContext:
     `llm_client` is the synchronous `LlmClient` protocol from
     `backend/services/context/workspace/tools/rlm_query.py` — `.complete(*,
     system, user) -> str`. `runtime` is an `AgentRuntime`; only
-    `implement_baseline` needs it, so it defaults to None.
+    `implement_baseline` needs it, so it defaults to None. `agent_model` is the
+    model a primitive-spawned agent runs on (the code-writing agent in
+    `implement_baseline`); `None` falls back to the agent registry's default.
 
     `deadline_utc` is set by `run.py` from the wall-clock budget at run start
     (M-DEADLINE, WS-H Batch P).  Primitives call `remaining_s()` to get seconds
@@ -37,6 +39,7 @@ class RunContext:
     provider: str             # "anthropic" | "openai"
     model: str
     runtime: Any = None       # AgentRuntime — only implement_baseline uses it
+    agent_model: str | None = None  # model for primitive-spawned agents (implement_baseline)
     workspace_service: Any = None
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py

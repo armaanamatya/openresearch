@@ -380,9 +380,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     artifact_index = plan.get("artifact_index")
 
     async def _run():
+        # ctx.agent_model is the per-invocation model_override — it is the only
+        # knob that beats the agent registry's heavier default for the
+        # baseline-implementation agent (Opus). None -> registry default.
         return await _run_baseline_with_sdk(
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
-            runtime=ctx.runtime)
+            runtime=ctx.runtime, model=ctx.agent_model)
 
     timeout = _timeout_for(ctx, 3600)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

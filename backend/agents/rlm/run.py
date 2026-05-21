@@ -139,8 +139,10 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     return ClaudeLlmClient(), "claude"
 
 
-def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str]:
-    """Resolve the sub-agent runtime for primitives (e.g. ``implement_baseline``).
+def _resolve_agent_runtime(
+    runtime: Any, provider: str | None
+) -> tuple[Any, str | None, str]:
+    """Resolve the sub-agent runtime + model for primitives (``implement_baseline``).
 
     An RLM run has two independent LLM layers with separate credentials:
 
@@ -155,10 +157,13 @@ def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str
       * **production / API mode** — ``ANTHROPIC_API_KEY`` takes priority;
       * **dev** — the Claude Code subscription's OAuth login (no key needed).
 
-    Either way the agent runs on ``settings.anthropic_default_model`` — Sonnet
-    by default, so a heavy code-writing agent stays in a low cost / quota tier
-    rather than burning Opus-rate budget (run 3 exhausted the OAuth quota when
-    the agent defaulted to the CLI's heavier model).
+    The resolved ``agent_model`` is ``settings.anthropic_default_model`` (Sonnet
+    by default). It is threaded onto ``RunContext.agent_model`` and passed by
+    ``implement_baseline`` as the per-invocation ``model_override`` — which is
+    the *only* knob that beats the agent registry's heavier default
+    (``baseline-implementation`` is registered as Opus). Without this override
+    the code-writing agent runs Opus-rate and exhausts the OAuth quota, exactly
+    as RLM run 3 did.
 
     Resolution order (most-preferred first):
 
@@ -168,27 +173,33 @@ def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str
          setting that might point at a dead OpenAI key;
       3. whatever ``make_runtime`` resolves from env/settings.
 
-    Returns ``(runtime_or_None, label)``. A ``None`` runtime is not fatal —
-    ``implement_baseline`` falls through to ``make_runtime`` itself and fails
-    honestly there.
+    Returns ``(runtime_or_None, agent_model_or_None, label)``. ``agent_model``
+    is ``None`` outside the Claude path (the registry default then applies). A
+    ``None`` runtime is not fatal — ``implement_baseline`` falls through to
+    ``make_runtime`` itself and fails honestly there.
     """
     if runtime is not None:
-        return runtime, "caller-supplied"
+        return runtime, None, "caller-supplied"
     from backend.agents.runtime.factory import (
         has_provider_credentials,
         make_runtime,
     )
 
     if has_provider_credentials("anthropic"):
-        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
-
         model = get_settings().anthropic_default_model
         return (
-            ClaudeAgentRuntime(default_model=model),
+            make_runtime("anthropic"),
+            model,
             f"claude / {model} (SDK-resolved auth: API key or OAuth)",
         )
     try:
-        return make_runtime(provider), f"make_runtime({provider or 'env-default'})"
+        # require_api_key=True so a missing-credentials environment fails here,
+        # at resolution, rather than opaquely at the primitive's call site.
+        return (
+            make_runtime(provider, require_api_key=True),
+            None,
+            f"make_runtime({provider or 'env-default'})",
+        )
     except Exception as exc:  # noqa: BLE001 — degrade; the primitive fails honestly
         logger.warning(
             "run_pipeline_rlm: no agent runtime could be resolved (%s: %s) — "
@@ -196,7 +207,7 @@ def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str
             type(exc).__name__,
             exc,
         )
-        return None, f"unresolved ({type(exc).__name__})"
+        return None, None, f"unresolved ({type(exc).__name__})"
 
 
 def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
@@ -446,10 +457,10 @@ async def run_pipeline_rlm(
             "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
-    # 4. The #59 seam — RunContext. The sub-agent runtime is resolved here so
-    #    implement_baseline never falls through to a dead env-default key
-    #    (Claude OAuth covers it for free when the CLI is logged in).
-    agent_runtime, runtime_label = _resolve_agent_runtime(runtime, provider)
+    # 4. The #59 seam — RunContext. The sub-agent runtime + model are resolved
+    #    here so implement_baseline never falls through to a dead env-default
+    #    key, and runs Sonnet rather than the registry's Opus default.
+    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
     logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
     ctx = RunContext(
         project_id=project_id,
@@ -461,6 +472,7 @@ async def run_pipeline_rlm(
         provider=provider_label,
         model=llm_model,
         runtime=agent_runtime,
+        agent_model=agent_model,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
     )

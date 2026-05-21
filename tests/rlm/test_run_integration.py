@@ -433,22 +433,25 @@ class TestRunPipelineRlmIntegration:
 
 
 class TestResolveAgentRuntime:
-    """Guard the OAuth-preferring sub-agent runtime resolver."""
+    """Guard the sub-agent runtime + model resolver."""
 
     def test_explicit_runtime_passes_through(self) -> None:
         from backend.agents.rlm.run import _resolve_agent_runtime
 
         sentinel = object()
-        resolved, label = _resolve_agent_runtime(sentinel, "openai")
+        resolved, model, label = _resolve_agent_runtime(sentinel, "openai")
         assert resolved is sentinel
+        assert model is None
         assert label == "caller-supplied"
 
     def test_prefers_claude_when_anthropic_creds_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With anthropic credentials (an API key OR a logged-in claude CLI),
-        the sub-agent runtime is a ClaudeAgentRuntime pinned to the configured
-        model — not a dead OpenAI key — regardless of the provider argument."""
+        the sub-agent runtime is a ClaudeAgentRuntime and the resolved model is
+        the configured Sonnet default — not a dead OpenAI key, not Opus. The
+        model is passed as model_override so it beats the agent registry's
+        heavier baseline-implementation default."""
         from backend.agents.rlm import run as run_mod
         from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
 
@@ -456,20 +459,11 @@ class TestResolveAgentRuntime:
             "backend.agents.runtime.factory.has_provider_credentials",
             lambda provider=None: provider == "anthropic",
         )
-        resolved, label = run_mod._resolve_agent_runtime(None, "openai")
+        resolved, model, label = run_mod._resolve_agent_runtime(None, "openai")
         assert isinstance(resolved, ClaudeAgentRuntime)
-        # Pinned to settings.anthropic_default_model (Sonnet) so a heavy
-        # code-writing agent stays in a low cost / quota tier.
-        assert resolved._default_model
+        assert model == run_mod.get_settings().anthropic_default_model
+        assert model  # non-empty
         assert "claude" in label.lower()
-
-    def test_claude_runtime_default_model_falls_back_to_spec_model(self) -> None:
-        """An explicit AgentRuntimeSpec.model wins over the runtime default."""
-        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
-
-        runtime = ClaudeAgentRuntime(default_model="claude-sonnet-4-6")
-        assert runtime._default_model == "claude-sonnet-4-6"
-        assert ClaudeAgentRuntime()._default_model is None
 
 
 # ---------------------------------------------------------------------------
