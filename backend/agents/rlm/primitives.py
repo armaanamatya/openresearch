@@ -379,13 +379,19 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                 if plan.get("reproduction_contract") else None)
     artifact_index = plan.get("artifact_index")
 
+    # An optional plan["repair_context"] (a failed run_experiment result) puts
+    # the code-writing agent into fix-existing-code mode — the root passes it
+    # to retry after run_experiment fails.
+    repair_context = plan.get("repair_context")
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
         # baseline-implementation agent (Opus). None -> registry default.
         return await _run_baseline_with_sdk(
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
-            runtime=ctx.runtime, model=ctx.agent_model)
+            runtime=ctx.runtime, model=ctx.agent_model,
+            repair_context=repair_context)
 
     timeout = _timeout_for(ctx, 3600)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -670,7 +676,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "detect_environment), reproduction_contract (from plan_reproduction)}. "
         "paper_claim_map must include core_contribution (str), claims (list of "
         "dicts with keys like method/dataset/metric/expected_result), and "
-        "metrics (list of {name, definition} dicts).",
+        "metrics (list of {name, definition} dicts). To repair a baseline whose "
+        "run_experiment FAILED, also put repair_context (the failed run_experiment "
+        "result dict) in plan — the agent then diagnoses the error and fixes the "
+        "existing code in place instead of rewriting.",
     "run_experiment": "run_experiment(code_path, env_id) -> dict — run the "
         "baseline in a container from image `env_id` (build_environment's "
         "image_tag); returns {success, metrics, logs}.",

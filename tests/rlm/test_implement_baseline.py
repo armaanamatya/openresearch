@@ -49,6 +49,32 @@ def test_implement_baseline_passes_agent_model_as_override(make_context, tmp_pat
     assert captured.get("model") == "claude-sonnet-4-6"
 
 
+def test_implement_baseline_threads_repair_context(make_context, tmp_path, monkeypatch):
+    # plan["repair_context"] must reach run_with_sdk as `repair_context` — it is
+    # the signal that switches the code-writing agent into fix-existing-code mode
+    # rather than a fresh implementation.
+    ctx = make_context(tmp_path)
+    ctx.runtime = object()
+    captured: dict = {}
+
+    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
+                                artifact_index, **kw):
+        captured.update(kw)
+        return _FakeBaselineResult()
+
+    monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
+    implement_baseline(
+        {
+            "paper_claim_map": {},
+            "environment_spec": {},
+            "reproduction_contract": None,
+            "repair_context": {"success": False, "logs": "boom"},
+        },
+        ctx=ctx,
+    )
+    assert captured.get("repair_context") == {"success": False, "logs": "boom"}
+
+
 def test_implement_baseline_writes_manifest_beside_the_code(make_context, tmp_path, monkeypatch):
     # run_with_sdk writes the code to runs_root/project_id/code. commands.json
     # must land THERE — not at ctx.project_dir/code — even when project_dir
