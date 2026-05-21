@@ -105,16 +105,14 @@ class PaperClaimMap(BaseModel):
     # strings (`datasets=['Gaussian Linear', ...]`, `claims=['...']`) where the
     # schema expects dicts / submodels. One canonical coercion keeps claims,
     # datasets and metrics consistent — a bare string becomes a single-key dict
-    # on the field's natural name key; non-string/dict items are dropped.
+    # on the field's natural name key. Every non-string item (a dict, or an
+    # already-built DatasetRequirement / MetricSpec instance from the offline
+    # agent) passes through untouched for pydantic itself to validate.
     @staticmethod
     def _coerce_str_items(v: Any, key: str) -> Any:
         if not isinstance(v, list):
             return v
-        return [
-            {key: item} if isinstance(item, str) else item
-            for item in v
-            if isinstance(item, (str, dict))
-        ]
+        return [{key: item} if isinstance(item, str) else item for item in v]
 
     @field_validator("claims", mode="before")
     @classmethod
