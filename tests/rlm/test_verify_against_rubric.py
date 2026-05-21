@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from backend.agents.rlm.primitives import verify_against_rubric
 
 RUBRIC = {
@@ -32,4 +34,4 @@ def test_verify_uses_llm_scores_for_a_real_run(make_context, tmp_path):
     result = verify_against_rubric(
         {"success": True, "metrics": {"mean_reward": 200.0}}, RUBRIC, ctx=ctx)
     assert any(a["score"] > 0.35 for a in result["areas"])
-    assert 0.0 <= result["overall_score"] <= 1.0
+    assert result["overall_score"] == pytest.approx(0.86)

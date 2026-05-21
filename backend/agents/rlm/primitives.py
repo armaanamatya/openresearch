@@ -45,6 +45,14 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
 
+def _clamp01(val: object) -> float:
+    """Coerce an LLM-returned value into [0.0, 1.0]; None / garbage -> 0.0."""
+    try:
+        return max(0.0, min(1.0, float(val)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 _PLAN_REPRODUCTION_SYSTEM = (
     "You are the Reproduction Planner for ReproLab. Given a paper's method "
     "spec and a target environment spec, produce a ReproductionContract: what "
@@ -357,12 +365,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
     parsed = _extract_json(raw)
 
-    weights = {a["area"]: float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
+    weights = {a.get("area", ""): float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
     degraded = (not results.get("success")) or (not results.get("metrics"))
     areas: list[RubricAreaScore] = []
     for a in parsed.get("areas", []):
         name = str(a.get("area", ""))
-        score = float(a.get("score", 0.0))
+        score = _clamp01(a.get("score"))
         if degraded:
             score = min(score, 0.35)  # honesty backstop
         areas.append(RubricAreaScore(
@@ -376,7 +384,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         areas,
         rubric_source=rubric.get("source", "generated"),
         target_score=float(rubric.get("target_score", 0.0)),
-        confidence=float(parsed.get("confidence", 0.0)),
+        confidence=_clamp01(parsed.get("confidence")),
     )
     return verification.model_dump()
 
