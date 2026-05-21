@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk"]
+RunMode = Literal["offline", "sdk", "rlm"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -1207,7 +1207,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk
+from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk, run_pipeline_rlm
 from backend.cli import cmd_reproduce
 
 config = json.loads({json.dumps(json.dumps(common))})
@@ -1309,7 +1309,7 @@ try:
             agent="default",
             mode=config["run_mode"],
             model=config["model"],
-            provider=config["provider"] if config["run_mode"] == "sdk" else None,
+            provider=config["provider"] if config["run_mode"] in ("sdk", "rlm") else None,
             verification_provider=config["verification_provider"] if config["run_mode"] == "sdk" else None,
             execution_mode=config["execution_mode"],
             sandbox=config["sandbox"],
@@ -1338,6 +1338,16 @@ try:
                 model=config["model"],
                 user_hints=["Keep this as a lightweight smoke test"],
                 n_improvement_paths=1,
+                execution_profile=profile,
+                sandbox_mode=SandboxMode(config["sandbox"]),
+            ))
+        elif config["run_mode"] == "rlm":
+            asyncio.run(run_pipeline_rlm(
+                project_id,
+                runs_root,
+                DEMO_WORKSPACE,
+                provider=config["provider"],
+                model=config["model"],
                 execution_profile=profile,
                 sandbox_mode=SandboxMode(config["sandbox"]),
             ))
