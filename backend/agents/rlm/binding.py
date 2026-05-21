@@ -46,6 +46,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         ))
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("ctx", None)  # the wrapper supplies ctx; never let a caller double it
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
         try:
             result = fn(*args, ctx=ctx, **kwargs)
@@ -70,8 +71,9 @@ def build_custom_tools(
 ) -> dict[str, dict]:
     """Return the rlm `custom_tools` dict, every primitive closed over `ctx`."""
     if registry is None or descriptions is None:
-        # Lazy import: keeps this module usable before Task 13 adds
-        # PRIMITIVE_DESCRIPTIONS, and lets callers pass both explicitly.
+        # Defer the import to the call site so this module does not force
+        # primitives.py to be importable at load time. Callers must pass both
+        # `registry` and `descriptions` explicitly until Task 13 adds the defaults.
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
