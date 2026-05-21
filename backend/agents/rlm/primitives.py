@@ -45,6 +45,14 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
 
+def _clamp01(val: object) -> float:
+    """Coerce an LLM-returned value into [0.0, 1.0]; None / garbage -> 0.0."""
+    try:
+        return max(0.0, min(1.0, float(val)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 _PLAN_REPRODUCTION_SYSTEM = (
     "You are the Reproduction Planner for ReproLab. Given a paper's method "
     "spec and a target environment spec, produce a ReproductionContract: what "
@@ -331,28 +339,87 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         ).result()
 
 
-def verify_against_rubric(results: dict, rubric: dict) -> dict:
-    """Score `results` against the PaperBench-style `rubric`.
+def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
+    """Score `results` against `rubric` via the rubric-verifier prompt.
 
-    Wraps the existing rubric-verifier agent. Replaces fixed Gate 1/2/3
-    checkpoints — the root calls this when it judges appropriate.
+    The LLM scores areas only; weights come verbatim from `rubric`. The honesty
+    backstop is enforced mechanically: every area score is capped at 0.35 when
+    the run did not succeed OR produced no metrics — matching
+    `orchestrator._run_rubric_verifier` (which caps on `success`) and extending
+    it to the metric-less case (`run_experiment` returns `metrics={}` in
+    Phase 2 — see Task 9). `overall_score` / `meets_target` are computed by
+    `RubricVerification.from_areas`, never trusted from the model.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap rubric-verifier agent")
+    import json
+
+    from backend.agents.prompts.rubric_verifier import RUBRIC_VERIFIER_PROMPT
+    from backend.agents.schemas import RubricAreaScore, RubricVerification
+
+    user = (
+        "results:\n" + json.dumps(results, indent=2, default=str)
+        + "\n\nrubric:\n" + json.dumps(rubric, indent=2, default=str)
+        + "\n\nScore each rubric area in [0,1]. Return a JSON object: "
+          '{"areas": [{"area": str, "score": float, "justification": str, '
+          '"weak_points": [str]}], "confidence": float}.'
+    )
+    raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
+    parsed = _extract_json(raw)
+
+    weights = {a.get("area", ""): float(a.get("weight", 0.0)) for a in rubric.get("areas", [])}
+    degraded = (not results.get("success")) or (not results.get("metrics"))
+    areas: list[RubricAreaScore] = []
+    for a in parsed.get("areas", []):
+        name = str(a.get("area", ""))
+        score = _clamp01(a.get("score"))
+        if degraded:
+            score = min(score, 0.35)  # honesty backstop
+        areas.append(RubricAreaScore(
+            area=name,
+            weight=weights.get(name, 0.0),
+            score=score,
+            justification=str(a.get("justification", "")),
+            weak_points=[str(w) for w in (a.get("weak_points") or [])],
+        ))
+    verification = RubricVerification.from_areas(
+        areas,
+        rubric_source=rubric.get("source", "generated"),
+        target_score=float(rubric.get("target_score", 0.0)),
+        confidence=_clamp01(parsed.get("confidence")),
+    )
+    return verification.model_dump()
 
 
-def propose_improvements(
-    current_results: dict,
-    rubric_scores: dict,
-    k: int | None = None,
-) -> list[dict]:
-    """Propose paper-specific improvements with proposer-assigned free-form tags.
+def propose_improvements(current_results: dict, rubric_scores: dict,
+                         k: int | None = None, *, ctx: "RunContext") -> list[dict]:
+    """Propose paper-specific improvement hypotheses (variable-length, free-form tags).
 
-    Variable-length list. NOT the hardcoded 5-category taxonomy from the
-    old `improvement_orchestrator`. The proposer's system prompt is
-    rewritten in Phase 3 (brief FM#4 validation: run on 3 papers, assert
-    candidate lists differ in count or content).
+    Reuses the `improvement-orchestrator` prompt — no fixed taxonomy. Each item
+    is an `ImprovementHypothesis` dict; malformed items are dropped fail-soft.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap rewritten improvement-orchestrator")
+    import json
+
+    from backend.agents.prompts.improvement import IMPROVEMENT_ORCHESTRATOR_PROMPT
+    from backend.agents.schemas import ImprovementHypothesis
+
+    target = k if k is not None else 3
+    user = (
+        "current_results:\n" + json.dumps(current_results, indent=2, default=str)
+        + "\n\nrubric_scores (prioritise lifting the weakest areas):\n"
+        + json.dumps(rubric_scores, indent=2, default=str)
+        + f"\n\nPropose up to {target} improvement hypotheses. Return a JSON "
+          'object {"hypotheses": [ImprovementHypothesis, ...]}. Each hypothesis '
+          "carries a free-form `category` tag of your choosing."
+    )
+    raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
+    items = _extract_json(raw).get("hypotheses", [])
+
+    out: list[dict] = []
+    for item in items:
+        try:
+            out.append(ImprovementHypothesis(**item).model_dump())
+        except Exception:
+            continue  # fail-soft: skip a malformed hypothesis
+    return out[:target]
 
 
 def set_final(report: dict) -> None:
