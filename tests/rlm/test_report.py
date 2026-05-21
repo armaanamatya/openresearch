@@ -53,6 +53,19 @@ def _make_result(response: str, total_cost: float = 0.0) -> RLMChatCompletion:
     )
 
 
+def _record_run_experiment(ctx):
+    """Append a run_experiment ledger entry so the honesty guard treats the
+    run's baseline_metrics as backed by a real execution. Returns ``ctx``."""
+    ctx.cost_ledger.append(CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc),
+        agent_id="run_experiment",
+        attempt_index=0,
+        provider="anthropic",
+        model="test-model",
+    ))
+    return ctx
+
+
 _BASE_REPORT_DICT = {
     "paper": {"id": "2512.24601", "title": "Test Paper"},
     "verdict": "reproduced",
@@ -77,7 +90,7 @@ class TestBuildFinalReportParsing:
 
     def test_json_response(self, make_context, tmp_path):
         """A valid JSON response is parsed into a correct RLMFinalReport."""
-        ctx = make_context(tmp_path)
+        ctx = _record_run_experiment(make_context(tmp_path))
         result = _make_result(json.dumps(_BASE_REPORT_DICT))
         report = build_final_report(result, ctx=ctx)
 
@@ -89,7 +102,7 @@ class TestBuildFinalReportParsing:
 
     def test_python_repr_fallback(self, make_context, tmp_path):
         """A Python-repr-stringified dict (from FINAL_VAR str()) is recovered via ast.literal_eval."""
-        ctx = make_context(tmp_path)
+        ctx = _record_run_experiment(make_context(tmp_path))
         # Simulate what LocalREPL._final_var does: str() on the dict
         raw = str(_BASE_REPORT_DICT)
         result = _make_result(raw)
@@ -163,6 +176,55 @@ class TestBuildFinalReportParsing:
         report = build_final_report(result, ctx=ctx, root_model=None)
 
         assert isinstance(report, RLMFinalReport)
+
+
+# ---------------------------------------------------------------------------
+# Tests: honesty guard — a result section must be backed by its primitive
+# ---------------------------------------------------------------------------
+
+
+class TestHonestyGuard:
+    """build_final_report must not present results the root never measured."""
+
+    def test_unbacked_baseline_metrics_dropped(self, make_context, tmp_path):
+        """When run_experiment never ran, root-supplied baseline_metrics are
+        dropped and a 'reproduced' verdict is downgraded to 'partial'."""
+        ctx = make_context(tmp_path)  # empty ledger — run_experiment never ran
+        result = _make_result(json.dumps(_BASE_REPORT_DICT))
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.baseline_metrics == {}
+        assert report.verdict == "partial"
+        assert "honesty guard" in report.reproduction_summary.lower()
+
+    def test_backed_baseline_metrics_kept(self, make_context, tmp_path):
+        """baseline_metrics survive when run_experiment is in the ledger."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        result = _make_result(json.dumps(_BASE_REPORT_DICT))
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.baseline_metrics == {"accuracy": 0.92}
+        assert report.verdict == "reproduced"
+
+    def test_primitive_trace_comes_from_the_ledger_not_the_root(
+        self, make_context, tmp_path
+    ):
+        """primitive_trace reflects the authoritative cost ledger — not the
+        root model's self-reported (and observed-unreliable) trace."""
+        ctx = make_context(tmp_path)
+        ctx.cost_ledger.append(CostLedgerEntry(
+            timestamp=datetime.now(timezone.utc),
+            agent_id="understand_section",
+            attempt_index=0,
+            provider="anthropic",
+            model="test-model",
+        ))
+        # _BASE_REPORT_DICT self-reports primitive_trace={"understand_section": 2}
+        result = _make_result(json.dumps(_BASE_REPORT_DICT))
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.primitive_trace["by_primitive"] == {"understand_section": 1}
+        assert report.primitive_trace["calls"] == 1
 
 
 # ---------------------------------------------------------------------------

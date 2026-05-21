@@ -11,6 +11,36 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — The RLM root fabricated benchmark metrics it never measured
+
+**Symptom.** An `--mode rlm` run finished `partial` with
+`baseline_metrics={"c2st": 0.75, ...}` in `final_report.json` — but no
+experiment had been run. The numbers were plausible and entirely fake.
+
+**Root cause.** The root model assembles the final report JSON itself. It
+skipped the `run_experiment` primitive, wrote a baseline, then invented metrics
+for the report. `build_final_report` passed `parsed["baseline_metrics"]` through
+verbatim, and also trusted the root's self-reported `primitive_trace` (which
+undercounted — claimed `understand_section=12`, the ledger showed 18). A
+self-attested field was treated as ground truth.
+
+**Fix.** `build_final_report` now derives the primitive trace from the cost
+ledger — `binding.wrap_primitive` appends a row on every call, so it is
+authoritative — and enforces an honesty invariant: `baseline_metrics` are
+dropped (and a `reproduced` verdict downgraded to `partial`) when
+`run_experiment` is absent from that trace. The root prompt also now mandates
+`run_experiment` and forbids estimated metrics.
+
+**Lesson.** Anything an LLM writes into a results artifact is a *claim*, not a
+measurement. A field the model self-attests (metrics, its own call trace,
+a verdict) must be cross-checked against an out-of-band authoritative record
+before a report presents it as fact. Trust the ledger, not the narrator.
+
+**Guardrail.** `TestHonestyGuard` in `tests/rlm/test_report.py` — unbacked
+metrics dropped, backed metrics kept, trace sourced from the ledger.
+
+---
+
 ## 2026-05-21 — A coercion validator silently dropped already-built model instances
 
 **Symptom.** After adding string→dict coercion to `PaperClaimMap`, eight tests

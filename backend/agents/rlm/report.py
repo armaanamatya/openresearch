@@ -162,6 +162,20 @@ def _cost_dict(result: RLMChatCompletion, ctx: RunContext) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _authoritative_primitive_trace(ctx: RunContext) -> dict[str, Any]:
+    """Count primitive invocations from the cost ledger — the authoritative record.
+
+    ``binding.wrap_primitive`` appends a ledger row on *every* primitive call,
+    so the ledger reflects what actually ran. The root model also self-reports
+    a ``primitive_trace`` in its report JSON, but that has been observed to
+    undercount and to omit calls entirely — so the report uses this instead.
+    """
+    by_primitive: dict[str, int] = {}
+    for entry in ctx.cost_ledger.entries:
+        by_primitive[entry.agent_id] = by_primitive.get(entry.agent_id, 0) + 1
+    return {"calls": sum(by_primitive.values()), "by_primitive": by_primitive}
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -209,15 +223,39 @@ def build_final_report(
     # Build kwargs, falling back to honest defaults for any missing field
     verdict = _reconcile_verdict(parsed)
 
+    # The root assembles the report JSON itself, so its `primitive_trace` and
+    # `baseline_metrics` are self-attested. Replace the trace with the
+    # authoritative ledger count, then enforce the honesty invariant: a result
+    # section must be backed by the primitive that produces it.
+    trace = _authoritative_primitive_trace(ctx)
+    baseline_metrics = parsed.get("baseline_metrics") or {}
+    summary = str(parsed.get("reproduction_summary") or "")
+    if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
+        # The root reported metrics it never measured — run_experiment never
+        # ran. Drop them and say so; downgrade an over-claimed verdict.
+        logger.warning(
+            "report: dropping %d unbacked baseline metric(s) — run_experiment "
+            "never ran (root-fabricated)",
+            len(baseline_metrics),
+        )
+        baseline_metrics = {}
+        summary = (
+            summary
+            + "\n\n[honesty guard] Baseline metrics were dropped: the "
+            "run_experiment primitive never ran, so no metrics were measured."
+        ).strip()
+        if verdict == "reproduced":
+            verdict = "partial"
+
     kwargs: dict[str, Any] = {
         "verdict": verdict,
         "paper": parsed.get("paper") or {},
-        "reproduction_summary": str(parsed.get("reproduction_summary") or ""),
-        "baseline_metrics": parsed.get("baseline_metrics") or {},
+        "reproduction_summary": summary,
+        "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
         "rubric": parsed.get("rubric") or {"overall_score": 0.0, "meets_target": False, "areas": []},
         "improvements": list(parsed.get("improvements") or []),
-        "primitive_trace": parsed.get("primitive_trace") or {},
+        "primitive_trace": trace,
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
     }

@@ -72,10 +72,15 @@ _ROOT_PROMPT = (
     "Navigate it with REPL code and sub-calls (llm_query / rlm_query) over slices "
     "you construct, use the domain primitives to detect the environment, plan, "
     "implement and run a baseline, then score it against the rubric and propose "
-    "improvements. Accumulate the reproduction as REPL state. When finished, build "
-    "your report dict, json.dumps it into a variable, and call FINAL_VAR on that "
-    "JSON-string variable — exactly as the system prompt's termination contract "
-    "describes."
+    "improvements. Accumulate the reproduction as REPL state. "
+    "You MUST call run_experiment to actually execute the baseline — a "
+    "reproduction is not complete until the baseline has run. Every metric in "
+    "your final report must come from a real run_experiment result; never "
+    "estimate, guess, or invent a metric. If run_experiment did not run or did "
+    "not succeed, report no baseline metrics and an honest 'partial' verdict. "
+    "When finished, build your report dict, json.dumps it into a variable, and "
+    "call FINAL_VAR on that JSON-string variable — exactly as the system "
+    "prompt's termination contract describes."
 )
 
 
