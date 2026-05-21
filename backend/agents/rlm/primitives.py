@@ -256,15 +256,77 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
     return str(code_dir)
 
 
-def run_experiment(code_path: str, env_id: str) -> dict:
-    """Execute the baseline in the sandbox; return metrics.
+async def _execute_in_sandbox(
+    code_path: str,
+    env_id: str,
+    commands: list[str],
+    *,
+    project_id: str,
+    run_id: str,
+) -> dict:
+    """Run `commands` in a container started from the prebuilt image `env_id`.
 
-    Sandbox state (Docker image, RunPod pod) lives outside the REPL. This
-    primitive is a sync wrapper that schedules the async sandbox call on
-    the orchestrator's event loop and blocks until it returns.
-    See `docs/rlm-pivot-mapping.md` §6.5.
+    Drives the verified `RuntimeAppService` lifecycle (`service.py`): create a
+    sandbox from the existing image (`dockerfile_path=None`, `build_context=None`
+    → no rebuild, design decision D1), execute each command, destroy. The
+    service methods take `Command` objects. Indirection so tests can patch it.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap experiment_runner.run_with_runtime")
+    from pathlib import Path
+
+    from backend.services.runtime.interface import SandboxConfig
+    from backend.services.runtime.local_docker import LocalDockerBackend
+    from backend.services.runtime.service import (
+        CreateSandbox, DestroySandbox, ExecuteCommand, RuntimeAppService,
+    )
+
+    service = RuntimeAppService(LocalDockerBackend())
+    config = SandboxConfig(
+        project_id=project_id,
+        run_id=run_id,
+        image=env_id,
+        project_root=Path(code_path),
+        dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
+        build_context=None,
+    )
+    sandbox = await service.create_sandbox(CreateSandbox(config=config))
+    results = []
+    try:
+        for command in commands:
+            results.append(await service.execute(
+                ExecuteCommand(sandbox=sandbox, command=command, timeout=3600)))
+    finally:
+        await service.destroy(DestroySandbox(sandbox=sandbox))
+    return {
+        "success": all(r.succeeded for r in results),
+        "metrics": {},  # real metric extraction from artifacts is Phase 5 (#62)
+        "logs": "\n".join(r.stdout for r in results),
+    }
+
+
+def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
+    """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
+
+    Commands are read from `code_path/commands.json` (written by
+    `implement_baseline`). `env_id` is a Docker image tag (design decisions
+    D1/D2). Async sandbox work is bridged to sync via a worker thread.
+    """
+    import asyncio
+    import concurrent.futures
+    import json
+    from pathlib import Path
+
+    manifest = Path(code_path) / "commands.json"
+    commands = json.loads(manifest.read_text()) if manifest.exists() else []
+    if not commands:
+        return {"success": False, "metrics": {},
+                "error": f"no commands.json at {manifest}"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run,
+            _execute_in_sandbox(code_path, env_id, commands,
+                                project_id=ctx.project_id, run_id=ctx.project_id),
+        ).result()
 
 
 def verify_against_rubric(results: dict, rubric: dict) -> dict:
