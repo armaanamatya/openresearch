@@ -329,3 +329,29 @@ class TestEnvVarFor:
         from backend.agents.rlm.models import _env_var_for
 
         assert _env_var_for("vllm", None) is None
+
+
+class TestFeatherlessContextLimit:
+    """register_featherless_context_limits teaches rlm the plan's context cap."""
+
+    def test_registers_plan_cap_over_native_window(self):
+        """get_context_limit must return the Featherless plan cap for the root
+        model — overriding the broad 'qwen3' -> 128K native-window entry — so
+        rlm's compaction triggers before a context_length_exceeded 400."""
+        from rlm.utils.token_utils import get_context_limit
+
+        from backend.agents.rlm.models import (
+            FEATHERLESS_PLAN_CONTEXT_LIMIT,
+            FEATHERLESS_ROOT_MODEL,
+            FEATHERLESS_SUBCALL_MODEL,
+            register_featherless_context_limits,
+        )
+
+        # Plan cap must be well below the model's native window for the fix
+        # to mean anything.
+        assert FEATHERLESS_PLAN_CONTEXT_LIMIT < 128_000
+
+        register_featherless_context_limits()
+
+        assert get_context_limit(FEATHERLESS_ROOT_MODEL) == FEATHERLESS_PLAN_CONTEXT_LIMIT
+        assert get_context_limit(FEATHERLESS_SUBCALL_MODEL) == FEATHERLESS_PLAN_CONTEXT_LIMIT

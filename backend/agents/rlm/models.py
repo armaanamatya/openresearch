@@ -106,6 +106,32 @@ FEATHERLESS_BASE_URL = "https://api.featherless.ai/v1"
 FEATHERLESS_ROOT_MODEL = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
 FEATHERLESS_SUBCALL_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 
+# Featherless's plan caps *input* context far below the model's native window
+# (Qwen3-Coder is natively 128K+). The rlm engine sizes compaction off a
+# model's context limit, so it must be told this cap — see
+# register_featherless_context_limits.
+FEATHERLESS_PLAN_CONTEXT_LIMIT = 49_152
+
+
+def register_featherless_context_limits() -> None:
+    """Teach the rlm library the Featherless plan's input-context cap.
+
+    rlm sizes compaction off ``MODEL_CONTEXT_LIMITS``, which records each
+    model's *native* window. For Qwen3-Coder that is 128K+, but the Featherless
+    plan caps input context at ``FEATHERLESS_PLAN_CONTEXT_LIMIT``. Without this,
+    rlm believes it has ample headroom, compaction never triggers, and the
+    root's accumulated context eventually 400s the provider mid-run
+    (``context_length_exceeded``). Registering the real cap — by exact model
+    name, which ``get_context_limit`` matches first — makes compaction trigger
+    in time. Idempotent; safe to call once per run.
+    """
+    try:
+        from rlm.utils.token_utils import MODEL_CONTEXT_LIMITS
+    except ImportError:  # pragma: no cover - rlm is always installed in practice
+        return
+    for model_name in (FEATHERLESS_ROOT_MODEL, FEATHERLESS_SUBCALL_MODEL):
+        MODEL_CONTEXT_LIMITS[model_name] = FEATHERLESS_PLAN_CONTEXT_LIMIT
+
 
 # ---------------------------------------------------------------------------
 # Registry builder — deferred so env vars are read at call time, not import time

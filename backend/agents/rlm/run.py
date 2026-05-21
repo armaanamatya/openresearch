@@ -41,7 +41,11 @@ from backend.eventstore.sqlite_store import SqliteEventStore
 
 from backend.agents.rlm.checkpoint import IterationCheckpointer
 from backend.agents.rlm.context import RunContext
-from backend.agents.rlm.models import RootModel, resolve_root_model
+from backend.agents.rlm.models import (
+    RootModel,
+    register_featherless_context_limits,
+    resolve_root_model,
+)
 from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
@@ -519,6 +523,17 @@ async def run_pipeline_rlm(
     if run_budget is not None and run_budget.max_usd:
         max_usd = float(run_budget.max_usd)
 
+    # Featherless's plan caps input context far below the model's native window.
+    # Register that cap with rlm so compaction fires before the provider 400s
+    # the run on context_length_exceeded, and tighten the compaction threshold
+    # for extra margin against token-count drift on a non-tiktoken model.
+    is_featherless = root_model.rlm_backend == "openai" and "featherless" in str(
+        bk.get("base_url", "")
+    )
+    if is_featherless:
+        register_featherless_context_limits()
+    compaction_threshold_pct = 0.7 if is_featherless else 0.85
+
     # 9. Construct the RLM engine.
     rlm = RLM(
         backend=root_model.rlm_backend,
@@ -529,6 +544,7 @@ async def run_pipeline_rlm(
         max_timeout=wall_clock_s,
         max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
         compaction=True,
+        compaction_threshold_pct=compaction_threshold_pct,
         other_backends=[root_model.sub_backend],
         other_backend_kwargs=[root_model.sub_backend_kwargs],
         custom_tools=custom_tools,
