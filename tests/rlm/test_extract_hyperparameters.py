@@ -15,3 +15,4 @@ def test_extract_hyperparameters_flat_dict(make_context, tmp_path):
     assert "3e-4" in result["learning_rate"]
     assert "64" in result["batch_size"]
     assert "adam" in result["optimizer"].lower()
+    assert "200" in result["epochs_or_steps"]
