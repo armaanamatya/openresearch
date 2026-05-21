@@ -109,8 +109,10 @@ _PRIMITIVES_SECTION = """\
 ═══════════════════════════════════════════════════════════════
 
 The primitives below are callable in the REPL.  They are domain operations
-that wrap the paper-reproduction pipeline stages.  Their signatures and
-descriptions are appended to this prompt automatically by the RLM engine.
+that wrap the paper-reproduction pipeline stages.  Their exact signatures and
+descriptions are listed here:
+
+[[REPROLAB_CUSTOM_TOOLS_SECTION]]
 
 ALGORITHM-2 GUARD (critical):
   NEVER pass a whole `context` value to a primitive.
@@ -267,7 +269,10 @@ def build_system_prompt(
             append ``root_model.prompt_addendum`` verbatim at the end.
 
     Returns:
-        The complete custom system prompt string.
+        The custom system prompt as an ``rlm`` ``.format()`` template: every
+        literal brace is escaped (``{{`` / ``}}``) and a single
+        ``{custom_tools_section}`` placeholder marks where ``rlm`` injects the
+        auto-generated primitive tool docs.
     """
     parts: list[str] = [
         _RLM_OPERATING_MODEL,
@@ -287,4 +292,13 @@ def build_system_prompt(
             + "\n"
         )
 
-    return "\n".join(parts)
+    body = "\n".join(parts)
+    # rlm's build_rlm_system_prompt runs `prompt.format(custom_tools_section=...)`
+    # on this string (rlm/utils/prompts.py:156) — the prompt is a .format()
+    # TEMPLATE. Our prompt carries literal braces (JSON report examples, code
+    # snippets) that .format() would crash on as stray fields. Escape every
+    # brace, then restore the ONE real placeholder — the slot where rlm injects
+    # the auto-generated primitive tool docs. Without that placeholder the root
+    # model would never see the primitive signatures at all.
+    body = body.replace("{", "{{").replace("}", "}}")
+    return body.replace("[[REPROLAB_CUSTOM_TOOLS_SECTION]]", "{custom_tools_section}")

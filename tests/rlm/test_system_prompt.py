@@ -301,3 +301,46 @@ class TestReturnType:
         )
         assert result is not None
         assert result != ""
+
+
+class TestFormatTemplate:
+    """rlm consumes the prompt as a .format() template — rlm/utils/prompts.py:156
+    runs ``system_prompt.format(custom_tools_section=...)``. The prompt must
+    survive that call despite its literal JSON/code braces."""
+
+    def test_format_does_not_raise(self, prompt_gpt5):
+        """rlm's .format(custom_tools_section=...) must not raise on the literal
+        braces in the JSON report example / code snippets."""
+        rendered = prompt_gpt5.format(custom_tools_section="TOOLS_GO_HERE")
+        assert "TOOLS_GO_HERE" in rendered
+
+    def test_exactly_one_format_field(self, prompt_gpt5):
+        """The template must expose exactly one .format() field —
+        custom_tools_section. Any stray {field} would KeyError inside rlm."""
+        import string
+
+        fields = {
+            name
+            for _, name, _, _ in string.Formatter().parse(prompt_gpt5)
+            if name is not None
+        }
+        assert fields == {"custom_tools_section"}, (
+            f"prompt has unexpected .format() fields: {fields}"
+        )
+
+    def test_rendered_prompt_restores_literal_braces(self, prompt_gpt5):
+        """After .format(), the escaped braces become the literal braces the
+        root model needs (the JSON report shape must read normally)."""
+        rendered = prompt_gpt5.format(custom_tools_section="")
+        # A literal-brace fragment from the report-shape section is restored
+        # (the prompt's nested-dict JSON examples must read normally — that the
+        # round-trip is otherwise correct is covered by test_format_does_not_raise
+        # and test_exactly_one_format_field).
+        assert '{"id"' in rendered
+        assert "json.dumps" in rendered
+
+    def test_format_injects_tool_section_in_primitives_block(self, prompt_gpt5):
+        """The {custom_tools_section} slot sits inside the PRIMITIVES section."""
+        rendered = prompt_gpt5.format(custom_tools_section="<<<PRIMITIVE_DOCS>>>")
+        assert "<<<PRIMITIVE_DOCS>>>" in rendered
+        assert rendered.index("PRIMITIVES") < rendered.index("<<<PRIMITIVE_DOCS>>>")
