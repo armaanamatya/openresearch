@@ -86,14 +86,71 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     return spec.model_dump()
 
 
-def build_environment(env_spec: dict) -> dict:
-    """Build the Docker image for an env_spec, with repair-on-failure.
+# Indirection so tests can monkeypatch the async Docker build.
+def _build_image(dockerfile_path, context_dir, tag, **kw):
+    from backend.services.runtime.local_docker import build_image
+    return build_image(dockerfile_path, context_dir, tag, **kw)
 
-    Wraps the existing Docker build-and-repair loop (Track 4). The internal
-    retry loop (`environment_build_max_attempts`) lives inside the primitive
-    — the root sees one call, gets one result.
+
+_ENV_REPAIR_SYSTEM = (
+    "You are a Docker environment repair assistant. Given a Dockerfile and the "
+    "build error it produced, output a corrected Dockerfile and NOTHING else — "
+    "no prose, no code fences."
+)
+
+
+def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
+    """Build the Docker image for `env_spec`, repairing the Dockerfile on failure.
+
+    Genuinely fail-soft (design decision D3): any failure — a spent attempt
+    cap, an `llm_client` error, a `write_text` error, a bad import — returns
+    `{"ok": False, "error": ..., "attempts": ...}`; the primitive never raises.
+    The ONE exception is `SandboxRuntimeError` (Docker daemon down / SDK
+    missing): an infrastructure failure, not a Dockerfile problem, so it
+    propagates.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap env build-and-repair loop")
+    import asyncio
+    import concurrent.futures
+    import tempfile
+    from pathlib import Path
+
+    dockerfile = (env_spec.get("dockerfile") or "").strip()
+    if not dockerfile:
+        return {"ok": False, "image_tag": "", "error": "env_spec.dockerfile is empty",
+                "attempts": 0}
+
+    attempts, ok, tag, error = 0, False, "", ""
+    try:
+        from backend.config import get_settings
+        from backend.services.runtime.interface import SandboxRuntimeError
+
+        max_attempts = max(1, get_settings().environment_build_max_attempts)
+        tag = f"reprolab/{ctx.project_id}:env-check"
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp)
+            dockerfile_path = context_dir / "Dockerfile"
+            while not ok and attempts < max_attempts:
+                attempts += 1
+                dockerfile_path.write_text(dockerfile, encoding="utf-8")
+                # Async bridge: asyncio.run in a fresh worker thread, never
+                # bare (a bare asyncio.run raises inside a running loop).
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    ok, tag, error = pool.submit(
+                        asyncio.run, _build_image(dockerfile_path, context_dir, tag)
+                    ).result()
+                if not ok and attempts < max_attempts:
+                    dockerfile = ctx.llm_client.complete(
+                        system=_ENV_REPAIR_SYSTEM,
+                        user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
+                    ).strip()
+    except SandboxRuntimeError:
+        raise  # infrastructure failure — not a Dockerfile problem; propagate
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
+        return {"ok": False, "image_tag": "",
+                "error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
+
+    return {"ok": ok, "image_tag": tag if ok else "", "error": error,
+            "attempts": attempts}
 
 
 def plan_reproduction(method_spec: dict, env_spec: dict) -> dict:

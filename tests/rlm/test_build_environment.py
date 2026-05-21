@@ -1,0 +1,30 @@
+import backend.agents.rlm.primitives as primitives
+from backend.agents.rlm.primitives import build_environment
+
+
+def test_build_environment_succeeds_first_try(make_context, tmp_path, monkeypatch):
+    ctx = make_context(tmp_path)
+
+    async def fake_build_image(dockerfile_path, context_dir, tag, **kw):
+        return (True, tag, "")
+
+    monkeypatch.setattr(primitives, "_build_image", fake_build_image)
+    result = build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+    assert result["ok"] is True
+    assert result["image_tag"]
+    assert result["attempts"] == 1
+
+
+def test_build_environment_repairs_then_succeeds(make_context, tmp_path, monkeypatch):
+    ctx = make_context(tmp_path, llm_responses=["FROM python:3.11-slim\nRUN pip install x\n"])
+    calls = {"n": 0}
+
+    async def fake_build_image(dockerfile_path, context_dir, tag, **kw):
+        calls["n"] += 1
+        return (calls["n"] > 1, tag, "" if calls["n"] > 1 else "pip failed")
+
+    monkeypatch.setattr(primitives, "_build_image", fake_build_image)
+    result = build_environment({"dockerfile": "FROM bad\n"}, ctx=ctx)
+    assert result["ok"] is True
+    assert result["attempts"] == 2
+    assert len(ctx.llm_client.calls) == 1
