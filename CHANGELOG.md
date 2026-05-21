@@ -436,6 +436,23 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **RLM `implement_baseline` survives the Claude OAuth quota; serves API + dev
+  modes (merge).** The RLM sub-agent runtime (`_resolve_agent_runtime`) now
+  resolves to Claude with SDK-resolved auth — `ANTHROPIC_API_KEY` in production,
+  the Claude Code subscription's OAuth login in dev — and threads
+  `settings.anthropic_default_model` (Sonnet) through `RunContext.agent_model`
+  as the `to_runtime_spec` `model_override`. Without the override the
+  `baseline-implementation` agent ran the registry's Opus default and exhausted
+  the OAuth quota (`Claude Code returned an error result: success`), finishing a
+  run `failed` with no code written. The fallback now validates credentials at
+  resolution time (`require_api_key=True`).
+- **RLM `PaperClaimMap` tolerates the loosely-shaped dicts an LLM root emits
+  (merge).** `claims` / `datasets` / `metrics` accept bare strings (coerced to
+  single-key dicts) and `MetricSpec.definition` defaults to `""`. One canonical
+  `_coerce_str_items` validator handles all three; it transforms only bare
+  strings and passes dicts and pre-built `DatasetRequirement`/`MetricSpec`
+  instances through untouched (an earlier filter dropped instances, emptying
+  the lists). `PRIMITIVE_DESCRIPTIONS` now publish the `PaperClaimMap` shape.
 - **Live logs surface subprocess stdout, not just stderr.**
   `FileLiveRunService._read_log` read only `runner.stderr.log`, so agent
   activity on stdout was invisible in the UI. It now reads and combines

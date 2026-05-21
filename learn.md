@@ -11,6 +11,57 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — A coercion validator silently dropped already-built model instances
+
+**Symptom.** After adding string→dict coercion to `PaperClaimMap`, eight tests
+failed across paper-understanding, environment-detective and report-generator:
+`PaperClaimMap.datasets` / `.metrics` came back empty.
+
+**Root cause.** The `_coerce_str_items` before-validator filtered its output with
+`if isinstance(item, (str, dict))` — so every already-built `DatasetRequirement`
+/ `MetricSpec` instance (exactly what the offline paper-understanding agent
+passes) was dropped on the floor. Pydantic then validated an empty list.
+
+**Fix.** The coercion now only transforms bare strings into single-key dicts and
+passes every other item through untouched for pydantic itself to validate.
+
+**Lesson.** A `mode="before"` validator that exists to *coerce* one input shape
+must be a pure pass-through for every other shape. Filtering inside a coercion
+silently discards valid data — the validator's job is to widen what is accepted,
+never to narrow it.
+
+**Guardrail.** `tests/test_schemas.py` asserts datasets/metrics accept dicts,
+bare strings, and pre-built submodel instances (mixed lists included).
+
+---
+
+## 2026-05-21 — implement_baseline exhausted the Claude OAuth quota on Opus
+
+**Symptom.** An `--mode rlm` run's `implement_baseline` failed with `Claude Code
+returned an error result: success` — the code-writing agent wrote no code, and
+the run finished `failed` with a 0.0 rubric score.
+
+**Root cause.** Two layers. (1) That string is the claude-agent-sdk's signal for
+a Claude Code subscription quota cap — already catalogued in
+`resilience/classify.py` as a `QuotaExhausted` phrase. (2) The agent ran on
+Opus: `baseline-implementation` is registered with
+`default_model_anthropic="claude-opus-4-7"`, and a heavy Opus agent exhausts the
+OAuth quota it shares with interactive Claude Code sessions.
+
+**Fix.** Pin the sub-agent to Sonnet. The model is threaded as the explicit
+`model_override` — `RunContext.agent_model` → `implement_baseline` →
+`run_with_sdk(model=)` → `collect_agent_text(model=)` → `to_runtime_spec`.
+
+**Lesson.** `to_runtime_spec` resolves `model_override or settings_override or
+registry_default`. A non-empty registry per-agent model beats any runtime-level
+default — so to force a model for one invocation you must pass `model_override`,
+not configure the runtime. Pinning a model on the runtime instance is dead code.
+
+**Guardrail.** `test_implement_baseline_passes_agent_model_as_override` asserts
+`ctx.agent_model` reaches `run_with_sdk` as `model`.
+
+---
+
 ## 2026-05-21 — A missing LLM API key surfaced as a cryptic `TypeError` deep in `rlm`
 
 **Symptom.** An `--mode rlm` run with the `claude` root failed at run start with
