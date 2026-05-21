@@ -8,11 +8,14 @@ appends a row to `cost_ledger.jsonl`.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from backend.agents.resilience.cost import CostLedgerEntry
 from backend.agents.rlm.context import RunContext
+
+logger = logging.getLogger(__name__)
 
 
 def _summarize(args: tuple, kwargs: dict) -> dict:
@@ -51,15 +54,32 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         try:
             result = fn(*args, ctx=ctx, **kwargs)
         except Exception as exc:
-            # Value-free: an exception MESSAGE can carry raw LLM output, paper
-            # text or paths, and result_summary is streamed to the UI. Only the
-            # type goes into the event; the full exception still propagates via
-            # `raise` for server-side logs.
+            # Value-free event: an exception MESSAGE can carry raw LLM output,
+            # paper text or paths, and result_summary is streamed to the UI.
+            # Only the type goes into the event. The WARNING and the `raise`
+            # below are server-side only.
             ctx.dashboard.primitive_call(name, "error", result_summary=type(exc).__name__)
             _ledger()
+            logger.warning("primitive %s raised %s", name, type(exc).__name__)
             raise
-        ctx.dashboard.primitive_call(name, "ok", result_summary=_result_summary(result))
+        # Most primitives are fail-soft: on failure they RETURN a failure-shaped
+        # dict instead of raising. Surface that as an `error` primitive_call and
+        # a server-side WARNING — otherwise it is silently logged as a success
+        # (a run-7 verify_against_rubric failure stayed invisible until traced
+        # by hand).
+        failed = isinstance(result, dict) and (
+            result.get("success") is False or bool(result.get("error"))
+        )
+        ctx.dashboard.primitive_call(
+            name, "error" if failed else "ok",
+            result_summary=_result_summary(result),
+        )
         _ledger()
+        if failed:
+            logger.warning(
+                "primitive %s returned a failure: %s",
+                name, result.get("error") or "(see dashboard_events.jsonl)",
+            )
         return result
 
     wrapped.__name__ = name
