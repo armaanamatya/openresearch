@@ -122,23 +122,40 @@ def _build_llm_client(provider: str | None) -> tuple[Any, str]:
 def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     """Return ``(custom_tools, provider_label)`` for ``RLM(custom_tools=...)``.
 
-    Uses #59's real ``binding.build_custom_tools`` when it is importable and
-    stubs are not forced; otherwise the deterministic stub provider (§13).  This
-    keeps the orchestrator runnable and testable before #59's primitive layer
-    lands — switching to the real primitives is automatic once ``binding.py``
-    exists.
+    Prefers #59's real ``binding.build_custom_tools``. Falls back to the
+    deterministic stub provider (§13) when #59's primitive layer is **absent**
+    *or* **present-but-incomplete** — #59 ships incrementally, so for a window
+    `binding.py` exists while `primitives.PRIMITIVE_DESCRIPTIONS` does not, and
+    `build_custom_tools(ctx)` raises. The orchestrator must run regardless of
+    #59's state; the real primitives are picked up automatically once #59's
+    layer is complete. The incomplete-binding fallback is loud (a WARNING with
+    the underlying exception) — it degrades, it never silently masks.
     """
     if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
         return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
     try:
         from backend.agents.rlm.binding import build_custom_tools
+
+        tools = build_custom_tools(ctx)
     except ImportError:
         logger.info(
             "run_pipeline_rlm: backend.agents.rlm.binding not present — "
             "using stub primitives (#59 not yet merged)"
         )
         return build_stub_custom_tools(ctx), "stub (#59 binding.py absent)"
-    return build_custom_tools(ctx), "real (#59 binding)"
+    except Exception as exc:  # noqa: BLE001 — #59 mid-build: degrade loudly, don't crash
+        logger.warning(
+            "run_pipeline_rlm: #59's build_custom_tools is present but raised "
+            "(%s: %s) — its primitive layer is incomplete; falling back to stub "
+            "primitives until #59 lands.",
+            type(exc).__name__,
+            exc,
+        )
+        return (
+            build_stub_custom_tools(ctx),
+            f"stub (#59 binding incomplete: {type(exc).__name__})",
+        )
+    return tools, "real (#59 binding)"
 
 
 def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:

@@ -117,6 +117,32 @@ class TestResolveCustomTools:
         assert len(tools) == 9
         assert "stub" in label
 
+    def test_falls_back_to_stub_when_binding_incomplete(self, tmp_path, make_context, monkeypatch):
+        """binding.py present but build_custom_tools raises (e.g. #59 mid-build —
+        PRIMITIVE_DESCRIPTIONS not yet shipped). Resolution must degrade to the
+        stub, loudly, not crash the run."""
+        import sys
+        import types
+
+        monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
+
+        fake_binding = types.ModuleType("backend.agents.rlm.binding")
+
+        def _raising_build_custom_tools(ctx):
+            raise AttributeError(
+                "module 'backend.agents.rlm.primitives' has no attribute "
+                "'PRIMITIVE_DESCRIPTIONS'"
+            )
+
+        fake_binding.build_custom_tools = _raising_build_custom_tools
+        monkeypatch.setitem(sys.modules, "backend.agents.rlm.binding", fake_binding)
+
+        ctx = make_context(tmp_path)
+        tools, label = _resolve_custom_tools(ctx)
+        assert len(tools) == 9
+        assert "stub" in label
+        assert "incomplete" in label
+
 
 # ---------------------------------------------------------------------------
 # _build_llm_client
