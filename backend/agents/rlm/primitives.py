@@ -210,9 +210,50 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     return ReproductionContract(**data).model_dump()
 
 
-def implement_baseline(plan: dict) -> str:
-    """Generate the baseline code from a reproduction plan; return code_path."""
-    raise NotImplementedError("Phase 3 (#60) — wrap baseline_implementation.run_offline")
+def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw):
+    """Indirection over baseline_implementation.run_with_sdk so tests can patch it."""
+    from backend.agents.baseline_implementation import run_with_sdk
+    return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
+
+
+def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
+    """Generate the baseline code from a reproduction plan; return the code path.
+
+    `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
+    <understand_section output>, "environment_spec": <detect_environment
+    output>, "reproduction_contract": <plan_reproduction output>}` (plus an
+    optional `artifact_index`) — NOT a single producer's output. Wraps
+    `baseline_implementation.run_with_sdk` (a code-writing agent) and writes
+    `code/commands.json` so `run_experiment` can read the run commands without
+    a BaselineResult (design decision D2).
+    """
+    import asyncio
+    import concurrent.futures
+    import json
+
+    from backend.agents.schemas import PaperClaimMap, EnvironmentSpec, ReproductionContract
+
+    # core_contribution is PaperClaimMap's one required field; default it so a
+    # partial paper_claim_map (e.g. understand_section's output) validates.
+    pcm = PaperClaimMap(**{"core_contribution": "", **plan.get("paper_claim_map", {})})
+    env = EnvironmentSpec(**plan.get("environment_spec", {}))
+    contract = (ReproductionContract(**plan["reproduction_contract"])
+                if plan.get("reproduction_contract") else None)
+    artifact_index = plan.get("artifact_index")
+
+    async def _run():
+        return await _run_baseline_with_sdk(
+            ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
+            runtime=ctx.runtime)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(asyncio.run, _run()).result()
+
+    code_dir = ctx.project_dir / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    commands = list(getattr(result, "commands_to_run", []) or [])
+    (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
+    return str(code_dir)
 
 
 def run_experiment(code_path: str, env_id: str) -> dict:
