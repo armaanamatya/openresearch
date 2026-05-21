@@ -36,12 +36,15 @@ fabricated without a real `run_experiment` call.
 |-----|---------------|-------------------------------------------------------|
 | 3   | failed        | `implement_baseline` hit the OAuth quota (ran Opus)   |
 | 5   | partial 0.65  | real code written; root skipped `run_experiment`, faked metrics |
-| 6   | in progress   | all fixes applied — honesty guard + run_experiment nudge |
+| 6   | failed        | **every primitive ran incl. `run_experiment`**, real code — but `rlm.completion` 400'd: root context exceeded the Featherless plan's 49K cap |
+| 7   | in progress   | + Featherless context-cap fix (compaction now triggers in time) |
 
 ## In flight
 
-**SNSE run 6** — end-to-end reproduction with every fix. Verifying: GPU
-engaged, code written, `run_experiment` runs, honest rubric score.
+**SNSE run 7** — every fix applied. Run 6 proved the full pipeline works
+end-to-end (all 9 primitives ran, real code written); the only failure
+was the root's context exceeding the Featherless plan cap. Run 7 should
+complete with a real verdict and rubric score.
 
 ## Next
 
