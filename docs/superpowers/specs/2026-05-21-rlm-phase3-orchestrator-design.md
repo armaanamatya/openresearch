@@ -17,6 +17,8 @@
 > the corpus sanitizer (§9), the JSON `FINAL_VAR` contract (§7, §11), the lazy seam
 > resolver (§2, §8), the precise event-store contract (§10), real emit locking (§9), and
 > the full run-mode wiring surface (§12) — are folded into the body.
+> **v3** — implemented (Wave A/B/C, 2026-05-21); §19 records two design points that
+> building the modules + the real-`rlm` integration harness made more precise.
 
 > **Context.** ReproLab is being re-architected from a 14-stage `PipelineStage` state
 > machine to an RLM orchestrator built on the `rlms` library. Issue #60 is the
@@ -606,9 +608,33 @@ wiring (B1) in parallel — disjoint files. Each delegated task gets exact paths
 | M2 | Medium | Event-store `append` contract underspecified | Dedicated aggregate, tracked `expected_version`, `EventEnvelope`, registered `RLMRunIteration` (§10) |
 | M3 | Medium | `DashboardEmitter._emit` has no lock | The `emit` callable owns a `threading.Lock` and serializes writes (§9.3) |
 
+## 19. Implementation corrections (Wave A/B/C, 2026-05-21)
+
+Two design points proved imprecise once the modules were built and the real-`rlm`
+integration harness ran. The shipped code is correct; this records the delta.
+
+1. **`custom_system_prompt` is an `rlm` `.format()` template.** §4/§7 said `rlm`
+   "auto-appends" the primitive tool section. Precisely: `rlm`'s
+   `build_rlm_system_prompt` runs `prompt.format(custom_tools_section=…)`
+   (`rlm/utils/prompts.py:156`). `build_system_prompt` therefore returns a
+   `.format()` template — every literal brace escaped, with one
+   `{custom_tools_section}` placeholder marking the tool-doc injection point.
+   Omitting it both crashes `.format()` on the prompt's literal JSON braces and
+   leaves the root with no primitive documentation. (Post-mortem: `learn.md`,
+   2026-05-21.)
+
+2. **No per-primitive LLM-usage capture.** §5/§8 described a "usage-capturing
+   `llm_client`." The `LlmClient` protocol is `.complete(*, system, user) -> str`
+   — it returns no token usage. `run.py` builds the plain client; the dominant
+   root + sub-call cost is captured from `rlm`'s `usage_summary` (`report.py`).
+   Real per-primitive usage needs the `LlmClient` protocol to carry usage — a
+   #59/#60 seam evolution, deferred. Under stub primitives (#60's done-condition)
+   this is moot: stubs make no LLM calls, so `cost.primitives` is correctly `$0`.
+
 ---
 
-*v2, 2026-05-21. Issue #60 — the RLM orchestrator, decoupled (Option 1) from #59's
-primitive layer, Codex-review-hardened. Consumes `RunContext` + `build_custom_tools`
-(lazily); ships a stub provider for standalone testability. Per-module contracts §6–§13;
-delegation §15.*
+*v3, 2026-05-21. Issue #60 — the RLM orchestrator, decoupled (Option 1) from #59's
+primitive layer, Codex-review-hardened and implemented (Wave A/B/C). Consumes
+`RunContext` + `build_custom_tools` (lazily); ships a stub provider for standalone
+testability. Per-module contracts §6–§13; delegation §15; implementation
+corrections §19.*

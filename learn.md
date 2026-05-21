@@ -11,6 +11,41 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — A library that `.format()`s the prompt you hand it
+
+**Symptom.** The first real-`rlm` integration run of the new RLM orchestrator
+(#60) crashed inside the `rlms` library before the Algorithm-1 loop even started
+— an error from deep in `rlm`, on a prompt string our own `build_system_prompt`
+had produced and we treated as plain text.
+
+**Root cause.** `rlm`'s `build_rlm_system_prompt` runs
+`system_prompt.format(custom_tools_section=…)` on whatever `custom_system_prompt`
+you pass `rlm.RLM(...)` (`rlm/utils/prompts.py:156`). The custom prompt is not
+plain text to the library — it is a `str.format()` **template**. Our prompt was
+full of literal braces (JSON report examples, code snippets like
+`json.dumps({"summary": …})`); `.format()` read each `{…}` as a replacement
+field and blew up. Worse: the library injects the auto-generated primitive tool
+docs at a `{custom_tools_section}` placeholder — our prompt had none, so even
+absent the crash the root model would never have been told the primitives exist.
+
+**Fix.** `build_system_prompt` now treats its output as what it is — a
+`.format()` template. It assembles the prompt with normal, readable braces, then
+escapes every brace (`{` → `{{`, `}` → `}}`) and restores exactly one real
+placeholder (`{custom_tools_section}`) at the primitive-docs slot.
+
+**Lesson.** When you hand a string to a third-party library, find out what the
+library *does* to it. "It's just a prompt string" was the wrong mental model —
+the library's contract was "give me a `.format()` template." A value crossing an
+API boundary is governed by the callee's contract, not the caller's assumption.
+
+**Guardrail.** `tests/rlm/test_system_prompt.py::TestFormatTemplate` asserts the
+output is a valid template — `.format(custom_tools_section=…)` does not raise and
+exposes *exactly* one field. The real-`rlm` integration harness
+(`tests/rlm/test_run_integration.py`) drives the real `build_system_prompt`
+through `rlm`'s own `.format()`, so a regression also fails end-to-end.
+
+---
+
 ## 2026-05-14 — A "successful" docker build can still ship a broken environment
 
 **Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4

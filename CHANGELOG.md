@@ -9,6 +9,23 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **RLM orchestrator — `--mode rlm`, Phase 3 of the RLM pivot (#60).** A new run
+  mode that replaces the 14-stage `PipelineStage` machine with the `rlms`
+  library's Algorithm-1 loop: the root model writes REPL code that calls domain
+  primitives to reproduce a paper. New `backend/agents/rlm/` modules — `run.py`
+  (`run_pipeline_rlm`: builds the `rlm.RLM`, runs `.completion()` on a worker
+  thread, writes `final_report.{json,md}`), `system_prompt.py`, `models.py`
+  (root-model registry: GPT-5 / Qwen3-Coder / Kimi K2.5 / Claude),
+  `sse_bridge.py` (a corpus sanitizer + an `RLMLogger` subclass streaming
+  `repl_iteration` / `sub_rlm_*` / `run_complete` events), `checkpoint.py`
+  (per-iteration `RLMRunIteration` events → the SQLite event store + a sanitized
+  snapshot), `report.py`, and `stub_primitives.py`. Wired through `cli.py` /
+  `pipeline.py` / `live_runs.py` as `--mode {offline,sdk,rlm}`; `offline` and
+  `sdk` are unchanged. Decoupled from the #59 primitive layer — `run.py` lazily
+  resolves `build_custom_tools` and falls back to a stub provider, so the
+  orchestrator runs and is integration-tested before #59 lands. The paper is
+  offloaded as the `context` REPL variable; the `sanitize_iteration` chokepoint
+  keeps it out of every event, log, and snapshot (Algorithm-2 guard).
 - **Dockerfile smoke-import layer — closes the build/runtime visibility gap.**
   Track 4 validates `docker build` succeeds, but build-success isn't
   runtime-success: packages can install cleanly and still fail on first
