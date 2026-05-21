@@ -112,8 +112,9 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     point — directly (brief §4 "wrap, not rewrite"). Verified: `run_offline` is
     exactly the heuristic helper chain plus a Dockerfile write into the run
     dir; that file-write side effect is fine — a primitive may write run
-    artifacts via `ctx`, and `build_environment` can reuse the written
-    Dockerfile. `method_spec` is a (possibly partial) PaperClaimMap dict;
+    artifacts via `ctx`. (`build_environment` consumes the Dockerfile from the
+    returned EnvironmentSpec dict's `dockerfile` field, not that file.)
+    `method_spec` is a (possibly partial) PaperClaimMap dict;
     `PaperClaimMap.core_contribution` is its one *required* field, so it is
     defaulted here — `understand_section`'s output omits it.
     """
@@ -257,7 +258,11 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         result = pool.submit(asyncio.run, _run()).result()
 
-    code_dir = ctx.project_dir / "code"
+    # run_with_sdk writes the generated code to runs_root/project_id/code;
+    # derive commands.json's directory the same way (not ctx.project_dir/code)
+    # so the manifest provably lands alongside the code regardless of how
+    # RunContext.project_dir was constructed.
+    code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     commands = list(getattr(result, "commands_to_run", []) or [])
     (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")

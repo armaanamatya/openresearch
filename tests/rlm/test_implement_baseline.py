@@ -24,3 +24,28 @@ def test_implement_baseline_writes_commands_manifest(make_context, tmp_path, mon
     manifest = json.loads((tmp_path / "test_proj" / "code" / "commands.json").read_text())
     assert manifest == ["python train.py", "python eval.py"]
     assert code_path.endswith("code")
+
+
+def test_implement_baseline_writes_manifest_beside_the_code(make_context, tmp_path, monkeypatch):
+    # run_with_sdk writes the code to runs_root/project_id/code. commands.json
+    # must land THERE — not at ctx.project_dir/code — even when project_dir
+    # diverges from runs_root/project_id (RunContext does not enforce that
+    # invariant). This pins the fix: reverting it to ctx.project_dir/code
+    # makes this test fail.
+    ctx = make_context(tmp_path)
+    ctx.runtime = object()
+    ctx.project_dir = tmp_path / "elsewhere"  # diverge from runs_root/project_id
+
+    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
+                                artifact_index, **kw):
+        return _FakeBaselineResult()
+
+    monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
+    code_path = implement_baseline(
+        {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
+        ctx=ctx,
+    )
+    # ctx.project_id is "test_proj"; runs_root is tmp_path.
+    assert (tmp_path / "test_proj" / "code" / "commands.json").exists()
+    assert not (tmp_path / "elsewhere" / "code" / "commands.json").exists()
+    assert code_path == str(tmp_path / "test_proj" / "code")

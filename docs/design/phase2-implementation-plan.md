@@ -560,6 +560,9 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     optimizer, learning_rate, batch_size, epochs_or_steps, scheduler,
     other_hparams. The heuristic populates the first four; the root model can
     fill scheduler/other_hparams via `llm_query` if needed.
+
+    `ctx` is required by the primitive-wrapper protocol (design decision D4);
+    this heuristic body does not use it.
     """
     from backend.agents.paper_understanding import _extract_training_recipe
     return _extract_training_recipe({"_": text_slice}).model_dump()
