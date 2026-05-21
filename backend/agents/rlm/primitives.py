@@ -204,6 +204,9 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     )
     raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
     data = _extract_json(raw)
+    if not any(k in data for k in ReproductionContract.model_fields):
+        raise ValueError(
+            f"LLM response has no ReproductionContract fields: {list(data)}")
     return ReproductionContract(**data).model_dump()
 
 

@@ -1,6 +1,6 @@
 import json
 
-from backend.agents.rlm.primitives import plan_reproduction
+from backend.agents.rlm.primitives import plan_reproduction, _PLAN_REPRODUCTION_SYSTEM
 
 CONTRACT_JSON = json.dumps({
     "reproduction_definition": "Same algorithm, same dataset.",
@@ -17,3 +17,4 @@ def test_plan_reproduction_parses_llm_contract(make_context, tmp_path):
     assert result["reproduction_definition"] == "Same algorithm, same dataset."
     assert result["expected_outputs"] == ["metrics.json"]
     assert len(ctx.llm_client.calls) == 1
+    assert ctx.llm_client.calls[0]["system"] == _PLAN_REPRODUCTION_SYSTEM
