@@ -82,7 +82,17 @@ that corroboration stands.
 ## Existing-suite note
 
 The audit's `pytest tests/` run (878 passed, 2 pre-existing local-process
-failures, 2 skipped) is unrelated to Phase 2. The `pip check` `python-dotenv`
-note is resolved by Task 1; a residual `litellm`-pins-`python-dotenv==1.0.1`
-warning is a pre-existing eval-path over-pin and does not affect the RLM code
-path (Phase 2 code never imports `litellm`).
+failures, 2 skipped) is unrelated to Phase 2.
+
+`pip check` reports `litellm 1.83.7 has requirement python-dotenv==1.0.1, but
+you have python-dotenv 1.2.2`. This is **not** a `backend/requirements.txt`
+defect: `pip install --dry-run --ignore-installed -r backend/requirements.txt`
+resolves cleanly and pulls **no `litellm`** (`deepeval` does not depend on it).
+`litellm` is in the working `.venv` only as a transitive dependency of `dspy`,
+which the RLM-engine spike (`tools/rlms_spike.py`) `pip install`ed to evaluate
+`dspy.RLM` — rejected; see `rlms-spike-report.md` and issue #66. Neither `dspy`
+nor `litellm` appears in `backend/requirements.txt`, `backend/requirements-dev.txt`
+or `pyproject.toml`. Phase 2 raised `python-dotenv` to `>=1.2.1` (a real `rlms`
+requirement), which is what makes the spike-leftover `litellm`'s exact `==1.0.1`
+pin surface in `pip check`. `pip uninstall dspy litellm` clears the warning; the
+RLM code path never imports `litellm`. (Codex review finding #1.)

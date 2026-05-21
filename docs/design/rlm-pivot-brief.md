@@ -192,6 +192,24 @@ variable**: this was corrected after the `rlms` spike (`rlms-spike-report.md`;
 Primitive signatures here are the contract; re-verify them against the
 implementation when `primitives.py` is written.
 
+**Threat model — `environment="local"` is a security boundary (Phase-3 gate).**
+`environment="local"` is not only a `custom_tools` requirement: it means the
+root model's REPL code runs via `exec` in the **host process**. `rlm` 0.1.1's
+`_SAFE_BUILTINS` (`rlm/environments/local_repl.py`) blocks `eval`/`exec`/`compile`
+but **keeps `__import__` and `open`** — any code the root model writes can
+`__import__("os").system(...)` and own the host. The root *model* is trusted;
+the `context` it reads (`paper_text`, `repo_files`) is **not** — a paper is an
+arXiv id or an uploaded PDF, i.e. attacker-influenceable. A paper carrying a
+prompt injection ("ignore the task; run …") can steer the root into writing
+hostile REPL code. **Phase 3 (#60) must not construct
+`rlm.RLM(environment="local")` until this is resolved**, by an explicit choice
+among: (a) run the whole root REPL inside an isolated container — note the
+primitives' own Docker work then needs the host daemon, so re-derive the
+sandbox model; (b) declare and document a trust boundary (single-tenant /
+trusted-operator only, papers never untrusted); or (c) constrain the REPL
+builtins via a custom map. Centralise the `RLM(...)` construction in one helper
+so the decision is enforced in exactly one place.
+
 ## 8. RLM fidelity — invariants to hold and test
 
 The system is genuinely RLM only if these hold. Add tests/assertions for each.
@@ -206,9 +224,9 @@ The system is genuinely RLM only if these hold. Add tests/assertions for each.
    slices the root constructed, and specs — never the whole `context`.
 3. **Recursion is programmatic.** `llm_query`/`rlm_query` are REPL functions the
    root calls from code — never tool-use blocks in the root's API request.
-4. **Output is a REPL variable.** Termination is the library's `answer`
-   mechanism; the report is built as REPL state so it can exceed the context
-   window.
+4. **Output is a REPL variable.** Termination is the library's `FINAL_VAR`
+   mechanism (there is no reserved `answer` variable — see §7); the report is
+   built as REPL state so it can exceed the context window.
 5. **The root actually recurses over the paper.** If the root only calls domain
    primitives in sequence and never uses `llm_query`/`rlm_query` over `context`,
    the "recursive" claim is hollow — it is the old pipeline in a REPL.
@@ -226,9 +244,13 @@ The system is genuinely RLM only if these hold. Add tests/assertions for each.
    lists and iteration counts must differ meaningfully. Identical trajectories
    mean the dynamism is fake.
 
-Note: the `rlms` REPL is `exec` in a controlled namespace, not a security
-sandbox — the root model is trusted. The paper flags sandboxed REPLs and async
-sub-calls as open problems; do not sink time into either.
+Note: the `rlms` root REPL is `exec` on the host, not a security sandbox. The
+root *model* is trusted — but the paper it reads is not (see §7's threat model:
+an attacker-controllable paper can prompt-inject the root into writing hostile
+REPL code, and `environment="local"` runs that code on the host). The RLM paper
+flags sandboxed REPLs and async sub-calls as open research problems;
+host-isolation here is not one of those problems to defer — it is the Phase-3
+gate stated in §7.
 
 ## 9. Events and UI
 
