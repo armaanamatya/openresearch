@@ -389,19 +389,37 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     return verification.model_dump()
 
 
-def propose_improvements(
-    current_results: dict,
-    rubric_scores: dict,
-    k: int | None = None,
-) -> list[dict]:
-    """Propose paper-specific improvements with proposer-assigned free-form tags.
+def propose_improvements(current_results: dict, rubric_scores: dict,
+                         k: int | None = None, *, ctx: "RunContext") -> list[dict]:
+    """Propose paper-specific improvement hypotheses (variable-length, free-form tags).
 
-    Variable-length list. NOT the hardcoded 5-category taxonomy from the
-    old `improvement_orchestrator`. The proposer's system prompt is
-    rewritten in Phase 3 (brief FM#4 validation: run on 3 papers, assert
-    candidate lists differ in count or content).
+    Reuses the `improvement-orchestrator` prompt — no fixed taxonomy. Each item
+    is an `ImprovementHypothesis` dict; malformed items are dropped fail-soft.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap rewritten improvement-orchestrator")
+    import json
+
+    from backend.agents.prompts.improvement import IMPROVEMENT_ORCHESTRATOR_PROMPT
+    from backend.agents.schemas import ImprovementHypothesis
+
+    target = k if k is not None else 3
+    user = (
+        "current_results:\n" + json.dumps(current_results, indent=2, default=str)
+        + "\n\nrubric_scores (prioritise lifting the weakest areas):\n"
+        + json.dumps(rubric_scores, indent=2, default=str)
+        + f"\n\nPropose up to {target} improvement hypotheses. Return a JSON "
+          'object {"hypotheses": [ImprovementHypothesis, ...]}. Each hypothesis '
+          "carries a free-form `category` tag of your choosing."
+    )
+    raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
+    items = _extract_json(raw).get("hypotheses", [])
+
+    out: list[dict] = []
+    for item in items:
+        try:
+            out.append(ImprovementHypothesis(**item).model_dump())
+        except Exception:
+            continue  # fail-soft: skip a malformed hypothesis
+    return out
 
 
 def set_final(report: dict) -> None:
