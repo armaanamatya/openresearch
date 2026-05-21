@@ -16,7 +16,7 @@ touching source code.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,36 @@ _VALID_RLM_BACKENDS = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# API-key injection — the registry stores no secrets; the key for each backend
+# is read from the environment at resolve time and merged into backend_kwargs.
+# ---------------------------------------------------------------------------
+
+# Which env var holds the API key for each rlm ClientBackend.
+_BACKEND_ENV_KEY: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+
+def _inject_api_key(backend: str, kwargs: dict) -> dict:
+    """Return a copy of *kwargs* with ``api_key`` from the backend's env var.
+
+    rlm's ``AnthropicClient`` requires ``api_key`` as a constructor argument
+    (it does not read the environment); ``OpenAIClient`` accepts it too. The
+    registry deliberately stores ``backend_kwargs`` without secrets — the key
+    is injected here, at resolve time, from the process environment.
+    """
+    out = dict(kwargs)
+    env_key = _BACKEND_ENV_KEY.get(backend)
+    if env_key:
+        api_key = os.environ.get(env_key)
+        if api_key:
+            out["api_key"] = api_key
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
 
@@ -204,4 +234,11 @@ def resolve_root_model(name: str | None) -> RootModel:
             f"{_ENV_ROOT_MODEL} / --model."
         )
 
-    return entry
+    # Inject the API key into backend_kwargs / sub_backend_kwargs — rlm's
+    # AnthropicClient requires it as a constructor argument (it does not read
+    # the environment). The registry itself stays secret-free.
+    return replace(
+        entry,
+        backend_kwargs=_inject_api_key(entry.rlm_backend, entry.backend_kwargs),
+        sub_backend_kwargs=_inject_api_key(entry.sub_backend, entry.sub_backend_kwargs),
+    )
