@@ -51,8 +51,11 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         try:
             result = fn(*args, ctx=ctx, **kwargs)
         except Exception as exc:
-            ctx.dashboard.primitive_call(
-                name, "error", result_summary=f"{type(exc).__name__}: {exc}"[:200])
+            # Value-free: an exception MESSAGE can carry raw LLM output, paper
+            # text or paths, and result_summary is streamed to the UI. Only the
+            # type goes into the event; the full exception still propagates via
+            # `raise` for server-side logs.
+            ctx.dashboard.primitive_call(name, "error", result_summary=type(exc).__name__)
             _ledger()
             raise
         ctx.dashboard.primitive_call(name, "ok", result_summary=_result_summary(result))
@@ -69,11 +72,20 @@ def build_custom_tools(
     registry: dict[str, Callable[..., Any]] | None = None,
     descriptions: dict[str, str] | None = None,
 ) -> dict[str, dict]:
-    """Return the rlm `custom_tools` dict, every primitive closed over `ctx`."""
+    """Return the rlm `custom_tools` dict, every primitive closed over `ctx`.
+
+    The consumer MUST instantiate `rlm.RLM(environment="local")`: `rlm`'s
+    `DockerREPL` silently drops `custom_tools` (it absorbs the kwarg into
+    `**kwargs` and never injects the tools), so under `environment="docker"`
+    none of these primitives would exist in the REPL. `"local"` is also a
+    security boundary — see the threat model in
+    `docs/design/rlm-pivot-brief.md` §7.
+    """
     if registry is None or descriptions is None:
-        # Deferred import: keeps this module importable without loading
-        # primitives.py at module-load time. A kwarg left as None falls back
-        # to the module-level PRIMITIVE_REGISTRY / PRIMITIVE_DESCRIPTIONS.
+        # Imported here, not at module scope, so a caller that passes both
+        # `registry=` and `descriptions=` explicitly (e.g. tests) never imports
+        # primitives.py at all. A kwarg left as None falls back to the
+        # module-level PRIMITIVE_REGISTRY / PRIMITIVE_DESCRIPTIONS.
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS

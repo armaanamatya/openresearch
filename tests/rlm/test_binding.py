@@ -38,6 +38,11 @@ def test_wrapped_primitive_records_failure(make_context, tmp_path):
               (ctx.project_dir / "dashboard_events.jsonl").read_text().splitlines() if ln]
     statuses = [e["status"] for e in events if e.get("event") == "primitive_call"]
     assert statuses == ["start", "error"]
+    # M1: the error summary is value-free — the exception MESSAGE ("bad") is
+    # never leaked into the dashboard event, only the exception type.
+    error_event = next(e for e in events if e.get("status") == "error")
+    assert error_event["result_summary"] == "ValueError"
+    assert "bad" not in str(error_event["result_summary"])
     ledger = [json.loads(ln) for ln in
               (ctx.project_dir / "cost_ledger.jsonl").read_text().splitlines() if ln]
     assert ledger[-1]["agent_id"] == "boom"  # ledger row appended on the error path too
