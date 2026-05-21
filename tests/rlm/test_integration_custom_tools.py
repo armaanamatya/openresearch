@@ -52,6 +52,7 @@ def test_primitives_are_callable_inside_the_rlm_repl(make_context, tmp_path):
 
     original = rlm_core.get_client
     rlm_core.get_client = lambda backend, kw: ScriptedLM()
+    rlm = None
     try:
         rlm = RLM(backend="openai", backend_kwargs={"model_name": "scripted"},
                   environment="local", max_iterations=4, custom_tools=custom_tools,
@@ -59,13 +60,21 @@ def test_primitives_are_callable_inside_the_rlm_repl(make_context, tmp_path):
         result = rlm.completion(MOCK_PAPER)  # MOCK_PAPER becomes the REPL `context`
     finally:
         rlm_core.get_client = original
-        rlm.close()
+        if rlm is not None:  # rlm is unbound if the RLM(...) constructor raised
+            rlm.close()
 
-    assert result.response  # terminated via FINAL_VAR(report)
+    # The scripted run terminates with FINAL_VAR(report), and report is
+    # {"hyperparameters": ...} — so a genuine FINAL_VAR resolution (not the
+    # max_iterations _default_answer fallback) carries "hyperparameters".
+    assert result.response
+    assert "hyperparameters" in str(result.response)
     events = [json.loads(ln) for ln in
               (ctx.project_dir / "dashboard_events.jsonl").read_text().splitlines() if ln]
-    names = {e["primitive"] for e in events if e.get("event") == "primitive_call"}
-    assert "extract_hyperparameters" in names  # a primitive ran on a slice of `context`
+    # status == "ok" — proves the primitive COMPLETED, not merely that a
+    # "start" event was emitted before it ran.
+    names = {e["primitive"] for e in events
+             if e.get("event") == "primitive_call" and e.get("status") == "ok"}
+    assert "extract_hyperparameters" in names
 
 
 def test_every_primitive_binds_and_heuristic_ones_run(make_context, tmp_path):
