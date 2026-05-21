@@ -20,3 +20,22 @@ def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_pat
     result = run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
     assert result["success"] is True
     assert result["metrics"]["mean_reward"] == 200.0
+
+
+def test_run_experiment_missing_commands_json(make_context, tmp_path):
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "nocode"
+    code_dir.mkdir()
+    result = run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
+    assert result["success"] is False
+    assert "error" in result
+
+
+def test_run_experiment_empty_commands_json(make_context, tmp_path):
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "emptycode"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text("[]")
+    result = run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
+    assert result["success"] is False
+    assert "error" in result

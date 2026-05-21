@@ -313,6 +313,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     import asyncio
     import concurrent.futures
     import json
+    import uuid
     from pathlib import Path
 
     manifest = Path(code_path) / "commands.json"
@@ -321,11 +322,12 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         return {"success": False, "metrics": {},
                 "error": f"no commands.json at {manifest}"}
 
+    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(
             asyncio.run,
             _execute_in_sandbox(code_path, env_id, commands,
-                                project_id=ctx.project_id, run_id=ctx.project_id),
+                                project_id=ctx.project_id, run_id=run_id),
         ).result()
 
 
