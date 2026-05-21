@@ -14,24 +14,29 @@ result is reproducible.
 
 What it checks
 --------------
-Runs the brief's intended Phase 1 spike: a minimal `RLM(custom_tools=...)` with
-two mock domain primitives over a tiny mock "paper", and confirms that
-Algorithm 1 runs, `custom_tools` are callable inside the REPL, and the run
-terminates by returning a REPL variable via `FINAL_VAR`.
+1. The brief's Phase 1 spike (`run_mock`): a minimal `RLM(custom_tools=...)`
+   with two mock domain primitives over a tiny mock "paper" — confirms
+   Algorithm 1 runs, `custom_tools` are callable inside the REPL, and the run
+   terminates by returning a REPL variable via `FINAL_VAR`.
+2. The depth-2 recursion check (`run_depth2`): confirms that with `max_depth=2`
+   a `rlm_query()` call from the root spawns a genuine recursive child RLM
+   (`on_subcall_*` fire at depth 1), and that a `rlm_query()` at the depth cap
+   degrades to a plain LM call (no child RLM, no `on_subcall_*` at depth 2) —
+   brief paper-accuracy correction #1.
 
-Two modes
----------
-* mock  (default) — monkeypatches the rlm client factory with a deterministic
-  scripted fake model. No API key, no network, no cost. This is the
-  reproducible verification.
-* live  (`--live`)  — runs a real `RLM` against OpenAI/Anthropic. Needs a valid
-  key. (When this spike was authored the only key in the environment was an
-  invalid `OPENAI_API_KEY`, so the live path 401'd at the API boundary — see
-  docs/design/rlms-spike-report.md.)
+Modes
+-----
+* default     — runs `run_mock` then `run_depth2` (deterministic, no key, no cost).
+* `--mock`    — only the Phase 1 spike.
+* `--depth2`  — only the depth-2 recursion check.
+* `--live`    — runs a real `RLM` against OpenAI. Needs a valid key. (When this
+  harness was authored the environment's only `OPENAI_API_KEY` was invalid, so
+  the live path 401'd at the API boundary — see docs/design/rlms-spike-report.md.)
 
 Run
 ---
-    .venv/bin/python tools/rlms_spike.py            # mock (default)
+    .venv/bin/python tools/rlms_spike.py            # mock + depth-2 (default)
+    .venv/bin/python tools/rlms_spike.py --depth2   # depth-2 recursion only
     .venv/bin/python tools/rlms_spike.py --live     # real API, needs a key
 """
 
@@ -297,10 +302,179 @@ def _report(result, fake_turns, max_iterations: int, mode: str) -> int:  # noqa:
     return 0 if all_pass else 2
 
 
+# --- depth-2 recursion check (run_depth2) -----------------------------------
+# Verifies brief paper-accuracy correction #1: at max_depth=2 a rlm_query()
+# call spawns a genuine recursive child RLM; at the depth cap rlm_query()
+# degrades to a plain LM call. Three scripted fakes are handed out by a
+# patched get_client in call order: root (depth 0) -> child (depth 1) ->
+# grandchild leaf (depth 2, used as a plain LM by the capped _subcall).
+DEPTH2_TURNS: dict[str, int] = {"root": 0, "child": 0, "grandchild": 0}
+
+
+def _make_scripted_turns_lm(role: str, script: list[str]):
+    """A fake BaseLM that returns `script` responses in order (last repeats)."""
+    from rlm.clients.base_lm import BaseLM
+    from rlm.core.types import ModelUsageSummary, UsageSummary
+
+    class ScriptedTurnsLM(BaseLM):
+        def __init__(self) -> None:
+            super().__init__(model_name=f"scripted-{role}")
+            self.calls = 0
+
+        def completion(self, prompt) -> str:  # noqa: ANN001
+            self.calls += 1
+            DEPTH2_TURNS[role] += 1
+            return script[min(self.calls - 1, len(script) - 1)]
+
+        async def acompletion(self, prompt) -> str:  # noqa: ANN001
+            return self.completion(prompt)
+
+        def _usage(self):
+            return ModelUsageSummary(
+                total_calls=self.calls, total_input_tokens=0,
+                total_output_tokens=0, total_cost=0.0,
+            )
+
+        def get_usage_summary(self):
+            return UsageSummary(model_usage_summaries={self.model_name: self._usage()})
+
+        def get_last_usage(self):
+            return self._usage()
+
+    return ScriptedTurnsLM()
+
+
+def run_depth2() -> int:
+    """Verify max_depth=2 recursion: root -> child RLM -> capped plain-LM leaf."""
+    try:
+        import rlm.core.rlm as rlm_core
+        from rlm import RLM
+        from rlm.logger import RLMLogger
+    except Exception as e:  # noqa: BLE001
+        print(f"FAIL: cannot import `rlm` — {e!r}")
+        return 1
+
+    EVENTS.clear()
+    for k in DEPTH2_TURNS:
+        DEPTH2_TURNS[k] = 0
+
+    # Root (depth 0): call rlm_query once, then terminate on the returned var.
+    root_lm = _make_scripted_turns_lm("root", [
+        "I will delegate a subtask to a recursive sub-RLM.\n"
+        "```repl\n"
+        "child_answer = rlm_query('CHILD: do a small subtask and finish.')\n"
+        "print('child returned:', child_answer)\n"
+        "```\n",
+        "Delegation complete.\nFINAL_VAR(child_answer)",
+    ])
+    # Child (depth 1): itself calls rlm_query — this call hits the depth cap.
+    child_lm = _make_scripted_turns_lm("child", [
+        "I will delegate further to exercise the depth cap.\n"
+        "```repl\n"
+        "gc = rlm_query('GRANDCHILD: reply with the word OK.')\n"
+        "print('grandchild returned:', gc)\n"
+        "```\n",
+        "Subtask done.\nFINAL(child RLM completed its nested task)",
+    ])
+    # Grandchild (depth 2): the capped _subcall uses this as a plain LM.
+    grandchild_lm = _make_scripted_turns_lm(
+        "grandchild", ["OK (degraded plain-LM call at the depth cap)"]
+    )
+
+    fakes = [root_lm, child_lm, grandchild_lm]
+    calls = [0]
+
+    def ordered_get_client(backend, backend_kwargs):  # noqa: ANN001, ARG001
+        i = calls[0]
+        calls[0] += 1
+        if i >= len(fakes):
+            raise RuntimeError(
+                f"rlms_spike depth-2: unexpected get_client call #{i + 1} — rlm "
+                "control flow differs from the expected root/child/grandchild order"
+            )
+        return fakes[i]
+
+    original_get_client = rlm_core.get_client
+    rlm_core.get_client = ordered_get_client
+    max_iterations = 4
+    result = None
+    error: str | None = None
+    try:
+        rlm = RLM(
+            backend="openai",  # irrelevant — get_client is patched
+            backend_kwargs={"model_name": "scripted-root"},
+            environment="local",
+            max_depth=2,
+            max_iterations=max_iterations,
+            logger=RLMLogger(),
+            verbose=False,
+            on_iteration_start=on_iteration_start,
+            on_iteration_complete=on_iteration_complete,
+            on_subcall_start=on_subcall_start,
+            on_subcall_complete=on_subcall_complete,
+        )
+        print("[spike/depth2] RLM(max_depth=2).completion() — root -> child RLM -> capped leaf")
+        try:
+            result = rlm.completion(
+                "Delegate a subtask via rlm_query.",
+                root_prompt="Verify recursive sub-RLM spawning.",
+            )
+        finally:
+            rlm.close()
+    except Exception as e:  # noqa: BLE001
+        error = repr(e)
+        traceback.print_exc()
+    finally:
+        rlm_core.get_client = original_get_client
+
+    subcall_start_d1 = [e for e in EVENTS if e[0] == "subcall_start" and e[1] == 1]
+    subcall_done_d1 = [e for e in EVENTS if e[0] == "subcall_complete" and e[1] == 1]
+    subcall_start_d2 = [e for e in EVENTS if e[0] == "subcall_start" and e[1] == 2]
+
+    checks = {
+        "root RLM ran (root fake invoked)": DEPTH2_TURNS["root"] >= 1,
+        "max_depth=2 spawned a child RLM (on_subcall_start at depth 1)":
+            len(subcall_start_d1) >= 1,
+        "on_subcall_complete fired at depth 1": len(subcall_done_d1) >= 1,
+        "child ran a genuine nested completion (child fake invoked)":
+            DEPTH2_TURNS["child"] >= 1,
+        "rlm_query at the depth cap degraded to a plain LM call "
+        "(grandchild leaf invoked; NO child RLM / on_subcall_start at depth 2)":
+            DEPTH2_TURNS["grandchild"] >= 1 and len(subcall_start_d2) == 0,
+        "run completed without error": error is None and result is not None,
+    }
+    print("\n=== DEPTH-2 RECURSION VERIFICATION ===")
+    for name, ok in checks.items():
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
+    print("  --- observations ---")
+    print(f"  [info] fake invocations — root:{DEPTH2_TURNS['root']} "
+          f"child:{DEPTH2_TURNS['child']} grandchild-leaf:{DEPTH2_TURNS['grandchild']}")
+    print(f"  [info] on_subcall_start events: {[e for e in EVENTS if e[0] == 'subcall_start']}")
+    print(f"  [info] on_subcall_complete events: {[e for e in EVENTS if e[0] == 'subcall_complete']}")
+    if result is not None:
+        print(f"  [info] root response (first 200 chars): {str(result.response)[:200]!r}")
+    if error:
+        print(f"  [info] error: {error}")
+    all_pass = all(checks.values())
+    print("\nDEPTH-2 RESULT: " + (
+        "PASS — max_depth=2 spawns a genuine recursive child RLM; rlm_query at "
+        "the cap degrades to a plain LM call."
+        if all_pass else
+        "UNVERIFIED — the mock did not reach the expected recursion shape; see FAIL lines."))
+    return 0 if all_pass else 2
+
+
 def main(argv: list[str]) -> int:
     if "--live" in argv:
         return run_live()
-    return run_mock()
+    if "--depth2" in argv:
+        return run_depth2()
+    if "--mock" in argv:
+        return run_mock()
+    # default: the Phase 1 spike + the depth-2 recursion check
+    rc_mock = run_mock()
+    rc_depth2 = run_depth2()
+    return rc_mock or rc_depth2
 
 
 if __name__ == "__main__":
