@@ -69,6 +69,15 @@ is built up as REPL state and returned as the run's `answer`.
 via its `custom_tools` argument. See `docs/design/rlm-pivot-brief.md` for the
 full design, the RLM-fidelity invariants, and the build order.
 
+**`--mode rlm` is production-hardened** (Phase 5, 2026-05): per-primitive
+deadlines (`RunContext.deadline_utc` + `run_with_deadline`), `max_usd` cost cap
+enforced between iterations, corpus-leak redaction at every egress (SSE stdout
+prefixes + final report), and atomic `demo_status.json` writes with SIGKILL
+escalation on stuck runs. The primitive and orchestrator layers are wired
+(`#59` primitives + `#60` orchestrator merged). Real PaperBench bundles (`ftrl`,
+`sequential-neural-score-estimation`, `mechanistic-understanding`) are vendored
+under `third_party/paperbench/`.
+
 ## Run lifecycle (UI ↔ backend)
 
 1. Lab UI (`frontend/src/components/lab/lab-shell.tsx`) starts a run — arXiv

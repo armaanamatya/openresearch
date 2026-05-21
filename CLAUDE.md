@@ -61,7 +61,7 @@ python -m backend.cli ingest paper.pdf                          # ingest only
 python -m backend.cli eval <project_id> --paper-metrics '{...}' # score completed run
 ```
 
-Useful flags: `--mode {offline,sdk}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost.
+Useful flags: `--mode {offline,sdk,rlm}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost. `--mode rlm` is the production-hardened RLM path (Phase 5): per-primitive deadlines, `max_usd` cost cap, corpus-leak redaction at every egress, atomic run-status writes. Set `REPROLAB_RLM_ROOT_MODEL` to `gpt-5`, `qwen3-coder`, `kimi-k2.5`, or `claude` (defaults to GPT-5 when `OPENAI_API_KEY` is set).
 
 ### Docker
 
