@@ -17,16 +17,33 @@ Phase 2 (#59) implementation.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from backend.agents.rlm.context import RunContext
 
 
-def understand_section(text_slice: str) -> dict:
-    """Extract claims, datasets, metrics from a section-sized text slice.
+def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
+    """Extract datasets/metrics/training-recipe/hardware/ambiguities from a slice.
 
-    Wraps `backend/agents/paper_understanding.py::run_offline` core logic
-    (the `_extract_*` helpers operating on a single section's text).
+    Wraps the *title-agnostic* heuristic helpers in
+    `backend/agents/paper_understanding.py`. Returns a PARTIAL PaperClaimMap
+    dict — `core_contribution`, `claims`, `model_architecture` and
+    `evaluation_protocol` need section titles and are left for the root model
+    to extract with `llm_query` over `context` (design decision D5).
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap paper_understanding._extract_*")
+    from backend.agents.paper_understanding import (
+        _extract_datasets, _extract_metrics, _extract_training_recipe,
+        _extract_hardware, _extract_ambiguities,
+    )
+    sections = {"_": text_slice}
+    return {
+        "datasets": [d.model_dump() for d in _extract_datasets(sections)],
+        "metrics": [m.model_dump() for m in _extract_metrics(sections)],
+        "training_recipe": _extract_training_recipe(sections).model_dump(),
+        "hardware_clues": _extract_hardware(sections),
+        "ambiguities": [a.model_dump() for a in _extract_ambiguities(sections)],
+    }
 
 
 def extract_hyperparameters(text_slice: str) -> dict:
