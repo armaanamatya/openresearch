@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk"]
+RunMode = Literal["offline", "sdk", "rlm"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -351,8 +351,15 @@ class FileLiveRunService:
             yield sse_event("dashboard_event", dash_event, event_id=f"dash-{last_dash_count}")
             last_dash_count += 1
 
+        # A4-10: mild backoff after the first 60 s in a running state —
+        # 1 s for the first minute, then grows towards ~5 s to avoid
+        # hammering the file system on long-running jobs.
+        _running_secs: float = 0.0
         while state.status in {"queued", "running"}:
-            await asyncio.sleep(1)
+            _poll_interval = 1.0 if _running_secs < 60.0 else min(5.0, 1.0 + (_running_secs - 60.0) / 60.0)
+            await asyncio.sleep(_poll_interval)
+            if state.status == "running":
+                _running_secs += _poll_interval
             counter += 1
             state = await self.get_run(project_id)
             if state is None:
@@ -441,7 +448,7 @@ class FileLiveRunService:
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,
-                    **({"REPROLAB_LLM_PROVIDER": request.provider} if request.mode == "sdk" else {}),
+                    **({"REPROLAB_LLM_PROVIDER": request.provider} if request.mode in ("sdk", "rlm") else {}),
                     **(
                         {"REPROLAB_VERIFICATION_PROVIDER": request.verificationProvider}
                         if request.verificationProvider
@@ -1110,6 +1117,10 @@ def _fixture_project_id(request: StartRunRequest) -> str:
     review = request.verificationProvider or "same"
     if request.mode == "sdk":
         return f"ui_sdk_{request.provider}_review_{review}_demo_{int(datetime.now().timestamp() * 1000)}"
+    if request.mode == "rlm":
+        # A4-4: rlm runs get a distinct prefix so the provider is recoverable
+        # from the project_id and IDs cannot collide with offline/sdk runs.
+        return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
     return f"ui_demo_{int(datetime.now().timestamp() * 1000)}"
 
 
@@ -1198,6 +1209,10 @@ def _python_script(
         "runs_root": str(runs_root),
         "database_url": _settings.database_url,
         "uploaded_paper": uploaded_paper,
+        # A4-7: budget fields threaded through so an API-set budget is honored
+        # in the non-uploaded rlm path (run_pipeline_rlm call below).
+        "max_usd": None,
+        "max_wall_clock": None,
     }
     return f"""
 import asyncio
@@ -1207,8 +1222,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk
-from backend.cli import cmd_reproduce
+from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk, run_pipeline_rlm
+from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
 
 config = json.loads({json.dumps(json.dumps(common))})
 project_id = config["project_id"]
@@ -1245,7 +1260,12 @@ def write_status(status, error=None, completed_at=None):
         payload["completedAt"] = completed_at
     if error:
         payload["error"] = error
-    status_path.write_text(json.dumps(payload, indent=2))
+    # A4-1: atomic write — crash mid-write leaves either old or new JSON,
+    # never a half-written file that permanently breaks status reads.
+    import os as _os
+    _tmp = status_path.with_suffix(status_path.suffix + ".tmp")
+    _tmp.write_text(json.dumps(payload, indent=2))
+    _os.replace(_tmp, status_path)
 
 def finalize_benchmark():
     # Replace the staged benchmark placeholder with the measured values from the
@@ -1295,7 +1315,11 @@ def finalize_benchmark():
             "baselineRubricAreas": base_rv.get("areas") or [],
         }})
         existing["benchmark"] = bench
-        status_path.write_text(json.dumps(existing, indent=2))
+        # A4-1: atomic write — same guard as write_status above.
+        import os as _os
+        _tmp = status_path.with_suffix(status_path.suffix + ".tmp")
+        _tmp.write_text(json.dumps(existing, indent=2))
+        _os.replace(_tmp, status_path)
     except Exception:
         pass
 
@@ -1303,27 +1327,27 @@ write_status("running")
 
 try:
     if config["uploaded_paper"]:
-        exit_code = cmd_reproduce(Namespace(
-            source=config["uploaded_paper"]["path"],
-            source_kind="pdf_path",
-            agent="default",
-            mode=config["run_mode"],
-            model=config["model"],
-            provider=config["provider"] if config["run_mode"] == "sdk" else None,
-            verification_provider=config["verification_provider"] if config["run_mode"] == "sdk" else None,
-            execution_mode=config["execution_mode"],
-            sandbox=config["sandbox"],
-            gpu_mode=config["gpu_mode"],
-            command_timeout=None,
-            allow_sandbox_network=False,
-            sandbox_platform=None,
-            sandbox_memory=None,
-            sandbox_cpus=None,
-            hints="Keep this as a lightweight smoke test",
-            n_paths=1,
-            runs_root=config["runs_root"],
-            database_url=config["database_url"],
-        ))
+        # A4-5: build from the full _REPRODUCE_DEFAULTS set so a missing key
+        # cannot AttributeError at runtime when cmd_reproduce accesses it.
+        exit_code = cmd_reproduce(Namespace(**{{
+            **_REPRODUCE_DEFAULTS,
+            "source": config["uploaded_paper"]["path"],
+            "source_kind": "pdf_path",
+            "agent": "default",
+            "mode": config["run_mode"],
+            "model": config["model"],
+            "provider": config["provider"] if config["run_mode"] in ("sdk", "rlm") else None,
+            "verification_provider": config["verification_provider"] if config["run_mode"] == "sdk" else None,
+            "execution_mode": config["execution_mode"],
+            "sandbox": config["sandbox"],
+            "gpu_mode": config["gpu_mode"],
+            "hints": "Keep this as a lightweight smoke test",
+            "n_paths": 1,
+            "runs_root": config["runs_root"],
+            "database_url": config["database_url"],
+            "max_usd": config["max_usd"],
+            "max_wall_clock": config["max_wall_clock"],
+        }}))
         if exit_code != 0:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
@@ -1340,6 +1364,26 @@ try:
                 n_improvement_paths=1,
                 execution_profile=profile,
                 sandbox_mode=SandboxMode(config["sandbox"]),
+            ))
+        elif config["run_mode"] == "rlm":
+            # A4-7: build run_budget from threaded-through config fields so
+            # an API-set budget is honored in the non-uploaded rlm path.
+            _run_budget = None
+            if config["max_usd"] is not None or config["max_wall_clock"] is not None:
+                from backend.agents.resilience import RunBudget
+                _run_budget = RunBudget(
+                    max_usd=config["max_usd"],
+                    max_wall_clock_seconds=config["max_wall_clock"],
+                )
+            asyncio.run(run_pipeline_rlm(
+                project_id,
+                runs_root,
+                DEMO_WORKSPACE,
+                provider=config["provider"],
+                model=config["model"],
+                execution_profile=profile,
+                sandbox_mode=SandboxMode(config["sandbox"]),
+                run_budget=_run_budget,
             ))
         else:
             run_pipeline_offline(
@@ -1381,6 +1425,11 @@ def _provider_from_project_id(project_id: str) -> str | None:
     if project_id.startswith("ui_sdk_openai_"):
         return "openai"
     if project_id.startswith("ui_sdk_anthropic_") or project_id.startswith("ui_sdk_demo_"):
+        return "anthropic"
+    # A4-4: rlm runs use ui_rlm_<provider>_<ms> — extract provider from the prefix.
+    if project_id.startswith("ui_rlm_openai_"):
+        return "openai"
+    if project_id.startswith("ui_rlm_anthropic_"):
         return "anthropic"
     return None
 
@@ -1526,14 +1575,33 @@ def _pid_exists(pid: Any) -> bool:
         return False
 
 
-def _terminate_pid(pid: int) -> None:
+def _terminate_pid(pid: int, *, _sigkill_grace_seconds: float = 5.0) -> None:
+    """Send SIGTERM; escalate to SIGKILL after a short grace if the process survives.
+
+    A4-8: a wedged rlm subprocess blocked inside rlm.completion() never
+    responds to SIGTERM alone. After _sigkill_grace_seconds, if the pid is
+    still alive, we escalate to SIGKILL so stop_run always terminates the run.
+    """
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)
         return
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
-        pass
+        return
+    # Wait up to _sigkill_grace_seconds for the process to exit gracefully.
+    import time
+    deadline = time.monotonic() + _sigkill_grace_seconds
+    while time.monotonic() < deadline:
+        if not _pid_exists(pid):
+            return
+        time.sleep(0.25)
+    # Escalate: process is still alive after grace period.
+    if _pid_exists(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def _summarize_failure(log: str) -> str:

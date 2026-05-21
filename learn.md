@@ -11,6 +11,171 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — A missing LLM API key surfaced as a cryptic `TypeError` deep in `rlm`
+
+**Symptom.** An `--mode rlm` run with the `claude` root failed at run start with
+`TypeError: AnthropicClient.__init__() missing 1 required positional argument:
+'api_key'`, raised ~100 frames deep inside the `rlm` library — nothing pointed at
+the real problem: an unset credential.
+
+**Root cause.** `resolve_root_model` injected each backend's API key from the
+environment via `_inject_api_key`, which added `api_key` to `backend_kwargs` only
+when the env var was truthy — an absent or empty key was silently dropped. The
+single fail-fast guard covered only the OpenRouter backend; `anthropic` and
+`openai` had none, so a missing key sailed through to `rlm`'s client constructor.
+
+**Fix.** `resolve_root_model` now fails fast for *every* backend: a `_env_var_for`
+helper resolves the key's env var (honouring an explicit `RootModel.api_key_env`),
+and a loop over the root and sub-call backends raises an actionable `ValueError`
+when the key is absent. The `api_key_env` field also decouples the key source from
+the backend type — which is what lets the Featherless backend (an `openai` client
+type authenticating with `FEATHERLESS_API_KEY`) work.
+
+**Lesson.** A missing credential must fail loudly at the boundary where it is
+resolved — never let it travel inward to surface as a type error inside a
+dependency. A fail-fast check added for one backend must cover *every* backend,
+not just the one that first needed it.
+
+**Guardrail.** `TestMissingApiKeyFailsFast` in `tests/rlm/test_models.py` asserts
+`resolve_root_model` raises `ValueError` (naming the missing env var) when a
+backend's key is absent — covering the anthropic and openrouter backends.
+
+---
+
+## 2026-05-21 — Git LFS pointers served by raw.githubusercontent.com look like real files
+
+**Symptom.** Fetching `paper.md` from `openai/preparedness` via
+`raw.githubusercontent.com/openai/preparedness/main/…/paper.md` returned a
+134-byte text file starting with `version https://git-lfs.github.com/spec/v1`.
+The paper content was absent; only a pointer stub was stored in the main git
+tree.
+
+**Root cause.** PaperBench source files (`paper.md`, `addendum.md`) are tracked
+in Git LFS on `openai/preparedness`. `raw.githubusercontent.com` serves only the
+pointer object, not the resolved blob. There is no flag or header to make it
+transparently dereference LFS.
+
+**Fix.** Use the LFS batch API directly:
+`POST https://github.com/openai/preparedness.git/info/lfs/objects/batch` with
+the pointer's `oid` and `size`. The response returns an `actions.download.href`
+redirect URL. For `openai/preparedness` that URL is under the
+`openai/frontier-evals` LFS store — follow the redirect to get the real blob.
+
+**Lesson.** When vendoring from a repo that uses Git LFS, treat `raw.githubusercontent.com`
+as unreliable for any file whose tracked size is suspiciously small. Check the
+first line: if it starts `version https://git-lfs.github.com/spec/v1`, you have
+a pointer, not the file. Always fetch via the LFS batch API for LFS-tracked blobs.
+
+**Guardrail.** The vendoring script (`scripts/vendor_paperbench.py`) checks the
+first line of each fetched file and aborts with a clear error if it detects a
+pointer stub, so a future re-vendor does not silently store a 134-byte shell.
+
+---
+
+## 2026-05-21 — `rlms` `max_timeout` only fires between iterations — primitives overrun it
+
+**Symptom.** A long `run_experiment` primitive (N experiment commands, each up
+to 3600 s) wedged inside `execute_code`. The `rlms.RLM(max_timeout=…)` budget
+expired, but the process did not stop — the run hung past its wall-clock budget.
+
+**Root cause.** `rlms`'s `max_timeout` is checked *between* iterations of the
+Algorithm-1 loop. A primitive that blocks synchronously inside `execute_code` or
+`pool.submit(...).result()` is opaque to the library's timeout check; the next
+check never arrives. The process-level watchdog in `run.py` is the only backstop,
+and it fires via `os._exit` — no teardown.
+
+**Fix.** Each long primitive (`build_environment`, `implement_baseline`,
+`run_experiment`) now routes through `run_with_deadline(coro, ctx, cap_s)`.
+`RunContext` carries `deadline_utc: datetime | None` and `remaining_s()`.
+`run_with_deadline` wraps the async body in `asyncio.wait_for(min(cap_s, remaining))`
+and, on `TimeoutError`, runs the primitive's teardown (sandbox `destroy`) before
+returning a fail-soft error dict. This gives the loop a chance to handle the
+failure gracefully rather than relying on the brutal process-level watchdog.
+
+**Lesson.** A library-level timeout that only fires between loop iterations is
+not a real timeout for any primitive that blocks synchronously inside the loop.
+When you offload heavy work to a third-party scheduler (`rlms`, `celery`,
+`asyncio.gather`), own the deadline enforcement inside your own code — do not
+rely on the scheduler's outer clock.
+
+**Guardrail.** `tests/rlm/test_primitives_deadline.py` drives each long primitive
+with an already-expired `RunContext.deadline_utc` and asserts it returns a
+fail-soft error dict (no hang, no exception). The test also verifies sandbox
+`destroy` is called exactly once so no orphaned containers are left.
+
+---
+
+## 2026-05-21 — Corpus-leak (Algorithm-2) invariant needs redaction at EVERY egress, not only in `sanitize_iteration`
+
+**Symptom.** A corpus-leak audit of the RLM run surface found two escape paths
+not covered by `sanitize_iteration`: (1) `sse_bridge.py` prefixed streamed
+stdout/stderr lines with the raw primitive output before sanitizing; (2)
+`report.py` embedded the full primitive return value (which can carry a
+`context` slice) verbatim in the final JSON report. The `sanitize_iteration`
+chokepoint was correctly placed for iteration events but was not the only place
+where corpus-bearing data reached a durable or streamed surface.
+
+**Root cause.** `sanitize_iteration` strips the `context` variable from
+`RLMIteration.locals` before the event is logged, which is correct for
+iteration snapshots. But stdout/stderr from inside a primitive are streamed
+directly to the SSE bridge before the iteration is complete, and the final
+report is built from primitive return values after the loop — neither path
+flows through `sanitize_iteration`.
+
+**Fix.** A `redact_corpus(text, sentinels)` helper is now applied at every
+egress point. `sentinels` is the set of first-200-char prefixes of each
+`context` corpus value, computed once at run start. Applied to: stdout/stderr
+prefixes in `sse_bridge.py`; every string field in `report.py`'s final-report
+construction.
+
+**Lesson.** A security invariant ("the corpus must never reach a logged surface")
+is only as strong as the set of egress points it covers. `sanitize_iteration`
+was the right chokepoint for the iteration-event path; it was not the only path.
+When you audit an invariant, enumerate **all** surfaces where the sensitive value
+could reach — not just the one that motivated the original guard.
+
+**Guardrail.** `tests/rlm/test_corpus_redaction.py` drives a run with a
+recognisable sentinel in the corpus and asserts the sentinel is absent from: the
+SSE event stream, the SQLite snapshot, and the final JSON report. The test fails
+if any of the three egress points is not covered.
+
+---
+
+## 2026-05-21 — A library that `.format()`s the prompt you hand it
+
+**Symptom.** The first real-`rlm` integration run of the new RLM orchestrator
+(#60) crashed inside the `rlms` library before the Algorithm-1 loop even started
+— an error from deep in `rlm`, on a prompt string our own `build_system_prompt`
+had produced and we treated as plain text.
+
+**Root cause.** `rlm`'s `build_rlm_system_prompt` runs
+`system_prompt.format(custom_tools_section=…)` on whatever `custom_system_prompt`
+you pass `rlm.RLM(...)` (`rlm/utils/prompts.py:156`). The custom prompt is not
+plain text to the library — it is a `str.format()` **template**. Our prompt was
+full of literal braces (JSON report examples, code snippets like
+`json.dumps({"summary": …})`); `.format()` read each `{…}` as a replacement
+field and blew up. Worse: the library injects the auto-generated primitive tool
+docs at a `{custom_tools_section}` placeholder — our prompt had none, so even
+absent the crash the root model would never have been told the primitives exist.
+
+**Fix.** `build_system_prompt` now treats its output as what it is — a
+`.format()` template. It assembles the prompt with normal, readable braces, then
+escapes every brace (`{` → `{{`, `}` → `}}`) and restores exactly one real
+placeholder (`{custom_tools_section}`) at the primitive-docs slot.
+
+**Lesson.** When you hand a string to a third-party library, find out what the
+library *does* to it. "It's just a prompt string" was the wrong mental model —
+the library's contract was "give me a `.format()` template." A value crossing an
+API boundary is governed by the callee's contract, not the caller's assumption.
+
+**Guardrail.** `tests/rlm/test_system_prompt.py::TestFormatTemplate` asserts the
+output is a valid template — `.format(custom_tools_section=…)` does not raise and
+exposes *exactly* one field. The real-`rlm` integration harness
+(`tests/rlm/test_run_integration.py`) drives the real `build_system_prompt`
+through `rlm`'s own `.format()`, so a regression also fails end-to-end.
+
+---
+
 ## 2026-05-14 — A "successful" docker build can still ship a broken environment
 
 **Symptom.** A docker+sonnet e2e run on the demo PPO paper sailed past Track 4

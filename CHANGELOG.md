@@ -9,6 +9,81 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **RLM Featherless root-model backend + hardened key resolution (feat/rlm-phase5-e2e).**
+  Adds `qwen3-coder-featherless` to the root-model registry — `Qwen/Qwen3-Coder-480B-A35B-Instruct`
+  (the paper-validated RLM root) served via Featherless's OpenAI-compatible endpoint, so an RLM
+  run needs no OpenAI/Anthropic key. A new `RootModel.api_key_env` field decouples the API-key
+  env var from the backend type (`_env_var_for` helper), letting an `openai`-typed backend
+  authenticate with `FEATHERLESS_API_KEY`; `_build_llm_client` mirrors a custom endpoint so the
+  primitive LLM client shares the root's host and key. `resolve_root_model` now fails fast —
+  with an actionable `ValueError` — when *any* backend's API key is missing (previously only
+  OpenRouter was checked; a missing key otherwise surfaced as a cryptic `TypeError` deep inside
+  `rlm`).
+- **RLM Phase 5 — production-hardened end-to-end run mode (WS-H + WS-B, feat/rlm-phase5-e2e).**
+  Completes the #59 (primitive layer) ↔ #60 (orchestrator) merge and makes `--mode rlm` safe
+  for real reproduction runs. Four disjoint hardening batches landed on top of the merge:
+
+  - **Per-primitive deadlines (M-DEADLINE / Batch P).** `RunContext` gained `deadline_utc:
+    datetime | None` (set once from the wall-clock budget at run start) and `remaining_s()`.
+    A `run_with_deadline(coro, ctx, cap_s)` helper wraps a primitive's async body in
+    `asyncio.wait_for(min(cap_s, remaining))` and, on `TimeoutError`, runs the primitive's
+    teardown (sandbox `destroy`) before returning a fail-soft error dict. The three long
+    primitives — `build_environment` (3 × 1800 s repair + aggregate cap), `implement_baseline`
+    (previously blocked forever on `pool.submit(...).result()`), and `run_experiment`
+    (N commands × 3600 s) — all route through it. `rlms`'s `max_timeout` only fires between
+    iterations; a primitive wedged in `execute_code` overruns it; the per-primitive deadline
+    is the only real enforcement.
+
+  - **`max_usd` cost cap (M-BUDGET / Batch O).** The `RLMLogger.log()` callback now compares
+    `cost_ledger.total_usd()` to `run_budget.max_usd` between iterations; on breach it
+    requests run stop and `_finalize` marks `status="failed"` (→ non-zero CLI exit). Cost
+    reporting drops the always-zero `sub_usd` field for an honest single `llm_usd`. A
+    budget-exhausted run no longer exits 0.
+
+  - **Corpus-leak redaction at every egress (M-REDACT / Batch O).** Algorithm-2's invariant
+    — the offloaded paper corpus must never reach a durable or streamed surface — previously
+    held only inside `sanitize_iteration`. The fix applies a `redact_corpus(text, sentinels)`
+    helper (sentinel = first 200 chars of each `context` corpus value) at every remaining
+    egress: `sse_bridge` stdout/stderr prefixes and `report.py`'s final-report strings.
+
+  - **Run-status integrity (Batch L).** Non-atomic `demo_status.json` writes in `live_runs.py`
+    (a crash bricks the UI) are now tempfile + `os.replace` on every code path. The watchdog
+    `os._exit` now writes a terminal `status=failed` and a terminal SSE frame before exiting.
+    `stop_run` escalates from SIGTERM to SIGKILL after 10 s so a wedged run cannot live
+    forever.
+
+  - **RunPod backend hardening (Batch R).** `gpu_mode` and `network_disabled` flags are now
+    honoured. HTTP 401/403 from the RunPod API is classified `retryable=False` so the retry
+    loop does not spin forever on auth failures. Pod-death detection in the SSH wait avoids
+    a 900 s spin. Cleanup is `asyncio.shield`-ed from cancellation. SSH host-key handling
+    and idempotent destroy are in place.
+
+  - **Real PaperBench bundles vendored (WS-B).** Replaced the placeholder `third_party/
+    paperbench/ftrl/` with the real upstream artifacts (`paper.md`, `addendum.md`,
+    `rubric.json`) from `openai/preparedness`. Added two genuinely-easy companion papers
+    (`sequential-neural-score-estimation`, `mechanistic-understanding`) so rubric scores are
+    honestly comparable to PaperBench's published baselines. PaperBench's `paper.md` /
+    `addendum.md` are stored in Git LFS on `openai/preparedness`; raw.githubusercontent.com
+    returns a pointer — artifacts are fetched via the LFS batch API (the LFS store on
+    `openai/preparedness` redirects to `openai/frontier-evals`).
+
+- **RLM orchestrator — `--mode rlm`, Phase 3 of the RLM pivot (#60).** A new run
+  mode that replaces the 14-stage `PipelineStage` machine with the `rlms`
+  library's Algorithm-1 loop: the root model writes REPL code that calls domain
+  primitives to reproduce a paper. New `backend/agents/rlm/` modules — `run.py`
+  (`run_pipeline_rlm`: builds the `rlm.RLM`, runs `.completion()` on a worker
+  thread, writes `final_report.{json,md}`), `system_prompt.py`, `models.py`
+  (root-model registry: GPT-5 / Qwen3-Coder / Kimi K2.5 / Claude),
+  `sse_bridge.py` (a corpus sanitizer + an `RLMLogger` subclass streaming
+  `repl_iteration` / `sub_rlm_*` / `run_complete` events), `checkpoint.py`
+  (per-iteration `RLMRunIteration` events → the SQLite event store + a sanitized
+  snapshot), `report.py`, and `stub_primitives.py`. Wired through `cli.py` /
+  `pipeline.py` / `live_runs.py` as `--mode {offline,sdk,rlm}`; `offline` and
+  `sdk` are unchanged. Decoupled from the #59 primitive layer — `run.py` lazily
+  resolves `build_custom_tools` and falls back to a stub provider, so the
+  orchestrator runs and is integration-tested before #59 lands. The paper is
+  offloaded as the `context` REPL variable; the `sanitize_iteration` chokepoint
+  keeps it out of every event, log, and snapshot (Algorithm-2 guard).
 - **Dockerfile smoke-import layer — closes the build/runtime visibility gap.**
   Track 4 validates `docker build` succeeds, but build-success isn't
   runtime-success: packages can install cleanly and still fail on first

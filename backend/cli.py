@@ -559,6 +559,22 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_service=workspace,
                 workspace_id=workspace_id,
             )
+        elif args.mode == "rlm":
+            from backend.agents.pipeline import run_pipeline_rlm
+
+            rlm_result = asyncio.run(run_pipeline_rlm(
+                project_id, runs_root, workspace_claim_map,
+                model=args.model,
+                provider=provider,
+                run_budget=run_budget,
+                sandbox_mode=sandbox_mode,
+                seed=args.seed,
+                execution_profile=execution_profile,
+                attempt_id=args.attempt_id,
+                run_group_id=args.run_group_id,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            ))
         else:
             from backend.agents.pipeline import run_pipeline_sdk
 
@@ -609,21 +625,43 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     # Print final summary
     out_dir = runs_root / project_id
-    result = {
-        "project_id": project_id,
-        "stage": state.stage.value,
-        "output_dir": str(out_dir),
-        "gates": {
-            "gate_1": state.gate_1.passed if state.gate_1 else None,
-            "gate_2": state.gate_2.passed if state.gate_2 else None,
-            "gate_3": state.gate_3.passed if state.gate_3 else None,
-        },
-        "assumptions": len(state.assumption_ledger),
-        "improvement_paths": len(state.path_results),
-        "research_map": state.research_map is not None,
-        "execution_mode": execution_profile.mode.value,
-        "sandbox": sandbox_mode.value,
-    }
+    if args.mode == "rlm":
+        # RLMRunResult — no PipelineState fields
+        result = {
+            "project_id": rlm_result.project_id,
+            "status": rlm_result.status,
+            "output_dir": str(out_dir),
+            "iterations": rlm_result.iterations,
+            "rubric_score": rlm_result.rubric_score,
+            "cost_usd": rlm_result.cost_usd,
+            "final_report_path": rlm_result.final_report_path,
+            "execution_mode": execution_profile.mode.value,
+            "sandbox": sandbox_mode.value,
+        }
+        # A4-6: a budget-exhausted (or otherwise failed) rlm run must exit
+        # non-zero. run_pipeline_rlm never raises on budget breach — it
+        # returns status="failed" (set by Batch O). Return 3 to match the
+        # BudgetExhausted exit code used by the sdk path above.
+        if rlm_result.status == "failed":
+            json.dump(result, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+            return 3
+    else:
+        result = {
+            "project_id": project_id,
+            "stage": state.stage.value,
+            "output_dir": str(out_dir),
+            "gates": {
+                "gate_1": state.gate_1.passed if state.gate_1 else None,
+                "gate_2": state.gate_2.passed if state.gate_2 else None,
+                "gate_3": state.gate_3.passed if state.gate_3 else None,
+            },
+            "assumptions": len(state.assumption_ledger),
+            "improvement_paths": len(state.path_results),
+            "research_map": state.research_map is not None,
+            "execution_mode": execution_profile.mode.value,
+            "sandbox": sandbox_mode.value,
+        }
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
@@ -680,8 +718,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument("--agent", default="default", help="Agent name for the workspace.")
     reproduce.add_argument(
-        "--mode", choices=("offline", "sdk"), default="sdk",
-        help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic.",
+        "--mode", choices=("offline", "sdk", "rlm"), default="sdk",
+        help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic, 'rlm' uses the RLM orchestrator.",
     )
     reproduce.add_argument("--model", default=None, help="Model override for SDK mode.")
     reproduce.add_argument(

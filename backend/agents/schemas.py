@@ -9,7 +9,7 @@ from __future__ import annotations
 import enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ class Assumption(BaseModel):
 
 class MetricSpec(BaseModel):
     name: str
-    definition: str
+    definition: str = ""
     target_value: str | None = None
     source_section: str | None = None
 
@@ -100,6 +100,36 @@ class PaperClaimMap(BaseModel):
     evaluation_protocol: str = ""
     hardware_clues: list[str] = Field(default_factory=list)
     ambiguities: list[Ambiguity] = Field(default_factory=list)
+
+    @field_validator("claims", mode="before")
+    @classmethod
+    def _coerce_claims(cls, v: Any) -> Any:
+        if not isinstance(v, list):
+            return v
+        coerced = []
+        for item in v:
+            if isinstance(item, str):
+                coerced.append({"claim": item})
+            elif isinstance(item, dict):
+                coerced.append(item)
+            # other types dropped
+        return coerced
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _coerce_metrics(cls, v: Any) -> Any:
+        if not isinstance(v, list):
+            return v
+        coerced = []
+        for item in v:
+            if isinstance(item, str):
+                coerced.append({"name": item, "definition": ""})
+            elif isinstance(item, dict):
+                if "definition" not in item:
+                    item = {**item, "definition": ""}
+                coerced.append(item)
+            # other types dropped
+        return coerced
 
 
 # ---------------------------------------------------------------------------

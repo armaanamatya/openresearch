@@ -37,6 +37,7 @@ from backend.services.runtime.local_docker import (
     ensure_local_docker_available,
 )
 from backend.services.runtime.local_process import LocalProcessBackend
+from backend.services.runtime.brev_backend import BrevBackend, ensure_brev_available
 from backend.services.runtime.runpod_backend import RunpodBackend, ensure_runpod_available
 from backend.services.runtime.service import (
     CreateSandbox,
@@ -46,6 +47,7 @@ from backend.services.runtime.service import (
 )
 
 __all__ = [
+    "BrevBackend",
     "CommandExecuted",
     "CommandFailed",
     "CommandLogEntry",
@@ -72,6 +74,7 @@ __all__ = [
     "SandboxState",
     "append_command_log",
     "build_image",
+    "ensure_brev_available",
     "ensure_local_docker_available",
     "ensure_runpod_available",
     "initialize_run_artifacts",

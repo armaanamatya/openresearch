@@ -46,3 +46,27 @@ def test_constructor_requires_openai():
         assert client._model == "gpt-4o-mini"
     except Exception:
         pytest.skip("openai package not installed or not configured")
+
+
+def test_constructor_accepts_api_key_and_base_url():
+    """OpenAILlmClient(api_key=..., base_url=...) constructs without network.
+
+    The openai SDK is lazy — it does not connect until .chat.completions.create
+    is called — so construction with a custom key and base_url succeeds even
+    without a live server.
+    """
+    try:
+        from backend.services.context.workspace.tools.openai_client import (
+            OpenAILlmClient,
+        )
+
+        client = OpenAILlmClient(
+            model="Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            api_key="test-key",
+            base_url="https://api.featherless.ai/v1",
+        )
+        assert client._model == "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+        # The SDK may normalize the URL (e.g. add a trailing slash), so use `in`.
+        assert "featherless" in str(client._client.base_url)
+    except ImportError:
+        pytest.skip("openai package not installed")

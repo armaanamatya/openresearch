@@ -115,8 +115,11 @@ class SandboxAggregate:
         ]
 
     def handle_destroyed(self) -> Sequence[DomainEvent]:
+        # Idempotent: a double-destroy (e.g. retry after cancellation) is a
+        # safe no-op — emitting no events leaves the aggregate in DESTROYED
+        # and avoids an InvalidSandboxTransition for the caller (A3-14).
         if self.state is SandboxState.DESTROYED:
-            raise InvalidSandboxTransition(self.state, "destroyed")
+            return []
         return [
             SandboxDestroyed(
                 project_id=self.project_id,

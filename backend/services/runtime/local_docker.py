@@ -281,6 +281,7 @@ class LocalDockerBackend(RuntimeBackend):
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             info.mtime = int(datetime.now(timezone.utc).timestamp())
+            info.mode = 0o644  # prevent mode=0 (unreadable) files in the container (A3-8)
             tar.addfile(info, io.BytesIO(data))
         try:
             ok = await asyncio.to_thread(container.put_archive, parent, archive.getvalue())
@@ -323,9 +324,17 @@ class LocalDockerBackend(RuntimeBackend):
             }
             if config.platform:
                 build_kwargs["platform"] = config.platform
-            await asyncio.to_thread(
-                self.client.images.build,
-                **build_kwargs,
+            # Apply the same cap as the standalone build_image() helper (A3-7).
+            await asyncio.wait_for(
+                asyncio.to_thread(self.client.images.build, **build_kwargs),
+                timeout=DEFAULT_BUILD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.build_failed,
+                f"Image build exceeded {DEFAULT_BUILD_TIMEOUT_SECONDS}s wall-clock — "
+                "likely too-heavy dependencies; split pip install into per-package layers.",
+                retryable=False,
             )
         except Exception as exc:  # pragma: no cover - docker-specific branches
             raise _map_docker_error(exc, RuntimeCauseKind.build_failed) from exc
@@ -454,10 +463,22 @@ def _decode_bytes(value: bytes | str | None) -> str:
 
 
 def _map_docker_error(exc: Exception, default: RuntimeCauseKind) -> SandboxRuntimeError:
+    # Prefer typed docker SDK exceptions over string matching so that a
+    # missing image and a missing container are not conflated (A3-12).
+    # ImageNotFound is a subclass of NotFound, so check it first.
+    try:
+        from docker.errors import ImageNotFound, NotFound  # type: ignore[import-untyped]
+        if isinstance(exc, ImageNotFound):
+            return SandboxRuntimeError(RuntimeCauseKind.image_not_found, str(exc), retryable=False)
+        if isinstance(exc, NotFound):
+            return SandboxRuntimeError(default, str(exc), retryable=False)
+    except Exception:
+        pass  # docker SDK not importable — fall through to string-based heuristics
+
     text = str(exc)
     lower = text.lower()
     cause = default
-    if "not found" in lower or "no such image" in lower:
+    if "no such image" in lower:
         cause = RuntimeCauseKind.image_not_found
     elif "network" in lower:
         cause = RuntimeCauseKind.network_unavailable

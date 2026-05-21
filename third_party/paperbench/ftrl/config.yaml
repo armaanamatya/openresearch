@@ -6,4 +6,4 @@ url: "https://openreview.net/forum?id=53iSXb1m8w"
 icml_topic: "Reinforcement Learning: Deep RL"
 rubric_node_count_paper: 233
 rubric_leaf_count_paper: 178
-notes: "Placeholder bundle. Replace paper.md / addendum.md / rubric.json with the upstream PaperBench artifacts before claiming apples-to-apples comparison."
+notes: "Vendored from openai/preparedness@51052ce on 2026-05-21 (paper.md + addendum.md via Git LFS)."

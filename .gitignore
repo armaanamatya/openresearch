@@ -51,6 +51,8 @@ Thumbs.db
 # Local run outputs (anchored to repo root — must not match nested
 # source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/)
 /runs/
+# Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
+/logs/
 
 # Windows artifacts
 %APPDATA%/

@@ -1,0 +1,3 @@
+id: sequential-neural-score-estimation
+title: "Sequential Neural Score Estimation: Likelihood-Free Inference with Conditional Score Based Diffusion Models"
+notes: "Vendored from openai/preparedness@51052ce on 2026-05-21."

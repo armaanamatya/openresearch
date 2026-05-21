@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.config import get_settings
 from backend.agents.schemas import BaselineResult, ExperimentArtifacts, ReproductionContract
 from backend.services.runtime import (
+    BrevBackend,
     CommandLogEntry,
     CreateSandbox,
     DestroySandbox,
@@ -425,6 +427,53 @@ async def run_with_runpod(
         platform=None,
         require_dockerfile=True,
         runtime_kind="runpod",
+    )
+
+
+async def run_with_brev(
+    project_id: str,
+    runs_root: Path,
+    baseline_result: BaselineResult,
+    reproduction_contract: ReproductionContract | None = None,
+    *,
+    command_timeout: int = 3600,
+) -> ExperimentArtifacts:
+    """Execute baseline commands on a remote NVIDIA Brev GPU instance.
+
+    Reads configuration from settings / environment variables prefixed
+    ``REPROLAB_BREV_`` or ``BREV_``.  Requires the ``brev`` CLI to be
+    installed and ``REPROLAB_BREV_API_KEY`` (or an existing ``~/.brev/``
+    session) to be present.
+    """
+    settings = get_settings()
+    backend = BrevBackend(
+        api_key=getattr(settings, "brev_api_key", None) or os.environ.get("REPROLAB_BREV_API_KEY") or os.environ.get("BREV_API_KEY") or "",
+        cli_path=getattr(settings, "brev_cli_path", None) or os.environ.get("REPROLAB_BREV_CLI_PATH", "brev"),
+        gpu_type=getattr(settings, "brev_gpu_type", None) or os.environ.get("REPROLAB_BREV_GPU_TYPE", "A10G"),
+        gpu_count=int(getattr(settings, "brev_gpu_count", None) or os.environ.get("REPROLAB_BREV_GPU_COUNT", "1")),
+        instance_type=getattr(settings, "brev_instance_type", None) or os.environ.get("REPROLAB_BREV_INSTANCE_TYPE", "t3.medium"),
+        image=getattr(settings, "brev_image", None) or os.environ.get("REPROLAB_BREV_IMAGE", "ubuntu:22.04"),
+        ssh_key_path=getattr(settings, "brev_ssh_key_path", None) or os.environ.get("REPROLAB_BREV_SSH_KEY_PATH") or None,
+        ssh_public_key=getattr(settings, "brev_ssh_public_key", None) or os.environ.get("REPROLAB_BREV_SSH_PUBLIC_KEY", ""),
+        ssh_user=getattr(settings, "brev_ssh_user", None) or os.environ.get("REPROLAB_BREV_SSH_USER", "ubuntu"),
+        boot_timeout_seconds=int(getattr(settings, "brev_boot_timeout_seconds", None) or os.environ.get("REPROLAB_BREV_BOOT_TIMEOUT_SECONDS", "900")),
+        delete_on_destroy=str(getattr(settings, "brev_delete_on_destroy", None) or os.environ.get("REPROLAB_BREV_DELETE_ON_DESTROY", "true")).lower() != "false",
+        bootstrap_command=getattr(settings, "brev_bootstrap_command", None) or os.environ.get("REPROLAB_BREV_BOOTSTRAP_COMMAND", ""),
+        instance_id=getattr(settings, "brev_instance_id", None) or os.environ.get("REPROLAB_BREV_INSTANCE_ID", ""),
+    )
+    return await run_with_runtime(
+        project_id,
+        runs_root,
+        baseline_result,
+        reproduction_contract,
+        runtime=RuntimeAppService(backend),
+        command_timeout=command_timeout,
+        network_disabled=False,
+        memory_limit=None,
+        cpus=None,
+        platform=None,
+        require_dockerfile=True,
+        runtime_kind="brev",
     )
 
 

@@ -2,13 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **⚠ Architecture pivot in progress (2026-05).** This repo is being re-architected
+> from the 14-stage `PipelineStage` state machine to an RLM-based orchestrator built
+> on the `rlms` library (Recursive Language Models, arXiv 2512.24601). The canonical
+> plan is **`docs/design/rlm-pivot-brief.md`** — read it first. The architecture
+> described below is the *current, pre-pivot* code and is being replaced; where this
+> file and the brief conflict, the brief is the direction and the code below is the
+> present.
+
 ## Project: OpenResearch / ReproLab
 
-An agent pipeline that reproduces research papers end-to-end: ingest paper → understand claims → build environment → implement + run a baseline → gate the result → explore improvements → emit a benchmark report comparing the reproduction to the paper's claims. See `system_overview.md` and `docs/product/reprolab-agent-prd.md` for the full "why" — read those before making non-trivial architectural changes.
+An agent pipeline that reproduces research papers end-to-end: ingest paper → understand claims → build environment → implement + run a baseline → gate the result → explore improvements → emit a benchmark report comparing the reproduction to the paper's claims. See `system_overview.md` and `docs/design/rlm-pivot-brief.md` for the full "why" — read those before making non-trivial architectural changes.
 
 ## Common commands
 
-### Backend (Python 3.11, FastAPI)
+### Backend (Python 3.14.2, FastAPI)
 
 ```bash
 # Install
@@ -53,7 +61,7 @@ python -m backend.cli ingest paper.pdf                          # ingest only
 python -m backend.cli eval <project_id> --paper-metrics '{...}' # score completed run
 ```
 
-Useful flags: `--mode {offline,sdk}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost.
+Useful flags: `--mode {offline,sdk,rlm}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost. `--mode rlm` is the production-hardened RLM path (Phase 5): per-primitive deadlines, `max_usd` cost cap, corpus-leak redaction at every egress, atomic run-status writes. Set `REPROLAB_RLM_ROOT_MODEL` to `gpt-5`, `qwen3-coder`, `kimi-k2.5`, or `claude` (defaults to GPT-5 when `OPENAI_API_KEY` is set).
 
 ### Docker
 
@@ -90,7 +98,7 @@ Two important behaviors **happen inside existing stages** rather than as new enu
 Structured pass/fail with dynamic confidence thresholds and a supervisor-verifier layer. Gates can halt a run with `blocked_requires_human` unless fail-soft modes (see above) are enabled.
 
 ### UI ↔ backend run lifecycle
-1. Lab UI (`frontend/src/components/repro-lab-client.tsx`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload`).
+1. Lab UI (`frontend/src/components/lab/lab-shell.tsx`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload`).
 2. Backend spawns the pipeline subprocess, writes `demo_status.json`, returns initial state.
 3. UI opens an **SSE** stream via `/api/demo/events` → backend `/runs/<id>/events`.
 4. SSE frame types: `run_state` (full state + stage), `agent_log` (incremental log), `dashboard_event`. `stateMapForRun()` maps backend stage → graph node states.
@@ -104,7 +112,7 @@ A `localStorage` pointer auto-resumes an in-flight run when the user lands on a 
 - Pipeline state machine: `backend/agents/orchestrator.py`
 - Run modes (sdk / offline): `backend/agents/pipeline.py`
 - Subprocess spawn + SSE bridge: `backend/services/events/live_runs.py`
-- Per-agent docs: `docs/agents/` — one file per agent (orchestrator, paper-understanding, environment-detective, experiment-runner, *-verifier, etc.). The rest of `backend/{agents,services}/` is named by function.
+- `backend/{agents,services}/` is named by function — read it directly.
 
 ## Sandboxes
 `REPROLAB_DEFAULT_SANDBOX` selects the execution backend: `local`, `docker` (network/memory/CPU controlled), or `runpod` (remote GPU pods, requires `REPROLAB_RUNPOD_API_KEY` and `REPROLAB_RUNPOD_SSH_KEY_PATH`). `start.sh` runs `scripts/runpod_check.sh` as a preflight when sandbox is `runpod`; bypass with `START_SKIP_PREFLIGHT=1`. `START_FULL_SMOKE=1` boots a real pod for end-to-end verification — **this costs money** (cents-scale on RTX 4090).
