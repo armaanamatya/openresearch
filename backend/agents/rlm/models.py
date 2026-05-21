@@ -71,6 +71,18 @@ class RootModel:
     sub_backend_kwargs: dict = field(default_factory=dict)
     prompt_addendum: str = ""
     paper_validated: bool = False
+    api_key_env: str | None = None
+    """Env var holding this model's API key.
+
+    When ``None``, the env var is derived from the backend type via
+    ``_BACKEND_ENV_KEY``; set it for OpenAI-compatible hosts that use a
+    non-standard key (e.g. Featherless uses ``FEATHERLESS_API_KEY`` rather
+    than ``OPENAI_API_KEY`` even though the backend type is ``"openai"``).
+
+    Applies to BOTH the root and sub-call backends — correct only when both
+    run on the same host (true for every current entry). A model mixing
+    providers across root and sub-call would need a separate per-backend key.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +97,14 @@ _QWEN_PROMPT_ADDENDUM = (
     "Prefer to accumulate results as REPL variables and call primitives directly rather "
     "than issuing many small `llm_query` calls."
 )
+
+# ---------------------------------------------------------------------------
+# Featherless — OpenAI-compatible inference host for Qwen3-Coder
+# ---------------------------------------------------------------------------
+
+FEATHERLESS_BASE_URL = "https://api.featherless.ai/v1"
+FEATHERLESS_ROOT_MODEL = "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+FEATHERLESS_SUBCALL_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +161,16 @@ def _build_registry() -> dict[str, RootModel]:
             prompt_addendum="",
             paper_validated=False,
         ),
+        "qwen3-coder-featherless": RootModel(
+            key="qwen3-coder-featherless",
+            rlm_backend="openai",
+            backend_kwargs={"model_name": FEATHERLESS_ROOT_MODEL, "base_url": FEATHERLESS_BASE_URL},
+            sub_backend="openai",
+            sub_backend_kwargs={"model_name": FEATHERLESS_SUBCALL_MODEL, "base_url": FEATHERLESS_BASE_URL},
+            prompt_addendum=_QWEN_PROMPT_ADDENDUM,
+            paper_validated=True,
+            api_key_env="FEATHERLESS_API_KEY",
+        ),
     }
 
 
@@ -175,8 +205,17 @@ _BACKEND_ENV_KEY: dict[str, str] = {
 }
 
 
-def _inject_api_key(backend: str, kwargs: dict) -> dict:
-    """Return a copy of *kwargs* with ``api_key`` from the backend's env var.
+def _env_var_for(backend: str, api_key_env: str | None) -> str | None:
+    """The env var holding the API key for *backend*.
+
+    An explicit api_key_env (a RootModel property) wins; otherwise derive
+    from the backend type via ``_BACKEND_ENV_KEY``.
+    """
+    return api_key_env or _BACKEND_ENV_KEY.get(backend)
+
+
+def _inject_api_key(env_var: str | None, kwargs: dict) -> dict:
+    """Return a copy of *kwargs* with ``api_key`` injected from *env_var*.
 
     rlm's ``AnthropicClient`` requires ``api_key`` as a constructor argument
     (it does not read the environment); ``OpenAIClient`` accepts it too. The
@@ -184,9 +223,8 @@ def _inject_api_key(backend: str, kwargs: dict) -> dict:
     is injected here, at resolve time, from the process environment.
     """
     out = dict(kwargs)
-    env_key = _BACKEND_ENV_KEY.get(backend)
-    if env_key:
-        api_key = os.environ.get(env_key)
+    if env_var:
+        api_key = os.environ.get(env_var)
         if api_key:
             out["api_key"] = api_key
     return out
@@ -225,20 +263,32 @@ def resolve_root_model(name: str | None) -> RootModel:
             f"Set {_ENV_ROOT_MODEL} or pass a valid --model argument."
         )
 
-    # A1-H1: if the resolved model uses OpenRouter, fail fast when the key is absent.
-    if entry.rlm_backend == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
-        raise ValueError(
-            f"Root model {name!r} requires the OpenRouter backend but "
-            f"OPENROUTER_API_KEY is not set. "
-            f"Set OPENROUTER_API_KEY or choose a different model via "
-            f"{_ENV_ROOT_MODEL} / --model."
-        )
+    # Resolve env var names for root and sub-call backends.  An explicit
+    # api_key_env on the entry wins over the backend-type default (so
+    # Featherless uses FEATHERLESS_API_KEY even though its backend is "openai").
+    root_env = _env_var_for(entry.rlm_backend, entry.api_key_env)
+    sub_env = _env_var_for(entry.sub_backend, entry.api_key_env)
+
+    # Fail fast when a required API key is missing — catches both root and sub-call
+    # backends.  A backend not in _BACKEND_ENV_KEY (and no explicit api_key_env)
+    # is skipped (no key required).
+    for _backend, _role, _env in (
+        (entry.rlm_backend, "root", root_env),
+        (entry.sub_backend, "sub-call", sub_env),
+    ):
+        if _env and not os.environ.get(_env):
+            raise ValueError(
+                f"Root model {name!r} requires the {_backend!r} backend "
+                f"({_role}) but {_env} is not set. "
+                f"Set {_env} or choose a different model via "
+                f"{_ENV_ROOT_MODEL} / --model."
+            )
 
     # Inject the API key into backend_kwargs / sub_backend_kwargs — rlm's
     # AnthropicClient requires it as a constructor argument (it does not read
     # the environment). The registry itself stays secret-free.
     return replace(
         entry,
-        backend_kwargs=_inject_api_key(entry.rlm_backend, entry.backend_kwargs),
-        sub_backend_kwargs=_inject_api_key(entry.sub_backend, entry.sub_backend_kwargs),
+        backend_kwargs=_inject_api_key(root_env, entry.backend_kwargs),
+        sub_backend_kwargs=_inject_api_key(sub_env, entry.sub_backend_kwargs),
     )

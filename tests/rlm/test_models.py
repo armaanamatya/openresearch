@@ -4,7 +4,7 @@ Tests cover:
   - Direct name lookup in ROOT_MODELS
   - The layered default (gpt-5 when OPENAI_API_KEY set; qwen3-coder otherwise)
   - Unknown name raises ValueError listing valid keys
-  - All four registry entries carry valid rlm ClientBackend literals
+  - All registry entries carry valid rlm ClientBackend literals
   - qwen3-coder has a non-empty prompt_addendum
   - paper_validated flags are correct per the spec
 """
@@ -90,7 +90,8 @@ class TestResolveByName:
         m = resolve_root_model("kimi-k2.5")
         assert m.key == "kimi-k2.5"
 
-    def test_claude_resolves(self):
+    def test_claude_resolves(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         from backend.agents.rlm.models import resolve_root_model
 
         m = resolve_root_model("claude")
@@ -120,12 +121,14 @@ class TestLayeredDefault:
     def test_env_var_overrides_fallback(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "claude")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         mod = _reload_models()
         result = mod.resolve_root_model(None)
         assert result.key == "claude"
 
     def test_explicit_name_beats_env_var(self, monkeypatch):
         monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "claude")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         from backend.agents.rlm.models import resolve_root_model
 
         result = resolve_root_model("gpt-5")
@@ -153,12 +156,12 @@ class TestUnknownName:
 
 
 class TestRegistryContract:
-    """All four ROOT_MODELS entries satisfy the §6 spec contract."""
+    """All ROOT_MODELS entries satisfy the §6 spec contract."""
 
-    def test_all_four_entries_present(self):
+    def test_all_registry_entries_present(self):
         from backend.agents.rlm.models import ROOT_MODELS
 
-        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude"}
+        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "qwen3-coder-featherless"}
 
     def test_all_backends_are_valid_rlm_literals(self):
         from backend.agents.rlm.models import ROOT_MODELS
@@ -224,3 +227,105 @@ class TestEnvVarSlugOverride:
         assert mod.ROOT_MODELS["kimi-k2.5"].backend_kwargs["model_name"] == (
             "moonshotai/kimi-custom"
         )
+
+
+class TestMissingApiKeyFailsFast:
+    """resolve_root_model raises ValueError at resolve time when a required API key is absent."""
+
+    def test_anthropic_key_absent_raises(self, monkeypatch):
+        """Missing ANTHROPIC_API_KEY raises ValueError, not a deep TypeError."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError) as exc_info:
+            resolve_root_model("claude")
+        assert "ANTHROPIC_API_KEY" in str(exc_info.value)
+
+    def test_openrouter_key_absent_raises_regression(self, monkeypatch):
+        """Regression: qwen3-coder (openrouter) still raises ValueError with OPENROUTER_API_KEY in msg."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError) as exc_info:
+            resolve_root_model("qwen3-coder")
+        assert "OPENROUTER_API_KEY" in str(exc_info.value)
+
+    def test_happy_path_key_set_injects_into_kwargs(self, monkeypatch):
+        """With the key set, resolve_root_model returns a RootModel with api_key in both *_kwargs."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-happy")
+        from backend.agents.rlm.models import resolve_root_model
+
+        result = resolve_root_model("claude")
+        assert result.backend_kwargs.get("api_key") == "sk-ant-happy"
+        assert result.sub_backend_kwargs.get("api_key") == "sk-ant-happy"
+
+
+class TestFeatherlessEntry:
+    """Contract tests for the qwen3-coder-featherless RootModel entry."""
+
+    def test_resolves_with_key_set(self, monkeypatch):
+        """With FEATHERLESS_API_KEY set, resolve returns correct fields."""
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "fl-test-key-abc")
+        from backend.agents.rlm.models import (
+            FEATHERLESS_BASE_URL,
+            FEATHERLESS_ROOT_MODEL,
+            resolve_root_model,
+        )
+
+        m = resolve_root_model("qwen3-coder-featherless")
+        assert m.api_key_env == "FEATHERLESS_API_KEY"
+        assert m.backend_kwargs["base_url"] == FEATHERLESS_BASE_URL
+        assert m.backend_kwargs["model_name"] == FEATHERLESS_ROOT_MODEL
+        assert m.backend_kwargs["api_key"] == "fl-test-key-abc"
+        assert m.paper_validated is True
+
+    def test_raises_when_key_absent(self, monkeypatch):
+        """Without FEATHERLESS_API_KEY, resolve raises ValueError naming the env var."""
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError) as exc_info:
+            resolve_root_model("qwen3-coder-featherless")
+        assert "FEATHERLESS_API_KEY" in str(exc_info.value)
+
+    def test_sub_backend_kwargs_carry_base_url(self, monkeypatch):
+        """sub_backend_kwargs also contain base_url and the 30B sub model."""
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "fl-test-key-abc")
+        from backend.agents.rlm.models import (
+            FEATHERLESS_BASE_URL,
+            FEATHERLESS_SUBCALL_MODEL,
+            resolve_root_model,
+        )
+
+        m = resolve_root_model("qwen3-coder-featherless")
+        assert m.sub_backend_kwargs["base_url"] == FEATHERLESS_BASE_URL
+        assert m.sub_backend_kwargs["model_name"] == FEATHERLESS_SUBCALL_MODEL
+        assert m.sub_backend_kwargs.get("api_key") == "fl-test-key-abc"
+
+
+class TestEnvVarFor:
+    """Unit tests for _env_var_for helper."""
+
+    def test_explicit_api_key_env_wins_over_backend_default(self):
+        """When api_key_env is set explicitly, it takes priority."""
+        from backend.agents.rlm.models import _env_var_for
+
+        result = _env_var_for("openai", "FEATHERLESS_API_KEY")
+        assert result == "FEATHERLESS_API_KEY"
+
+    def test_none_api_key_env_falls_back_to_backend_default(self):
+        """When api_key_env is None, the backend-type default is returned."""
+        from backend.agents.rlm.models import _env_var_for
+
+        result = _env_var_for("openai", None)
+        assert result == "OPENAI_API_KEY"
+
+    def test_anthropic_backend_default(self):
+        from backend.agents.rlm.models import _env_var_for
+
+        assert _env_var_for("anthropic", None) == "ANTHROPIC_API_KEY"
+
+    def test_unknown_backend_returns_none_when_no_explicit(self):
+        from backend.agents.rlm.models import _env_var_for
+
+        assert _env_var_for("vllm", None) is None

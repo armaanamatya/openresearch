@@ -41,7 +41,7 @@ from backend.eventstore.sqlite_store import SqliteEventStore
 
 from backend.agents.rlm.checkpoint import IterationCheckpointer
 from backend.agents.rlm.context import RunContext
-from backend.agents.rlm.models import resolve_root_model
+from backend.agents.rlm.models import RootModel, resolve_root_model
 from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
@@ -96,11 +96,15 @@ class RLMRunResult:
 # ---------------------------------------------------------------------------
 
 
-def _build_llm_client(provider: str | None) -> tuple[Any, str]:
+def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any, str]:
     """Build the ``LlmClient`` for ``RunContext.llm_client`` and its model label.
 
-    Mirrors ``orchestrator._build_rlm_llm_client``: ``openai`` → ``OpenAILlmClient``,
-    otherwise ``ClaudeLlmClient``.
+    Intentionally diverges from ``orchestrator._build_rlm_llm_client``: when the
+    root model runs on a custom OpenAI-compatible endpoint (e.g. Featherless), the
+    primitive client mirrors that endpoint so all LLM calls share the same host and
+    key rather than falling back to the standard OpenAI or Anthropic paths.
+
+    Otherwise: ``openai`` provider → ``OpenAILlmClient``, else → ``ClaudeLlmClient``.
 
     The ``LlmClient`` protocol is ``.complete(*, system, user) -> str`` — it
     returns no token usage.  Primitive-internal LLM cost is therefore not
@@ -109,6 +113,20 @@ def _build_llm_client(provider: str | None) -> tuple[Any, str]:
     needs the ``LlmClient`` protocol to carry usage — a #59/#60 seam evolution,
     deferred.
     """
+    # Custom OpenAI-compatible endpoint (e.g. Featherless): mirror it for primitives.
+    bk = root_model.backend_kwargs
+    if root_model.rlm_backend == "openai" and bk.get("base_url"):
+        if not bk.get("api_key"):
+            raise ValueError(
+                f"Root model {root_model.key!r} uses a custom base_url but its "
+                f"api_key was not resolved — _build_llm_client requires a RootModel "
+                f"from resolve_root_model()."
+            )
+        from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
+
+        model = root_model.sub_backend_kwargs.get("model_name") or bk.get("model_name", "")
+        return OpenAILlmClient(model=model, api_key=bk.get("api_key"), base_url=bk["base_url"]), model
+
     use_openai = (provider or "").lower() == "openai" or (
         provider is None and bool(os.environ.get("OPENAI_API_KEY"))
     )
@@ -343,19 +361,25 @@ async def run_pipeline_rlm(
     if run_budget is not None and run_budget.max_wall_clock_seconds:
         wall_clock_s = float(run_budget.max_wall_clock_seconds)
 
-    # 2. Primitive LLM client (see _build_llm_client on the usage caveat).
-    llm_client, llm_model = _build_llm_client(provider)
-    provider_label = (provider or "").lower() or (
-        "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
-    )
-
-    # 3. Root model.
+    # 2. Root model (resolved before the primitive LLM client so the client
+    #    can mirror a custom endpoint when the root uses one).
     root_model = resolve_root_model(model)
     if not root_model.paper_validated:
         logger.warning(
             "run_pipeline_rlm: root model %r is NOT paper-validated as an RLM root "
             "(root_model_unvalidated) — results may not match paper expectations",
             root_model.key,
+        )
+
+    # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
+    llm_client, llm_model = _build_llm_client(provider, root_model)
+    bk = root_model.backend_kwargs
+    if root_model.rlm_backend == "openai" and bk.get("base_url"):
+        import urllib.parse
+        provider_label = urllib.parse.urlparse(bk["base_url"]).hostname or root_model.key
+    else:
+        provider_label = (provider or "").lower() or (
+            "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
     # 4. The #59 seam — RunContext.

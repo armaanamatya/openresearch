@@ -9,6 +9,16 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **RLM Featherless root-model backend + hardened key resolution (feat/rlm-phase5-e2e).**
+  Adds `qwen3-coder-featherless` to the root-model registry — `Qwen/Qwen3-Coder-480B-A35B-Instruct`
+  (the paper-validated RLM root) served via Featherless's OpenAI-compatible endpoint, so an RLM
+  run needs no OpenAI/Anthropic key. A new `RootModel.api_key_env` field decouples the API-key
+  env var from the backend type (`_env_var_for` helper), letting an `openai`-typed backend
+  authenticate with `FEATHERLESS_API_KEY`; `_build_llm_client` mirrors a custom endpoint so the
+  primitive LLM client shares the root's host and key. `resolve_root_model` now fails fast —
+  with an actionable `ValueError` — when *any* backend's API key is missing (previously only
+  OpenRouter was checked; a missing key otherwise surfaced as a cryptic `TypeError` deep inside
+  `rlm`).
 - **RLM Phase 5 — production-hardened end-to-end run mode (WS-H + WS-B, feat/rlm-phase5-e2e).**
   Completes the #59 (primitive layer) ↔ #60 (orchestrator) merge and makes `--mode rlm` safe
   for real reproduction runs. Four disjoint hardening batches landed on top of the merge:

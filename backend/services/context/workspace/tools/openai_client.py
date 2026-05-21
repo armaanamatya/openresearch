@@ -14,10 +14,10 @@ class OpenAILlmClient:
     leaf calls that RLM generates, strong enough for focused Q&A.
     """
 
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
+    def __init__(self, model: str = "gpt-4o-mini", *, api_key: str | None = None, base_url: str | None = None) -> None:
         from openai import OpenAI
 
-        self._client = OpenAI()
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._model = model
 
     def complete(self, *, system: str, user: str) -> str:

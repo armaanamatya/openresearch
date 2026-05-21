@@ -169,19 +169,40 @@ class TestResolveCustomTools:
 
 class TestBuildLlmClient:
 
+    def _plain_root_model(self):
+        """A plain openai root model with no custom base_url (standard path)."""
+        from backend.agents.rlm.models import RootModel
+        return RootModel(
+            key="gpt-5",
+            rlm_backend="openai",
+            backend_kwargs={"model_name": "gpt-5"},
+            sub_backend="openai",
+            sub_backend_kwargs={"model_name": "gpt-5-mini"},
+        )
+
+    def _anthropic_root_model(self):
+        from backend.agents.rlm.models import RootModel
+        return RootModel(
+            key="claude",
+            rlm_backend="anthropic",
+            backend_kwargs={"model_name": "claude-opus-4-7"},
+            sub_backend="anthropic",
+            sub_backend_kwargs={"model_name": "claude-haiku-4-5-20251001"},
+        )
+
     def test_openai_provider_builds_openai_client(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        client, model = _build_llm_client("openai")
+        client, model = _build_llm_client("openai", self._plain_root_model())
         assert client.__class__.__name__ == "OpenAILlmClient"
         assert model == "gpt-4o-mini"
 
     def test_non_openai_provider_builds_claude_client(self):
-        client, model = _build_llm_client("anthropic")
+        client, model = _build_llm_client("anthropic", self._anthropic_root_model())
         assert client.__class__.__name__ == "ClaudeLlmClient"
         assert model == "claude"
 
     def test_client_exposes_complete(self):
-        client, _ = _build_llm_client("anthropic")
+        client, _ = _build_llm_client("anthropic", self._anthropic_root_model())
         assert hasattr(client, "complete")
 
 

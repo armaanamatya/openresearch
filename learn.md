@@ -11,6 +11,37 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — A missing LLM API key surfaced as a cryptic `TypeError` deep in `rlm`
+
+**Symptom.** An `--mode rlm` run with the `claude` root failed at run start with
+`TypeError: AnthropicClient.__init__() missing 1 required positional argument:
+'api_key'`, raised ~100 frames deep inside the `rlm` library — nothing pointed at
+the real problem: an unset credential.
+
+**Root cause.** `resolve_root_model` injected each backend's API key from the
+environment via `_inject_api_key`, which added `api_key` to `backend_kwargs` only
+when the env var was truthy — an absent or empty key was silently dropped. The
+single fail-fast guard covered only the OpenRouter backend; `anthropic` and
+`openai` had none, so a missing key sailed through to `rlm`'s client constructor.
+
+**Fix.** `resolve_root_model` now fails fast for *every* backend: a `_env_var_for`
+helper resolves the key's env var (honouring an explicit `RootModel.api_key_env`),
+and a loop over the root and sub-call backends raises an actionable `ValueError`
+when the key is absent. The `api_key_env` field also decouples the key source from
+the backend type — which is what lets the Featherless backend (an `openai` client
+type authenticating with `FEATHERLESS_API_KEY`) work.
+
+**Lesson.** A missing credential must fail loudly at the boundary where it is
+resolved — never let it travel inward to surface as a type error inside a
+dependency. A fail-fast check added for one backend must cover *every* backend,
+not just the one that first needed it.
+
+**Guardrail.** `TestMissingApiKeyFailsFast` in `tests/rlm/test_models.py` asserts
+`resolve_root_model` raises `ValueError` (naming the missing env var) when a
+backend's key is absent — covering the anthropic and openrouter backends.
+
+---
+
 ## 2026-05-21 — Git LFS pointers served by raw.githubusercontent.com look like real files
 
 **Symptom.** Fetching `paper.md` from `openai/preparedness` via

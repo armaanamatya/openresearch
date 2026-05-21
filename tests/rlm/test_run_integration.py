@@ -233,7 +233,7 @@ class TestRunPipelineRlmIntegration:
         # Force a known root model so resolve_root_model is deterministic
         # regardless of which API keys the test runner happens to have set.
         monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")  # satisfy fail-fast check
 
         # The production build_system_prompt is used UNCHANGED. It returns a
         # valid rlm .format() template — one {custom_tools_section} slot, every
