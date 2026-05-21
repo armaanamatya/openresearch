@@ -101,35 +101,36 @@ class PaperClaimMap(BaseModel):
     hardware_clues: list[str] = Field(default_factory=list)
     ambiguities: list[Ambiguity] = Field(default_factory=list)
 
+    # LLM-generated REPL code routinely hands the list fields below as bare
+    # strings (`datasets=['Gaussian Linear', ...]`, `claims=['...']`) where the
+    # schema expects dicts / submodels. One canonical coercion keeps claims,
+    # datasets and metrics consistent — a bare string becomes a single-key dict
+    # on the field's natural name key; non-string/dict items are dropped.
+    @staticmethod
+    def _coerce_str_items(v: Any, key: str) -> Any:
+        if not isinstance(v, list):
+            return v
+        return [
+            {key: item} if isinstance(item, str) else item
+            for item in v
+            if isinstance(item, (str, dict))
+        ]
+
     @field_validator("claims", mode="before")
     @classmethod
     def _coerce_claims(cls, v: Any) -> Any:
-        if not isinstance(v, list):
-            return v
-        coerced = []
-        for item in v:
-            if isinstance(item, str):
-                coerced.append({"claim": item})
-            elif isinstance(item, dict):
-                coerced.append(item)
-            # other types dropped
-        return coerced
+        return cls._coerce_str_items(v, "claim")
+
+    @field_validator("datasets", mode="before")
+    @classmethod
+    def _coerce_datasets(cls, v: Any) -> Any:
+        return cls._coerce_str_items(v, "name")
 
     @field_validator("metrics", mode="before")
     @classmethod
     def _coerce_metrics(cls, v: Any) -> Any:
-        if not isinstance(v, list):
-            return v
-        coerced = []
-        for item in v:
-            if isinstance(item, str):
-                coerced.append({"name": item, "definition": ""})
-            elif isinstance(item, dict):
-                if "definition" not in item:
-                    item = {**item, "definition": ""}
-                coerced.append(item)
-            # other types dropped
-        return coerced
+        # MetricSpec.definition defaults to "", so a {name} dict validates.
+        return cls._coerce_str_items(v, "name")
 
 
 # ---------------------------------------------------------------------------

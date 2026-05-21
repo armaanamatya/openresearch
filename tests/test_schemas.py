@@ -81,6 +81,27 @@ def test_metrics_complete_dict_passes_through():
 
 
 # ---------------------------------------------------------------------------
+# PaperClaimMap — datasets coercion (Bug A's sibling: Qwen passes bare strings)
+# ---------------------------------------------------------------------------
+
+def test_datasets_plain_string_coerced_to_dict():
+    pcm = PaperClaimMap(core_contribution="x", datasets=["Gaussian Linear"])
+    assert len(pcm.datasets) == 1
+    assert pcm.datasets[0].name == "Gaussian Linear"
+
+
+def test_datasets_mixed_strings_and_dicts():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        datasets=["Two Moons", {"name": "SLCP", "source": "sbibm"}],
+    )
+    assert len(pcm.datasets) == 2
+    assert pcm.datasets[0].name == "Two Moons"
+    assert pcm.datasets[1].name == "SLCP"
+    assert pcm.datasets[1].source == "sbibm"
+
+
+# ---------------------------------------------------------------------------
 # Regression — fully-formed PaperClaimMap still validates
 # ---------------------------------------------------------------------------
 
