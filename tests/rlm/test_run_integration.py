@@ -432,6 +432,38 @@ class TestRunPipelineRlmIntegration:
         assert (resolved / "dashboard_events.jsonl").exists()
 
 
+class TestResolveAgentRuntime:
+    """Guard the OAuth-preferring sub-agent runtime resolver."""
+
+    def test_explicit_runtime_passes_through(self) -> None:
+        from backend.agents.rlm.run import _resolve_agent_runtime
+
+        sentinel = object()
+        resolved, label = _resolve_agent_runtime(sentinel, "openai")
+        assert resolved is sentinel
+        assert label == "caller-supplied"
+
+    def test_prefers_claude_when_oauth_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the claude CLI logged in, the runtime is Claude — not a dead
+        OpenAI key — regardless of the provider argument."""
+        from backend.agents.rlm import run as run_mod
+
+        monkeypatch.setattr(
+            "backend.agents.runtime.factory.has_provider_credentials",
+            lambda provider=None: provider == "anthropic",
+        )
+        sentinel = object()
+        monkeypatch.setattr(
+            "backend.agents.runtime.factory.make_runtime",
+            lambda provider=None, **kw: sentinel,
+        )
+        resolved, label = run_mod._resolve_agent_runtime(None, "openai")
+        assert resolved is sentinel
+        assert "claude" in label.lower()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

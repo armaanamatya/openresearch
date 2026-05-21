@@ -139,6 +139,51 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     return ClaudeLlmClient(), "claude"
 
 
+def _resolve_agent_runtime(runtime: Any, provider: str | None) -> tuple[Any, str]:
+    """Resolve the sub-agent runtime for primitives (e.g. ``implement_baseline``).
+
+    An RLM run has two independent LLM layers with separate credentials:
+
+      * the **root-model loop** — the ``rlm`` library's backend; makes raw HTTP
+        completion calls, so it needs a real API key (Featherless);
+      * the **sub-agent runtime** — used by ``implement_baseline`` to drive a
+        code-writing agent. This one can run on the Claude Code subscription via
+        OAuth: ``claude-agent-sdk`` spawns the ``claude`` CLI as a subprocess and
+        inherits its login — no ``ANTHROPIC_API_KEY`` required.
+
+    Resolution order (most-preferred first):
+
+      1. an explicitly-passed ``runtime`` (caller override — e.g. a test);
+      2. **Claude OAuth** — when the ``claude`` CLI is logged in, the subscription
+         covers the sub-agent layer for free, independent of any ``.env``
+         provider setting that might point at a dead OpenAI key;
+      3. whatever ``make_runtime`` resolves from env/settings.
+
+    Returns ``(runtime_or_None, label)``. A ``None`` runtime is not fatal —
+    ``implement_baseline`` falls through to ``make_runtime`` itself and fails
+    honestly there.
+    """
+    if runtime is not None:
+        return runtime, "caller-supplied"
+    from backend.agents.runtime.factory import (
+        has_provider_credentials,
+        make_runtime,
+    )
+
+    if has_provider_credentials("anthropic"):
+        return make_runtime("anthropic"), "claude (OAuth subscription / API key)"
+    try:
+        return make_runtime(provider), f"make_runtime({provider or 'env-default'})"
+    except Exception as exc:  # noqa: BLE001 — degrade; the primitive fails honestly
+        logger.warning(
+            "run_pipeline_rlm: no agent runtime could be resolved (%s: %s) — "
+            "implement_baseline will surface the credential error itself",
+            type(exc).__name__,
+            exc,
+        )
+        return None, f"unresolved ({type(exc).__name__})"
+
+
 def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     """Return ``(custom_tools, provider_label)`` for ``RLM(custom_tools=...)``.
 
@@ -386,7 +431,11 @@ async def run_pipeline_rlm(
             "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
-    # 4. The #59 seam — RunContext.
+    # 4. The #59 seam — RunContext. The sub-agent runtime is resolved here so
+    #    implement_baseline never falls through to a dead env-default key
+    #    (Claude OAuth covers it for free when the CLI is logged in).
+    agent_runtime, runtime_label = _resolve_agent_runtime(runtime, provider)
+    logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
     ctx = RunContext(
         project_id=project_id,
         project_dir=project_dir,
@@ -396,7 +445,7 @@ async def run_pipeline_rlm(
         llm_client=llm_client,
         provider=provider_label,
         model=llm_model,
-        runtime=runtime,
+        runtime=agent_runtime,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
     )
