@@ -24,3 +24,10 @@ def test_extract_json_tolerates_braces_inside_strings():
 def test_extract_json_raises_when_no_json():
     with pytest.raises(ValueError):
         _extract_json("there is no json object here at all")
+
+
+def test_extract_json_raises_on_truncated_object():
+    # A response cut off mid-object must raise, not silently return the inner
+    # `{"c":2}` fragment — a wrong parse is worse than a clear failure.
+    with pytest.raises(ValueError, match="truncated"):
+        _extract_json('{"a":1,"b":{"c":2}')

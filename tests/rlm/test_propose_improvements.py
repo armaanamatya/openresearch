@@ -42,3 +42,13 @@ def test_propose_improvements_caps_result_at_k(make_context, tmp_path):
     ctx = make_context(tmp_path, llm_responses=[three])
     result = propose_improvements({"success": True}, {"areas": []}, k=1, ctx=ctx)
     assert len(result) == 1
+
+
+def test_propose_improvements_clamps_nonpositive_k(make_context, tmp_path):
+    # k <= 0 from the root model must not empty the result via out[:k]; clamp to 1.
+    three = json.dumps({"hypotheses": [
+        {"path_id": f"p{i}", "hypothesis": "h", "rationale": "r",
+         "expected_outcome": "o", "category": "c"} for i in range(3)]})
+    ctx = make_context(tmp_path, llm_responses=[three])
+    result = propose_improvements({"success": True}, {"areas": []}, k=0, ctx=ctx)
+    assert len(result) == 1

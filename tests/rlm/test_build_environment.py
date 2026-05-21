@@ -56,3 +56,20 @@ def test_build_environment_propagates_sandbox_runtime_error(make_context, tmp_pa
     monkeypatch.setattr(primitives, "_build_image", daemon_down)
     with pytest.raises(SandboxRuntimeError):
         build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+
+
+def test_build_environment_distinct_dockerfiles_get_distinct_tags(
+        make_context, tmp_path, monkeypatch):
+    # A Docker tag is a mutable pointer — two builds in one run must not share
+    # a tag, or run_experiment runs whichever image the tag last pointed at.
+    ctx = make_context(tmp_path)
+
+    async def fake_build_image(dockerfile_path, context_dir, tag, **kw):
+        return (True, tag, "")
+
+    monkeypatch.setattr(primitives, "_build_image", fake_build_image)
+    a = build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+    b = build_environment({"dockerfile": "FROM python:3.12-slim\n"}, ctx=ctx)
+    again = build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+    assert a["image_tag"] != b["image_tag"]      # distinct Dockerfiles -> distinct tags
+    assert a["image_tag"] == again["image_tag"]  # same Dockerfile -> stable tag

@@ -1,7 +1,7 @@
 import json
 
 import backend.agents.rlm.primitives as primitives
-from backend.agents.rlm.primitives import run_experiment
+from backend.agents.rlm.primitives import _MAX_LOG_CHARS, _cap_logs, run_experiment
 
 
 def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_path, monkeypatch):
@@ -39,3 +39,16 @@ def test_run_experiment_empty_commands_json(make_context, tmp_path):
     result = run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
     assert result["success"] is False
     assert "error" in result
+
+
+def test_cap_logs_bounds_unbounded_experiment_output():
+    # run_experiment's container stdout is unbounded; verify_against_rubric and
+    # propose_improvements feed the result into an LLM prompt, so the logs must
+    # be capped before they leave run_experiment.
+    small = "ok\n" * 10
+    assert _cap_logs(small) == small  # under the cap: untouched
+    huge = "x" * (_MAX_LOG_CHARS * 4)
+    capped = _cap_logs(huge)
+    assert len(capped) < _MAX_LOG_CHARS + 100  # head+tail window + marker
+    assert "truncated" in capped
+    assert capped.startswith("x") and capped.endswith("x")
