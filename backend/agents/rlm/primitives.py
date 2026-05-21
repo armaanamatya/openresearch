@@ -65,13 +65,25 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     return _extract_training_recipe({"_": text_slice}).model_dump()
 
 
-def detect_environment(method_spec: dict) -> dict:
-    """Infer Python/CUDA/framework versions and pip packages from a method_spec.
+def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
+    """Infer the runtime environment; return an EnvironmentSpec dict.
 
-    Wraps `backend/agents/environment_detective.py::run_offline` core logic.
-    Returns a dict matching the `EnvironmentSpec` schema shape.
+    Wraps `environment_detective.run_offline` — the deterministic, no-LLM entry
+    point — directly (brief §4 "wrap, not rewrite"). Verified: `run_offline` is
+    exactly the heuristic helper chain plus a Dockerfile write into the run
+    dir; that file-write side effect is fine — a primitive may write run
+    artifacts via `ctx`, and `build_environment` can reuse the written
+    Dockerfile. `method_spec` is a (possibly partial) PaperClaimMap dict;
+    `PaperClaimMap.core_contribution` is its one *required* field, so it is
+    defaulted here — `understand_section`'s output omits it.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap environment_detective.run_offline")
+    from backend.agents.environment_detective import run_offline
+    from backend.agents.schemas import PaperClaimMap
+
+    claim_map = PaperClaimMap(**{"core_contribution": "", **method_spec})
+    spec = run_offline(
+        ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"))
+    return spec.model_dump()
 
 
 def build_environment(env_spec: dict) -> dict:
