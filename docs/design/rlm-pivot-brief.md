@@ -5,6 +5,15 @@
 > One consistent document — no corrections preamble. If something here is wrong
 > against the code, fix it here in the same change. Last revised 2026-05-20.
 
+> **✅ Fork RESOLVED (2026-05-21) — §3/§5/§11 confirmed.** The architecture
+> fork (drift D1) is closed: the `rlm` library wins. A spike installed and
+> probed every candidate — `rlm.RLM`'s real signature matches this brief's §3
+> table exactly, including `environment='docker'` (which ReproLab needs and
+> `dspy.RLM`'s WASM sandbox cannot do). Hand-building (the old issue #59 / PR
+> #65 skeleton) is retired; `dspy.RLM` (#66) is evaluated and not adopted.
+> Evidence + verdict: `docs/design/rlms-spike-report.md`. §3, §5, and the §11
+> phase plan are the canonical architecture — implement against them.
+
 ## 1. Context — why
 
 ReproLab reproduces research papers end-to-end and scores the result against a
@@ -156,8 +165,11 @@ At run start the `rlms` REPL is initialised with:
 only metadata about it, never its contents: `paper_text`, `paper_metadata`,
 `supplementary_text`, `repo_files`, `prior_work_refs`.
 
-**`custom_tools`** — passed to `RLM(custom_tools=...)`; callables become REPL
-functions, non-callables become REPL variables:
+**`custom_tools`** — passed to `RLM(custom_tools=..., environment="local")`;
+callables become REPL functions, non-callables become REPL variables. The root
+REPL **must** be `environment="local"`: `rlm`'s `DockerREPL` does not inject
+`custom_tools` (verified — see `rlms-spike-report.md`). Docker is used only
+inside the `build_environment` / `run_experiment` primitives, not by the root REPL.
 - data: `rubric_spec`, run config.
 - primitives (callables): `understand_section(text_slice)`,
   `extract_hyperparameters(text_slice)`, `detect_environment(method_spec)`,
@@ -168,12 +180,14 @@ functions, non-callables become REPL variables:
   of paper-specific candidates with free-form tags (**not** the old five paths).
 
 **Reserved (library built-ins, cannot be overridden):** `llm_query`, `rlm_query`,
-`llm_query_batched`, `rlm_query_batched`, `SHOW_VARS`, `answer`, `context`,
+`llm_query_batched`, `rlm_query_batched`, `SHOW_VARS`, `FINAL_VAR`, `context`,
 `history`.
 
-**Termination:** the root sets the reserved `answer` variable (the library's
-final-answer dict). The final report is built up as REPL state and placed in
-`answer`; it is read from the REPL, not from autoregressive model text.
+**Termination:** the root builds the final report up as a REPL variable, then
+emits a `FINAL_VAR(<var>)` tag (or `FINAL(<text>)`) — `rlm` parses the tag,
+reads that REPL variable, and returns it. There is **no reserved `answer`
+variable**: this was corrected after the `rlms` spike (`rlms-spike-report.md`;
+`rlm/utils/parsing.py::find_final_answer`).
 
 Primitive signatures here are the contract; re-verify them against the
 implementation when `primitives.py` is written.

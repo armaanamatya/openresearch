@@ -7,6 +7,18 @@
 
 This document maps each existing stage agent to the primitive it becomes in the RLM REPL, records the function signatures Phase 2 must implement, identifies what survives from `rlm_query.py`, and notes the design items that need decisions before Phase 2 starts.
 
+> **✅ Fork RESOLVED (2026-05-21) — partially superseded.** The architecture
+> fork is closed: the `rlm` library wins (see `docs/design/rlms-spike-report.md`).
+> What that means for this doc:
+> - **§1 stage→primitive table and §2 primitive signatures SURVIVE** — domain
+>   primitives are real work under the library architecture; they become the
+>   `rlm` `custom_tools` dict.
+> - **§5 (`rlm_query.py` reuse) and §6 ("frozen Phase 2 hand-build decisions")
+>   are SUPERSEDED** — the `rlm` library provides the REPL host, root loop, and
+>   `sub_LLM`/`sub_RLM`; we do not hand-build or reuse `rlm_query.py` for them.
+> - Section refs to the pre-rewrite brief (§7.7, §13 FM#1–#10) are stale (drift
+>   D4) — the current brief is `docs/design/rlm-pivot-brief.md`.
+
 ---
 
 ## 1. Stage agent → primitive

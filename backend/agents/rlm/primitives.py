@@ -17,64 +17,318 @@ Phase 2 (#59) implementation.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from backend.agents.rlm.context import RunContext
 
 
-def understand_section(text_slice: str) -> dict:
-    """Extract claims, datasets, metrics from a section-sized text slice.
+def _extract_json(text: str) -> dict:
+    """Pull the first JSON object out of an LLM response.
 
-    Wraps `backend/agents/paper_understanding.py::run_offline` core logic
-    (the `_extract_*` helpers operating on a single section's text).
+    Robust to prose and ``` fences around the JSON: scans forward from each
+    `{` and uses `json.JSONDecoder.raw_decode`, which correctly ignores braces
+    inside strings and any trailing text — unlike a naive first-`{`/last-`}`
+    span, which over-grabs when the response contains prose braces.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap paper_understanding._extract_*")
+    import json
+    decoder = json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = text.find("{", idx + 1)
+    raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
 
-def extract_hyperparameters(text_slice: str) -> dict:
+_PLAN_REPRODUCTION_SYSTEM = (
+    "You are the Reproduction Planner for ReproLab. Given a paper's method "
+    "spec and a target environment spec, produce a ReproductionContract: what "
+    "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
+    "the expected output artifacts, a dataset plan, an evaluation plan, and a "
+    "verification checklist. Return exactly ONE JSON object with those fields "
+    "and nothing else. Do NOT write files; do NOT reference any filesystem path."
+)
+
+
+def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
+    """Extract datasets/metrics/training-recipe/hardware/ambiguities from a slice.
+
+    Wraps the *title-agnostic* heuristic helpers in
+    `backend/agents/paper_understanding.py`. Returns a PARTIAL PaperClaimMap
+    dict — `core_contribution`, `claims`, `model_architecture` and
+    `evaluation_protocol` need section titles and are left for the root model
+    to extract with `llm_query` over `context` (design decision D5).
+
+    `ctx` is required by the primitive-wrapper protocol (design decision D4 —
+    `build_custom_tools` closes `ctx` over every primitive uniformly); this
+    heuristic body does not use it.
+    """
+    from backend.agents.paper_understanding import (
+        _extract_datasets, _extract_metrics, _extract_training_recipe,
+        _extract_hardware, _extract_ambiguities,
+    )
+    sections = {"_": text_slice}
+    return {
+        "datasets": [d.model_dump() for d in _extract_datasets(sections)],
+        "metrics": [m.model_dump() for m in _extract_metrics(sections)],
+        "training_recipe": _extract_training_recipe(sections).model_dump(),
+        "hardware_clues": _extract_hardware(sections),
+        "ambiguities": [a.model_dump() for a in _extract_ambiguities(sections)],
+    }
+
+
+def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     """Extract hyperparameters from a slice (typically the training-recipe section).
 
-    Wraps `backend/agents/paper_understanding.py::_extract_training_recipe`.
+    Wraps `paper_understanding._extract_training_recipe`. Returns a flat dict:
+    optimizer, learning_rate, batch_size, epochs_or_steps, scheduler,
+    other_hparams. The heuristic populates the first four; the root model can
+    fill scheduler/other_hparams via `llm_query` if needed.
+
+    `ctx` is required by the primitive-wrapper protocol (design decision D4);
+    this heuristic body does not use it.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap paper_understanding._extract_training_recipe")
+    from backend.agents.paper_understanding import _extract_training_recipe
+    return _extract_training_recipe({"_": text_slice}).model_dump()
 
 
-def detect_environment(method_spec: dict) -> dict:
-    """Infer Python/CUDA/framework versions and pip packages from a method_spec.
+def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
+    """Infer the runtime environment; return an EnvironmentSpec dict.
 
-    Wraps `backend/agents/environment_detective.py::run_offline` core logic.
-    Returns a dict matching the `EnvironmentSpec` schema shape.
+    Wraps `environment_detective.run_offline` — the deterministic, no-LLM entry
+    point — directly (brief §4 "wrap, not rewrite"). Verified: `run_offline` is
+    exactly the heuristic helper chain plus a Dockerfile write into the run
+    dir; that file-write side effect is fine — a primitive may write run
+    artifacts via `ctx`, and `build_environment` can reuse the written
+    Dockerfile. `method_spec` is a (possibly partial) PaperClaimMap dict;
+    `PaperClaimMap.core_contribution` is its one *required* field, so it is
+    defaulted here — `understand_section`'s output omits it.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap environment_detective.run_offline")
+    from backend.agents.environment_detective import run_offline
+    from backend.agents.schemas import PaperClaimMap
+
+    claim_map = PaperClaimMap(**{"core_contribution": "", **method_spec})
+    spec = run_offline(
+        ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"))
+    return spec.model_dump()
 
 
-def build_environment(env_spec: dict) -> dict:
-    """Build the Docker image for an env_spec, with repair-on-failure.
+# Indirection so tests can monkeypatch the async Docker build.
+def _build_image(dockerfile_path, context_dir, tag, **kw):
+    from backend.services.runtime.local_docker import build_image
+    return build_image(dockerfile_path, context_dir, tag, **kw)
 
-    Wraps the existing Docker build-and-repair loop (Track 4). The internal
-    retry loop (`environment_build_max_attempts`) lives inside the primitive
-    — the root sees one call, gets one result.
+
+_ENV_REPAIR_SYSTEM = (
+    "You are a Docker environment repair assistant. Given a Dockerfile and the "
+    "build error it produced, output a corrected Dockerfile and NOTHING else — "
+    "no prose, no code fences."
+)
+
+
+def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
+    """Build the Docker image for `env_spec`, repairing the Dockerfile on failure.
+
+    Genuinely fail-soft (design decision D3): any failure — a spent attempt
+    cap, an `llm_client` error, a `write_text` error, a bad import — returns
+    `{"ok": False, "error": ..., "attempts": ...}`; the primitive never raises.
+    The ONE exception is `SandboxRuntimeError` (Docker daemon down / SDK
+    missing): an infrastructure failure, not a Dockerfile problem, so it
+    propagates.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap env build-and-repair loop")
+    import asyncio
+    import concurrent.futures
+    import tempfile
+    from pathlib import Path
+
+    dockerfile = str(env_spec.get("dockerfile") or "").strip()
+    if not dockerfile:
+        return {"ok": False, "image_tag": "", "error": "env_spec.dockerfile is empty",
+                "attempts": 0}
+
+    attempts, ok, tag, error = 0, False, "", ""
+    try:
+        from backend.config import get_settings
+        from backend.services.runtime.interface import SandboxRuntimeError
+
+        max_attempts = max(1, get_settings().environment_build_max_attempts)
+        tag = f"reprolab/{ctx.project_id}:env-check"
+        with tempfile.TemporaryDirectory() as tmp:
+            context_dir = Path(tmp)
+            dockerfile_path = context_dir / "Dockerfile"
+            while not ok and attempts < max_attempts:
+                attempts += 1
+                dockerfile_path.write_text(dockerfile, encoding="utf-8")
+                # Async bridge: asyncio.run in a fresh worker thread, never
+                # bare (a bare asyncio.run raises inside a running loop).
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    ok, tag, error = pool.submit(
+                        asyncio.run, _build_image(dockerfile_path, context_dir, tag)
+                    ).result()
+                if not ok and attempts < max_attempts:
+                    dockerfile = ctx.llm_client.complete(
+                        system=_ENV_REPAIR_SYSTEM,
+                        user=f"Dockerfile:\n{dockerfile}\n\nBuild error:\n{error}",
+                    ).strip()
+    except SandboxRuntimeError:
+        raise  # infrastructure failure — not a Dockerfile problem; propagate
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
+        return {"ok": False, "image_tag": "",
+                "error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
+
+    return {"ok": ok, "image_tag": tag if ok else "", "error": error,
+            "attempts": attempts}
 
 
-def plan_reproduction(method_spec: dict, env_spec: dict) -> dict:
-    """Generate a reproduction plan from structured specs (NOT from paper_text)."""
-    raise NotImplementedError("Phase 3 (#60) — wrap reproduction-planner agent")
+def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -> dict:
+    """Generate a reproduction contract from structured specs via the LLM.
 
-
-def implement_baseline(plan: dict) -> str:
-    """Generate the baseline code from a reproduction plan; return code_path."""
-    raise NotImplementedError("Phase 3 (#60) — wrap baseline_implementation.run_offline")
-
-
-def run_experiment(code_path: str, env_id: str) -> dict:
-    """Execute the baseline in the sandbox; return metrics.
-
-    Sandbox state (Docker image, RunPod pod) lives outside the REPL. This
-    primitive is a sync wrapper that schedules the async sandbox call on
-    the orchestrator's event loop and blocks until it returns.
-    See `docs/rlm-pivot-mapping.md` §6.5.
+    Uses a primitive-specific system prompt (`_PLAN_REPRODUCTION_SYSTEM`). The
+    orchestrator's `REPRODUCTION_PLANNER_PROMPT` is deliberately NOT reused: it
+    instructs a file-writing agent ("write to `{runs_root}/{project_id}/...`"),
+    which conflicts with a primitive that must return JSON inline. Returns a
+    ReproductionContract dict.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap experiment_runner.run_with_runtime")
+    import json
+
+    from backend.agents.schemas import ReproductionContract
+
+    user = (
+        "method_spec:\n" + json.dumps(method_spec, indent=2, default=str)
+        + "\n\nenvironment_spec:\n" + json.dumps(env_spec, indent=2, default=str)
+    )
+    raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
+    data = _extract_json(raw)
+    if not any(k in data for k in ReproductionContract.model_fields):
+        raise ValueError(
+            f"LLM response has no ReproductionContract fields: {list(data)}")
+    return ReproductionContract(**data).model_dump()
+
+
+def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw):
+    """Indirection over baseline_implementation.run_with_sdk so tests can patch it."""
+    from backend.agents.baseline_implementation import run_with_sdk
+    return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
+
+
+def implement_baseline(plan: dict, *, ctx: "RunContext") -> str:
+    """Generate the baseline code from a reproduction plan; return the code path.
+
+    `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
+    <understand_section output>, "environment_spec": <detect_environment
+    output>, "reproduction_contract": <plan_reproduction output>}` (plus an
+    optional `artifact_index`) — NOT a single producer's output. Wraps
+    `baseline_implementation.run_with_sdk` (a code-writing agent) and writes
+    `code/commands.json` so `run_experiment` can read the run commands without
+    a BaselineResult (design decision D2).
+    """
+    import asyncio
+    import concurrent.futures
+    import json
+
+    from backend.agents.schemas import PaperClaimMap, EnvironmentSpec, ReproductionContract
+
+    # core_contribution is PaperClaimMap's one required field; default it so a
+    # partial paper_claim_map (e.g. understand_section's output) validates.
+    pcm = PaperClaimMap(**{"core_contribution": "", **plan.get("paper_claim_map", {})})
+    env = EnvironmentSpec(**plan.get("environment_spec", {}))
+    contract = (ReproductionContract(**plan["reproduction_contract"])
+                if plan.get("reproduction_contract") else None)
+    artifact_index = plan.get("artifact_index")
+
+    async def _run():
+        return await _run_baseline_with_sdk(
+            ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
+            runtime=ctx.runtime)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(asyncio.run, _run()).result()
+
+    code_dir = ctx.project_dir / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    commands = list(getattr(result, "commands_to_run", []) or [])
+    (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
+    return str(code_dir)
+
+
+async def _execute_in_sandbox(
+    code_path: str,
+    env_id: str,
+    commands: list[str],
+    *,
+    project_id: str,
+    run_id: str,
+) -> dict:
+    """Run `commands` in a container started from the prebuilt image `env_id`.
+
+    Drives the verified `RuntimeAppService` lifecycle (`service.py`): create a
+    sandbox from the existing image (`dockerfile_path=None`, `build_context=None`
+    → no rebuild, design decision D1), execute each command, destroy. The
+    service methods take `Command` objects. Indirection so tests can patch it.
+    """
+    from pathlib import Path
+
+    from backend.services.runtime.interface import SandboxConfig
+    from backend.services.runtime.local_docker import LocalDockerBackend
+    from backend.services.runtime.service import (
+        CreateSandbox, DestroySandbox, ExecuteCommand, RuntimeAppService,
+    )
+
+    service = RuntimeAppService(LocalDockerBackend())
+    config = SandboxConfig(
+        project_id=project_id,
+        run_id=run_id,
+        image=env_id,
+        project_root=Path(code_path),
+        dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
+        build_context=None,
+    )
+    sandbox = await service.create_sandbox(CreateSandbox(config=config))
+    results = []
+    try:
+        for command in commands:
+            results.append(await service.execute(
+                ExecuteCommand(sandbox=sandbox, command=command, timeout=3600)))
+    finally:
+        await service.destroy(DestroySandbox(sandbox=sandbox))
+    return {
+        "success": all(r.succeeded for r in results),
+        "metrics": {},  # real metric extraction from artifacts is Phase 5 (#62)
+        "logs": "\n".join(r.stdout for r in results),
+    }
+
+
+def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
+    """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
+
+    Commands are read from `code_path/commands.json` (written by
+    `implement_baseline`). `env_id` is a Docker image tag (design decisions
+    D1/D2). Async sandbox work is bridged to sync via a worker thread.
+    """
+    import asyncio
+    import concurrent.futures
+    import json
+    import uuid
+    from pathlib import Path
+
+    manifest = Path(code_path) / "commands.json"
+    commands = json.loads(manifest.read_text()) if manifest.exists() else []
+    if not commands:
+        return {"success": False, "metrics": {},
+                "error": f"no commands.json at {manifest}"}
+
+    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run,
+            _execute_in_sandbox(code_path, env_id, commands,
+                                project_id=ctx.project_id, run_id=run_id),
+        ).result()
 
 
 def verify_against_rubric(results: dict, rubric: dict) -> dict:
