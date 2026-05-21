@@ -23,6 +23,38 @@ if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
 
 
+def _extract_json(text: str) -> dict:
+    """Pull the first JSON object out of an LLM response.
+
+    Robust to prose and ``` fences around the JSON: scans forward from each
+    `{` and uses `json.JSONDecoder.raw_decode`, which correctly ignores braces
+    inside strings and any trailing text — unlike a naive first-`{`/last-`}`
+    span, which over-grabs when the response contains prose braces.
+    """
+    import json
+    decoder = json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = text.find("{", idx + 1)
+    raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
+
+
+_PLAN_REPRODUCTION_SYSTEM = (
+    "You are the Reproduction Planner for ReproLab. Given a paper's method "
+    "spec and a target environment spec, produce a ReproductionContract: what "
+    "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
+    "the expected output artifacts, a dataset plan, an evaluation plan, and a "
+    "verification checklist. Return exactly ONE JSON object with those fields "
+    "and nothing else. Do NOT write files; do NOT reference any filesystem path."
+)
+
+
 def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     """Extract datasets/metrics/training-recipe/hardware/ambiguities from a slice.
 
@@ -153,9 +185,26 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": attempts}
 
 
-def plan_reproduction(method_spec: dict, env_spec: dict) -> dict:
-    """Generate a reproduction plan from structured specs (NOT from paper_text)."""
-    raise NotImplementedError("Phase 3 (#60) — wrap reproduction-planner agent")
+def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -> dict:
+    """Generate a reproduction contract from structured specs via the LLM.
+
+    Uses a primitive-specific system prompt (`_PLAN_REPRODUCTION_SYSTEM`). The
+    orchestrator's `REPRODUCTION_PLANNER_PROMPT` is deliberately NOT reused: it
+    instructs a file-writing agent ("write to `{runs_root}/{project_id}/...`"),
+    which conflicts with a primitive that must return JSON inline. Returns a
+    ReproductionContract dict.
+    """
+    import json
+
+    from backend.agents.schemas import ReproductionContract
+
+    user = (
+        "method_spec:\n" + json.dumps(method_spec, indent=2, default=str)
+        + "\n\nenvironment_spec:\n" + json.dumps(env_spec, indent=2, default=str)
+    )
+    raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
+    data = _extract_json(raw)
+    return ReproductionContract(**data).model_dump()
 
 
 def implement_baseline(plan: dict) -> str:
