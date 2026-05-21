@@ -26,10 +26,14 @@ class OpenAILlmClient:
         api_key: str | None = None,
         base_url: str | None = None,
         max_tokens: int = 4096,
+        timeout: float = 300.0,
     ) -> None:
         from openai import OpenAI
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        # Bound every request: the OpenAI SDK default is 600 s, so one hung
+        # primitive call stalls the whole run for ten minutes. 300 s matches
+        # rlm's own client default and still clears any real response.
+        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self._model = model
         self._max_tokens = max_tokens
 
