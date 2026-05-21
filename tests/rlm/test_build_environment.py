@@ -1,3 +1,5 @@
+import pytest
+
 import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.primitives import build_environment
 
@@ -28,3 +30,29 @@ def test_build_environment_repairs_then_succeeds(make_context, tmp_path, monkeyp
     assert result["ok"] is True
     assert result["attempts"] == 2
     assert len(ctx.llm_client.calls) == 1
+
+
+def test_build_environment_cap_exhausted_returns_fail_soft(make_context, tmp_path, monkeypatch):
+    ctx = make_context(tmp_path, llm_responses=["FROM repaired\n"])
+
+    async def always_fail(dockerfile_path, context_dir, tag, **kw):
+        return (False, tag, "always fails")
+
+    monkeypatch.setattr(primitives, "_build_image", always_fail)
+    result = build_environment({"dockerfile": "FROM bad\n"}, ctx=ctx)
+    assert result["ok"] is False
+    assert result["image_tag"] == ""
+    assert result["attempts"] >= 1
+
+
+def test_build_environment_propagates_sandbox_runtime_error(make_context, tmp_path, monkeypatch):
+    from backend.services.runtime.interface import RuntimeCauseKind, SandboxRuntimeError
+
+    ctx = make_context(tmp_path)
+
+    async def daemon_down(dockerfile_path, context_dir, tag, **kw):
+        raise SandboxRuntimeError(RuntimeCauseKind.backend_unavailable, "daemon unreachable")
+
+    monkeypatch.setattr(primitives, "_build_image", daemon_down)
+    with pytest.raises(SandboxRuntimeError):
+        build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)

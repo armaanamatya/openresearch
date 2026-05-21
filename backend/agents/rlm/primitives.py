@@ -114,7 +114,7 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     import tempfile
     from pathlib import Path
 
-    dockerfile = (env_spec.get("dockerfile") or "").strip()
+    dockerfile = str(env_spec.get("dockerfile") or "").strip()
     if not dockerfile:
         return {"ok": False, "image_tag": "", "error": "env_spec.dockerfile is empty",
                 "attempts": 0}
