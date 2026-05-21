@@ -1,0 +1,458 @@
+"""run.py — the RLM-mode run entry (Phase 3, issue #60).
+
+``run_pipeline_rlm()`` replaces the 14-stage ``PipelineStage`` machine for the
+new ``rlm`` run mode.  It:
+
+  1. builds a run-scoped :class:`RunContext` (#59's seam),
+  2. resolves the primitive layer — #59's real ``build_custom_tools`` if present,
+     else the deterministic stub provider (so the orchestrator is runnable now),
+  3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
+  4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
+     iteration through :class:`ReproLabRLMLogger`,
+  5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
+
+Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
+between iterations), #59's per-primitive deadlines (the real bound on a hung
+primitive — a #59 requirement), and a process-level wall-clock watchdog here
+(the hard backstop — a thread cannot be killed, only the process).
+
+Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from rlm import RLM
+
+from backend.agents.dashboard_emitter import DashboardEmitter
+from backend.agents.execution import DEFAULT_SANDBOX_MODE
+from backend.agents.resilience.budget import RunBudget
+from backend.agents.resilience.cost import RunCostLedger
+from backend.config import get_settings
+from backend.eventstore.sqlite_store import SqliteEventStore
+
+from backend.agents.rlm.checkpoint import IterationCheckpointer
+from backend.agents.rlm.context import RunContext
+from backend.agents.rlm.models import resolve_root_model
+from backend.agents.rlm.report import (
+    RLMFinalReport,
+    build_final_report,
+    write_final_report_rlm,
+)
+from backend.agents.rlm.sse_bridge import (
+    ReproLabRLMLogger,
+    build_run_complete_event,
+    make_emit,
+    make_on_subcall_complete,
+    make_on_subcall_start,
+)
+from backend.agents.rlm.stub_primitives import build_stub_custom_tools
+from backend.agents.rlm.system_prompt import build_system_prompt
+
+logger = logging.getLogger(__name__)
+
+# --- Tuning constants ------------------------------------------------------
+_MAX_ITERATIONS = 20          # paper Appendix A
+_MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
+_DEFAULT_WALL_CLOCK_S = 3600.0
+_WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
+_WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
+
+_ROOT_PROMPT = (
+    "Reproduce the research paper offloaded in the REPL variable `context`. "
+    "Navigate it with REPL code and sub-calls (llm_query / rlm_query) over slices "
+    "you construct, use the domain primitives to detect the environment, plan, "
+    "implement and run a baseline, then score it against the rubric and propose "
+    "improvements. Accumulate the reproduction as REPL state. When finished, build "
+    "your report dict, json.dumps it into a variable, and call FINAL_VAR on that "
+    "JSON-string variable — exactly as the system prompt's termination contract "
+    "describes."
+)
+
+
+@dataclass
+class RLMRunResult:
+    """Lightweight outcome of one ``rlm``-mode run — returned to the CLI / caller."""
+
+    project_id: str
+    status: str                       # "completed" | "partial" | "failed"
+    iterations: int
+    rubric_score: float | None
+    cost_usd: float | None
+    final_report_path: str | None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_llm_client(provider: str | None) -> tuple[Any, str]:
+    """Build the ``LlmClient`` for ``RunContext.llm_client`` and its model label.
+
+    Mirrors ``orchestrator._build_rlm_llm_client``: ``openai`` → ``OpenAILlmClient``,
+    otherwise ``ClaudeLlmClient``.
+
+    The ``LlmClient`` protocol is ``.complete(*, system, user) -> str`` — it
+    returns no token usage.  Primitive-internal LLM cost is therefore not
+    captured here; the dominant root + sub-call cost comes from ``rlm``'s
+    ``usage_summary`` (see ``report._cost_dict``).  Real per-primitive usage
+    needs the ``LlmClient`` protocol to carry usage — a #59/#60 seam evolution,
+    deferred.
+    """
+    use_openai = (provider or "").lower() == "openai" or (
+        provider is None and bool(os.environ.get("OPENAI_API_KEY"))
+    )
+    if use_openai:
+        from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
+
+        return OpenAILlmClient(), "gpt-4o-mini"
+    from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+    return ClaudeLlmClient(), "claude"
+
+
+def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
+    """Return ``(custom_tools, provider_label)`` for ``RLM(custom_tools=...)``.
+
+    Uses #59's real ``binding.build_custom_tools`` when it is importable and
+    stubs are not forced; otherwise the deterministic stub provider (§13).  This
+    keeps the orchestrator runnable and testable before #59's primitive layer
+    lands — switching to the real primitives is automatic once ``binding.py``
+    exists.
+    """
+    if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
+        return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
+    try:
+        from backend.agents.rlm.binding import build_custom_tools
+    except ImportError:
+        logger.info(
+            "run_pipeline_rlm: backend.agents.rlm.binding not present — "
+            "using stub primitives (#59 not yet merged)"
+        )
+        return build_stub_custom_tools(ctx), "stub (#59 binding.py absent)"
+    return build_custom_tools(ctx), "real (#59 binding)"
+
+
+def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the offloaded RLM ``context`` dict from the workspace claim map.
+
+    ``workspace_claim_map`` shape (see ``pipeline._write_workspace_claim_map``):
+    ``{"project_id": str, "entries": [{"source_id", "title", "excerpt"}, ...]}``.
+
+    The full corpus — supplementary text, repo files, prior-work refs — is
+    populated by later phases (#62).  For now ``paper_text`` / ``paper_metadata``
+    are assembled from the claim-map entries; ``rubric_spec`` is passed through
+    if present.
+    """
+    entries = workspace_claim_map.get("entries") or []
+    sections: list[str] = []
+    for entry in entries:
+        title = entry.get("title", "")
+        excerpt = entry.get("excerpt", "")
+        sections.append(f"## {title}\n\n{excerpt}" if title else excerpt)
+
+    return {
+        "paper_text": "\n\n".join(sections),
+        "paper_metadata": {
+            "title": entries[0].get("title", "") if entries else "",
+            "sections": [e.get("title", "") for e in entries],
+            "source_ids": [e.get("source_id", "") for e in entries],
+        },
+        "supplementary_text": None,
+        "repo_files": None,
+        "prior_work_refs": [],
+        "rubric_spec": workspace_claim_map.get("rubric_spec") or {},
+    }
+
+
+def _context_metadata(context_dict: dict[str, Any]) -> dict[str, dict]:
+    """Build ``{key: {"type", "length"}}`` metadata for the system prompt.
+
+    Only the name / type / length of each ``context`` value is exposed to the
+    root model — never the value itself (RLM property 1).
+    """
+    meta: dict[str, dict] = {}
+    for key, value in context_dict.items():
+        if isinstance(value, (str, list, dict)):
+            length: int = len(value)
+        else:
+            length = 0
+        meta[key] = {"type": type(value).__name__, "length": length}
+    return meta
+
+
+def _verdict_to_status(verdict: str) -> str:
+    """Map an ``RLMFinalReport`` verdict to a run status."""
+    return "completed" if verdict == "reproduced" else verdict
+
+
+def _arm_watchdog(
+    deadline_s: float,
+    *,
+    project_dir: Path,
+    emit: Any,
+    iteration_count: Any,
+) -> threading.Timer:
+    """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
+
+    ``rlm``'s ``max_timeout`` only checks between iterations; a primitive wedged
+    inside ``execute_code`` can overrun it indefinitely, and a Python thread
+    cannot be killed.  This timer fires ``_WATCHDOG_GRACE_S`` past the deadline
+    (so it only triggers when ``rlm``'s own timeout failed), writes an honest
+    partial report, and hard-exits the process — the OS then reclaims the wedged
+    worker thread.
+
+    ``iteration_count`` is a zero-arg callable returning the iterations done so
+    far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
+    it on normal completion.
+    """
+
+    def _fire() -> None:
+        logger.error(
+            "run_pipeline_rlm: wall-clock watchdog fired (%.0fs + %.0fs grace) — "
+            "hard-stopping a wedged run",
+            deadline_s,
+            _WATCHDOG_GRACE_S,
+        )
+        try:
+            done = iteration_count()
+            report = RLMFinalReport(
+                verdict="failed",
+                reproduction_summary=(
+                    f"Wall-clock watchdog: the run exceeded {deadline_s:.0f}s "
+                    f"and was hard-stopped after {done} iteration(s)."
+                ),
+                iterations=done,
+            )
+            write_final_report_rlm(report, project_dir)
+            emit(
+                build_run_complete_event(
+                    status="failed",
+                    iterations=done,
+                    rubric_score=None,
+                    cost_usd=None,
+                    final_report_path=str(project_dir / "final_report.json"),
+                )
+            )
+        finally:
+            os._exit(_WATCHDOG_EXIT_CODE)
+
+    timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
+async def run_pipeline_rlm(
+    project_id: str,
+    runs_root: Path,
+    workspace_claim_map: dict[str, Any],
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    runtime: Any = None,
+    run_budget: RunBudget | None = None,
+    sandbox_mode: Any = DEFAULT_SANDBOX_MODE,
+    seed: int | None = None,
+    execution_profile: Any = None,
+    attempt_id: str | None = None,
+    run_group_id: str | None = None,
+    workspace_service: Any = None,
+    workspace_id: str | None = None,
+) -> RLMRunResult:
+    """Run one paper reproduction in ``rlm`` mode.
+
+    The signature parallels ``run_pipeline_sdk`` so ``cli.py`` can dispatch the
+    three modes uniformly.  ``seed`` / ``execution_profile`` / ``attempt_id`` /
+    ``run_group_id`` are accepted for that parity; the RLM engine owns its own
+    iteration loop, so they are not all load-bearing yet.
+
+    Returns an :class:`RLMRunResult`; never raises for an in-run failure — a
+    crashed or timed-out run yields an honest ``partial`` / ``failed`` report.
+    """
+    runs_root = Path(runs_root)
+    project_dir = runs_root / project_id
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Observability + budget.
+    cost_ledger = RunCostLedger.load_jsonl(
+        project_dir / "cost_ledger.jsonl", project_id=project_id, attach_path=True
+    )
+    dashboard = DashboardEmitter(project_id, runs_root)
+    emit = make_emit(dashboard)
+    wall_clock_s = _DEFAULT_WALL_CLOCK_S
+    if run_budget is not None and run_budget.max_wall_clock_seconds:
+        wall_clock_s = float(run_budget.max_wall_clock_seconds)
+
+    # 2. Primitive LLM client (see _build_llm_client on the usage caveat).
+    llm_client, llm_model = _build_llm_client(provider)
+    provider_label = (provider or "").lower() or (
+        "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
+    )
+
+    # 3. Root model.
+    root_model = resolve_root_model(model)
+    if not root_model.paper_validated:
+        logger.warning(
+            "run_pipeline_rlm: root model %r is NOT paper-validated as an RLM root "
+            "(root_model_unvalidated) — results may not match paper expectations",
+            root_model.key,
+        )
+
+    # 4. The #59 seam — RunContext.
+    ctx = RunContext(
+        project_id=project_id,
+        project_dir=project_dir,
+        runs_root=runs_root,
+        dashboard=dashboard,
+        cost_ledger=cost_ledger,
+        llm_client=llm_client,
+        provider=provider_label,
+        model=llm_model,
+        runtime=runtime,
+        workspace_service=workspace_service,
+        workspace_id=workspace_id,
+    )
+
+    # 5. Primitives — real #59 binding or the stub provider.
+    custom_tools, tools_label = _resolve_custom_tools(ctx)
+    logger.info(
+        "run_pipeline_rlm: project=%s root=%s primitives=%s",
+        project_id,
+        root_model.key,
+        tools_label,
+    )
+
+    # 6. The offloaded corpus + 7. the system prompt.
+    context_dict = _build_context(workspace_claim_map)
+    system_prompt = build_system_prompt(
+        context_metadata=_context_metadata(context_dict),
+        root_model=root_model,
+    )
+
+    # 8. Checkpoint + the streaming logger.
+    event_store = SqliteEventStore(get_settings().database_url)
+    checkpointer = IterationCheckpointer(
+        project_id=project_id,
+        event_store=event_store,
+        snapshot_dir=project_dir / "rlm_state",
+    )
+    rlm_logger = ReproLabRLMLogger(emit=emit, checkpointer=checkpointer)
+
+    # 9. Construct the RLM engine.
+    rlm = RLM(
+        backend=root_model.rlm_backend,
+        backend_kwargs=root_model.backend_kwargs,
+        environment="local",                       # mandatory — DockerREPL drops custom_tools
+        max_depth=_MAX_DEPTH,
+        max_iterations=_MAX_ITERATIONS,
+        max_timeout=wall_clock_s,
+        compaction=True,
+        other_backends=[root_model.sub_backend],
+        other_backend_kwargs=[root_model.sub_backend_kwargs],
+        custom_tools=custom_tools,
+        custom_sub_tools={},                       # sub-calls navigate text, not primitives
+        custom_system_prompt=system_prompt,
+        logger=rlm_logger,
+        on_subcall_start=make_on_subcall_start(emit),
+        on_subcall_complete=make_on_subcall_complete(emit),
+    )
+
+    # 10. Arm the wall-clock backstop, then 11. run .completion() on a worker thread.
+    watchdog = _arm_watchdog(
+        wall_clock_s,
+        project_dir=project_dir,
+        emit=emit,
+        iteration_count=lambda: rlm_logger.iteration_count,
+    )
+    result_obj: Any = None
+    run_failed = False
+    try:
+        result_obj = await asyncio.to_thread(rlm.completion, context_dict, _ROOT_PROMPT)
+    except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
+        run_failed = True
+        logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
+    finally:
+        watchdog.cancel()
+
+    # 12. Build, write, and report.
+    return _finalize(
+        result_obj=result_obj,
+        run_failed=run_failed,
+        ctx=ctx,
+        iterations=rlm_logger.iteration_count,
+        project_dir=project_dir,
+        emit=emit,
+    )
+
+
+def _finalize(
+    *,
+    result_obj: Any,
+    run_failed: bool,
+    ctx: RunContext,
+    iterations: int,
+    project_dir: Path,
+    emit: Any,
+) -> RLMRunResult:
+    """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
+    if result_obj is not None:
+        report = build_final_report(result_obj, ctx=ctx)
+    else:
+        report = RLMFinalReport(
+            verdict="failed",
+            reproduction_summary="The RLM run produced no result (see run logs).",
+        )
+
+    # The real iteration count is authoritative over the root's self-report.
+    report.iterations = iterations
+    # A crashed run is never an honest clean reproduction.
+    if run_failed and report.verdict == "reproduced":
+        report.verdict = "partial"
+
+    json_path, _md_path = write_final_report_rlm(report, project_dir)
+
+    rubric_score = report.rubric.get("overall_score")
+    cost_usd = report.cost.get("llm_usd")
+    status = _verdict_to_status(report.verdict)
+
+    emit(
+        build_run_complete_event(
+            status=status,
+            iterations=iterations,
+            rubric_score=rubric_score,
+            cost_usd=cost_usd,
+            final_report_path=str(json_path),
+        )
+    )
+    logger.info(
+        "run_pipeline_rlm: %s — verdict=%s iterations=%d cost=$%.4f",
+        ctx.project_id,
+        report.verdict,
+        iterations,
+        cost_usd or 0.0,
+    )
+    return RLMRunResult(
+        project_id=ctx.project_id,
+        status=status,
+        iterations=iterations,
+        rubric_score=rubric_score,
+        cost_usd=cost_usd,
+        final_report_path=str(json_path),
+    )
+
+
+__all__ = ["RLMRunResult", "run_pipeline_rlm"]

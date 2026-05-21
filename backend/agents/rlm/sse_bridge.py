@@ -191,6 +191,16 @@ class ReproLabRLMLogger(RLMLogger):
         self._next_index += 1
         return self._next_index
 
+    @property
+    def iteration_count(self) -> int:
+        """Total iterations logged so far.
+
+        Overrides ``RLMLogger.iteration_count`` — the base's ``_iteration_count``
+        is never incremented because :meth:`log` deliberately does not call
+        ``super().log()`` (see the class docstring).
+        """
+        return self._next_index
+
     def log(self, iteration: RLMIteration) -> None:
         """Sanitize, emit, and checkpoint one iteration.
 
