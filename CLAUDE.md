@@ -16,7 +16,7 @@ An agent pipeline that reproduces research papers end-to-end: ingest paper → u
 
 ## Common commands
 
-### Backend (Python 3.11, FastAPI)
+### Backend (Python 3.14.2, FastAPI)
 
 ```bash
 # Install
@@ -98,7 +98,7 @@ Two important behaviors **happen inside existing stages** rather than as new enu
 Structured pass/fail with dynamic confidence thresholds and a supervisor-verifier layer. Gates can halt a run with `blocked_requires_human` unless fail-soft modes (see above) are enabled.
 
 ### UI ↔ backend run lifecycle
-1. Lab UI (`frontend/src/components/repro-lab-client.tsx`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload`).
+1. Lab UI (`frontend/src/components/lab/lab-shell.tsx`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload`).
 2. Backend spawns the pipeline subprocess, writes `demo_status.json`, returns initial state.
 3. UI opens an **SSE** stream via `/api/demo/events` → backend `/runs/<id>/events`.
 4. SSE frame types: `run_state` (full state + stage), `agent_log` (incremental log), `dashboard_event`. `stateMapForRun()` maps backend stage → graph node states.

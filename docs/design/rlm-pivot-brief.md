@@ -5,6 +5,15 @@
 > One consistent document — no corrections preamble. If something here is wrong
 > against the code, fix it here in the same change. Last revised 2026-05-20.
 
+> **⚠ Fork status (2026-05-21) — §3/§5/§11 are CONTESTED.** This brief §3
+> mandates a *library* engine and forbids hand-writing the REPL host / root
+> loop / sub-calls. GitHub issues #58/#59, PR #65's `backend/agents/rlm/`
+> skeleton, and `docs/rlm-pivot-mapping.md` §6 mandate *hand-building* exactly
+> those. The fork is unresolved — see issue #64 (status comment) and the drift
+> catalog in `docs/design/phase2-analysis.md` §2.4 (D1–D9). `dspy.RLM` (#66) is
+> a third candidate engine. Do not treat §3, §5, or the §11 phase plan as final
+> until @armaanamatya resolves the fork.
+
 ## 1. Context — why
 
 ReproLab reproduces research papers end-to-end and scores the result against a

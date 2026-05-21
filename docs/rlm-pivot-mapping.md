@@ -7,6 +7,16 @@
 
 This document maps each existing stage agent to the primitive it becomes in the RLM REPL, records the function signatures Phase 2 must implement, identifies what survives from `rlm_query.py`, and notes the design items that need decisions before Phase 2 starts.
 
+> **⚠ Fork status (2026-05-21) — CONTESTED.** This mapping describes the
+> *hand-build* architecture and cites the *pre-rewrite* brief structure
+> (§7.7, §13 FM#1–#10, "correction #1/#8") — the current
+> `docs/design/rlm-pivot-brief.md` has none of those (drift D4). The current
+> brief §3 mandates a *library* engine and forbids hand-building the REPL /
+> root loop / sub-calls, contradicting this doc and issue #59. Unresolved —
+> see issue #64 (status comment), #66 (`dspy.RLM` candidate), and
+> `docs/design/phase2-analysis.md` §2.4 (drifts D1–D9). §6's "frozen Phase 2
+> decisions" are frozen against the hand-build path only; they are not final.
+
 ---
 
 ## 1. Stage agent → primitive
