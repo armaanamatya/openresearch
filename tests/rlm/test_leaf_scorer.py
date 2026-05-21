@@ -114,3 +114,29 @@ def test_score_reproduction_overall():
     assert result["graded"] == 3
     assert result["rubric_source"] == "paperbench_bundle"
     assert len(result["leaf_scores"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 4: rubric_source="generated" is propagated to the result dict
+# ---------------------------------------------------------------------------
+
+
+def test_score_reproduction_generated_rubric_source():
+    """Passing rubric_source='generated' puts 'generated' in the result dict.
+
+    Locks in: the new rubric_source keyword param of score_reproduction is
+    forwarded verbatim — the arXiv self-generated-rubric path sets it so the
+    report is honest about its rubric origin.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp)
+        (run_dir / "final_report.json").write_text(
+            json.dumps({"reproduction_summary": "arxiv run", "metrics": {}}),
+            encoding="utf-8",
+        )
+
+        result = score_reproduction(
+            TINY_TREE, run_dir, MockLlmClient(), rubric_source="generated"
+        )
+
+    assert result["rubric_source"] == "generated"

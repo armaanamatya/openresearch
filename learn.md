@@ -11,6 +11,70 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — RLM runs never wrote demo_status.json, so GET /runs/{id} 404'd
+
+**Symptom.** Caught while wiring the REST-retrievable arXiv path. A completed
+RLM run launched from the CLI or `rlm_paperbench.py` left no `demo_status.json`
+in its run dir — so `GET /runs/{id}` (which builds `LiveRunState` from that file)
+404'd even though `final_report.{json,md}` were on disk. The run's results
+existed but the run was not addressable through the HTTP API.
+
+**Root cause.** Status-file writing was owned by the *launcher*, not the *run*.
+`live_runs._python_script` wrote `demo_status.json` for backend-spawned runs; the
+watchdog wrote a status-only one on timeout; CLI- and script-launched
+`run_pipeline_rlm` wrote nothing. A run's status is a property of the run, but no
+single place owned writing it.
+
+**Fix.** `run_pipeline_rlm` writes `demo_status.json` itself — `running` at
+start, a terminal `completed`/`failed` in `_finalize`, merge-preserving
+`startedAt`. The watchdog's status-only write (which omitted `LiveRunState`'s
+required `projectId`/`outputDir`/`runMode` and would itself have raised on read)
+routes through the same helper. Every RLM run, however launched, is now
+REST-addressable.
+
+**Lesson.** A durable status artifact must be written by the component that owns
+the lifecycle, not by whichever launcher happened to start it. Split ownership
+means some launch paths silently skip it — and the gap stays invisible until a
+consumer (here, the HTTP layer) needs the artifact.
+
+**Guardrail.** `tests/rlm/test_run.py::TestWriteDemoStatus` — the written file
+round-trips through `live_runs.LiveRunState`, and a terminal write merges onto
+(not clobbers) the start write.
+
+---
+
+## 2026-05-21 — arXiv RLM path silently fed the root a 600-char-truncated paper
+
+**Symptom.** Caught by inspection while wiring the arXiv self-generated-rubric
+path — before the first arXiv `--mode rlm` run. The shipped arXiv RLM path would
+have offloaded only a 600-char stub of the paper into the root model's REPL
+`context` variable instead of the full text, leaving the model almost nothing to
+reproduce from — and no error would have been raised (a silently degraded run).
+
+**Root cause.** A single `workspace_claim_map` builder was shared by all three
+run modes (SDK, offline, RLM). The builder correctly truncated each excerpt to
+600 chars for SDK/offline (where excerpts go directly into LLM prompts). RLM is
+architecturally different — the paper is offloaded whole into the REPL `context`
+variable, never into a prompt, so truncation there defeats the paradigm. Because
+both paths called the same inline builder, the RLM path silently received a
+600-char stub.
+
+**Fix.** Extracted the builder to a module-level `_build_workspace_claim_map(variables, project_id, mode)`.
+For `mode == "rlm"` the function looks up the `paper_text` workspace variable and
+returns its full text un-truncated. For any other mode the behavior is byte-identical
+to the original truncating path.
+
+**Lesson.** A single claim-map builder cannot serve two fundamentally different
+consumption models (prompt injection vs. REPL offload) without a mode branch. Mode-
+specific data shaping must be explicit and tested; silent fallback to the "prompt" path
+was the error.
+
+**Guardrail.** `tests/test_cli_claim_map.py::test_rlm_mode_paper_text_dict_full_text` —
+asserts `mode="rlm"` returns a single un-truncated entry; companion tests assert SDK
+mode still truncates at 600 chars.
+
+---
+
 ## 2026-05-21 — The RLM root fabricated benchmark metrics it never measured
 
 **Symptom.** An `--mode rlm` run finished `partial` with

@@ -76,6 +76,73 @@ _ARXIV_RE = re.compile(
 )
 
 
+def _build_workspace_claim_map(variables: dict, project_id: str, mode: str) -> dict:
+    """Build the workspace claim map handed to a run.
+
+    `variables` is the workspace view's `{name: Cited}` dict. SDK/offline modes
+    truncate each excerpt to 600 chars (the excerpt goes into an LLM prompt).
+    RLM mode offloads the paper into the REPL `context` variable, never a
+    prompt, so it carries the full `paper_text` un-truncated — a truncated
+    corpus defeats the RLM paradigm (rlm-pivot-brief.md §7).
+    """
+    def _truncate(text: str, max_chars: int = 600) -> str:
+        return text if len(text) <= max_chars else text[:max_chars] + "..."
+
+    def _value_str(cited: Any) -> str:
+        return (
+            cited.value if isinstance(cited.value, str)
+            else json.dumps(cited.value) if cited.value is not None
+            else ""
+        )
+
+    if mode == "rlm":
+        paper_cited = variables.get("paper_text")
+        if paper_cited is not None:
+            val = paper_cited.value
+            if isinstance(val, dict) and isinstance(val.get("text"), str):
+                full_text = val["text"]
+            elif isinstance(val, str):
+                full_text = val
+            else:
+                full_text = None
+            if full_text is not None:
+                return {
+                    "project_id": project_id,
+                    "entries": [
+                        {
+                            "source_id": project_id,
+                            "title": "paper_text",
+                            "excerpt": full_text,
+                        }
+                    ],
+                }
+        # Fallback: no usable paper_text — one entry per variable, un-truncated.
+        return {
+            "project_id": project_id,
+            "entries": [
+                {
+                    "source_id": name,
+                    "title": name,
+                    "excerpt": _value_str(cited),
+                }
+                for name, cited in variables.items()
+            ],
+        }
+
+    # SDK / offline: one entry per variable, truncated to keep LLM prompt manageable.
+    return {
+        "project_id": project_id,
+        "entries": [
+            {
+                "source_id": name,
+                "title": name,
+                "excerpt": _truncate(_value_str(cited)),
+            }
+            for name, cited in variables.items()
+        ],
+    }
+
+
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     """Write ``data`` to ``path`` atomically via tempfile + os.replace.
 
@@ -469,26 +536,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     view = workspace.materialize_view(workspace_id)
 
-    # Build workspace claim map for the agent pipeline.
-    # Truncate excerpts so the LLM prompt stays manageable.
-    def _truncate(text: str, max_chars: int = 600) -> str:
-        return text if len(text) <= max_chars else text[:max_chars] + "..."
-
-    workspace_claim_map = {
-        "project_id": project_id,
-        "entries": [
-            {
-                "source_id": name,
-                "title": name,
-                "excerpt": _truncate(
-                    cited.value if isinstance(cited.value, str)
-                    else json.dumps(cited.value) if cited.value is not None
-                    else ""
-                ),
-            }
-            for name, cited in view.variables.items()
-        ],
-    }
+    workspace_claim_map = _build_workspace_claim_map(view.variables, project_id, args.mode)
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)

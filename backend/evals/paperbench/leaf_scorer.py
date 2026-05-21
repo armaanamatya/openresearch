@@ -179,10 +179,14 @@ def score_reproduction(
     llm_client: LlmClient,
     *,
     batch_size: int = 15,
+    rubric_source: str = "paperbench_bundle",
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source, leaf_scores.
+    ``rubric_source`` is passed through to the result dict unchanged — callers set
+    it to "generated" when the rubric was derived at run-time rather than from a
+    vendored bundle.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -234,7 +238,7 @@ def score_reproduction(
         "overall_score": overall_score,
         "leaf_count": len(leaves),
         "graded": graded,
-        "rubric_source": "paperbench_bundle",
+        "rubric_source": rubric_source,
         "leaf_scores": leaf_score_records,
     }
 

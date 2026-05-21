@@ -9,7 +9,7 @@ Drive the RLM orchestrator end-to-end on PaperBench papers — deliver
 
 ## Status
 
-`main` and `merge` synced. Full test suite: **1119 passing**. The RLM
+`main` and `merge` synced. Full test suite: **1139 passing**. The RLM
 pipeline now runs **end-to-end** — run 7 executed all 9 primitives and
 produced an honest, leaf-scored report.
 
@@ -25,6 +25,18 @@ no metrics; the **rubric score is real** — the leaf scorer graded the
 written code against the full PaperBench rubric.
 
 ## Done
+
+**arXiv RLM end-to-end path.** An arXiv `--mode rlm` run now works end-to-end
+and its results are retrievable through the REST API. Three gaps closed:
+*(1)* the shared claim-map builder truncated every entry to 600 chars — right
+for SDK prompts, wrong for RLM (the paper is offloaded whole into the REPL
+`context`); RLM mode now carries the full `paper_text` un-truncated. *(2)* arXiv
+runs self-generate a PaperBench-shaped rubric tree from the paper
+(`rlm.rubric_gen.generate_rubric_tree`), persist it to `generated_rubric.json`,
+and score against it — `score_run.py` finds it automatically and labels the
+score `rubric_source="generated"` (honestly **not** PaperBench-official).
+*(3)* `run_pipeline_rlm` now writes `demo_status.json`, so `GET /runs/{id}`
+resolves for CLI- and script-launched RLM runs.
 
 **Phase-2 merge.** Aayush's four `feat/rlm-phase2-foundation` Codex-review
 commits merged into the line (primitives/binding hardening, Phase-1

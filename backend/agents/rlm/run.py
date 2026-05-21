@@ -27,6 +27,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -330,6 +331,48 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
+def _write_demo_status(project_dir: Path, status: str, *, error: str | None = None) -> None:
+    """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
+
+    The HTTP layer's ``GET /runs/{id}`` reads this snapshot via
+    ``live_runs._read_status``; without it a CLI- or script-launched RLM run
+    404s. The payload carries ``LiveRunState``'s required fields (``projectId``,
+    ``outputDir``, ``runMode``, ``status``). Any pre-existing file is merged, not
+    overwritten, so an earlier ``startedAt`` survives the terminal write.
+
+    ``status`` must be a valid ``RunStatus`` (``running`` | ``completed`` |
+    ``failed`` | ``stopped``) — the reproduction *verdict* (which may be
+    ``partial``) is a separate axis and lives in ``final_report.json``.
+    """
+    path = project_dir / "demo_status.json"
+    now = datetime.now(timezone.utc).isoformat()
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a corrupt prior snapshot is replaced
+            existing = {}
+    payload: dict[str, Any] = {
+        **existing,
+        "projectId": project_dir.name,
+        "outputDir": str(project_dir),
+        "runMode": "rlm",
+        "status": status,
+        "updatedAt": now,
+    }
+    payload.setdefault("startedAt", now)
+    if status in ("completed", "failed", "stopped"):
+        payload["completedAt"] = now
+    if error is not None:
+        payload["error"] = error
+    try:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — status is best-effort; never crash the run
+        logger.exception("run_pipeline_rlm: could not write demo_status.json")
+
+
 def _arm_watchdog(
     deadline_s: float,
     *,
@@ -350,10 +393,6 @@ def _arm_watchdog(
     far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
     it on normal completion.
     """
-    # Capture the status path in the closure so the watchdog can update it
-    # before os._exit — prevents the UI from staying stuck at "running".
-    _demo_status_path = project_dir / "demo_status.json"
-
     def _fire() -> None:
         logger.error(
             "run_pipeline_rlm: wall-clock watchdog fired (%.0fs + %.0fs grace) — "
@@ -386,12 +425,11 @@ def _arm_watchdog(
             )
         except Exception:  # noqa: BLE001
             logger.exception("run_pipeline_rlm: watchdog could not emit run_complete event")
-        try:
-            _tmp = _demo_status_path.with_suffix(".json.tmp")
-            _tmp.write_text(json.dumps({"status": "failed"}), encoding="utf-8")
-            os.replace(_tmp, _demo_status_path)
-        except Exception:  # noqa: BLE001
-            logger.exception("run_pipeline_rlm: watchdog could not write demo_status.json")
+        _write_demo_status(
+            project_dir,
+            "failed",
+            error=f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline",
+        )
         os._exit(_WATCHDOG_EXIT_CODE)
 
     timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
@@ -439,6 +477,9 @@ async def run_pipeline_rlm(
     runs_root = Path(runs_root).resolve()
     project_dir = runs_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
+    # Status snapshot at run start — GET /runs/{id} reads this; without it a
+    # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
+    _write_demo_status(project_dir, "running")
 
     # 1. Observability + budget.
     cost_ledger = RunCostLedger.load_jsonl(
@@ -502,6 +543,26 @@ async def run_pipeline_rlm(
 
     # 6. The offloaded corpus + 7. the system prompt.
     context_dict = _build_context(workspace_claim_map)
+
+    # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
+    # from the paper so the run is scorable (bundle runs already carry one).
+    if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+        from backend.agents.rlm.rubric_gen import generate_rubric_tree
+
+        generated = generate_rubric_tree(
+            context_dict["paper_text"],
+            llm_client,
+            paper_title=context_dict.get("paper_metadata", {}).get("title", ""),
+        )
+        if generated is not None:
+            context_dict["rubric_spec"] = generated
+            (project_dir / "generated_rubric.json").write_text(
+                json.dumps(generated, indent=2), encoding="utf-8"
+            )
+            logger.info("run_pipeline_rlm: using a self-generated rubric (persisted to generated_rubric.json)")
+        else:
+            logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
+
     # M-REDACT: build sentinels once; threaded into logger + _finalize (A1-M2, A1-C1).
     corpus_sentinels = _corpus_sentinels(context_dict)
     system_prompt = build_system_prompt(
@@ -650,6 +711,10 @@ def _finalize(
         iterations,
         cost_usd or 0.0,
     )
+    # demo_status.json terminal write: a produced report means the run-process
+    # completed; a crash means it failed. The reproduction verdict (incl.
+    # "partial") is a separate axis recorded in final_report.json.
+    _write_demo_status(project_dir, "failed" if run_failed else "completed")
     return RLMRunResult(
         project_id=ctx.project_id,
         status=status,
