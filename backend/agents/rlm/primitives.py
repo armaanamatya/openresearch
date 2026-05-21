@@ -422,15 +422,6 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     return out[:target]
 
 
-def set_final(report: dict) -> None:
-    """Convenience: bind `report` to a REPL variable and emit FINAL_VAR(report).
-
-    The root can also assign and emit the tag manually; this primitive is
-    sugar for the common case.
-    """
-    raise NotImplementedError("Phase 2 (#59) — REPL binding helper")
-
-
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -441,5 +432,4 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "run_experiment": run_experiment,
     "verify_against_rubric": verify_against_rubric,
     "propose_improvements": propose_improvements,
-    "set_final": set_final,
 }
