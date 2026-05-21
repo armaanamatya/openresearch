@@ -5,14 +5,14 @@
 > One consistent document — no corrections preamble. If something here is wrong
 > against the code, fix it here in the same change. Last revised 2026-05-20.
 
-> **⚠ Fork status (2026-05-21) — §3/§5/§11 are CONTESTED.** This brief §3
-> mandates a *library* engine and forbids hand-writing the REPL host / root
-> loop / sub-calls. GitHub issues #58/#59, PR #65's `backend/agents/rlm/`
-> skeleton, and `docs/rlm-pivot-mapping.md` §6 mandate *hand-building* exactly
-> those. The fork is unresolved — see issue #64 (status comment) and the drift
-> catalog in `docs/design/phase2-analysis.md` §2.4 (D1–D9). `dspy.RLM` (#66) is
-> a third candidate engine. Do not treat §3, §5, or the §11 phase plan as final
-> until @armaanamatya resolves the fork.
+> **✅ Fork RESOLVED (2026-05-21) — §3/§5/§11 confirmed.** The architecture
+> fork (drift D1) is closed: the `rlm` library wins. A spike installed and
+> probed every candidate — `rlm.RLM`'s real signature matches this brief's §3
+> table exactly, including `environment='docker'` (which ReproLab needs and
+> `dspy.RLM`'s WASM sandbox cannot do). Hand-building (the old issue #59 / PR
+> #65 skeleton) is retired; `dspy.RLM` (#66) is evaluated and not adopted.
+> Evidence + verdict: `docs/design/rlms-spike-report.md`. §3, §5, and the §11
+> phase plan are the canonical architecture — implement against them.
 
 ## 1. Context — why
 
