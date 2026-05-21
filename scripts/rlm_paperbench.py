@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import re
 import sys
 import time
@@ -20,6 +21,17 @@ from dotenv import load_dotenv
 # root-model client and the primitive LLM client both read the process env,
 # and nothing else in the repo loads .env for a local (non-docker) run.
 load_dotenv()
+
+# Surface logger.* output from the orchestrator and primitives in the run log
+# so a run is debuggable post-hoc — without this only bare print()s appear, and
+# diagnosing a failure means re-deriving it by hand. HTTP libraries are quieted
+# to keep the signal high (httpx logs every LLM request at INFO).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+for _noisy in ("httpx", "httpcore", "openai", "urllib3", "docker"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 def _safe_dir_name(s: str) -> str:
