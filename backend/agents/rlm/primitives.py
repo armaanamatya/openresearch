@@ -50,12 +50,19 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     }
 
 
-def extract_hyperparameters(text_slice: str) -> dict:
+def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     """Extract hyperparameters from a slice (typically the training-recipe section).
 
-    Wraps `backend/agents/paper_understanding.py::_extract_training_recipe`.
+    Wraps `paper_understanding._extract_training_recipe`. Returns a flat dict:
+    optimizer, learning_rate, batch_size, epochs_or_steps, scheduler,
+    other_hparams. The heuristic populates the first four; the root model can
+    fill scheduler/other_hparams via `llm_query` if needed.
+
+    `ctx` is required by the primitive-wrapper protocol (design decision D4);
+    this heuristic body does not use it.
     """
-    raise NotImplementedError("Phase 3 (#60) — wrap paper_understanding._extract_training_recipe")
+    from backend.agents.paper_understanding import _extract_training_recipe
+    return _extract_training_recipe({"_": text_slice}).model_dump()
 
 
 def detect_environment(method_spec: dict) -> dict:
