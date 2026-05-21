@@ -419,7 +419,7 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
             out.append(ImprovementHypothesis(**item).model_dump())
         except Exception:
             continue  # fail-soft: skip a malformed hypothesis
-    return out
+    return out[:target]
 
 
 def set_final(report: dict) -> None:
