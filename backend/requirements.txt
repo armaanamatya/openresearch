@@ -28,3 +28,7 @@ asyncssh>=2.14,<3
 deepeval>=2.0
 scipy>=1.12
 numpy>=1.26
+
+# --- RLM orchestrator -------------------------------------------------------
+rlms==0.1.1
+python-dotenv>=1.2.1,<2
