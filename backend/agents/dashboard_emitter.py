@@ -187,6 +187,37 @@ class DashboardEmitter:
             "detail": detail,
         })
 
+    def primitive_call(
+        self,
+        primitive: str,
+        status: str,
+        *,
+        args_summary: dict | None = None,
+        result_summary: str | None = None,
+        iteration: int | None = None,
+        rubric_delta: float | None = None,
+    ) -> None:
+        """Emit a `primitive_call` event (RLM Phase 2 — issue #61 schema).
+
+        `status` is "start" | "ok" | "error". `iteration` is the root-loop
+        index — a bare primitive wrapper cannot know it, so it is None here.
+        Phase 3 (`run.py`, #60) supplies it via a custom `RLMLogger` subclass
+        passed to `rlm.RLM`: `rlm` calls `logger.log(iteration)` once per loop
+        (the verified per-iteration hook — `on_iteration_*` never fire), and
+        that subclass stashes the index for the wrapper to read.
+        `rubric_delta` is not applicable to a primitive call (always None).
+        """
+        self._emit({
+            "event": "primitive_call",
+            "timestamp": _now(),
+            "primitive": primitive,
+            "status": status,
+            "args_summary": args_summary or {},
+            "result_summary": result_summary,
+            "iteration": iteration,
+            "rubric_delta": rubric_delta,
+        })
+
     def shared_state_updated(
         self,
         agent_id: str,
