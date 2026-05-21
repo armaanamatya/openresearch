@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.agents.schemas import PaperClaimMap, MetricSpec
+from backend.agents.schemas import PaperClaimMap, MetricSpec, DatasetRequirement
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +99,27 @@ def test_datasets_mixed_strings_and_dicts():
     assert pcm.datasets[0].name == "Two Moons"
     assert pcm.datasets[1].name == "SLCP"
     assert pcm.datasets[1].source == "sbibm"
+
+
+def test_datasets_accepts_prebuilt_model_instances():
+    """The offline paper-understanding agent passes DatasetRequirement
+    instances directly — the coercion must pass them through, not drop them.
+    This guards the exact regression the coercion-passthrough fix addressed."""
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        datasets=[DatasetRequirement(name="MuJoCo"), DatasetRequirement(name="Atari")],
+    )
+    assert [d.name for d in pcm.datasets] == ["MuJoCo", "Atari"]
+
+
+def test_metrics_accepts_prebuilt_model_instances():
+    """MetricSpec instances pass through the coercion untouched."""
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        metrics=[MetricSpec(name="reward", definition="cumulative episode reward")],
+    )
+    assert pcm.metrics[0].name == "reward"
+    assert pcm.metrics[0].definition == "cumulative episode reward"
 
 
 # ---------------------------------------------------------------------------

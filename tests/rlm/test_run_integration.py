@@ -139,6 +139,35 @@ class _ScriptedLM(BaseLM):
         return self._usage_summary()
 
 
+class _ScriptedLMFabricatedMetrics(_ScriptedLM):
+    """A scripted root that reports ``baseline_metrics`` it never measured —
+    it calls no ``run_experiment`` primitive. Drives the honesty guard
+    end-to-end: a full ``run_pipeline_rlm`` run must drop these metrics.
+    """
+
+    _TURN1 = (
+        "I will assemble the reproduction report.\n"
+        "```repl\n"
+        "import json\n"
+        "slice_text = 'Algorithm X trains for 10 epochs on MockEnv-v1.'\n"
+        "claims = understand_section(slice_text)\n"
+        "report = {\n"
+        "    'verdict': 'reproduced',\n"
+        "    'reproduction_summary': 'Stub run; metrics were never measured.',\n"
+        "    'baseline_metrics': {'accuracy': 0.99},\n"
+        "    'paper_claims': {},\n"
+        "    'rubric': {'overall_score': 0.5, 'meets_target': False, 'areas': []},\n"
+        "    'improvements': [],\n"
+        "    'primitive_trace': {},\n"
+        "    'cost': {'llm_usd': 0.0, 'primitives': 0.0},\n"
+        "    'iterations': 1,\n"
+        "    'paper': {'id': 'stub-001', 'title': 'Mock Paper'},\n"
+        "}\n"
+        "report_json = json.dumps(report)\n"
+        "```\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture: monkeypatch rlm.core.rlm.get_client
 # ---------------------------------------------------------------------------
@@ -155,6 +184,16 @@ def scripted_rlm_backend():
     is scoped to this fixture and restored automatically at teardown.
     """
     lm_instance = _ScriptedLM()
+
+    with patch("rlm.core.rlm.get_client", return_value=lm_instance):
+        yield lm_instance
+
+
+@pytest.fixture
+def scripted_rlm_backend_fabricated_metrics():
+    """``scripted_rlm_backend`` variant whose root reports baseline metrics it
+    never measured — for the end-to-end honesty-guard test."""
+    lm_instance = _ScriptedLMFabricatedMetrics()
 
     with patch("rlm.core.rlm.get_client", return_value=lm_instance):
         yield lm_instance
@@ -430,6 +469,58 @@ class TestRunPipelineRlmIntegration:
         resolved = tmp_path / "relative_runs" / "rel-runs-root-test"
         assert (resolved / "final_report.json").exists()
         assert (resolved / "dashboard_events.jsonl").exists()
+
+    def test_honesty_guard_drops_fabricated_metrics_end_to_end(
+        self,
+        tmp_path: Path,
+        workspace_claim_map: dict,
+        scripted_rlm_backend_fabricated_metrics: _ScriptedLM,
+        integration_db_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end honesty guard: a scripted root reports baseline_metrics
+        but never calls run_experiment. The written final_report.json must have
+        the metrics dropped and a 'reproduced' verdict downgraded to 'partial'
+        — proving the guard fires through a full run_pipeline_rlm, not only in
+        unit tests (RLM run 5 fabricated metrics in production)."""
+        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
+
+        from backend.config import Settings
+
+        fake_settings = Settings(
+            database_url=integration_db_url,
+            anthropic_api_key="fake-key-not-used",
+        )
+        monkeypatch.setattr(
+            "backend.agents.rlm.run.get_settings", lambda: fake_settings
+        )
+
+        runs_root = tmp_path / "runs"
+        runs_root.mkdir(parents=True, exist_ok=True)
+
+        from backend.agents.rlm.run import run_pipeline_rlm
+
+        result = asyncio.run(
+            run_pipeline_rlm(
+                project_id="honesty-e2e-001",
+                runs_root=runs_root,
+                workspace_claim_map=workspace_claim_map,
+                model="gpt-5",
+                provider="anthropic",
+            )
+        )
+
+        report = json.loads(
+            (runs_root / "honesty-e2e-001" / "final_report.json").read_text()
+        )
+        # run_experiment never ran — the root's metrics are unbacked.
+        assert report["baseline_metrics"] == {}
+        # A reproduction whose experiment never ran is not a full success.
+        assert report["verdict"] == "partial"
+        assert result.status == "partial"
+        assert "honesty guard" in report["reproduction_summary"].lower()
 
 
 class TestResolveAgentRuntime:
