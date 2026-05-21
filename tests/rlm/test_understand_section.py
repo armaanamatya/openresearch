@@ -14,3 +14,4 @@ def test_understand_section_returns_partial_claim_map(make_context, tmp_path):
                            "hardware_clues", "ambiguities"}
     assert isinstance(result["datasets"], list)
     assert result["training_recipe"]["optimizer"]  # Adam was detected
+    assert any(d["name"] == "CartPole-v1" for d in result["datasets"])

@@ -31,6 +31,10 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     dict — `core_contribution`, `claims`, `model_architecture` and
     `evaluation_protocol` need section titles and are left for the root model
     to extract with `llm_query` over `context` (design decision D5).
+
+    `ctx` is required by the primitive-wrapper protocol (design decision D4 —
+    `build_custom_tools` closes `ctx` over every primitive uniformly); this
+    heuristic body does not use it.
     """
     from backend.agents.paper_understanding import (
         _extract_datasets, _extract_metrics, _extract_training_recipe,
