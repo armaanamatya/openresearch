@@ -223,6 +223,38 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
     }
   }, [positioned]);
 
+  // ── Initial framing ───────────────────────────────────────────────────────
+  // Frame the tree on first render that has data, centering on the frontier
+  // node (or the first positioned node as fallback). The guard ensures the
+  // user's subsequent panning is never overridden as the tree grows.
+  //
+  // usePan's own mount-centering effect registers first (it fires before this
+  // one); this effect runs after it and overrides the stale old-canvas offset.
+  //
+  // In jsdom (unit tests), clientWidth / clientHeight are 0, so the math
+  // reduces to scroll = SCENE_PADDING + node position — harmless; nothing
+  // visible to assert in a headless layout engine.
+  const framedRef = useRef(false);
+  useEffect(() => {
+    if (framedRef.current) return;
+    const wrap = wrapRef.current;
+    if (!wrap || positioned.length === 0) return;
+
+    const target =
+      positioned.find((n) => n.id === frontierNodeId) ?? positioned[0];
+
+    wrap.scrollLeft = Math.max(
+      0,
+      SCENE_PADDING + target.x + COLUMN_WIDTH / 2 - wrap.clientWidth / 2
+    );
+    wrap.scrollTop = Math.max(
+      0,
+      SCENE_PADDING + target.y + ROW_HEIGHT / 2 - wrap.clientHeight / 2
+    );
+
+    framedRef.current = true;
+  }, [positioned, frontierNodeId, wrapRef]);
+
   // Register / unregister a TreeNode button element by node id.
   const registerNodeEl = useCallback(
     (id: string, el: HTMLButtonElement | null) => {
