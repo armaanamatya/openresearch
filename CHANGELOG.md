@@ -9,6 +9,39 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **Dynamic best-source paper ingestion — HTML > PDF > OCR cascade.**
+  Figure-heavy arXiv papers produce figure-label noise when PDF-parsed; arXiv's
+  LaTeXML HTML rendering is clean (figures are images there). `ResolvingParser`
+  (`backend/services/ingestion/parser/`) quality-scores HTML and PDF on every
+  run and picks the highest — HTML wins ties. OCR (`OcrPaperParser`, tesseract)
+  runs only when both score below the usable threshold. The HTML sibling is
+  written by `ArxivFetcher`, which now fail-soft fetches `arxiv.org/html/<id>`
+  with structural-marker validation to reject interstitials; the fetch never
+  fails the run. `cli.py` wires `ResolvingParser` as the ingestion entry point.
+  New deps: `beautifulsoup4`, `Pillow`, `pytesseract`.
+- **arXiv RLM runs — self-generated rubric + REST-retrievable status.**
+  When an arXiv `--mode rlm` run has no vendored bundle rubric,
+  `backend/agents/rlm/rubric_gen.py::generate_rubric_tree` derives a
+  PaperBench-shaped weighted rubric tree from the paper text (six standard
+  categories, paper-specific leaf criteria) and persists it to
+  `runs/<id>/generated_rubric.json`. `score_run.py` finds it automatically;
+  `leaf_scorer` labels the result `rubric_source="generated"` — explicitly not
+  PaperBench-official. `run_pipeline_rlm` also writes `demo_status.json` at
+  start and terminal states, so `GET /runs/{id}` resolves for CLI- and
+  script-launched RLM runs.
+- **RLM context sources clean full paper text (not the truncated workspace variable).**
+  `_build_workspace_claim_map` now reads `parsed_full_text.txt` — the parser's
+  direct, complete output — for RLM mode, falling back to the workspace variable
+  only when the file is absent. The chunk-reassembly round-trip that the SDK
+  retrieval layer needs (and that loses content on some papers) is bypassed; RLM
+  offloads the paper whole.
+- **Honest leaf-scoring output — `final_report.md` re-rendered on amend.**
+  `score_run.py` / `leaf_scorer.amend_final_report` now re-renders
+  `final_report.md` (not only the JSON), so `GET /runs/{id}/final-report` serves
+  the authoritative leaf score. The markdown surface rubric provenance: a
+  generated-rubric score is labelled "self-generated rubric — not
+  PaperBench-official"; a bundle score "PaperBench bundle rubric".
+
 - **RLM Featherless root-model backend + hardened key resolution (feat/rlm-phase5-e2e).**
   Adds `qwen3-coder-featherless` to the root-model registry — `Qwen/Qwen3-Coder-480B-A35B-Instruct`
   (the paper-validated RLM root) served via Featherless's OpenAI-compatible endpoint, so an RLM

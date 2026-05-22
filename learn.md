@@ -11,6 +11,33 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-22 — Re-running a paper conflicts: run state lives in the DB, not just the run dir
+
+**Symptom.** Re-running an arXiv paper (`reproduce <arxiv_id>` — deterministic
+project_id) after `rm -rf runs/<id>` failed at iteration 1 with
+`ConcurrencyError: expected version 0, found N`; a later attempt produced a
+degraded result because stale ingestion events were replayed.
+
+**Root cause.** A run's state is split across two stores: the filesystem run
+dir (`runs/<id>/`) and the SQLite event store (`reprolab.db` table
+`event_store_events`, aggregates `<id>`, `<id>:parsed`, `<id>:index`,
+`<id>:discovery`). `rm -rf` of the run dir clears only the first. The
+optimistic-concurrency check (`MAX(aggregate_version)`) then sees the previous
+run's events and rejects the re-run's append.
+
+**Fix (operational).** To re-run a paper cleanly, purge BOTH: `rm -rf` the run
+dir AND `DELETE FROM event_store_events WHERE aggregate_id LIKE '%<id>%'`.
+
+**Lesson.** When run state is persisted in two stores, "reset a run" must clear
+*every* store — the surviving half silently poisons the re-run. A deterministic
+project_id makes this unavoidable on every re-run.
+
+**Guardrail.** None yet — flagged in `progress.md` "known gaps". The durable fix
+is a `reproduce --fresh` / purge helper that owns the two-store reset so an
+operator never has to.
+
+---
+
 ## 2026-05-21 — RLM context came from the chunk-reassembled workspace variable, not the parser blob
 
 **Symptom.** Even after the HTML-source resolver produced a clean

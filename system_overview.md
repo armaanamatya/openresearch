@@ -69,6 +69,15 @@ is built up as REPL state and returned as the run's `answer`.
 via its `custom_tools` argument. See `docs/design/rlm-pivot-brief.md` for the
 full design, the RLM-fidelity invariants, and the build order.
 
+**Paper ingestion is no longer PDF-only.** `ResolvingParser`
+(`backend/services/ingestion/parser/`) quality-scores every available source
+and picks the cleanest one: arXiv's LaTeXML HTML rendering (written by
+`ArxivFetcher` as `raw_paper.html`, fail-soft) outscores PDF on figure-heavy
+papers because figures are images in HTML and become label-noise in PDF.
+`PyMuPdfParser` is the default when HTML is absent or low-quality; tesseract
+OCR runs only when both score below the usable threshold. The winning parse is
+written to `parsed_full_text.txt`, the run's canonical full-text artifact.
+
 **`--mode rlm` is production-hardened** (Phase 5, 2026-05): per-primitive
 deadlines (`RunContext.deadline_utc` + `run_with_deadline`), `max_usd` cost cap
 enforced between iterations, corpus-leak redaction at every egress (SSE stdout
@@ -77,6 +86,20 @@ escalation on stuck runs. The primitive and orchestrator layers are wired
 (`#59` primitives + `#60` orchestrator merged). Real PaperBench bundles (`ftrl`,
 `sequential-neural-score-estimation`, `mechanistic-understanding`) are vendored
 under `third_party/paperbench/`.
+
+For arXiv papers, `run_pipeline_rlm` feeds the root model from
+`parsed_full_text.txt` — the ingestion parser's direct, complete output — rather
+than the workspace variable, which is reassembled from indexed chunks and can
+lose content. `demo_status.json` is written at run start and on terminal states,
+so `GET /runs/{id}` resolves for CLI- and script-launched RLM runs identically
+to UI-launched ones.
+
+When no vendored bundle rubric exists, `backend/agents/rlm/rubric_gen.py`
+derives a PaperBench-shaped rubric from the paper text (six standard categories,
+paper-specific leaf criteria) and persists it as `runs/<id>/generated_rubric.json`.
+Scores from a generated rubric carry `rubric_source="generated"` and are labelled
+as non-PaperBench-official in both the JSON and the re-rendered `final_report.md`
+that `GET /runs/{id}/final-report` serves.
 
 ## Run lifecycle (UI ↔ backend)
 
