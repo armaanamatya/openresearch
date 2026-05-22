@@ -16,14 +16,11 @@ import type {
   LiveDemoRunState
 } from "./demo-run-types";
 import { isStaleDemoRun, summarizeRunFailure } from "./run-staleness";
-import { buildLiveDemoDashboard } from "./pipeline-dashboard";
 import {
   buildFixtureMeta,
   buildUploadedPaperMeta,
   logPath,
-  metaFromStatus,
   readLogTail,
-  readPipelineState,
   readStatus,
   readTelemetryTail,
   repoRoot,
@@ -143,31 +140,6 @@ function pythonBinary(): string {
 async function writeStatus(projectId: string, status: DemoRunStatusFile): Promise<void> {
   await fs.mkdir(runDir(projectId), { recursive: true });
   await fs.writeFile(statusPath(projectId), JSON.stringify(status, null, 2), "utf8");
-}
-
-async function payloadForProject(
-  projectId: string,
-  runMode: DemoRunMode,
-  log = "",
-  status?: Pick<
-    DemoRunStatusFile,
-    | "llmProvider"
-    | "verificationProvider"
-    | "executionMode"
-    | "sandboxMode"
-    | "gpuMode"
-    | "sourceKind"
-    | "sourceLabel"
-    | "sourceNote"
-  >
-) {
-  const outputDir = runDir(projectId);
-  const state = await readPipelineState(projectId);
-  if (!state) {
-    return null;
-  }
-
-  return buildLiveDemoDashboard(state, metaFromStatus(projectId, outputDir, runMode, status), log);
 }
 
 function buildPythonScript(
@@ -393,12 +365,7 @@ async function latestProjectId(
           if (runMode && status.runMode !== runMode) {
             return null;
           }
-          if (runMode === "sdk" && llmProvider) {
-            const statusProvider = status.llmProvider ?? providerFromProjectId(entry.name);
-            if (statusProvider !== llmProvider) {
-              return null;
-            }
-          }
+
           if (executionMode && (status.executionMode ?? "efficient") !== executionMode) {
             return null;
           }
@@ -430,65 +397,42 @@ async function latestProjectId(
 
 async function inferState(projectId: string): Promise<LiveDemoRunState | null> {
   const status = await readStatus(projectId);
-  const runMode: DemoRunMode =
-    status?.runMode ?? (projectId.startsWith("ui_sdk_") ? "sdk" : "offline");
-  const llmProvider = status?.llmProvider ?? providerFromProjectId(projectId);
-  const verificationProvider = status?.verificationProvider;
-  const executionMode = status?.executionMode ?? "efficient";
-  const sandboxMode = status?.sandboxMode ?? "runpod";
-  const gpuMode = status?.gpuMode ?? "auto";
+  if (!status) {
+    return null;
+  }
+  const runMode: DemoRunMode = status.runMode;
+  const llmProvider = status.llmProvider ?? providerFromProjectId(projectId);
+  const verificationProvider = status.verificationProvider;
+  const executionMode = status.executionMode ?? "efficient";
+  const sandboxMode = status.sandboxMode ?? "runpod";
+  const gpuMode = status.gpuMode ?? "auto";
   const log = await readLogTail(projectId);
-  const payload = await payloadForProject(projectId, runMode, log, status ?? undefined);
   const telemetry = await readTelemetryTail(projectId);
 
-  if (status) {
-    return {
-      projectId: status.projectId,
-      outputDir: status.outputDir,
-      runMode: status.runMode,
-      llmProvider,
-      verificationProvider,
-      executionMode,
-      sandboxMode,
-      gpuMode,
-      status: status.status,
-      sourceKind: status.sourceKind,
-      sourceLabel: status.sourceLabel,
-      sourceNote: status.sourceNote,
-      sourcePdf: status.sourcePdf,
-      benchmark: status.benchmark,
-      startedAt: status.startedAt,
-      updatedAt: status.updatedAt,
-      completedAt: status.completedAt,
-      error: status.error,
-      pid: status.pid,
-      payload,
-      log,
-      telemetry
-    };
-  }
-
-  if (payload) {
-    return {
-      projectId,
-      outputDir: payload.outputDir,
-      runMode,
-      llmProvider,
-      verificationProvider,
-      executionMode,
-      sandboxMode,
-      gpuMode,
-      status: "completed",
-      sourceKind: payload.sourceKind,
-      sourceLabel: payload.sourceLabel,
-      sourceNote: payload.sourceNote,
-      payload,
-      log: payload.log,
-      telemetry
-    };
-  }
-
-  return null;
+  return {
+    projectId: status.projectId,
+    outputDir: status.outputDir,
+    runMode,
+    llmProvider,
+    verificationProvider,
+    executionMode,
+    sandboxMode,
+    gpuMode,
+    status: status.status,
+    sourceKind: status.sourceKind,
+    sourceLabel: status.sourceLabel,
+    sourceNote: status.sourceNote,
+    sourcePdf: status.sourcePdf,
+    benchmark: status.benchmark,
+    startedAt: status.startedAt,
+    updatedAt: status.updatedAt,
+    completedAt: status.completedAt,
+    error: status.error,
+    pid: status.pid,
+    payload: null,
+    log,
+    telemetry
+  };
 }
 
 function providerFromProjectId(projectId: string): DemoProvider | undefined {
@@ -601,12 +545,11 @@ export async function startDemoRun(
   sandboxMode: DemoSandboxMode = "runpod",
   options?: DemoRunStartOptions
 ): Promise<LiveDemoRunState> {
-  const verificationProvider =
-    runMode === "sdk" ? options?.verificationProvider : undefined;
+  const verificationProvider = options?.verificationProvider;
   const gpuMode = options?.gpuMode ?? "auto";
   const existing = await currentRunningRun(
     runMode,
-    runMode === "sdk" ? llmProvider : undefined,
+    undefined,
     executionMode,
     sandboxMode,
     verificationProvider,
@@ -623,16 +566,14 @@ export async function startDemoRun(
     : null;
   const projectId = uploadedPaper
     ? projectIdForUploadedPdfPath(uploadedPaper.sourcePath)
-    : runMode === "sdk"
-      ? `ui_sdk_${llmProvider}_review_${verificationProvider ?? "same"}_demo_${Date.now()}`
-      : `ui_demo_${Date.now()}`;
+    : `ui_rlm_demo_${Date.now()}`;
   const outputDir = runDir(projectId);
   const meta = uploadedPaper
     ? buildUploadedPaperMeta(
         projectId,
         outputDir,
         runMode,
-        runMode === "sdk" ? llmProvider : undefined,
+        undefined,
         verificationProvider,
         executionMode,
         sandboxMode,
@@ -643,7 +584,7 @@ export async function startDemoRun(
         projectId,
         outputDir,
         runMode,
-        runMode === "sdk" ? llmProvider : undefined,
+        undefined,
         verificationProvider,
         executionMode,
         sandboxMode,
@@ -655,7 +596,7 @@ export async function startDemoRun(
     projectId,
     outputDir,
     runMode,
-    llmProvider: runMode === "sdk" ? llmProvider : undefined,
+    llmProvider: undefined,
     verificationProvider,
     executionMode,
     sandboxMode,
@@ -714,7 +655,6 @@ export async function startDemoRun(
     env: {
       ...process.env,
       REPROLAB_GPU_MODE: gpuMode,
-      ...(runMode === "sdk" ? { REPROLAB_LLM_PROVIDER: llmProvider } : {}),
       ...(verificationProvider ? { REPROLAB_VERIFICATION_PROVIDER: verificationProvider } : {})
     }
   });
@@ -723,7 +663,7 @@ export async function startDemoRun(
     projectId,
     outputDir,
     runMode,
-    llmProvider: runMode === "sdk" ? llmProvider : undefined,
+    llmProvider: undefined,
     verificationProvider,
     executionMode,
     sandboxMode,
@@ -745,7 +685,7 @@ export async function startDemoRun(
     projectId,
     outputDir,
     runMode,
-    llmProvider: runMode === "sdk" ? llmProvider : undefined,
+    llmProvider: undefined,
     verificationProvider,
     executionMode,
     sandboxMode,

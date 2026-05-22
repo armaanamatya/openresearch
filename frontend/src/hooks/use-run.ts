@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { DemoModelChoice, DemoRunMode, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { issueText } from "@/components/lab/shared-helpers";
 import { readUserPrefs } from "@/lib/user-prefs";
@@ -73,12 +73,9 @@ function describeStartError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-// Merge a freshly-received run_state frame onto the current one. The GET
-// /api/demo route caps payload enrichment and on timeout returns an
-// un-enriched LiveDemoRunState (payload === null). The graph reads
-// payload heavily, so applying the un-enriched frame verbatim would
-// regress the graph for one tick. coalesceRunState merges, carrying the
-// last enriched payload forward when the new frame lacks one.
+// Merge a freshly-received run_state frame onto the current one. Carry
+// forward the last telemetry and log when the new frame is empty, so
+// transient backend responses do not regress the UI.
 export function coalesceRunState(
   prev: LiveDemoRunState | null,
   next: LiveDemoRunState
@@ -86,14 +83,8 @@ export function coalesceRunState(
   if (!prev || prev.projectId !== next.projectId) {
     return next;
   }
-  if (!next.payload && prev.payload && process.env.NODE_ENV !== "production") {
-    console.warn(
-      "[reprolab] un-enriched run_state frame (no payload) — retaining the last enriched payload so the graph does not regress"
-    );
-  }
   return {
     ...next,
-    payload: next.payload ?? prev.payload,
     telemetry: next.telemetry?.length ? next.telemetry : prev.telemetry,
     log: next.log || prev.log
   };
@@ -318,11 +309,10 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     try {
       const prefs = readUserPrefs();
       // URLSearchParams preserves insertion order; keep the key order
-      // mode, provider, executionMode, sandbox, gpuMode, model so the
+      // mode, executionMode, sandbox, gpuMode, model so the
       // produced URL matches the contract asserted in lab-shell.test.tsx.
       const params = new URLSearchParams({
-        mode: "sdk",
-        provider: "anthropic",
+        mode: "rlm" satisfies DemoRunMode,
         executionMode: prefs.executionMode ?? "efficient",
         sandbox: prefs.sandbox ?? "runpod",
         gpuMode: "auto",
@@ -352,8 +342,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     try {
       const prefs = readUserPrefs();
       const formData = new FormData();
-      formData.set("mode", "sdk");
-      formData.set("provider", "anthropic");
+      formData.set("mode", "rlm" satisfies DemoRunMode);
       formData.set("executionMode", prefs.executionMode ?? "efficient");
       formData.set("sandbox", prefs.sandbox ?? "runpod");
       formData.set("gpuMode", "auto");
@@ -393,8 +382,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           url: normalisedUrl,
-          mode: "sdk",
-          provider: "anthropic",
+          mode: "rlm" satisfies DemoRunMode,
           executionMode: prefs.executionMode ?? "efficient",
           sandbox: prefs.sandbox ?? "runpod",
           gpuMode: "auto",

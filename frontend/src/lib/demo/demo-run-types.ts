@@ -1,6 +1,4 @@
-import type { LiveDemoPayload } from "./pipeline-dashboard";
-
-export type DemoRunMode = "offline" | "sdk" | "rlm";
+export type DemoRunMode = "rlm";
 
 export type DemoProvider = "anthropic" | "openai";
 
@@ -88,7 +86,7 @@ export interface LiveDemoRunState {
   completedAt?: string;
   error?: string;
   pid?: number;
-  payload: LiveDemoPayload | null;
+  payload: null;
   log: string;
   telemetry?: TelemetryRecordPublic[];
 }
