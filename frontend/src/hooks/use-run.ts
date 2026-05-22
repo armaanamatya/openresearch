@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
-import type { DashboardLiveEvent } from "@/components/lab/agent-timeline-rail";
+import type { DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { issueText } from "@/components/lab/shared-helpers";
 import { readUserPrefs } from "@/lib/user-prefs";
 

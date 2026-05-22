@@ -1,8 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { defaultTopologyFixture } from "@/lib/pipeline/__fixtures__/default-topology";
-
 import { LabShell } from "./lab-shell";
 
 // useRun calls useRouter() (to keep ?projectId= in sync with the active
@@ -31,7 +29,7 @@ describe("LabShell", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<LabShell initialTopology={defaultTopologyFixture} />);
+    render(<LabShell />);
 
     expect(screen.getByRole("heading", { name: "Upload PDF" })).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();

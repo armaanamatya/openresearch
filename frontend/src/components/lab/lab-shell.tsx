@@ -5,12 +5,8 @@ import { useSearchParams } from "next/navigation";
 
 import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
-import type { PipelineTopology } from "@/lib/pipeline/topology";
 import type { ModelChoice } from "@/lib/models/server-fetch";
-import { type DashboardLiveEvent } from "./agent-timeline-rail";
-import {
-  stateMapForRun,
-} from "./node-config";
+import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { UploadView } from "./upload-view";
 import { LabSidebar } from "./lab-sidebar";
 import { CommandPalette } from "./command-palette";
@@ -18,8 +14,6 @@ import { ShortcutOverlay } from "./shortcut-overlay";
 import { useRun } from "@/hooks/use-run";
 import { useCommandPalette } from "@/hooks/use-command-palette";
 import { useShortcutOverlay } from "@/hooks/use-shortcut-overlay";
-import { useTopology } from "@/hooks/use-topology";
-import { TopologyProvider } from "@/lib/pipeline/topology-context";
 import { PresentationModeProvider, type PresentationMode } from "@/lib/presentation-mode";
 import { readUserPrefs, writeUserPref } from "@/lib/user-prefs";
 import { RlmLab } from "./rlm/rlm-lab";
@@ -28,13 +22,9 @@ import { replayFixture } from "./rlm/replay";
 
 import "./lab-shell.css";
 
-// Re-export so existing test imports keep working until Task 2.10's rename.
-export { stateMapForRun };
-
 type LabShellProps = {
   initialRun?: LiveDemoRunState | null;
   initialRecents?: RecentRunSummary[];
-  initialTopology?: PipelineTopology | null;
   initialModels?: ModelChoice[];
   presentationMode?: PresentationMode;
 };
@@ -82,7 +72,6 @@ function RlmFixtureContent({ children }: { children: ReactNode }) {
 export function LabShell({
   initialRun = null,
   initialRecents = [],
-  initialTopology = null,
   initialModels = [],
   presentationMode = "internal"
 }: LabShellProps) {
@@ -99,10 +88,6 @@ export function LabShell({
     startArxivRun,
     resetToUpload: resetRun
   } = useRun(initialRun);
-  // SSR-warmed topology — falls back to a client fetch via the hook.
-  // The workflow view requires it; the upload view doesn't, so a null
-  // topology is non-fatal until a run starts.
-  const topology = useTopology(initialTopology);
 
   const resetToUpload = () => {
     setArxiv("");
@@ -153,24 +138,13 @@ export function LabShell({
     </main>
   );
 
-  // Wrap the layout in TopologyProvider only when topology is non-null;
-  // child components that consume it (canvas, gate chips) only render
-  // inside the WorkflowView, which is itself gated above.
-  const layoutTree = (
-    <div className="layout">
-      <LabSidebar active="lab" onBrandClick={resetToUpload} recents={initialRecents} />
-      {main}
-    </div>
-  );
-
   return (
     <div className="reproLab">
       <PresentationModeProvider mode={presentationMode}>
-        {topology ? (
-          <TopologyProvider topology={topology}>{layoutTree}</TopologyProvider>
-        ) : (
-          layoutTree
-        )}
+        <div className="layout">
+          <LabSidebar active="lab" onBrandClick={resetToUpload} recents={initialRecents} />
+          {main}
+        </div>
         <CommandPalette
           open={palette.open}
           setOpen={palette.setOpen}
