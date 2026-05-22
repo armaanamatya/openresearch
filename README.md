@@ -49,8 +49,8 @@ API keys — at minimum one of `ANTHROPIC_API_KEY` (Anthropic/Claude) or `OPENAI
 
 - **Root model** (the `rlm` library orchestrator) talks raw HTTP and needs a real, **credited** API key in `os.environ`. Pick one of:
   - `--model claude` → needs `ANTHROPIC_API_KEY` with Anthropic API credits (≈ $2–3 per reproduction)
-  - default / `--model gpt-5` → needs `OPENAI_API_KEY` with OpenAI credits (≈ $3–5 per reproduction)
-  - `--model qwen3-coder-featherless` → needs `FEATHERLESS_API_KEY` (cheapest, ≈ $0.40/MTok) — paper-validated RLM root
+  - default / `--model gpt-5` → needs `OPENAI_API_KEY` with OpenAI credits (≈ $3–5 per reproduction) — paper-validated RLM root
+  - `--model qwen3-coder-featherless` → needs `FEATHERLESS_API_KEY` (cheapest, ≈ $0.40/MTok); Qwen3-Coder via OpenRouter requires separate credentials
 - **Sub-agents** (`implement_baseline` etc., via `claude-agent-sdk`) accept either an API key **or** OAuth via the local `claude` CLI subscription (no per-token billing). For local dev the cheapest setup is: **leave `ANTHROPIC_API_KEY` empty** in `.env`, run `claude login` once, and the SDK uses your subscription for every Sonnet sub-call.
 
 **Pitfall:** if you set `ANTHROPIC_API_KEY` to a key whose **Anthropic API account has no credits**, the SDK tries that key first, gets a 400 *"credit balance too low"*, and **does not fall back to OAuth** — so your reproductions die at the first sub-call with `cost_usd=0.0`. The Anthropic *API* balance and the Claude Code *subscription* are billed separately; running `claude --print "ping"` proves the subscription works, but the API key still needs its own credits if you choose to set it. The safest default is **empty `ANTHROPIC_API_KEY` + working OAuth + a credited root model (OpenAI or Featherless)**.
