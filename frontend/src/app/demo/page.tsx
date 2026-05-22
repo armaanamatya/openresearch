@@ -1,9 +1,7 @@
 import { LabShell } from "@/components/lab/lab-shell";
 import { fetchRunById } from "@/lib/demo/server-run";
 import { fetchRecentRuns } from "@/lib/runs/server-list";
-import { fetchTopology } from "@/lib/pipeline/server-fetch";
 import { fetchModels } from "@/lib/models/server-fetch";
-import { DemoOverlay } from "@/components/demo/demo-overlay";
 
 // The `/demo` route mirrors `/lab` but presents the workflow with the
 // mythological agent names (Reader, Forge, …) and a step-through tour
@@ -20,22 +18,17 @@ export default async function DemoPage({
   const params = await searchParams;
   const raw = params.projectId;
   const projectId = Array.isArray(raw) ? raw[0] : raw;
-  const [initialRun, initialRecents, topology, models] = await Promise.all([
+  const [initialRun, initialRecents, models] = await Promise.all([
     projectId ? fetchRunById(projectId) : Promise.resolve(null),
     fetchRecentRuns(8),
-    fetchTopology(),
     fetchModels()
   ]);
   return (
-    <>
-      <LabShell
-        initialRun={initialRun}
-        initialRecents={initialRecents}
-        initialTopology={topology}
-        initialModels={models}
-        presentationMode="demo"
-      />
-      <DemoOverlay topology={topology} />
-    </>
+    <LabShell
+      initialRun={initialRun}
+      initialRecents={initialRecents}
+      initialModels={models}
+      presentationMode="demo"
+    />
   );
 }
