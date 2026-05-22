@@ -32,6 +32,14 @@ _STDOUT_PREFIX_MAX_CHARS: int = 200
 _PROMPT_PREVIEW_MAX_CHARS: int = 200
 _SENTINEL_LEN: int = 200  # chars from each corpus value used as a leak sentinel
 
+# Thresholds for rubric area status derivation in build_rubric_score_event.
+# score >= RUBRIC_AREA_PASS_THRESHOLD    → "pass"
+# score >= RUBRIC_AREA_PARTIAL_THRESHOLD → "partial"
+# otherwise                              → "fail"
+# These are UI affordances, not rubric gates; the rubric gate uses target_score.
+RUBRIC_AREA_PASS_THRESHOLD: float = 0.7
+RUBRIC_AREA_PARTIAL_THRESHOLD: float = 0.4
+
 
 # ---------------------------------------------------------------------------
 # M-REDACT corpus-leak guard — applied at every egress point
@@ -449,8 +457,125 @@ def make_on_subcall_complete(
     return _on_subcall_complete
 
 
+def build_candidate_proposed_event(
+    *,
+    iteration: int,
+    round: int,
+    candidate: dict,
+    parent_id: str | None = None,
+) -> dict:
+    """Build a ``candidate_proposed`` dashboard event.
+
+    Emitted once per hypothesis returned by a successful ``propose_improvements``
+    call.  Field names match the wire contract in
+    ``frontend/src/lib/events/rlm-events.ts`` exactly.
+
+    Args:
+        iteration:  1-based root-loop iteration index (from ``RunContext.current_iteration``).
+        round:      1-based per-run count of ``propose_improvements`` calls (from
+                    ``RunContext.propose_round``).
+        candidate:  Dict with keys ``id``, ``title``, ``category``, ``description``,
+                    ``reasoning`` — derived from ``ImprovementHypothesis`` fields.
+        parent_id:  The node this candidate branches from.  Omitted from the event
+                    dict when ``None`` (TS optional property means absent, not null).
+    """
+    _CANDIDATE_KEYS = {"id", "title", "category", "description", "reasoning"}
+    ev: dict = {
+        "event": "candidate_proposed",
+        "timestamp": _now_iso(),
+        "iteration": iteration,
+        "round": round,
+        "candidate": {k: candidate[k] for k in _CANDIDATE_KEYS},
+    }
+    if parent_id is not None:
+        ev["parent_id"] = parent_id
+    return ev
+
+
+def build_candidate_outcome_event(
+    *,
+    iteration: int,
+    candidate_id: str,
+    outcome: str,
+    rubric_delta: float | None,
+) -> dict:
+    """Build a ``candidate_outcome`` dashboard event.
+
+    Emitted when the run-level orchestrator determines the outcome for a
+    candidate (promoted, failed, etc.).  Field names match the wire contract in
+    ``frontend/src/lib/events/rlm-events.ts`` exactly.
+
+    Args:
+        iteration:    Root-loop iteration when the outcome was determined.
+        candidate_id: Matches ``candidate_proposed.candidate.id``.
+        outcome:      One of ``"running"``, ``"promoted"``, ``"marginal"``,
+                      ``"failed"``, ``"skipped"``, ``"declined"``.
+        rubric_delta: Overall-score change this candidate produced, or ``None``.
+    """
+    return {
+        "event": "candidate_outcome",
+        "timestamp": _now_iso(),
+        "iteration": iteration,
+        "candidate_id": candidate_id,
+        "outcome": outcome,
+        "rubric_delta": rubric_delta,
+    }
+
+
+def build_rubric_score_event(
+    *,
+    iteration: int,
+    score: float,
+    target: float,
+    areas: list[dict],
+) -> dict:
+    """Build a ``rubric_score`` dashboard event.
+
+    Emitted after a successful ``verify_against_rubric`` call.  Each area's
+    ``status`` is derived from its ``score`` using module-level thresholds
+    (``RUBRIC_AREA_PASS_THRESHOLD``, ``RUBRIC_AREA_PARTIAL_THRESHOLD``) — it is
+    a UI affordance, not a rubric gate decision.  Field names match the wire
+    contract in ``frontend/src/lib/events/rlm-events.ts`` exactly.
+
+    Args:
+        iteration:  1-based root-loop iteration index.
+        score:      Overall rubric score, 0–1 (from ``RubricVerification.overall_score``).
+        target:     Rubric target, 0–1 (from ``RubricVerification.target_score``).
+        areas:      List of area dicts with keys ``area``, ``score``, ``weight``;
+                    ``status`` is derived and added here.
+    """
+    def _area_status(area_score: float) -> str:
+        if area_score >= RUBRIC_AREA_PASS_THRESHOLD:
+            return "pass"
+        if area_score >= RUBRIC_AREA_PARTIAL_THRESHOLD:
+            return "partial"
+        return "fail"
+
+    return {
+        "event": "rubric_score",
+        "timestamp": _now_iso(),
+        "iteration": iteration,
+        "score": score,
+        "target": target,
+        "areas": [
+            {
+                "area": a["area"],
+                "score": a["score"],
+                "weight": a["weight"],
+                "status": _area_status(a["score"]),
+            }
+            for a in areas
+        ],
+    }
+
+
 __all__ = [
+    "RUBRIC_AREA_PARTIAL_THRESHOLD",
+    "RUBRIC_AREA_PASS_THRESHOLD",
     "ReproLabRLMLogger",
+    "build_candidate_outcome_event",
+    "build_candidate_proposed_event",
+    "build_rubric_score_event",
     "build_run_complete_event",
     "build_sub_rlm_complete_event",
     "build_sub_rlm_spawned_event",

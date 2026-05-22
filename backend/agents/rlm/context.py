@@ -44,6 +44,8 @@ class RunContext:
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py
     sandbox_mode: Any = None  # SandboxMode — threaded from --sandbox CLI flag (I7)
+    current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
+    propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.
