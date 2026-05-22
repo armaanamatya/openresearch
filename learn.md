@@ -11,6 +11,35 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — RLM context came from the chunk-reassembled workspace variable, not the parser blob
+
+**Symptom.** Even after the HTML-source resolver produced a clean
+`parsed_full_text.txt` (24 KB of good prose), the IOI arXiv `--mode rlm` run
+still got garbage as its `context["paper_text"]` — `generate_rubric_tree`
+produced empty categories on every attempt.
+
+**Root cause.** cli.py's RLM claim-map builder sourced the corpus from the
+workspace `paper_text` *variable*. That variable is reassembled downstream from
+indexed chunks (parser sections -> indexer -> chunker -> workspace), and that
+reassembly path drops/mangles content for some papers — so it did not match the
+parser's clean `parsed_full_text.txt` sitting in the same run dir.
+
+**Fix.** RLM mode now sources `context["paper_text"]` from `parsed_full_text.txt`
+— the parser's direct, complete output — in preference to the workspace
+variable (kept as a fallback). RLM offloads the whole paper into the REPL
+`context`; the parser blob *is* that, and skips the lossy chunk round-trip the
+SDK retrieval layer needs but RLM does not.
+
+**Lesson.** When two artifacts both claim to hold "the paper text" — a direct
+parser blob and a variable reassembled through an indexing pipeline — they are
+not interchangeable. For a whole-document need use the artifact closest to the
+source; the reassembled one belongs to the consumer it was reassembled for
+(chunk retrieval), not to everyone.
+
+**Guardrail.** `tests/test_cli_claim_map.py::test_rlm_mode_prefers_parsed_full_text_blob`.
+
+---
+
 ## 2026-05-21 — Figure-heavy arXiv PDFs parse to figure-label-noise text, defeating downstream LLM use
 
 **Symptom.** LLM agents operating on parsed paper text received token soup

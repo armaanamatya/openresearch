@@ -76,14 +76,20 @@ _ARXIV_RE = re.compile(
 )
 
 
-def _build_workspace_claim_map(variables: dict, project_id: str, mode: str) -> dict:
+def _build_workspace_claim_map(
+    variables: dict, project_id: str, mode: str, runs_root: Path | None = None
+) -> dict:
     """Build the workspace claim map handed to a run.
 
     `variables` is the workspace view's `{name: Cited}` dict. SDK/offline modes
     truncate each excerpt to 600 chars (the excerpt goes into an LLM prompt).
-    RLM mode offloads the paper into the REPL `context` variable, never a
-    prompt, so it carries the full `paper_text` un-truncated — a truncated
-    corpus defeats the RLM paradigm (rlm-pivot-brief.md §7).
+
+    RLM mode offloads the paper whole into the REPL `context` variable, never a
+    prompt (rlm-pivot-brief.md §7). It sources the corpus, in order: (1)
+    `parsed_full_text.txt` — the parser's direct full-text output, the clean
+    source of truth; (2) the workspace `paper_text` variable; (3) one entry per
+    variable. The workspace variable is reassembled from indexed chunks and has
+    been observed to lose content, so the parser blob is preferred.
     """
     def _truncate(text: str, max_chars: int = 600) -> str:
         return text if len(text) <= max_chars else text[:max_chars] + "..."
@@ -95,7 +101,25 @@ def _build_workspace_claim_map(variables: dict, project_id: str, mode: str) -> d
             else ""
         )
 
+    def _one_entry(text: str) -> dict:
+        return {
+            "project_id": project_id,
+            "entries": [
+                {"source_id": project_id, "title": "paper_text", "excerpt": text}
+            ],
+        }
+
     if mode == "rlm":
+        # 1. parsed_full_text.txt — the parser's clean, complete output.
+        if runs_root is not None:
+            blob = Path(runs_root) / project_id / "parsed_full_text.txt"
+            try:
+                blob_text = blob.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                blob_text = ""
+            if blob_text.strip():
+                return _one_entry(blob_text)
+        # 2. The workspace `paper_text` variable.
         paper_cited = variables.get("paper_text")
         if paper_cited is not None:
             val = paper_cited.value
@@ -106,25 +130,12 @@ def _build_workspace_claim_map(variables: dict, project_id: str, mode: str) -> d
             else:
                 full_text = None
             if full_text is not None:
-                return {
-                    "project_id": project_id,
-                    "entries": [
-                        {
-                            "source_id": project_id,
-                            "title": "paper_text",
-                            "excerpt": full_text,
-                        }
-                    ],
-                }
-        # Fallback: no usable paper_text — one entry per variable, un-truncated.
+                return _one_entry(full_text)
+        # 3. Fallback: one entry per variable, un-truncated.
         return {
             "project_id": project_id,
             "entries": [
-                {
-                    "source_id": name,
-                    "title": name,
-                    "excerpt": _value_str(cited),
-                }
+                {"source_id": name, "title": name, "excerpt": _value_str(cited)}
                 for name, cited in variables.items()
             ],
         }
@@ -536,7 +547,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     view = workspace.materialize_view(workspace_id)
 
-    workspace_claim_map = _build_workspace_claim_map(view.variables, project_id, args.mode)
+    workspace_claim_map = _build_workspace_claim_map(
+        view.variables, project_id, args.mode, runs_root
+    )
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)

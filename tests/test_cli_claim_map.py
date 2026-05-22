@@ -136,3 +136,33 @@ def test_sdk_mode_dict_value_json_dumped_and_truncated():
     entry = result["entries"][0]
     assert entry["excerpt"].endswith("...")
     assert len(entry["excerpt"]) == 603
+
+
+def test_rlm_mode_prefers_parsed_full_text_blob(tmp_path):
+    """RLM mode reads parsed_full_text.txt (the parser's clean output) in
+    preference to the workspace paper_text variable.
+
+    Regression: the workspace paper_text variable is reassembled from indexed
+    chunks and can lose content; the parser blob is the clean source of truth.
+    """
+    pid = "prj_blobtest"
+    blob_dir = tmp_path / pid
+    blob_dir.mkdir()
+    (blob_dir / "parsed_full_text.txt").write_text(
+        "CLEAN parser full text body.", encoding="utf-8"
+    )
+    # The workspace variable holds DIFFERENT (degraded) text — must be ignored.
+    variables = {"paper_text": _Cited({"text": "degraded variable text"})}
+
+    result = _build_workspace_claim_map(variables, pid, "rlm", runs_root=tmp_path)
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["excerpt"] == "CLEAN parser full text body."
+
+
+def test_rlm_mode_falls_back_to_variable_when_no_blob(tmp_path):
+    """RLM mode with no parsed_full_text.txt falls back to the paper_text variable."""
+    pid = "prj_noblob"
+    (tmp_path / pid).mkdir()
+    variables = {"paper_text": _Cited({"text": "variable fallback text"})}
+    result = _build_workspace_claim_map(variables, pid, "rlm", runs_root=tmp_path)
+    assert result["entries"][0]["excerpt"] == "variable fallback text"
