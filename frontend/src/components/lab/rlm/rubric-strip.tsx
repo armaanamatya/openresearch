@@ -81,11 +81,11 @@ export function RubricStrip({ rubric }: RubricStripProps) {
       {/* Climb sparkline */}
       {series.length > 0 && (
         <div className={styles.sparkBlock} aria-hidden="true">
-          {series.map((point) => {
+          {series.map((point, index) => {
             const barH = Math.round(Math.max(2, point.score * maxBarHeight));
             return (
               <span
-                key={point.iteration}
+                key={`${point.iteration}-${index}`}
                 data-spark-bar
                 className={styles.sparkBar}
                 style={{ height: `${barH}px` }}
