@@ -36,7 +36,7 @@ _MODEL_IDS: dict[str, str] = {
 
 
 class StartRunRequest(BaseModel):
-    mode: RunMode = "offline"
+    mode: RunMode = "rlm"
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "efficient"
@@ -869,7 +869,7 @@ class FileLiveRunService:
                 "stage": stage,
                 "meanReward": _mean_reward(pipeline_state),
                 "improvementCount": len((pipeline_state or {}).get("path_results") or []),
-                "runModeLabel": _run_mode_label(meta["runMode"], meta.get("llmProvider")),
+                "runModeLabel": _run_mode_label(meta.get("llmProvider")),
                 "llmProvider": meta.get("llmProvider"),
                 "verificationProvider": meta.get("verificationProvider"),
                 "executionMode": meta.get("executionMode"),
@@ -1290,7 +1290,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk, run_pipeline_rlm
+from backend.agents.pipeline import run_pipeline_rlm
 from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
 
 config = json.loads({json.dumps(json.dumps(common))})
@@ -1444,8 +1444,8 @@ try:
             "agent": "default",
             "mode": config["run_mode"],
             "model": config["model"],
-            "provider": config["provider"] if config["run_mode"] in ("sdk", "rlm") else None,
-            "verification_provider": config["verification_provider"] if config["run_mode"] == "sdk" else None,
+            "provider": config["provider"],
+            "verification_provider": None,
             "execution_mode": config["execution_mode"],
             "sandbox": config["sandbox"],
             "gpu_mode": config["gpu_mode"],
@@ -1460,47 +1460,25 @@ try:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
         profile = ExecutionProfile.from_mode(config["execution_mode"], gpu_mode=config["gpu_mode"])
-        if config["run_mode"] == "sdk":
-            asyncio.run(run_pipeline_sdk(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                provider=config["provider"],
-                verification_provider=config["verification_provider"],
-                model=config["model"],
-                user_hints=["Keep this as a lightweight smoke test"],
-                n_improvement_paths=1,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
-            ))
-        elif config["run_mode"] == "rlm":
-            # A4-7: build run_budget from threaded-through config fields so
-            # an API-set budget is honored in the non-uploaded rlm path.
-            _run_budget = None
-            if config["max_usd"] is not None or config["max_wall_clock"] is not None:
-                from backend.agents.resilience import RunBudget
-                _run_budget = RunBudget(
-                    max_usd=config["max_usd"],
-                    max_wall_clock_seconds=config["max_wall_clock"],
-                )
-            asyncio.run(run_pipeline_rlm(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                provider=config["provider"],
-                model=config["model"],
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
-                run_budget=_run_budget,
-            ))
-        else:
-            run_pipeline_offline(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
+        # A4-7: build run_budget from threaded-through config fields so
+        # an API-set budget is honored in the non-uploaded rlm path.
+        _run_budget = None
+        if config["max_usd"] is not None or config["max_wall_clock"] is not None:
+            from backend.agents.resilience import RunBudget
+            _run_budget = RunBudget(
+                max_usd=config["max_usd"],
+                max_wall_clock_seconds=config["max_wall_clock"],
             )
+        asyncio.run(run_pipeline_rlm(
+            project_id,
+            runs_root,
+            DEMO_WORKSPACE,
+            provider=config["provider"],
+            model=config["model"],
+            execution_profile=profile,
+            sandbox_mode=SandboxMode(config["sandbox"]),
+            run_budget=_run_budget,
+        ))
     finalize_benchmark()
     write_status("completed", completed_at=now())
 except Exception as exc:
@@ -1663,14 +1641,12 @@ def _mean_reward(pipeline_state: dict[str, Any] | None) -> float | int | None:
     return value if isinstance(value, (float, int)) else None
 
 
-def _run_mode_label(run_mode: Any, provider: Any) -> str:
-    if run_mode != "sdk":
-        return "Offline"
+def _run_mode_label(provider: Any) -> str:
     if provider == "openai":
-        return "SDK: OpenAI"
+        return "RLM: OpenAI"
     if provider == "anthropic":
-        return "SDK: Anthropic"
-    return "SDK"
+        return "RLM: Anthropic"
+    return "RLM"
 
 
 def _pid_exists(pid: Any) -> bool:
