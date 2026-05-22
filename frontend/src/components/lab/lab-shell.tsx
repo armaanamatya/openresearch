@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState, Suspense, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
@@ -40,6 +40,7 @@ import { issueText } from "./shared-helpers";
 import { summariseFailure } from "./failure-summary";
 import { RlmLab } from "./rlm/rlm-lab";
 import { isRlmEvent } from "@/lib/events/rlm-events";
+import { replayFixture } from "./rlm/replay";
 
 import "./lab-shell.css";
 
@@ -613,6 +614,27 @@ function WorkflowView({
 }
 
 
+// ── Dev/test-only: ?rlmFixture=1 path ────────────────────────────────────────
+// When the URL has ?rlmFixture=1 the lab renders <RlmLab> against the instant-
+// replayed fixture instead of any live run. This path is ONLY triggered by the
+// explicit query param and never affects a real run.
+const FIXTURE_RUN_META = {
+  projectId: "prj_fixture",
+  paperTitle: "Attention is all you need",
+  paperMeta: "Vaswani et al. · fixture replay",
+};
+
+/** Inner fixture check — uses useSearchParams which requires a Suspense boundary. */
+function RlmFixtureContent({ children }: { children: ReactNode }) {
+  const searchParams = useSearchParams();
+  const isFixtureMode = searchParams?.get("rlmFixture") === "1";
+  if (isFixtureMode) {
+    const events = replayFixture("instant");
+    return <RlmLab events={events} runMeta={FIXTURE_RUN_META} />;
+  }
+  return <>{children}</>;
+}
+
 export function LabShell({
   initialRun = null,
   initialRecents = [],
@@ -651,47 +673,55 @@ export function LabShell({
 
   const main = (
     <main className="content">
-      {run ? (
-        topology ? (
-          <WorkflowView
-            run={run}
-            onClear={clearRun}
-            onResume={(overrides) => resumeRun(run.projectId, overrides)}
-            busy={busy}
-            error={error}
-            dashboardEvents={dashboardEvents}
-          />
-        ) : (
-          <div className="card" style={{ padding: 24 }}>
-            <div className="eyebrow">Pipeline unavailable</div>
-            <p style={{ marginTop: 8 }}>
-              The pipeline topology could not be loaded. Reload the page or
-              check that the backend is reachable.
-            </p>
-          </div>
-        )
-      ) : (
-        <UploadView
-          arxiv={arxiv}
-          busy={busy}
-          error={error}
-          model={model}
-          models={initialModels}
-          onArxivChange={setArxiv}
-          onArxivSubmit={() =>
-            arxiv.trim().length > 0
-              ? void startArxivRun(arxiv, model)
-              : void startFixtureRun(model)
-          }
-          onFileSelected={(file) => void startUploadedRun(file, model)}
-          onModelChange={(value) => {
-            setModel(value);
-            writeUserPref("model", value);
-          }}
-          over={over}
-          setOver={setOver}
-        />
-      )}
+      {/* Dev/test-only: ?rlmFixture=1 renders the fixture-driven RlmLab
+          regardless of any live run. RlmFixtureContent uses useSearchParams
+          which requires a Suspense boundary per Next.js App Router rules.
+          When rlmFixture=1, the normal run/upload content is replaced. */}
+      <Suspense fallback={null}>
+        <RlmFixtureContent>
+          {run ? (
+            topology ? (
+              <WorkflowView
+                run={run}
+                onClear={clearRun}
+                onResume={(overrides) => resumeRun(run.projectId, overrides)}
+                busy={busy}
+                error={error}
+                dashboardEvents={dashboardEvents}
+              />
+            ) : (
+              <div className="card" style={{ padding: 24 }}>
+                <div className="eyebrow">Pipeline unavailable</div>
+                <p style={{ marginTop: 8 }}>
+                  The pipeline topology could not be loaded. Reload the page or
+                  check that the backend is reachable.
+                </p>
+              </div>
+            )
+          ) : (
+            <UploadView
+              arxiv={arxiv}
+              busy={busy}
+              error={error}
+              model={model}
+              models={initialModels}
+              onArxivChange={setArxiv}
+              onArxivSubmit={() =>
+                arxiv.trim().length > 0
+                  ? void startArxivRun(arxiv, model)
+                  : void startFixtureRun(model)
+              }
+              onFileSelected={(file) => void startUploadedRun(file, model)}
+              onModelChange={(value) => {
+                setModel(value);
+                writeUserPref("model", value);
+              }}
+              over={over}
+              setOver={setOver}
+            />
+          )}
+        </RlmFixtureContent>
+      </Suspense>
     </main>
   );
 

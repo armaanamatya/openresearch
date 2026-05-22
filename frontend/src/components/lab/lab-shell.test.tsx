@@ -10,7 +10,10 @@ import { LabShell, stateMapForRun } from "./lab-shell";
 // run). jsdom doesn't mount Next's app-router context, so we stub it.
 const routerReplaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), prefetch: vi.fn() })
+  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), prefetch: vi.fn() }),
+  // useSearchParams is used by the ?rlmFixture=1 dev path; return null params
+  // (fixture mode off) in all existing tests.
+  useSearchParams: () => ({ get: () => null })
 }));
 
 describe("LabShell", () => {
