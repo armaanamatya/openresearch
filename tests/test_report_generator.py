@@ -16,9 +16,7 @@ guarded here:
 
 from __future__ import annotations
 
-import ast
 import json
-from pathlib import Path
 
 from backend.agents.report_generator import (
     _find_std,
@@ -38,10 +36,6 @@ from backend.agents.schemas import (
     PathResult,
     ResearchMap,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ORCHESTRATOR_SRC = REPO_ROOT / "backend" / "agents" / "orchestrator.py"
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — a minimal but realistic "complete" pipeline state.
@@ -120,30 +114,7 @@ def _full_report():
 
 
 # ---------------------------------------------------------------------------
-# 1. The generator stays wired into the pipeline.
-# ---------------------------------------------------------------------------
-
-def test_report_generator_is_wired_into_orchestrator_and_pipeline():
-    """The orchestrator finishing path must call generate_final_report + write_final_report.
-
-    Guards against regression to the old state where the generator was dead
-    code and the UI bridge fabricated placeholder zeros.
-
-    Note: ``pipeline.py`` is now a thin RLM dispatch shim (Phase-6 cleanup) and
-    no longer directly calls these functions — only the orchestrator is checked.
-    """
-    tree = ast.parse(ORCHESTRATOR_SRC.read_text())
-    called = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    assert "generate_final_report" in called, f"{ORCHESTRATOR_SRC.name} never calls generate_final_report"
-    assert "write_final_report" in called, f"{ORCHESTRATOR_SRC.name} never calls write_final_report"
-
-
-# ---------------------------------------------------------------------------
-# 2. The rubric is computed from artifacts, not hardcoded.
+# 1. The rubric is computed from artifacts, not hardcoded.
 # ---------------------------------------------------------------------------
 
 def test_rubric_is_computed_from_artifacts_not_hardcoded():

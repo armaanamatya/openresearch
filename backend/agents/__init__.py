@@ -20,14 +20,11 @@ from backend.agents.schemas import (
     TrainingRecipe,
     VerificationReport,
 )
-from backend.agents.orchestrator import ReproLabOrchestrator, PipelineState
 from backend.hermes_audit import HermesAuditReport
 
 __all__ = [
     "AGENT_REGISTRY",
     "get_agent_definitions",
-    "ReproLabOrchestrator",
-    "PipelineState",
     "AgentOutput",
     "Ambiguity",
     "Assumption",
