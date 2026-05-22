@@ -398,3 +398,39 @@ async def test_model_falls_back_to_ctx_model_when_agent_model_unset(
 
     assert call_kwargs["model"] == "claude-sonnet-4-6"
     assert call_kwargs["provider"] == "anthropic"
+
+
+def test_snapshot_excludes_ephemeral_and_cache_dirs(tmp_path):
+    """``_snapshot_code_dir`` skips cache/build/ephemeral dirs so the repair
+    loop never tries to rewrite e.g. Docker-created HuggingFace lock files."""
+    from backend.agents.rdr.agent import _snapshot_code_dir
+
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    # Source files — must be included.
+    (code_dir / "train.py").write_text("print('hi')", encoding="utf-8")
+    (code_dir / "configs").mkdir()
+    (code_dir / "configs" / "model.yaml").write_text("lr: 0.001", encoding="utf-8")
+    # Ephemeral / cache / hidden — must be excluded.
+    (code_dir / "__pycache__").mkdir()
+    (code_dir / "__pycache__" / "train.cpython-312.pyc").write_text("x", encoding="utf-8")
+    (code_dir / "hf_cache" / ".locks" / "models--gpt2").mkdir(parents=True)
+    (code_dir / "hf_cache" / ".locks" / "models--gpt2" / "abc.lock").write_text("", encoding="utf-8")
+    (code_dir / ".git").mkdir()
+    (code_dir / ".git" / "HEAD").write_text("ref", encoding="utf-8")
+    (code_dir / "outputs").mkdir()
+    (code_dir / "outputs" / "results.txt").write_text("acc=0.5", encoding="utf-8")
+    (code_dir / "sbi-logs").mkdir()
+    (code_dir / "sbi-logs" / "run.log").write_text("...", encoding="utf-8")
+
+    snap = _snapshot_code_dir(code_dir)
+
+    assert "train.py" in snap
+    assert "configs/model.yaml" in snap
+    assert not any("__pycache__" in p for p in snap), snap
+    assert not any("hf_cache" in p for p in snap), snap
+    assert not any(p.startswith(".git") or "/.git" in p for p in snap), snap
+    assert not any("outputs" in p for p in snap), snap
+    assert not any("sbi-logs" in p for p in snap), snap
+    assert not any(p.endswith(".lock") for p in snap), snap
+    assert not any(p.endswith(".pyc") for p in snap), snap

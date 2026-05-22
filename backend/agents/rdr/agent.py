@@ -37,6 +37,21 @@ _MAX_FILE_BYTES = 100 * 1024  # 100 KB
 # Hard cap for the agent when no deadline is set (90 minutes).
 _DEFAULT_AGENT_TIMEOUT_S = 5_400.0
 
+# Directories whose contents are ephemeral / build / cache. Snapshotting them
+# back into Artifacts.files causes a downstream PermissionError when the
+# repair loop tries to rewrite e.g. HuggingFace cache lock files created
+# inside the experiment container with restricted perms. Also skip pyc /
+# binary suffixes and any path component starting with "." (hidden / cache).
+_EXCLUDE_DIRS = frozenset({
+    "__pycache__", ".git", "hf_cache", ".cache", ".locks",
+    "node_modules", ".venv", "venv", "outputs", "sbi-logs",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "build",
+    ".huggingface", "wandb", "mlruns",
+})
+_EXCLUDE_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".so", ".o", ".lock", ".dylib", ".dll",
+})
+
 
 def _render_prompt(agent_context: AgentContext, code_dir: Path) -> str:
     """Build the full reproduction prompt from an AgentContext.
@@ -135,6 +150,17 @@ def _snapshot_code_dir(code_dir: Path) -> dict[str, str]:
 
     for path in sorted(code_dir.rglob("*")):
         if not path.is_file():
+            continue
+        # Skip ephemeral / build / cache files — see _EXCLUDE_DIRS for why
+        # (esp. HuggingFace cache lock files written by the experiment
+        # container).  Skips any path with a hidden component (".foo").
+        rel_parts = path.relative_to(code_dir).parts
+        if any(
+            p in _EXCLUDE_DIRS or (p.startswith(".") and len(p) > 1)
+            for p in rel_parts
+        ):
+            continue
+        if path.suffix.lower() in _EXCLUDE_SUFFIXES:
             continue
         # Skip files that are too large.
         try:

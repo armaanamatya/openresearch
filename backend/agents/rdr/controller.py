@@ -265,11 +265,20 @@ async def run_rdr(
         done[cluster.id] = art
 
         # Merge files into the shared code/ dir (agent writes its own copies;
-        # files dict carries the canonical content from the agent's perspective).
+        # files dict carries the canonical content from the agent's
+        # perspective).  Defensive: skip files we can't write (e.g. cache
+        # locks with restricted perms that slipped past the agent-side
+        # exclusions) so a single bad path doesn't kill the run.
         for rel_path, content in art.files.items():
             dest = code_dir / rel_path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
+            except (PermissionError, OSError) as exc:
+                logger.warning(
+                    "rdr/controller: skipping %r (%s: %s)",
+                    str(dest), type(exc).__name__, exc,
+                )
 
         _write_cluster_checkpoint(iterations_dir, idx, cluster, art)
 
@@ -400,11 +409,18 @@ async def run_rdr(
             done[cluster.id] = art
             total_agent_dispatches += 1
 
-            # Merge repaired files back into code/
+            # Merge repaired files back into code/ (defensive — see the
+            # initial-pass note above).
             for rel_path, content in art.files.items():
                 dest = code_dir / rel_path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(content, encoding="utf-8")
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(content, encoding="utf-8")
+                except (PermissionError, OSError) as exc:
+                    logger.warning(
+                        "rdr/controller: skipping %r (%s: %s)",
+                        str(dest), type(exc).__name__, exc,
+                    )
 
             # Write a repair-pass checkpoint alongside the initial cluster checkpoints.
             _write_repair_checkpoint(iterations_dir, rep_n, cluster, art)
