@@ -9,7 +9,10 @@ Drive the RLM orchestrator end-to-end on PaperBench papers — deliver
 
 ## Status
 
-`main` and `merge` synced. Full test suite: **1139 passing**. The RLM
+`merge` branch: **1164 passing** (baseline 1141 + 23 new). Added quality-gated
+HTML-preferred source cascade for paper ingestion (`ResolvingParser`).
+
+`main` and `merge` previously synced. Full test suite was **1139 passing**. The RLM
 pipeline now runs **end-to-end** — run 7 executed all 9 primitives and
 produced an honest, leaf-scored report.
 

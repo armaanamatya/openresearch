@@ -60,7 +60,7 @@ from backend.services.ingestion.parser import (
     StartParsing,
 )
 from backend.services.ingestion.parser.extractor import extractor_from_settings
-from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
+from backend.services.ingestion.parser.resolving_parser import ResolvingParser
 
 # Force-import event modules so all @register_event decorators run.
 import backend.services.context.indexer.events  # noqa: F401
@@ -212,7 +212,7 @@ def _make_services(
     )
     parser = ParserAppService(
         store=store,
-        parser=PyMuPdfParser(),
+        parser=ResolvingParser(),
         runs_root=runs_root,
         extractor=extractor_from_settings(get_settings()),
     )

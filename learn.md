@@ -11,6 +11,38 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — Figure-heavy arXiv PDFs parse to figure-label-noise text, defeating downstream LLM use
+
+**Symptom.** LLM agents operating on parsed paper text received token soup
+dominated by axis ticks, legend tokens, and figure labels (e.g. `0.0 0.2 0.4
+<BOS> IO S1`) — especially for vision/ML papers heavy with plots. The extracted
+`full_text` scored low on word-like token ratio and the downstream claim-extraction
+LLM saw noise instead of prose.
+
+**Root cause.** `PyMuPdfParser` extracts all text layers from a PDF page in
+order, interleaving text from figure axes and legends with paragraph prose.
+arXiv also publishes a LaTeXML HTML version where figures are images and the
+text is clean prose — but the ingestion pipeline fetched only the PDF.
+
+**Fix.** Quality-gated HTML-preferred cascade: `ArxivFetcher` opportunistically
+fetches `https://arxiv.org/html/<id>` (fail-soft — never fails the run) and
+writes it as a sibling `raw_paper.html`. `ResolvingParser` tries HTML first (if
+the sibling exists), then PDF, then OCR as last resort. Each result is scored
+with `score_text_quality` (wordish-token ratio; 0.0 for texts < 1 000 chars).
+The first strategy reaching `_USABLE = 0.35` wins; if none does, the
+highest-scoring available result is used; if all raise `ParseError`, the
+composite error propagates.
+
+**Lesson.** A single-source parser that picks the worst quality source (PDF) by
+default, when a higher-quality source exists (HTML), silently degrades every
+paper that has significant figure content. Multi-source with explicit quality
+scoring is the right abstraction when sources vary in fidelity.
+
+**Guardrail.** `tests/test_ingestion_resolving_parser.py::test_resolving_prefers_html_when_good`
+and `::test_resolving_falls_back_to_pdf_when_html_low_quality` (cascade logic locked in).
+
+---
+
 ## 2026-05-21 — Leaf-scoring amended final_report.json but not the .md the REST API serves
 
 **Symptom.** After `score_run.py` leaf-scored a completed RLM run,
