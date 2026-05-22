@@ -7,7 +7,8 @@ guarded here:
 
   1. The generator must stay *wired in*. It was previously dead code while
      `live_runs.py` fabricated placeholder zeros; these tests fail if the
-     orchestrator or the offline pipeline stops calling it.
+     orchestrator stops calling it.  (The offline pipeline was removed in
+     Phase-6 cleanup; ``pipeline.py`` is now a thin RLM dispatch shim.)
   2. Every number must be *derived*, never hardcoded or fabricated. The rubric
      responds to artifact completeness and gate decisions; the statistical
      fields stay ``None`` unless the runner actually emitted the variance.
@@ -40,7 +41,6 @@ from backend.agents.schemas import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATOR_SRC = REPO_ROOT / "backend" / "agents" / "orchestrator.py"
-PIPELINE_SRC = REPO_ROOT / "backend" / "agents" / "pipeline.py"
 
 
 # ---------------------------------------------------------------------------
@@ -124,20 +124,22 @@ def _full_report():
 # ---------------------------------------------------------------------------
 
 def test_report_generator_is_wired_into_orchestrator_and_pipeline():
-    """Both finishing paths must call generate_final_report + write_final_report.
+    """The orchestrator finishing path must call generate_final_report + write_final_report.
 
     Guards against regression to the old state where the generator was dead
     code and the UI bridge fabricated placeholder zeros.
+
+    Note: ``pipeline.py`` is now a thin RLM dispatch shim (Phase-6 cleanup) and
+    no longer directly calls these functions — only the orchestrator is checked.
     """
-    for src in (ORCHESTRATOR_SRC, PIPELINE_SRC):
-        tree = ast.parse(src.read_text())
-        called = {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        assert "generate_final_report" in called, f"{src.name} never calls generate_final_report"
-        assert "write_final_report" in called, f"{src.name} never calls write_final_report"
+    tree = ast.parse(ORCHESTRATOR_SRC.read_text())
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "generate_final_report" in called, f"{ORCHESTRATOR_SRC.name} never calls generate_final_report"
+    assert "write_final_report" in called, f"{ORCHESTRATOR_SRC.name} never calls write_final_report"
 
 
 # ---------------------------------------------------------------------------
