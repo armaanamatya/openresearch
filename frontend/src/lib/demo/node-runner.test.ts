@@ -19,9 +19,9 @@ describe("node-runner uploaded paper helpers", () => {
   it("builds an uploaded-paper python script that routes through the pdf ingestion path", () => {
     const script = __test__.buildPythonScript(
       "prj_1234567890abcdef",
-      "sdk",
+      "rlm",
       "anthropic",
-      "openai",
+      undefined,
       "max",
       "docker",
       "prefer",
@@ -34,8 +34,7 @@ describe("node-runner uploaded paper helpers", () => {
     expect(script).toContain("from backend.cli import cmd_reproduce");
     expect(script).toContain("exit_code = cmd_reproduce");
     expect(script).toContain('write_status("failed", error=f"Pipeline exited with status {exit_code}"');
-    expect(script).toContain('provider=llm_provider if "sdk" == "sdk" else None');
-    expect(script).toContain('verification_provider=verification_provider if "sdk" == "sdk" else None');
+    expect(script).toContain('mode="rlm"');
     expect(script).toContain('execution_mode=execution_mode');
     expect(script).toContain('sandbox=sandbox_mode');
     expect(script).toContain('gpu_mode=gpu_mode');
@@ -50,9 +49,9 @@ describe("node-runner uploaded paper helpers", () => {
   it("escapes uploaded paper paths and names before embedding them in python", () => {
     const script = __test__.buildPythonScript(
       "prj_1234567890abcdef",
-      "sdk",
+      "rlm",
       "anthropic",
-      "anthropic",
+      undefined,
       "efficient",
       "auto",
       "auto",
