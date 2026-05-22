@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { TreeNode, IterationView } from "../../../hooks/use-rlm-run";
 import styles from "./node-detail-popup.module.css";
 
@@ -26,6 +26,11 @@ export interface NodeDetailPopupProps {
 export function NodeDetailPopup({ node, iteration, onClose }: NodeDetailPopupProps) {
   const { kind, title, round, candidate, rubricDelta } = node;
 
+  // Close button ref — focused on mount so focus moves into the popup when it
+  // opens (spec §9 focus dance). ExplorationCanvas restores focus to the
+  // triggering TreeNode when this popup closes.
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
+
   // Register Escape keydown listener; clean up on unmount or onClose change.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -37,9 +42,15 @@ export function NodeDetailPopup({ node, iteration, onClose }: NodeDetailPopupPro
     };
   }, [onClose]);
 
+  // Move focus into the popup on mount (focus-in half of the §9 focus dance).
+  useEffect(() => {
+    closeBtnRef.current?.focus();
+  }, []);
+
   return (
     <div
       className={styles.popup}
+      data-testid="node-detail-popup"
       role="dialog"
       aria-modal="true"
       aria-label={`Node detail: ${title}`}
@@ -55,6 +66,7 @@ export function NodeDetailPopup({ node, iteration, onClose }: NodeDetailPopupPro
         </div>
         <button
           type="button"
+          ref={closeBtnRef}
           className={styles.closeBtn}
           aria-label="Close node detail"
           onClick={onClose}
