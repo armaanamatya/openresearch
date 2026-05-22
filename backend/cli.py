@@ -60,7 +60,7 @@ from backend.services.ingestion.parser import (
     StartParsing,
 )
 from backend.services.ingestion.parser.extractor import extractor_from_settings
-from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
+from backend.services.ingestion.parser.resolving_parser import ResolvingParser
 
 # Force-import event modules so all @register_event decorators run.
 import backend.services.context.indexer.events  # noqa: F401
@@ -74,6 +74,84 @@ _ARXIV_RE = re.compile(
     r"(?:arxiv:|arxiv\.org/(?:abs|pdf)/)?(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?$",
     re.IGNORECASE,
 )
+
+
+def _build_workspace_claim_map(
+    variables: dict, project_id: str, mode: str, runs_root: Path | None = None
+) -> dict:
+    """Build the workspace claim map handed to a run.
+
+    `variables` is the workspace view's `{name: Cited}` dict. SDK/offline modes
+    truncate each excerpt to 600 chars (the excerpt goes into an LLM prompt).
+
+    RLM mode offloads the paper whole into the REPL `context` variable, never a
+    prompt (rlm-pivot-brief.md §7). It sources the corpus, in order: (1)
+    `parsed_full_text.txt` — the parser's direct full-text output, the clean
+    source of truth; (2) the workspace `paper_text` variable; (3) one entry per
+    variable. The workspace variable is reassembled from indexed chunks and has
+    been observed to lose content, so the parser blob is preferred.
+    """
+    def _truncate(text: str, max_chars: int = 600) -> str:
+        return text if len(text) <= max_chars else text[:max_chars] + "..."
+
+    def _value_str(cited: Any) -> str:
+        return (
+            cited.value if isinstance(cited.value, str)
+            else json.dumps(cited.value) if cited.value is not None
+            else ""
+        )
+
+    def _one_entry(text: str) -> dict:
+        return {
+            "project_id": project_id,
+            "entries": [
+                {"source_id": project_id, "title": "paper_text", "excerpt": text}
+            ],
+        }
+
+    if mode == "rlm":
+        # 1. parsed_full_text.txt — the parser's clean, complete output.
+        if runs_root is not None:
+            blob = Path(runs_root) / project_id / "parsed_full_text.txt"
+            try:
+                blob_text = blob.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                blob_text = ""
+            if blob_text.strip():
+                return _one_entry(blob_text)
+        # 2. The workspace `paper_text` variable.
+        paper_cited = variables.get("paper_text")
+        if paper_cited is not None:
+            val = paper_cited.value
+            if isinstance(val, dict) and isinstance(val.get("text"), str):
+                full_text = val["text"]
+            elif isinstance(val, str):
+                full_text = val
+            else:
+                full_text = None
+            if full_text is not None:
+                return _one_entry(full_text)
+        # 3. Fallback: one entry per variable, un-truncated.
+        return {
+            "project_id": project_id,
+            "entries": [
+                {"source_id": name, "title": name, "excerpt": _value_str(cited)}
+                for name, cited in variables.items()
+            ],
+        }
+
+    # SDK / offline: one entry per variable, truncated to keep LLM prompt manageable.
+    return {
+        "project_id": project_id,
+        "entries": [
+            {
+                "source_id": name,
+                "title": name,
+                "excerpt": _truncate(_value_str(cited)),
+            }
+            for name, cited in variables.items()
+        ],
+    }
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -145,7 +223,7 @@ def _make_services(
     )
     parser = ParserAppService(
         store=store,
-        parser=PyMuPdfParser(),
+        parser=ResolvingParser(),
         runs_root=runs_root,
         extractor=extractor_from_settings(get_settings()),
     )
@@ -469,26 +547,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     view = workspace.materialize_view(workspace_id)
 
-    # Build workspace claim map for the agent pipeline.
-    # Truncate excerpts so the LLM prompt stays manageable.
-    def _truncate(text: str, max_chars: int = 600) -> str:
-        return text if len(text) <= max_chars else text[:max_chars] + "..."
-
-    workspace_claim_map = {
-        "project_id": project_id,
-        "entries": [
-            {
-                "source_id": name,
-                "title": name,
-                "excerpt": _truncate(
-                    cited.value if isinstance(cited.value, str)
-                    else json.dumps(cited.value) if cited.value is not None
-                    else ""
-                ),
-            }
-            for name, cited in view.variables.items()
-        ],
-    }
+    workspace_claim_map = _build_workspace_claim_map(
+        view.variables, project_id, args.mode, runs_root
+    )
 
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)

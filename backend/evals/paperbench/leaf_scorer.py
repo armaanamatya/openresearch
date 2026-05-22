@@ -179,10 +179,14 @@ def score_reproduction(
     llm_client: LlmClient,
     *,
     batch_size: int = 15,
+    rubric_source: str = "paperbench_bundle",
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source, leaf_scores.
+    ``rubric_source`` is passed through to the result dict unchanged — callers set
+    it to "generated" when the rubric was derived at run-time rather than from a
+    vendored bundle.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -234,7 +238,7 @@ def score_reproduction(
         "overall_score": overall_score,
         "leaf_count": len(leaves),
         "graded": graded,
-        "rubric_source": "paperbench_bundle",
+        "rubric_source": rubric_source,
         "leaf_scores": leaf_score_records,
     }
 
@@ -285,7 +289,12 @@ def _parse_batch_response(
 
 
 def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
-    """Load final_report.json, set its rubric field, write back atomically."""
+    """Load final_report.json, set its rubric field, write back atomically.
+
+    Also re-renders final_report.md so ``GET /runs/{id}/final-report`` (which
+    serves the markdown) reflects this authoritative leaf score — not the stale
+    in-loop ``verify_against_rubric`` score the run wrote at finish time.
+    """
     report_path = run_dir / "final_report.json"
     if report_path.exists():
         report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -305,6 +314,48 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         os.replace(tmp_path, report_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    _rerender_report_markdown(run_dir, report)
+
+
+def _rerender_report_markdown(run_dir: Path, report: dict[str, Any]) -> None:
+    """Re-render final_report.md from an amended RLM report dict.
+
+    The post-run leaf scorer updates final_report.json's rubric block; the
+    markdown the HTTP layer serves must stay consistent with it. Only RLM-mode
+    reports are re-rendered — the markdown renderer is RLM-specific; for any
+    other report shape (or a missing markdown file) this is a no-op.
+    """
+    md_path = run_dir / "final_report.md"
+    if not md_path.exists():
+        return
+    try:
+        # Lazy import — keeps backend.evals import-light and breaks no cycle.
+        from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+
+        fields = set(RLMFinalReport.model_fields)
+        if not fields.issubset(report.keys()):
+            return  # not an RLM-mode report — leave its markdown untouched
+        obj = RLMFinalReport(**{k: v for k, v in report.items() if k in fields})
+        md = _render_markdown(obj)
+    except Exception as exc:  # noqa: BLE001 — markdown refresh is best-effort
+        logger.warning(
+            "amend_final_report: could not re-render final_report.md (%s) — "
+            "it may show a stale rubric score",
+            exc,
+        )
+        return
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=run_dir, prefix=".final_report_", suffix=".md")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(md)
+        os.replace(tmp_path, md_path)
     except Exception:
         try:
             os.unlink(tmp_path)

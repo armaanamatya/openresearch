@@ -294,7 +294,8 @@ def test_fetch_arxiv_downloads_pdf_and_records_adapter(store, runs_dir):
     assert events[-1].event_type == "paper_fetched"
     assert events[-1].payload["fetched_via"] == "arxiv"
     assert Path(events[-1].payload["raw_paper_path"]).read_bytes().startswith(b"%PDF-")
-    assert http.urls == ["https://example.test/arxiv/pdf/1707.06347"]
+    # PDF URL must be first; the HTML fetch is a best-effort sibling request.
+    assert http.urls[0] == "https://example.test/arxiv/pdf/1707.06347"
 
 
 def test_fetch_doi_resolves_with_pdf_accept_header(store, runs_dir):

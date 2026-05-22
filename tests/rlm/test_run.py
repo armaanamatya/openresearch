@@ -14,6 +14,7 @@ from backend.agents.rlm.run import (
     _context_metadata,
     _resolve_custom_tools,
     _verdict_to_status,
+    _write_demo_status,
 )
 
 
@@ -231,3 +232,54 @@ class TestVerdictAndResult:
         assert result.project_id == "prj"
         assert result.iterations == 7
         assert result.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# _write_demo_status
+# ---------------------------------------------------------------------------
+
+class TestWriteDemoStatus:
+    """_write_demo_status writes a demo_status.json that GET /runs/{id} can read.
+
+    Regression guard: an RLM run that never wrote demo_status.json 404'd on
+    GET /runs/{id}. The contract here is that the file round-trips through
+    live_runs.LiveRunState (the model the HTTP layer constructs from it), and
+    that a later terminal write merges onto the earlier one — preserving
+    startedAt rather than discarding it.
+    """
+
+    @staticmethod
+    def _load(project_dir):
+        import json
+        return json.loads((project_dir / "demo_status.json").read_text(encoding="utf-8"))
+
+    def test_running_status_round_trips_through_live_run_state(self, tmp_path):
+        from backend.services.events.live_runs import LiveRunState
+
+        _write_demo_status(tmp_path, "running")
+        status = self._load(tmp_path)
+        # The real contract: GET /runs/{id} does LiveRunState(**status).
+        state = LiveRunState(**status)
+        assert state.status == "running"
+        assert state.runMode == "rlm"
+        assert state.projectId == tmp_path.name
+        assert state.outputDir == str(tmp_path)
+        assert state.startedAt is not None
+
+    def test_terminal_write_merges_and_preserves_started_at(self, tmp_path):
+        from backend.services.events.live_runs import LiveRunState
+
+        _write_demo_status(tmp_path, "running")
+        started = self._load(tmp_path)["startedAt"]
+        _write_demo_status(tmp_path, "completed")
+        status = self._load(tmp_path)
+        assert status["status"] == "completed"
+        assert status["startedAt"] == started   # merged, not lost
+        assert status["completedAt"] is not None
+        LiveRunState(**status)  # still valid
+
+    def test_failed_status_records_error(self, tmp_path):
+        _write_demo_status(tmp_path, "failed", error="watchdog timeout")
+        status = self._load(tmp_path)
+        assert status["status"] == "failed"
+        assert status["error"] == "watchdog timeout"

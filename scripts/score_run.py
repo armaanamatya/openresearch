@@ -7,13 +7,25 @@ Runs the post-run leaf scorer (``backend.evals.paperbench.leaf_scorer``) — the
 fail-soft; this leaf scorer (flatten leaves -> batched LLM grading -> weighted
 roll-up) is the score of record.
 
-Usage:
-    python scripts/score_run.py <run_dir> <paper_id>
+Rubric resolution order
+-----------------------
+1. ``<run_dir>/generated_rubric.json`` — present when the run was an arXiv run
+   that self-generated its rubric (``rubric_source = "generated"``).
+2. ``third_party/paperbench/<paper_id>/rubric.json`` — vendored PaperBench bundle
+   (``rubric_source = "paperbench_bundle"``); requires ``<paper_id>`` argument.
+3. If neither is found, an error is printed and the command exits 1.
 
-Example:
+Usage:
+    python scripts/score_run.py <run_dir> [<paper_id>]
+
+Examples:
+    # Bundle run — paper_id required:
     python scripts/score_run.py \\
         runs/pb_sequential-neural-score-estimation_1779390764 \\
         sequential-neural-score-estimation
+
+    # arXiv run — no paper_id needed (generated_rubric.json used automatically):
+    python scripts/score_run.py runs/prj_abc123
 
 Grading uses the Featherless Qwen root model — the same backend the RLM run
 uses — so no extra API key is required beyond ``FEATHERLESS_API_KEY``.
@@ -38,22 +50,38 @@ def main() -> int:
     parser.add_argument("run_dir", help="runs/<id> directory of a completed run")
     parser.add_argument(
         "paper_id",
-        help="PaperBench bundle id (directory under --bundles-root)",
+        nargs="?",
+        default=None,
+        help="PaperBench bundle id (directory under --bundles-root); optional when generated_rubric.json is present",
     )
     parser.add_argument("--bundles-root", default="third_party/paperbench")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir).resolve()
-    rubric_path = Path(args.bundles_root) / args.paper_id / "rubric.json"
 
     if not (run_dir / "final_report.json").exists():
         print(f"error: no final_report.json in {run_dir}", file=sys.stderr)
         return 1
-    if not rubric_path.exists():
-        print(f"error: rubric not found: {rubric_path}", file=sys.stderr)
-        return 1
 
-    rubric_tree = json.loads(rubric_path.read_text(encoding="utf-8"))
+    # Rubric resolution: generated > bundle > error.
+    generated_rubric_path = run_dir / "generated_rubric.json"
+    if generated_rubric_path.exists():
+        rubric_tree = json.loads(generated_rubric_path.read_text(encoding="utf-8"))
+        rubric_source = "generated"
+        print(f"  note: using self-generated rubric from {generated_rubric_path}")
+    elif args.paper_id is not None:
+        rubric_path = Path(args.bundles_root) / args.paper_id / "rubric.json"
+        if not rubric_path.exists():
+            print(f"error: rubric not found: {rubric_path}", file=sys.stderr)
+            return 1
+        rubric_tree = json.loads(rubric_path.read_text(encoding="utf-8"))
+        rubric_source = "paperbench_bundle"
+    else:
+        print(
+            "error: no generated_rubric.json in run_dir and no paper_id argument given",
+            file=sys.stderr,
+        )
+        return 1
 
     # Grading client — the Featherless Qwen root, same backend the RLM run uses.
     from backend.agents.rlm.models import resolve_root_model
@@ -71,8 +99,7 @@ def main() -> int:
     )
 
     print(f"scoring {run_dir.name}")
-    print(f"  rubric : {rubric_path}")
-    score = score_reproduction(rubric_tree, run_dir, llm_client)
+    score = score_reproduction(rubric_tree, run_dir, llm_client, rubric_source=rubric_source)
     amend_final_report(run_dir, score)
 
     print(f"  overall_score : {score['overall_score']:.4f}")

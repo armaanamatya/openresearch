@@ -11,6 +11,186 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-22 — Re-running a paper conflicts: run state lives in the DB, not just the run dir
+
+**Symptom.** Re-running an arXiv paper (`reproduce <arxiv_id>` — deterministic
+project_id) after `rm -rf runs/<id>` failed at iteration 1 with
+`ConcurrencyError: expected version 0, found N`; a later attempt produced a
+degraded result because stale ingestion events were replayed.
+
+**Root cause.** A run's state is split across two stores: the filesystem run
+dir (`runs/<id>/`) and the SQLite event store (`reprolab.db` table
+`event_store_events`, aggregates `<id>`, `<id>:parsed`, `<id>:index`,
+`<id>:discovery`). `rm -rf` of the run dir clears only the first. The
+optimistic-concurrency check (`MAX(aggregate_version)`) then sees the previous
+run's events and rejects the re-run's append.
+
+**Fix (operational).** To re-run a paper cleanly, purge BOTH: `rm -rf` the run
+dir AND `DELETE FROM event_store_events WHERE aggregate_id LIKE '%<id>%'`.
+
+**Lesson.** When run state is persisted in two stores, "reset a run" must clear
+*every* store — the surviving half silently poisons the re-run. A deterministic
+project_id makes this unavoidable on every re-run.
+
+**Guardrail.** None yet — flagged in `progress.md` "known gaps". The durable fix
+is a `reproduce --fresh` / purge helper that owns the two-store reset so an
+operator never has to.
+
+---
+
+## 2026-05-21 — RLM context came from the chunk-reassembled workspace variable, not the parser blob
+
+**Symptom.** Even after the HTML-source resolver produced a clean
+`parsed_full_text.txt` (24 KB of good prose), the IOI arXiv `--mode rlm` run
+still got garbage as its `context["paper_text"]` — `generate_rubric_tree`
+produced empty categories on every attempt.
+
+**Root cause.** cli.py's RLM claim-map builder sourced the corpus from the
+workspace `paper_text` *variable*. That variable is reassembled downstream from
+indexed chunks (parser sections -> indexer -> chunker -> workspace), and that
+reassembly path drops/mangles content for some papers — so it did not match the
+parser's clean `parsed_full_text.txt` sitting in the same run dir.
+
+**Fix.** RLM mode now sources `context["paper_text"]` from `parsed_full_text.txt`
+— the parser's direct, complete output — in preference to the workspace
+variable (kept as a fallback). RLM offloads the whole paper into the REPL
+`context`; the parser blob *is* that, and skips the lossy chunk round-trip the
+SDK retrieval layer needs but RLM does not.
+
+**Lesson.** When two artifacts both claim to hold "the paper text" — a direct
+parser blob and a variable reassembled through an indexing pipeline — they are
+not interchangeable. For a whole-document need use the artifact closest to the
+source; the reassembled one belongs to the consumer it was reassembled for
+(chunk retrieval), not to everyone.
+
+**Guardrail.** `tests/test_cli_claim_map.py::test_rlm_mode_prefers_parsed_full_text_blob`.
+
+---
+
+## 2026-05-21 — Figure-heavy arXiv PDFs parse to figure-label-noise text, defeating downstream LLM use
+
+**Symptom.** LLM agents operating on parsed paper text received token soup
+dominated by axis ticks, legend tokens, and figure labels (e.g. `0.0 0.2 0.4
+<BOS> IO S1`) — especially for vision/ML papers heavy with plots. The extracted
+`full_text` scored low on word-like token ratio and the downstream claim-extraction
+LLM saw noise instead of prose.
+
+**Root cause.** `PyMuPdfParser` extracts all text layers from a PDF page in
+order, interleaving text from figure axes and legends with paragraph prose.
+arXiv also publishes a LaTeXML HTML version where figures are images and the
+text is clean prose — but the ingestion pipeline fetched only the PDF.
+
+**Fix.** Quality-gated HTML-preferred cascade: `ArxivFetcher` opportunistically
+fetches `https://arxiv.org/html/<id>` (fail-soft — never fails the run) and
+writes it as a sibling `raw_paper.html`. `ResolvingParser` tries HTML first (if
+the sibling exists), then PDF, then OCR as last resort. Each result is scored
+with `score_text_quality` (wordish-token ratio; 0.0 for texts < 1 000 chars).
+The first strategy reaching `_USABLE = 0.35` wins; if none does, the
+highest-scoring available result is used; if all raise `ParseError`, the
+composite error propagates.
+
+**Lesson.** A single-source parser that picks the worst quality source (PDF) by
+default, when a higher-quality source exists (HTML), silently degrades every
+paper that has significant figure content. Multi-source with explicit quality
+scoring is the right abstraction when sources vary in fidelity.
+
+**Guardrail.** `tests/test_ingestion_resolving_parser.py::test_resolving_prefers_html_when_good`
+and `::test_resolving_falls_back_to_pdf_when_html_low_quality` (cascade logic locked in).
+
+---
+
+## 2026-05-21 — Leaf-scoring amended final_report.json but not the .md the REST API serves
+
+**Symptom.** After `score_run.py` leaf-scored a completed RLM run,
+`final_report.json` carried the authoritative score (0.325, below target) but
+`GET /runs/{id}/final-report` — which serves `final_report.md` — still showed
+the stale in-loop `verify_against_rubric` score (0.258, "✔ meets target"). The
+REST-retrievable report contradicted the JSON and overclaimed.
+
+**Root cause.** `leaf_scorer.amend_final_report` rewrote only `final_report.json`.
+The run writes BOTH `final_report.{json,md}` at finish; the markdown is what the
+HTTP `/final-report` route serves. Amending one of a two-file pair left the
+served artifact stale.
+
+**Fix.** `amend_final_report` now also re-renders `final_report.md` (via
+`RLMFinalReport` + `report._render_markdown`) when the report is RLM-shaped —
+guarded so a non-RLM report's markdown is never clobbered. `_render_markdown`
+gained a rubric-provenance line, so a generated-rubric score is labelled
+"self-generated rubric — not PaperBench-official".
+
+**Lesson.** When a fact is persisted in two representations (canonical JSON +
+rendered markdown) and a consumer reads one of them, an amend step must update
+*every* representation a consumer can reach — otherwise the amend is a half-truth.
+
+**Guardrail.** `tests/rlm/test_leaf_scorer.py::test_amend_final_report_rerenders_markdown`
+(markdown tracks the leaf score) and `..._leaves_non_rlm_markdown_untouched`.
+
+---
+
+## 2026-05-21 — RLM runs never wrote demo_status.json, so GET /runs/{id} 404'd
+
+**Symptom.** Caught while wiring the REST-retrievable arXiv path. A completed
+RLM run launched from the CLI or `rlm_paperbench.py` left no `demo_status.json`
+in its run dir — so `GET /runs/{id}` (which builds `LiveRunState` from that file)
+404'd even though `final_report.{json,md}` were on disk. The run's results
+existed but the run was not addressable through the HTTP API.
+
+**Root cause.** Status-file writing was owned by the *launcher*, not the *run*.
+`live_runs._python_script` wrote `demo_status.json` for backend-spawned runs; the
+watchdog wrote a status-only one on timeout; CLI- and script-launched
+`run_pipeline_rlm` wrote nothing. A run's status is a property of the run, but no
+single place owned writing it.
+
+**Fix.** `run_pipeline_rlm` writes `demo_status.json` itself — `running` at
+start, a terminal `completed`/`failed` in `_finalize`, merge-preserving
+`startedAt`. The watchdog's status-only write (which omitted `LiveRunState`'s
+required `projectId`/`outputDir`/`runMode` and would itself have raised on read)
+routes through the same helper. Every RLM run, however launched, is now
+REST-addressable.
+
+**Lesson.** A durable status artifact must be written by the component that owns
+the lifecycle, not by whichever launcher happened to start it. Split ownership
+means some launch paths silently skip it — and the gap stays invisible until a
+consumer (here, the HTTP layer) needs the artifact.
+
+**Guardrail.** `tests/rlm/test_run.py::TestWriteDemoStatus` — the written file
+round-trips through `live_runs.LiveRunState`, and a terminal write merges onto
+(not clobbers) the start write.
+
+---
+
+## 2026-05-21 — arXiv RLM path silently fed the root a 600-char-truncated paper
+
+**Symptom.** Caught by inspection while wiring the arXiv self-generated-rubric
+path — before the first arXiv `--mode rlm` run. The shipped arXiv RLM path would
+have offloaded only a 600-char stub of the paper into the root model's REPL
+`context` variable instead of the full text, leaving the model almost nothing to
+reproduce from — and no error would have been raised (a silently degraded run).
+
+**Root cause.** A single `workspace_claim_map` builder was shared by all three
+run modes (SDK, offline, RLM). The builder correctly truncated each excerpt to
+600 chars for SDK/offline (where excerpts go directly into LLM prompts). RLM is
+architecturally different — the paper is offloaded whole into the REPL `context`
+variable, never into a prompt, so truncation there defeats the paradigm. Because
+both paths called the same inline builder, the RLM path silently received a
+600-char stub.
+
+**Fix.** Extracted the builder to a module-level `_build_workspace_claim_map(variables, project_id, mode)`.
+For `mode == "rlm"` the function looks up the `paper_text` workspace variable and
+returns its full text un-truncated. For any other mode the behavior is byte-identical
+to the original truncating path.
+
+**Lesson.** A single claim-map builder cannot serve two fundamentally different
+consumption models (prompt injection vs. REPL offload) without a mode branch. Mode-
+specific data shaping must be explicit and tested; silent fallback to the "prompt" path
+was the error.
+
+**Guardrail.** `tests/test_cli_claim_map.py::test_rlm_mode_paper_text_dict_full_text` —
+asserts `mode="rlm"` returns a single un-truncated entry; companion tests assert SDK
+mode still truncates at 600 chars.
+
+---
+
 ## 2026-05-21 — The RLM root fabricated benchmark metrics it never measured
 
 **Symptom.** An `--mode rlm` run finished `partial` with

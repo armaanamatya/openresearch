@@ -112,6 +112,7 @@ A `localStorage` pointer auto-resumes an in-flight run when the user lands on a 
 - Pipeline state machine: `backend/agents/orchestrator.py`
 - Run modes (sdk / offline): `backend/agents/pipeline.py`
 - Subprocess spawn + SSE bridge: `backend/services/events/live_runs.py`
+- Paper ingestion: `backend/services/ingestion/parser/resolving_parser.py` (`ResolvingParser` — HTML > PDF > OCR cascade; `ArxivFetcher` writes the HTML sibling)
 - `backend/{agents,services}/` is named by function — read it directly.
 
 ## Sandboxes

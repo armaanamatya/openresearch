@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from backend.evals.paperbench.leaf_scorer import (
+    amend_final_report,
     flatten_leaves,
     roll_up,
     score_reproduction,
@@ -114,3 +115,100 @@ def test_score_reproduction_overall():
     assert result["graded"] == 3
     assert result["rubric_source"] == "paperbench_bundle"
     assert len(result["leaf_scores"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 4: rubric_source="generated" is propagated to the result dict
+# ---------------------------------------------------------------------------
+
+
+def test_score_reproduction_generated_rubric_source():
+    """Passing rubric_source='generated' puts 'generated' in the result dict.
+
+    Locks in: the new rubric_source keyword param of score_reproduction is
+    forwarded verbatim — the arXiv self-generated-rubric path sets it so the
+    report is honest about its rubric origin.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp)
+        (run_dir / "final_report.json").write_text(
+            json.dumps({"reproduction_summary": "arxiv run", "metrics": {}}),
+            encoding="utf-8",
+        )
+
+        result = score_reproduction(
+            TINY_TREE, run_dir, MockLlmClient(), rubric_source="generated"
+        )
+
+    assert result["rubric_source"] == "generated"
+
+
+# ---------------------------------------------------------------------------
+# Test 5: amend_final_report keeps final_report.md consistent with the JSON
+# ---------------------------------------------------------------------------
+
+
+def _rlm_report_dict() -> dict:
+    """A dict carrying every RLMFinalReport field (RLM-mode report shape)."""
+    return {
+        "paper": {"id": "2510.25013", "title": "Test Paper"},
+        "verdict": "partial",
+        "reproduction_summary": "ran the baseline",
+        "baseline_metrics": {},
+        "paper_claims": {},
+        "rubric": {"overall_score": 0.999, "meets_target": True, "areas": []},
+        "improvements": [],
+        "primitive_trace": {"calls": 0, "by_primitive": {}},
+        "cost": {"llm_usd": 0.0, "primitives": 0.0},
+        "iterations": 3,
+    }
+
+
+def test_amend_final_report_rerenders_markdown():
+    """amend_final_report rewrites final_report.md with the leaf score.
+
+    Regression: score_run.py updated only final_report.json, so the markdown
+    GET /runs/{id}/final-report serves kept showing the stale in-loop
+    verify_against_rubric score. The markdown must track the JSON.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp)
+        (run_dir / "final_report.json").write_text(
+            json.dumps(_rlm_report_dict()), encoding="utf-8"
+        )
+        (run_dir / "final_report.md").write_text(
+            "# PARTIAL REPRODUCTION\n\n## Rubric Score\n\n"
+            "**Overall score:** 0.999  (meets target)\n\n## Reproduction Summary\n\nx\n",
+            encoding="utf-8",
+        )
+        amend_final_report(run_dir, {
+            "overall_score": 0.42, "rubric_source": "generated",
+            "leaf_count": 10, "graded": 10,
+        })
+        md = (run_dir / "final_report.md").read_text(encoding="utf-8")
+        report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
+
+    assert report["rubric"]["overall_score"] == 0.42
+    assert "0.420" in md
+    assert "self-generated rubric" in md
+    assert "10/10 rubric leaves graded" in md
+    assert "0.999" not in md  # the stale score is gone
+
+
+def test_amend_final_report_leaves_non_rlm_markdown_untouched():
+    """A non-RLM final_report.json must not have its markdown clobbered — the
+    RLM markdown renderer only applies to RLM-shaped reports."""
+    stale_md = "# Some SDK report\n\nOverall: 0.7\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp)
+        (run_dir / "final_report.json").write_text(
+            json.dumps({"sdk_field": 1, "another": 2}), encoding="utf-8"
+        )
+        (run_dir / "final_report.md").write_text(stale_md, encoding="utf-8")
+        amend_final_report(run_dir, {
+            "overall_score": 0.3, "rubric_source": "paperbench_bundle",
+            "leaf_count": 5, "graded": 5,
+        })
+        md = (run_dir / "final_report.md").read_text(encoding="utf-8")
+
+    assert md == stale_md  # untouched — the RLM-shape guard prevented a re-render
