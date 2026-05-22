@@ -4,11 +4,33 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
-import type { DashboardLiveEvent } from "@/components/lab/agent-timeline-rail";
 import { issueText } from "@/components/lab/shared-helpers";
+
+// Relocated from the retired agent-timeline-rail.tsx (deleted in a later task).
+export type DashboardLiveEvent = {
+  event: string;
+  timestamp?: string;
+  agentId?: string;
+  agentLabel?: string;
+  agent?: { id?: string; label?: string; status?: string; currentTask?: string };
+  stepType?: string;
+  title?: string;
+  detail?: string;
+  changeType?: string;
+  fromAgentId?: string;
+  toAgentId?: string;
+  variableName?: string;
+  summary?: string;
+  panel?: { title?: string; summary?: string; overallStatus?: string };
+};
 import { readUserPrefs } from "@/lib/user-prefs";
 
-const MAX_DASHBOARD_EVENTS = 200;
+// An rlm run emits one repl_iteration + several primitive/candidate/rubric
+// events per root-loop iteration — well over 200 across a full run. The
+// useRlmRun reducer folds the whole stream, so the in-memory history must
+// not be truncated. 20000 covers a long run with headroom; the backend's
+// dashboard_events.jsonl is the durable record on reconnect either way.
+const MAX_DASHBOARD_EVENTS = 20000;
 const POLL_INTERVAL_MS = 3000;
 const LAST_RUN_KEY = "reprolab:lastRun";
 
@@ -321,7 +343,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       // mode, provider, executionMode, sandbox, gpuMode, model so the
       // produced URL matches the contract asserted in lab-shell.test.tsx.
       const params = new URLSearchParams({
-        mode: "sdk",
+        mode: "rlm",
         provider: "anthropic",
         executionMode: prefs.executionMode ?? "efficient",
         sandbox: prefs.sandbox ?? "runpod",
@@ -352,7 +374,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     try {
       const prefs = readUserPrefs();
       const formData = new FormData();
-      formData.set("mode", "sdk");
+      formData.set("mode", "rlm");
       formData.set("provider", "anthropic");
       formData.set("executionMode", prefs.executionMode ?? "efficient");
       formData.set("sandbox", prefs.sandbox ?? "runpod");
@@ -393,7 +415,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           url: normalisedUrl,
-          mode: "sdk",
+          mode: "rlm",
           provider: "anthropic",
           executionMode: prefs.executionMode ?? "efficient",
           sandbox: prefs.sandbox ?? "runpod",

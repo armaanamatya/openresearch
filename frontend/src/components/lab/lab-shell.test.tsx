@@ -84,7 +84,7 @@ describe("LabShell", () => {
       expect(init.method).toBe("POST");
       const body = JSON.parse(init.body as string) as { url: string; mode: string; provider: string };
       expect(body.url).toBe("https://arxiv.org/abs/2303.04137");
-      expect(body.mode).toBe("sdk");
+      expect(body.mode).toBe("rlm");
       expect(body.provider).toBe("anthropic");
     });
 

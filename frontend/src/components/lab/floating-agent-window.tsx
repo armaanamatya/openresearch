@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AgentTimelineRail, type DashboardLiveEvent } from "./agent-timeline-rail";
+import { AgentTimelineRail } from "./agent-timeline-rail";
+import type { DashboardLiveEvent } from "@/hooks/use-run";
 import type { NodeState } from "./node-config";
 import { NODE_W } from "./node-card";
 import { useTopologyContext } from "@/lib/pipeline/topology-context";

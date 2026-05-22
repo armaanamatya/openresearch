@@ -4,7 +4,7 @@ import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { LaidOutNode } from "@/lib/pipeline/layout";
 import { useTopologyContext } from "@/lib/pipeline/topology-context";
 import { stageProgressFromTopology } from "@/lib/pipeline/topology-helpers";
-import type { DashboardLiveEvent } from "./agent-timeline-rail";
+import type { DashboardLiveEvent } from "@/hooks/use-run";
 import { FloatingAgentWindow } from "./floating-agent-window";
 import { GateChips } from "./gate-chips";
 import type { NodeState } from "./node-config";

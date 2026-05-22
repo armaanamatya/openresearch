@@ -8,7 +8,8 @@ import type { RecentRunSummary } from "@/lib/runs/server-list";
 import type { LaidOutNode } from "@/lib/pipeline/layout";
 import type { PipelineTopology } from "@/lib/pipeline/topology";
 import type { ModelChoice } from "@/lib/models/server-fetch";
-import { AgentTimelineRail, type DashboardLiveEvent } from "./agent-timeline-rail";
+import { AgentTimelineRail } from "./agent-timeline-rail";
+import type { DashboardLiveEvent } from "@/hooks/use-run";
 import {
   deriveStage,
   stateMapForRun,

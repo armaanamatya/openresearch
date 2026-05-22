@@ -2,7 +2,7 @@
 
 import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import { usePan } from "@/hooks/use-pan";
-import type { DashboardLiveEvent } from "./agent-timeline-rail";
+import type { DashboardLiveEvent } from "@/hooks/use-run";
 import { LabCanvas } from "./lab-canvas";
 import type { NodeState } from "./node-config";
 

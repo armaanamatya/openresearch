@@ -86,7 +86,9 @@ describe("/api/demo backend proxy", () => {
         method: "POST",
         headers: expect.objectContaining({ "content-type": "application/json" }),
         body: JSON.stringify({
-          mode: "sdk",
+          // The proxy route ignores the incoming `mode` query param and
+          // always forwards `rlm` — the lab is RLM-only (Task 1 change).
+          mode: "rlm",
           provider: "openai",
           verificationProvider: "anthropic",
           executionMode: "max",
