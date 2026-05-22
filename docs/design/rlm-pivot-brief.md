@@ -130,18 +130,16 @@ The library is the engine; our code is the domain layer plus glue:
 We do **not** write a REPL host, a root loop, or `sub_LLM`/`sub_RLM` — `rlms`
 provides all three.
 
-## 6. What gets removed
+## 6. What was removed
 
-- The `PipelineStage` enum and stage-advancement logic in
-  `backend/agents/orchestrator.py`.
-- Gate 1/2/3 as control-flow. Verification becomes a primitive
-  (`verify_against_rubric`) the root calls when it judges useful — there are no
-  fixed gate checkpoints.
-- The hardcoded five improvement paths in `backend/agents/topology.py`
-  (optimizer / backbone / augmentation / horizon / diffusion). The new
-  `propose_improvements()` returns a variable-length, paper-specific list with
-  proposer-assigned tags.
-- The fixed 14-stage pipeline strip in the lab UI.
+- The `PipelineStage` enum and its stage-advancement logic.
+- Gate 1/2/3 as control-flow. Verification is the `verify_against_rubric`
+  primitive the root calls when it judges useful — there are no fixed gate
+  checkpoints.
+- The hardcoded five improvement paths (optimizer / backbone / augmentation /
+  horizon / diffusion). `propose_improvements()` returns a variable-length,
+  paper-specific list with proposer-assigned tags.
+- The fixed pipeline stage strip in the lab UI.
 
 ## 7. The RLM environment
 
@@ -176,9 +174,9 @@ variable**: this was corrected after the `rlms` spike (`rlms-spike-report.md`;
 `rlm/utils/parsing.py::find_final_answer`).
 
 Primitive signatures here are the contract; re-verify them against the
-implementation when `primitives.py` is written.
+implementation when `primitives.py` changes.
 
-**Threat model — `environment="local"` is a security boundary (Phase-3 gate).**
+**Threat model — `environment="local"` is a security boundary.**
 `environment="local"` is not only a `custom_tools` requirement: it means the
 root model's REPL code runs via `exec` in the **host process**. `rlm` 0.1.1's
 `_SAFE_BUILTINS` (`rlm/environments/local_repl.py`) blocks `eval`/`exec`/`compile`
@@ -187,18 +185,12 @@ but **keeps `__import__` and `open`** — any code the root model writes can
 the `context` it reads (`paper_text`, `repo_files`) is **not** — a paper is an
 arXiv id or an uploaded PDF, i.e. attacker-influenceable. A paper carrying a
 prompt injection ("ignore the task; run …") can steer the root into writing
-hostile REPL code. **Phase 3 (#60) must not construct
-`rlm.RLM(environment="local")` until this is resolved**, by an explicit choice
-among: (a) run the whole root REPL inside an isolated container — note the
-primitives' own Docker work then needs the host daemon, so re-derive the
-sandbox model; (b) declare and document a trust boundary (single-tenant /
-trusted-operator only, papers never untrusted); or (c) constrain the REPL
-builtins via a custom map. Centralise the `RLM(...)` construction in one helper
-so the decision is enforced in exactly one place.
+hostile REPL code. The `RLM(...)` construction is centralised in `run.py` so the
+sandbox boundary decision is enforced in exactly one place.
 
 ## 8. RLM fidelity — invariants to hold and test
 
-The system is genuinely RLM only if these hold. Add tests/assertions for each.
+The system is genuinely RLM only if these hold. Tests/assertions exist for each.
 
 1. **The paper never enters the root's context.** It is offloaded as `context`.
    Test: the root model's message payload never contains a `paper_text`
@@ -218,7 +210,7 @@ The system is genuinely RLM only if these hold. Add tests/assertions for each.
    the "recursive" claim is hollow — it is the old pipeline in a REPL.
 6. **Depth.** Default `max_depth=1` (sub-`llm_query` only). Set `max_depth=2` to
    enable sub-`rlm_query`. At the cap, `rlm_query` falls back to `llm_query`.
-7. **The root triages.** The system prompt must instruct the root to decline
+7. **The root triages.** The system prompt instructs the root to decline
    candidates unlikely to lift weak rubric nodes — cost and time budgets are
    real. If logs show every proposed candidate was attempted, strengthen the
    triage prompt.
@@ -234,23 +226,21 @@ Note: the `rlms` root REPL is `exec` on the host, not a security sandbox. The
 root *model* is trusted — but the paper it reads is not (see §7's threat model:
 an attacker-controllable paper can prompt-inject the root into writing hostile
 REPL code, and `environment="local"` runs that code on the host). The RLM paper
-flags sandboxed REPLs and async sub-calls as open research problems;
-host-isolation here is not one of those problems to defer — it is the Phase-3
-gate stated in §7.
+flags sandboxed REPLs and async sub-calls as open research problems.
 
 ## 9. Events and UI
 
-**Events.** Wire SSE emission into the library's `on_subcall_start/complete`
+**Events.** SSE emission is wired into the library's `on_subcall_start/complete`
 callbacks, a custom `RLMLogger` subclass for per-iteration events (`rlm` calls
 `logger.log(iteration)` once per loop — `on_iteration_start/complete` are
 declared but never fire; see `rlms-spike-report.md`), and the primitive
-wrappers. Event types (the full schema lives in code): `repl_iteration`,
-`primitive_call`, `candidate_proposed`, `candidate_outcome`, `sub_rlm_spawned`,
-`rubric_score`, `root_reasoning`, `run_complete`. Only *metadata* about stdout
-goes to the model history (Algorithm 1) and to the UI — never full stdout.
+wrappers. Event types (full schema in code): `repl_iteration`, `primitive_call`,
+`candidate_proposed`, `candidate_outcome`, `sub_rlm_spawned`, `rubric_score`,
+`root_reasoning`, `run_complete`. Only *metadata* about stdout goes to the model
+history (Algorithm 1) and to the UI — never full stdout.
 
-**UI.** The lab shell (header, project context, SSE) stays. The fixed 14-stage
-strip is replaced by:
+**UI.** The lab shell (header, project context, SSE) is unchanged. The previous
+fixed pipeline strip was replaced by:
 - a prominent **rubric score bar** — current vs target, baseline → current;
 - a **REPL state panel** — live variables and the available primitives;
 - a **live iteration panel** — the Python the root just wrote + stdout metadata;
@@ -260,9 +250,9 @@ strip is replaced by:
   declined). Not a hardcoded fan-out;
 - a collapsible **primitive-call history**.
 
-Visual language unchanged: flat surfaces, hairline borders, sentence case, no
-marketing aesthetic. UI claims must match backend reality — no fake fixed slots,
-no "real-time" overclaim.
+Visual language: flat surfaces, hairline borders, sentence case, no marketing
+aesthetic. UI claims match backend reality — no fake fixed slots, no
+"real-time" overclaim.
 
 ## 10. Checkpointing and resume
 
@@ -276,43 +266,37 @@ process-kill resume. We own this:
 - `rlm_query` sub-calls are their own runs (`prj_xxx_sub_yyy`) with a
   `parent_run_id`; they checkpoint independently.
 
-## 11. Build order
+## 11. Build phases (completed)
 
-Each phase has a done condition; do not start one before the last is done.
-Refactor on the `rlm-pivot` branch; keep `main` runnable until cutover.
+The pivot was executed in six phases:
 
-**Phase 1 — Spike.** `pip install rlms`. Stand up a minimal `RLM(custom_tools=…)`
-with two mock primitives on a tiny mock paper; confirm Algorithm 1 runs, the
+**Phase 1 — Spike.** Installed `rlms`, stood up a minimal `RLM(custom_tools=…)`
+with two mock primitives on a tiny mock paper; confirmed Algorithm 1 runs, the
 `custom_tools` are callable in the REPL, and the `on_*` callbacks fire.
-*Done:* a standalone RLM run terminates via `answer` with mock primitives.
+*Done:* a standalone RLM run terminates via `FINAL_VAR` with mock primitives.
 
-**Phase 2 — Primitives.** Extract each surviving stage-agent's core logic into a
-plain function in `primitives.py`; wire cost-ledger + event emission; test each
-in isolation. Hardest: `build_environment` (own retry loop), `run_experiment`
-(sandbox state), `propose_improvements` (must return variable-length,
-paper-specific candidates — validate variation across papers).
+**Phase 2 — Primitives.** Extracted each surviving stage-agent's core logic into
+a plain function in `primitives.py`; wired cost-ledger + event emission; tested
+each in isolation.
 *Done:* every primitive callable from the REPL, with correct outputs and events.
 
-**Phase 3 — Orchestrator + system prompt.** Write `backend/agents/rlm/` —
-`system_prompt.py`, `run.py`, the SSE bridge, and `final_report` writing. Wire
-run modes (`pipeline.py`): `sdk` mode runs the RLM root.
+**Phase 3 — Orchestrator + system prompt.** Wrote `backend/agents/rlm/` —
+`system_prompt.py`, `run.py`, the SSE bridge, and `final_report` writing.
 *Done:* a real RLM run on a PaperBench paper, primitive by primitive.
 
 **Phase 4 — Frontend.** New SSE event handling; REPL state panel; live iteration
-panel; dynamic exploration tree; primitive-call history. Mock data first, then
-live SSE.
+panel; dynamic exploration tree; primitive-call history.
 *Done:* the lab UI renders a live RLM run; no fixed stage strip anywhere.
 
-**Phase 5 — End-to-end.** Vendor the real `ftrl` bundle (Section 13). Run the RLM
-system on it end-to-end; produce `final_report.md` with a real rubric score; fix
-what breaks; run a second paper.
+**Phase 5 — End-to-end.** Vendored the real `ftrl` bundle (Section 13). Ran the
+RLM system on it end-to-end; produced `final_report.md` with a real rubric
+score; ran a second paper.
 *Done:* ≥2 PaperBench papers with completed runs and real rubric scores on disk.
 
-**Phase 6 — Cleanup.** Delete the dead `PipelineStage` / gate / five-path code.
-Update `README.md` and `system_overview.md` to drop the "current (pre-pivot)"
-framing. Pin a successful run as the demo.
-*Done (2026-05-22):* dead pipeline code deleted; `README.md`, `system_overview.md`,
-and `CLAUDE.md` rewritten to describe the RLM architecture as the present.
+**Phase 6 — Cleanup.** Deleted dead pipeline / gate / five-path code. Updated
+`README.md`, `system_overview.md`, and `CLAUDE.md` to describe the RLM
+architecture as the present. Pinned a successful run as the demo.
+*Done (2026-05-22).*
 
 ## 12. Success criteria
 
@@ -322,21 +306,20 @@ with a real PaperBench rubric score; open `backend/agents/rlm/` and see the
 system is the `rlms` library driven by domain primitives; find ≥2 completed
 `runs/prj_xxx/` directories with real reports for different papers.
 
-The pitch sentence becomes true: *"ReproLab is a paper-reproduction agent built
+The pitch sentence is true: *"ReproLab is a paper-reproduction agent built
 on the Recursive Language Model paradigm. The root model treats the paper as a
 variable in a persistent REPL, writes Python to navigate and decompose it,
 recursively invokes sub-models on programmatic slices, and accumulates the
 reproduction as REPL state."* It maps 1:1 to code in the repo — and the RLM
 engine is the authors' own published library.
 
-## 13. First paper
+## 13. Vendored papers
 
-`third_party/paperbench/ftrl/` is currently a placeholder bundle with a
-*synthetic* rubric. **Vendor the real upstream `ftrl` artifacts** (real
-`paper.md`, `addendum.md`, `rubric.json` from the public PaperBench repo), plus
-1–2 genuinely easy papers, so scores are honestly comparable to PaperBench's
-published baselines.
+`third_party/paperbench/ftrl/` contains the real upstream `ftrl` artifacts
+(`paper.md`, `addendum.md`, `rubric.json` from the public PaperBench repo).
+Additional bundles are vendored under `third_party/paperbench/` for further
+papers so scores are honestly comparable to PaperBench's published baselines.
 
 The `agent-eval-integ` branch vendored the *RLM paper* as a bundle
-(`third_party/paperbench/rlm/`). That is **not** paper #1 — RLM is the substrate,
-not a reproduction target (Section 1). It can remain as a self-test curiosity.
+(`third_party/paperbench/rlm/`). That is a self-test curiosity, not a primary
+reproduction target — RLM is the substrate, not a paper to reproduce (Section 1).

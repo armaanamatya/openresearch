@@ -48,7 +48,7 @@ architecture, and `frontend_integration.md` for the SSE event contract.
 API keys required (at minimum one of):
 
 - `ANTHROPIC_API_KEY` — for the Anthropic/Claude provider
-- `OPENAI_API_KEY` — for the OpenAI provider (GPT-5 / Qwen3-Coder are the paper-validated RLM root models)
+- `OPENAI_API_KEY` — for the OpenAI provider; GPT-5 is the paper-validated RLM root model (Qwen3-Coder via OpenRouter requires separate credentials)
 
 ---
 
