@@ -851,10 +851,53 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     out: list[dict] = []
     for item in items:
         try:
+            # Ensure title is never empty — derive a fallback from hypothesis text
+            # so candidate_proposed events always carry a human-readable label.
+            if not item.get("title"):
+                hypothesis_text = (item.get("hypothesis") or "").strip()
+                item["title"] = (
+                    hypothesis_text.split(".")[0][:80]
+                    or hypothesis_text[:80]
+                    or item.get("path_id", "candidate")
+                )
             out.append(ImprovementHypothesis(**item).model_dump())
         except Exception:
             continue  # fail-soft: skip a malformed hypothesis
     return out[:target]
+
+
+def record_candidate_outcome(
+    candidate_id: str,
+    outcome: str,
+    parent_id: str | None = None,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Record the root model's outcome decision for a candidate (Option B, handoff §5).
+
+    Near-no-op computation — the primitive exists purely so its ``wrap_primitive``
+    wrapper can emit a ``candidate_outcome`` SSE event that reflects the root's
+    actual decision (not a backend-inferred approximation).  The root calls this
+    after evaluating each improvement candidate:
+
+        outcome = "promoted" if score > rubric_target else "failed"
+        record_candidate_outcome(candidate_id=cid, outcome=outcome)
+
+    Valid outcomes: ``"running"``, ``"promoted"``, ``"marginal"``, ``"failed"``,
+    ``"skipped"``, ``"declined"``.  ``parent_id`` is the node this candidate
+    branches from (passed through to the ``candidate_outcome`` event's
+    ``parent_id`` field so the UI can build the exploration tree).
+
+    Returns a plain ``{"success": True, ...}`` dict — no ``error`` key — so
+    ``wrap_primitive``'s fail-soft check does not misclassify it as a failure.
+    ``ctx`` is required by the primitive-wrapper protocol (design decision D4).
+    """
+    return {
+        "success": True,
+        "candidate_id": candidate_id,
+        "outcome": outcome,
+        "parent_id": parent_id,
+    }
 
 
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
@@ -867,6 +910,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "run_experiment": run_experiment,
     "verify_against_rubric": verify_against_rubric,
     "propose_improvements": propose_improvements,
+    "record_candidate_outcome": record_candidate_outcome,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -908,5 +952,12 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "graded (int), rubric_source (str), weak_leaves (up to 8 lowest-scoring "
         "leaf dicts), leaf_scores (all leaf scores).",
     "propose_improvements": "propose_improvements(current_results, rubric_scores, "
-        "k=None) -> list[dict] — paper-specific improvement hypotheses.",
+        "k=None) -> list[dict] — paper-specific improvement hypotheses. Each "
+        "hypothesis includes a `title` field (short name for the candidate node).",
+    "record_candidate_outcome": "record_candidate_outcome(candidate_id, outcome, "
+        "parent_id=None) -> dict — record the root's outcome decision for a "
+        "candidate. Call this after evaluating each improvement candidate. "
+        "outcome is one of: 'running', 'promoted', 'marginal', 'failed', "
+        "'skipped', 'declined'. candidate_id must match the id from "
+        "candidate_proposed. parent_id is the node this candidate branches from.",
 }

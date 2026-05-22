@@ -5,6 +5,7 @@ EXPECTED = {
     "understand_section", "extract_hyperparameters", "detect_environment",
     "build_environment", "plan_reproduction", "implement_baseline",
     "run_experiment", "verify_against_rubric", "propose_improvements",
+    "record_candidate_outcome",
 }
 
 

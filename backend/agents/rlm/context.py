@@ -46,6 +46,7 @@ class RunContext:
     sandbox_mode: Any = None  # SandboxMode — threaded from --sandbox CLI flag (I7)
     current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
+    emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

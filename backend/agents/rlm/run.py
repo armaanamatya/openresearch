@@ -530,6 +530,7 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         runs_root=runs_root,
         dashboard=dashboard,
+        emit=emit,           # thread-safe emit chokepoint from make_emit above
         cost_ledger=cost_ledger,
         llm_client=llm_client,
         provider=provider_label,
@@ -596,6 +597,7 @@ async def run_pipeline_rlm(
         checkpointer=checkpointer,
         sentinels=corpus_sentinels,
         snapshot_writer=snapshot_writer,
+        ctx=ctx,
     )
 
     # Resolve cost cap — passed directly to RLM(max_budget=...) so the library

@@ -248,6 +248,7 @@ class ReproLabRLMLogger(RLMLogger):
         checkpointer: Any,
         sentinels: list[str] | None = None,
         snapshot_writer: Any = None,
+        ctx: Any = None,
     ) -> None:
         super().__init__(log_dir=None)
         self._emit = emit
@@ -256,6 +257,7 @@ class ReproLabRLMLogger(RLMLogger):
         self._snapshot_writer = snapshot_writer
         self._next_index: int = 0
         self._index_lock = threading.Lock()  # A1-M3: guard concurrent index increments
+        self._ctx = ctx  # RunContext — for current_iteration plumbing (optional)
 
     def next_index(self) -> int:
         """Return the next 1-based iteration index and advance the counter (thread-safe)."""
@@ -278,15 +280,27 @@ class ReproLabRLMLogger(RLMLogger):
 
         Does NOT call ``super().log(iteration)`` — see class docstring.
 
+        Updates ``ctx.current_iteration`` (when ``ctx`` was supplied) to the
+        just-completed 1-based index AFTER emitting and checkpointing.
+        Primitives running inside the *next* iteration therefore see the last
+        completed iteration's index — a one-behind ("last-completed") semantic.
+        This is intentional and documented: the index is a UI label, not a
+        precise in-flight counter.
+
         Args:
             iteration: The raw ``RLMIteration`` from ``rlms``.  Treated as
                        read-only; never stored or forwarded.
         """
-        clean = sanitize_iteration(iteration, self.next_index(), self._sentinels)
+        index = self.next_index()
+        clean = sanitize_iteration(iteration, index, self._sentinels)
         self._emit(_repl_iteration_event(clean))
         self._checkpointer.record(clean)
         if self._snapshot_writer is not None:
             self._snapshot_writer.write(iteration, clean["iteration"])
+        # Update ctx.current_iteration after emit/checkpoint so any failure in
+        # those steps does not leave ctx with a stale counter.
+        if self._ctx is not None:
+            self._ctx.current_iteration = index
 
 
 # ---------------------------------------------------------------------------

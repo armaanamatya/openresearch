@@ -53,6 +53,9 @@ on disk under `runs/<project_id>/`.
 | `sub_rlm_spawned` | `depth`, `model`, `prompt_preview` (≤200 ch) | a recursive sub-call starts |
 | `sub_rlm_complete` | `depth`, `model`, `duration_ms`, `error` | a sub-call finishes |
 | `run_complete` | `status`, `iterations`, `rubric_score`, `cost_usd`, `final_report_path` | the run ends |
+| `candidate_proposed` | `iteration`, `round`, `candidate` (`id`, `title`, `category`, `description`, `reasoning`), `parent_id?` | one per hypothesis returned by a successful `propose_improvements` call |
+| `candidate_outcome` | `iteration`, `candidate_id`, `outcome`, `rubric_delta` | root calls `record_candidate_outcome` after evaluating a candidate |
+| `rubric_score` | `iteration`, `score`, `target`, `areas[]` (`area`, `score`, `weight`, `status`) | after a successful `verify_against_rubric` call (not emitted on fail-soft failure) |
 
 `code_blocks[]` element shape:
 `{code, stdout_meta:{length,prefix,has_traceback}, stderr_meta:{…}, vars:{name:{type,size}}, sub_calls}`.
