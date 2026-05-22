@@ -2,6 +2,7 @@
 
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
 import styles from "./report-rail.module.css";
+import { DEGRADED_SCORE_CAP } from "./rlm-config";
 
 export interface ReportRailProps {
   status: RlmRunState["status"];
@@ -80,7 +81,7 @@ export function ReportRail({
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
   const isDegraded =
-    rubric.current !== null && rubric.current <= 0.35;
+    rubric.current !== null && rubric.current <= DEGRADED_SCORE_CAP;
 
   // Verdict pill style class.
   const verdictClass =
