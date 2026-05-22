@@ -118,6 +118,12 @@ describe("fold — the tree", () => {
       expect(n.parentId != null && ids.has(n.parentId)).toBe(true);
     }
   });
+  it("every tree node carries a non-empty title", () => {
+    const s = reduce();
+    for (const n of s.tree) {
+      expect(n.title).toBeTruthy();
+    }
+  });
 
   /**
    * §5.3 branch (b) — the previous fan's parent.

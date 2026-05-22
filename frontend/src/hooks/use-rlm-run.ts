@@ -71,6 +71,8 @@ export interface TreeNode {
   id: string;
   kind: "paper" | "work" | "baseline" | "candidate" | "subrlm" | "declined-group";
   parentId: string | null;
+  /** Display title — uniform across node kinds. */
+  title: string;
   /** Iteration range this node covers. */
   iterationRange: [number, number];
   /** Only present on candidate nodes. */
@@ -188,6 +190,18 @@ function phaseFor(primitive: string): TreePhase | null {
   }
 }
 
+/** Title-cased label for each trunk phase. */
+function titleForPhase(phase: TreePhase): string {
+  switch (phase) {
+    case "comprehension":
+      return "Comprehension";
+    case "environment":
+      return "Environment";
+    case "baseline-build":
+      return "Baseline build";
+  }
+}
+
 /** Ensure the `paper` root exists. Returns the same array if it already does. */
 function ensurePaper(tree: TreeNode[]): TreeNode[] {
   if (tree.some((n) => n.kind === "paper")) return tree;
@@ -195,6 +209,7 @@ function ensurePaper(tree: TreeNode[]): TreeNode[] {
     id: PAPER_NODE_ID,
     kind: "paper",
     parentId: null,
+    title: "Paper",
     iterationRange: [0, 0],
   };
   return [paper, ...tree];
@@ -315,6 +330,7 @@ function foldPrimitiveCall(
         id: `work-${phase}-${tree.filter((n) => n.kind === "work").length + 1}`,
         kind: "work",
         parentId,
+        title: titleForPhase(phase),
         iterationRange: [iter, iter],
         phase,
       };
@@ -354,6 +370,7 @@ function foldRubricScore(
       id: "baseline",
       kind: "baseline",
       parentId,
+      title: "Baseline",
       iterationRange: [ev.iteration, ev.iteration],
       rubricScore: ev.score,
     };
@@ -406,11 +423,13 @@ function applyDeclinedGroup(
   const groupId = `declined-group-r${round}`;
   const existing = tree.find((n) => n.id === groupId);
   if (existing) {
+    const newCount = (existing.declinedCount ?? 0) + 1;
     return tree.map((n) =>
       n === existing
         ? {
             ...n,
-            declinedCount: (n.declinedCount ?? 0) + 1,
+            declinedCount: newCount,
+            title: `${newCount} declined`,
             iterationRange: [
               Math.min(n.iterationRange[0], iteration),
               Math.max(n.iterationRange[1], iteration),
@@ -423,6 +442,7 @@ function applyDeclinedGroup(
     id: groupId,
     kind: "declined-group",
     parentId: candidateParentId,
+    title: "1 declined",
     iterationRange: [iteration, iteration],
     round,
     declinedCount: 1,
@@ -443,6 +463,7 @@ function foldCandidateProposed(
     id: `candidate-${ev.candidate.id}`,
     kind: "candidate",
     parentId,
+    title: ev.candidate.title,
     iterationRange: [ev.iteration, ev.iteration],
     round: ev.round,
     candidate: { ...ev.candidate },
@@ -521,6 +542,7 @@ function foldSubRlmSpawned(
     id: `subrlm-${state.subRlms.length + 1}`,
     kind: "subrlm",
     parentId,
+    title: "Sub-RLM",
     iterationRange: [state.iterationCount, state.iterationCount],
   };
 
