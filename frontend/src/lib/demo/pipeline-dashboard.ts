@@ -191,7 +191,7 @@ export interface LiveDemoMeta {
   projectId: string;
   outputDir: string;
   sourceKind: "workspace_fixture" | "uploaded_pdf";
-  runMode: "offline" | "sdk";
+  runMode: "offline" | "sdk" | "rlm";
   llmProvider?: DemoProvider;
   verificationProvider?: DemoProvider;
   executionMode?: DemoExecutionMode;
@@ -238,6 +238,9 @@ export interface LiveDemoPayload extends LiveDemoMeta {
 }
 
 function runModeLabel(runMode: LiveDemoMeta["runMode"], provider?: DemoProvider): string {
+  if (runMode === "rlm") {
+    return "RLM";
+  }
   if (runMode !== "sdk") {
     return "Offline";
   }

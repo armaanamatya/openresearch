@@ -1,0 +1,33 @@
+/*
+ * RlmLab — 4-band layout shell.
+ *
+ * Band 1: RlmHeader  (fixed height, full width)
+ * Band 2: RubricStrip (fixed height, full width)
+ * Band 3: workspace row — ReplStateRail | ExplorationCanvas | ReportRail
+ * Band 4: PrimitiveHistoryBar (fixed height, full width)
+ */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg, #fff);
+  color: var(--ink, #111);
+}
+
+/* ── Band 3: workspace ──────────────────────────────────────────────────── */
+
+.workspace {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canvas {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: auto;
+}

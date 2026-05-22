@@ -38,6 +38,8 @@ import { PresentationModeProvider, usePresentationMode, type PresentationMode } 
 import { readUserPrefs, writeUserPref } from "@/lib/user-prefs";
 import { issueText } from "./shared-helpers";
 import { summariseFailure } from "./failure-summary";
+import { RlmLab } from "./rlm/rlm-lab";
+import { isRlmEvent } from "@/lib/events/rlm-events";
 
 import "./lab-shell.css";
 
@@ -547,6 +549,19 @@ function WorkflowView({
             ? "stopped"
             : "running";
   const decisions = run.payload?.decisionLog ?? [];
+
+  // ── RLM mode: render the RlmLab shell instead of the 14-stage canvas ───
+  if (run.runMode === "rlm") {
+    const rlmEvents = dashboardEvents.filter(isRlmEvent);
+    const paperTitle = run.sourceLabel ?? "Untitled paper";
+    const paperMeta = run.sourceNote ?? "";
+    return (
+      <RlmLab
+        events={rlmEvents}
+        runMeta={{ projectId: run.projectId, paperTitle, paperMeta }}
+      />
+    );
+  }
 
   return (
     <>
