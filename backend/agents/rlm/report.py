@@ -357,6 +357,23 @@ def _render_markdown(report: RLMFinalReport) -> str:
     lines.append("## Rubric Score")
     lines.append("")
     lines.append(f"**Overall score:** {overall:.3f}  ({target_flag})")
+    # Provenance: after the post-run leaf scorer amends the report, surface the
+    # rubric source + leaf coverage so a "generated" score is never mistaken for
+    # a PaperBench-official one.
+    source = rubric.get("rubric_source")
+    leaf_count = rubric.get("leaf_count")
+    if source or leaf_count:
+        bits: list[str] = []
+        if leaf_count:
+            bits.append(f"{rubric.get('graded', leaf_count)}/{leaf_count} rubric leaves graded")
+        if source == "generated":
+            bits.append("self-generated rubric — not PaperBench-official")
+        elif source == "paperbench_bundle":
+            bits.append("PaperBench bundle rubric")
+        elif source:
+            bits.append(f"rubric source: {source}")
+        lines.append("")
+        lines.append(f"_{' · '.join(bits)}_")
     lines.append("")
 
     areas = rubric.get("areas") or []

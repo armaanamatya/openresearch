@@ -40,7 +40,12 @@ already feeds the root a real paper. It does not — recon found two gaps:
 `/runs/{id}/final-report` / `/runs/{id}/events`. Fix any gap that stops an RLM
 arXiv run from being retrievable through the API.
 
-## Phase C — runs (Docker, ~2h each, prefer 2 concurrent, staggered)
+## Phase C — runs (Docker, ~2h each, SERIAL)
+
+> Featherless `feather_pro_plus` caps at 4 concurrent units; one RLM run
+> saturates it, so a second concurrent run 429s. Runs are serial, not the
+> handoff's "2 concurrent" (observed + corrected 2026-05-21).
+
 
 - **C1** RLM paper arXiv `2512.24601`.
 - **C2** one more recent (~6-month) paper — candidates proposed, user picks.

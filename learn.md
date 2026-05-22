@@ -11,6 +11,34 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-21 — Leaf-scoring amended final_report.json but not the .md the REST API serves
+
+**Symptom.** After `score_run.py` leaf-scored a completed RLM run,
+`final_report.json` carried the authoritative score (0.325, below target) but
+`GET /runs/{id}/final-report` — which serves `final_report.md` — still showed
+the stale in-loop `verify_against_rubric` score (0.258, "✔ meets target"). The
+REST-retrievable report contradicted the JSON and overclaimed.
+
+**Root cause.** `leaf_scorer.amend_final_report` rewrote only `final_report.json`.
+The run writes BOTH `final_report.{json,md}` at finish; the markdown is what the
+HTTP `/final-report` route serves. Amending one of a two-file pair left the
+served artifact stale.
+
+**Fix.** `amend_final_report` now also re-renders `final_report.md` (via
+`RLMFinalReport` + `report._render_markdown`) when the report is RLM-shaped —
+guarded so a non-RLM report's markdown is never clobbered. `_render_markdown`
+gained a rubric-provenance line, so a generated-rubric score is labelled
+"self-generated rubric — not PaperBench-official".
+
+**Lesson.** When a fact is persisted in two representations (canonical JSON +
+rendered markdown) and a consumer reads one of them, an amend step must update
+*every* representation a consumer can reach — otherwise the amend is a half-truth.
+
+**Guardrail.** `tests/rlm/test_leaf_scorer.py::test_amend_final_report_rerenders_markdown`
+(markdown tracks the leaf score) and `..._leaves_non_rlm_markdown_untouched`.
+
+---
+
 ## 2026-05-21 — RLM runs never wrote demo_status.json, so GET /runs/{id} 404'd
 
 **Symptom.** Caught while wiring the REST-retrievable arXiv path. A completed
