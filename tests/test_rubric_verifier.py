@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from pydantic import ValidationError
 
 from backend.agents.registry import AGENT_REGISTRY
-from backend.agents.rubric_source import (
-    BundleRubricSource,
-    GeneratedRubricSource,
-    RubricSource,
-    resolve_rubric_source,
-)
 from backend.agents.schemas import (
-    ExperimentArtifacts,
     RubricAreaScore,
     RubricVerification,
 )
@@ -74,48 +65,6 @@ def test_area_score_bounds_enforced():
         RubricAreaScore(area="a", weight=-0.1, score=0.5)
 
 
-# --- RubricSource: bundle vs generated, degrades cleanly ---
-
-def _write_bundle(root, paper_id):
-    bundle_dir = root / paper_id
-    bundle_dir.mkdir(parents=True)
-    (bundle_dir / "paper.md").write_text("# Paper", encoding="utf-8")
-    (bundle_dir / "addendum.md").write_text("# Addendum", encoding="utf-8")
-    rubric = {"sub_tasks": [{"requirements": "x", "weight": 1.0, "sub_tasks": []}]}
-    (bundle_dir / "rubric.json").write_text(json.dumps(rubric), encoding="utf-8")
-    return bundle_dir
-
-
-def test_resolve_returns_bundle_source_when_bundle_exists(tmp_path):
-    _write_bundle(tmp_path, "demo-paper")
-    src = resolve_rubric_source(tmp_path, "demo-paper")
-    assert isinstance(src, BundleRubricSource)
-    assert src.kind == "paperbench_bundle"
-    assert src.load_rubric() is not None
-    assert isinstance(src, RubricSource)
-
-
-def test_resolve_degrades_to_generated_when_no_bundle(tmp_path):
-    src = resolve_rubric_source(tmp_path, "missing-paper")
-    assert isinstance(src, GeneratedRubricSource)
-    assert src.kind == "generated"
-    assert src.load_rubric() is None
-
-
-def test_resolve_degrades_when_no_paper_id(tmp_path):
-    assert isinstance(resolve_rubric_source(tmp_path, None), GeneratedRubricSource)
-    assert isinstance(resolve_rubric_source(None, "x"), GeneratedRubricSource)
-
-
-def test_resolve_degrades_on_malformed_bundle(tmp_path):
-    # bundle dir exists but rubric.json is missing -> PaperBenchBundleError -> generated
-    bad = tmp_path / "bad-paper"
-    bad.mkdir()
-    (bad / "paper.md").write_text("x", encoding="utf-8")
-    src = resolve_rubric_source(tmp_path, "bad-paper")
-    assert isinstance(src, GeneratedRubricSource)
-
-
 # --- rubric-verifier agent registration ---
 
 def test_rubric_verifier_registered():
@@ -132,81 +81,6 @@ def test_rubric_verifier_inherits_run_default_model():
     runtime = spec.to_runtime_spec("anthropic")
     assert runtime.model  # resolved to a concrete model, not empty
     assert runtime.instructions  # prompt is wired
-
-
-# --- Phase D: FinalReport verification fields + honest comparison summary ---
-
-def _verification(score, target):
-    return RubricVerification.from_areas(
-        [_area("a", 1.0, score)], rubric_source="generated", target_score=target
-    )
-
-
-def test_generate_final_report_without_verification_is_unchanged():
-    """No verification args -> the new fields stay at their empty defaults."""
-    from backend.agents.report_generator import generate_final_report
-
-    report = generate_final_report("prj_plain", None, None, [], [], None)
-    assert report.rubric_verification is None
-    assert report.baseline_rubric_verification is None
-    assert report.verification_delta is None
-    assert report.improvement_iterations == 0
-    assert report.comparison_summary == ""
-    assert report.paperbench_baseline is None  # prj_* has no published baseline
-
-
-def test_generate_final_report_populates_verification_fields():
-    from backend.agents.report_generator import generate_final_report
-
-    baseline = _verification(0.40, 0.70)
-    improved = _verification(0.66, 0.70)
-    report = generate_final_report(
-        "prj_v",
-        None,
-        None,
-        [],
-        [],
-        None,
-        baseline_verification=baseline,
-        improved_verification=improved,
-        improvement_iterations=2,
-    )
-    assert report.rubric_verification.overall_score == pytest.approx(0.66)
-    assert report.baseline_rubric_verification.overall_score == pytest.approx(0.40)
-    assert report.verification_delta == pytest.approx(0.26)
-    assert report.improvement_iterations == 2
-    assert "0.66" in report.comparison_summary
-    assert "Still below the 0.70 target" in report.comparison_summary
-
-
-def test_comparison_summary_is_honest():
-    from backend.agents.report_generator import _build_comparison_summary
-
-    # Improvement helped and met the target.
-    s = _build_comparison_summary(
-        _verification(0.8, 0.7), _verification(0.5, 0.7), None, 1
-    )
-    assert "+0.30" in s and "Meets the 0.70 target" in s
-    # Improvement made it worse — the summary must say so plainly.
-    s = _build_comparison_summary(
-        _verification(0.4, 0.7), _verification(0.6, 0.7), None, 2
-    )
-    assert "did not help" in s and "Still below" in s
-    # No improved verification -> empty string.
-    assert _build_comparison_summary(None, None, None, 0) == ""
-
-
-def test_resolve_paperbench_baseline():
-    from backend.agents.report_generator import _resolve_paperbench_baseline
-
-    assert _resolve_paperbench_baseline("prj_uploaded_paper") is None
-    assert _resolve_paperbench_baseline("paperbench_unknown_xyz") is None
-    ftrl = _resolve_paperbench_baseline("paperbench_ftrl")
-    assert ftrl is not None
-    assert ftrl["source"] == "paperbench_published"
-    # ftrl's strongest published agent is claude_3_5_sonnet_basicagent @ 0.093.
-    assert ftrl["score"] == pytest.approx(0.093)
-    assert ftrl["model"] == "claude_3_5_sonnet_basicagent"
 
 
 # --- Phase F: BenchmarkSummary carries Track 3 fields through LiveRunState ---

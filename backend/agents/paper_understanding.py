@@ -1,20 +1,18 @@
-"""Paper Understanding Agent — LLM-powered claim extraction.
+"""Paper Understanding Agent — heuristic claim extraction.
 
-This module provides two modes:
-  1. ``run_with_sdk()`` — invokes the configured agent runtime for LLM analysis
-  2. ``run_offline()`` — deterministic extraction without LLM (for tests/CI)
+This module provides:
+  - ``run_offline()`` — deterministic extraction without LLM (for tests/CI and the RLM path)
+  - Heuristic extractors used by ``backend/agents/rlm/primitives.py``
 
-Both produce a PaperClaimMap and write it to the project's runs directory.
+Produces a PaperClaimMap and writes it to the project's runs directory.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import (
     Ambiguity,
     DatasetRequirement,
@@ -23,7 +21,6 @@ from backend.agents.schemas import (
     RiskLevel,
     TrainingRecipe,
 )
-from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
@@ -77,50 +74,6 @@ def run_offline(
     out_path.write_text(claim_map.model_dump_json(indent=2), encoding="utf-8")
     logger.info("Paper claim map written to %s", out_path)
 
-    return claim_map
-
-
-async def run_with_sdk(
-    project_id: str,
-    runs_root: Path,
-    workspace_claim_map: dict[str, Any],
-    *,
-    model: str | None = None,
-    provider: ProviderName | str | None = None,
-    runtime: AgentRuntime | None = None,
-) -> PaperClaimMap:
-    """Full LLM-powered paper understanding via the configured agent runtime."""
-    from backend.agents.runtime.invoke import collect_agent_text
-
-    project_dir = Path(runs_root) / project_id
-    claim_map_context = json.dumps(workspace_claim_map, indent=2)
-
-    prompt = (
-        f"Analyze the paper for project {project_id}.\n"
-        f"The parsed workspace claim_map is:\n```json\n{claim_map_context}\n```\n\n"
-        f"Read any additional files in {project_dir} for more context.\n"
-        f"Write the complete PaperClaimMap JSON to {project_dir}/paper_claim_map.json"
-    )
-
-    full_text = await collect_agent_text(
-        "paper-understanding",
-        prompt,
-        project_dir=project_dir,
-        model=model,
-        provider=provider,
-        runtime=runtime,
-    )
-
-    # Try to read the written file first
-    out_path = project_dir / "paper_claim_map.json"
-    if out_path.exists():
-        data = read_json(out_path)
-        return PaperClaimMap(**data)
-
-    # Fall back to parsing from agent output
-    data = _extract_json(full_text)
-    claim_map = PaperClaimMap(**data)
-    out_path.write_text(claim_map.model_dump_json(indent=2), encoding="utf-8")
     return claim_map
 
 
@@ -384,20 +337,3 @@ def _find_result_numbers(text: str) -> str:
     return "See paper"
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """Extract JSON from text, handling markdown fences."""
-    import re
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-    if fence_match:
-        return json.loads(fence_match.group(1))
-    brace_start = text.find("{")
-    if brace_start >= 0:
-        depth = 0
-        for i in range(brace_start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return json.loads(text[brace_start : i + 1])
-    raise ValueError(f"No JSON found in output: {text[:200]}")
