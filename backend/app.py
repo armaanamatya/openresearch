@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend import __version__
-from backend.agents.topology import PipelineTopology, default_topology
 from backend.config import get_settings
 from backend.persistence.database import Database
 from backend.services.approval import ApprovalAction, ApprovalService, ApprovalState
@@ -327,14 +326,6 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
-
-    # ------------------------------------------------------------------ #
-    # Pipeline topology (canonical graph metadata for the frontend)
-    # ------------------------------------------------------------------ #
-
-    @app.get("/pipeline/topology", response_model=PipelineTopology)
-    async def pipeline_topology() -> PipelineTopology:
-        return default_topology()
 
     # ------------------------------------------------------------------ #
     # Models (LLM choices surfaced in the upload-view dropdown)
