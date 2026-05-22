@@ -7,7 +7,6 @@ import type {
   DemoModelChoice,
   DemoProvider,
   LiveDemoRunState,
-  DemoRunMode,
   DemoSandboxMode
 } from "@/lib/demo/demo-run-types";
 import { backendBaseUrl, BACKEND_GET_TIMEOUT_MS, enrichOrTimeout } from "@/lib/demo/server-run";
@@ -27,9 +26,10 @@ function search(request: Request): URLSearchParams {
   return new URL(request.url).searchParams;
 }
 
-function toRunMode(request: Request): DemoRunMode | undefined {
-  const value = search(request).get("mode");
-  return value === "offline" || value === "sdk" ? value : undefined;
+// The lab is RLM-only — every run the UI starts is an `rlm` run. The `mode`
+// query param is no longer read; sdk/offline remain reachable via the CLI only.
+function toRunMode(): "rlm" {
+  return "rlm";
 }
 
 function toProjectId(request: Request): string | undefined {
@@ -72,7 +72,7 @@ function toModelChoice(request: Request): DemoModelChoice | undefined {
 
 function backendQuery(request: Request): URLSearchParams {
   const params = new URLSearchParams();
-  const mode = toRunMode(request);
+  const mode = toRunMode();
   const provider = toProvider(request);
   const executionMode = toExecutionMode(request);
   const sandbox = toSandboxMode(request);
@@ -168,7 +168,7 @@ export async function POST(request: Request) {
         method: "POST",
         headers: { "content-type": "application/json", ...demoSecretHeaders() },
         body: JSON.stringify({
-          mode: toRunMode(request) ?? "offline",
+          mode: toRunMode(),
           provider: toProvider(request) ?? "anthropic",
           verificationProvider: toVerificationProvider(request),
           executionMode: toExecutionMode(request) ?? "efficient",
