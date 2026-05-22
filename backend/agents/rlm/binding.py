@@ -4,6 +4,13 @@ Phase 2 (issue #59). `build_custom_tools(ctx)` produces the dict
 `rlm.RLM(custom_tools=...)` consumes: `{name: {"tool": callable, "description": str}}`.
 Each wrapped callable emits a `primitive_call` SSE event (start + complete) and
 appends a row to `cost_ledger.jsonl`.
+
+Phase 6 (Task 13) additive wiring: after successful `propose_improvements` and
+`verify_against_rubric` calls, and for `record_candidate_outcome`, emit the three
+additional events described in the handoff spec
+(docs/superpowers/specs/2026-05-21-rlm-phase4-backend-events-handoff.md §3–5).
+All new events route through `ctx.emit` (the `make_emit`-produced thread-safe
+closure) — never through `dashboard._emit` directly.
 """
 
 from __future__ import annotations
@@ -36,7 +43,15 @@ def _result_summary(result: Any) -> str:
 
 
 def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callable[..., Any]:
-    """Close `fn` over `ctx`, adding primitive_call emission and a cost-ledger row."""
+    """Close `fn` over `ctx`, adding primitive_call emission and a cost-ledger row.
+
+    Phase 6 (Task 13): after successful ``propose_improvements``,
+    ``verify_against_rubric``, and ``record_candidate_outcome`` calls, emit
+    the three new SSE events via ``ctx.emit`` (the ``make_emit``-produced
+    thread-safe chokepoint).  When ``ctx.emit`` is None (e.g. old test fixtures
+    that have not been updated), the additional emissions are silently skipped —
+    the existing ``primitive_call`` events still fire via ``dashboard``.
+    """
 
     def _ledger() -> None:
         # Phase 2 (D7): a zero-usage call entry; real token usage lands with run.py (#60).
@@ -47,6 +62,11 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             provider=ctx.provider,
             model=ctx.model,
         ))
+
+    def _emit_extra(event: dict) -> None:
+        """Emit via the thread-safe chokepoint; skip if ctx.emit is unset."""
+        if ctx.emit is not None:
+            ctx.emit(event)
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         kwargs.pop("ctx", None)  # the wrapper supplies ctx; never let a caller double it
@@ -80,10 +100,84 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 "primitive %s returned a failure: %s",
                 name, result.get("error") or "(see dashboard_events.jsonl)",
             )
+        else:
+            # --- Phase 6 (Task 13): post-success supplemental event emission ---
+            _emit_supplemental(name, result, ctx, _emit_extra)
         return result
 
     wrapped.__name__ = name
     return wrapped
+
+
+def _emit_supplemental(
+    name: str,
+    result: Any,
+    ctx: RunContext,
+    emit_extra: Callable[[dict], None],
+) -> None:
+    """Emit supplemental SSE events after a SUCCESSFUL primitive call.
+
+    Three primitives produce dedicated events that carry richer data than the
+    value-free ``primitive_call(ok)`` event:
+
+    * ``propose_improvements`` → one ``candidate_proposed`` per hypothesis.
+    * ``verify_against_rubric`` → one ``rubric_score`` (only on real success).
+    * ``record_candidate_outcome`` → one ``candidate_outcome``.
+
+    This function is a no-op for all other primitives.
+    """
+    from backend.agents.rlm.sse_bridge import (
+        build_candidate_outcome_event,
+        build_candidate_proposed_event,
+        build_rubric_score_event,
+    )
+
+    if name == "propose_improvements" and isinstance(result, list):
+        # Increment propose_round BEFORE the per-hypothesis loop so all events
+        # in this fan share the same round number.
+        ctx.propose_round += 1
+        for hyp in result:
+            if not isinstance(hyp, dict):
+                continue
+            candidate = {
+                "id": hyp.get("path_id", ""),
+                "title": hyp.get("title") or hyp.get("path_id", "candidate"),
+                "category": hyp.get("category", ""),
+                "description": hyp.get("hypothesis", ""),
+                "reasoning": hyp.get("rationale", ""),
+            }
+            emit_extra(build_candidate_proposed_event(
+                iteration=ctx.current_iteration,
+                round=ctx.propose_round,
+                candidate=candidate,
+            ))
+
+    elif name == "verify_against_rubric" and isinstance(result, dict):
+        # Only emit on a genuinely successful verification — failure returns
+        # {"success": False, ...} and is already handled by the `failed` branch
+        # above, so we never reach here for a failed verification.
+        score = result.get("overall_score")
+        target = result.get("target_score")
+        areas = result.get("areas", [])
+        if score is not None and isinstance(areas, list):
+            emit_extra(build_rubric_score_event(
+                iteration=ctx.current_iteration,
+                score=float(score),
+                target=float(target) if target is not None else 0.0,
+                areas=[
+                    {"area": a.get("area", ""), "score": a.get("score", 0.0),
+                     "weight": a.get("weight", 0.0)}
+                    for a in areas if isinstance(a, dict)
+                ],
+            ))
+
+    elif name == "record_candidate_outcome" and isinstance(result, dict):
+        emit_extra(build_candidate_outcome_event(
+            iteration=ctx.current_iteration,
+            candidate_id=str(result.get("candidate_id", "")),
+            outcome=str(result.get("outcome", "")),
+            rubric_delta=None,  # root supplies outcome; delta is not computed here
+        ))
 
 
 def build_custom_tools(
