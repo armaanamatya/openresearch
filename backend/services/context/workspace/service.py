@@ -177,30 +177,48 @@ class WorkspaceAppService:
             )
             self._append(agg, workspace_id, [stub_event], cid)
         else:
-            # Step 3a: preload `paper_text` — full concatenated text.
-            paper_text_parts: list[str] = []
-            text_citations: list[Citation] = []
-            for src in sections:
-                chunks = proj.chunks_for_source(src.id)
-                section_text = " ".join(c.text for c in chunks)
-                paper_text_parts.append(section_text)
-                if chunks:
-                    text_citations.append(Citation(
-                        source_id=src.id,
-                        chunk_id=chunks[0].id,
-                        quote=chunks[0].text[:_CLAIM_MAP_QUOTE_TRUNCATE],
-                        locator=src.locator,
+            # Step 3a: preload `paper_text` — the parser's authoritative full
+            # text (I4). Chunk-reassembly here was lossy — degraded or empty
+            # for some papers — so the variable did not equal the parser's
+            # `full_text`. Read the parser blob; fall back to chunk-reassembly
+            # only when the blob is unavailable.
+            full_text = self._load_parser_full_text(cmd.project_id)
+            if full_text is not None:
+                paper_text_value = full_text
+                paper_text_citations: tuple[Citation, ...] = (
+                    Citation(
+                        source_id=f"project:{cmd.project_id}",
+                        chunk_id=None,
+                        quote=full_text[:_CLAIM_MAP_QUOTE_TRUNCATE],
+                        locator="parsed_full_text.txt",
                         confidence=1.0,
-                    ))
-            if text_citations:
+                    ),
+                )
+            else:
+                parts: list[str] = []
+                chunk_citations: list[Citation] = []
+                for src in sections:
+                    chunks = proj.chunks_for_source(src.id)
+                    parts.append(" ".join(c.text for c in chunks))
+                    if chunks:
+                        chunk_citations.append(Citation(
+                            source_id=src.id,
+                            chunk_id=chunks[0].id,
+                            quote=chunks[0].text[:_CLAIM_MAP_QUOTE_TRUNCATE],
+                            locator=src.locator,
+                            confidence=1.0,
+                        ))
+                paper_text_value = "\n\n".join(parts)
+                paper_text_citations = tuple(chunk_citations)
+            if paper_text_citations:
                 self._append(agg, workspace_id, [VariableLoaded(
                     workspace_id=workspace_id,
                     variable_name="paper_text",
                     value_payload={
-                        "text": "\n\n".join(paper_text_parts),
+                        "text": paper_text_value,
                         "project_id": cmd.project_id,
                     },
-                    citations=tuple(text_citations),
+                    citations=paper_text_citations,
                     scope=Scope.private_to_parent,
                     source_agent="workspace_service",
                 )], cid)
@@ -574,6 +592,40 @@ class WorkspaceAppService:
             cls = resolve_event_class(stored.event_type, stored.schema_version)
             agg.apply(stored.into(cls))
         return agg
+
+    def _load_parser_full_text(self, project_id: str) -> str | None:
+        """Return the parser's authoritative full paper text, or None.
+
+        I4: the workspace `paper_text` variable must equal the parser's
+        `full_text`. The parser persists that text as a blob and records its
+        path in the `ParsingCompleted` event; read it from there. Returns None
+        — so the caller falls back to chunk-reassembly — when the event is
+        absent, the blob is missing, or the blob is empty.
+        """
+        from pathlib import Path
+
+        from backend.services.ingestion.parser.events import ParsingCompleted
+
+        try:
+            blob_path: str | None = None
+            for stored in self._store.load(AggregateId(f"{project_id}:parsed")):
+                if stored.event_type == ParsingCompleted.event_type:
+                    cls = resolve_event_class(
+                        stored.event_type, stored.schema_version)
+                    blob_path = stored.into(cls).full_text_blob_path
+            if not blob_path:
+                return None
+            path = Path(blob_path)
+            if not path.is_file():
+                return None
+            return path.read_text(encoding="utf-8") or None
+        except Exception:  # noqa: BLE001 — fail-soft: fall back to chunk reassembly
+            logger.warning(
+                "workspace: could not load parser full text for %s; "
+                "falling back to chunk reassembly",
+                project_id, exc_info=True,
+            )
+            return None
 
     def _append(
         self,

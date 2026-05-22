@@ -11,6 +11,65 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-22 — I3 root-prompt change backfired: a "read the paper" emphasis made the root loop on understanding
+
+**Symptom.** Run 3 (GoRL, arXiv) burned all 21 root iterations calling
+`understand_section` (×34) and never reached `detect_environment` /
+`implement_baseline` / `run_experiment`. Iterations 18–20 were byte-identical
+("First, let's understand the paper structure…"). No reproduction; an
+unparseable final report.
+
+**Root cause.** I3 added a prominent `_PAPER_GROUNDING` section to the root
+system prompt — "read the part that DEFINES it", "read for the complete set of
+experiments". On the `qwen3-coder-featherless` root model this anchored the
+model on the *understanding* phase; it never transitioned to reproduction. Runs
+without I3 (run 2b, both prior arXiv runs) progressed through the full pipeline.
+
+**Fix.** Reverted `_PAPER_GROUNDING` entirely — the known-good prompt is
+restored.
+
+**Lesson.** A prompt change to an agentic orchestrator must be validated by a
+full end-to-end run before you rely on it. I3's unit tests only asserted the
+prompt *contains* the text — they cannot catch that the text *changes
+behaviour for the worse*. Prompt-content tests are not prompt-effect tests.
+Emphasising one phase of a multi-phase agent loop can starve the others.
+
+**Guardrail.** No automatable test (prompt effect needs a real run). Process
+guardrail: a root-prompt change ships only after a green end-to-end run.
+
+---
+
+## 2026-05-22 — run_experiment failed in 6 s: dropped stderr hid a stale-image bug and killed the repair loop
+
+**Symptom.** The mechanistic-understanding RLM run's `run_experiment` failed in
+6 seconds with `success=false, logs="", metrics={}` — no error string, no trace.
+
+**Root cause.** Three compounding bugs in `backend/agents/rlm/primitives.py`.
+(A) `_execute_in_sandbox` built `logs` from `r.stdout` only — a failed command
+writes its traceback to *stderr*, so the failure reason was discarded. (B) the
+experiment ran the image `detect_environment` built *before any code existed*;
+it under-specified dependencies (no `transformers`), and nothing rebuilt after
+the code agent wrote the real Dockerfile. (C) the sandbox ran
+`network_disabled`, blocking the HuggingFace download the paper needs.
+
+**Fix.** (A) `_combine_command_output` joins stdout + stderr. (B) `run_experiment`
+rebuilds from `ctx.project_dir/Dockerfile` via `build_environment`
+(content-addressed, Docker-cached). (C) `_execute_in_sandbox` sets
+`network_disabled=False` (scoped — the corpus is never in that container).
+
+**Lesson.** An observability gap is a functionality gap. Bug A did not merely
+make failures hard to debug: `run_experiment`'s result *is* the `repair_context`
+fed back to the code agent, so `logs=""` left the RLM self-repair loop with
+nothing to act on — a silently dead feature. And: build the environment *from*
+the code's declared dependencies, never *for* code that does not exist yet — a
+spec guessed before its inputs are final must be re-derived once they exist.
+
+**Guardrail.** `tests/rlm/test_run_experiment_env.py` — `_combine_command_output`
+keeps stderr; `run_experiment` rebuilds from the project Dockerfile and fails
+soft on a bad rebuild.
+
+---
+
 ## 2026-05-22 — Re-running a paper conflicts: run state lives in the DB, not just the run dir
 
 **Symptom.** Re-running an arXiv paper (`reproduce <arxiv_id>` — deterministic

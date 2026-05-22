@@ -214,17 +214,21 @@ class ReproLabRLMLogger(RLMLogger):
     base never opens a file.
 
     Args:
-        emit:         A thread-safe callable produced by :func:`make_emit`.
-                      Accepts a pre-built event dict and writes it to the
-                      dashboard JSONL stream.
-        checkpointer: An :class:`~backend.agents.rlm.checkpoint.IterationCheckpointer`
-                      whose ``record(clean)`` persists the sanitized dict to the
-                      event store and snapshot file.
-        sentinels:    Optional corpus sentinels (first ``_SENTINEL_LEN`` chars of
-                      each ``context_dict`` value) threaded into
-                      :func:`sanitize_iteration` for M-REDACT / A1-M2 stdout
-                      prefix hardening.  Computed once at run-start; ``None``
-                      disables the secondary redaction pass.
+        emit:            A thread-safe callable produced by :func:`make_emit`.
+                         Accepts a pre-built event dict and writes it to the
+                         dashboard JSONL stream.
+        checkpointer:    An :class:`~backend.agents.rlm.checkpoint.IterationCheckpointer`
+                         whose ``record(clean)`` persists the sanitized dict to the
+                         event store and snapshot file.
+        sentinels:       Optional corpus sentinels (first ``_SENTINEL_LEN`` chars of
+                         each ``context_dict`` value) threaded into
+                         :func:`sanitize_iteration` for M-REDACT / A1-M2 stdout
+                         prefix hardening.  Computed once at run-start; ``None``
+                         disables the secondary redaction pass.
+        snapshot_writer: Optional :class:`~backend.agents.rlm.repl_snapshot.ReplSnapshotWriter`
+                         that writes per-iteration JSON snapshots and a rolling
+                         ``repl_state.pickle`` to the run directory (issue #62 DC#4).
+                         ``None`` disables snapshotting (back-compat default).
     """
 
     def __init__(
@@ -233,11 +237,13 @@ class ReproLabRLMLogger(RLMLogger):
         emit: Callable[[dict], None],
         checkpointer: Any,
         sentinels: list[str] | None = None,
+        snapshot_writer: Any = None,
     ) -> None:
         super().__init__(log_dir=None)
         self._emit = emit
         self._checkpointer = checkpointer
         self._sentinels: list[str] = sentinels or []
+        self._snapshot_writer = snapshot_writer
         self._next_index: int = 0
         self._index_lock = threading.Lock()  # A1-M3: guard concurrent index increments
 
@@ -269,6 +275,8 @@ class ReproLabRLMLogger(RLMLogger):
         clean = sanitize_iteration(iteration, self.next_index(), self._sentinels)
         self._emit(_repl_iteration_event(clean))
         self._checkpointer.record(clean)
+        if self._snapshot_writer is not None:
+            self._snapshot_writer.write(iteration, clean["iteration"])
 
 
 # ---------------------------------------------------------------------------

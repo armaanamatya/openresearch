@@ -469,6 +469,33 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **Workspace `paper_text` now equals the parser's full text (I4).** It was
+  reassembled from indexed chunks — lossy, and degraded or empty for some
+  papers. `build_workspace` now loads `paper_text` from the parser's full-text
+  blob (located via the `ParsingCompleted` event's `full_text_blob_path`),
+  falling back to chunk-reassembly only when the blob is unavailable.
+  `backend/services/context/workspace/service.py`; guard
+  `tests/test_issue16_workspace_service.py::test_paper_text_equals_parser_full_text`.
+- **`run_experiment` failed in 6 s with empty logs — three compounding bugs
+  (`backend/agents/rlm/primitives.py`).** (A) `_execute_in_sandbox` built
+  `logs` from `r.stdout` only; a failed command's traceback is on stderr, so
+  every failure landed `logs=""` — undiagnosable, and the RLM repair loop got
+  an empty `repair_context`. `_combine_command_output` now joins both streams.
+  (B) the experiment ran the image `detect_environment` built before any code
+  existed (missing `transformers`); `run_experiment` now rebuilds from
+  `ctx.project_dir/Dockerfile` via `build_environment` — content-addressed and
+  Docker-cached, so an unchanged Dockerfile is a near-instant no-op. (C) the
+  experiment sandbox ran `network_disabled`, blocking HuggingFace/PyPI
+  downloads; `_execute_in_sandbox` now enables network for the experiment
+  container (the paper corpus is never mounted there). See `learn.md`
+  2026-05-22; guard `tests/rlm/test_run_experiment_env.py`.
+- **`plan_reproduction` no longer fail-softs on list-valued plan fields.**
+  `ReproductionContract`'s plan fields accept `str | list[str]` — the root LLM
+  routinely returns lists, which previously dropped the whole contract to
+  near-empty defaults.
+- **`repl_snapshot` no longer clobbers `repl_state.pickle` on a no-code
+  iteration.** A pure-reasoning RLM iteration (no code blocks) now preserves the
+  prior REPL pickle instead of overwriting it empty.
 - **RLM `implement_baseline` survives the Claude OAuth quota; serves API + dev
   modes (merge).** The RLM sub-agent runtime (`_resolve_agent_runtime`) now
   resolves to Claude with SDK-resolved auth — `ANTHROPIC_API_KEY` in production,

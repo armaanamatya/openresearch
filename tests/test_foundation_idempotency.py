@@ -90,14 +90,20 @@ def test_lookup_treats_expired_rows_as_missing(db):
 def test_record_replaces_expired_row(db):
     """An expired row is treated as missing by lookup(). A new record
     on the same (agg, cmd) replaces it cleanly."""
-    table = IdempotencyTable(db, default_retention=timedelta(milliseconds=10))
     agg = AggregateId("agg_1")
     cmd = CommandId("cmd_1")
-    table.record(agg, cmd, (EventId("evt_old"),))
+    # Old row: a tiny retention so it is expired by the time it is replaced
+    # (record() raises DuplicateCommandError on a still-live divergent row).
+    old_table = IdempotencyTable(db, default_retention=timedelta(milliseconds=10))
+    old_table.record(agg, cmd, (EventId("evt_old"),))
     db.connection.commit()
 
     time.sleep(0.05)
-    # Expired — record() replaces.
+    # New row: a normal retention. The replacement must NOT inherit the 10 ms
+    # retention above — under parallel load the commit + lookup below can take
+    # longer than 10 ms, expiring the freshly-written row before the assertion
+    # reads it back (a flaky-test race).
+    table = IdempotencyTable(db, default_retention=timedelta(minutes=5))
     table.record(agg, cmd, (EventId("evt_new"),))
     db.connection.commit()
     assert table.lookup(agg, cmd) == (EventId("evt_new"),)

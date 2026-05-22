@@ -309,6 +309,23 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         "meets_target": False,
     }
 
+    # Reconcile the self-reported verdict against the authoritative leaf score.
+    # Symptom: the `ftrl` run wrote verdict="reproduced" at overall_score=0.0.
+    # This must happen BEFORE the atomic write and before _rerender_report_markdown
+    # so the markdown re-render picks up the corrected verdict automatically.
+    if "verdict" in report:
+        try:
+            from backend.agents.rlm.report import reconcile_verdict_with_score  # lazy import
+            report["verdict"] = reconcile_verdict_with_score(
+                report["verdict"], score["overall_score"]
+            )
+        except Exception as exc:  # noqa: BLE001 — reconciliation is best-effort
+            logger.warning(
+                "amend_final_report: verdict reconciliation failed (%s) — "
+                "verdict may be inconsistent with rubric score",
+                exc,
+            )
+
     tmp_fd, tmp_path = tempfile.mkstemp(dir=run_dir, prefix=".final_report_", suffix=".json")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:

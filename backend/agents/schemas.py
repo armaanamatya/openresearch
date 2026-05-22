@@ -159,12 +159,16 @@ class EnvironmentSpec(BaseModel):
 class ReproductionContract(BaseModel):
     """Defines what counts as reproduction for this paper."""
     model_config = {"extra": "ignore"}
-    reproduction_definition: str = ""
-    smoke_test_plan: str = ""
-    full_run_plan: str = ""
+    # str | list[str]: an LLM naturally returns plan/definition fields as a list
+    # of steps. Accepting either avoids `plan_reproduction` fail-softing to an
+    # empty contract on every such paper (observed run-1 `evaluation_plan`
+    # Pydantic error). Mirrors `compatibility_notes` above.
+    reproduction_definition: str | list[str] = ""
+    smoke_test_plan: str | list[str] = ""
+    full_run_plan: str | list[str] = ""
     expected_outputs: list[str] = Field(default_factory=list)
-    dataset_plan: str = ""
-    evaluation_plan: str = ""
+    dataset_plan: str | list[str] = ""
+    evaluation_plan: str | list[str] = ""
     verification_checklist: list[str] = Field(default_factory=list)
 
 

@@ -33,7 +33,12 @@ class OpenAILlmClient:
         # Bound every request: the OpenAI SDK default is 600 s, so one hung
         # primitive call stalls the whole run for ten minutes. 300 s matches
         # rlm's own client default and still clears any real response.
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        # max_retries=6: the SDK natively retries 429s with exponential
+        # backoff and honours the Retry-After header, handling Featherless
+        # concurrency caps without any hand-rolled retry logic.
+        self._client = OpenAI(
+            api_key=api_key, base_url=base_url, timeout=timeout, max_retries=6
+        )
         self._model = model
         self._max_tokens = max_tokens
 

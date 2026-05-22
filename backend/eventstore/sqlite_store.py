@@ -402,6 +402,47 @@ class SqliteEventStore(EventStore):
             from_position=from_position,
         )
 
+    # --- Purge ----------------------------------------------------------------
+
+    def purge_project_aggregates(self, project_id: str) -> int:
+        """Delete all events for a project in a single transaction.
+
+        Covers the five aggregate ids the pipeline writes:
+          - ``project_id``                 — the intake/root aggregate
+          - ``project_id + ":<suffix>"``   — parsed, index, discovery, …
+          - ``"rlm-run:" + project_id``    — the RLM iteration checkpointer
+
+        Returns the number of rows deleted across all tables that key on
+        ``aggregate_id``.  Callers should also ``shutil.rmtree`` the run
+        directory so the two stores are purged atomically from the user's
+        perspective.
+        """
+        conn = self._conn()
+        try:
+            conn.execute("BEGIN")
+            cur = conn.execute(
+                """
+                DELETE FROM event_store_events
+                WHERE aggregate_id = ?
+                   OR aggregate_id LIKE ? ESCAPE '\\'
+                   OR aggregate_id = ?
+                """,
+                (
+                    project_id,
+                    project_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%",
+                    "rlm-run:" + project_id,
+                ),
+            )
+            deleted = cur.rowcount
+            conn.execute("COMMIT")
+            return deleted
+        except sqlite3.Error as exc:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise AppendError(f"SQLite error during purge: {exc}") from exc
+
     # --- Internal: row decoding -------------------------------------------
 
     @staticmethod

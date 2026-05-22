@@ -42,6 +42,7 @@ from backend.eventstore.sqlite_store import SqliteEventStore
 
 from backend.agents.rlm.checkpoint import IterationCheckpointer
 from backend.agents.rlm.context import RunContext
+from backend.agents.rlm.repl_snapshot import ReplSnapshotWriter
 from backend.agents.rlm.models import (
     RootModel,
     register_featherless_context_limits,
@@ -530,6 +531,7 @@ async def run_pipeline_rlm(
         agent_model=agent_model,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
+        sandbox_mode=sandbox_mode,
     )
 
     # 5. Primitives — real #59 binding or the stub provider.
@@ -577,10 +579,15 @@ async def run_pipeline_rlm(
         event_store=event_store,
         snapshot_dir=project_dir / "rlm_state",
     )
+    snapshot_writer = ReplSnapshotWriter(
+        project_dir=project_dir,
+        sentinels=corpus_sentinels,
+    )
     rlm_logger = ReproLabRLMLogger(
         emit=emit,
         checkpointer=checkpointer,
         sentinels=corpus_sentinels,
+        snapshot_writer=snapshot_writer,
     )
 
     # Resolve cost cap — passed directly to RLM(max_budget=...) so the library

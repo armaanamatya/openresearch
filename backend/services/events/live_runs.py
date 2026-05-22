@@ -1267,6 +1267,15 @@ def write_status(status, error=None, completed_at=None):
     _tmp.write_text(json.dumps(payload, indent=2))
     _os.replace(_tmp, status_path)
 
+def _is_rlm_report(fr):
+    # RLM-shaped: has "verdict" string and "rubric" dict but NOT the SDK-only
+    # "rubric_overall_score" key (which is a float, not a nested dict).
+    return (
+        isinstance(fr.get("verdict"), str)
+        and isinstance(fr.get("rubric"), dict)
+        and "rubric_overall_score" not in fr
+    )
+
 def finalize_benchmark():
     # Replace the staged benchmark placeholder with the measured values from the
     # pipeline's computed final_report.json (rubric, statistics, paper deltas).
@@ -1287,33 +1296,64 @@ def finalize_benchmark():
             (output_dir / "final_report.json").write_text(report_json.read_text())
             if report_md.exists():
                 (output_dir / "final_report.md").write_text(report_md.read_text())
+            # Also bridge dashboard events written by the RLM run so streaming
+            # consumers see them from the demo run dir.
+            src_dash = report_dir / "dashboard_events.jsonl"
+            if src_dash.exists():
+                import shutil as _shutil
+                _shutil.copy2(src_dash, output_dir / "dashboard_events.jsonl")
         existing = json.loads(status_path.read_text()) if status_path.exists() else {{}}
         bench = dict(existing.get("benchmark") or {{}})
-        rv = fr.get("rubric_verification") or {{}}
-        base_rv = fr.get("baseline_rubric_verification") or {{}}
-        bench.update({{
-            "overallScore": round((fr.get("rubric_overall_score") or 0.0) * 100, 1),
-            "targetMetric": fr.get("primary_metric") or bench.get("targetMetric"),
-            "targetValue": fr.get("paper_primary_target"),
-            "reproducedValue": fr.get("reproduction_primary_value"),
-            "deltaValue": fr.get("reproduction_delta_vs_paper"),
-            "verdict": fr.get("reproduction_status") or bench.get("verdict"),
-            "reproductionScore": fr.get("reproduction_score"),
-            "rubricOverallScore": fr.get("rubric_overall_score"),
-            "bestPathId": fr.get("best_path_id"),
-            "bestImprovementPct": fr.get("best_overall_improvement_pct"),
-            "reportPath": str((output_dir / "final_report.md").resolve()),
-            "comparisonPath": str((output_dir / "final_report.json").resolve()),
-            "source": "computed_final_report",
-            "paperbenchBaseline": fr.get("paperbench_baseline"),
-            "ourRubricScore": rv.get("overall_score"),
-            "verificationDelta": fr.get("verification_delta"),
-            "improvementIterations": fr.get("improvement_iterations") or 0,
-            "meetsTarget": rv.get("meets_target"),
-            "comparisonSummary": fr.get("comparison_summary") or "",
-            "rubricAreas": rv.get("areas") or [],
-            "baselineRubricAreas": base_rv.get("areas") or [],
-        }})
+        if _is_rlm_report(fr):
+            # RLM-shaped report: fields are verdict, rubric.overall_score,
+            # baseline_metrics, reproduction_summary, cost, iterations.
+            rubric = fr.get("rubric") or {{}}
+            overall_score = rubric.get("overall_score") or 0.0
+            baseline = fr.get("baseline_metrics") or {{}}
+            # Derive a single representative metric value if any metrics exist.
+            first_metric_key = next(iter(baseline), None)
+            first_metric_val = baseline.get(first_metric_key) if first_metric_key else None
+            bench.update({{
+                "overallScore": round(overall_score * 100, 1),
+                "verdict": fr.get("verdict") or bench.get("verdict"),
+                "targetMetric": first_metric_key or bench.get("targetMetric"),
+                "reproducedValue": first_metric_val,
+                "reportPath": str((output_dir / "final_report.md").resolve()),
+                "comparisonPath": str((output_dir / "final_report.json").resolve()),
+                "source": "computed_final_report_rlm",
+                "ourRubricScore": overall_score,
+                "meetsTarget": rubric.get("meets_target"),
+                "rubricAreas": rubric.get("areas") or [],
+                "improvementIterations": fr.get("iterations") or 0,
+                "comparisonSummary": fr.get("reproduction_summary") or "",
+            }})
+        else:
+            # SDK-shaped report: original field mapping.
+            rv = fr.get("rubric_verification") or {{}}
+            base_rv = fr.get("baseline_rubric_verification") or {{}}
+            bench.update({{
+                "overallScore": round((fr.get("rubric_overall_score") or 0.0) * 100, 1),
+                "targetMetric": fr.get("primary_metric") or bench.get("targetMetric"),
+                "targetValue": fr.get("paper_primary_target"),
+                "reproducedValue": fr.get("reproduction_primary_value"),
+                "deltaValue": fr.get("reproduction_delta_vs_paper"),
+                "verdict": fr.get("reproduction_status") or bench.get("verdict"),
+                "reproductionScore": fr.get("reproduction_score"),
+                "rubricOverallScore": fr.get("rubric_overall_score"),
+                "bestPathId": fr.get("best_path_id"),
+                "bestImprovementPct": fr.get("best_overall_improvement_pct"),
+                "reportPath": str((output_dir / "final_report.md").resolve()),
+                "comparisonPath": str((output_dir / "final_report.json").resolve()),
+                "source": "computed_final_report",
+                "paperbenchBaseline": fr.get("paperbench_baseline"),
+                "ourRubricScore": rv.get("overall_score"),
+                "verificationDelta": fr.get("verification_delta"),
+                "improvementIterations": fr.get("improvement_iterations") or 0,
+                "meetsTarget": rv.get("meets_target"),
+                "comparisonSummary": fr.get("comparison_summary") or "",
+                "rubricAreas": rv.get("areas") or [],
+                "baselineRubricAreas": base_rv.get("areas") or [],
+            }})
         existing["benchmark"] = bench
         # A4-1: atomic write — same guard as write_status above.
         import os as _os

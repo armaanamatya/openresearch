@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from typing import Protocol
 
@@ -107,6 +108,8 @@ def generate_rubric_tree(
         except Exception as exc:
             last_error = f"LLM exception on attempt {attempt}: {exc}"
             logger.warning("generate_rubric_tree: %s", last_error)
+            if attempt < max_attempts:
+                time.sleep(min(2 ** attempt, 30))
             continue
 
         parsed = _extract_json_object(raw)

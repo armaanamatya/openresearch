@@ -43,6 +43,7 @@ class RunContext:
     workspace_service: Any = None
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py
+    sandbox_mode: Any = None  # SandboxMode — threaded from --sandbox CLI flag (I7)
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

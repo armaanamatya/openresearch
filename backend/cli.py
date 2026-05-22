@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ from backend.services.ingestion.intake import (
     PdfPath,
     RegisterProject,
 )
+from backend.services.ingestion.intake.service import project_id_for
 from backend.services.ingestion.intake.fetchers.arxiv import ArxivFetcher
 from backend.services.ingestion.intake.fetchers.doi import DoiFetcher
 from backend.services.ingestion.intake.fetchers.pdf_path import PdfPathFetcher
@@ -517,6 +519,19 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
 
     source = _source_from_cli(args.source, args.source_kind)
+
+    # --fresh: purge the prior run before registering so the first append
+    # does not hit a ConcurrencyError on the existing aggregate.
+    if getattr(args, "fresh", False):
+        fresh_pid = project_id_for(source)
+        run_dir = runs_root / fresh_pid
+        shutil.rmtree(run_dir, ignore_errors=True)
+        purged = store.purge_project_aggregates(fresh_pid)
+        print(
+            f"[--fresh] Purged runs/{fresh_pid}/ and {purged} event-store rows.",
+            file=sys.stderr,
+        )
+
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
     project_id = intake.register_project(RegisterProject(source=source))
     print(f"             project_id={project_id}", file=sys.stderr)
@@ -891,6 +906,16 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Comma-separated blocked URLs/terms, or a path to a newline-delimited "
             "PaperBench blacklist file."
+        ),
+    )
+    reproduce.add_argument(
+        "--fresh",
+        action="store_true",
+        default=False,
+        help=(
+            "Purge any prior run of the same paper before starting. "
+            "Deletes runs/<project_id>/ and all event-store rows for the project "
+            "so the re-run starts with a clean slate."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)

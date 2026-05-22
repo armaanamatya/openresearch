@@ -10,7 +10,7 @@ def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_pat
     code_dir.mkdir()
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
         assert env_id == "reprolab/test:env-check"
         assert commands == ["python train.py"]
         assert project_id  # run_experiment threads ctx.project_id through
@@ -50,7 +50,7 @@ def test_run_experiment_persists_result_to_disk(make_context, tmp_path, monkeypa
     code_dir.mkdir()
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
         return {"metrics": {}, "success": False, "logs": "boom: traceback here"}
 
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)

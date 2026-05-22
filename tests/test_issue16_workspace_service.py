@@ -345,6 +345,30 @@ def test_workspace_preloads_paper_text(workspace_service, indexed_project):
     assert len(paper_text.citations) >= 1
 
 
+def test_paper_text_equals_parser_full_text(
+    workspace_service, indexed_project, tmp_path
+):
+    """I4: the workspace `paper_text` variable equals the parser's full_text
+    blob, not a lossy chunk-reassembly of the indexed sections."""
+    wsid = workspace_service.build_workspace(
+        BuildWorkspace(project_id=indexed_project)
+    )
+    view = workspace_service.materialize_view(wsid)
+    paper_text = view.get("paper_text")
+
+    blob = tmp_path / "runs" / indexed_project / "parsed_full_text.txt"
+    assert blob.is_file(), "parser must have written parsed_full_text.txt"
+    assert paper_text.value["text"] == blob.read_text(encoding="utf-8")
+
+
+def test_load_parser_full_text_returns_none_without_parsing_event(
+    workspace_service,
+):
+    """No ParsingCompleted event for the project → None, so build_workspace
+    falls back to chunk-reassembly rather than raising."""
+    assert workspace_service._load_parser_full_text("no_such_project") is None
+
+
 def test_workspace_preloads_paper_sections(workspace_service, indexed_project):
     wsid = workspace_service.build_workspace(
         BuildWorkspace(project_id=indexed_project)

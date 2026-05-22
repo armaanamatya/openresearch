@@ -84,6 +84,22 @@ _HONEST_DEFAULTS: dict[str, Any] = {
 
 _VALID_VERDICTS = frozenset({"reproduced", "partial", "failed"})
 
+# ---------------------------------------------------------------------------
+# Rubric-evidence score thresholds for verdict reconciliation
+#
+# PaperBench scores run low in practice: partial credit on a handful of leaves
+# can clear 0.15 even without a real reproduction, but a "reproduced" claim
+# requires the majority of rubric criteria to be satisfied.  The ceilings below
+# are deliberately conservative so that a zero-score run (e.g. the `ftrl` run:
+# verdict "reproduced" at leaf score 0.000) is downgraded to "failed" rather
+# than silently mislabelled as a success.
+# ---------------------------------------------------------------------------
+_VERDICT_REPRODUCED_MIN_SCORE: float = 0.60  # need most rubric leaves satisfied
+_VERDICT_PARTIAL_MIN_SCORE: float = 0.15     # at least some rubric leaves graded
+
+# Numeric rank so we can compare verdicts (higher = stronger claim)
+_VERDICT_RANK: dict[str, int] = {"failed": 0, "partial": 1, "reproduced": 2}
+
 
 def _parse_response(raw: str) -> dict | None:
     """Try to parse `raw` as JSON, then as Python repr (ast.literal_eval).
@@ -160,6 +176,51 @@ def _cost_dict(result: RLMChatCompletion, ctx: RunContext) -> dict:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def reconcile_verdict_with_score(verdict: str, overall_score: float) -> str:
+    """Cap a self-reported verdict at what the authoritative rubric score supports.
+
+    Symptom this guards against: the `ftrl` run self-reported verdict
+    "reproduced" while its post-run leaf score was 0.000 — an impossible
+    combination that makes the benchmark leaderboard dishonest.
+
+    Evidence ceiling derived from ``overall_score``:
+      - >= _VERDICT_REPRODUCED_MIN_SCORE (0.60) → ceiling "reproduced"
+      - >= _VERDICT_PARTIAL_MIN_SCORE    (0.15) → ceiling "partial"
+      - else                                    → ceiling "failed"
+
+    The function NEVER upgrades a verdict — it only downgrades.  If the
+    incoming ``verdict``'s rank exceeds the ceiling's rank, the ceiling is
+    returned; otherwise the original ``verdict`` is returned unchanged.
+
+    An unrecognised ``verdict`` string is treated as rank ``partial``
+    (consistent with ``_reconcile_verdict``, which also downgrades unknowns
+    to ``partial``).
+
+    Args:
+        verdict: The self-reported verdict string from the final report.
+        overall_score: The authoritative post-run rubric leaf score (0.0–1.0).
+
+    Returns:
+        The reconciled verdict string (one of "reproduced", "partial", "failed").
+    """
+    # Determine the evidence ceiling
+    if overall_score >= _VERDICT_REPRODUCED_MIN_SCORE:
+        ceiling = "reproduced"
+    elif overall_score >= _VERDICT_PARTIAL_MIN_SCORE:
+        ceiling = "partial"
+    else:
+        ceiling = "failed"
+
+    # Treat unrecognised verdicts as "partial" (matches _reconcile_verdict logic)
+    verdict_rank = _VERDICT_RANK.get(verdict, _VERDICT_RANK["partial"])
+    ceiling_rank = _VERDICT_RANK[ceiling]
+
+    # Only downgrade — never upgrade
+    if verdict_rank > ceiling_rank:
+        return ceiling
+    return verdict
 
 
 def _authoritative_primitive_trace(ctx: RunContext) -> dict[str, Any]:

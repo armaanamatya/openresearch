@@ -13,14 +13,11 @@ reconstructs full_text exactly with no duplication or loss.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
 from backend.services.ingestion.parser.interface import ParseError, ParseResult
 from backend.services.ingestion.parser.model import (
-    Reference,
     Section,
-    reference_id_for,
     section_id_for,
 )
 
@@ -34,12 +31,6 @@ _DROP_TAGS = {"script", "style", "nav", "header", "footer", "button", "svg", "fi
 
 # Heading tag → depth mapping.
 _HEADING_DEPTH: dict[str, int] = {"h1": 1, "h2": 2, "h3": 3, "h4": 4}
-
-# Reference patterns (reused from pymupdf_parser logic).
-_ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE)
-_DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s,;\)]+)\b")
-_REF_HEADING = re.compile(r"^(References|Bibliography)\s*$", re.IGNORECASE)
-_REF_LABEL_LINE = re.compile(r"^\s*(?:\[[^\]\n]{1,40}\]|\d{1,4}[.)])\s+")
 
 _MIN_TEXT_CHARS = 500
 
@@ -120,12 +111,10 @@ class HtmlPaperParser:
                 retryable=False,
             )
 
-        references = self._extract_references(project_id, full_text)
-
         sorted_sections = sorted(sections, key=lambda s: (s.depth, s.char_offset, s.id))
         return ParseResult(
             sections=tuple(sorted_sections),
-            references=tuple(references),
+            references=(),
             figures=(),
             full_text=full_text,
         )
@@ -260,41 +249,6 @@ class HtmlPaperParser:
             )
 
         return full_text, sections
-
-    @staticmethod
-    def _extract_references(project_id: str, full_text: str) -> list[Reference]:
-        """Best-effort reference extraction mirroring PyMuPdfParser's approach."""
-        lines = full_text.split("\n")
-        ref_start = None
-        for i, raw in enumerate(lines):
-            if _REF_HEADING.match(raw.strip()):
-                ref_start = i + 1
-                break
-        if ref_start is None:
-            return []
-
-        ref_text = "\n".join(lines[ref_start:])
-        refs: list[Reference] = []
-        for block in re.split(r"\n\s*\n", ref_text):
-            block = block.strip()
-            if not block:
-                continue
-            arxiv_match = _ARXIV_RE.search(block)
-            doi_match = _DOI_RE.search(block)
-            if not arxiv_match and not doi_match:
-                continue
-            ref_id = reference_id_for(project_id, block)
-            refs.append(
-                Reference(
-                    id=ref_id,
-                    project_id=project_id,
-                    raw_text=block,
-                    arxiv_id=arxiv_match.group(1) if arxiv_match else None,
-                    doi=doi_match.group(1) if doi_match else None,
-                    title=None,
-                )
-            )
-        return refs
 
 
 __all__ = ["HtmlPaperParser"]

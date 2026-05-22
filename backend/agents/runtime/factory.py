@@ -44,8 +44,12 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             or getattr(settings, "anthropic_api_key", "")
         )
         # claude-agent-sdk spawns the `claude` CLI as a subprocess and inherits
-        # its subscription login — no API key needed when the CLI is on PATH.
-        has_claude_cli = shutil.which("claude") is not None
+        # its OAuth session. The CLI binary on PATH alone is NOT proof of a valid
+        # session — we also require the credentials file that `claude login`
+        # writes (~/.claude/.credentials.json on Linux/macOS).
+        _claude_bin = shutil.which("claude")
+        _creds_file = os.path.expanduser("~/.claude/.credentials.json")
+        has_claude_cli = _claude_bin is not None and os.path.isfile(_creds_file)
         if not (has_api_key or has_claude_cli):
             raise ProviderConfigurationError(
                 provider=resolved,
@@ -90,9 +94,13 @@ def has_provider_credentials(provider: ProviderName | str | None = None) -> bool
     if resolved == "anthropic":
         if os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "anthropic_api_key", ""):
             return True
-        # claude-agent-sdk inherits a subscription login from the `claude`
-        # CLI subprocess, so its presence on PATH counts as credentials.
-        return shutil.which("claude") is not None
+        # claude-agent-sdk inherits a subscription login from the `claude` CLI
+        # subprocess. The binary on PATH alone is NOT proof of a valid session —
+        # `claude login` writes an OAuth credentials file at
+        # ~/.claude/.credentials.json (Linux/macOS). Both must be present.
+        _claude_bin = shutil.which("claude")
+        _creds_file = os.path.expanduser("~/.claude/.credentials.json")
+        return _claude_bin is not None and os.path.isfile(_creds_file)
     if resolved == "openai":
         return bool(
             os.getenv("OPENAI_API_KEY")

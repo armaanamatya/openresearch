@@ -88,6 +88,12 @@ def _clamp01(val: object) -> float:
 # window before the logs leave run_experiment.
 _MAX_LOG_CHARS = 16000
 
+# Contract: the experiment writes its measured numeric results as a flat JSON
+# object (metric name → number) to this file in the code root (or in an
+# "outputs/" sub-directory). `_execute_in_sandbox` reads it back so
+# run_experiment can return real metrics instead of an empty dict.
+METRICS_FILENAME = "metrics.json"
+
 # Per-command wall-clock cap for run_experiment's sandbox execution. Container
 # resource bounds (network/memory/cpu) already come from SandboxConfig
 # defaults; this is the time bound. Phase 3 (#60) should source it from
@@ -260,7 +266,9 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             context_dir = Path(tmp)
             dockerfile_path = context_dir / "Dockerfile"
             # A2-C3: single executor for all repair iterations.
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            # I12: explicit shutdown(wait=False) so a wedged build cannot block cleanup.
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 while not ok and attempts < max_attempts:
                     remaining = deadline_abs - time.monotonic()
                     if remaining <= 0:
@@ -299,6 +307,8 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
                                 f"after {llm_timeout:.0f} s (attempt {attempts})"
                             )
                             break
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
     except SandboxRuntimeError:
         raise  # infrastructure failure — not a Dockerfile problem; propagate
     except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
@@ -397,7 +407,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             repair_context=repair_context)
 
     timeout = _timeout_for(ctx, 3600)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         try:
             result = pool.submit(asyncio.run, _run()).result(timeout=timeout)
         except concurrent.futures.TimeoutError:
@@ -407,6 +419,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                     f"implement_baseline: timed out after {timeout:.0f} s"
                 ),
             }
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     # run_with_sdk writes the generated code to runs_root/project_id/code;
     # derive commands.json's directory the same way (not ctx.project_dir/code)
@@ -419,6 +433,60 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     return str(code_dir)
 
 
+def _backend_for_sandbox_mode(sandbox_mode: object):
+    """Return a RuntimeBackend instance for the given sandbox mode.
+
+    Only ``SandboxMode.docker`` (and ``None`` / the default) are supported in
+    the RLM path — RLM experiments run inside Docker containers.  Any other
+    mode falls back to ``LocalDockerBackend`` with a WARNING rather than
+    crashing, so existing docker runs are behaviour-identical and an unsupported
+    mode still produces a useful (if not precisely targeted) result.
+    """
+    from backend.agents.execution import SandboxMode
+    from backend.services.runtime.local_docker import LocalDockerBackend
+
+    if sandbox_mode is None:
+        return LocalDockerBackend()
+    try:
+        mode = SandboxMode(sandbox_mode)
+    except ValueError:
+        logger.warning(
+            "_execute_in_sandbox: unknown sandbox_mode %r — falling back to LocalDockerBackend",
+            sandbox_mode,
+        )
+        return LocalDockerBackend()
+
+    if mode is SandboxMode.docker:
+        return LocalDockerBackend()
+
+    # All other modes (runpod, brev, local, auto, simulate) are not yet wired
+    # for the RLM path.  Fall back with a loud WARNING so the operator knows.
+    logger.warning(
+        "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
+        "path — falling back to LocalDockerBackend.  "
+        "RLM experiments are docker-centric; plumb the backend here when needed.",
+        mode.value,
+    )
+    return LocalDockerBackend()
+
+
+def _combine_command_output(results: list) -> str:
+    """Join sandbox command results into one log — stdout AND stderr, in order.
+
+    A failed command writes its diagnostics (tracebacks, missing-module errors)
+    to stderr. Building the log from stdout alone left every run_experiment
+    failure with logs="" — undiagnosable on disk, and useless as the
+    repair_context the code agent needs to fix the baseline.
+    """
+    parts: list[str] = []
+    for r in results:
+        if r.stdout:
+            parts.append(r.stdout)
+        if r.stderr:
+            parts.append(r.stderr)
+    return "\n".join(parts)
+
+
 async def _execute_in_sandbox(
     code_path: str,
     env_id: str,
@@ -426,6 +494,7 @@ async def _execute_in_sandbox(
     *,
     project_id: str,
     run_id: str,
+    sandbox_mode: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -437,17 +506,20 @@ async def _execute_in_sandbox(
     Hardening (A2-C1): `asyncio.shield` on destroy so the container is cleaned
     up even when the outer thread's `.result(timeout=...)` fires and the
     coroutine is cancelled.
+
+    I7: `sandbox_mode` selects the runtime backend; ``None`` / ``docker`` map to
+    ``LocalDockerBackend`` (behaviour-identical to the previous hardcoded path).
+    Any unsupported mode falls back to ``LocalDockerBackend`` with a WARNING.
     """
     import asyncio
     from pathlib import Path
 
     from backend.services.runtime.interface import SandboxConfig
-    from backend.services.runtime.local_docker import LocalDockerBackend
     from backend.services.runtime.service import (
         CreateSandbox, DestroySandbox, ExecuteCommand, RuntimeAppService,
     )
 
-    service = RuntimeAppService(LocalDockerBackend())
+    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -455,6 +527,12 @@ async def _execute_in_sandbox(
         project_root=Path(code_path),
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
+        # Bug C: paper reproduction must fetch pretrained weights and datasets
+        # (HuggingFace, PyPI, torch hub) — network_disabled defaults to True and
+        # blocked every model-download paper. The paper corpus is never mounted
+        # into this container (only agent-written code is), so this is not a
+        # corpus-leak vector. Scoped here; the global default stays disabled.
+        network_disabled=False,
     )
     sandbox = await service.create_sandbox(CreateSandbox(config=config))
     results = []
@@ -467,10 +545,44 @@ async def _execute_in_sandbox(
         # asyncio.shield: destroy completes even if the surrounding
         # wait_for / thread-pool timeout cancels this coroutine (A2-C1).
         await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
+
+    # Read metrics from the host filesystem (the mount is rw; the experiment
+    # writes METRICS_FILENAME to the code root or outputs/ sub-dir).
+    import json as _json
+    metrics: dict = {}
+    for candidate in (
+        Path(code_path) / METRICS_FILENAME,
+        Path(code_path) / "outputs" / METRICS_FILENAME,
+    ):
+        if not candidate.exists():
+            continue
+        # File exists — try to parse it. Whether it succeeds or fails, stop
+        # here (don't fall through to the next candidate for a file that exists
+        # but is malformed — that would silently use stale data from outputs/).
+        try:
+            data = _json.loads(candidate.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                metrics = data
+            else:
+                logger.warning(
+                    "_execute_in_sandbox: %s is valid JSON but not a dict (%s) — "
+                    "falling back to {}",
+                    candidate,
+                    type(data).__name__,
+                )
+        except Exception as exc:  # noqa: BLE001 — fail-soft: malformed file
+            logger.warning(
+                "_execute_in_sandbox: could not parse %s as JSON (%s) — "
+                "falling back to {}",
+                candidate,
+                exc,
+            )
+        break  # stop at the first existing candidate regardless of parse result
+
     return {
         "success": all(r.succeeded for r in results),
-        "metrics": {},  # real metric extraction from artifacts is Phase 5 (#62)
-        "logs": _cap_logs("\n".join(r.stdout for r in results)),
+        "metrics": metrics,
+        "logs": _cap_logs(_combine_command_output(results)),
     }
 
 
@@ -506,8 +618,13 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
 
     Commands are read from `code_path/commands.json` (written by
-    `implement_baseline`). `env_id` is a Docker image tag (design decisions
-    D1/D2). Async sandbox work is bridged to sync via a worker thread.
+    `implement_baseline`). Before executing, the image is rebuilt from
+    `ctx.project_dir/Dockerfile` — the code agent keeps that file in step with
+    the baseline's actual imports, while `detect_environment` (which runs before
+    any code exists) routinely under-specifies dependencies. The rebuild is
+    content-addressed and Docker-cached, so an unchanged Dockerfile is a no-op;
+    `env_id` is the fallback used only when no Dockerfile is on disk.
+    Async sandbox work is bridged to sync via a worker thread.
 
     Hardening (WS-H Batch P):
     - A2-H2: guard empty `env_id` → fail-soft error dict.
@@ -522,14 +639,6 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     import uuid
     from pathlib import Path
 
-    # A2-H2: guard empty env_id before attempting any Docker work.
-    if not env_id or not str(env_id).strip():
-        return _persist_experiment_result(ctx, {
-            "success": False,
-            "metrics": {},
-            "error": "env_id empty — build_environment must succeed first",
-        })
-
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
     if not commands:
@@ -537,15 +646,50 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "success": False, "metrics": {},
             "error": f"no commands.json at {manifest}"})
 
+    # Bug B: the experiment must run against an image matching its own code.
+    # detect_environment builds the env spec before any code exists, so it
+    # routinely under-specifies dependencies (it missed transformers/datasets
+    # for the DPO-toxicity paper). The code agent writes the baseline AND keeps
+    # ctx.project_dir/Dockerfile in step with the code's real imports — rebuild
+    # from THAT Dockerfile. build_environment is content-addressed and
+    # Docker-cached, so an unchanged Dockerfile is a near-instant no-op.
+    dockerfile_path = ctx.project_dir / "Dockerfile"
+    if dockerfile_path.exists():
+        build = build_environment(
+            {"dockerfile": dockerfile_path.read_text(encoding="utf-8")}, ctx=ctx)
+        if not build.get("ok"):
+            return _persist_experiment_result(ctx, {
+                "success": False, "metrics": {},
+                "error": (
+                    f"run_experiment: environment rebuild from {dockerfile_path} "
+                    f"failed: {build.get('error')}"
+                ),
+            })
+        env_id = build["image_tag"]
+
+    # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
+    # to rebuild from) before attempting any Docker work.
+    if not env_id or not str(env_id).strip():
+        return _persist_experiment_result(ctx, {
+            "success": False,
+            "metrics": {},
+            "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
+        })
+
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     # A2-C1: bound the entire command loop (not just each individual command).
     timeout = _timeout_for(ctx, 7200)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         try:
             result = pool.submit(
                 asyncio.run,
-                _execute_in_sandbox(code_path, env_id, commands,
-                                    project_id=ctx.project_id, run_id=run_id),
+                _execute_in_sandbox(
+                    code_path, env_id, commands,
+                    project_id=ctx.project_id, run_id=run_id,
+                    sandbox_mode=ctx.sandbox_mode,
+                ),
             ).result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             result = {
@@ -553,80 +697,71 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                 "metrics": {},
                 "error": f"run_experiment: timed out after {timeout:.0f} s",
             }
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return _persist_experiment_result(ctx, result)
 
 
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
-    """Score `results` against `rubric` via the rubric-verifier prompt.
+    """Score the run against `rubric` using the authoritative PaperBench leaf scorer.
 
-    The LLM scores areas only; weights come verbatim from `rubric`. The honesty
-    backstop is enforced mechanically: every area score is capped at 0.35 when
-    the run did not succeed OR produced no metrics — matching
-    `orchestrator._run_rubric_verifier` (which caps on `success`) and extending
-    it to the metric-less case (`run_experiment` returns `metrics={}` in
-    Phase 2 — see Task 9). `overall_score` / `meets_target` are computed by
-    `RubricVerification.from_areas`, never trusted from the model.
+    Evidence is gathered from the run directory by `score_reproduction`, so the
+    in-loop score matches the post-run leaf score exactly. `results` is kept in
+    the signature for registry/root call convention compatibility; the leaf scorer
+    gathers its own evidence from `ctx.project_dir`.
 
-    Hardening (WS-H Batch P):
-    - A2-H3: `_extract_json` / schema failures return a fail-soft error dict.
-    - A2-H4: rubric `weight` and `target_score` coerced via `_clamp01` (handles
-      non-numeric LLM output gracefully, consistent with area-score handling).
+    Returns:
+        overall_score (float), meets_target (bool), target_score (float),
+        leaf_count (int), graded (int), rubric_source (str),
+        weak_leaves (list of up to 8 lowest-scoring leaf dicts), leaf_scores (list).
+
+    Fail-soft (A2-H3 / D3 pattern): any exception returns an error dict.
     """
-    import json
+    if not rubric or not isinstance(rubric, dict):
+        return {
+            "success": False,
+            "error": "verify_against_rubric: rubric must be a non-empty dict",
+        }
 
-    from backend.agents.prompts.rubric_verifier import RUBRIC_VERIFIER_PROMPT
-    from backend.agents.schemas import RubricAreaScore, RubricVerification
-
-    user = (
-        "results:\n" + json.dumps(results, indent=2, default=str)
-        + "\n\nrubric:\n" + json.dumps(rubric, indent=2, default=str)
-        + "\n\nScore each rubric area in [0,1]. Return a JSON object: "
-          '{"areas": [{"area": str, "score": float, "justification": str, '
-          '"weak_points": [str]}], "confidence": float}.'
-    )
     try:
-        raw = ctx.llm_client.complete(system=RUBRIC_VERIFIER_PROMPT, user=user)
-        parsed = _extract_json(raw)
-    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
-        return {"success": False,
-                "error": f"verify_against_rubric: {type(exc).__name__}: {exc}"}
+        from backend.evals.paperbench.leaf_scorer import score_reproduction
 
-    # A2-H4: use _clamp01 so non-numeric weight values degrade to 0.0 rather
-    # than raising TypeError/ValueError from a bare float() call.
-    weights = {
-        a.get("area", ""): _clamp01(a.get("weight", 0.0))
-        for a in rubric.get("areas", [])
-    }
-    degraded = (not results.get("success")) or (not results.get("metrics"))
-    areas: list[RubricAreaScore] = []
-    parsed_areas = parsed.get("areas", [])
-    if not isinstance(parsed_areas, list):
-        parsed_areas = []  # tolerate a malformed LLM payload
-    for a in parsed_areas:
-        if not isinstance(a, dict):
-            continue  # skip a malformed area entry (cf. propose_improvements)
-        name = str(a.get("area", ""))
-        score = _clamp01(a.get("score"))
-        if degraded:
-            score = min(score, 0.35)  # honesty backstop
-        areas.append(RubricAreaScore(
-            area=name,
-            weight=weights.get(name, 0.0),
-            score=score,
-            justification=str(a.get("justification", "")),
-            weak_points=[str(w) for w in (a.get("weak_points") or [])],
-        ))
-    try:
-        verification = RubricVerification.from_areas(
-            areas,
-            rubric_source=rubric.get("source", "generated"),
-            target_score=_clamp01(rubric.get("target_score", 0.0)),  # A2-H4
-            confidence=_clamp01(parsed.get("confidence")),
+        scored = score_reproduction(
+            rubric_tree=rubric,
+            run_dir=ctx.project_dir,
+            llm_client=ctx.llm_client,
+            rubric_source=str(rubric.get("source") or "paperbench_bundle"),
         )
-    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3)
-        return {"success": False,
-                "error": f"verify_against_rubric: schema error: {type(exc).__name__}: {exc}"}
-    return verification.model_dump()
+        overall_score = _clamp01(scored["overall_score"])
+        target = _clamp01(rubric.get("target_score", 0.6))
+        meets_target = overall_score >= target
+
+        leaf_scores = scored.get("leaf_scores", [])
+        # Up to 8 lowest-scoring leaves (conservative grader — 0.0 means no evidence)
+        weak_leaves = sorted(
+            [e for e in leaf_scores if isinstance(e, dict)],
+            key=lambda e: float(e.get("score", 0.0)),
+        )[:8]
+
+        return {
+            "overall_score": overall_score,
+            "meets_target": meets_target,
+            "target_score": target,
+            "leaf_count": scored.get("leaf_count", 0),
+            "graded": scored.get("graded", 0),
+            "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
+            "weak_leaves": [
+                {"id": e.get("id", ""), "score": e.get("score", 0.0),
+                 "justification": e.get("justification", "")}
+                for e in weak_leaves
+            ],
+            "leaf_scores": leaf_scores,
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
+        return {
+            "success": False,
+            "error": f"verify_against_rubric: {type(exc).__name__}: {exc}",
+        }
 
 
 def propose_improvements(current_results: dict, rubric_scores: dict,
@@ -717,7 +852,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "baseline in a container from image `env_id` (build_environment's "
         "image_tag); returns {success, metrics, logs}.",
     "verify_against_rubric": "verify_against_rubric(results, rubric) -> dict — "
-        "score the results against a PaperBench-style rubric.",
+        "score the run against a PaperBench tree rubric using the authoritative "
+        "leaf scorer (flatten→LLM-grade→weighted-rollup). Returns: overall_score "
+        "(float), meets_target (bool), target_score (float), leaf_count (int), "
+        "graded (int), rubric_source (str), weak_leaves (up to 8 lowest-scoring "
+        "leaf dicts), leaf_scores (all leaf scores).",
     "propose_improvements": "propose_improvements(current_results, rubric_scores, "
         "k=None) -> list[dict] — paper-specific improvement hypotheses.",
 }

@@ -454,7 +454,10 @@ async def run_with_sdk(
             f"{code_dir}, but running the experiment FAILED. Diagnose the failure "
             f"from the error below and FIX the existing code in place — read the "
             f"current files, find the bug, and correct it. Do NOT rewrite the "
-            f"project from scratch.\n\n"
+            f"project from scratch. The experiment MUST write its measured numeric "
+            f"results as a flat JSON object (metric name → number) to a file named "
+            f"metrics.json in the code root, because that file is how the "
+            f"reproduction's metrics are read back.\n\n"
             f"Experiment failure:\n```json\n"
             f"{json.dumps(repair_context, indent=2, default=str)}\n```\n\n"
             f"Reproduction context:\n```json\n{json.dumps(context, indent=2)}\n```"
@@ -463,6 +466,9 @@ async def run_with_sdk(
         prompt = (
             f"Implement the baseline for project {project_id}.\n"
             f"Write code to {code_dir}\n"
+            f"The experiment MUST write its measured numeric results as a flat JSON "
+            f"object (metric name → number) to a file named metrics.json in the code "
+            f"root, because that file is how the reproduction's metrics are read back.\n"
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
         )
 

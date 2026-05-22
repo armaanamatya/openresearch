@@ -183,6 +183,36 @@ def _clear_registry_for_tests() -> None:
     _REGISTRY.clear()
 
 
+def _restore_registry_for_tests() -> None:
+    """Test-only helper: re-register every loaded production DomainEvent subclass.
+
+    Paired with `_clear_registry_for_tests()`. A test that clears the global
+    registry (or any test collected after it) would otherwise leave production
+    events such as `rlm_run_iteration` unresolvable — `resolve_event_class`
+    then raises KeyError purely as a function of collection order.
+
+    Walking `DomainEvent.__subclasses__()` is self-maintaining: there is no
+    hardcoded list to fall out of sync as new event classes are added. Only
+    `backend.*`-defined subclasses are restored — test-defined throwaway event
+    classes are deliberately skipped so a later test re-registering its own
+    event does not collide.
+    """
+    def _walk(cls: type[DomainEvent]):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from _walk(sub)
+
+    for cls in _walk(DomainEvent):
+        if not getattr(cls, "event_type", ""):
+            continue
+        if not cls.__module__.startswith("backend."):
+            continue
+        try:
+            register_event(cls)
+        except Exception:  # noqa: BLE001 — already registered: benign in fixture context
+            pass
+
+
 __all__ = [
     "DomainEvent",
     "EventTypeAlreadyRegistered",

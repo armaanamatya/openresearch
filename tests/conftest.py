@@ -90,3 +90,21 @@ def production_events_registered():
     """Force production event modules to (re)register before a test."""
     _re_register_production_events()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_event_registry():
+    """Restore the production event registry after every test.
+
+    Several tests call `_clear_registry_for_tests()` to exercise event
+    registration in isolation. Without this autouse guard the global registry
+    stays cleared, and any later test that resolves a production event — e.g.
+    `tests/rlm/test_checkpoint.py::test_registered_in_registry` resolving
+    `rlm_run_iteration` — fails with KeyError depending purely on pytest
+    collection order. Restoring after every test makes the registry
+    order-independent for the whole suite.
+    """
+    yield
+    from backend.messaging.event import _restore_registry_for_tests
+
+    _restore_registry_for_tests()

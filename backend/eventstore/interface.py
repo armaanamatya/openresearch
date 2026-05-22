@@ -237,6 +237,17 @@ class EventStore(Protocol):
     def get_aggregate_version(self, aggregate_id: AggregateId) -> int:
         """Current version of the aggregate. 0 if no events yet."""
 
+    def purge_project_aggregates(self, project_id: str) -> int:
+        """Delete every event whose aggregate belongs to ``project_id``.
+
+        Removes the root aggregate (``project_id``), all sub-aggregates
+        (``project_id:<suffix>``), and the RLM checkpointer aggregate
+        (``rlm-run:<project_id>``), in a single atomic transaction.
+
+        Returns the number of rows deleted.  Callers should also remove the
+        ``runs/<project_id>/`` directory so both stores are cleared together.
+        """
+
 
 __all__ = [
     "AppendError",
