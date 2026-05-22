@@ -63,9 +63,9 @@ Algorithm 1. We **depend on it** rather than reimplement it — less code, and
 faithful by construction (a reviewer sees `from rlm import RLM`, not our
 re-derivation of the paradigm).
 
-**RLM is the root orchestrator (the radical pivot).** The 14-stage `PipelineStage`
-state machine is retired. The stages become a library of **primitives**; the RLM
-root model decides what to call, and in what order, by writing REPL code.
+**RLM is the root orchestrator.** The previous 14-stage pipeline state machine
+was retired. The stages became a library of **primitives**; the RLM root model
+decides what to call, and in what order, by writing REPL code.
 
 The `rlms` `RLM` class provides, as first-class constructor arguments, almost
 everything the earlier brief planned to hand-build:
@@ -89,9 +89,9 @@ Models: a strong frontier root with a cheaper sub-call model via `other_backends
 Qwen3-Coder** as RLM roots; **Claude as a root is not paper-validated** — if used,
 verify empirically. No fine-tuning; RLM-Qwen3-8B is out of scope.
 
-## 4. What survives
+## 4. What survived the pivot
 
-Wrapped as primitives, or used unchanged — do not rewrite these during the pivot:
+Wrapped as primitives, or used unchanged:
 
 - `PaperExtractor` — produces the paper text loaded into the REPL `context`.
 - Docker + RunPod sandbox runtimes.
@@ -104,15 +104,14 @@ Wrapped as primitives, or used unchanged — do not rewrite these during the piv
 - SQLite event store; `assumption_ledger.json`, `cost_ledger.jsonl`,
   `agent_telemetry.jsonl` — still emitted, now from inside the primitives.
 - The lab UI shell — header, project context, SSE pattern. Only the graph view
-  changes.
-- `backend/services/context/workspace/tools/rlm_query.py` — the existing dormant
+  changed.
+- `backend/services/context/workspace/tools/rlm_query.py` — the dormant
   recursion tool; superseded by the `rlms` library. Keep as reference or retire;
   do not invest further in it.
 
-## 5. What we build
+## 5. What we built
 
-The library is the engine; our code is the domain layer plus glue — and it is
-small:
+The library is the engine; our code is the domain layer plus glue:
 
 - **`backend/agents/rlm/primitives.py`** — the domain primitive functions, each
   wrapping surviving stage-agent core logic, assembled into the `custom_tools`
@@ -122,10 +121,9 @@ small:
   the primitive signatures, `context` metadata, and **in-context decomposition
   examples** (the paper's Figure 4a shows these measurably improve performance —
   even unrelated examples help). It does **not** prescribe a fixed workflow.
-- **`backend/agents/rlm/run.py`** — the new run entry, replacing the
-  `PipelineStage` machine in `backend/agents/orchestrator.py`: builds the
-  `RLM(...)`, wires SSE emission into the `on_*` callbacks, calls `.completion()`,
-  and writes `final_report.{json,md}` from the result.
+- **`backend/agents/rlm/run.py`** — the run entry: builds the `RLM(...)`, wires
+  SSE emission into the `on_*` callbacks, calls `.completion()`, and writes
+  `final_report.{json,md}` from the result.
 - The operational layer the library does not provide: the event-store bridge and
   checkpoint/resume (Section 10).
 
