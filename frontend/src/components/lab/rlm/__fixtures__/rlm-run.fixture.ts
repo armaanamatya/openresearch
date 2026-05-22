@@ -832,9 +832,11 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
     rubric_delta: null,
   },
 
-  // ─── Round 2: branches off promoted c1/c2/c4 (iteration 13) ─────────────
-  // Round 2 promotes NOTHING — all outcomes are running / marginal / declined.
-  // This pins the §5.3 no-promotion fallback in the reducer.
+  // ─── Round 2: branches off the most-recent promoted node (c4) ───────────
+  // Round 2 promotes NOTHING — all outcomes are running / marginal / skipped.
+  // Round-2 candidates still parent via §5.3 branch (a) on c4 (the last promoted
+  // node from round 1). Branch (b) — the previous fan's parent — would only fire
+  // for a hypothetical round 3 where round 2 had produced no promoted node.
 
   {
     event: "primitive_call",
@@ -1000,7 +1002,7 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
     timing: 7.6,
   },
 
-  // Round 2 outcomes — NO promoted (pins the §5.3 no-promotion fallback)
+  // Round 2 outcomes — NO promoted (c7=running, c8=marginal, c9=skipped)
   {
     event: "candidate_outcome",
     timestamp: ts(),
