@@ -414,8 +414,8 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
-    # The RLM orchestrator is the only pipeline; ignore any legacy mode value
-    # (UI subprocesses may still pass mode="sdk" from the frontend).
+    # The RLM orchestrator is the only pipeline; defensively ignore any stale
+    # mode value an external/CLI caller may still pass.
     args.mode = "rlm"
     # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
     # module gets a chance to emit. This is the *subprocess* hot path
@@ -540,7 +540,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        from backend.agents.pipeline import run_pipeline_rlm
+        from backend.agents.rlm.run import run_pipeline_rlm
 
         rlm_result = asyncio.run(run_pipeline_rlm(
             project_id, runs_root, workspace_claim_map,
@@ -599,8 +599,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     }
     # A4-6: a budget-exhausted (or otherwise failed) rlm run must exit
     # non-zero. run_pipeline_rlm never raises on budget breach — it
-    # returns status="failed" (set by Batch O). Return 3 to match the
-    # BudgetExhausted exit code used by the sdk path above.
+    # returns status="failed" (set by Batch O). Exit code 3 signals
+    # budget exhaustion to callers (same as BudgetExhausted exceptions).
     if rlm_result.status == "failed":
         json.dump(result, sys.stdout, indent=2)
         sys.stdout.write("\n")

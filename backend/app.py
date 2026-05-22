@@ -187,7 +187,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if not safe_stem.lower().endswith(".pdf"):
             safe_stem = f"{safe_stem}.pdf"
         run_request = StartRunRequest(
-            mode=request.mode or "offline",
+            mode=request.mode or "rlm",
             provider=request.provider or "anthropic",
             verificationProvider=request.verificationProvider,
             executionMode=request.executionMode or "efficient",
@@ -221,7 +221,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Upload a PDF before starting a lab run.")
         run_request = StartRunRequest(
-            mode=_form_value(form, "mode", "offline"),
+            mode=_form_value(form, "mode", "rlm"),
             provider=_form_value(form, "provider", "anthropic"),
             verificationProvider=_optional_form_value(form, "verificationProvider"),
             executionMode=_form_value(form, "executionMode", "efficient"),
@@ -510,7 +510,7 @@ class StartArxivRunRequest(BaseModel):
 
     All run-config fields are optional so the client only has to send the URL.
     Defaults are resolved server-side to mirror what the multipart upload path
-    provides (mode=offline, provider=anthropic, sandbox=<settings default>, …).
+    provides (mode=rlm, provider=anthropic, sandbox=<settings default>, …).
     """
 
     url: str = ""

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk", "rlm"]
+RunMode = Literal["rlm"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -220,7 +220,7 @@ class FileLiveRunService:
         if status is None:
             return None
         merged = {
-            "mode": status.get("runMode", "offline"),
+            "mode": status.get("runMode", "rlm"),
             "provider": status.get("llmProvider", "anthropic"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode", "efficient"),
@@ -448,7 +448,7 @@ class FileLiveRunService:
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,
-                    **({"REPROLAB_LLM_PROVIDER": request.provider} if request.mode in ("sdk", "rlm") else {}),
+                    "REPROLAB_LLM_PROVIDER": request.provider,
                     **(
                         {"REPROLAB_VERIFICATION_PROVIDER": request.verificationProvider}
                         if request.verificationProvider
@@ -849,7 +849,7 @@ class FileLiveRunService:
             "projectId": project_id,
             "outputDir": status.get("outputDir") or str(self.runs_root / project_id),
             "sourceKind": status.get("sourceKind") or "workspace_fixture",
-            "runMode": status.get("runMode") or "offline",
+            "runMode": status.get("runMode") or "rlm",
             "llmProvider": status.get("llmProvider"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode"),
@@ -1182,14 +1182,9 @@ def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
 
 
 def _fixture_project_id(request: StartRunRequest) -> str:
-    review = request.verificationProvider or "same"
-    if request.mode == "sdk":
-        return f"ui_sdk_{request.provider}_review_{review}_demo_{int(datetime.now().timestamp() * 1000)}"
-    if request.mode == "rlm":
-        # A4-4: rlm runs get a distinct prefix so the provider is recoverable
-        # from the project_id and IDs cannot collide with offline/sdk runs.
-        return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
-    return f"ui_demo_{int(datetime.now().timestamp() * 1000)}"
+    # A4-4: rlm runs get a distinct prefix so the provider is recoverable
+    # from the project_id and IDs cannot collide with legacy run IDs.
+    return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
 
 
 def _initial_status(
@@ -1216,10 +1211,6 @@ def _initial_status(
         "startedAt": now,
         "updatedAt": now,
     }
-    if request.mode == "sdk":
-        status["llmProvider"] = request.provider
-        if request.verificationProvider:
-            status["verificationProvider"] = request.verificationProvider
     if uploaded_paper:
         status.update(
             {
@@ -1290,7 +1281,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_rlm
+from backend.agents.rlm.run import run_pipeline_rlm
 from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
 
 config = json.loads({json.dumps(json.dumps(common))})
