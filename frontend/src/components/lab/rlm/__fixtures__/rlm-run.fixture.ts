@@ -55,6 +55,7 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
         stderr_meta: { length: 0, prefix: "", has_traceback: false },
         vars: {
           paper: { type: "PaperDoc", size: 1 },
+          paper_text: { type: "str", size: 48230 },
           sections: { type: "list[Section]", size: 15 },
         },
         sub_calls: 0,
@@ -667,6 +668,39 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
   },
 
   // Round 1 outcomes — interleaved with rubric_score events as candidates resolve
+
+  // i11 — root evaluates c1 (warmup applied) and c2 (attention dropout) outcomes
+  {
+    event: "repl_iteration",
+    timestamp: ts(),
+    iteration: 11,
+    response:
+      "Evaluating round-1 results for c1 (learning-rate warmup) and c2 (attention dropout). The warmup schedule dramatically stabilised training — BLEU on the toy subset jumped from 18.3 to ~20.1 after only 5k steps, a clear signal. Attention dropout (c2) shows a marginal +0.2 BLEU; worth keeping but not the bottleneck. Marking c1=promoted, c2=marginal.",
+    code_blocks: [
+      {
+        code: "c1_result = evaluate_candidate('c1', baseline_code, hyperparams)\nc2_result = evaluate_candidate('c2', baseline_code, hyperparams)\nprint('c1 BLEU:', c1_result['bleu'], '| c2 BLEU:', c2_result['bleu'])",
+        stdout_meta: { length: 48, prefix: "c1 BLEU: 20.1 | c2 BLEU: 18.5", has_traceback: false },
+        stderr_meta: { length: 0, prefix: "", has_traceback: false },
+        vars: {
+          paper: { type: "PaperDoc", size: 1 },
+          sections: { type: "list[Section]", size: 15 },
+          arch: { type: "dict[str,Any]", size: 12 },
+          hyperparams: { type: "dict[str,Any]", size: 24 },
+          training: { type: "dict[str,Any]", size: 9 },
+          env_spec: { type: "dict[str,Any]", size: 7 },
+          build_result2: { type: "dict[str,Any]", size: 4 },
+          baseline_code: { type: "dict[str,list]", size: 11 },
+          exp_result: { type: "dict[str,Any]", size: 6 },
+          baseline_metrics: { type: "dict[str,float]", size: 4 },
+          improvements: { type: "list[dict]", size: 6 },
+          applied_candidates: { type: "dict[str,dict]", size: 2 },
+        },
+        sub_calls: 0,
+      },
+    ],
+    sub_calls: 0,
+    timing: 11.2,
+  },
   {
     event: "candidate_outcome",
     timestamp: ts(),
@@ -709,6 +743,43 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
       { area: "bleu_score_ende", score: 0.16, weight: 0.30, status: "fail" },
       { area: "bleu_score_enfr", score: 0.00, weight: 0.20, status: "fail" },
     ],
+  },
+  // i12 — root evaluates c3/c4/c5/c6 outcomes
+  {
+    event: "repl_iteration",
+    timestamp: ts(),
+    iteration: 12,
+    response:
+      "Evaluating remaining round-1 candidates. Pre-norm placement (c3) regressed BLEU by 0.2 — the paper uses post-LN; reverting. Label smoothing (c4) added +0.4 BLEU and reduced perplexity measurably — promoting. Beam search (c5) and weight tying (c6) are impractical at 5k steps on the toy subset: declining both for this run; they remain candidates for a full 300k-step reproduction.",
+    code_blocks: [
+      {
+        code: "c3_result = evaluate_candidate('c3', baseline_code, hyperparams)\nc4_result = evaluate_candidate('c4', baseline_code, hyperparams)\nround1_results = {'c1': c1_result, 'c2': c2_result, 'c3': c3_result, 'c4': c4_result}\nprint('round1 deltas:', {k: v['bleu_delta'] for k,v in round1_results.items()})",
+        stdout_meta: {
+          length: 72,
+          prefix: "round1 deltas: {'c1': +1.8, 'c2': +0.2, 'c3': -0.2, 'c4': +0.4}",
+          has_traceback: false,
+        },
+        stderr_meta: { length: 0, prefix: "", has_traceback: false },
+        vars: {
+          paper: { type: "PaperDoc", size: 1 },
+          sections: { type: "list[Section]", size: 15 },
+          arch: { type: "dict[str,Any]", size: 12 },
+          hyperparams: { type: "dict[str,Any]", size: 24 },
+          training: { type: "dict[str,Any]", size: 9 },
+          env_spec: { type: "dict[str,Any]", size: 7 },
+          build_result2: { type: "dict[str,Any]", size: 4 },
+          baseline_code: { type: "dict[str,list]", size: 11 },
+          exp_result: { type: "dict[str,Any]", size: 6 },
+          baseline_metrics: { type: "dict[str,float]", size: 4 },
+          improvements: { type: "list[dict]", size: 6 },
+          applied_candidates: { type: "dict[str,dict]", size: 4 },
+          round1_results: { type: "dict[str,dict]", size: 4 },
+        },
+        sub_calls: 0,
+      },
+    ],
+    sub_calls: 0,
+    timing: 9.8,
   },
   // c3 — failed (pre-norm regresses quality)
   {
@@ -886,6 +957,47 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
     model: "claude-sonnet-4-6",
     duration_ms: 28400,
     error: null,
+  },
+
+  // i14 — root evaluates round-2 outcomes; wraps up
+  {
+    event: "repl_iteration",
+    timestamp: ts(),
+    iteration: 14,
+    response:
+      "Evaluating round-2 results. Beam-size sweep (c7): sub-RLM reported beam=4 optimal at BLEU 19.8 (+1.5 over greedy baseline), but the experiment is still running at the time of this iteration — marking as running. BPE vocab tuning (c8): marginal +0.1 BLEU, not worth the tokeniser retrain overhead for this short run. Mixed-precision (c9): deferred — throughput improvement only, skipping for quality-focused run. No promotions in round 2; final rubric reflects cumulative gains from round 1.",
+    code_blocks: [
+      {
+        code: "round2_results = collect_round2_outcomes()\nbleu_per_beam = round2_results.get('c7', {}).get('bleu_per_beam', {})\nprint('beam sweep:', bleu_per_beam)\nprint('c8 delta:', round2_results.get('c8', {}).get('bleu_delta', 0))",
+        stdout_meta: {
+          length: 80,
+          prefix: "beam sweep: {2: 19.2, 4: 19.8, 6: 19.7}",
+          has_traceback: false,
+        },
+        stderr_meta: { length: 0, prefix: "", has_traceback: false },
+        vars: {
+          paper: { type: "PaperDoc", size: 1 },
+          sections: { type: "list[Section]", size: 15 },
+          arch: { type: "dict[str,Any]", size: 12 },
+          hyperparams: { type: "dict[str,Any]", size: 24 },
+          training: { type: "dict[str,Any]", size: 9 },
+          env_spec: { type: "dict[str,Any]", size: 7 },
+          build_result2: { type: "dict[str,Any]", size: 4 },
+          baseline_code: { type: "dict[str,list]", size: 11 },
+          exp_result: { type: "dict[str,Any]", size: 6 },
+          baseline_metrics: { type: "dict[str,float]", size: 4 },
+          improvements: { type: "list[dict]", size: 6 },
+          applied_candidates: { type: "dict[str,dict]", size: 4 },
+          round1_results: { type: "dict[str,dict]", size: 4 },
+          round2_improvements: { type: "list[dict]", size: 3 },
+          round2_results: { type: "dict[str,dict]", size: 3 },
+          bleu_per_beam: { type: "dict[int,float]", size: 3 },
+        },
+        sub_calls: 1,
+      },
+    ],
+    sub_calls: 1,
+    timing: 7.6,
   },
 
   // Round 2 outcomes — NO promoted (pins the §5.3 no-promotion fallback)
