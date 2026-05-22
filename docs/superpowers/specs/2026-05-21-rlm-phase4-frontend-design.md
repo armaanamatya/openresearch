@@ -345,7 +345,7 @@ All new components live in `frontend/src/components/lab/rlm/`.
 
 | Component | Consumes | Renders |
 |---|---|---|
-| `RlmLab` | `run`, `events` | calls `useRlmRun`; composes the four bands; owns `selectedNodeId` + rail-collapse state |
+| `RlmLab` | `run`, `events` | calls `useRlmRun`; composes the four bands; owns rail-collapse state (`selectedNodeId` is owned by `ExplorationCanvas` — node selection is canvas-internal) |
 | `RlmHeader` | `run`, `state.status`, `state.iterationCount` | paper metadata, project id, status pill (reuse `status.tsx`), iter/cost |
 | `RubricStrip` | `state.rubric` | score number, baseline→target bar, climb sparkline, Δ-vs-baseline / Δ-vs-target |
 | `ReplStateRail` | `state.variables`, primitive list | variable rows (name · type · size, dimmed if unset), "N/M set", primitives list; collapsible |

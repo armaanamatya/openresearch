@@ -504,7 +504,7 @@ export const rlmRunFixture: RlmDashboardEvent[] = [
   },
 
   // ─── Round 1: propose_improvements (iteration 10) ────────────────────────
-  // 6 candidates: c1=promoted, c2=promoted, c3=failed, c4=promoted (out-of-order),
+  // 6 candidates: c1=promoted, c2=marginal, c3=failed, c4=promoted (out-of-order),
   //               c5=declined, c6=declined  →  2 declined in round 1
 
   {

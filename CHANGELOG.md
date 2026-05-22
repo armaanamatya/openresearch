@@ -9,6 +9,27 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **RLM Phase 4 — RLM lab frontend (feat/rlm-phase4-frontend, #61).** Ships the
+  RLM lab UI: a live, branching **exploration-tree canvas** (the centerpiece) wrapped
+  in a lab-notebook shell — rich header (paper metadata, project id, status pill,
+  iter/cost), rubric score + climb strip (baseline→target bar, Δ sparkline), REPL-state
+  rail (variable manifest + primitive list, collapsible), live report rail
+  (verdict, stat grid, rubric breakdown, collapsible), and a primitive-call history
+  bar. `useRlmRun` is a pure `fold`-based reducer that folds the SSE `dashboard_event`
+  stream into `RlmRunState` (tree, rubric series, variable manifest, report).
+  `ExplorationCanvas` renders a laid-out node graph via a pure `layoutTree` function
+  with pan/zoom, declined-collapse, soft cap, `NodeDetailPopup`, and live pulse
+  animations. Built **fixture-first** against a hand-authored 14-iteration recorded
+  events fixture (`rlm-run.fixture.ts`); coexists with the old 14-stage pipeline UI
+  via a `runMode === "rlm"` branch in `WorkflowView` (the old UI is untouched).
+  `replay.ts` + a `?rlmFixture=1` query param on `/lab` drive the fixture in dev/test.
+  A Playwright e2e (`e2e/rlm-lab.spec.ts`) drives the full fixture path end-to-end.
+  The 3 candidate/rubric event types (`candidate_proposed`, `candidate_outcome`,
+  `rubric_score`) are fixture-contract + a documented backend handoff
+  (`docs/superpowers/specs/2026-05-21-rlm-phase4-backend-events-handoff.md`), not yet
+  backend-emitted. Design spec:
+  `docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md`. Implementation
+  plan: `docs/superpowers/plans/2026-05-21-rlm-phase4-frontend.md`.
 - **RLM Featherless root-model backend + hardened key resolution (feat/rlm-phase5-e2e).**
   Adds `qwen3-coder-featherless` to the root-model registry — `Qwen/Qwen3-Coder-480B-A35B-Instruct`
   (the paper-validated RLM root) served via Featherless's OpenAI-compatible endpoint, so an RLM
