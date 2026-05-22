@@ -101,6 +101,33 @@ Scores from a generated rubric carry `rubric_source="generated"` and are labelle
 as non-PaperBench-official in both the JSON and the re-rendered `final_report.md`
 that `GET /runs/{id}/final-report` serves.
 
+## Rubric-driven harness (`--mode rdr`, 2026-05)
+
+`--mode rdr` is a parallel reproduction path that **makes the official
+PaperBench rubric the spine of the run** instead of grading only at the end.
+A deterministic Python controller (`backend/agents/rdr/controller.py`)
+decomposes the rubric tree into agent-sized work-clusters and dispatches
+**one scoped Claude coding agent per cluster**, each with a precisely-engineered
+context window (verbatim leaf requirements + cited paper excerpts + dependency
+artifacts from prior clusters + repair feedback). Every rubric leaf is a
+controller obligation: attempted, scored, and repaired-if-weak in a capped loop
+fed the leaf scorer's own justifications.
+
+There is no LLM in the control flow, so the free-form RLM root's wander/loop
+failure mode (run 3 / GoRL: 21 root iterations stuck in `understand_section`)
+is structurally impossible. The orchestration **reuses existing infrastructure**:
+`collect_agent_text` for the Claude SDK agent (the same path `run_with_sdk` uses)
+so the agent is **provider-portable by construction** — Claude OAuth (Sonnet)
+locally, Azure OpenAI as an alternative — and `run_experiment` /
+`score_reproduction` / `write_final_report_rlm` / `reconcile_verdict_with_score`
+for environment, scoring, reporting.
+
+`rdr` targets PaperBench bundle papers (the official rubric is required); arXiv
+papers can use it secondarily with a generated rubric. The design spec is
+`docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`; the package
+is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
+`controller`, `run`); the launcher is `scripts/rdr_paperbench.py`.
+
 ## Run lifecycle (UI ↔ backend)
 
 1. Lab UI (`frontend/src/components/lab/lab-shell.tsx`) starts a run — arXiv

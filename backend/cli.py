@@ -487,6 +487,76 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
+    """Dispatch ``--mode rdr``: run the rubric-driven harness on a PaperBench bundle.
+
+    The positional ``source`` arg is the bundle paper_id (directory name under
+    ``third_party/paperbench/``) or an absolute path to the bundle directory.
+    Bypasses the standard ingest pipeline — the bundle carries its own paper.md
+    and rubric.json.
+    """
+    import re
+    import time
+
+    from backend.agents.rdr.run import run_pipeline_rdr
+
+    paper_id = args.source
+
+    def _safe_dir_name(s: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_\-]", "_", s)
+
+    raw_id = f"pb_{_safe_dir_name(paper_id)}_{int(time.time())}"
+    project_id = raw_id[:80]
+
+    max_repair_iterations: int = getattr(args, "max_repair_iterations", 2)
+    repair_target: float = getattr(args, "repair_target", 0.6)
+
+    from backend.agents.execution import resolve_sandbox_mode
+
+    sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode="rdr")
+
+    print(f"[rdr] paper_id  : {paper_id}", file=sys.stderr)
+    print(f"[rdr] project_id: {project_id}", file=sys.stderr)
+    print(f"[rdr] runs_root : {runs_root}", file=sys.stderr)
+    print(f"[rdr] sandbox   : {sandbox_mode.value}", file=sys.stderr)
+
+    try:
+        rdr_result = asyncio.run(
+            run_pipeline_rdr(
+                project_id,
+                runs_root,
+                paper_id=paper_id,
+                provider=getattr(args, "provider", None),
+                model=getattr(args, "model", None),
+                sandbox_mode=sandbox_mode,
+                max_repair_iterations=max_repair_iterations,
+                repair_target=repair_target,
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(
+            "\n[reprolab] RDR pipeline interrupted (Ctrl-C). Exiting.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 130
+
+    result = {
+        "project_id": rdr_result.project_id,
+        "status": rdr_result.status,
+        "rubric_score": rdr_result.rubric_score,
+        "clusters_total": rdr_result.clusters_total,
+        "clusters_failed": rdr_result.clusters_failed,
+        "repair_iterations": rdr_result.repair_iterations,
+        "final_report_path": rdr_result.final_report_path,
+        "cost_usd": rdr_result.cost_usd,
+        "output_dir": str(runs_root / rdr_result.project_id),
+    }
+    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0 if rdr_result.status in ("completed", "partial") else 3
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
@@ -498,6 +568,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
     runs_root = Path(args.runs_root)
+
+    # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
+    # Bypasses the ingest pipeline entirely — the positional `source` arg is
+    # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
+    if args.mode == "rdr":
+        return _cmd_reproduce_rdr(args, runs_root)
+
     from backend.agents.runtime import ProviderConfigurationError
 
     try:
@@ -794,8 +871,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument("--agent", default="default", help="Agent name for the workspace.")
     reproduce.add_argument(
-        "--mode", choices=("offline", "sdk", "rlm"), default="sdk",
-        help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic, 'rlm' uses the RLM orchestrator.",
+        "--mode", choices=("offline", "sdk", "rlm", "rdr"), default="sdk",
+        help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic, 'rlm' uses the RLM orchestrator, 'rdr' uses the rubric-driven harness on a PaperBench bundle.",
     )
     reproduce.add_argument("--model", default=None, help="Model override for SDK mode.")
     reproduce.add_argument(

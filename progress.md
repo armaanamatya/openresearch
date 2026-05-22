@@ -55,9 +55,25 @@ See `runlog.md`.
   (I3 reverted) progressed through the full pipeline but crashed on the
   Featherless Qwen3-Coder 49 152-token context cap. `failed`, leaf 0.0.
 
+## rdr harness — built (2026-05-22)
+
+The `rlm_rubric_orchestration` branch carries the full rdr harness — six
+modules under `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`,
+`agent`, `controller`, `run`), the `--mode rdr` CLI wiring, the
+`scripts/rdr_paperbench.py` launcher, and 112 rdr tests including a full
+offline end-to-end on the real `sequential-neural-score-estimation` bundle (27
+clusters). The deterministic controller reproduces the paper cluster-by-cluster
+against the official rubric and repairs weak clusters in a capped loop; no LLM
+in the control path. Provider/model is dynamic — Claude OAuth (Sonnet) locally
+or Azure OpenAI — via the existing `collect_agent_text` runtime resolution.
+
+Full test suite green: 1362 passed, 3 skipped (the 3 are pre-existing
+optional-dep skips: chromadb, tesseract). Built across six phase commits
+squashed into one milestone commit on `rlm_rubric_orchestration`.
+
 ## Remaining
 
-Debug-and-harden and #62 are complete. Next phase: implement the rubric-driven
-reproduction harness (`rdr`) — design spec and executable implementation prompt
-in `docs/superpowers/specs/2026-05-22-rubric-driven-harness-{design,
-implementation}.md`. That work happens on the `rlm_rubric_orchestration` branch.
+Real live end-to-end run (Claude OAuth + local GPU) on a PaperBench bundle —
+verify the leaf score beats the rlm baseline (≈0.37) on
+`sequential-neural-score-estimation`. Production wiring into the UI / SSE
+bridge if the live run validates. See the design spec §10 success criteria.

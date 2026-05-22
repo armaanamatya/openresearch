@@ -11,6 +11,34 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-22 — pytest module-name collisions across sibling test dirs
+
+**Symptom.** `pytest tests/` (full suite) failed with `import file mismatch:
+imported module 'test_run' has this __file__ attribute:
+tests/rdr/test_run.py which is not the same as the test file we want to
+collect: tests/rlm/test_run.py`. `pytest tests/rdr/ -q` (subdir alone) passed;
+only the full collection broke.
+
+**Root cause.** Neither `tests/rdr/` nor `tests/rlm/` has `__init__.py`. Under
+pytest's default `prepend` import mode this is fine *until* two sibling test
+dirs share a basename — `tests/rdr/test_models.py` and
+`tests/rlm/test_models.py` both want to import as the module `test_models`,
+and pytest refuses to resolve the clash.
+
+**Fix.** Renamed the rdr files to `test_rdr_models.py` / `test_rdr_run.py`
+(via `git mv`) — unique basenames so the basename-import works. Matches the
+existing `test_rdr_offline_e2e.py` convention in the same directory.
+
+**Lesson.** When two test directories share the parent (no `__init__.py`),
+file basenames must be globally unique across them. Prefix test files in a
+new subpackage with the subpackage name (`test_rdr_<thing>.py`) — Python
+imports test modules by basename in this layout, so siblings collide.
+
+**Guardrail.** The naming convention is the guardrail. CI's full-suite run
+catches a regression immediately (`Interrupted: 2 errors during collection`).
+
+---
+
 ## 2026-05-22 — I3 root-prompt change backfired: a "read the paper" emphasis made the root loop on understanding
 
 **Symptom.** Run 3 (GoRL, arXiv) burned all 21 root iterations calling

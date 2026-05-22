@@ -9,6 +9,39 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **`rdr` — rubric-driven paper-reproduction harness (`--mode rdr`).**
+  A deterministic Python controller (`backend/agents/rdr/`) decomposes the
+  official PaperBench rubric into agent-sized work-clusters and dispatches
+  one scoped Claude coding agent per cluster, each with a precisely-engineered
+  context window (verbatim leaf requirements + cited paper excerpts +
+  dependency artifacts + repair feedback). The cluster outputs are assembled
+  into a shared project, run through `run_experiment`, scored against the
+  exact rubric by the existing leaf scorer, and weak clusters are re-attacked
+  in a capped repair loop fed the scorer's own justifications. **No LLM in
+  the control flow** — the wander/loop failure mode of the free-form RLM root
+  is structurally impossible.
+  - New package `backend/agents/rdr/` (`models`, `decomposer`,
+    `context_engineer`, `agent`, `controller`, `run`); new CLI mode
+    `reproduce --mode rdr <paper_id>`; new launcher
+    `scripts/rdr_paperbench.py` (parallel to `scripts/rlm_paperbench.py`).
+  - Provider/model is fully dynamic — the agent reuses the repo's
+    `collect_agent_text` (the same SDK path `run_with_sdk` uses) and inherits
+    the runtime resolution, so the same harness runs on Claude OAuth (Sonnet)
+    locally OR Azure OpenAI without code changes.
+  - Bounded everywhere: agent calls go through `asyncio.wait_for(timeout_s)`
+    against `ctx.remaining_s()`; per-cluster fail-soft; deterministic
+    termination — the controller assembles the report from structured
+    artifacts, never an LLM "final answer."
+  - All four #62 DC#4 artifacts: `final_report.{json,md}`,
+    `iterations/cluster_*.json` per cluster, `repl_state.pickle`
+    (corpus-redacted — file counts / notes only, never raw paper text).
+    Verdict reconciled against the leaf score via the existing
+    `reconcile_verdict_with_score`.
+  - 112 rdr tests (decomposer, context engineer, agent contract, controller
+    flow + repair + fail-soft, run.py bundle resolution, full offline e2e on
+    the real `sequential-neural-score-estimation` bundle). Full suite green:
+    1362 passed, 3 skipped.
+  - Design spec: `docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`.
 - **Dynamic best-source paper ingestion — HTML > PDF > OCR cascade.**
   Figure-heavy arXiv papers produce figure-label noise when PDF-parsed; arXiv's
   LaTeXML HTML rendering is clean (figures are images there). `ResolvingParser`
