@@ -1,30 +1,20 @@
-# OpenResearch / ReproLab — RLM Pivot Plan
+# OpenResearch / ReproLab — RLM Architecture Reference
 
-> Canonical plan for the RLM pivot. Supersedes the earlier implementation brief,
+> Canonical architecture reference. Supersedes the earlier implementation brief,
 > the deleted `rlm-integration.md`, and the deleted pre-pivot architecture docs.
 > One consistent document — no corrections preamble. If something here is wrong
-> against the code, fix it here in the same change. Last revised 2026-05-20.
-
-> **✅ Fork RESOLVED (2026-05-21) — §3/§5/§11 confirmed.** The architecture
-> fork (drift D1) is closed: the `rlm` library wins. A spike installed and
-> probed every candidate — `rlm.RLM`'s real signature matches this brief's §3
-> table exactly, including `environment='docker'` (which ReproLab needs and
-> `dspy.RLM`'s WASM sandbox cannot do). Hand-building (the old issue #59 / PR
-> #65 skeleton) is retired; `dspy.RLM` (#66) is evaluated and not adopted.
-> Evidence + verdict: `docs/design/rlms-spike-report.md`. §3, §5, and the §11
-> phase plan are the canonical architecture — implement against them.
+> against the code, fix it here in the same change. Last revised 2026-05-20;
+> Phase 6 cleanup complete 2026-05-22.
 
 ## 1. Context — why
 
 ReproLab reproduces research papers end-to-end and scores the result against a
-PaperBench-style rubric. It is being shown to potential investors/reviewers (a
-serial founder; a senior Microsoft engineering leader) who were told the system
-is built on the **Recursive Language Model (RLM)** paradigm. Two reasons drive
-the pivot, in order of importance:
+PaperBench-style rubric, built on the **Recursive Language Model (RLM)**
+paradigm. Two reasons drove the architectural choice, in order of importance:
 
-1. **Honesty.** The pitch is RLM-based; the implementation is a fixed 14-stage
-   pipeline state machine. A reviewer who has read the RLM paper catches that in
-   minutes. The pivot is what makes the pitch true.
+1. **Honesty.** The pitch is RLM-based; the architecture is RLM-based. A
+   reviewer who has read the RLM paper can open `backend/agents/rlm/` and verify
+   this directly.
 2. **Capability (our hypothesis, not a paper result).** We believe RLM suits
    paper reproduction better than a fixed-stage machine — the paper is a long,
    dense context and reproduction is exploratory, not linear. The RLM paper
@@ -37,12 +27,10 @@ it *reproduces other papers*. The RLM paper itself is not a reproduction target.
 (Reproducing it with an RLM-based system is possible, but explicitly out of
 scope.)
 
-**The real gap.** No paper has ever been reproduced end-to-end by ReproLab — by
-any architecture. There are zero `final_report.{json,md}` files for a real
-paper; the existing "demo" is a self-authored PPO fixture with a generated
-codebase. The pivot is not finished when the RLM loop runs — it is finished when
-a real PaperBench paper completes with a real rubric score. That is the
-deliverable bar; the RLM architecture is how we reach it honestly.
+**The real gap.** No paper has been reproduced end-to-end with a real rubric
+score yet. The RLM orchestrator runs; the deliverable bar is a real PaperBench
+paper completing with a real rubric score. The RLM architecture is how we reach
+it honestly.
 
 ## 2. What RLM is
 
@@ -325,6 +313,8 @@ what breaks; run a second paper.
 **Phase 6 — Cleanup.** Delete the dead `PipelineStage` / gate / five-path code.
 Update `README.md` and `system_overview.md` to drop the "current (pre-pivot)"
 framing. Pin a successful run as the demo.
+*Done (2026-05-22):* dead pipeline code deleted; `README.md`, `system_overview.md`,
+and `CLAUDE.md` rewritten to describe the RLM architecture as the present.
 
 ## 12. Success criteria
 
