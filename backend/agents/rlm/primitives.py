@@ -18,10 +18,13 @@ Phase 2 (#59) implementation.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
+
+logger = logging.getLogger(__name__)
 
 
 def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
@@ -379,13 +382,19 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                 if plan.get("reproduction_contract") else None)
     artifact_index = plan.get("artifact_index")
 
+    # An optional plan["repair_context"] (a failed run_experiment result) puts
+    # the code-writing agent into fix-existing-code mode — the root passes it
+    # to retry after run_experiment fails.
+    repair_context = plan.get("repair_context")
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
         # baseline-implementation agent (Opus). None -> registry default.
         return await _run_baseline_with_sdk(
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
-            runtime=ctx.runtime, model=ctx.agent_model)
+            runtime=ctx.runtime, model=ctx.agent_model,
+            repair_context=repair_context)
 
     timeout = _timeout_for(ctx, 3600)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -465,6 +474,34 @@ async def _execute_in_sandbox(
     }
 
 
+def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
+    """Append a run_experiment result to ``experiment_runs.jsonl`` and return it.
+
+    A run_experiment result otherwise lives only in the root model's REPL — a
+    failed experiment leaves no on-disk trace, so a post-run diagnosis cannot
+    see the actual logs (this session it forced re-running ``train.py`` by
+    hand). This writes one JSONL line per call — repair-loop retries included —
+    and logs a WARNING on failure so the run log surfaces it. Fail-soft:
+    observability must never break the run.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    if not result.get("success"):
+        logger.warning(
+            "run_experiment failed: %s",
+            result.get("error") or "(see experiment_runs.jsonl for logs)",
+        )
+    try:
+        entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **result}
+        path = ctx.project_dir / "experiment_runs.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — observability must never break the run
+        logger.exception("run_experiment: failed to persist experiment result")
+    return result
+
+
 def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
 
@@ -487,34 +524,36 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
 
     # A2-H2: guard empty env_id before attempting any Docker work.
     if not env_id or not str(env_id).strip():
-        return {
+        return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
             "error": "env_id empty — build_environment must succeed first",
-        }
+        })
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
     if not commands:
-        return {"success": False, "metrics": {},
-                "error": f"no commands.json at {manifest}"}
+        return _persist_experiment_result(ctx, {
+            "success": False, "metrics": {},
+            "error": f"no commands.json at {manifest}"})
 
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     # A2-C1: bound the entire command loop (not just each individual command).
     timeout = _timeout_for(ctx, 7200)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         try:
-            return pool.submit(
+            result = pool.submit(
                 asyncio.run,
                 _execute_in_sandbox(code_path, env_id, commands,
                                     project_id=ctx.project_id, run_id=run_id),
             ).result(timeout=timeout)
         except concurrent.futures.TimeoutError:
-            return {
+            result = {
                 "success": False,
                 "metrics": {},
                 "error": f"run_experiment: timed out after {timeout:.0f} s",
             }
+    return _persist_experiment_result(ctx, result)
 
 
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
@@ -670,7 +709,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "detect_environment), reproduction_contract (from plan_reproduction)}. "
         "paper_claim_map must include core_contribution (str), claims (list of "
         "dicts with keys like method/dataset/metric/expected_result), and "
-        "metrics (list of {name, definition} dicts).",
+        "metrics (list of {name, definition} dicts). To repair a baseline whose "
+        "run_experiment FAILED, also put repair_context (the failed run_experiment "
+        "result dict) in plan — the agent then diagnoses the error and fixes the "
+        "existing code in place instead of rewriting.",
     "run_experiment": "run_experiment(code_path, env_id) -> dict — run the "
         "baseline in a container from image `env_id` (build_environment's "
         "image_tag); returns {success, metrics, logs}.",

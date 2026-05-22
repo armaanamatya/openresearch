@@ -426,8 +426,14 @@ async def run_with_sdk(
     model: str | None = None,
     provider: ProviderName | str | None = None,
     runtime: AgentRuntime | None = None,
+    repair_context: dict[str, Any] | None = None,
 ) -> BaselineResult:
-    """Full LLM-powered baseline implementation via the configured agent runtime."""
+    """Full LLM-powered baseline implementation via the configured agent runtime.
+
+    When ``repair_context`` is set, switches the agent to fix-existing-code mode:
+    the prompt instructs it to diagnose the failure and correct the code in place
+    rather than rewriting from scratch.
+    """
     from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
@@ -442,11 +448,23 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
-    prompt = (
-        f"Implement the baseline for project {project_id}.\n"
-        f"Write code to {code_dir}\n"
-        f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
-    )
+    if repair_context:
+        prompt = (
+            f"The baseline for project {project_id} was already implemented in "
+            f"{code_dir}, but running the experiment FAILED. Diagnose the failure "
+            f"from the error below and FIX the existing code in place — read the "
+            f"current files, find the bug, and correct it. Do NOT rewrite the "
+            f"project from scratch.\n\n"
+            f"Experiment failure:\n```json\n"
+            f"{json.dumps(repair_context, indent=2, default=str)}\n```\n\n"
+            f"Reproduction context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        )
+    else:
+        prompt = (
+            f"Implement the baseline for project {project_id}.\n"
+            f"Write code to {code_dir}\n"
+            f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        )
 
     await collect_agent_text(
         "baseline-implementation",

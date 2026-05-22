@@ -41,6 +41,29 @@ def test_run_experiment_empty_commands_json(make_context, tmp_path):
     assert "error" in result
 
 
+def test_run_experiment_persists_result_to_disk(make_context, tmp_path, monkeypatch):
+    # Every run_experiment call must leave an on-disk trace — its result
+    # otherwise lives only in the root's REPL, so a failed experiment cannot
+    # be diagnosed post-run. One JSONL line per call (repair retries included).
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
+
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id):
+        return {"metrics": {}, "success": False, "logs": "boom: traceback here"}
+
+    monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
+    run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
+
+    log = ctx.project_dir / "experiment_runs.jsonl"
+    assert log.exists()
+    entry = json.loads(log.read_text().strip())
+    assert entry["success"] is False
+    assert "boom" in entry["logs"]
+    assert "timestamp" in entry
+
+
 def test_cap_logs_bounds_unbounded_experiment_output():
     # run_experiment's container stdout is unbounded; verify_against_rubric and
     # propose_improvements feed the result into an LLM prompt, so the logs must

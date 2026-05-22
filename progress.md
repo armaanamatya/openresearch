@@ -9,7 +9,20 @@ Drive the RLM orchestrator end-to-end on PaperBench papers — deliver
 
 ## Status
 
-`main` and `merge` synced. Full test suite: **1111 passing**.
+`main` and `merge` synced. Full test suite: **1119 passing**. The RLM
+pipeline now runs **end-to-end** — run 7 executed all 9 primitives and
+produced an honest, leaf-scored report.
+
+## Results
+
+| Paper | Run | Verdict | Authoritative rubric (leaf scorer) |
+|-------|-----|---------|------------------------------------|
+| sequential-neural-score-estimation | 7 | failed* | **0.4042** (92/92 leaves graded) |
+| mechanistic-understanding | 1 | — | in progress |
+
+\* `failed` verdict = the generated `train.py` ran in Docker but produced
+no metrics; the **rubric score is real** — the leaf scorer graded the
+written code against the full PaperBench rubric.
 
 ## Done
 
@@ -30,23 +43,54 @@ OAuth login for dev.
 the authoritative cost ledger and drops `baseline_metrics` the root
 fabricated without a real `run_experiment` call.
 
-## Run history
+**Featherless context cap.** `register_featherless_context_limits()` teaches
+the rlm engine the plan's 49K input-context cap so compaction triggers before
+the provider 400s the run.
+
+**LLM client `max_tokens`.** Raised 600 → 4096 — 600 truncated the structured
+JSON from `verify_against_rubric` and the leaf scorer.
+
+**Experiment self-repair loop.** When `run_experiment` fails, the root re-calls
+`implement_baseline` with `plan['repair_context']` (the failed result); the
+code-writing agent diagnoses the error and fixes the existing code in place,
+then `run_experiment` retries — up to 2 cycles. Each step is a distinct
+`primitive_call` event, so Phase 4's UI renders the repair cycle naturally.
+
+## Run history (SNSE)
 
 | Run | Result        | Note                                                  |
 |-----|---------------|-------------------------------------------------------|
 | 3   | failed        | `implement_baseline` hit the OAuth quota (ran Opus)   |
 | 5   | partial 0.65  | real code written; root skipped `run_experiment`, faked metrics |
-| 6   | in progress   | all fixes applied — honesty guard + run_experiment nudge |
+| 6   | failed        | every primitive ran incl. `run_experiment`, real code — but `rlm.completion` 400'd: context exceeded the Featherless plan's 49K cap |
+| 7   | failed / 0.40 | **completed end-to-end**; honest report; leaf scorer: 0.4042 |
 
 ## In flight
 
-**SNSE run 6** — end-to-end reproduction with every fix. Verifying: GPU
-engaged, code written, `run_experiment` runs, honest rubric score.
+**Paper 2 — `mechanistic-understanding`** — full end-to-end run with every
+fix applied. Leaf-score it on completion.
+
+## Diagnosis — run 7's `failed` verdict
+
+Ran `train.py` directly in run 7's Docker image: **training ran fully** (100
+epochs, loss converged) and crashed only in posterior evaluation —
+`score_network.py` `torch.cat` shape mismatch (500 posterior samples vs a
+batch-1 observation never expanded). **Not** an API / Docker / OAuth fault —
+infrastructure is sound; it is a bug in the AI-generated code. The
+experiment self-repair loop (above) is the systemic fix.
 
 ## Next
 
-- Authoritative PaperBench score via the post-run leaf scorer
-- Reproduce a 2nd paper (`ftrl` or `mechanistic-understanding`)
+- Leaf-score paper 2 → second authoritative rubric score (deliverable met)
+- `run_experiment` real metric extraction — `_execute_in_sandbox` hardcodes
+  `metrics: {}`; reading `metrics.json` from the run's outputs would give a
+  measured-metrics path and enable a `reproduced` verdict
+
+## Phase 4 readiness (#61 — frontend, not built here)
+
+The repair loop is deliberately root-orchestrated so each attempt surfaces as
+its own `primitive_call` SSE event — #61's UI renders the cycle with no extra
+backend work. Event audit for #61 is a follow-up.
 
 ## Known issues (deferred, pre-existing)
 
