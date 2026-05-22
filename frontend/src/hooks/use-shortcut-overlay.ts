@@ -4,9 +4,8 @@ import { useEffect, useState } from "react";
 
 /**
  * Toggles the shortcut-help overlay on `?` press. Esc always closes.
- * Mirrors the input-suppression rules from useCanvasKeyboardNav so
- * typing `?` inside an input or contenteditable does not open the
- * overlay.
+ * Suppresses the shortcut while focus is in an input, textarea, or
+ * contenteditable element so typing `?` there does not open the overlay.
  */
 export function useShortcutOverlay() {
   const [open, setOpen] = useState(false);

@@ -14,10 +14,10 @@ def bundle_to_workspace_claim_map(
     *,
     max_excerpt_chars: int = 120_000,
 ) -> dict[str, Any]:
-    """Return the workspace-claim-map shape consumed by ``run_pipeline_sdk``.
+    """Return the workspace-claim-map shape consumed by the RLM run entry.
 
     This keeps PaperBench intake outside the general arXiv/DOI/PDF source model
-    while still feeding the pipeline the same high-level ``entries`` surface.
+    while still feeding the run the same high-level ``entries`` surface.
     """
 
     rubric = bundle.rubric()

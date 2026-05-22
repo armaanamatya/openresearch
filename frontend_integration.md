@@ -102,11 +102,11 @@ summaries and shapes — full values are not, and will not be, on the wire.
   `run_complete`: the exploration tree, the REPL-state panel
   (`code_blocks[].vars`), the live iteration view (`response`, `code`), and the
   primitive-call history all derive from these.
-- #61 also lists `variable_update`, `candidate_proposed` / `candidate_outcome`,
-  `rubric_score`, and `root_reasoning`. These are **derivable** from the events
-  above (e.g. `root_reasoning` ≈ `repl_iteration.response`; candidates ≈
-  `primitive_call` for `propose_improvements`). Promote any to a dedicated
-  backend event only if the UI needs push-granularity the derivation can't give.
+- `candidate_proposed`, `candidate_outcome`, and `rubric_score` are now
+  **dedicated emitted events** — the backend pushes them directly rather than
+  leaving the UI to derive them from `primitive_call`. `root_reasoning` remains
+  derivable (≈ `repl_iteration.response`); `variable_update` is folded into
+  `repl_iteration` (`code_blocks[].vars`).
 - Keep the renderer **pure** — never recompute run logic client-side. The
   backend owns verdicts, scores, and state.
 

@@ -1,20 +1,19 @@
-"""run.py — the RLM-mode run entry (Phase 3, issue #60).
+"""run.py — the RLM run entry.
 
-``run_pipeline_rlm()`` replaces the 14-stage ``PipelineStage`` machine for the
-new ``rlm`` run mode.  It:
+``run_pipeline_rlm()`` is the single run entry point.  It:
 
-  1. builds a run-scoped :class:`RunContext` (#59's seam),
-  2. resolves the primitive layer — #59's real ``build_custom_tools`` if present,
-     else the deterministic stub provider (so the orchestrator is runnable now),
+  1. builds a run-scoped :class:`RunContext`,
+  2. resolves the primitive layer — the real ``build_custom_tools`` from
+     ``binding.py`` if importable, else the deterministic stub provider,
   3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
   4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
      iteration through :class:`ReproLabRLMLogger`,
   5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
 
 Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
-between iterations), #59's per-primitive deadlines (the real bound on a hung
-primitive — a #59 requirement), and a process-level wall-clock watchdog here
-(the hard backstop — a thread cannot be killed, only the process).
+between iterations), per-primitive deadlines carried on :class:`RunContext`
+(the real bound on a hung primitive), and a process-level wall-clock watchdog
+here (the hard backstop — a thread cannot be killed, only the process).
 
 Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
 """
@@ -126,8 +125,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     returns no token usage.  Primitive-internal LLM cost is therefore not
     captured here; the dominant root + sub-call cost comes from ``rlm``'s
     ``usage_summary`` (see ``report._cost_dict``).  Real per-primitive usage
-    needs the ``LlmClient`` protocol to carry usage — a #59/#60 seam evolution,
-    deferred.
+    needs the ``LlmClient`` protocol to carry usage — deferred.
     """
     # Custom OpenAI-compatible endpoint (e.g. Featherless): mirror it for primitives.
     bk = root_model.backend_kwargs
@@ -229,14 +227,12 @@ def _resolve_agent_runtime(
 def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     """Return ``(custom_tools, provider_label)`` for ``RLM(custom_tools=...)``.
 
-    Prefers #59's real ``binding.build_custom_tools``. Falls back to the
-    deterministic stub provider (§13) when #59's primitive layer is **absent**
-    *or* **present-but-incomplete** — #59 ships incrementally, so for a window
-    `binding.py` exists while `primitives.PRIMITIVE_DESCRIPTIONS` does not, and
-    `build_custom_tools(ctx)` raises. The orchestrator must run regardless of
-    #59's state; the real primitives are picked up automatically once #59's
-    layer is complete. The incomplete-binding fallback is loud (a WARNING with
-    the underlying exception) — it degrades, it never silently masks.
+    Prefers the real ``binding.build_custom_tools`` (the domain primitives).
+    Falls back to the deterministic stub provider (§13) when the primitive
+    layer is **absent** *or* **present-but-failing** — if ``binding.py`` cannot
+    be imported, or ``build_custom_tools(ctx)`` raises. The run must proceed
+    regardless; the fallback is loud (a WARNING with the underlying exception)
+    — it degrades, it never silently masks.
     """
     if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
         return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
@@ -246,23 +242,22 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
         tools = build_custom_tools(ctx)
     except ImportError:
         logger.info(
-            "run_pipeline_rlm: backend.agents.rlm.binding not present — "
-            "using stub primitives (#59 not yet merged)"
+            "run_pipeline_rlm: backend.agents.rlm.binding not importable — "
+            "using stub primitives"
         )
-        return build_stub_custom_tools(ctx), "stub (#59 binding.py absent)"
-    except Exception as exc:  # noqa: BLE001 — #59 mid-build: degrade loudly, don't crash
+        return build_stub_custom_tools(ctx), "stub (binding.py absent)"
+    except Exception as exc:  # noqa: BLE001 — degrade loudly, don't crash the run
         logger.warning(
-            "run_pipeline_rlm: #59's build_custom_tools is present but raised "
-            "(%s: %s) — its primitive layer is incomplete; falling back to stub "
-            "primitives until #59 lands.",
+            "run_pipeline_rlm: build_custom_tools is present but raised "
+            "(%s: %s) — falling back to stub primitives for this run.",
             type(exc).__name__,
             exc,
         )
         return (
             build_stub_custom_tools(ctx),
-            f"stub (#59 binding incomplete: {type(exc).__name__})",
+            f"stub (binding failed: {type(exc).__name__})",
         )
-    return tools, "real (#59 binding)"
+    return tools, "real (binding)"
 
 
 def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
@@ -470,10 +465,9 @@ async def run_pipeline_rlm(
 ) -> RLMRunResult:
     """Run one paper reproduction in ``rlm`` mode.
 
-    The signature parallels ``run_pipeline_sdk`` so ``cli.py`` can dispatch the
-    three modes uniformly.  ``seed`` / ``execution_profile`` / ``attempt_id`` /
-    ``run_group_id`` are accepted for that parity; the RLM engine owns its own
-    iteration loop, so they are not all load-bearing yet.
+    ``seed`` / ``execution_profile`` / ``attempt_id`` / ``run_group_id`` are
+    accepted for call-site parity; the RLM engine owns its own iteration loop,
+    so they are not all load-bearing yet.
 
     Returns an :class:`RLMRunResult`; never raises for an in-run failure — a
     crashed or timed-out run yields an honest ``partial`` / ``failed`` report.
@@ -520,9 +514,9 @@ async def run_pipeline_rlm(
             "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
-    # 4. The #59 seam — RunContext. The sub-agent runtime + model are resolved
-    #    here so implement_baseline never falls through to a dead env-default
-    #    key, and runs Sonnet rather than the registry's Opus default.
+    # 4. RunContext. The sub-agent runtime + model are resolved here so
+    #    implement_baseline never falls through to a dead env-default key,
+    #    and runs Sonnet rather than the registry's Opus default.
     agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
     logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
     ctx = RunContext(
@@ -543,7 +537,7 @@ async def run_pipeline_rlm(
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
 
-    # 5. Primitives — real #59 binding or the stub provider.
+    # 5. Primitives — the real binding or the stub provider.
     custom_tools, tools_label = _resolve_custom_tools(ctx)
     logger.info(
         "run_pipeline_rlm: project=%s root=%s primitives=%s",
