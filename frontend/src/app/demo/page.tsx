@@ -31,7 +31,6 @@ export default async function DemoPage({
       <LabShell
         initialRun={initialRun}
         initialRecents={initialRecents}
-        initialTopology={topology}
         initialModels={models}
         presentationMode="demo"
       />
