@@ -542,7 +542,7 @@ def test_benchmark_summary_preserves_track3_fields():
     status = {
         "projectId": "prj_bench",
         "outputDir": "/tmp/prj_bench",
-        "runMode": "sdk",
+        "runMode": "rlm",
         "status": "completed",
         "benchmark": {
             "benchmarkName": "PaperBench-style final benchmark",
@@ -613,7 +613,7 @@ def test_benchmark_summary_back_compat_without_track3_fields():
     run = LiveRunState(
         projectId="prj_old",
         outputDir="/tmp/prj_old",
-        runMode="sdk",
+        runMode="rlm",
         status="completed",
         benchmark={
             "benchmarkName": "b",
