@@ -1,5 +1,25 @@
 import { test, expect } from "@playwright/test";
 
+test("lab is RLM-only — RlmLab renders and no legacy 14-stage UI is present", async ({
+  page,
+}) => {
+  await page.goto("/lab?rlmFixture=1");
+
+  // The RLM lab root must render. Use .first() because the fixture path can
+  // produce two [data-testid="rlm-lab"] nodes (SSR + hydrated) and strict mode
+  // would reject an unqualified locator.
+  await expect(page.getByTestId("rlm-lab").first()).toBeVisible({ timeout: 10000 });
+
+  // Regression guard: none of the retired 14-stage UI elements should exist.
+  // These classes and test-ids were deleted in the lab-UI rewrite (Tasks 1-4).
+  // If any future change re-introduces them, this assertion surfaces the regression.
+  await expect(
+    page.locator(
+      ".progress-strip, .gate-chips, .lab-canvas, [data-testid='node-card']"
+    )
+  ).toHaveCount(0);
+});
+
 test("RLM lab renders the exploration tree from the fixture", async ({ page }) => {
   await page.goto("/lab?rlmFixture=1");
 
