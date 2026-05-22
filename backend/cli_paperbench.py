@@ -1,12 +1,11 @@
-"""PaperBench subcommand: drives bundle inspection and seeded pipeline runs.
+"""PaperBench subcommand: drives bundle inspection and dry-mode runs.
 
 Mode 1 (no API key required):
     reprolab paperbench list
     reprolab paperbench summary --paper-id ftrl
 
-Mode 2 (full pipeline, requires LLM credentials):
-    reprolab paperbench run --paper-id ftrl --seeds 3 [--max-parallel 1] \
-        [--provider anthropic] [--model ...] [--bundles-root third_party/paperbench]
+Mode 2 (dry run — no LLM, placeholder submission only):
+    reprolab paperbench run --paper-id ftrl [--bundles-root third_party/paperbench]
 
 Status JSON is persisted to ``<runs_root>/paperbench/<run_group_id>/status.json``
 so the frontend can poll it without coupling to the in-process Python state.
@@ -15,7 +14,6 @@ so the frontend can poll it without coupling to the in-process Python state.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
 import sys
@@ -24,12 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.agents.execution import DEFAULT_SANDBOX_MODE
 from backend.evals.paperbench import (
     code_development_ceiling,
     create_submission_manifest,
     load_paperbench_bundle,
-    mean_standard_error,
     summarize_rubric,
     validate_submission_tree,
 )
@@ -145,11 +141,7 @@ def cmd_paperbench_run(args: argparse.Namespace) -> int:
         "paper_id": bundle.paper_id,
         "bundle_root": str(bundle.root),
         "runs_root": str(runs_root),
-        "mode": "with-pipeline" if args.pipeline else "dry",
-        "seeds": list(args.seeds),
-        "max_parallel": args.max_parallel,
-        "provider": args.provider,
-        "model": args.model,
+        "mode": "dry",
         "status": "pending",
         "started_at": _utcnow(),
         "updated_at": _utcnow(),
@@ -177,10 +169,7 @@ def cmd_paperbench_run(args: argparse.Namespace) -> int:
     sys.stdout.flush()
 
     try:
-        if args.pipeline:
-            _run_with_pipeline(bundle, run_dir, status, args)
-        else:
-            _run_dry(bundle, run_dir, status)
+        _run_dry(bundle, run_dir, status)
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 — surface any failure into status JSON
@@ -217,7 +206,7 @@ def _run_dry(bundle: PaperBenchBundle, run_dir: Path, status: dict[str, Any]) ->
         readme.write_text(
             f"# Placeholder submission for paper `{bundle.paper_id}`\n\n"
             "This directory was produced by `reprolab paperbench run` in dry mode.\n"
-            "No agent ran. Use `--with-pipeline` to populate this with real outputs.\n",
+            "This is a dry-run submission; no pipeline outputs were generated.\n",
             encoding="utf-8",
         )
     manifest = create_submission_manifest(
@@ -242,102 +231,6 @@ def _run_dry(bundle: PaperBenchBundle, run_dir: Path, status: dict[str, Any]) ->
     _write_status(run_dir, status)
 
 
-def _run_with_pipeline(
-    bundle: PaperBenchBundle,
-    run_dir: Path,
-    status: dict[str, Any],
-    args: argparse.Namespace,
-) -> None:
-    """Run N seeded pipeline attempts; persist status after each one."""
-
-    from backend.agents.execution import ExecutionProfile, resolve_sandbox_mode
-    from backend.agents.runtime import selected_provider, validate_provider_credentials
-    from backend.evals.paperbench.runner import (
-        PaperBenchAttemptConfig,
-        run_seeded_pipeline_attempts,
-    )
-    from backend.services.ingestion.paperbench import bundle_to_workspace_claim_map
-
-    provider = selected_provider(args.provider) if args.provider else selected_provider(None)
-    if provider == "openai":
-        validate_provider_credentials(provider)
-
-    workspace_claim_map = bundle_to_workspace_claim_map(bundle)
-    project_id = workspace_claim_map["project_id"]
-
-    execution_profile = ExecutionProfile.from_mode(
-        args.execution_mode,
-        sandbox_network_disabled=not args.allow_sandbox_network,
-    )
-    sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode="sdk")
-    blacklist_terms = tuple(bundle.blacklist_entries())
-
-    attempts = [
-        PaperBenchAttemptConfig(
-            project_id=f"{project_id}_seed{seed}",
-            runs_root=Path(args.runs_root).expanduser().resolve(),
-            workspace_claim_map=workspace_claim_map,
-            seed=seed,
-            attempt_id=f"{status['run_group_id']}-seed{seed}",
-            run_group_id=status["run_group_id"],
-            model=args.model,
-            provider=provider,
-            user_hints=None,
-            n_improvement_paths=args.n_paths,
-            execution_profile=execution_profile,
-            sandbox_mode=sandbox_mode,
-            blacklist_terms=blacklist_terms,
-        )
-        for seed in args.seeds
-    ]
-
-    status["status"] = "running"
-    status["updated_at"] = _utcnow()
-    _write_status(run_dir, status)
-
-    results = asyncio.run(
-        run_seeded_pipeline_attempts(attempts, max_parallel=args.max_parallel, resume=True)
-    )
-
-    attempt_payloads: list[dict[str, Any]] = []
-    attempt_scores: list[float] = []
-    for cfg, result in zip(attempts, results):
-        submission_dir = (
-            Path(cfg.runs_root) / cfg.project_id / "paperbench_submission"
-        )
-        validation_payload: dict[str, Any] | None = None
-        if submission_dir.is_dir():
-            validation_payload = _validation_to_dict(validate_submission_tree(submission_dir))
-        score = _extract_score_from_state(result.state)
-        if score is not None:
-            attempt_scores.append(score)
-        attempt_payloads.append(
-            {
-                "attempt_id": cfg.attempt_id,
-                "seed": cfg.seed,
-                "status": "succeeded",
-                "elapsed_seconds": result.elapsed_seconds,
-                "project_id": cfg.project_id,
-                "submission_dir": str(submission_dir),
-                "submission_validation": validation_payload,
-                "score": score,
-            }
-        )
-        status["attempts"] = attempt_payloads
-        status["n_attempts"] = len(attempt_payloads)
-        status["updated_at"] = _utcnow()
-        _write_status(run_dir, status)
-
-    if attempt_scores:
-        mean, se, _ = mean_standard_error(attempt_scores)
-        status["mean_score"] = mean
-        status["standard_error"] = se
-    status["status"] = "succeeded"
-    status["completed_at"] = _utcnow()
-    status["updated_at"] = _utcnow()
-    _write_status(run_dir, status)
-
-
 def _validation_to_dict(validation: Any) -> dict[str, Any]:
     return {
         "ok": validation.ok,
@@ -347,25 +240,6 @@ def _validation_to_dict(validation: Any) -> dict[str, Any]:
         "file_count": validation.file_count,
         "committed_bytes": validation.committed_bytes,
     }
-
-
-def _extract_score_from_state(state: Any) -> float | None:
-    """Best-effort extraction of a single replication score from PipelineState.
-
-    Looks first at ``state.replication_score`` (if the pipeline ever sets it),
-    then falls back to a verification report rating if available. Returns
-    ``None`` when no usable signal is present.
-    """
-
-    score = getattr(state, "replication_score", None)
-    if isinstance(score, (int, float)):
-        return float(score)
-    verification = getattr(state, "verification_report", None)
-    if verification is not None:
-        report_score = getattr(verification, "replication_score", None)
-        if isinstance(report_score, (int, float)):
-            return float(report_score)
-    return None
 
 
 def _write_status(run_dir: Path, status: dict[str, Any]) -> None:
@@ -380,7 +254,7 @@ def _make_run_group_id(paper_id: str) -> str:
 
 
 def add_paperbench_subparser(subparsers: argparse._SubParsersAction) -> None:
-    pb = subparsers.add_parser("paperbench", help="PaperBench bundle inspection and seeded runs.")
+    pb = subparsers.add_parser("paperbench", help="PaperBench bundle inspection and dry-mode runs.")
     pb_sub = pb.add_subparsers(dest="pb_cmd", required=True)
 
     listing = pb_sub.add_parser("list", help="List vendored PaperBench bundles.")
@@ -396,43 +270,10 @@ def add_paperbench_subparser(subparsers: argparse._SubParsersAction) -> None:
     status.add_argument("--run-group-id", required=True)
     status.set_defaults(func=cmd_paperbench_status)
 
-    run = pb_sub.add_parser("run", help="Start a PaperBench run group (one or more seeded attempts).")
+    run = pb_sub.add_parser("run", help="Start a PaperBench dry run (placeholder submission only).")
     run.add_argument("--paper-id", required=True)
     run.add_argument("--bundles-root", default=None)
     run.add_argument("--run-group-id", default=None, help="Override the auto-generated run group id.")
-    run.add_argument(
-        "--seeds",
-        type=int,
-        nargs="+",
-        default=[0],
-        help="One or more integer seeds; one pipeline attempt is launched per seed.",
-    )
-    run.add_argument("--max-parallel", type=int, default=1)
-    run.add_argument(
-        "--pipeline",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Run the real agent pipeline (default). Pass --no-pipeline to skip the LLM "
-        "and produce a placeholder submission tree only.",
-    )
-    run.add_argument(
-        "--provider",
-        choices=("anthropic", "openai"),
-        default=None,
-    )
-    run.add_argument("--model", default=None)
-    run.add_argument("--n-paths", type=int, default=3)
-    run.add_argument(
-        "--execution-mode",
-        choices=("efficient", "max"),
-        default="efficient",
-    )
-    run.add_argument(
-        "--sandbox",
-        choices=("auto", "local", "docker", "runpod"),
-        default=DEFAULT_SANDBOX_MODE.value,
-    )
-    run.add_argument("--allow-sandbox-network", action="store_true")
     run.set_defaults(func=cmd_paperbench_run)
 
 
