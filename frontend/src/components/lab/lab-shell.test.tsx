@@ -46,7 +46,7 @@ describe("LabShell", () => {
         json: async () => ({
           projectId: "ui_sdk_uploaded_demo_1",
           outputDir: "runs/ui_sdk_uploaded_demo_1",
-          runMode: "sdk",
+          runMode: "rlm",
           llmProvider: "anthropic",
           sourceKind: "uploaded_pdf",
           sourceLabel: "paper.pdf",

@@ -637,7 +637,7 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
  * useRlmRun(events) — folds the event array into RlmRunState.
  *
  * Pure — only re-computes when the events array reference changes.
- * The caller (WorkflowView or replay harness) owns the event accumulation.
+ * The caller (RlmLab or replay harness) owns the event accumulation.
  */
 export function useRlmRun(events: RlmDashboardEvent[]): RlmRunState {
   return useMemo(() => events.reduce(fold, INITIAL_RLM_STATE), [events]);

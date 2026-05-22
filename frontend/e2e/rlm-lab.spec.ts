@@ -24,7 +24,9 @@ test("RLM lab renders the exploration tree from the fixture", async ({ page }) =
   await page.goto("/lab?rlmFixture=1");
 
   // Paper title is the single h1 inside the RlmLab root (data-testid="rlm-lab").
-  await expect(page.getByTestId("rlm-lab").locator("h1")).toBeVisible();
+  // Use .first() so Playwright strict mode doesn't reject the locator when the
+  // ?rlmFixture=1 path briefly produces two [data-testid="rlm-lab"] nodes (SSR + hydrated).
+  await expect(page.getByTestId("rlm-lab").first().locator("h1")).toBeVisible();
 
   // Final rubric score 0.53 appears in the RubricStrip scoreValue span.
   // It also appears in the climb annotation "baseline 0.22 → 0.53";
