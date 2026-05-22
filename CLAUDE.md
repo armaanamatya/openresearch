@@ -2,17 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **⚠ Architecture pivot in progress (2026-05).** This repo is being re-architected
-> from the 14-stage `PipelineStage` state machine to an RLM-based orchestrator built
-> on the `rlms` library (Recursive Language Models, arXiv 2512.24601). The canonical
-> plan is **`docs/design/rlm-pivot-brief.md`** — read it first. The architecture
-> described below is the *current, pre-pivot* code and is being replaced; where this
-> file and the brief conflict, the brief is the direction and the code below is the
-> present.
-
 ## Project: OpenResearch / ReproLab
 
-An agent pipeline that reproduces research papers end-to-end: ingest paper → understand claims → build environment → implement + run a baseline → gate the result → explore improvements → emit a benchmark report comparing the reproduction to the paper's claims. See `system_overview.md` and `docs/design/rlm-pivot-brief.md` for the full "why" — read those before making non-trivial architectural changes.
+An agent that reproduces research papers end-to-end: ingest paper → offload it as a REPL variable → RLM root model writes Python to understand claims, build an environment, implement and run a baseline, score against a rubric, and explore improvements → emit `final_report.{json,md}`. See `system_overview.md` and `docs/design/rlm-pivot-brief.md` for the full "why" — read those before making non-trivial architectural changes.
 
 ## Common commands
 
@@ -56,12 +48,11 @@ E2E tests use Playwright (`frontend/e2e/`); run via `npx playwright test` from `
 
 ```bash
 python -m backend.cli reproduce paper.pdf --provider anthropic --sandbox docker
-python -m backend.cli reproduce 2512.24601 --mode offline       # deterministic, no LLM
+python -m backend.cli reproduce 2512.24601                      # arXiv ID
 python -m backend.cli ingest paper.pdf                          # ingest only
-python -m backend.cli eval <project_id> --paper-metrics '{...}' # score completed run
 ```
 
-Useful flags: `--mode {offline,sdk,rlm}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost. `--mode rlm` is the production-hardened RLM path (Phase 5): per-primitive deadlines, `max_usd` cost cap, corpus-leak redaction at every egress, atomic run-status writes. Set `REPROLAB_RLM_ROOT_MODEL` to `gpt-5`, `qwen3-coder`, `kimi-k2.5`, or `claude` (defaults to GPT-5 when `OPENAI_API_KEY` is set).
+Useful flags: `--mode rlm` (the only supported mode, and the default), `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. Set `REPROLAB_RLM_ROOT_MODEL` to `gpt-5`, `qwen3-coder`, `kimi-k2.5`, or `claude` (defaults to GPT-5 when `OPENAI_API_KEY` is set).
 
 ### RLM auth — two surfaces, billed separately
 The RLM path has **two distinct LLM auth surfaces** and they are NOT interchangeable:
@@ -90,41 +81,55 @@ docker compose up --build
 `docker/entrypoint.sh` (under `tini`) runs the FastAPI backend on internal `:8000` and the Next.js frontend on public `:$PORT`. The frontend reaches the backend **server-side only** through `/api/demo/*` proxy routes — there is no CORS layer because the browser never talks to the backend directly. When debugging UI-vs-API issues, check the Next.js proxy route under `frontend/src/app/api/demo/`, not CORS.
 
 ### File-backed run state, not a service
-Each pipeline run is a **long-lived subprocess** spawned by the backend. Run state lives in `runs/<project_id>/`:
-- `demo_status.json` — UI-facing status snapshot
-- `pipeline_state.json` — checkpointed after every stage; resume-safe
+Each run is a **long-lived subprocess** spawned by the backend. Run state lives in `runs/<project_id>/`:
+- `demo_status.json` — UI-facing status snapshot (atomic write)
+- `rlm_state/` — per-iteration checkpoints; resume-safe
+- `dashboard_events.jsonl` — append-only SSE event log
 - `final_report.{json,md}` — the computed benchmark output
-- `*.jsonl` — agent event logs (SSE source)
+- `cost_ledger.jsonl` — per-primitive USD spend
+- `experiment_runs.jsonl` — every `run_experiment` result (logs, success, metrics)
 - `code/` — the reproduced project
+- `generated_rubric.json` — auto-derived rubric (arXiv runs without a vendored bundle)
 - Hermes audit chain artifacts
 
-SQLite (`REPROLAB_DATABASE_URL`, defaults to `sqlite:///reprolab.db`) is the event/persistence store with CQRS projections. Pipeline state is **persisted atomically** at each stage transition.
+SQLite (`REPROLAB_DATABASE_URL`, defaults to `sqlite:///reprolab.db`) is the event/persistence store with CQRS projections. Iteration state is checkpointed atomically after each RLM loop.
 
-### The 14-stage pipeline state machine
-`PipelineStage` in `backend/agents/orchestrator.py` is the **source of truth** for stage order. Each stage has a corresponding agent under `backend/agents/`. Order: ingest → paper-understanding → artifact-discovery → environment-detective → reproduction-planner → Gate 1 → baseline-implementation → experiment-runner → Gate 2 → improvement-selection → improvement-paths (parallel) → Gate 3 → research-map → complete.
+### The RLM orchestrator
+`backend/agents/rlm/run.py` is the run entry. It builds an `rlm.RLM(...)` from the `rlms` library (PyPI) and calls `.completion()` on a worker thread. The paper is offloaded as the REPL `context` variable — the root model sees only constant-size metadata about it (name, type, length), never the corpus itself (RLM Algorithm 1, arXiv 2512.24601).
 
-Two important behaviors **happen inside existing stages** rather than as new enum values — keep the stage count at 14:
+The root model writes Python that calls **10 domain primitives** exposed in the REPL via `custom_tools`:
 
-- **Rubric verification + self-improvement** (`rubric_verifier_enabled`): a `rubric-verifier` agent scores against a PaperBench-style weighted rubric at Gate 2 (`baseline_verification`) and Gate 3 (`improved_verification`). The canonical rubric is resolved once per run (vendored bundle's `rubric.json` or LLM-generated) and stored on `PipelineState.rubric_spec` so the two checkpoints stay comparable. Below `rubric_target_score`, the orchestrator loops improvement-selection + Gate 3, capped by `rubric_max_improvement_iterations`. Fail-closed: a verifier error degrades to the heuristic rubric.
-- **Environment build-and-repair** (`environment_build_validation_enabled`, docker-sandbox only): the reproduction Dockerfile is built at `ENVIRONMENT_BUILT` via `build_image()`; failures feed back to `environment-detective` in repair mode, capped by `environment_build_max_attempts`. Fail-soft — when the cap is spent, Gate 2 failure is allowed through and the run completes with an honest partial-reproduction verdict.
+- `understand_section(text_slice)` — datasets, metrics, training recipe, hardware clues, ambiguities from a slice
+- `extract_hyperparameters(text_slice)` — optimizer, learning rate, batch size, epochs
+- `detect_environment(method_spec)` — EnvironmentSpec (Dockerfile, framework, packages)
+- `build_environment(env_spec)` — build the Docker image, repairing the Dockerfile on failure
+- `plan_reproduction(method_spec, env_spec)` — ReproductionContract (smoke-test plan, eval plan)
+- `implement_baseline(plan)` — run the code-writing agent; returns the code directory path
+- `run_experiment(code_path, env_id)` — execute the baseline in a Docker container; returns `{success, metrics, logs}`
+- `verify_against_rubric(results, rubric)` — score results against a PaperBench-style rubric
+- `propose_improvements(current_results, rubric_scores, k)` — paper-specific improvement hypotheses with free-form tags
+- `record_candidate_outcome(candidate_id, outcome, parent_id)` — record the root's outcome decision for a candidate
 
-### Three verification gates
-Structured pass/fail with dynamic confidence thresholds and a supervisor-verifier layer. Gates can halt a run with `blocked_requires_human` unless fail-soft modes (see above) are enabled.
+Primitives are in `backend/agents/rlm/primitives.py`. The root also calls `llm_query` / `rlm_query` (library built-ins) to recursively navigate slices of `context`. Verification is the `verify_against_rubric` primitive — called when the root judges it useful; there are no fixed gate checkpoints. The run terminates via the library's `FINAL_VAR(<var>)` mechanism (no reserved `answer` variable), and produces `final_report.{json,md}`.
+
+Time is bounded three ways: `rlm`'s `max_timeout` (between iterations), per-primitive deadlines via `RunContext`, and a process-level wall-clock watchdog that hard-exits a wedged run.
 
 ### UI ↔ backend run lifecycle
-1. Lab UI (`frontend/src/components/lab/lab-shell.tsx`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload`).
-2. Backend spawns the pipeline subprocess, writes `demo_status.json`, returns initial state.
+1. RLM lab UI (`frontend/src/components/lab/rlm/`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload` / `/runs/arxiv`).
+2. Backend spawns the run subprocess, writes `demo_status.json`, returns initial state.
 3. UI opens an **SSE** stream via `/api/demo/events` → backend `/runs/<id>/events`.
-4. SSE frame types: `run_state` (full state + stage), `agent_log` (incremental log), `dashboard_event`. `stateMapForRun()` maps backend stage → graph node states.
-5. Payload enrichment is timeout-capped on both the GET and SSE routes; the client's `coalesceRunState` keeps the last enriched frame so a timed-out, payload-less frame never regresses the graph. **Don't remove this guard** when refactoring SSE handling — it prevents UI flicker on transient timeouts.
+4. SSE event types (full schema in `frontend_integration.md`): `repl_iteration`, `primitive_call`, `sub_rlm_spawned`, `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`, `rubric_score`.
+5. All events route through `sse_bridge.sanitize_iteration` — the single egress chokepoint that strips REPL locals and bounds stdout/stderr to metadata prefixes. The paper corpus never reaches the stream.
 
 A `localStorage` pointer auto-resumes an in-flight run when the user lands on a bare `/lab`.
 
 ### Where to look first
 - HTTP layer: `backend/app.py`
 - CLI / non-UI runs: `backend/cli.py`
-- Pipeline state machine: `backend/agents/orchestrator.py`
-- Run modes (sdk / offline): `backend/agents/pipeline.py`
+- RLM run entry: `backend/agents/rlm/run.py`
+- Domain primitives: `backend/agents/rlm/primitives.py`
+- System prompt: `backend/agents/rlm/system_prompt.py`
+- SSE bridge (egress chokepoint): `backend/agents/rlm/sse_bridge.py`
 - Subprocess spawn + SSE bridge: `backend/services/events/live_runs.py`
 - Paper ingestion: `backend/services/ingestion/parser/resolving_parser.py` (`ResolvingParser` — HTML > PDF > OCR cascade; `ArxivFetcher` writes the HTML sibling)
 - `backend/{agents,services}/` is named by function — read it directly.
@@ -136,7 +141,7 @@ A `localStorage` pointer auto-resumes an in-flight run when the user lands on a 
 When `REPROLAB_DEMO_SECRET` is set, run-start endpoints require a matching `X-Demo-Secret` header (constant-time comparison via `hmac.compare_digest`). Empty/unset secret disables the gate — that's local dev behavior, not a bug.
 
 ## Maintaining this doc and `system_overview.md`
-`system_overview.md` documents the "why" and "how it fits together"; this file documents the day-to-day. When you add a new pipeline stage, a new gate, a new sandbox, a new fail-soft/fail-closed mode, or change the SSE frame contract, update both. Don't document "what's where" — the code is named by function.
+`system_overview.md` documents the "why" and "how it fits together"; this file documents the day-to-day. When you add a new primitive, a new SSE event type, a new sandbox, or a new fail-soft/fail-closed mode, update both. Don't document "what's where" — the code is named by function.
 
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.
