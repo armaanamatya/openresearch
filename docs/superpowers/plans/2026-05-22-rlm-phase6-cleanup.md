@@ -104,12 +104,20 @@ grep -rn "run_pipeline_sdk\|run_pipeline_offline\|cmd_eval\|\"eval\"\|'eval'\|--
 
 In `cmd_reproduce` (around lines 540–595): delete the `offline` branch
 (`run_pipeline_offline`, ~547–561) and the `sdk` branch (`run_pipeline_sdk`,
-~579–626); keep only the `rlm` branch. Remove the `--mode` argument from the
-`reproduce` subparser, or make it accept only `rlm` with `default="rlm"` for
-back-compat. Delete `cmd_eval` (line 294) and the `eval` subparser
+~579–626); keep only the `rlm` branch. **Keep the `--mode` argument** (do not
+drop it) — set `choices=["rlm"], default="rlm"`. The frontend `/api/demo` POST
+and `live_runs.py` thread a `mode` field, and external scripts/`start.sh` may
+pass `--mode`; keeping the flag with a single choice preserves back-compat.
+Delete `cmd_eval` (line 294) and the `eval` subparser
 (`evaluate = sub.add_parser("eval", …)` … `evaluate.set_defaults`, lines
 702–710). Remove now-unused imports (`PipelineState` at line 296, the
 `backend.evals` imports inside `cmd_eval`).
+
+**Note — the stub-primitive gate is safe to leave alone.** `run.py`'s
+`_resolve_custom_tools` selects `build_stub_custom_tools` via the env var
+`REPROLAB_RLM_STUB_PRIMITIVES=1` (run.py:240), *not* via `--mode`. Collapsing
+`--mode` does not touch it; no rewiring needed. (Its `#59 not yet merged`
+docstrings are stale — optionally tidy them in Task 14, not here.)
 
 - [ ] **Step 3: Edit `backend/services/events/live_runs.py`**
 
@@ -458,18 +466,31 @@ git -C <worktree> add -A && git -C <worktree> commit -m "refactor(rlm-ui): delet
   `frontend/src/app/api/demo/events/route.ts`, `frontend/src/hooks/use-run.ts`,
   `frontend/src/lib/pipeline/layout.ts` (if dead).
 
-- [ ] **Step 1: Grep the consumers**
+- [ ] **Step 1: Grep the consumers AND trace the live SSE path first**
 
 ```bash
 cd frontend && grep -rn "events/contract\|pipeline-dashboard\|DemoRunMode\|runMode\|\"run_state\"\|\"agent_log\"\|\"dashboard_event\"" src/
 ```
 
+**Before deleting anything, confirm the live SSE path.** The RLM lab's events
+are produced by the *backend* writing `dashboard_events.jsonl`
+(`backend/agents/rlm/{run,binding}.py`, `dashboard_emitter.py`,
+`live_runs.py` — all KEPT) and the backend `/runs/<id>/events` endpoint;
+`/api/demo/events/route.ts` proxies that stream. `pipeline-dashboard.ts` is a
+frontend **server-side 14-stage state builder**, NOT the SSE source — deleting
+it does not affect live RLM events. Confirm this by reading
+`events/route.ts` + `use-run.ts` and verifying neither imports
+`pipeline-dashboard.ts` on the `dashboard_event` path. If either does, stop and
+re-scope.
+
 - [ ] **Step 2: Delete `contract.ts` and `pipeline-dashboard.ts`**
 
 Delete both (and `pipeline-dashboard.test.ts`). `pipeline-dashboard.ts` is the
-14-stage server-side dashboard builder; trace its exports
+14-stage server-side dashboard *state builder*; trace its exports
 (`node-runner.ts`/`server-fs.ts`/`server-payload.ts`) and delete the dead
-server-side dashboard code paths that fed the old UI.
+server-side dashboard code paths that fed the old UI — keeping the file/disk
+plumbing the RLM run still needs (`server-fs.ts`'s run-directory I/O,
+`server-payload.ts`'s `metaFromStatus`).
 
 - [ ] **Step 3: Collapse `DemoRunMode`**
 
@@ -544,13 +565,59 @@ field names there are the wire contract (authoritative source
 
 - [ ] **Step 1: Write failing tests for the event builders**
 
-In `tests/rlm/test_sse_bridge.py` add tests for three new builders —
-`build_candidate_proposed_event`, `build_candidate_outcome_event`,
-`build_rubric_score_event` — asserting the exact field shapes from handoff
-§2.1/§2.2/§2.3 (e.g. `candidate_proposed` → `{event, timestamp, iteration,
-round, parent_id?, candidate:{id,title,category,description,reasoning}}`).
-Add a `test_context.py` test that `RunContext` has `current_iteration: int = 0`
-and `propose_round: int = 0`.
+In `tests/rlm/test_sse_bridge.py` add tests for the three new builders (match
+the existing test file's import style and any shared fixtures):
+
+```python
+from backend.agents.rlm.sse_bridge import (
+    build_candidate_proposed_event,
+    build_candidate_outcome_event,
+    build_rubric_score_event,
+)
+
+
+def test_build_candidate_proposed_event_shape():
+    ev = build_candidate_proposed_event(
+        iteration=3, round=1, parent_id="baseline",
+        candidate={"id": "c1", "title": "tune lr", "category": "optimizer",
+                   "description": "raise the learning rate", "reasoning": "loss plateaued"},
+    )
+    assert ev["event"] == "candidate_proposed"
+    assert ev["iteration"] == 3 and ev["round"] == 1
+    assert ev["parent_id"] == "baseline"
+    assert set(ev["candidate"]) == {"id", "title", "category", "description", "reasoning"}
+    assert "timestamp" in ev
+
+
+def test_build_candidate_outcome_event_shape():
+    ev = build_candidate_outcome_event(
+        iteration=5, candidate_id="c1", outcome="promoted", rubric_delta=0.08,
+    )
+    assert ev["event"] == "candidate_outcome"
+    assert ev["candidate_id"] == "c1" and ev["outcome"] == "promoted"
+    assert ev["rubric_delta"] == 0.08
+
+
+def test_build_rubric_score_event_derives_area_status():
+    ev = build_rubric_score_event(
+        iteration=4, score=0.55, target=0.7,
+        areas=[{"area": "method", "score": 0.8, "weight": 0.5},
+               {"area": "results", "score": 0.3, "weight": 0.5}],
+    )
+    assert ev["event"] == "rubric_score"
+    assert ev["score"] == 0.55 and ev["target"] == 0.7
+    statuses = {a["area"]: a["status"] for a in ev["areas"]}
+    assert statuses == {"method": "pass", "results": "fail"}
+```
+
+In `tests/rlm/test_context.py` add:
+
+```python
+def test_run_context_has_tree_event_counters():
+    from backend.agents.rlm.context import RunContext
+    ctx = RunContext.__dataclass_fields__
+    assert "current_iteration" in ctx and "propose_round" in ctx
+```
 
 - [ ] **Step 2: Run the tests, verify they fail**
 
@@ -594,14 +661,46 @@ Implements handoff §3 (`candidate_proposed`), §4 (`rubric_score`), §5 Option 
 
 - [ ] **Step 1: Write failing tests**
 
-In `test_binding.py`: after a wrapped `propose_improvements` returns N
-hypotheses, `wrap_primitive` emits N `candidate_proposed` events (mapping
-`path_id→id`, `title→title`, `category→category`, `hypothesis→description`,
-`rationale→reasoning`) and increments `ctx.propose_round`. After a successful
-`verify_against_rubric`, it emits one `rubric_score` event; after a *failed*
-(`success=False`) verification it emits none. Add a test that the new
-`record_candidate_outcome` primitive emits a `candidate_outcome` event with the
-given `candidate_id`/`outcome`/`parent_id`.
+In `tests/rlm/test_binding.py` (follow the existing fixture style — the file
+already builds a `RunContext` + a fake/recording emitter; reuse it):
+
+```python
+def test_propose_improvements_emits_candidate_proposed_per_item(rlm_ctx, recorded_events):
+    tools = build_custom_tools(rlm_ctx)
+    # propose_improvements returns list[ImprovementHypothesis.model_dump()]
+    result = tools["propose_improvements"]["tool"](current_results={}, rubric_scores={})
+    proposed = [e for e in recorded_events if e["event"] == "candidate_proposed"]
+    assert len(proposed) == len(result)
+    first = proposed[0]["candidate"]
+    assert set(first) == {"id", "title", "category", "description", "reasoning"}
+    assert rlm_ctx.propose_round == 1
+
+
+def test_verify_against_rubric_emits_rubric_score_on_success(rlm_ctx, recorded_events):
+    tools = build_custom_tools(rlm_ctx)
+    tools["verify_against_rubric"]["tool"](results={"metrics": {"acc": 0.9}}, rubric={})
+    assert any(e["event"] == "rubric_score" for e in recorded_events)
+
+
+def test_verify_against_rubric_emits_nothing_on_failure(rlm_ctx, recorded_events, monkeypatch):
+    # force verify_against_rubric to return {"success": False, ...}
+    ...  # patch the primitive to fail-soft
+    tools = build_custom_tools(rlm_ctx)
+    tools["verify_against_rubric"]["tool"](results={}, rubric={})
+    assert not any(e["event"] == "rubric_score" for e in recorded_events)
+
+
+def test_record_candidate_outcome_emits_candidate_outcome(rlm_ctx, recorded_events):
+    tools = build_custom_tools(rlm_ctx)
+    tools["record_candidate_outcome"]["tool"](
+        candidate_id="c1", outcome="promoted", parent_id="baseline")
+    out = [e for e in recorded_events if e["event"] == "candidate_outcome"]
+    assert len(out) == 1
+    assert out[0]["candidate_id"] == "c1" and out[0]["outcome"] == "promoted"
+```
+
+Adapt the fixture names (`rlm_ctx`, `recorded_events`) to whatever
+`tests/rlm/conftest.py` / `test_binding.py` already provide.
 
 - [ ] **Step 2: Run the tests, verify they fail**
 
@@ -704,9 +803,12 @@ was deleted in Task 6). If anything else is red, fix it.
 - [ ] **Step 2: Frontend checks**
 
 ```bash
-cd frontend && npm run lint && npx tsc --noEmit && npm test
+cd frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
 ```
-Expected: lint **0 errors 0 warnings**; tsc clean; vitest green.
+Expected: lint **0 errors 0 warnings**; tsc clean; vitest green; `npm run build`
+succeeds. The production build catches server/client component-boundary and
+server-only-import-leak errors that dev `tsc` does not — required given how
+much of the lab shell this phase rewires.
 
 - [ ] **Step 3: Playwright e2e**
 
@@ -716,10 +818,11 @@ Run: `cd frontend && npx playwright test`. Expected: `rlm-lab.spec.ts` and
 - [ ] **Step 4: Dead-reference sweep**
 
 ```bash
-grep -rn "PipelineStage\|ReproLabOrchestrator\|run_pipeline_sdk\|run_pipeline_offline\|progress-strip\|gate-chips\|events/contract" backend/ frontend/src/ tests/
+grep -rn "PipelineStage\|ReproLabOrchestrator\|run_pipeline_sdk\|run_pipeline_offline\|pipeline-dashboard\|cmd_eval\|EvalRunner\|topology\b\|structured_output\|rubric_source\|progress-strip\|gate-chips\|telemetry-strip\|events/contract" backend/ frontend/src/ tests/
 ```
-Expected: no production hits (docs/historical specs may mention them — that is
-fine).
+Expected: no production hits (docs/historical specs under `docs/` may mention
+them — that is fine; the sweep is for live code). Catching a stray
+`from backend.agents.prompts.experiment_runner import …` is exactly the point.
 
 - [ ] **Step 5: Commit any fixes**
 
