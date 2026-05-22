@@ -110,13 +110,13 @@ class TestResolveCustomTools:
             assert isinstance(entry["description"], str)
 
     def test_uses_real_binding_when_present(self, tmp_path, make_context, monkeypatch):
-        """#59's binding.py is merged in — resolution binds the real primitive
-        layer, not the stub. This is the post-#59-merge default path."""
+        """binding.py is merged in — resolution binds the real primitive
+        layer, not the stub. This is the default path."""
         monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
         assert len(tools) == 10  # 9 original + record_candidate_outcome (Task 13)
-        assert label == "real (#59 binding)"
+        assert label == "real (binding)"
         for entry in tools.values():
             assert callable(entry["tool"])
             assert isinstance(entry["description"], str)
@@ -161,7 +161,7 @@ class TestResolveCustomTools:
         tools, label = _resolve_custom_tools(ctx)
         assert len(tools) == 9
         assert "stub" in label
-        assert "incomplete" in label
+        assert "binding failed" in label
 
 
 # ---------------------------------------------------------------------------
