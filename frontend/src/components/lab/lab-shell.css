@@ -44,9 +44,7 @@
   display: flex;
 }
 
-/* Primary button (the workflow actions row). The base .btn variant
- * lives in script-panel.css.
- */
+/* Primary button (the workflow actions row). */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
