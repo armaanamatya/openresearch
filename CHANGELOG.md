@@ -8,6 +8,36 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (night — constellation UI + dynamic sandbox capability + outcome canonicalization)
+- `frontend/src/components/lab/rlm/constellation-canvas.tsx` (695 LOC) + `layout-constellation.ts` (234 LOC) — replace the 4-node Reingold-Tilford tree with a force-directed graph that visualizes every primitive call and every mini-RLM, with progressive disclosure so the default view stays clean.
+- `frontend/src/components/lab/rlm/layout-constellation.test.ts` — pinned: empty input, 1+3 candidates, 50-primitive density (no-overlap under `forceCollide(radius+14)`), deterministic seed.
+- `d3-force@^3` (~20 KB) + `@types/d3-force` in `frontend/package.json` — only the focused sub-package, not the d3 umbrella.
+- `_OUTCOME_ALIASES` + `_canonicalize_outcome()` in `backend/agents/rlm/primitives.py` — case-insensitive map from natural-language outcome synonyms (success/ok/passed → promoted; fail/error → failed; partial → marginal; etc.) to the 6-value canonical set; unknown values pass through as literal.
+- `_friendly_candidate_title()` helper in `backend/agents/rlm/binding.py` — compresses 60-char candidate titles to ≤5 words by splitting on colon / em-dash with first-words fallback; emitted alongside the full title as `display_title` on the wire.
+- `_compute_constraint_guidance(sandbox_mode, gpu_mode)` helper in `backend/agents/baseline_implementation.py` — pure dynamic decision: `runpod` OR `gpu_mode=max` → no CPU constraint; `{docker, local}` × {off, auto, prefer, None} → CPU smoke-test guidance; unknown → conservative (no guidance).
+- `RunContext.gpu_mode` field — threaded from `ExecutionProfile.gpu_mode` so the constraint helper sees the real value instead of always None.
+- `tests/agents/test_baseline_implementation_sandbox_aware.py` — 10-case parameterized `TestDynamicComputeGuidance` (runpod/docker/local × off/auto/prefer/max/None) + `TestAuthSurfaceParity` (claude / claude-oauth / gpt-5 produce byte-identical prompts) + `TestGpuModePlumbedThroughRunContext`.
+- `tests/rlm/test_binding.py` — `test_record_candidate_outcome_canonicalizes_outcome_aliases` (17 alias→canonical pairs incl. case-insensitivity + space/hyphen normalization) + `..._unknown_outcome_falls_back_to_literal_not_reject` + `..._empty_outcome_falls_back_to_unknown`.
+
+### Changed (night)
+- `rlm-lab.tsx` swaps `ExplorationCanvas → ConstellationCanvas`. `ExplorationCanvas + layout-tree` are NOT deleted — preserved as fallback.
+- `TreeNode.kind` union extended with `primitive` and `llm_primitive`; `foldPrimitiveCall` appends one tree node per `status=ok` call keyed by `primitivePhase`. `LLM_USING_PRIMITIVES` set (understand_section, propose_improvements, recommend_next_tool, verify_against_rubric, plan_reproduction, extract_hyperparameters, detect_environment) gets the pulsing mini-RLM visual; `NON_VISUALIZED` set (heartbeat, check_user_messages, record_candidate_outcome, respond_to_user) is filtered out.
+- `run_experiment` default cap removed — only honors `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var OR `ctx.remaining_s()` from `--max-wall-clock`. Without either, `timeout=None` waits indefinitely (per user mandate "no cost cap until set"). The CPU-bound-baseline problem the 1800s cap was working around is now addressed at the agent prompt layer instead.
+- `record_candidate_outcome` — strict-reject of any outcome not in `_VALID_OUTCOMES` (commit 1f72e07) replaced with canonicalize-or-accept-literal. Empty/None outcome falls back to the literal string `"unknown"` so the event still emits.
+- `_run_baseline_with_sdk` call now threads `gpu_mode=getattr(ctx, "gpu_mode", None)` so the sandbox-aware prompt receives the real value.
+
+### Fixed (night)
+- **Constellation viewport-fit + progressive disclosure** (per "scale to fit the display correctly, only show sub-RLM on click"): auto-fit-to-viewport with `MIN_FIT 600×400` floor so sparse runs don't look lost; user-interaction tracking stops auto-refit once they wheel-zoom or drag-pan; activity nodes (primitive / llm_primitive / subrlm) hidden by default; per-structural-node `+N activity` badge fades them in with 200ms transition; edges to hidden nodes are culled (no orphan lines).
+- **Outcome strict-reject silent regression**: my commit 1f72e07's strict 6-value validator was dropping all 4 of C5's `record_candidate_outcome` calls because the model passed natural English synonyms instead of the literal canonical strings. Result: 0 outcome events on the wire, gate unreachable for that paper. C2 + C4 + C5 (3 papers, 0 promoted between them) may all have had outcomes silently eaten.
+- **Static "docker = CPU forever" heuristic** (per "sandbox shouldn't be cpu only it should be dynamic since we can use runpod"): replaced with `_compute_constraint_guidance(sandbox_mode, gpu_mode)` honest 2D decision. runpod runs no longer get the CPU smoke-test nudge; `--gpu-mode max` overrides the constraint on any sandbox.
+
+### Validated (night)
+- **3 total promotions across this + the prior session** (B1 + C1 + C3); **2 distinct papers promoted** (CodeOCR ×2, LLM CodeGen ×1) of 4 attempted before the outcome-regression discovery. Round 3 (C6 + C7) running with the canonicalization fix live to chase the 3rd-distinct.
+- **560 tests pass** across `tests/rlm/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite_concurrent.py tests/routes/test_leaderboard_http.py` after all 4 commits.
+- **TypeScript clean** (`npx tsc --noEmit`); 214 vitest pass on the constellation surface (npm test infra blocked elsewhere on pre-existing Node 21 / rolldown — CLAUDE.md mandates ≥22.12).
+
+---
+
 ### Added (late evening — parallel paper sweep + reliability sprint)
 - `tests/services/events/test_live_runs_status_ordering.py` — 5 compile-the-wrapper tests pinning: `write_status("completed")` before `finalize_benchmark()`; finalize wrapped in try/except; `finally:` block with `os._exit`; exit code follows status; failure path also reaches finally.
 - `tests/test_eventstore_sqlite_concurrent.py` — 3 tests pinning concurrent SQLite writers under WAL: 2 threads × different aggregates both succeed; 4×20 = 80 appends complete < 25 s; same-aggregate same-version → exactly one wins with `ConcurrencyError` (not `"database is locked"`).

@@ -1,3 +1,73 @@
+## 2026-05-23 (night) — Constellation UI + dynamic sandbox + outcome canonicalization; 3 promotions / 2 distinct papers, round 3 chasing the 3rd-distinct
+
+_Updated: 2026-05-23 night._
+
+### Headline
+
+4 commits: removed the run_experiment default cap; rewrote the sandbox guidance to be dynamic on `(sandbox_mode, gpu_mode)` not "docker = CPU forever"; replaced the 4-node tree with a live constellation graph + progressive disclosure UI; fixed a self-inflicted outcome strict-reject regression that was silently dropping the model's natural-English outcome strings on every run.
+
+### Commits landed (newest first)
+
+| SHA | Headline | Lines |
+| --- | --- | --- |
+| `183f4d6` | Outcome strict-reject regression — record_candidate_outcome was eating natural-language synonyms like 'success' / 'fail' and emitting zero events | +130 / -19 |
+| `6022008` | Constellation graph replaces the 4-node tree — every primitive call + every mini-RLM is visible with progressive disclosure so the default view stays clean | +1584 / -8 |
+| `34749b6` | Sandbox guidance is now dynamic (sandbox_mode + gpu_mode), not 'docker = CPU forever' — runpod runs no longer get smoke-test nudge | +158 / -75 |
+| `c2dc968` | Cap removed by default + agent learns the sandbox is CPU-only — papers now feasible end to end without timeouts | +222 / -21 |
+
+### Paper-sweep results (cumulative across this + prior session)
+
+| Run | arXiv | Iters | Rubric | Promoted | Notes |
+|---|---|---|---|---|---|
+| B1 (prior) | 2602.01785 CodeOCR | 6 | 31.9% | **1 ✓** | first-ever gate hit |
+| A1 | 2512.24601 RLM | 3 | 9.6% | 0 | old prompt |
+| A2 | 2512.18131 LLM CodeGen | 3 | 14.4% | 0 | old prompt |
+| C1 | 2602.01785 CodeOCR | 2 | 3.7% | **1 ✓** | new prompt validates |
+| C2 | 2602.17186 Visual Info Gain | 6 | 7.1% | 0 (1 marginal) | outcomes likely eaten by strict-reject |
+| C3 | 2512.18131 LLM CodeGen | 2 | 12.8% | **1 ✓** | new prompt + canonicalization |
+| C4 | 2512.24601 RLM | 6 | 32.7% | 0 (1 marginal) | highest rubric, close miss |
+| C5 | 2603.26337 RACE-bench | 3 | 3.2% | 0 (0 outcomes!) | the regression that surfaced 183f4d6 |
+| **C6** | 2602.17186 Visual Info Gain | running | — | — | retry with canonicalization fix live |
+| **C7** | 2603.26337 RACE-bench | running | — | — | retry with canonicalization fix live |
+
+**3 total promotions · 2 distinct papers promoted** (CodeOCR + LLM CodeGen). Round 3 (C6 + C7) racing for the 3rd-distinct now that natural-English outcomes register correctly.
+
+### What's now verified end-to-end
+
+| Capability | Status | Where verified |
+| --- | --- | --- |
+| Live constellation graph w/ progressive disclosure | ✅ | C4 (95 events, dense case) + C1 (sparse) both render cleanly with default view + click-to-expand |
+| Friendly candidate titles (display_title on wire) | ✅ | binding helper + 6 backend tests; UI renders short label, full text in tooltip |
+| Mini-RLM visualization (every LLM-using primitive) | ✅ | 7 primitive types get pulsing circles; non-LLM (heartbeat etc.) filtered out |
+| Sandbox guidance dynamic on (sandbox, gpu_mode) | ✅ | 10-case parameterized table + auth-parity (API/OAuth/OpenAI byte-identical prompts) |
+| Outcome canonicalization (natural English → canonical) | ✅ | 17-pair alias map; unknowns pass through as literal; never reject + drop |
+| No default per-primitive timeout cap | ✅ | run_experiment honors only env var OR run-budget deadline |
+
+### What's still open (tracked, not blocking)
+
+| # | Item | Severity | Path |
+| --- | --- | --- | --- |
+| 1 | 3rd distinct paper not yet promoted | Medium | C6 / C7 in flight; if both miss, try fresh paper |
+| 2 | implement_baseline still doesn't emit intermediate SSE events | Low | constellation UI mitigates visually; back-end change would require new event types |
+| 3 | Frontend `npm test` blocked on pre-existing Node 21 / rolldown infra | Low | CLAUDE.md mandates ≥22.12; type-check + manual UI works |
+| 4 | Round-3 results pending validation of canonicalization fix end-to-end | High | monitor `beahqmtv0` watches C6 + C7 |
+
+### Live URLs (this session's runs)
+
+- **B1 promoted** (CodeOCR baseline): http://localhost:3000/lab?projectId=prj_7b7b34eb9d623b75
+- **C1 promoted** (CodeOCR re-run): http://localhost:3000/lab?projectId=prj_b3b00478bcc974b6
+- **C3 promoted** (LLM CodeGen): http://localhost:3000/lab?projectId=prj_40ed1381627a46a0
+- **C4 close-miss** (RLM, rubric 32.7%): http://localhost:3000/lab?projectId=prj_d42934cc91035eb0
+- **C6 running** (Visual Info Gain retry): http://localhost:3000/lab?projectId=prj_0181aa08c697382f
+- **C7 running** (RACE-bench retry): http://localhost:3000/lab?projectId=prj_829ee3213b96d1fd
+- Leaderboard: http://localhost:3000/leaderboard
+
+### Test count check
+
+560 passed + 1 xfailed (pre-existing) across `tests/rlm/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite_concurrent.py tests/routes/test_leaderboard_http.py`. TypeScript `npx tsc --noEmit` clean. Zero regressions from any of the 4 night commits.
+
+---
+
 ## 2026-05-23 (late evening) — Parallel 4-paper sweep + 6 reliability commits — first run hits promoted-candidate gate
 
 _Updated: 2026-05-23 evening._
