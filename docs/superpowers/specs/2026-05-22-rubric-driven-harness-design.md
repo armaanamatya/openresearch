@@ -1,10 +1,9 @@
 # Rubric-Driven Reproduction Harness (`rdr`) — Design Spec
 
-_Date: 2026-05-22 · Status: **design approved** (brainstorming) · Next: implementation._
-_Companion: `2026-05-22-rubric-driven-harness-implementation.md` — the executable implementation handoff._
+_Date: 2026-05-22 · Status: **implemented**._
 
 This spec is self-contained: §1–§11 are the design; §12 captures the session
-context and standing instructions so the work survives a conversation compaction.
+context and standing instructions preserved from the original implementation handoff.
 
 ---
 

@@ -225,7 +225,7 @@ rdr reuses `leaf_scorer.score_reproduction` and `amend_final_report` (per the rd
 - All `docs/superpowers/plans/2026-05-2[12]-*.md` (Phase 4/5/6 + infra plan + debug-harden plan + static-values plan — all delivered).
 - All `docs/superpowers/specs/2026-05-09-*.md`.
 - All `docs/superpowers/specs/2026-05-2[12]-*.md` **except**:
-  - `2026-05-22-rubric-driven-harness-design.md` and `2026-05-22-rubric-driven-harness-implementation.md` — both consumed into `architecture.md` then deleted at the end of Phase 4.
+  - `2026-05-22-rubric-driven-harness-design.md` — retained as the canonical RDR design record.
   - This spec (`2026-05-23-cleanup-condensation-leaderboard-design.md`) — deleted at the end of Phase 5.
 - `docs/superpowers/specs/pr-body-*.md` (PR bodies — git history has them).
 

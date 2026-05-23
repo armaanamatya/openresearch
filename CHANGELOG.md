@@ -48,6 +48,7 @@ version + date and start a new `[Unreleased]` block above it.
 - Threaded `RunBudget.max_pod_seconds` through CLI PaperBench paths, live-run subprocesses, RDR, and hybrid Phase 1/Phase 2 budgets.
 - Frontend live-run state preserves terminal/chat/candidate/RDR cluster events across long streams and falls back to polling after SSE errors.
 - Library, leaderboard, and recent-run surfaces now show explicit backend-outage states instead of silent empty success states.
+- Removed stale committed handoff docs so the tracked docs inventory is back at the launch-readiness limit of 14 Markdown files.
 
 ### Added (ship-readiness)
 - Vendored PaperBench bundle identity guard covering `ftrl`, `mechanistic-understanding`, and `sequential-neural-score-estimation`.
