@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import pickle
+import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.rdr.controller import run_rdr
+from backend.agents.rdr.controller import _ClusterWatchdog, run_rdr
 from backend.agents.rdr.models import Artifacts, RdrResult, RubricLeaf, WorkCluster
 
 
@@ -853,3 +854,45 @@ async def test_iterations_count_reflects_actual_dispatches(
         assert report["iterations"] <= inflated, (
             "dispatch count exceeded inflated upper bound (impossible)"
         )
+
+
+# ---------------------------------------------------------------------------
+# _ClusterWatchdog unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_disarms_on_success() -> None:
+    """Arming then disarming before the timeout elapses must NOT call os._exit."""
+    with patch("os._exit") as mock_exit:
+        wd = _ClusterWatchdog(timeout_s=5.0, label="test_success")
+        wd.arm()
+        time.sleep(0.02)
+        wd.disarm()
+        # Give the timer a tiny extra window to fire if it were still ticking
+        time.sleep(0.05)
+        mock_exit.assert_not_called()
+
+
+def test_watchdog_fires_on_timeout() -> None:
+    """When the timeout elapses before disarm, os._exit(124) must be called."""
+    exit_calls: list[int] = []
+
+    def fake_exit(code: int) -> None:
+        exit_calls.append(code)
+
+    with patch("backend.agents.rdr.controller.os._exit", side_effect=fake_exit):
+        wd = _ClusterWatchdog(timeout_s=0.05, label="test_fire")
+        wd.arm()
+        # Wait long enough for the timer thread to fire
+        time.sleep(0.25)
+
+    assert exit_calls == [124], f"Expected os._exit(124), got: {exit_calls}"
+
+
+def test_watchdog_disarm_is_idempotent() -> None:
+    """Calling disarm() multiple times must not raise."""
+    wd = _ClusterWatchdog(timeout_s=10.0, label="test_idempotent")
+    wd.disarm()  # disarm before arm — no-op
+    wd.arm()
+    wd.disarm()
+    wd.disarm()  # second disarm — must be silent

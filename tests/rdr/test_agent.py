@@ -7,12 +7,13 @@ are made — the SDK infra is verified through call-argument inspection.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from backend.agents.rdr.agent import reproduce
+from backend.agents.rdr.agent import reproduce, _snapshot_repo_root_entries, _cleanup_repo_root_escape
 from backend.agents.rdr.models import (
     AgentContext,
     Artifacts,
@@ -434,3 +435,107 @@ def test_snapshot_excludes_ephemeral_and_cache_dirs(tmp_path):
     assert not any("sbi-logs" in p for p in snap), snap
     assert not any(p.endswith(".lock") for p in snap), snap
     assert not any(p.endswith(".pyc") for p in snap), snap
+
+
+# ---------------------------------------------------------------------------
+# CWD guard tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cwd_guard_restores_cwd_on_success(tmp_path, make_context, monkeypatch):
+    """After a successful reproduce(), the working directory is restored to what it was before."""
+    run_ctx = make_context(tmp_path, project_id="cwd_success_test")
+    cwd_before = Path.cwd()
+
+    async def fake_collect(
+        agent_id: str,
+        prompt: str,
+        *,
+        project_dir: Path,
+        **kwargs: Any,
+    ) -> str:
+        (project_dir / "commands.json").write_text("[]", encoding="utf-8")
+        return ""
+
+    import backend.agents.runtime.invoke as invoke_mod
+    monkeypatch.setattr(invoke_mod, "collect_agent_text", fake_collect)
+
+    ac = _make_agent_context()
+    await reproduce(ac, ctx=run_ctx)
+
+    assert Path.cwd() == cwd_before
+
+
+@pytest.mark.asyncio
+async def test_cwd_guard_restores_cwd_on_failure(tmp_path, make_context, monkeypatch):
+    """Even when collect_agent_text raises, the working directory is restored."""
+    run_ctx = make_context(tmp_path, project_id="cwd_fail_test")
+    cwd_before = Path.cwd()
+
+    async def raising_collect(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("simulated SDK failure")
+
+    import backend.agents.runtime.invoke as invoke_mod
+    monkeypatch.setattr(invoke_mod, "collect_agent_text", raising_collect)
+
+    ac = _make_agent_context()
+    result = await reproduce(ac, ctx=run_ctx)
+
+    # The outer fail-soft wrapper returns Artifacts(failed=True) — CWD must still be restored.
+    assert result.failed is True
+    assert Path.cwd() == cwd_before
+
+
+@pytest.mark.asyncio
+async def test_cwd_guard_cleans_repo_root_escape(
+    tmp_path: Path, make_context: Any, monkeypatch: Any, caplog: Any
+) -> None:
+    """When the agent creates a stray directory at the repo root, it is removed and a
+    WARNING is logged.  Uses a monkeypatched _REPO_ROOT pointing at tmp_path so the
+    real repo root is never touched."""
+    import backend.agents.rdr.agent as agent_mod
+
+    # Redirect _REPO_ROOT to a safe temp directory.
+    fake_root = tmp_path / "fake_repo_root"
+    fake_root.mkdir()
+    (fake_root / "backend").mkdir()  # satisfies the validation check
+
+    monkeypatch.setattr(agent_mod, "_REPO_ROOT", fake_root)
+
+    run_ctx = make_context(tmp_path, project_id="cwd_escape_test")
+
+    async def fake_collect_with_escape(
+        agent_id: str,
+        prompt: str,
+        *,
+        project_dir: Path,
+        **kwargs: Any,
+    ) -> str:
+        # Simulate agent escaping out of code_dir and creating a dir at the (fake) repo root.
+        stray = fake_root / "rdr_escape_test"
+        stray.mkdir(exist_ok=True)
+        (stray / "model.py").write_text("# stray file\n", encoding="utf-8")
+        (project_dir / "commands.json").write_text("[]", encoding="utf-8")
+        return ""
+
+    import backend.agents.runtime.invoke as invoke_mod
+    monkeypatch.setattr(invoke_mod, "collect_agent_text", fake_collect_with_escape)
+
+    ac = _make_agent_context()
+    with caplog.at_level(logging.WARNING, logger="backend.agents.rdr.agent"):
+        result = await reproduce(ac, ctx=run_ctx)
+
+    # reproduce() itself should succeed (stray dir is an agent behaviour issue, not a crash)
+    assert not result.failed
+
+    # The stray directory must have been removed by the guard
+    assert not (fake_root / "rdr_escape_test").exists(), (
+        "Guard did not remove the stray directory at the (fake) repo root"
+    )
+
+    # A WARNING must have been emitted
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("escaped" in r.message for r in warning_records), (
+        f"Expected escape warning in logs; got: {[r.message for r in warning_records]}"
+    )

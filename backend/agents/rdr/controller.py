@@ -15,6 +15,7 @@ import logging
 import os
 import pickle
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -37,6 +38,53 @@ if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-cluster watchdog
+# ---------------------------------------------------------------------------
+
+_RDR_WATCHDOG_DEFAULT_S = float(os.environ.get("RDR_CLUSTER_WATCHDOG_S", "900"))
+
+
+class _ClusterWatchdog:
+    """Per-cluster wall-clock guard.
+
+    Mitigates a known Claude-SDK aclose() deadlock: when the SDK's async
+    generator can't be closed cleanly after its subprocess exits, the
+    controller wedges in futex_wait_queue indefinitely. This watchdog runs
+    in a daemon thread (independent of the asyncio loop) so it fires even
+    when the loop deadlocks. When fired, it calls ``os._exit(124)`` — abrupt
+    but reliable. No final_report is written; the operator sees the watchdog
+    log line in the run log.
+    """
+
+    def __init__(self, timeout_s: float = _RDR_WATCHDOG_DEFAULT_S, *, label: str = ""):
+        self.timeout_s = float(timeout_s)
+        self.label = label
+        self._timer: threading.Timer | None = None
+
+    def _fire(self) -> None:
+        logger.critical(
+            "rdr/watchdog: no progress for %.0fs (%s) — terminating python (exit 124). "
+            "This usually means the Claude SDK deadlocked on aclose() after a subprocess exit.",
+            self.timeout_s, self.label,
+        )
+        os._exit(124)
+
+    def arm(self) -> None:
+        self.disarm()
+        t = threading.Timer(self.timeout_s, self._fire)
+        t.daemon = True
+        t.start()
+        self._timer = t
+        logger.debug("rdr/watchdog: armed for %.0fs (%s)", self.timeout_s, self.label)
+
+    def disarm(self) -> None:
+        t = self._timer
+        if t is not None:
+            t.cancel()
+            self._timer = None
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -250,6 +298,8 @@ async def run_rdr(
             artifacts=done,
             prior_scores=None,
         )
+        wd = _ClusterWatchdog(label=f"cluster_{idx}_{cluster.id}")
+        wd.arm()
         try:
             art = await _reproduce(agctx, ctx=ctx)
         except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
@@ -262,6 +312,8 @@ async def run_rdr(
                 failed=True,
                 error=f"{type(exc).__name__}: {exc}",
             )
+        finally:
+            wd.disarm()
 
         done[cluster.id] = art
 
@@ -402,6 +454,8 @@ async def run_rdr(
                 artifacts=done,
                 prior_scores=scores,
             )
+            wd = _ClusterWatchdog(label=f"repair_{rep_n}_cluster_{cluster.id}")
+            wd.arm()
             try:
                 art = await _reproduce(agctx, ctx=ctx)
             except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
@@ -414,6 +468,8 @@ async def run_rdr(
                     failed=True,
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            finally:
+                wd.disarm()
             done[cluster.id] = art
             total_agent_dispatches += 1
 

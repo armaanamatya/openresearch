@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
 import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,6 +53,50 @@ _EXCLUDE_DIRS = frozenset({
 _EXCLUDE_SUFFIXES = frozenset({
     ".pyc", ".pyo", ".so", ".o", ".lock", ".dylib", ".dll",
 })
+
+# ---------------------------------------------------------------------------
+# Repo-root CWD guard
+# ---------------------------------------------------------------------------
+
+# Repo root, resolved once at import time so the guard is cheap to invoke.
+# agent.py is at backend/agents/rdr/agent.py → parents[3] is the repo root.
+_REPO_ROOT: Path | None = Path(__file__).resolve().parents[3]
+if not (_REPO_ROOT / "backend").is_dir():
+    # Defensive: if the layout changed, disable the guard rather than rmtree the wrong place.
+    _REPO_ROOT = None  # type: ignore[assignment]
+
+
+def _snapshot_repo_root_entries() -> set[str]:
+    """Names of top-level entries at the repo root, excluding dotfiles."""
+    if _REPO_ROOT is None:
+        return set()
+    try:
+        return {p.name for p in _REPO_ROOT.iterdir() if not p.name.startswith(".")}
+    except OSError:
+        return set()
+
+
+def _cleanup_repo_root_escape(before: set[str], cluster_id: str) -> None:
+    """Detect + remove any top-level entries that appeared during a cluster."""
+    if _REPO_ROOT is None:
+        return
+    after = _snapshot_repo_root_entries()
+    new = after - before
+    if not new:
+        return
+    logger.warning(
+        "rdr/agent: cluster %r escaped its working dir — created %s at repo root; removing",
+        cluster_id, sorted(new),
+    )
+    for name in sorted(new):
+        path = _REPO_ROOT / name
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists() or path.is_symlink():
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("rdr/agent: cleanup of %r failed: %s", str(path), exc)
 
 
 def _render_prompt(agent_context: AgentContext, code_dir: Path) -> str:
@@ -272,18 +318,31 @@ async def _reproduce_inner(
 
     # 5. Run the SDK coding agent (same infrastructure as run_with_sdk),
     #    bounded by the run's remaining wall-clock budget.
-    agent_text = await asyncio.wait_for(
-        collect_agent_text(
-            "baseline-implementation",
-            prompt,
-            project_dir=code_dir,
-            model=model,
-            provider=provider,
-            runtime=runtime,
-            max_turns=max_turns,
-        ),
-        timeout=timeout_s,
-    )
+    #    Guard: snapshot repo-root entries before, chdir into code_dir, then
+    #    detect + clean any top-level stray paths created by the agent (e.g.
+    #    a cloned repo at the repo root rather than inside code_dir).
+    cwd_before = Path.cwd()
+    root_before = _snapshot_repo_root_entries()
+    try:
+        os.chdir(code_dir)
+        agent_text = await asyncio.wait_for(
+            collect_agent_text(
+                "baseline-implementation",
+                prompt,
+                project_dir=code_dir,
+                model=model,
+                provider=provider,
+                runtime=runtime,
+                max_turns=max_turns,
+            ),
+            timeout=timeout_s,
+        )
+    finally:
+        try:
+            os.chdir(cwd_before)
+        except OSError:
+            pass
+        _cleanup_repo_root_escape(root_before, cluster_id)
 
     # 6. Snapshot files written by the agent.
     files = _snapshot_code_dir(code_dir)
