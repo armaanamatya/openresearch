@@ -357,6 +357,11 @@ def resolve_gpu_requirements(
             f"got {type(requirements).__name__}"
         )
 
+    # ---- vram_override: per-run CLI override bypasses LLM estimate.
+    vram_override = getattr(ctx, "vram_override", None)
+    if vram_override is not None:
+        req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
+
     settings = get_settings()
     cloud_types: tuple[str, ...] = (
         ("COMMUNITY", "SECURE")
@@ -381,8 +386,11 @@ def resolve_gpu_requirements(
     tmp.write_text(_json.dumps(payload, default=str), encoding="utf-8")
     tmp.replace(cache_file)
 
-    # ---- Emit SSE event.
+    # ---- Emit SSE event: gpu_resolved for all plans; gpu_fallback additionally
+    #      when the resolver fell back to the default SKU (no catalog match).
     _emit_dashboard_event(ctx, event_type="gpu_resolved", payload=payload)
+    if plan.source == "fallback":
+        _emit_dashboard_event(ctx, event_type="gpu_fallback", payload=payload)
 
     return payload
 

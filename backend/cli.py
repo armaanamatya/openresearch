@@ -734,6 +734,22 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     configure_root_logger()
     runs_root = Path(args.runs_root)
 
+    # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
+    # pydantic-settings picks them up. Non-None CLI values override env defaults.
+    import os as _os
+    if getattr(args, "dynamic_gpu", None) is not None:
+        _os.environ["REPROLAB_DYNAMIC_GPU"] = "true" if args.dynamic_gpu else "false"
+    if getattr(args, "force_single_gpu", None) is not None:
+        _os.environ["REPROLAB_FORCE_SINGLE_GPU"] = "true" if args.force_single_gpu else "false"
+    if getattr(args, "max_gpu_usd_per_hour", None) is not None:
+        _os.environ["REPROLAB_MAX_GPU_USD_PER_HOUR"] = str(args.max_gpu_usd_per_hour)
+    if getattr(args, "max_run_gpu_usd", None) is not None:
+        _os.environ["REPROLAB_MAX_RUN_GPU_USD"] = str(args.max_run_gpu_usd)
+    if getattr(args, "dynamic_gpu_headroom", None) is not None:
+        _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
+    if getattr(args, "vram_gb", None) is not None:
+        _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
@@ -840,7 +856,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
-    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations or _max_pod_seconds is not None:
+    _max_run_gpu_usd = getattr(args, "max_run_gpu_usd", None)
+    if (
+        args.max_usd is not None
+        or args.max_wall_clock is not None
+        or args.max_invocations
+        or _max_pod_seconds is not None
+        or _max_run_gpu_usd is not None
+    ):
         from backend.agents.resilience import RunBudget
 
         run_budget = RunBudget(
@@ -848,6 +871,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             max_wall_clock_seconds=args.max_wall_clock,
             max_pod_seconds=_max_pod_seconds,
             max_invocations_per_agent=_max_invocations_from_arg(args.max_invocations),
+            max_run_gpu_usd=_max_run_gpu_usd,
         )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode=args.mode)
     print(
@@ -1101,6 +1125,48 @@ def _build_parser() -> argparse.ArgumentParser:
             "an ERROR log is emitted and manual cleanup is required. "
             "Also read from REPROLAB_MAX_POD_SECONDS env var."
         ),
+    )
+    reproduce.add_argument(
+        "--dynamic-gpu",
+        dest="dynamic_gpu",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable dynamic GPU SKU selection from paper hardware clues (default: from REPROLAB_DYNAMIC_GPU).",
+    )
+    reproduce.add_argument(
+        "--force-single-gpu",
+        dest="force_single_gpu",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="When dynamic-gpu is on, cap GPU count at 1 (default: from REPROLAB_FORCE_SINGLE_GPU).",
+    )
+    reproduce.add_argument(
+        "--max-gpu-usd-per-hour",
+        dest="max_gpu_usd_per_hour",
+        type=float,
+        default=None,
+        help="Per-GPU $/hr cap for SKU selection (default: from REPROLAB_MAX_GPU_USD_PER_HOUR=10.0).",
+    )
+    reproduce.add_argument(
+        "--max-run-gpu-usd",
+        dest="max_run_gpu_usd",
+        type=float,
+        default=None,
+        help="Total RunPod USD cap per run (default: from REPROLAB_MAX_RUN_GPU_USD=10.0).",
+    )
+    reproduce.add_argument(
+        "--dynamic-gpu-headroom",
+        dest="dynamic_gpu_headroom",
+        type=float,
+        default=None,
+        help="Multiplier on LLM VRAM estimate before tier-up (default: from REPROLAB_DYNAMIC_GPU_HEADROOM=1.25).",
+    )
+    reproduce.add_argument(
+        "--vram-gb",
+        dest="vram_gb",
+        type=int,
+        default=None,
+        help="Manual VRAM override; bypasses LLM estimate but headroom multiplier still applies.",
     )
     reproduce.add_argument(
         "--max-invocations",

@@ -300,6 +300,15 @@ class RunpodBackend(RuntimeBackend):
                     pod_started_at=sandbox.created_at,
                     agent_id="experiment-runner",
                 )
+                if self.gpu_plan is not None and sandbox.created_at is not None:
+                    _elapsed_hr = (
+                        (datetime.now(timezone.utc) - sandbox.created_at).total_seconds()
+                        / 3600.0
+                    )
+                    self._run_budget.check_run_gpu_usd(
+                        cumulative_pod_usd=_elapsed_hr * self.gpu_plan.total_usd_per_hr,
+                        agent_id="experiment-runner",
+                    )
             except BudgetExhausted:
                 # Track whether destroy actually deleted the pod. For persistent
                 # pods (REPROLAB_RUNPOD_POD_ID), the pod_id is intentionally not
