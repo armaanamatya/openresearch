@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -532,6 +532,7 @@ async def run_pipeline_rlm(
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
+        deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
 
     # 5. Primitives — real #59 binding or the stub provider.

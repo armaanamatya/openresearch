@@ -283,3 +283,57 @@ class TestWriteDemoStatus:
         status = self._load(tmp_path)
         assert status["status"] == "failed"
         assert status["error"] == "watchdog timeout"
+
+
+# ---------------------------------------------------------------------------
+# T9 — deadline_utc integration guard
+# ---------------------------------------------------------------------------
+
+def test_run_context_deadline_is_armed_from_wall_clock(tmp_path, monkeypatch):
+    """Symptom: ctx.remaining_s() always returns None; per-primitive deadlines never tighten.
+
+    run.py's docstring documents three time bounds (rlm max_timeout, per-primitive
+    deadlines, process watchdog) but the constructor never armed deadline_utc on
+    RunContext — so _timeout_for(ctx, cap_s) always returned the static cap, never
+    the run-wide remaining (review I1 / T9). Verify: with a wall_clock budget,
+    the constructed RunContext.deadline_utc is set and remaining_s() returns a
+    positive value less than the configured budget.
+    """
+    import asyncio
+
+    from backend.agents.resilience.budget import RunBudget
+    import backend.agents.rlm.run as run_mod
+
+    captured: dict = {}
+
+    original_resolve = run_mod._resolve_custom_tools
+
+    def spy_resolve(ctx):
+        captured["ctx"] = ctx
+        return original_resolve(ctx)
+
+    monkeypatch.setattr(run_mod, "_resolve_custom_tools", spy_resolve)
+
+    # Replace RLM so we don't dispatch a real engine.
+    class _FakeRLM:
+        def __init__(self, **kwargs):
+            pass
+
+        def completion(self, *args, **kwargs):
+            return type("R", (), {"response": "{}", "usage_summary": None, "metadata": {}})()
+
+    monkeypatch.setattr(run_mod, "RLM", _FakeRLM)
+
+    asyncio.run(run_mod.run_pipeline_rlm(
+        project_id="test_t9",
+        runs_root=tmp_path,
+        workspace_claim_map={"entries": []},
+        run_budget=RunBudget(max_wall_clock_seconds=300),
+    ))
+
+    assert "ctx" in captured, "_resolve_custom_tools was never called — hook point changed"
+    ctx = captured["ctx"]
+    assert ctx.deadline_utc is not None, "RunContext.deadline_utc was never set"
+    remaining = ctx.remaining_s()
+    assert remaining is not None, "remaining_s() returned None — deadline not armed"
+    assert 0 < remaining <= 300, f"remaining_s() = {remaining}, expected in (0, 300]"
