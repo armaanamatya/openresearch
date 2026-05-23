@@ -260,6 +260,18 @@ crash from the outside.  A single line suffices:
   code_path = implement_baseline(plan)
 """
 
+_DECISION_ADVISOR_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  DECISION-TIME ADVISOR
+═══════════════════════════════════════════════════════════════
+
+When uncertain between two approaches (e.g., should I rlm_query this section
+or use understand_section?), you may call `recommend_next_tool(situation_brief)`
+to get a structured second opinion: it returns {tool, reason, alternatives}.
+Use sparingly — it costs one LLM call.  Prefer it at major branch points
+(pre-baseline, post-failure, before sub-RLM spawn) rather than every iteration.
+"""
+
 _TRIAGE_INSTRUCTION = """\
 ═══════════════════════════════════════════════════════════════
   TRIAGE — COST AND TIME ARE FINITE
@@ -325,6 +337,7 @@ def build_system_prompt(
         _DECOMPOSITION_EXAMPLE,
         _TRIAGE_INSTRUCTION,
         _HEARTBEAT_SECTION,
+        _DECISION_ADVISOR_SECTION,
     ]
 
     if root_model.prompt_addendum:

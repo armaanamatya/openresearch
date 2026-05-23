@@ -1111,6 +1111,43 @@ def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
 _heartbeat_counter: int = 0
 
 
+def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
+    """Reflexion-lite: get a structured recommendation for the next tool.
+
+    The root calls this when uncertain about how to proceed. The recommendation
+    comes from a single llm_query call (no recursion, bounded cost).
+    """
+    prompt = (
+        "You are advising an RLM root model on which tool to use next.\n\n"
+        f"CURRENT SITUATION:\n{situation}\n\n"
+        "AVAILABLE TOOLS:\n"
+        "* rlm_query(slice, question) — spawn a sub-RLM to answer a focused question on a paper slice >8K chars\n"
+        "* llm_query(prompt) — single LLM call, no recursion, for simple summarization or transformation\n"
+        "* understand_section(text_slice) — extract datasets/metrics/recipe/hardware/ambiguities from a slice (generic schema)\n"
+        "* extract_hyperparameters(text_slice) — extract optimizer/lr/batch_size/epochs from a slice\n"
+        "* detect_environment(method_spec) — derive Dockerfile + framework + packages from a method spec\n"
+        "* build_environment(env_spec) — build the Docker image\n"
+        "* plan_reproduction(method_spec, env_spec) — derive smoke-test + eval plan\n"
+        "* implement_baseline(plan) — invoke the coding sub-agent to write the baseline\n"
+        "* run_experiment(code_path, env_id) — execute the baseline\n"
+        "* verify_against_rubric(results, rubric) — score against the rubric\n"
+        "* propose_improvements(results, scores, k) — derive k improvement hypotheses\n\n"
+        "Reply with JSON:\n"
+        "{\"tool\": \"<one of the above>\", \"reason\": \"<one sentence>\", \"alternatives\": [\"<other tool>\"]}\n\n"
+        "Be brief. Prefer rlm_query when synthesizing >10K-char passages with a focused question."
+    )
+    try:
+        raw = ctx.llm_client.complete(system="", user=prompt)
+        parsed = _extract_json(raw)
+        return {
+            "tool": str(parsed.get("tool", "")),
+            "reason": str(parsed.get("reason", "")),
+            "alternatives": [str(a) for a in (parsed.get("alternatives") or [])],
+        }
+    except Exception as exc:  # noqa: BLE001 — advisory; never break the root run
+        return {"tool": "", "reason": f"recommend_next_tool failed: {type(exc).__name__}", "alternatives": []}
+
+
 def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
     """Emit a liveness signal so the operator knows the root is still alive.
 
@@ -1169,6 +1206,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "check_user_messages": check_user_messages,
     "respond_to_user": respond_to_user,
     "heartbeat": heartbeat,
+    "recommend_next_tool": recommend_next_tool,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -1233,4 +1271,9 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "counter: int, note: str}. Call this BEFORE any operation that may take "
         ">30 s: implement_baseline, run_experiment, rlm_query. Example: "
         "heartbeat('about to implement_baseline').",
+    "recommend_next_tool": "recommend_next_tool(situation) -> dict — Reflexion-lite: "
+        "get a structured recommendation for the next tool to call. Pass a brief "
+        "description of the current situation. Returns {tool, reason, alternatives}. "
+        "Use sparingly at major branch points (pre-baseline, post-failure, before "
+        "sub-RLM spawn) — costs one LLM call.",
 }

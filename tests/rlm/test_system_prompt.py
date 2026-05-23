@@ -355,6 +355,13 @@ class TestRlmQueryNudge:
         assert "spawns a sub-RLM" in prompt_gpt5
 
 
+class TestDecisionAdvisor:
+    """The prompt must mention recommend_next_tool."""
+
+    def test_recommend_next_tool_mentioned(self, prompt_gpt5):
+        assert "recommend_next_tool" in prompt_gpt5
+
+
 class TestHeartbeatInstruction:
     """The prompt must instruct the root to call heartbeat before long operations."""
 

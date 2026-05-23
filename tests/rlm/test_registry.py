@@ -6,7 +6,7 @@ EXPECTED = {
     "build_environment", "plan_reproduction", "implement_baseline",
     "run_experiment", "verify_against_rubric", "propose_improvements",
     "record_candidate_outcome", "check_user_messages", "respond_to_user",
-    "heartbeat",
+    "heartbeat", "recommend_next_tool",
 }
 
 

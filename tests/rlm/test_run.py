@@ -168,7 +168,7 @@ class TestResolveCustomTools:
         monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
-        assert len(tools) == 13  # 9 original + record_candidate_outcome (Task 13) + check_user_messages + respond_to_user + heartbeat
+        assert len(tools) == 14  # 9 original + record_candidate_outcome (Task 13) + check_user_messages + respond_to_user + heartbeat + recommend_next_tool
         assert label == "real (binding)"
         for entry in tools.values():
             assert callable(entry["tool"])
