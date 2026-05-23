@@ -90,10 +90,19 @@ export function useRdrArtifacts(
 
       if (cancelled) return;
 
-      // Treat any non-2xx response (404, 5xx, network-error status=0) as
-      // "no artifact". The proxy now normalizes timeouts/5xx → 404, but defend
-      // against future regressions.
-      const allMissing = [c, l, r].every((res) => res.status === 0 || res.status >= 400);
+      // A fetch is "missing" if it returned a non-2xx status, OR if it returned
+      // 200 with an empty array (e.g. {clusters: []}). The latter covers a live
+      // run that hasn't produced artifacts yet — its endpoints return 200+empty
+      // rather than 404. Stop polling only when ALL three are missing.
+      function isMissing(res: FetchResult, arrKey: "clusters" | "leaf_scores" | "passes"): boolean {
+        if (res.status === 0 || res.status >= 400) return true;
+        if (res.status === 200) {
+          const arr = (res.data as Record<string, unknown> | null)?.[arrKey];
+          return Array.isArray(arr) && arr.length === 0;
+        }
+        return false;
+      }
+      const allMissing = isMissing(c, "clusters") && isMissing(l, "leaf_scores") && isMissing(r, "passes");
       if (allMissing) {
         localNoArtifactsCount += 1;
         setNoArtifactsCount(localNoArtifactsCount);

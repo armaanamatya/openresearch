@@ -43,7 +43,7 @@ function WorkflowView({
   return (
     <RlmLab
       events={rlmEvents}
-      runMeta={{ projectId: run.projectId, paperTitle, paperMeta }}
+      runMeta={{ projectId: run.projectId, paperTitle, paperMeta, startedAt: run.startedAt }}
       runMode={run.runMode}
       isActive={isActive}
     />

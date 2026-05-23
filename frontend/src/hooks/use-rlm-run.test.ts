@@ -11,6 +11,19 @@ describe("fold — linear state", () => {
     expect(INITIAL_RLM_STATE.status).toBe("queued");
     expect(INITIAL_RLM_STATE.report).toBeNull();
   });
+  it("transitions status queued→running on first primitive_call", () => {
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: "2026-05-23T00:00:00.000Z",
+      primitive: "understand_section",
+      status: "start",
+      args_summary: {},
+      result_summary: null,
+      iteration: 1,
+      rubric_delta: null,
+    };
+    expect(fold(INITIAL_RLM_STATE, ev).status).toBe("running");
+  });
   it("counts iterations from repl_iteration", () => {
     const s = reduce();
     expect(s.iterationCount).toBeGreaterThanOrEqual(13);

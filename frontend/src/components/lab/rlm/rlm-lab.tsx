@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
 import { useRlmRun } from "../../../hooks/use-rlm-run";
@@ -21,6 +21,8 @@ interface RlmLabProps {
     projectId: string;
     paperTitle: string;
     paperMeta: string;
+    /** ISO timestamp from demo_status.json; drives the real-time elapsed clock. */
+    startedAt?: string | null;
   };
   /** Run mode — when "rlm" or "rdr" the RubricBreakdown panel is shown. */
   runMode?: DemoRunMode;
@@ -59,13 +61,31 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
     [state.primitiveCalls]
   );
 
-  // Derive elapsed time from the first and last event timestamps.
+  // Real-time elapsed clock. If startedAt is provided, tick every second against
+  // wall-clock now so the display updates while the run is in-flight. Fall back to
+  // the event-timestamp span (static) when startedAt is absent.
+  const startedAtMs = useMemo(
+    () => (runMeta.startedAt ? new Date(runMeta.startedAt).getTime() : null),
+    [runMeta.startedAt]
+  );
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (startedAtMs === null) return;
+    setNowMs(Date.now());
+    tickRef.current = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => {
+      if (tickRef.current !== null) clearInterval(tickRef.current);
+    };
+  }, [startedAtMs]);
   const elapsedMs = useMemo(() => {
+    if (startedAtMs !== null) return Math.max(0, nowMs - startedAtMs);
+    // Fallback: derive from first/last event timestamps.
     if (events.length < 2) return 0;
     const first = new Date(events[0].timestamp).getTime();
     const last = new Date(events[events.length - 1].timestamp).getTime();
     return Math.max(0, last - first);
-  }, [events]);
+  }, [startedAtMs, nowMs, events]);
 
   // ── Selected node + iteration resolution ──────────────────────────────
   const selectedNode = useMemo(

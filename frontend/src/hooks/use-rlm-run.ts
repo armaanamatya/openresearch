@@ -367,6 +367,7 @@ function foldPrimitiveCall(
 
   return {
     ...state,
+    status: state.status === "queued" ? "running" : state.status,
     tree,
     primitiveCalls: [...state.primitiveCalls, call],
   };
@@ -669,6 +670,10 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
       return foldSubRlmComplete(seeded, event);
     case "run_complete":
       return foldRunComplete(seeded, event);
+    case "user_message":
+    case "user_message_response":
+      // Consumed by the chat hook; tree reducer is a no-op.
+      return seeded;
     default:
       // Exhaustiveness guard; unknown events return state unchanged.
       return seeded;

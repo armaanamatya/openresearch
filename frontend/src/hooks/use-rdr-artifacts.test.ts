@@ -296,6 +296,41 @@ describe("useRdrArtifacts", () => {
     expect(fetchMock).toHaveBeenCalledTimes(9);
   });
 
+  it("test_hook_stops_after_3_cycles_with_all_200_empty_arrays: treats 200+empty as missing and stops", async () => {
+    vi.useFakeTimers();
+
+    // All 3 endpoints return 200 with empty arrays every call.
+    const fetchMock = vi.fn((url: string | URL | Request) => {
+      const path = typeof url === "string" ? url : url.toString();
+      if (path.includes("/clusters")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ clusters: [] }) });
+      }
+      if (path.includes("/leaf-scores")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ leaf_scores: [] }) });
+      }
+      // repair-iterations
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ passes: [] }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_all_empty", true, 10));
+
+    // Cycle 1: initial fetch (3 calls)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+
+    // After 3 cycles of all-empty, noRdrArtifacts should be true.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(result.current.noRdrArtifacts).toBe(true);
+
+    // Advance further — no more fetches should fire.
+    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+  });
+
   it("test_hook_handles_mixed_404_and_data: continues polling when at least one endpoint returns data", async () => {
     vi.useFakeTimers();
 
