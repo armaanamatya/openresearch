@@ -1,0 +1,96 @@
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 4px);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm, 13px);
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table thead th {
+  background: var(--panel-soft, transparent);
+  font-weight: 600;
+  font-size: var(--fs-xs, 11px);
+  text-transform: lowercase;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable:hover {
+  background: var(--hover-bg, var(--panel-soft, rgba(0, 0, 0, 0.03)));
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.scoreCellDegraded {
+  color: var(--muted);
+}
+
+.scoreCellMet {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.modeBadge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.emptyState {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-sm, 13px);
+}
+
+.dash {
+  color: var(--muted-2, #b0b0b0);
+}
+
+.paperLink {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.paperLink:hover {
+  color: var(--accent);
+}
+
+.sortIndicator {
+  margin-left: 4px;
+  opacity: 0.6;
+}
