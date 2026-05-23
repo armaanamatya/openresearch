@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
+    from backend.agents.schemas import GpuPlan
 
 logger = logging.getLogger(__name__)
 
@@ -605,7 +606,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     return str(code_dir)
 
 
-def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None):
+def _backend_for_sandbox_mode(
+    sandbox_mode: object,
+    *,
+    run_budget: object = None,
+    gpu_plan: "GpuPlan | None" = None,
+):
     """Return a RuntimeBackend instance for the given sandbox mode.
 
     ``SandboxMode.docker`` (and ``None`` / the default) map to
@@ -619,6 +625,8 @@ def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None
     produces a result while making the misconfiguration visible.
 
     ``run_budget=None`` is safe for all modes — no cap is enforced.
+    ``gpu_plan=None`` is safe for all modes — RunpodBackend falls back to
+    legacy Settings defaults when None.  Non-runpod backends ignore it.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -642,7 +650,7 @@ def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None
         from backend.services.runtime.runpod_backend import RunpodBackend
 
         _runtime.ensure_runpod_available()
-        return RunpodBackend(run_budget=run_budget)
+        return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (local, auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
@@ -681,6 +689,7 @@ async def _execute_in_sandbox(
     run_id: str,
     sandbox_mode: object = None,
     run_budget: object = None,
+    gpu_plan: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -713,7 +722,9 @@ async def _execute_in_sandbox(
     artifact_root = code_dir / "outputs" / run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget))
+    service = RuntimeAppService(_backend_for_sandbox_mode(
+        sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan,
+    ))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -893,6 +904,17 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         timeout = ctx.remaining_s()
     else:
         timeout = _timeout_for(ctx, _cap_s)
+    # Load cached gpu_plan if present (written by resolve_gpu_requirements).
+    import json as _json_re
+    _gpu_plan = None
+    _plan_path = ctx.project_dir / "rlm_state" / "gpu_plan.json"
+    if _plan_path.exists():
+        try:
+            from backend.agents.schemas import GpuPlan as _GpuPlan
+            _gpu_plan = _GpuPlan(**_json_re.loads(_plan_path.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            logger.warning("run_experiment: gpu_plan.json present but unreadable; using legacy default")
+
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
@@ -904,6 +926,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     project_id=ctx.project_id, run_id=run_id,
                     sandbox_mode=ctx.sandbox_mode,
                     run_budget=ctx.run_budget,
+                    gpu_plan=_gpu_plan,
                 ),
             ).result(timeout=timeout)
         except concurrent.futures.TimeoutError:

@@ -10,9 +10,12 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from backend.agents.schemas import GpuPlan
 
 _log = logging.getLogger(__name__)
 
@@ -75,6 +78,7 @@ class RunpodBackend(RuntimeBackend):
         bootstrap_command: str = "",
         pod_id: str = "",
         run_budget: RunBudget | None = None,
+        gpu_plan: "GpuPlan | None" = None,
     ) -> None:
         self.api_key = (
             api_key
@@ -116,6 +120,17 @@ class RunpodBackend(RuntimeBackend):
         # or a persistent pod attached via REPROLAB_RUNPOD_POD_ID).
         self._owned_pod_ids: set[str] = set()
         self._run_budget = run_budget
+
+        # Dynamic GPU plan overrides explicit args ONLY when source != "informational"
+        # (informational means dynamic_gpu_enabled=off; caller passes the plan for
+        # telemetry/UI but expects the legacy gpu_type to provision the pod).
+        if gpu_plan is not None and getattr(gpu_plan, "source", None) != "informational":
+            self.gpu_type = gpu_plan.runpod_id
+            self.gpu_count = gpu_plan.gpu_count
+            self.cloud_type = gpu_plan.cloud_type
+            self.container_disk_gb = max(self.container_disk_gb, gpu_plan.container_disk_gb)
+            self.volume_gb = max(self.volume_gb, gpu_plan.volume_gb)
+        self.gpu_plan = gpu_plan
 
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
         if not self.api_key:
