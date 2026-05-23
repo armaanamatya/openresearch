@@ -287,6 +287,12 @@ class RunpodBackend(RuntimeBackend):
                     agent_id="experiment-runner",
                 )
             except BudgetExhausted:
+                # Track whether destroy actually deleted the pod. For persistent
+                # pods (REPROLAB_RUNPOD_POD_ID), the pod_id is intentionally not
+                # in _owned_pod_ids so destroy() returns without deleting —
+                # which means the pod keeps billing. The operator must see this
+                # explicitly, not buried as an INFO log inside destroy().
+                pod_was_owned = sandbox.sandbox_id in self._owned_pod_ids
                 try:
                     await self.destroy(sandbox)
                 except Exception as exc:
@@ -297,6 +303,15 @@ class RunpodBackend(RuntimeBackend):
                         exc,
                         exc_info=True,
                     )
+                else:
+                    if not pod_was_owned:
+                        _log.error(
+                            "RUNPOD_BUDGET_EXHAUSTED_PERSISTENT_POD_NOT_DELETED "
+                            "sandbox_id=%s — persistent pod (REPROLAB_RUNPOD_POD_ID) "
+                            "is unowned by this backend, destroy skipped; pod is STILL "
+                            "RUNNING and billing. Stop it manually via the RunPod dashboard.",
+                            sandbox.sandbox_id,
+                        )
                 raise
         started_at = datetime.now(timezone.utc)
         try:

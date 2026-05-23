@@ -114,6 +114,50 @@ async def test_exec_destroy_failure_does_not_swallow_budget_exhausted(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_exec_persistent_pod_emits_error_log_when_budget_exhausted(tmp_path, caplog):
+    """Persistent pods (REPROLAB_RUNPOD_POD_ID) are intentionally not in
+    _owned_pod_ids, so destroy() returns successfully without actually deleting
+    the pod. That silent no-op was the worst-case failure mode of this feature:
+    the operator thinks the budget killed the pod, but it keeps billing.
+    Verify the dedicated WARNING fires."""
+    import logging
+
+    budget = RunBudget(max_pod_seconds=60.0)
+    backend = RunpodBackend(api_key="dummy", run_budget=budget)
+    # Persistent pod: NOT in _owned_pod_ids — destroy() returns without deleting.
+    backend._owned_pod_ids = set()
+    backend.destroy = AsyncMock()  # succeeds (returns None) — same as the real
+                                    # destroy()'s "skipping delete for unowned pod" path
+    sandbox = _make_sandbox(
+        created_at=_frozen_now() - timedelta(seconds=120),
+        tmp_path=tmp_path,
+    )
+
+    with patch("backend.agents.resilience.budget.datetime") as mock_dt:
+        mock_dt.now.return_value = _frozen_now()
+        with caplog.at_level(logging.ERROR, logger="backend.services.runtime.runpod_backend"):
+            with pytest.raises(BudgetExhausted):
+                await backend.exec(sandbox, "echo hello", timeout=30)
+
+    assert any(
+        "RUNPOD_BUDGET_EXHAUSTED_PERSISTENT_POD_NOT_DELETED" in r.message
+        for r in caplog.records
+    ), (
+        "budget-exhaustion on a persistent (unowned) pod must emit an ERROR log "
+        "warning the operator that the pod is still billing"
+    )
+
+
+def test_runpod_backend_reads_api_key_from_env(monkeypatch, tmp_path):
+    """Regression guard: if the env-var fallback in __init__ were dropped,
+    a backend constructed without an explicit api_key= would silently have
+    empty credentials and only fail later at the API call."""
+    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "env-fake-key-abc123")
+    backend = RunpodBackend()
+    assert backend.api_key == "env-fake-key-abc123"
+
+
+@pytest.mark.asyncio
 async def test_exec_does_not_check_budget_when_none_configured(tmp_path):
     """exec() with no run_budget set must not raise BudgetExhausted even on ancient pods."""
     backend = RunpodBackend(api_key="dummy")  # no run_budget
