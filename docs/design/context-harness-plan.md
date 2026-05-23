@@ -1,48 +1,68 @@
-# Context-Engineering Harness — Build Plan
+# Context-Engineering Harness + Demo Track — Build Plan
 
 **Status:** Proposal for team approval
 **Owner:** TBD
 **Target branch:** `claude/great-tesla-xor5z` (will fan out into sub-PRs per item)
-**Window:** ~3 weeks of focused work, can run partially in parallel after Item 1 lands
+**Window:** ~3 weeks for Track A, ~2 weeks for Track B in parallel
 
 ---
 
 ## TL;DR
 
-Ship four pieces that turn the RLM harness from "stuff the prompt and hope" into
-a measured, cached, lens-driven, memory-augmented system. Build order is
-**1 → 3 → 2 → 4** because each item's *measurements* unlock the next item's
-*design decisions* — no guessing budgets, lens sizes, or cache strategies.
+Two parallel tracks:
 
-| # | Piece | Why this slot |
-|---|---|---|
-| **1** | Token-budget allocator + provenance | Foundation. Everything else needs "how many tokens did this primitive *actually* use, and where did they come from?" |
-| **3** | Prompt-caching audit | Cheap, immediate $ savings. Forces the stable-prefix discipline that #2 will rely on. |
-| **2** | Lens-specific semantic compaction | Now we know per-primitive needs (from #1) and stable-prefix shape (from #3). Lenses become the cached prefix. |
-| **4** | Cross-run memory | Built on lens fingerprints from #2 and the provenance log from #1. Last because it compounds the value of everything below it. |
+- **Track A — Harness (Items 1–4):** turn the RLM from "stuff the prompt and hope"
+  into a measured, cached, lens-driven, memory-augmented system. Order **1 → 3 → 2 → 4**
+  because each item's *measurements* unlock the next item's *design decisions*.
+- **Track B — Demo / Wow (Items 5–7):** make the system *visible* for the
+  Microsoft VP review. Live rubric demo, multi-model arena, public leaderboard.
+  Plumbs into Track A's telemetry but doesn't block on it.
+
+| # | Track | Piece | Why this slot |
+|---|---|---|---|
+| **1** | A | Token-budget allocator + provenance | Foundation — everything else needs "how many tokens, from where, why?" |
+| **3** | A | Prompt-caching audit | Cheap, immediate $ savings. Forces the stable-prefix discipline #2 relies on. |
+| **2** | A | Lens-specific semantic compaction | Now we know per-primitive needs (#1) and stable-prefix shape (#3). |
+| **4** | A | Cross-run memory | Built on lens fingerprints (#2) and provenance (#1). Compounds everything else. |
+| **5** | B | Live "watch it think" demo | Highest-ROI VP moment. Score climbing on screen during the self-improvement loop. |
+| **6** | B | Multi-model arena (`--mode arena`) | GPT-5 / Qwen3-Coder / Kimi K2.5 / Claude on the same paper, parallel. Model-agnostic story. |
+| **7** | B | Public PaperBench leaderboard | Static `/bench` page — papers × models × score × $ × wall-clock. Benchmark-defining framing. |
 
 ---
 
-## Build-order DAG
+## Build-order DAG (both tracks)
+
+![Build-order DAG](img/dag.png)
 
 ```mermaid
 flowchart LR
-    A["<b>1. Budget Allocator</b><br/>+ provenance log"] --> B["<b>3. Prompt-Cache Audit</b><br/>+ stable-prefix enforcer"]
-    A --> C["<b>2. Lens Compaction</b><br/>claims · methods · hyperparams · ablations"]
-    B --> C
-    C --> D["<b>4. Cross-Run Memory</b><br/>warm-start retrieval"]
-    A --> D
-    A -.measurements.-> Metric1["per-primitive token usage"]
-    B -.measurements.-> Metric2["cache-hit %, $ saved"]
-    C -.measurements.-> Metric3["lens hit-rate, compaction ratio"]
-    D -.measurements.-> Metric4["warm-start lift on rubric score"]
+    subgraph harness["Track A · Context-Engineering Harness"]
+        direction LR
+        A["1. Budget Allocator<br/>+ provenance"] --> B["3. Prompt-Cache Audit<br/>+ stable-prefix"]
+        A --> C["2. Lens Compaction<br/>claims · methods · hyperparams"]
+        B --> C
+        C --> D["4. Cross-Run Memory<br/>warm-start retrieval"]
+        A --> D
+    end
+    subgraph demo["Track B · Demo / Wow Factor"]
+        direction LR
+        E["5. Live 'Watch It Think'<br/>rubric score climbing"]
+        F["6. Multi-Model Arena<br/>--mode arena"]
+        G["7. PaperBench Leaderboard<br/>/bench static page"]
+    end
+    A -. telemetry .-> E
+    A -. cost data .-> G
+    B -. $ saved .-> G
+    F --> G
 
-    classDef done fill:#064e3b,stroke:#6ee7b7,color:#e8edf2
-    classDef next fill:#1e3a5f,stroke:#93c5fd,color:#e8edf2
-    classDef later fill:#3f2d05,stroke:#fbbf24,color:#e8edf2
+    classDef done fill:#064e3b,stroke:#6ee7b7,color:#e8edf2,stroke-width:2px
+    classDef next fill:#1e3a5f,stroke:#93c5fd,color:#e8edf2,stroke-width:2px
+    classDef later fill:#3f2d05,stroke:#fbbf24,color:#e8edf2,stroke-width:2px
+    classDef wow fill:#4c1d4f,stroke:#e879f9,color:#e8edf2,stroke-width:2px
     class A done
     class B next
     class C,D later
+    class E,F,G wow
 ```
 
 ---
@@ -216,26 +236,111 @@ top-k similar prior primitive invocations and their outcomes; surface as
 
 ---
 
-## Timeline
+## Track B — Demo / Wow Factor
+
+These three are the VP-facing pieces. Each is independently shippable; together
+they're the 90-second screen recording that sells the project before anyone
+reads the code.
+
+### Item 5 — Live "watch it think" demo
+
+**Goal.** Side-by-side panel showing the rubric score climbing in real time as
+the self-improvement loop runs. Nothing sells an agent like watching a number
+go from 0.34 → 0.71 on screen.
+
+**Scope.**
+- New UI pane in `frontend/src/components/lab/` — `RubricTimeline.tsx`
+- Subscribe to the existing SSE stream (`/runs/<id>/events`); add a `rubric_update` frame from `backend/agents/rubric_verifier/` whenever Gate 2 / Gate 3 / improvement-iteration scores it
+- Plot: line chart of rubric score over time, milestone pins for Gate events, hover tooltip with which subscores moved
+- Re-uses Item 1's provenance log to surface "what context change drove this delta?" on hover
+
+**Files touched.** ~2 new (UI + a small SSE frame type), ~2 modified (verifier emits the event).
+
+**Exit criteria.** Live demo: start a run, watch the score climb through ≥2 improvement iterations without page refresh. Tooltip names the contributing primitives.
+
+**Risk.** Low. Pure read-side; existing SSE infra.
+
+**Estimate.** 3–4 days.
+
+---
+
+### Item 6 — Multi-model arena (`--mode arena`)
+
+**Goal.** Run GPT-5, Qwen3-Coder, Kimi K2.5, and Claude on the same paper in
+parallel; show a leaderboard pane comparing rubric score, $ spent, and
+wall-clock per model. Positions the repo as **model-agnostic infrastructure** —
+which is exactly the framing Microsoft wants (they're not locked to one vendor
+either).
+
+**Scope.**
+- New mode in `backend/cli.py`: `--mode arena --models gpt-5,qwen3-coder,kimi-k2.5,claude`
+- New orchestrator entry in `backend/agents/arena/` that spawns N parallel RLM subprocesses (one per model), each writing to `runs/<project_id>/arena/<model>/`
+- Aggregator: when all complete, write `arena_report.json` with per-model rubric/$/time
+- UI: `frontend/src/app/lab/arena/page.tsx` — leaderboard view with a "play" button that re-runs
+- Cost guardrail: `--max-usd-per-model` and a hard ceiling on parallel pods (RunPod sandbox)
+
+**Files touched.** ~6 new, ~2 modified (CLI + run-status writer).
+
+**Exit criteria.**
+- Single CLI command kicks off 4 parallel runs on one paper.
+- Arena page shows final leaderboard with model · score · $ · time within a single screenshot.
+- Failure isolation: one model crashing doesn't bring down the others.
+
+**Risk.** Medium. Cost can spike if guardrails miss; concurrency on RunPod needs throttling. Mitigated by `--max-usd-per-model` (hard fail) + a `--dry-run` mode that estimates cost first.
+
+**Estimate.** 5 days.
+
+---
+
+### Item 7 — Public PaperBench leaderboard (`/bench`)
+
+**Goal.** Static page that turns every `final_report.json` we've ever emitted
+into a public leaderboard: papers × models × rubric score × $ × wall-clock.
+Frames the project as **benchmark-defining**, not just another agent.
+
+**Scope.**
+- New aggregator: `backend/services/scoring/leaderboard.py` — walks all `runs/*/final_report.json`, produces a single `leaderboard.json`
+- New static page: `frontend/src/app/bench/page.tsx` — sortable table, filter by paper / model / sandbox, sparkline of score-over-time per paper
+- Cost & cache columns sourced from Item 1's `context_telemetry` and Item 3's `cache_summary`
+- Auto-publish: GitHub Action regenerates `leaderboard.json` on every merge to main; the `/bench` page is statically built
+
+**Files touched.** ~3 new (aggregator + page + workflow), ~1 modified (Next.js routes).
+
+**Exit criteria.**
+- `/bench` loads in <500ms with ≥5 papers' worth of data.
+- Sortable on every column; deep-linkable filters (`/bench?paper=2512.24601`).
+- Auto-refreshes when a new run lands on main.
+
+**Risk.** Low. Pure presentation layer over data we already emit.
+
+**Estimate.** 3–4 days.
+
+---
+
+## Timeline (both tracks)
+
+![Timeline](img/gantt.png)
 
 ```mermaid
 gantt
-    title Context Harness Rollout (working days)
-    dateFormat X
+    title Context Harness + Demo Tracks (working days)
+    dateFormat YYYY-MM-DD
     axisFormat %d
-    section Item 1
-    Budget + provenance     :a1, 0, 4
-    section Item 3
-    Cache audit             :a3, after a1, 3
-    section Item 2
-    Lens compaction         :a2, after a1, 7
-    section Item 4
-    Cross-run memory        :a4, after a2, 6
-    section Demo prep
-    Wire to UI + report     :demo, after a4, 3
+    section Track A · Harness
+    1 · Budget + provenance     :done,    a1, 2026-06-01, 4d
+    3 · Cache audit             :active,  a3, after a1, 3d
+    2 · Lens compaction         :         a2, after a1, 7d
+    4 · Cross-run memory        :         a4, after a2, 6d
+    section Track B · Demo
+    5 · Live watch-it-think     :         b1, 2026-06-01, 4d
+    6 · Multi-model arena       :         b2, after b1, 5d
+    7 · PaperBench leaderboard  :         b3, after a3, 4d
 ```
 
-Realistic ship window: **3 weeks** with one engineer; **~2 weeks** if Items 2 and 3 are parallelized after Item 1 lands.
+Realistic ship window: **Track A ~3 weeks**, **Track B ~2 weeks in parallel**.
+Demo (#5) can start day-1 because it only needs the existing SSE infra; it gets
+*richer* once Item 1's provenance lands. Leaderboard (#7) gates on Item 3
+because that's where the `$` and cache columns come from.
 
 ---
 
@@ -248,6 +353,9 @@ Realistic ship window: **3 weeks** with one engineer; **~2 weeks** if Items 2 an
 | $ per paper (RLM mode) | Items 1+3 | −50% |
 | Warm-start hits per run | Item 4 | ≥1 per primitive after 10-run corpus |
 | Rubric score delta | rubric verifier | ≥0, ideally +0.05 |
+| Time-to-first-rubric-tick | Item 5 | <30s from run start (demo-ready) |
+| Models in arena | Item 6 | 4 (GPT-5, Qwen3-Coder, Kimi K2.5, Claude) |
+| Papers on `/bench` at demo | Item 7 | ≥10 |
 
 These are the numbers we put on the slide for the Microsoft VP review.
 
