@@ -129,7 +129,11 @@ After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into t
 |---|---|---|
 | 19:17 | kickoff | new run, all fixes through commit 1998e5d baked in |
 | 19:20 | first repl_iteration | 3 min ramp; slower than prj_5b5fe266b0b83f3d's 104s — within normal variance for the cold runpod path |
-| | | (loop continues monitoring) |
+| 19:22 | repl_iteration #2 |  |
+| 19:27 | iteration_heartbeat + sub_rlm_spawned/complete bursts | root recursively querying paper slices |
+| 19:29 | **F10 verified live** | Playwright snapshot at `playwright/lab-snapshot-002.md` shows `status "Sub-RLM prompt preview: candidate -> dict of downstream answers..."` — the new LiveActivityStrip is rendering in the lab page exactly as designed; user now sees real-time activity narration |
+| 19:29 | F7 verified live | same snapshot's console log: 3 leaf-scores 404s then stops (609ms, 5725ms, 10670ms) — counter hits STOP_AFTER_NO_ARTIFACT_CYCLES=3 and polling halts; no further 404 spam for the page lifetime |
+| | | (40 events in, sub-RLM bursting; build_environment + implement_baseline still ahead) |
 
 ## Open after both runs
 
