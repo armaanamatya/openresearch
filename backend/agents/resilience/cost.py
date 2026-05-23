@@ -105,6 +105,12 @@ class RunCostLedger:
 
     def __post_init__(self) -> None:
         # Buffer for batched writes; entries are accumulated here until a flush.
+        # The single _lock guards BOTH buffer mutations AND the file write inside
+        # _flush_locked — so this design subsumes the parallel-RDR concurrency
+        # concern that an earlier sibling branch addressed with a per-append lock:
+        # concurrent appends from parallel cluster tasks queue on this lock; the
+        # actual disk write is serialized through the same lock at flush time, so
+        # line-tearing is structurally impossible.
         self._buffer: list[dict] = []
         self._lock: threading.Lock = threading.Lock()
 
@@ -112,6 +118,8 @@ class RunCostLedger:
         """Append an entry to the in-memory list and the write buffer.
 
         Flushes to disk when the buffer reaches ``self.batch_size``.
+        Safe under concurrent appends from parallel RDR cluster tasks: the lock
+        serializes both buffer mutations and the eventual disk write.
         """
         with self._lock:
             self.entries.append(entry)
