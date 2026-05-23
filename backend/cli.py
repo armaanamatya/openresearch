@@ -394,6 +394,7 @@ _REPRODUCE_DEFAULTS = {
     "sandbox_cpus": None,
     "max_usd": None,
     "max_wall_clock": None,
+    "max_pod_seconds": None,
     "max_invocations": None,
     "seed": None,
     "attempt_id": None,
@@ -519,12 +520,18 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     run_budget = None
-    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations:
+    _max_pod_seconds = args.max_pod_seconds or (
+        float(os.environ["REPROLAB_MAX_POD_SECONDS"])
+        if os.environ.get("REPROLAB_MAX_POD_SECONDS")
+        else None
+    )
+    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations or _max_pod_seconds is not None:
         from backend.agents.resilience import RunBudget
 
         run_budget = RunBudget(
             max_usd=args.max_usd,
             max_wall_clock_seconds=args.max_wall_clock,
+            max_pod_seconds=_max_pod_seconds,
             max_invocations_per_agent=_max_invocations_from_arg(args.max_invocations),
         )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode=args.mode)
@@ -610,7 +617,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """Build and return the reprolab argument parser (testable without calling main)."""
     parser = argparse.ArgumentParser(prog="reprolab")
     parser.add_argument(
         "--database-url",
@@ -734,6 +742,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum whole-run wall-clock seconds before blocking the next SDK invocation.",
     )
     reproduce.add_argument(
+        "--max-pod-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Maximum cumulative CPU-seconds a RunPod pod may run before the next "
+            "exec() call is blocked (enforces RunBudget.max_pod_seconds). "
+            "Also read from REPROLAB_MAX_POD_SECONDS env var."
+        ),
+    )
+    reproduce.add_argument(
         "--max-invocations",
         default=None,
         help=(
@@ -790,6 +808,11 @@ def main(argv: list[str] | None = None) -> int:
     from backend.cli_paperbench import add_paperbench_subparser
     add_paperbench_subparser(sub)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
 
