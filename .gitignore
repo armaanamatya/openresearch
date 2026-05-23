@@ -74,6 +74,10 @@ test-results/
 frontend/test-results/
 frontend/playwright-report/
 
+# Repo-root /screenshots is produced by scripts/lab_screenshot_tail.mjs
+# during E2E monitoring runs; outputs are ephemeral, do not commit.
+/screenshots/
+
 # Stray root-level node_modules (the real one is frontend/node_modules/)
 /node_modules/
 
