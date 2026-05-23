@@ -9,13 +9,26 @@ import { test, expect } from "@playwright/test";
 // with no dev affordance enabled (no `?rlmFixture=1`-style flag exists in this
 // codebase) and no real run identifier, no fixture-shaped value can render.
 //
-// LEAK_MARKERS pin the historical bug from `script-panel.tsx:22-30` — the
-// "91.4% / 492.3 / Reproduced With Caveats" preset values that the
-// workspace_fixture's demo_status template once rendered for a halted run.
-// If any of these strings appear in the DOM of an audited route, the
-// containment has broken.
+// LEAK_MARKERS pin BOTH:
+//   (a) the historical bug from `script-panel.tsx:22-30` — the
+//       "91.4% / 492.3 / Reproduced With Caveats" preset values that the
+//       workspace_fixture's demo_status template once rendered for a halted run.
+//   (b) the descriptive-fallback literals removed by the 2026-05-22 audit
+//       (S2 commits b9859f9..e6aafea). If a future change reintroduces a
+//       fallback to any of these specific strings, this test catches it.
+// "paper.pdf" is intentionally NOT in this list — it is a common short token
+// that could legitimately appear in a future page (e.g. a downloads view)
+// and would yield false positives. The specific descriptive literals below
+// are unique enough to be a safe regression signal.
 
-const LEAK_MARKERS = ["91.4", "492.3", "Reproduced With Caveats"];
+const LEAK_MARKERS = [
+  "91.4",
+  "492.3",
+  "Reproduced With Caveats",
+  "PaperBench-style final benchmark",
+  "pending evaluator output",
+  "sha256:pending",
+];
 
 // The full set of public page routes. `/` is a redirect to `/lab` (handled by
 // Playwright's auto-follow); we exercise the destination directly.
