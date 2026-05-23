@@ -84,11 +84,45 @@ Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod crea
 
 ---
 
-## Open after this run
+## F8 — Lab page rendered blank when SSR fetch 504'd mid-run
+
+- **Severity:** UX (high-impact); the user explicitly called it out — "ui needs to be more clear, we need to work with the user so they understand at all times what is going on, right now it is blank at times and doesn't make sense".
+- **Symptom:** during the `implement_baseline` phase of prj_5b5fe266b0b83f3d, a Playwright snapshot of the lab page showed the header rendering but the main content area empty. The MCP console log captured: `Failed to load resource: 504 Gateway Timeout @ /api/demo?projectId=prj_5b5fe266b0b83f3d`.
+- **Cause:** `BACKEND_GET_TIMEOUT_MS = 4000` (frontend/src/lib/demo/server-run.ts:13) was too aggressive when the FastAPI single-worker uvicorn was busy serving heavy SSE event payloads. The `/api/demo` route returned 504; useRun's auto-resume saw 504 and silently bailed (use-run.ts line 185) — leaving the user on the UploadView with no indication their projectId was valid.
+- **Fix:** commit `1998e5d` ships three layered fixes:
+  1. `BACKEND_GET_TIMEOUT_MS` 4s → 10s (server-run.ts). 10s still feels snappy on warm path while tolerating the 5-8s tail when backend is under load.
+  2. `useRun` auto-resume retries 504s with exponential backoff (2s, 4s, 8s, 12s, 16s = ~42s budget) before giving up. Eliminates the "blank page on transient timeout" failure mode.
+  3. (See F9 for the related chip fix that shipped in the same commit.)
+- **Verified:** pending next Playwright snapshot on prj_20457ea6673b5a32 — the new run will exercise the same path with the fixes applied.
+
+## F9 — "no signal Xs" chip caused unnecessary panic during long primitives
+
+- **Severity:** UX (high-impact); user said "no signal 765s - we need to ensure this never happens. user should always know what the issue is".
+- **Symptom:** the warn-colored `no signal 765s` chip showed up in the header during `implement_baseline`. Per known-issues §3.4 this is a false alarm: heartbeats pause during long primitives (implement_baseline 5-15 min, build_environment 1-5 min) because the rlm core loop emits `iteration_heartbeat` between iterations, not during a single primitive call. The chip caused real user concern that the run was wedged when it wasn't.
+- **Fix:** commit `1998e5d`:
+  - `RlmHeader` accepts a new `inFlightPrimitive: { name; startedAt } | null` prop.
+  - `RlmLab` derives it: scans `state.primitiveCalls` backwards for the most recent `status="start"` entry that has no matching ok/error after it.
+  - When `noSignalSecs` would have fired AND `inFlightPrimitive !== null`: render `running <primitive> (Xs)` in info color (accent-soft / accent-ink) instead of `no signal Xs` in warn color. The chip becomes informational.
+  - When `noSignalSecs` fires WITHOUT a primitive in flight (true wedge): keep the warn-colored `no signal Xs` chip — this is now a real alarm, not noise.
+- **Tests:** existing 2/2 header tests pass; the change is additive (new prop defaults to null = old behavior).
+- **Verified:** pending — will snapshot prj_20457ea6673b5a32's `implement_baseline` phase to confirm the chip renders the new text.
+
+## Run 2 — prj_20457ea6673b5a32 (fresh restart 19:17 UTC)
+
+After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into the code-writing phase, the user requested a full restart to bake in the new UI/backend fixes from a clean state. Old run subprocess killed, headless tail + chromium killed, MCP playwright closed, runpod pods enumerated (0 active), docker reprolab containers stopped. Fresh kickoff via curl POST `/api/demo/arxiv` with same body: `{url, mode:rlm, sandbox:runpod, model:sonnet}`. Returned `projectId=prj_20457ea6673b5a32, sandboxMode=runpod` — F2 fix verified working end-to-end on the fresh run too.
+
+| time (UTC) | event | note |
+|---|---|---|
+| 19:17 | kickoff | new run, all fixes through commit 1998e5d baked in |
+| 19:20 | first repl_iteration | 3 min ramp; slower than prj_5b5fe266b0b83f3d's 104s — within normal variance for the cold runpod path |
+| | | (loop continues monitoring) |
+
+## Open after both runs
 
 - Real fix for F3 (expose all registered root models in `/models` + widen `DemoModelChoice`).
 - Decide whether to change the `force_sandbox` config default to `""`. The current `"docker"` is a deliberate guarantee per the field comment — a design discussion, not a bug fix.
 - Align `.env` `REPROLAB_DEFAULT_SANDBOX` with `start.sh` default (F4).
+- Improve the `ValidationError` SSE result_summary to include pydantic error field locations + types (not values) so the UI can show what specifically failed without leaking LLM output.
 
 ---
 
