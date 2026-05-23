@@ -17,6 +17,7 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
+  { id: "upload", label: "Upload", icon: "upload", href: "/lab?new=1" },
   { id: "lab", label: "Lab", icon: "lab", href: "/lab" },
   { id: "library", label: "Library", icon: "papers", href: "/library" }
 ];

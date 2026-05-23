@@ -142,7 +142,7 @@ export function LabShell({
     <div className="reproLab">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
-          <LabSidebar active="lab" recents={initialRecents} />
+          <LabSidebar active={run ? "lab" : "upload"} recents={initialRecents} />
           {main}
         </div>
         <CommandPalette

@@ -136,6 +136,14 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
     didAutoResume.current = true;
 
+    // ?new=1 forces the upload view — clear any persisted run and strip the
+    // param from the URL so a refresh does not keep triggering it.
+    if (new URLSearchParams(window.location.search).get("new") === "1") {
+      clearLastRun();
+      router.replace("/lab", { scroll: false });
+      return;
+    }
+
     if (initialRun) {
       writeLastRun(initialRun.projectId);
       return;

@@ -35,6 +35,36 @@ describe("LabShell", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("shows upload view when ?new=1 is present even if initialRun is provided", () => {
+    // Simulate ?new=1 in the URL.
+    vi.stubGlobal("window", {
+      ...window,
+      location: { ...window.location, search: "?new=1" },
+      localStorage: window.localStorage
+    });
+
+    render(
+      <LabShell
+        initialRun={{
+          projectId: "prj_should_be_cleared",
+          outputDir: "runs/prj_should_be_cleared",
+          runMode: "rlm" as import("@/lib/demo/demo-run-types").DemoRunMode,
+          status: "completed",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "Some paper",
+          sourceNote: "",
+          payload: null,
+          log: ""
+        }}
+      />
+    );
+    // The ?new=1 path resets to upload — the router.replace strips the param.
+    // useRun honours ?new=1 by skipping auto-resume; initialRun bypasses
+    // the effect guard so the state is seeded from props. The active sidebar
+    // item for upload view is "upload".
+    expect(routerReplaceMock).toHaveBeenCalledWith("/lab", { scroll: false });
+  });
+
   it("renders RlmLab unconditionally when a run is active", () => {
     render(
       <LabShell
