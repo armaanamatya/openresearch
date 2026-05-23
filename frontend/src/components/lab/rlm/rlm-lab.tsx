@@ -11,7 +11,7 @@ import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
 import { RubricStrip } from "./rubric-strip";
 import { ReplStateRail } from "./repl-state-rail";
-import { ExplorationCanvas } from "./exploration-canvas";
+import { ConstellationCanvas } from "./constellation-canvas";
 import { ReportRail } from "./report-rail";
 import { PrimitiveHistoryBar } from "./primitive-history-bar";
 import { RubricBreakdown } from "./rubric-breakdown";
@@ -234,7 +234,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           </>
         )}
         <div className={styles.canvas}>
-          <ExplorationCanvas
+          <ConstellationCanvas
             tree={state.tree}
             iterations={state.iterations}
             selectedNodeId={selectedNodeId}

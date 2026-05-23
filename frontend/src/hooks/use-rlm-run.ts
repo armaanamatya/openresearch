@@ -72,6 +72,17 @@ export interface RunWarning {
 /** Display-annotation phase a trunk (`work`) node belongs to — §6. Not load-bearing. */
 export type TreePhase = "comprehension" | "environment" | "baseline-build";
 
+/** Phase label for primitive nodes — maps the primitive name to a lifecycle phase. */
+export type PrimitivePhase =
+  | "ingest"
+  | "understand"
+  | "environment"
+  | "plan"
+  | "implement"
+  | "run"
+  | "verify"
+  | "improve";
+
 /**
  * A node in the exploration tree — §6.
  * Built by Task 4 (candidate_proposed, candidate_outcome, sub_rlm_spawned,
@@ -79,7 +90,15 @@ export type TreePhase = "comprehension" | "environment" | "baseline-build";
  */
 export interface TreeNode {
   id: string;
-  kind: "paper" | "work" | "baseline" | "candidate" | "subrlm" | "declined-group";
+  kind:
+    | "paper"
+    | "work"
+    | "baseline"
+    | "candidate"
+    | "subrlm"
+    | "declined-group"
+    | "primitive"
+    | "llm_primitive";
   parentId: string | null;
   /** Display title — uniform across node kinds. */
   title: string;
@@ -93,6 +112,7 @@ export interface TreeNode {
   candidate?: {
     id: string;
     title: string;
+    displayTitle?: string;
     category: string;
     description: string;
     reasoning: string;
@@ -103,8 +123,12 @@ export interface TreeNode {
   declinedCount?: number;
   /** Phase label of a trunk (`work`) node — a §6 display annotation. */
   phase?: TreePhase;
+  /** Phase label for primitive/llm_primitive nodes. */
+  primitivePhase?: PrimitivePhase | null;
   /** Rubric score attached at rubric_score events (for baseline / work nodes). */
   rubricScore?: number | null;
+  /** The raw primitive name (for primitive/llm_primitive nodes). */
+  primitiveName?: string;
 }
 
 // ─── RlmRunState ──────────────────────────────────────────────────────────────
@@ -209,6 +233,79 @@ export const INITIAL_RLM_STATE: RlmRunState = {
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
 
 const PAPER_NODE_ID = "paper";
+
+/**
+ * Primitives that invoke the LLM client — rendered as pulsing llm_primitive
+ * nodes in the constellation view. All others become plain primitive nodes.
+ * Pure file-I/O / no-op primitives are excluded entirely from visualization
+ * (see VISUALIZED_PRIMITIVES below).
+ */
+const LLM_USING_PRIMITIVES = new Set([
+  "understand_section",
+  "extract_hyperparameters",
+  "propose_improvements",
+  "recommend_next_tool",
+  "verify_against_rubric",
+  "plan_reproduction",
+  "detect_environment",
+]);
+
+/**
+ * Primitives that should NOT produce a node in the constellation.
+ * These are pure file I/O or heartbeat-style calls with no meaningful viz value.
+ */
+const NON_VISUALIZED_PRIMITIVES = new Set([
+  "check_user_messages",
+  "respond_to_user",
+  "record_candidate_outcome",
+  "iteration_heartbeat",
+]);
+
+/**
+ * Map a primitive name to its PrimitivePhase for the constellation view.
+ * Returns null for primitives not explicitly mapped (they still get a node,
+ * just without a phase label).
+ */
+function primitivePhaseFor(primitive: string): PrimitivePhase | null {
+  switch (primitive) {
+    case "understand_section":
+    case "extract_hyperparameters":
+      return "understand";
+    case "detect_environment":
+    case "build_environment":
+      return "environment";
+    case "plan_reproduction":
+      return "plan";
+    case "implement_baseline":
+      return "implement";
+    case "run_experiment":
+      return "run";
+    case "verify_against_rubric":
+      return "verify";
+    case "propose_improvements":
+    case "recommend_next_tool":
+      return "improve";
+    default:
+      return null;
+  }
+}
+
+/** User-friendly label for a primitive name. */
+function friendlyPrimitiveTitle(primitive: string): string {
+  switch (primitive) {
+    case "understand_section": return "Understand";
+    case "extract_hyperparameters": return "Extract Hyperparams";
+    case "detect_environment": return "Detect Env";
+    case "build_environment": return "Build Env";
+    case "plan_reproduction": return "Plan";
+    case "implement_baseline": return "Implement";
+    case "run_experiment": return "Run Experiment";
+    case "verify_against_rubric": return "Verify";
+    case "propose_improvements": return "Propose";
+    case "recommend_next_tool": return "Recommend";
+    default: return primitive.replace(/_/g, " ");
+  }
+}
 
 /** §6 phase derivation — map a primitive name to its trunk phase, or null. */
 function phaseFor(primitive: string): TreePhase | null {
@@ -387,6 +484,24 @@ function foldPrimitiveCall(
     }
   }
 
+  // Add a constellation node for completed, visualizable primitives.
+  if (ev.status === "ok" && !NON_VISUALIZED_PRIMITIVES.has(ev.primitive)) {
+    const isLlm = LLM_USING_PRIMITIVES.has(ev.primitive);
+    const kind: TreeNode["kind"] = isLlm ? "llm_primitive" : "primitive";
+    // Parent = the current work node if it exists, else paper.
+    const parentId = lastWorkNode(tree)?.id ?? PAPER_NODE_ID;
+    const primitiveNode: TreeNode = {
+      id: `prim-${ev.primitive}-${state.primitiveCalls.length + 1}`,
+      kind,
+      parentId,
+      title: friendlyPrimitiveTitle(ev.primitive),
+      iterationRange: [ev.iteration ?? 0, ev.iteration ?? 0],
+      primitiveName: ev.primitive,
+      primitivePhase: primitivePhaseFor(ev.primitive),
+    };
+    tree = [...tree, primitiveNode];
+  }
+
   return {
     ...state,
     status: state.status === "queued" ? "running" : state.status,
@@ -506,10 +621,17 @@ function foldCandidateProposed(
     id: `candidate-${ev.candidate.id}`,
     kind: "candidate",
     parentId,
-    title: ev.candidate.title,
+    title: ev.candidate.display_title ?? ev.candidate.title,
     iterationRange: [ev.iteration, ev.iteration],
     round: ev.round,
-    candidate: { ...ev.candidate },
+    candidate: {
+      id: ev.candidate.id,
+      title: ev.candidate.title,
+      displayTitle: ev.candidate.display_title,
+      category: ev.candidate.category,
+      description: ev.candidate.description,
+      reasoning: ev.candidate.reasoning,
+    },
     outcome: pending?.outcome,
     rubricDelta: pending?.rubricDelta ?? null,
   };

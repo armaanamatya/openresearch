@@ -218,6 +218,28 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
     return wrapped
 
 
+def _friendly_candidate_title(title: str) -> str:
+    """Return a display-friendly condensed form of a candidate title.
+
+    Rules (spec 2026-05-23):
+      - Already short (≤5 words AND ≤40 chars) → return as-is.
+      - Has a colon or em-dash → return the part before the separator (stripped).
+      - Else → return the first 5 words joined by spaces.
+    """
+    title = title.strip()
+    words = title.split()
+    if len(words) <= 5 and len(title) <= 40:
+        return title
+    # Try splitting on colon or em-dash
+    for sep in ("—", ": ", " - "):
+        if sep in title:
+            prefix = title.split(sep, 1)[0].strip()
+            if prefix:
+                return prefix
+    # Fallback: first 5 words
+    return " ".join(words[:5])
+
+
 def _emit_supplemental(
     name: str,
     result: Any,
@@ -248,9 +270,11 @@ def _emit_supplemental(
         for hyp in result:
             if not isinstance(hyp, dict):
                 continue
+            raw_title = hyp.get("title") or hyp.get("path_id", "candidate")
             candidate = {
                 "id": hyp.get("path_id", ""),
-                "title": hyp.get("title") or hyp.get("path_id", "candidate"),
+                "title": raw_title,
+                "display_title": _friendly_candidate_title(raw_title),
                 "category": hyp.get("category", ""),
                 "description": hyp.get("hypothesis", ""),
                 "reasoning": hyp.get("rationale", ""),

@@ -72,6 +72,7 @@ export interface CandidateProposedEvent {
   candidate: {
     id: string; // stable, e.g. "c5"
     title: string; // short, model-generated (improvement name) — not corpus
+    display_title?: string; // condensed display form (≤5 words) — computed by _friendly_candidate_title
     category: string; // free-form tag, e.g. "optimizer" — not corpus
     description: string; // 1–2 sentences, model-generated
     reasoning: string; // why the root proposed it

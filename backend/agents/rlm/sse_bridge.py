@@ -569,12 +569,16 @@ def build_candidate_proposed_event(
                     dict when ``None`` (TS optional property means absent, not null).
     """
     _CANDIDATE_KEYS = {"id", "title", "category", "description", "reasoning"}
+    candidate_payload: dict = {k: candidate[k] for k in _CANDIDATE_KEYS}
+    # Include display_title when present (computed by _friendly_candidate_title in binding.py).
+    if "display_title" in candidate:
+        candidate_payload["display_title"] = candidate["display_title"]
     ev: dict = {
         "event": "candidate_proposed",
         "timestamp": _now_iso(),
         "iteration": iteration,
         "round": round,
-        "candidate": {k: candidate[k] for k in _CANDIDATE_KEYS},
+        "candidate": candidate_payload,
     }
     if parent_id is not None:
         ev["parent_id"] = parent_id

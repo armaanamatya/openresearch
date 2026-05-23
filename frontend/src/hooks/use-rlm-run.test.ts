@@ -398,3 +398,103 @@ describe("rubric.attributableCandidate (spec §4.2)", () => {
     });
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Constellation node kinds — primitive / llm_primitive
+// Spec: live constellation feature 2026-05-23
+// ──────────────────────────────────────────────────────────────────────────────
+
+const T_CONST = "2026-05-23T10:00:00.000Z";
+
+describe("foldPrimitiveCall — constellation nodes", () => {
+  it("adds an llm_primitive node for understand_section with status=ok", () => {
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: T_CONST,
+      primitive: "understand_section",
+      status: "ok",
+      args_summary: {},
+      result_summary: "MethodSpec[...]",
+      iteration: 1,
+      rubric_delta: null,
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    const llmNodes = s.tree.filter((n) => n.kind === "llm_primitive");
+    expect(llmNodes).toHaveLength(1);
+    expect(llmNodes[0].primitiveName).toBe("understand_section");
+    expect(llmNodes[0].primitivePhase).toBe("understand");
+  });
+
+  it("adds a plain primitive node for build_environment with status=ok", () => {
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: T_CONST,
+      primitive: "build_environment",
+      status: "ok",
+      args_summary: {},
+      result_summary: "env_id[...]",
+      iteration: 2,
+      rubric_delta: null,
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    const primNodes = s.tree.filter((n) => n.kind === "primitive");
+    expect(primNodes).toHaveLength(1);
+    expect(primNodes[0].primitiveName).toBe("build_environment");
+    expect(primNodes[0].primitivePhase).toBe("environment");
+  });
+
+  it("does NOT add a node for heartbeat (non-visualized primitive)", () => {
+    // check_user_messages is in NON_VISUALIZED_PRIMITIVES
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: T_CONST,
+      primitive: "check_user_messages",
+      status: "ok",
+      args_summary: {},
+      result_summary: null,
+      iteration: 1,
+      rubric_delta: null,
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    const primNodes = s.tree.filter(
+      (n) => n.kind === "primitive" || n.kind === "llm_primitive"
+    );
+    expect(primNodes).toHaveLength(0);
+  });
+
+  it("does NOT add a node for a start-status primitive_call (only ok)", () => {
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: T_CONST,
+      primitive: "understand_section",
+      status: "start",
+      args_summary: {},
+      result_summary: null,
+      iteration: 1,
+      rubric_delta: null,
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    const primNodes = s.tree.filter(
+      (n) => n.kind === "primitive" || n.kind === "llm_primitive"
+    );
+    expect(primNodes).toHaveLength(0);
+  });
+
+  it("does NOT add a node for record_candidate_outcome (non-visualized)", () => {
+    const ev: RlmDashboardEvent = {
+      event: "primitive_call",
+      timestamp: T_CONST,
+      primitive: "record_candidate_outcome",
+      status: "ok",
+      args_summary: {},
+      result_summary: null,
+      iteration: 3,
+      rubric_delta: null,
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    const primNodes = s.tree.filter(
+      (n) => n.kind === "primitive" || n.kind === "llm_primitive"
+    );
+    expect(primNodes).toHaveLength(0);
+  });
+});

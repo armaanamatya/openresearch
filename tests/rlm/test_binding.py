@@ -132,7 +132,8 @@ def test_propose_improvements_emits_candidate_proposed_per_item(make_context, tm
     proposed = [e for e in _read_events(ctx) if e.get("event") == "candidate_proposed"]
     assert len(proposed) == len(result)
     first = proposed[0]["candidate"]
-    assert set(first) == {"id", "title", "category", "description", "reasoning"}
+    # display_title is now included when available; allow it alongside the required keys.
+    assert {"id", "title", "category", "description", "reasoning"}.issubset(set(first))
     # propose_round must have been incremented
     assert ctx.propose_round == 1
 
@@ -334,3 +335,51 @@ def test_record_candidate_outcome_happy_path_still_emits(make_context, tmp_path)
     assert len(out) == 1
     assert out[0]["candidate_id"] == "path_2"
     assert out[0]["outcome"] == "promoted"
+
+
+# ---------------------------------------------------------------------------
+# _friendly_candidate_title — display title compression
+# ---------------------------------------------------------------------------
+
+from backend.agents.rlm.binding import _friendly_candidate_title
+
+
+def test_friendly_candidate_title_short_passes_through():
+    """A title that is ≤5 words AND ≤40 chars is returned unchanged."""
+    short = "LR Tuning"
+    assert _friendly_candidate_title(short) == "LR Tuning"
+
+
+def test_friendly_candidate_title_long_is_compressed():
+    """A long title should be condensed to ≤5 words."""
+    long_title = (
+        "Adaptive learning rate schedule with cosine annealing and warm restarts "
+        "to improve convergence stability over 200 epochs"
+    )
+    result = _friendly_candidate_title(long_title)
+    # Must be shorter than the original
+    assert len(result) < len(long_title)
+    # Should be ≤5 words (split on whitespace)
+    assert len(result.split()) <= 5
+
+
+def test_friendly_candidate_title_colon_split():
+    """Titles with a colon are split and the prefix is returned."""
+    title = "Architecture: Replace MLP with Transformer block"
+    result = _friendly_candidate_title(title)
+    assert result == "Architecture"
+
+
+def test_friendly_candidate_title_em_dash_split():
+    """Titles with an em-dash are split and the prefix is returned."""
+    title = "Optimizer—Switch from SGD to AdamW for better convergence"
+    result = _friendly_candidate_title(title)
+    assert result == "Optimizer"
+
+
+def test_friendly_candidate_title_five_word_boundary():
+    """Exactly 5 words and ≤40 chars → pass through unchanged."""
+    title = "Tune LR with cosine decay"  # 5 words, short
+    assert len(title.split()) == 5
+    assert len(title) <= 40
+    assert _friendly_candidate_title(title) == title

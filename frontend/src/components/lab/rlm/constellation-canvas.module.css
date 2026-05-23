@@ -1,0 +1,167 @@
+/* ConstellationCanvas — SVG-based force-directed constellation renderer.
+ *
+ * Shares the same dotted-grid background, cursor, and background-color as
+ * exploration-canvas.module.css. Extends with SVG-specific animations.
+ */
+
+.wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  background-color: var(--canvas-bg);
+  overflow: hidden;
+}
+
+.svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+.svg:active {
+  cursor: grabbing;
+}
+
+/* ── Edge and node groups ────────────────────────────────────────────── */
+
+.edgesLayer {
+  /* No special treatment needed; SVG rendering order handles z-index. */
+}
+
+.nodesLayer {
+  /* Nodes render above edges in the SVG painter's model. */
+}
+
+/* ── Activity node fade-in/out animation ─────────────────────────────── */
+
+.activityNode {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+.activityNodeVisible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* ── Pulsing animation for LLM primitives and sub-RLMs ──────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes constellationPulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.75;
+      transform: scale(1.15);
+    }
+  }
+
+  .pulsingNode.activityNodeVisible {
+    transform-origin: center;
+    animation: constellationPulse 2s ease-in-out infinite;
+    transform-box: fill-box;
+  }
+}
+
+/* ── Legend — fixed top-left, backdrop-blur ──────────────────────────── */
+
+.legend {
+  position: absolute;
+  top: var(--sp-3);
+  left: var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  box-shadow: var(--shadow-1);
+  z-index: 10;
+  flex-wrap: wrap;
+  max-width: calc(100% - var(--sp-6) - 40px); /* don't collide with reset button */
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-family: var(--font-sans);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.legendItem svg {
+  flex-shrink: 0;
+}
+
+/* ── Toggle-all activity button (inside legend) ──────────────────────── */
+
+.toggleAllBtn {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--sp-2);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  font-family: var(--font-sans);
+  color: var(--muted);
+  white-space: nowrap;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.toggleAllBtn:hover {
+  border-color: var(--line-2);
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.toggleAllBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Reset view button ───────────────────────────────────────────────── */
+
+.resetBtn {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--muted);
+  box-shadow: var(--shadow-1);
+  transition: border-color 150ms ease, color 150ms ease;
+  z-index: 10;
+}
+
+.resetBtn:hover {
+  border-color: var(--line-2);
+  color: var(--ink);
+}
+
+.resetBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
