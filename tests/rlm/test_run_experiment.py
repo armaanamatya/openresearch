@@ -257,3 +257,62 @@ def test_cap_logs_bounds_unbounded_experiment_output():
     assert len(capped) < _MAX_LOG_CHARS + 100  # head+tail window + marker
     assert "truncated" in capped
     assert capped.startswith("x") and capped.endswith("x")
+
+
+def test_sandbox_mode_is_threaded_from_ctx_to_backend(make_context, tmp_path, monkeypatch):
+    """Symptom: --sandbox runpod silently uses LocalDockerBackend in RLM mode.
+
+    _execute_in_sandbox hardcoded LocalDockerBackend; ctx.sandbox_mode was
+    accepted but never consulted (handoff P1-I7 / T12). Verify: the sandbox_mode
+    stored in ctx is the value forwarded to _backend_for_sandbox_mode.
+    """
+    import backend.agents.rlm.primitives as primitives_mod
+
+    captured: dict = {}
+
+    real_backend_for = primitives_mod._backend_for_sandbox_mode
+
+    def spy_backend_for(mode):
+        captured["mode"] = mode
+        # Return a minimal fake backend so we don't need Docker.
+        class _FakeBackend:
+            pass
+        return _FakeBackend()
+
+    monkeypatch.setattr(primitives_mod, "_backend_for_sandbox_mode", spy_backend_for)
+
+    # Also stub RuntimeAppService so no real container work happens.
+    from datetime import datetime, timezone
+    from backend.services.runtime.interface import ExecResult, Sandbox
+
+    def _make_result(cmd_str: str) -> ExecResult:
+        now = datetime.now(timezone.utc)
+        return ExecResult(
+            command=cmd_str, exit_code=0, stdout="", stderr="",
+            started_at=now, finished_at=now, duration_seconds=0.01,
+        )
+
+    class _FakeService:
+        def __init__(self, backend):
+            pass
+        async def create_sandbox(self, cmd):
+            return Sandbox(sandbox_id="fake", name="fake", image="fake", config=cmd.config)
+        async def execute(self, cmd):
+            return _make_result(cmd.command)
+        async def destroy(self, cmd):
+            return None
+
+    monkeypatch.setattr(primitives_mod, "RuntimeAppService", _FakeService)
+
+    ctx = make_context(tmp_path)
+    ctx.sandbox_mode = "runpod"  # non-default value — must survive the thread
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["echo hi"]))
+
+    primitives_mod.run_experiment(str(code_dir), "img:tag", ctx=ctx)
+
+    assert captured.get("mode") == "runpod", (
+        f"ctx.sandbox_mode was not forwarded to _backend_for_sandbox_mode; "
+        f"got mode={captured.get('mode')!r}"
+    )
