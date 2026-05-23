@@ -278,6 +278,35 @@ These need answers before frontend implementation begins:
    frontend → adversarial review → commit cleanup → merge.
 6. **Grill the user** on the open frontend questions in §8 before implementing.
 
+### Background work dispatched immediately before compaction
+
+Three additional agents were dispatched in parallel right before the user
+compacted. Their outputs land on disk; agent IDs don't matter for resuming —
+just check these locations.
+
+| Worker | Output | What to do post-compaction |
+|---|---|---|
+| **Sonnet A** — retry-on-watchdog (`--resume`) + SSE emission from `run_rdr` | New code in `backend/cli.py`, `backend/agents/rdr/{run,controller}.py`, `scripts/rdr_paperbench.py`, `scripts/rdr_paperbench_retry.sh`, tests under `tests/rdr/`; summary at `/tmp/rdr_sonnet_a_report.md` | Read the report; run `pytest tests/rdr/ -q`; review the diff; commit + push as a `feat:` commit (this is one of the 10-15 noteworthy commits). |
+| **Sonnet B** — three new GET endpoints (`/runs/<id>/clusters`, `/repair-iterations`, `/leaf-scores`) on the backend + `/api/demo` proxy support for `mode='rdr'` + the frontend integration plan doc | New code in `backend/app.py` (or `backend/services/http/rdr_routes.py`), `frontend/src/app/api/demo/*`, new doc `docs/superpowers/specs/2026-05-22-frontend-integration-plan.md`; summary at `/tmp/rdr_sonnet_b_report.md` | Read the report + the integration plan; review the diffs; grill the user on the visual-layout / auth-default open questions in the plan; commit + push when accepted. |
+| **Codex** — adversarial review of THIS handoff doc + the merge plan | Numbered findings list at `/tmp/rdr_codex_adversarial_review.md` | Read findings; classify BLOCKER vs IMPORTANT vs DEFER; address blockers (likely small doc fixes) before the merge; respond to user with the verdict. |
+
+Plus the still-running pre-compaction agents (these notify on completion;
+their full text appears in the post-compaction summary):
+
+| Worker | Purpose |
+|---|---|
+| `b2v5nt48b` (bash, background) | **seqnn3 live e2e** — the binding score-gate run. Log: `/tmp/rdr_seqnn3.log`. Result: `runs/pb_sequential-neural-score-estimation_*/final_report.json`. |
+| `a4c0d8038906e84c9` (codex agent) | SDK aclose() deep-dive investigation. Final message is the report. |
+| `bcb7daxuv` (Monitor, persistent) | Periodic cluster-progress + error events on seqnn3. |
+
+### When you resume — first 5 minutes
+
+1. `cat /tmp/rdr_codex_adversarial_review.md` — read the doc adversarial findings; address blockers.
+2. `cat /tmp/rdr_sonnet_a_report.md` — read; review the retry-on-watchdog + SSE-emission diffs.
+3. `cat /tmp/rdr_sonnet_b_report.md` — read; review the endpoints diff; read the new `2026-05-22-frontend-integration-plan.md`.
+4. Check seqnn3 score: `cat runs/pb_sequential-neural-score-estimation_*/final_report.json 2>/dev/null | python3 -m json.tool | head -25`.
+5. Decide what to commit/push next; what to grill the user on next.
+
 ### Standing constraints (always honor)
 
 - Git remote: `origin` (`armaanamatya/openresearch`), NEVER `replix`.
