@@ -124,4 +124,70 @@ These are honest empty-state strings in `agent-info-helpers.ts` (lines 13, 21). 
 
 **Classification method:** Each file was checked for (a) `?? "<literal>"` fallbacks in rendered JSX, (b) hardcoded numeric or string data in value slots, (c) placeholder text that reads as real data, and (d) fixture data with import-graph tracing. Borderline cases were resolved by checking the surrounding JSX element class and label context, then applying the spec's discriminator: "does the value read as real data or as a state indicator?"
 
-**No files in `frontend/src/` were modified.** The only file written is this findings document.
+**No files in `frontend/src/` were modified by S1.** The only file written by S1 was this findings document.
+
+---
+
+## Test evidence (S4)
+
+All four verification layers exercised in the worktree `/Volumes/CS_Stuff/openresearch-audit/` on branch `feature/static-values-audit-2026-05-22`.
+
+| Layer | Command (from `frontend/`) | Result |
+|---|---|---|
+| Types | `npx tsc --noEmit` | clean (no output) |
+| Lint  | `npm run lint` | 4 errors, 9 warnings — all in pre-existing files this PR did not touch (`components/library/library-filters.tsx`, `lib/pipeline/layout.ts`). Verified identical on `main` HEAD. No new errors. |
+| Unit  | `npx vitest run` | 14 test files, **75 passed (75)**. Includes 16 new tests added by this audit (10 per-violation + 1 regression + 4 helper + 1 helper file count). |
+| E2E   | `npx playwright test e2e/static-values-route-pass.spec.ts` | **5 passed (5)** in 3.7s — one per route (`/lab`, `/demo`, `/library`, `/paperbench`, `/unlock`). Dev server (`PORT=3001 npm run dev`) ready in 209ms via Turbopack; backend not required (server-side fetches gracefully resolve to null and pages render their honest empty state). |
+
+### New tests added in this audit
+
+- `frontend/src/components/lab/script-panel.test.tsx` — 10 tests, two per violation 1–4 (renders-from-source + honest-empty), plus a present/absent pair for the sha256 hash row from violation 5.
+- `frontend/src/components/lab/agent-info-helpers.test.ts` — 4 tests pinning `shortHash()`'s new contract (returns `""` for null/undefined/empty, returns first 12 chars for truthy).
+- `frontend/src/components/lab/script-panel.regression.test.tsx` — 1 test pinning the historical "91.4 / 492.3 / Reproduced With Caveats" fixture-leak from `script-panel.tsx:22-30`. Constructs an inverse-shaped fixture (complete-looking benchmark + non-complete stage) and asserts none of the leak markers reach the DOM.
+- `frontend/e2e/static-values-route-pass.spec.ts` — 5 Playwright tests; load each public route with no data, assert no leak markers in the rendered body, screenshot full-page into `docs/design/audit-2026-05-22-screenshots/`.
+
+### Screenshots
+
+Committed at `docs/design/audit-2026-05-22-screenshots/`:
+
+| File | Size | Route |
+|---|---|---|
+| `lab.png` | 41 KB | `/lab` — upload view, ReproLab sidebar, "No recent runs." |
+| `demo.png` | 43 KB | `/demo` — same upload view (presentation-mode variant) |
+| `library.png` | 40 KB | `/library` — empty table state |
+| `paperbench.png` | 58 KB | `/paperbench` — start-a-run form, "no bundles vendored" |
+| `unlock.png` | 63 KB | `/unlock` — access-code form |
+
+The lab screenshot was visually inspected and confirms an honest empty state: sidebar with "No recent runs.", upload affordance, format-hint arxiv placeholder, model dropdown defaulting to Sonnet — no fabricated data anywhere.
+
+---
+
+## Post-audit follow-ups (borderline items, not fixed in this PR)
+
+Two items surfaced during S2 code-quality review and visual screenshot inspection that sit on the boundary between category A and B. They are NOT fixed in this PR — they would be a small follow-up audit. Flagged here so a reviewer can re-classify:
+
+1. **`script-panel.tsx:79` — `<a download="paper.pdf" ...>`** — the HTML `download` attribute used when the user clicks the "Download" link. If `pdf?.fileName` is missing the file saves as `paper.pdf`. Not rendered text — appears only in the browser's download dialog. Borderline because it IS data the user encounters about their run, but it is conventional default-filename UX. Suggested follow-up: derive from `pdf?.fileName` with a generic fallback (`source-paper.pdf`) or omit the attribute entirely (let the browser default to the response's `Content-Disposition`).
+
+2. **`upload-view.tsx:107` — `placeholder="arxiv.org/abs/2303.04137"`** — the arxiv input's HTML `placeholder` attribute uses a specific paper id (2303.04137 = "Sparks of AGI"). Ghost-text that disappears on type. Conventional format-hint UX. Could be misread as "the app has processed this paper." Suggested follow-up: change to a generic format example like `arxiv.org/abs/XXXX.XXXXX`.
+
+Both are category-B by the strict definition (HTML attributes ≠ rendered data values) but worth a documented decision rather than silent acceptance.
+
+---
+
+## Branch summary
+
+Final commit sequence on `feature/static-values-audit-2026-05-22`:
+
+```
+50bf187  chore(frontend): script-panel.test — drop unused screen import + dedupe NOTE
+e6aafea  fix(frontend): script-panel — suppress sha256 row when hash unavailable
+4ee3766  fix(frontend): script-panel — show honest-empty for benchmark task-id slot
+c1fdac7  fix(frontend): script-panel — show honest-empty for benchmark name slot
+06f3608  fix(frontend): script-panel — derive code root path from source, not synthesized fallback
+b9859f9  fix(frontend): script-panel — derive pdf filename from source, not literal
+693cf31  docs: frontend static-values audit — inventory (S1)
+c4c5408  docs: implementation plan for frontend static-values audit (2026-05-22)
+785fa11  docs: design spec for frontend static-values audit (2026-05-22)
+```
+
+Plus the S4 commit (regression test + route-pass spec + screenshots + this doc update) added with this commit.
