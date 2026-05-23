@@ -534,6 +534,7 @@ async def run_pipeline_rlm(
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
 
