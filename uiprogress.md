@@ -14,6 +14,39 @@ _Append-only log of UI-facing work. Newest first. Each entry: **what shipped →
 
 ---
 
+## 2026-05-23 (evening) — Schema-coercion + failed-run-UX + doc maintenance (`b290449…f624d33`)
+
+### Shipped (5 commits)
+
+| # | SHA | Subject |
+|---|---|---|
+| 1 | `b290449` | A 30-minute run was crashing at second-39 because paper_claims came back as a list |
+| 2 | `8f9b07a` | Clicking a failed run no longer shows a blank lab — it shows the failure and offers a one-click rerun |
+| 3 | `c930117` | CHANGELOG: today's session — 4 sections (Added / Changed / Fixed / Documentation) |
+| 4 | `4c1d2bb` | learn.md: three new postmortems — paper_claims coercion, aclose visibility, terminal-state UI seeding |
+| 5 | `f624d33` | progress.md: 2026-05-23 reliability + production-path sprint — current status above the older 05-22 entry |
+
+### New failure modes recorded (F15–F17)
+
+| # | Symptom | Root cause | Rule |
+|---|---|---|---|
+| F15 | 30-min runs crashed at `_finalize` with Pydantic ValidationError on `paper_claims` | Schema `dict`-only; root sometimes returns `list[dict]` (perfectly reasonable shape) | Schemas at long-computation seams: liberal about shape, strict about types. `@field_validator(mode="before")` coercer keyed by identity field, fallback to index |
+| F16 | Clicking failed run in Recent → blank lab UI | `useRun` opens SSE only for queued/running; for terminal runs `dashboardEvents` stayed `[]`, tree empty, no error shown | When live channel is status-gated, the static snapshot (`/api/demo?projectId=` returns `payload.events`) must seed the reducer for terminal runs |
+| F17 | No fast path to re-run a failed paper | Required navigate-back-to-upload + repick | `POST /runs/<id>/rerun` reads `demo_status.json::sourcePdf.runPath` and delegates to the same upload codepath; `useRerun` hook owns the POST + router.replace |
+
+### Architecture additions
+
+- **`useRerun(projectId)`** is reusable — future surfaces (Recent right-click, leaderboard "re-evaluate" button, CLI dashboard) can use the same hook.
+- **`LiveDemoRunPayload`** type narrows the previously-too-loose `payload: null` → `LiveDemoRunPayload | null` with explicit `events?: unknown[]`. The terminal-state seed reads from there.
+- **Rerun endpoint NEVER reuses the old project_id** — every rerun is a fresh `prj_*`. Old run state preserved for postmortem.
+
+### Live E2E status
+
+`http://localhost:3000/lab?projectId=prj_6b9acbfd8afcd789` (this session's run-after-schema-fix).
+Earlier run `prj_d118333894223202` is the one that crashed at finalize (now the failed-state UI gives it a visible error banner + Rerun button instead of blank).
+
+---
+
 ## 2026-05-23 (afternoon) — Stability + behavior-quality + Azure-path sprint (`30d243f…ad460ff`)
 
 ### Shipped (8 commits, in dependency order)
