@@ -99,3 +99,55 @@ def test_get_leaderboard_ignores_demo_secret_gate(tmp_path, monkeypatch):
     r = client.get("/leaderboard")
     assert r.status_code == 200
     assert len(r.json()) == 1
+
+
+# 2026-05-23: legacy final_report shapes (rubric=list, models=list) used to
+# crash the leaderboard with `'list' object has no attribute 'get'` because
+# the route ran `data.get("rubric") or {}` — which keeps a non-empty list as
+# the truthy value, then calls .get() on it. Pin the defensive coercion.
+
+
+def _seed_legacy_listrubric_run(runs_root: Path, project_id: str) -> None:
+    """Seed a run whose final_report.json has rubric as a list-of-areas instead
+    of the {overall_score, meets_target, areas} dict. This was the on-disk
+    shape of prj_verify_offline_report and similar legacy fixtures."""
+    d = runs_root / project_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "legacy_p", "title": "Legacy Paper"},
+        "verdict": "partial",
+        "rubric": [
+            {"area": "paper_understanding", "score": 1.0, "weight": 0.15},
+            {"area": "method_fidelity", "score": 0.3, "weight": 0.35},
+        ],
+        "cost": [1.0, 0.5],  # also list-shape — another legacy variant
+        "models": ["claude-sonnet-4-6"],  # also list-shape
+        "iterations": 1,
+        "mode": "rlm",
+    }))
+    (d / "demo_status.json").write_text("{}")
+
+
+def test_get_leaderboard_survives_legacy_list_shaped_rubric(tmp_path, monkeypatch):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    _seed_run(runs_root, "prj_good", 0.5)
+    _seed_legacy_listrubric_run(runs_root, "prj_legacy")
+    app = _fresh_app(monkeypatch, runs_root)
+    client = TestClient(app)
+    r = client.get("/leaderboard")
+    # MUST be 200 — a single malformed legacy row must not 500 the whole endpoint.
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+    rows = r.json()
+    # Both rows aggregated; legacy gets None score and is pushed to the bottom.
+    ids = [row["project_id"] for row in rows]
+    assert "prj_good" in ids
+    assert "prj_legacy" in ids
+    legacy = next(row for row in rows if row["project_id"] == "prj_legacy")
+    # Legacy with non-dict rubric → score is None (cannot extract overall_score)
+    assert legacy["overall_score"] is None
+    # And the dict-shaped fields default to safe values
+    assert legacy["models"] == {
+        "planner": None, "executor": None, "verifier": None, "grader": None,
+    }
+    assert legacy["cost_usd"] is None

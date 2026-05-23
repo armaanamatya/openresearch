@@ -63,10 +63,18 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         )
         return None
 
-    paper = data.get("paper") or {}
-    rubric = data.get("rubric") or {}
-    cost = data.get("cost") or {}
-    models = data.get("models") or {}
+    # Defensive: legacy/test final_report.json files (e.g. prj_verify_offline_report)
+    # had rubric as a list-of-areas instead of the {overall_score, meets_target,
+    # areas} dict. `data.get("rubric") or {}` keeps the list (truthy), then the
+    # subsequent `.get()` blows up with `'list' object has no attribute 'get'` —
+    # 500ing the whole leaderboard. Coerce to {} when the shape is wrong so a
+    # malformed row gets a None score but doesn't fail the entire aggregation.
+    def _as_dict(v):
+        return v if isinstance(v, dict) else {}
+    paper = _as_dict(data.get("paper"))
+    rubric = _as_dict(data.get("rubric"))
+    cost = _as_dict(data.get("cost"))
+    models = _as_dict(data.get("models"))
     started_at = data.get("started_at")
     completed_at = data.get("completed_at")
 
