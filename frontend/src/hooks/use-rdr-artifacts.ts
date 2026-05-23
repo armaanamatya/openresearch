@@ -25,7 +25,10 @@ const EMPTY_CLUSTERS: DemoClusterStatus[] = [];
 const EMPTY_LEAVES: DemoLeafScore[] = [];
 const EMPTY_PASSES: DemoRepairPass[] = [];
 
-/** Number of consecutive all-missing poll cycles before polling stops entirely. */
+/** Number of consecutive all-missing poll cycles before polling stops entirely.
+ *  At 5s pollMs this is ~15s. Reached the same way on both active and inactive
+ *  runs (post-2026-05-23 fix): runs whose shape will never produce rdr
+ *  artifacts stop polling rather than spamming the console for the full run. */
 const STOP_AFTER_NO_ARTIFACT_CYCLES = 3;
 
 /**
@@ -105,25 +108,17 @@ export function useRdrArtifacts(
         return false;
       }
       const allMissing = isMissing(c, "clusters") && isMissing(l, "leaf_scores") && isMissing(r, "passes");
-      // Strong "this run will never have rdr artifacts" signal: all three
-      // endpoints returned 404. Distinct from 200+empty (run-shape supports
-      // them, just not produced yet) and from 5xx (transient backend issue).
-      // 404 means the project simply has no rdr-iterations directory.
-      const allReturned404 =
-        c.status === 404 && l.status === 404 && r.status === 404;
       if (allMissing) {
-        // Even on active runs, repeated 404s tell us the run-shape will never
-        // produce these (e.g. rlm mode without a PaperBench bundle). Count up
-        // and stop polling after STOP_AFTER_NO_ARTIFACT_CYCLES to silence the
-        // console-error spam that otherwise lasts the entire run.
-        if (allReturned404 || !isActive) {
-          localNoArtifactsCount += 1;
-          setNoArtifactsCount(localNoArtifactsCount);
-        } else {
-          // 200+empty or 5xx during active run — keep polling, expect data.
-          localNoArtifactsCount = 0;
-          setNoArtifactsCount(0);
-        }
+        // Increment unconditionally — whether the run is active or not. The
+        // previous "reset on active" logic produced indefinite 404 spam in the
+        // browser console for run-shapes that never produce rdr artifacts
+        // (e.g. rlm mode without a PaperBench bundle, which yields the
+        // signature 200+empty / 404 / 200+empty for the entire run).
+        // STOP_AFTER_NO_ARTIFACT_CYCLES sets the budget — pick a value
+        // tolerant of slow rdr/hybrid ramp-up but short enough to silence
+        // the noise.
+        localNoArtifactsCount += 1;
+        setNoArtifactsCount(localNoArtifactsCount);
         return localNoArtifactsCount < STOP_AFTER_NO_ARTIFACT_CYCLES;
       }
 

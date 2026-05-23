@@ -276,32 +276,36 @@ describe("useRdrArtifacts", () => {
     expect(fetchMock.mock.calls.length).toBe(9);
   });
 
-  it("keeps polling 200+empty during active run (run-shape supports artifacts but they're not ready)", async () => {
-    // Counterpart to the 404 case: when the route exists but returns an
-    // empty array, the run-shape supports rdr artifacts and they're just
-    // not produced yet. Keep polling.
+  it("stops polling on mixed 404+200-empty during active run (the real rlm-no-bundle signature)", async () => {
+    // The real-world signature for rlm mode without a PaperBench bundle:
+    // /clusters returns 200+empty, /leaf-scores returns 404, /repair-iterations
+    // returns 200+empty. allMissing is true, but the previous "stop only on
+    // all-404" gate didn't fire. The fix: stop polling on allMissing
+    // unconditionally — whether each endpoint is 404, 5xx, or 200+empty.
     vi.useFakeTimers();
 
     const fetchMock = vi.fn((url: string) => {
-      const isClusters = url.includes("/clusters");
-      const isLeaves = url.includes("/leaf-scores");
-      const isPasses = url.includes("/repair-iterations");
-      const key = isClusters ? "clusters" : isLeaves ? "leaf_scores" : isPasses ? "passes" : null;
-      const body: Record<string, unknown[]> = {};
-      if (key) body[key] = [];
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+      if (url.includes("/leaf-scores")) {
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) });
+      }
+      const key = url.includes("/clusters") ? "clusters" : "passes";
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ [key]: [] }) });
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useRdrArtifacts("prj_active_empty", true, 10));
+    const { result } = renderHook(() => useRdrArtifacts("prj_rlm_no_bundle", true, 10));
 
+    // Cycle 1: initial fetch (3 calls)
     await act(async () => { await Promise.resolve(); });
+    // Cycle 2: +3 calls
     await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3: +3 calls = 9 total, threshold reached, polling stops
     await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
-    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+    // Past threshold — no further calls expected.
+    await act(async () => { vi.advanceTimersByTime(100); await Promise.resolve(); });
 
-    expect(result.current.noRdrArtifacts).toBe(false);
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(9);
+    expect(result.current.noRdrArtifacts).toBe(true);
+    expect(fetchMock.mock.calls.length).toBe(9);
   });
 
   it("test_hook_stops_polling_after_3_502_cycles: stops after 3 all-502 cycles and exposes noRdrArtifacts", async () => {
