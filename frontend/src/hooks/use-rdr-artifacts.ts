@@ -13,9 +13,10 @@ export interface RdrArtifacts {
   leafScores: DemoLeafScore[];
   repairPasses: DemoRepairPass[];
   /**
-   * True after 3 consecutive poll cycles where all 3 endpoints returned 404.
-   * Signals "this run will never have rdr artifacts" — callers can use this
-   * to suppress any UI placeholder rather than showing an indefinite empty state.
+   * True after 3 consecutive poll cycles where all 3 endpoints returned a
+   * non-2xx status (404, 5xx, or network-error status=0). Signals "this run
+   * will never have rdr artifacts" — callers can use this to suppress any UI
+   * placeholder rather than showing an indefinite empty state.
    */
   noRdrArtifacts: boolean;
 }
@@ -24,8 +25,8 @@ const EMPTY_CLUSTERS: DemoClusterStatus[] = [];
 const EMPTY_LEAVES: DemoLeafScore[] = [];
 const EMPTY_PASSES: DemoRepairPass[] = [];
 
-/** Number of consecutive all-404 poll cycles before polling stops entirely. */
-const STOP_AFTER_404_CYCLES = 3;
+/** Number of consecutive all-missing poll cycles before polling stops entirely. */
+const STOP_AFTER_NO_ARTIFACT_CYCLES = 3;
 
 /**
  * Polls the three RDR artifact endpoints while the run is active.
@@ -49,8 +50,8 @@ export function useRdrArtifacts(
   const [clusters, setClusters] = useState<DemoClusterStatus[]>([]);
   const [leafScores, setLeafScores] = useState<DemoLeafScore[]>([]);
   const [repairPasses, setRepairPasses] = useState<DemoRepairPass[]>([]);
-  // Count consecutive poll cycles where every endpoint returned 404.
-  // After STOP_AFTER_404_CYCLES we stop polling — the run has no rdr artifacts.
+  // Count consecutive poll cycles where every endpoint returned a non-2xx status.
+  // After STOP_AFTER_NO_ARTIFACT_CYCLES we stop polling — the run has no rdr artifacts.
   const [noArtifactsCount, setNoArtifactsCount] = useState(0);
 
   useEffect(() => {
@@ -79,7 +80,7 @@ export function useRdrArtifacts(
     const fetchOnce = async () => {
       // If we have already confirmed this run has no rdr artifacts, bail early
       // so the interval doesn't fire additional requests.
-      if (localNoArtifactsCount >= STOP_AFTER_404_CYCLES) return;
+      if (localNoArtifactsCount >= STOP_AFTER_NO_ARTIFACT_CYCLES) return;
 
       const [c, l, r] = await Promise.all([
         fetchOne("clusters"),
@@ -89,14 +90,17 @@ export function useRdrArtifacts(
 
       if (cancelled) return;
 
-      const all404 = [c, l, r].every((res) => res.status === 404);
-      if (all404) {
+      // Treat any non-2xx response (404, 5xx, network-error status=0) as
+      // "no artifact". The proxy now normalizes timeouts/5xx → 404, but defend
+      // against future regressions.
+      const allMissing = [c, l, r].every((res) => res.status === 0 || res.status >= 400);
+      if (allMissing) {
         localNoArtifactsCount += 1;
         setNoArtifactsCount(localNoArtifactsCount);
         return;
       }
 
-      // At least one endpoint returned data (or a non-404 error) — reset counter.
+      // At least one endpoint returned 2xx data — reset counter.
       localNoArtifactsCount = 0;
       setNoArtifactsCount(0);
 
@@ -129,7 +133,7 @@ export function useRdrArtifacts(
       clusters: EMPTY_CLUSTERS,
       leafScores: EMPTY_LEAVES,
       repairPasses: EMPTY_PASSES,
-      noRdrArtifacts: noArtifactsCount >= STOP_AFTER_404_CYCLES,
+      noRdrArtifacts: noArtifactsCount >= STOP_AFTER_NO_ARTIFACT_CYCLES,
     };
   }
 
@@ -137,6 +141,6 @@ export function useRdrArtifacts(
     clusters,
     leafScores,
     repairPasses,
-    noRdrArtifacts: noArtifactsCount >= STOP_AFTER_404_CYCLES,
+    noRdrArtifacts: noArtifactsCount >= STOP_AFTER_NO_ARTIFACT_CYCLES,
   };
 }

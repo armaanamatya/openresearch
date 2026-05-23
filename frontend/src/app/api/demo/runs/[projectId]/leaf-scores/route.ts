@@ -15,11 +15,16 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<NextResponse> {
   const { projectId } = await params;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
   try {
     const response = await fetch(
       `${backendBaseUrl()}/runs/${encodeURIComponent(projectId)}/leaf-scores`,
-      { method: "GET", headers: { ...demoSecretHeaders() }, cache: "no-store" }
+      { method: "GET", headers: { ...demoSecretHeaders() }, cache: "no-store", signal: controller.signal }
     );
+    if (response.status >= 500) {
+      return new NextResponse(null, { status: 404 });
+    }
     const text = await response.text();
     if (!response.ok) {
       return new NextResponse(text || "Upstream error", { status: response.status });
@@ -29,10 +34,9 @@ export async function GET(
     } catch {
       return new NextResponse(text, { status: response.status });
     }
-  } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "fetch failed" },
-      { status: 502 }
-    );
+  } catch {
+    return new NextResponse(null, { status: 404 });
+  } finally {
+    clearTimeout(timer);
   }
 }

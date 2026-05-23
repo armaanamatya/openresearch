@@ -244,6 +244,58 @@ describe("useRdrArtifacts", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeExtra);
   });
 
+  it("test_hook_stops_polling_after_3_502_cycles: stops after 3 all-502 cycles and exposes noRdrArtifacts", async () => {
+    vi.useFakeTimers();
+
+    // All 3 endpoints return 502 on every call.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 502, json: () => Promise.resolve(null) })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_all502", true, 10));
+
+    // Cycle 1: initial fetch (3 calls)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+
+    // After 3 cycles, noRdrArtifacts should be true and fetch count exactly 9.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(result.current.noRdrArtifacts).toBe(true);
+
+    // Advance further — no more fetches should fire.
+    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+  });
+
+  it("test_hook_stops_polling_after_3_network_error_cycles: stops after 3 all-status-0 cycles and exposes noRdrArtifacts", async () => {
+    vi.useFakeTimers();
+
+    // All 3 endpoints simulate network error (fetch throws → fetchOne returns status 0).
+    const fetchMock = vi.fn(() => Promise.reject(new TypeError("network error")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_all_net_err", true, 10));
+
+    // Cycle 1: initial fetch (3 calls)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+
+    // After 3 cycles, noRdrArtifacts should be true and fetch count exactly 9.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(result.current.noRdrArtifacts).toBe(true);
+
+    // Advance further — no more fetches should fire.
+    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+  });
+
   it("test_hook_handles_mixed_404_and_data: continues polling when at least one endpoint returns data", async () => {
     vi.useFakeTimers();
 
