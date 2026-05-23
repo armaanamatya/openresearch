@@ -80,6 +80,41 @@ def _extract_weak_clusters(
     return weak
 
 
+def _snapshot_report(report_path: str | None) -> tuple[str | None, str | None]:
+    """Capture final_report.json/md so Phase 2 cannot erase Phase 1 evidence."""
+    if not report_path:
+        return None, None
+    json_path = Path(report_path)
+    md_path = json_path.with_suffix(".md")
+    try:
+        json_text = json_path.read_text(encoding="utf-8")
+    except Exception:
+        json_text = None
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except Exception:
+        md_text = None
+    return json_text, md_text
+
+
+def _restore_report(report_path: str | None, json_text: str | None, md_text: str | None) -> None:
+    """Best-effort restore for the Phase 1 scored report."""
+    if not report_path or json_text is None:
+        return
+    json_path = Path(report_path)
+    try:
+        json_path.write_text(json_text, encoding="utf-8")
+        if md_text is not None:
+            json_path.with_suffix(".md").write_text(md_text, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "hybrid/controller: could not restore Phase 1 report at %s (%s: %s)",
+            report_path,
+            type(exc).__name__,
+            exc,
+        )
+
+
 async def run_pipeline_hybrid(
     project_id: str,
     runs_root: Path,
@@ -196,6 +231,7 @@ async def run_pipeline_hybrid(
             max_repair_iterations=0,   # Phase 1 only — no RDR repair
             repair_target=repair_target,
             bundles_root=bundles_root,
+            run_budget=run_budget,
         )
     except Exception as exc:
         phase1_failed = True
@@ -273,6 +309,7 @@ async def run_pipeline_hybrid(
         "hybrid/controller[%s]: %d weak cluster(s) — launching Phase 2 (RLM repair)",
         project_id, len(weak_clusters),
     )
+    phase1_report_json, phase1_report_md = _snapshot_report(final_report_path)
 
     # Decrement Phase 2's budget by what Phase 1 already spent so total
     # cost honors the user's max_usd ceiling. If Phase 1 already consumed
@@ -299,6 +336,9 @@ async def run_pipeline_hybrid(
         remaining_budget = RunBudget(
             max_usd=remaining_usd,
             max_wall_clock_seconds=getattr(run_budget, "max_wall_clock_seconds", None),
+            max_pod_seconds=getattr(run_budget, "max_pod_seconds", None),
+            max_invocations_per_agent=getattr(run_budget, "max_invocations_per_agent", {}),
+            rlm_calls_remaining=getattr(run_budget, "rlm_calls_remaining", 120),
         )
 
     # Seed the claim map with Phase 1 artifacts.
@@ -328,6 +368,21 @@ async def run_pipeline_hybrid(
         phase2_result.rubric_score,
         phase2_result.iterations,
     )
+    if phase2_result.rubric_score is None:
+        logger.warning(
+            "hybrid/controller[%s]: Phase 2 produced no rubric score — restoring "
+            "Phase 1 scored report",
+            project_id,
+        )
+        _restore_report(final_report_path, phase1_report_json, phase1_report_md)
+        return RLMRunResult(
+            project_id=phase1_result.project_id,
+            status="failed",
+            iterations=phase1_result.clusters_total,
+            rubric_score=rubric_score,
+            cost_usd=(phase1_result.cost_usd or 0.0) + (phase2_result.cost_usd or 0.0),
+            final_report_path=final_report_path,
+        )
     return phase2_result
 
 

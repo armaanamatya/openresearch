@@ -14,9 +14,14 @@ export async function GET(request: Request): Promise<Response> {
     const response = await fetch(`${backendBaseUrl()}/runs?${qs.toString()}`, {
       cache: "no-store"
     });
-    if (!response.ok) return NextResponse.json([], { status: 200 });
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: `Backend returned HTTP ${response.status}` },
+        { status: 502 }
+      );
+    }
     return NextResponse.json(await response.json());
   } catch {
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json({ error: "Backend unavailable" }, { status: 502 });
   }
 }

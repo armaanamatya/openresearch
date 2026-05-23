@@ -9,9 +9,21 @@ import { isRlmEvent } from "@/lib/events/rlm-events";
 import { issueText } from "@/components/lab/shared-helpers";
 import { readUserPrefs } from "@/lib/user-prefs";
 
-const MAX_DASHBOARD_EVENTS = 200;
+const MAX_DASHBOARD_EVENTS = 1000;
 const POLL_INTERVAL_MS = 3000;
 const LAST_RUN_KEY = "reprolab:lastRun";
+const PINNED_DASHBOARD_EVENTS = new Set([
+  "run_complete",
+  "rubric_score",
+  "candidate_proposed",
+  "candidate_outcome",
+  "user_message",
+  "user_message_response",
+  "cluster_started",
+  "cluster_artifact_emitted",
+  "cluster_scored",
+  "repair_dispatched",
+]);
 
 type EventSourceLike = {
   addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => void;
@@ -41,6 +53,15 @@ function readLastRun(): string | null {
   } catch {
     return null;
   }
+}
+
+function compactDashboardEvents(events: DashboardLiveEvent[]): DashboardLiveEvent[] {
+  if (events.length <= MAX_DASHBOARD_EVENTS) return events;
+  const tailStart = Math.max(0, events.length - MAX_DASHBOARD_EVENTS);
+  const pinned = events
+    .slice(0, tailStart)
+    .filter((event) => PINNED_DASHBOARD_EVENTS.has(event.event));
+  return [...pinned, ...events.slice(tailStart)];
 }
 
 // fetch() rejects with a TypeError on a network-level failure — the
@@ -192,19 +213,21 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
   }, []);
 
   useEffect(() => {
+    let seedTimer: number | null = null;
+
     if (run?.projectId !== dashboardProjectIdRef.current) {
       dashboardProjectIdRef.current = run?.projectId ?? null;
       // For terminal runs the events are seeded from payload.events in the
       // auto-resume effect (or will be seeded below from the current run).
       // Clearing here would wipe them — so only clear for live runs.
       const isTerminal = run?.status === "failed" || run?.status === "completed" || run?.status === "stopped";
+      const rawEvents = Array.isArray(run?.payload?.events) ? run.payload.events : [];
+      const rlmEvents = rawEvents.filter(isRlmEvent) as DashboardLiveEvent[];
       if (!isTerminal) {
-        setDashboardEvents([]);
+        seedTimer = window.setTimeout(() => setDashboardEvents([]), 0);
       } else {
         // Navigation to a terminal run: seed from payload.events if present.
-        const rawEvents = Array.isArray(run?.payload?.events) ? run.payload.events : [];
-        const rlmEvents = rawEvents.filter(isRlmEvent) as DashboardLiveEvent[];
-        setDashboardEvents(rlmEvents);
+        seedTimer = window.setTimeout(() => setDashboardEvents(compactDashboardEvents(rlmEvents)), 0);
       }
     }
 
@@ -216,8 +239,39 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
 
     if (!run || !["queued", "running"].includes(run.status)) {
+      if (seedTimer !== null) {
+        return () => window.clearTimeout(seedTimer);
+      }
       return;
     }
+
+    const pollOnce = async (projectId: string) => {
+      try {
+        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(projectId)}`, {
+          cache: "no-store"
+        });
+        if (!response.ok) {
+          throw new Error("Unable to refresh run");
+        }
+        const next = (await response.json()) as LiveDemoRunState | null;
+        if (next) {
+          setRun((current) => coalesceRunState(current, next));
+          if (next.status === "queued" || next.status === "running") {
+            pollTimer.current = window.setTimeout(() => void pollOnce(projectId), POLL_INTERVAL_MS);
+          }
+        }
+      } catch (pollError) {
+        setError(pollError instanceof Error ? pollError.message : "Unable to refresh run");
+        pollTimer.current = window.setTimeout(() => void pollOnce(projectId), POLL_INTERVAL_MS);
+      }
+    };
+
+    const schedulePoll = (delayMs: number) => {
+      if (pollTimer.current) {
+        window.clearTimeout(pollTimer.current);
+      }
+      pollTimer.current = window.setTimeout(() => void pollOnce(run.projectId), delayMs);
+    };
 
     if (typeof EventSource !== "undefined") {
       const source = new EventSource(
@@ -265,9 +319,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
           const evt = JSON.parse((event as MessageEvent).data) as DashboardLiveEvent;
           setDashboardEvents((prev) => {
             const next = [...prev, evt];
-            return next.length > MAX_DASHBOARD_EVENTS
-              ? next.slice(next.length - MAX_DASHBOARD_EVENTS)
-              : next;
+            return compactDashboardEvents(next);
           });
         } catch {
           // Malformed dashboard events should never break the live UI.
@@ -278,34 +330,26 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         if (eventSourceRef.current === source) {
           eventSourceRef.current = null;
         }
+        schedulePoll(500);
       };
 
       return () => {
+        if (seedTimer !== null) window.clearTimeout(seedTimer);
         source.close();
         if (eventSourceRef.current === source) {
           eventSourceRef.current = null;
         }
+        if (pollTimer.current) {
+          window.clearTimeout(pollTimer.current);
+          pollTimer.current = null;
+        }
       };
     }
 
-    pollTimer.current = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(run.projectId)}`, {
-          cache: "no-store"
-        });
-        if (!response.ok) {
-          throw new Error("Unable to refresh run");
-        }
-        const next = (await response.json()) as LiveDemoRunState | null;
-        if (next) {
-          setRun((current) => coalesceRunState(current, next));
-        }
-      } catch (pollError) {
-        setError(pollError instanceof Error ? pollError.message : "Unable to refresh run");
-      }
-    }, POLL_INTERVAL_MS);
+    schedulePoll(POLL_INTERVAL_MS);
 
     return () => {
+      if (seedTimer !== null) window.clearTimeout(seedTimer);
       if (pollTimer.current) {
         window.clearTimeout(pollTimer.current);
         pollTimer.current = null;

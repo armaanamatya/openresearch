@@ -122,7 +122,7 @@ export function NodeDetailPopup({ node, iteration, onClose }: NodeDetailPopupPro
               {block.stdout_meta && (
                 <div className={styles.stdoutMeta}>
                   <span className={styles.stdoutLength}>
-                    stdout: {block.stdout_meta.length.toLocaleString()} chars
+                    stdout: {String(block.stdout_meta.length)} chars
                   </span>
                   {block.stdout_meta.has_traceback && (
                     <span className={styles.tracebackBadge}>traceback</span>

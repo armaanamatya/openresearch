@@ -72,6 +72,10 @@ _Updated: 2026-05-23 evening._
 
 _Updated: 2026-05-23._
 
+## Ship-readiness pass — 2026-05-23
+
+Ran the launch-readiness sweep on a clean `chore/ship-readiness-2026-05-23` worktree. Backend fixes covered demo-gate parity, JSON 500s, RDR degraded scoring/report metadata, RDR spec cluster SSE events, scorer fallback honesty, leaderboard degraded detection, and `max_pod_seconds` threading across CLI/live/hybrid paths. Frontend fixes cleared lint/type/test failures, made live run streams resilient to SSE disconnects and long-event compaction, kept active RDR artifact polling alive, and replaced silent backend-outage empty states for library/leaderboard/recents with explicit errors. Added a vendored PaperBench bundle identity guard and refreshed docs for the hybrid default (`rlm`), peer `rdr`, and `rlm-pure` escape hatch.
+
 ### Headline
 
 15 commits across UI hardening, backend stability, Azure provider support, chat steering, and RLM behavior quality; repo is production-ready for single-user demo and staged for Vercel + Azure migration.

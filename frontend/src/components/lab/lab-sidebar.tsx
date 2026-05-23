@@ -24,10 +24,12 @@ const NAV: NavItem[] = [
 
 export function LabSidebar({
   active,
-  recents
+  recents,
+  recentsError = null,
 }: {
   active: string;
   recents: RecentRunSummary[];
+  recentsError?: string | null;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -73,7 +75,11 @@ export function LabSidebar({
       ))}
       <div className="dotted" />
       <div className="nav-section-title">Recent</div>
-      {recents.length === 0 ? (
+      {recentsError ? (
+        <div className="navitem navitem-small" style={{ opacity: 0.7 }} role="status">
+          <span className="nav-label">Recent runs unavailable.</span>
+        </div>
+      ) : recents.length === 0 ? (
         <div className="navitem navitem-small" style={{ opacity: 0.5 }}>
           <span className="nav-label">No recent runs.</span>
         </div>

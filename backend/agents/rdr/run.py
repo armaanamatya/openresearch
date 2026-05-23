@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,7 @@ async def run_pipeline_rdr(
     repair_target: float = 0.6,
     bundles_root: "str | Path | None" = None,
     resume: bool = False,
+    run_budget: Any = None,
 ) -> RdrResult:
     """Run one paper reproduction using the rubric-driven ``rdr`` harness.
 
@@ -176,6 +178,8 @@ async def run_pipeline_rdr(
             resolving ``paper_id``.  ``None`` → use the canonical vendored root.
         resume: When True, reuse the existing project_dir and resume from
             cluster checkpoints rather than starting fresh.
+        run_budget: Optional budget object threaded into primitive calls,
+            runtime sandboxes, and controller watchdog metadata.
 
     Returns:
         An :class:`~backend.agents.rdr.models.RdrResult`.
@@ -233,6 +237,11 @@ async def run_pipeline_rdr(
             exc,
         )
 
+    deadline_utc = None
+    wall_clock_s = getattr(run_budget, "max_wall_clock_seconds", None)
+    if wall_clock_s is not None:
+        deadline_utc = datetime.now(timezone.utc) + timedelta(seconds=float(wall_clock_s))
+
     ctx = RunContext(
         project_id=project_id,
         project_dir=project_dir,
@@ -245,6 +254,8 @@ async def run_pipeline_rdr(
         agent_model=agent_model,
         runtime=agent_runtime,
         sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
+        deadline_utc=deadline_utc,
     )
 
     logger.info(

@@ -1,6 +1,6 @@
 import { LabShell } from "@/components/lab/lab-shell";
 import { fetchRunById } from "@/lib/demo/server-run";
-import { fetchRecentRuns } from "@/lib/runs/server-list";
+import { fetchRecentRunsResult } from "@/lib/runs/server-list";
 import { fetchModels } from "@/lib/models/server-fetch";
 
 // The current run is identified by the `?projectId=` query param — that
@@ -18,15 +18,16 @@ export default async function LabPage({
   const params = await searchParams;
   const raw = params.projectId;
   const projectId = Array.isArray(raw) ? raw[0] : raw;
-  const [initialRun, initialRecents, models] = await Promise.all([
+  const [initialRun, recentResult, models] = await Promise.all([
     projectId ? fetchRunById(projectId) : Promise.resolve(null),
-    fetchRecentRuns(8),
+    fetchRecentRunsResult(8),
     fetchModels()
   ]);
   return (
     <LabShell
       initialRun={initialRun}
-      initialRecents={initialRecents}
+      initialRecents={recentResult.runs}
+      initialRecentsError={recentResult.error}
       initialModels={models}
       presentationMode="internal"
     />

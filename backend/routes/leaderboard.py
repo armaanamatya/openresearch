@@ -108,7 +108,7 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         ),
         overall_score=overall_score,
         meets_target=bool(rubric.get("meets_target") or False),
-        degraded=bool(data.get("degraded") or False),
+        degraded=bool(data.get("degraded") or rubric.get("degraded") or False),
         cost_usd=float(cost["llm_usd"]) if cost.get("llm_usd") is not None else None,
         iterations=int(data.get("iterations", 0)),
         wall_clock_s=wall_clock_s,

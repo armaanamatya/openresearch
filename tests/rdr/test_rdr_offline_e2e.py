@@ -103,7 +103,7 @@ async def test_full_contract_real_bundle(
     _patch_primitives(monkeypatch)
     monkeypatch.setattr(
         "backend.agents.rdr.controller.score_reproduction",
-        lambda rubric, run_dir, llm: _fake_scores(overall=0.80, graded=92),
+        lambda rubric, run_dir, llm, **kwargs: _fake_scores(overall=0.80, graded=92),
     )
 
     result: RdrResult = await run_rdr(
@@ -273,7 +273,7 @@ async def test_report_rubric_carries_score_real_bundle(
     _patch_primitives(monkeypatch)
     monkeypatch.setattr(
         "backend.agents.rdr.controller.score_reproduction",
-        lambda rubric, run_dir, llm: _fake_scores(overall=0.72, graded=92),
+        lambda rubric, run_dir, llm, **kwargs: _fake_scores(overall=0.72, graded=92),
     )
 
     result: RdrResult = await run_rdr(

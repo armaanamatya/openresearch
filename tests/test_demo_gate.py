@@ -95,17 +95,17 @@ def test_gate_disabled_accepts_any_value():
 
 
 def test_gate_rejects_missing_secret():
-    """Gate raises 403 when configured_secret is set and no secret provided."""
+    """Gate raises 401 when configured_secret is set and no secret provided."""
     with pytest.raises(HTTPException) as exc_info:
         _enforce_demo_gate(None, "topsecret")
-    assert exc_info.value.status_code == 403
+    assert exc_info.value.status_code == 401
 
 
 def test_gate_rejects_wrong_secret():
-    """Gate raises 403 when provided secret does not match."""
+    """Gate raises 401 when provided secret does not match."""
     with pytest.raises(HTTPException) as exc_info:
         _enforce_demo_gate("wrong", "topsecret")
-    assert exc_info.value.status_code == 403
+    assert exc_info.value.status_code == 401
 
 
 def test_gate_accepts_correct_secret():
@@ -131,10 +131,81 @@ def test_runs_endpoint_rejects_missing_secret(monkeypatch):
                 return {"projectId": "x", "status": "queued"}
 
         client = TestClient(create_app(run_service=_FakeRunService()))
-        assert client.post("/runs", json={"mode": "rlm"}).status_code == 403
+        assert client.post("/runs", json={"mode": "rlm"}).status_code == 401
         assert client.post(
             "/runs", json={"mode": "rlm"}, headers={"X-Demo-Secret": "topsecret"}
         ).status_code == 202
     finally:
         monkeypatch.undo()
         get_settings(_force_reload=True)  # reset the module-level settings cache
+
+
+def test_delete_run_rejects_missing_secret(monkeypatch):
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
+    from backend.config import get_settings
+    get_settings(_force_reload=True)
+    try:
+        from backend.app import create_app
+        from starlette.testclient import TestClient
+
+        class _FakeRunService:
+            async def stop_run(self, project_id):
+                return {"projectId": project_id, "status": "stopped"}
+
+        client = TestClient(create_app(run_service=_FakeRunService()))
+        assert client.delete("/runs/prj_test").status_code == 401
+        assert client.delete(
+            "/runs/prj_test", headers={"X-Demo-Secret": "topsecret"}
+        ).status_code == 200
+    finally:
+        monkeypatch.undo()
+        get_settings(_force_reload=True)
+
+
+def test_phase2_mutating_route_rejects_missing_secret(monkeypatch):
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
+    from backend.config import get_settings
+    get_settings(_force_reload=True)
+    try:
+        from backend.app import create_app
+        from starlette.testclient import TestClient
+
+        client = TestClient(create_app())
+        payload = {
+            "project_id": "prj_test",
+            "stage": "experiment",
+            "command": "python train.py",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "boom",
+            "timed_out": False,
+            "cause_kind": "runtime_error",
+            "artifact_refs": [],
+        }
+        assert client.post("/phase2/failures/diagnose", json=payload).status_code == 401
+    finally:
+        monkeypatch.undo()
+        get_settings(_force_reload=True)
+
+
+def test_unhandled_route_error_returns_json(monkeypatch):
+    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
+    from backend.config import get_settings
+    get_settings(_force_reload=True)
+    try:
+        from backend.app import create_app
+        from starlette.testclient import TestClient
+
+        app = create_app()
+
+        @app.get("/_test/boom")
+        async def boom():
+            raise RuntimeError("synthetic failure")
+
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/_test/boom")
+        assert response.status_code == 500
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json() == {"detail": "synthetic failure"}
+    finally:
+        get_settings(_force_reload=True)

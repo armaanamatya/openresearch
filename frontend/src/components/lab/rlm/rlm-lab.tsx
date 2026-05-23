@@ -89,9 +89,11 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (startedAtMs === null) return;
-    setNowMs(Date.now());
-    tickRef.current = setInterval(() => setNowMs(Date.now()), 1000);
+    const update = () => setNowMs(Date.now());
+    const initialTick = setTimeout(update, 0);
+    tickRef.current = setInterval(update, 1000);
     return () => {
+      clearTimeout(initialTick);
       if (tickRef.current !== null) clearInterval(tickRef.current);
     };
   }, [startedAtMs]);
@@ -103,8 +105,11 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
     }
     // Fallback: derive from first/last event timestamps (static, SSR-safe).
     if (events.length < 2) return 0;
-    const first = new Date(events[0].timestamp).getTime();
-    const last = new Date(events[events.length - 1].timestamp).getTime();
+    const firstTimestamp = events[0].timestamp;
+    const lastTimestamp = events[events.length - 1].timestamp;
+    if (!firstTimestamp || !lastTimestamp) return 0;
+    const first = new Date(firstTimestamp).getTime();
+    const last = new Date(lastTimestamp).getTime();
     return Math.max(0, last - first);
   }, [startedAtMs, nowMs, events]);
 
@@ -153,6 +158,9 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
         status={state.status}
         iterationCount={state.iterationCount}
         costUsd={state.report?.costUsd ?? null}
+        warnings={state.warnings}
+        lastHeartbeatAt={state.lastHeartbeatAt}
+        heartbeatNowMs={nowMs}
         error={runError}
         onRerun={rerun}
         rerunBusy={rerunBusy}
@@ -162,7 +170,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
       <RubricStrip rubric={state.rubric} />
 
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
-      {(runMode === "rlm" || runMode === "rdr") && (
+      {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (
         <RubricBreakdown projectId={runMeta.projectId} isActive={isActive} />
       )}
 

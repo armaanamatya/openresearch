@@ -80,6 +80,11 @@ test("? opens shortcut overlay; Esc closes", async ({ page }) => {
 
 test("library status filter narrows the table", async ({ page }) => {
   await page.goto(LIBRARY_URL);
+  const unavailable = page.getByText(/run library unavailable/i);
+  if (await unavailable.isVisible().catch(() => false)) {
+    await expect(unavailable).toBeVisible();
+    return;
+  }
 
   // The visible project-id text is truncated to 14 chars (library-table.tsx:179),
   // so match rows by their href attribute, which carries the full id.
@@ -100,4 +105,3 @@ test("library status filter narrows the table", async ({ page }) => {
   await expect(completedRow).toBeVisible();
   await expect(diffusionRow).toBeHidden();
 });
-

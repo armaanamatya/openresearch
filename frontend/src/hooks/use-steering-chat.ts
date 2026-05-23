@@ -11,7 +11,7 @@
  * a real event replaces it.
  */
 
-import { useMemo, useState, useCallback, useRef } from "react";
+import { useMemo, useState, useCallback } from "react";
 import type { RlmDashboardEvent } from "../lib/events/rlm-events";
 
 export interface ChatMessage {
@@ -36,17 +36,16 @@ export function useSteeringChat(
   const [error, setError] = useState<string | null>(null);
   // Optimistic messages keyed by a locally-generated id, removed when replaced.
   const [optimistic, setOptimistic] = useState<ChatMessage[]>([]);
-  // Track content of confirmed server-echoed user messages so we can drop
-  // the matching optimistic entry. We use the content string as the key because
-  // the backend echo event has no client-side id.
-  const confirmedContents = useRef<Set<string>>(new Set());
-
   // Derive confirmed messages from the event stream.
-  const serverMessages = useMemo<ChatMessage[]>(() => {
+  const { serverMessages, confirmedContents } = useMemo<{
+    serverMessages: ChatMessage[];
+    confirmedContents: Set<string>;
+  }>(() => {
     const out: ChatMessage[] = [];
+    const confirmed = new Set<string>();
     for (const ev of events) {
       if (ev.event === "user_message") {
-        confirmedContents.current.add(ev.content);
+        confirmed.add(ev.content);
         out.push({
           id: `server-user-${ev.timestamp}`,
           role: "user",
@@ -62,13 +61,13 @@ export function useSteeringChat(
         });
       }
     }
-    return out;
+    return { serverMessages: out, confirmedContents: confirmed };
   }, [events]);
 
   // Drop optimistic entries whose content has been confirmed by an SSE echo.
   const pendingOptimistic = useMemo(
-    () => optimistic.filter((m) => !confirmedContents.current.has(m.content)),
-    [optimistic]
+    () => optimistic.filter((m) => !confirmedContents.has(m.content)),
+    [optimistic, confirmedContents]
   );
 
   // Merge: server messages first (in stream order), then any still-pending

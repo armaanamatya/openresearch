@@ -2828,7 +2828,6 @@ No commit for this step.
 
 **Files:**
 - Modify: `CLAUDE.md`
-- Modify: `frontend_integration.md`
 - Modify: `system_overview.md`
 
 - [ ] **Step 1: Update `CLAUDE.md` SSE event types and new routes**
@@ -2838,9 +2837,9 @@ Find the "Run lifecycle (UI ↔ backend)" or "Where to look first" sections; add
 - Confirm under "SSE event types" that no new types were added; mention that the rubric climb panel derives all new state (per-area flips + candidate attribution) from existing `rubric_score`, `candidate_proposed`, `candidate_outcome` events.
 - Add a one-line note in the `final_report.json` section that runs now record `mode`, `models`, `started_at`, `completed_at`.
 
-- [ ] **Step 2: Update `frontend_integration.md`**
+- [ ] **Step 2: Update `system_overview.md`**
 
-Add a new "Leaderboard endpoint" subsection after "HTTP API":
+Add a new "Leaderboard endpoint" subsection in the lab/API overview:
 
 ```markdown
 ## Leaderboard endpoint
@@ -2871,7 +2870,7 @@ roadmap. Legacy reports without these fields parse fine — defaults are
 filled.
 ```
 
-- [ ] **Step 3: Update `system_overview.md`**
+- [ ] **Step 3: Confirm routing references**
 
 Add to the "Where to look" list:
 ```
@@ -2881,10 +2880,10 @@ Add to the "Where to look" list:
 - [ ] **Step 4: Commit**
 
 ```bash
-git add CLAUDE.md frontend_integration.md system_overview.md
+git add CLAUDE.md system_overview.md
 git commit -m "docs: leaderboard endpoint + rubric-climb final_report fields
 
-Updates CLAUDE.md, frontend_integration.md, system_overview.md to
+Updates CLAUDE.md and system_overview.md to
 reflect the new /leaderboard surface and the four new optional fields
 on final_report.json. Notes the rubric climb panel derives flip + 
 attribution state purely from existing SSE events.

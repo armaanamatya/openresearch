@@ -25,6 +25,7 @@ import "./lab-shell.css";
 type LabShellProps = {
   initialRun?: LiveDemoRunState | null;
   initialRecents?: RecentRunSummary[];
+  initialRecentsError?: string | null;
   initialModels?: ModelChoice[];
   presentationMode?: PresentationMode;
 };
@@ -76,6 +77,7 @@ function RlmFixtureContent({ children }: { children: ReactNode }) {
 export function LabShell({
   initialRun = null,
   initialRecents = [],
+  initialRecentsError = null,
   initialModels = [],
   presentationMode = "internal"
 }: LabShellProps) {
@@ -143,7 +145,11 @@ export function LabShell({
     <div className="reproLab">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
-          <LabSidebar active={run ? "lab" : "upload"} recents={initialRecents} />
+          <LabSidebar
+            active={run ? "lab" : "upload"}
+            recents={initialRecents}
+            recentsError={initialRecentsError}
+          />
           {main}
         </div>
         <CommandPalette

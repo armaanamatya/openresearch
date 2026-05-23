@@ -150,15 +150,15 @@ def _patch_primitives(monkeypatch: Any, *, env_spec=None, build=None, exp=None) 
     """Monkeypatch detect_environment, build_environment, run_experiment in controller."""
     monkeypatch.setattr(
         "backend.agents.rdr.controller.detect_environment",
-        lambda spec, ctx: env_spec or _FAKE_ENV_SPEC,
+        lambda spec, *, ctx: env_spec or _FAKE_ENV_SPEC,
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.build_environment",
-        lambda spec, ctx: build or _FAKE_BUILD_OK,
+        lambda spec, *, ctx: build or _FAKE_BUILD_OK,
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",
-        lambda code_path, env_id, ctx: exp or _FAKE_EXP_OK,
+        lambda code_path, env_id, *, ctx: exp or _FAKE_EXP_OK,
     )
 
 
@@ -172,7 +172,7 @@ def _patch_score(monkeypatch: Any, scores: Any) -> None:
     else:
         monkeypatch.setattr(
             "backend.agents.rdr.controller.score_reproduction",
-            lambda rubric, run_dir, llm: scores,
+            lambda rubric, run_dir, llm, **kwargs: scores,
         )
 
 
@@ -220,6 +220,21 @@ async def test_full_loop_writes_required_artifacts(
     assert "artifacts_summary" in state
     assert "scores" in state
     assert "repair_iterations" in state
+
+    ledger_rows = [
+        json.loads(line)
+        for line in (ctx.project_dir / "cost_ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["primitive"] for row in ledger_rows] == [
+        "detect_environment",
+        "build_environment",
+        "run_experiment",
+    ]
+    assert all(
+        {"primitive", "cost_usd", "tokens_in", "tokens_out", "timestamp"} <= row.keys()
+        for row in ledger_rows
+    )
 
 
 @pytest.mark.asyncio
@@ -427,15 +442,15 @@ async def test_env_detect_fail_soft(
     # detect_environment returns failure
     monkeypatch.setattr(
         "backend.agents.rdr.controller.detect_environment",
-        lambda spec, ctx: {"success": False, "error": "no env"},
+        lambda spec, *, ctx: {"success": False, "error": "no env"},
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.build_environment",
-        lambda spec, ctx: {"ok": False, "image_tag": "", "error": "skipped", "attempts": 0},
+        lambda spec, *, ctx: {"ok": False, "image_tag": "", "error": "skipped", "attempts": 0},
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",
-        lambda code_path, env_id, ctx: {"success": False, "metrics": {}},
+        lambda code_path, env_id, *, ctx: {"success": False, "metrics": {}},
     )
     _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
 
@@ -667,11 +682,11 @@ async def test_agent_dockerfile_promoted_to_project_dir(
     detect_called = [False]
     build_called_with: list[dict] = []
 
-    def _fake_detect(spec: Any, ctx: Any) -> dict:
+    def _fake_detect(spec: Any, *, ctx: Any) -> dict:
         detect_called[0] = True
         return _FAKE_ENV_SPEC
 
-    def _fake_build(spec: Any, ctx: Any) -> dict:
+    def _fake_build(spec: Any, *, ctx: Any) -> dict:
         build_called_with.append(dict(spec))
         return _FAKE_BUILD_OK
 
@@ -679,7 +694,7 @@ async def test_agent_dockerfile_promoted_to_project_dir(
     monkeypatch.setattr("backend.agents.rdr.controller.build_environment", _fake_build)
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",
-        lambda code_path, env_id, ctx: _FAKE_EXP_OK,
+        lambda code_path, env_id, *, ctx: _FAKE_EXP_OK,
     )
     _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
 
@@ -714,18 +729,18 @@ async def test_no_agent_dockerfile_falls_back_to_detect(
 
     detect_called = [False]
 
-    def _fake_detect(spec: Any, ctx: Any) -> dict:
+    def _fake_detect(spec: Any, *, ctx: Any) -> dict:
         detect_called[0] = True
         return _FAKE_ENV_SPEC
 
     monkeypatch.setattr("backend.agents.rdr.controller.detect_environment", _fake_detect)
     monkeypatch.setattr(
         "backend.agents.rdr.controller.build_environment",
-        lambda spec, ctx: _FAKE_BUILD_OK,
+        lambda spec, *, ctx: _FAKE_BUILD_OK,
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",
-        lambda code_path, env_id, ctx: _FAKE_EXP_OK,
+        lambda code_path, env_id, *, ctx: _FAKE_EXP_OK,
     )
     _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
 
@@ -1224,13 +1239,16 @@ async def test_rdr_emits_lifecycle_events(
     required = [
         "rdr_run_started",
         "rdr_cluster_started",
+        "cluster_started",
         "rdr_cluster_completed",
+        "cluster_artifact_emitted",
         "rdr_environment_started",
         "rdr_environment_completed",
         "rdr_experiment_started",
         "rdr_experiment_completed",
         "rdr_scoring_started",
         "rdr_scoring_completed",
+        "cluster_scored",
         "rdr_run_completed",
     ]
     for ev in required:
@@ -1244,6 +1262,9 @@ async def test_rdr_emits_lifecycle_events(
     assert _first_idx("rdr_run_started") < _first_idx("rdr_cluster_started"), (
         "rdr_run_started must precede rdr_cluster_started"
     )
+    assert _first_idx("cluster_started") < _first_idx("rdr_cluster_completed"), (
+        "cluster_started must be emitted before cluster completion"
+    )
     assert _first_idx("rdr_scoring_completed") < _first_idx("rdr_run_completed"), (
         "rdr_scoring_completed must precede rdr_run_completed"
     )
@@ -1254,6 +1275,85 @@ async def test_rdr_emits_lifecycle_events(
         assert paper_text not in payload_str, (
             f"Event {ev_type!r} payload contains raw paper text — corpus-leak!"
         )
+
+
+@pytest.mark.asyncio
+async def test_rdr_emits_repair_dispatched_spec_event(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_LOW)
+
+    emitted: list[tuple[str, dict]] = []
+
+    class FakeEmitter:
+        def emit(self, event_type: str, payload: dict) -> None:
+            emitted.append((event_type, dict(payload)))
+
+    ctx.dashboard = FakeEmitter()
+
+    await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_make_reproduce_fn(),
+        max_repair_iterations=1,
+        repair_target=0.6,
+    )
+
+    repairs = [payload for event_type, payload in emitted if event_type == "repair_dispatched"]
+    assert repairs, "repair_dispatched spec event was not emitted"
+    assert repairs[0]["attempt"] == 1
+    failed_leaf_ids = {
+        leaf_id
+        for payload in repairs
+        for leaf_id in payload["failed_leaves"]
+    }
+    assert failed_leaf_ids == {"leaf-1", "leaf-2"}
+
+
+@pytest.mark.asyncio
+async def test_rdr_metricless_run_scores_degraded_and_reports_metadata(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch, exp={"success": False, "metrics": {}, "logs": ""})
+
+    def _score_fn(rubric: dict, run_dir: Path, llm: Any, **kwargs: Any) -> dict:
+        assert kwargs["degraded"] is True
+        return {
+            "overall_score": 0.35,
+            "leaf_count": 2,
+            "graded": 0,
+            "rubric_source": "paperbench_bundle",
+            "degraded": True,
+            "target_score": None,
+            "leaf_scores": [
+                {"id": "leaf-1", "score": 0.35, "justification": "degraded"},
+                {"id": "leaf-2", "score": 0.35, "justification": "degraded"},
+            ],
+        }
+
+    _patch_score(monkeypatch, _score_fn)
+
+    result = await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_make_reproduce_fn(),
+        max_repair_iterations=0,
+    )
+
+    assert result.rubric_score <= 0.35
+    report = json.loads((ctx.project_dir / "final_report.json").read_text(encoding="utf-8"))
+    assert report["mode"] == "rdr"
+    assert report["degraded"] is True
+    assert report["rubric"]["degraded"] is True
+    assert report["rubric"]["overall_score"] <= 0.35
+    assert report["models"]["planner"] == ctx.model
+    assert report["started_at"]
+    assert report["completed_at"]
 
 
 @pytest.mark.asyncio

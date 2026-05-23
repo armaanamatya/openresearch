@@ -207,7 +207,7 @@ def test_amend_final_report_rerenders_markdown():
 
 
 # ---------------------------------------------------------------------------
-# P0 honesty guards (C2a / C2b / C2c) — see docs/design/project-state-audit-2026-05-22.md §A1
+# P0 honesty guards (C2a / C2b / C2c) from the 2026-05-22 ship-readiness audit.
 #
 # C2a: _gather_evidence reads "metrics"/"paper_title" — keys that do not exist
 #      in RLMFinalReport. Every RLM run was graded against evidence with no
@@ -270,6 +270,11 @@ class _HighScoreLlmClient:
         ])
 
 
+class _FailingLlmClient:
+    def complete(self, *, system: str, user: str) -> str:
+        raise AssertionError("degraded runs should not call the LLM grader")
+
+
 def test_score_reproduction_caps_degraded_run_at_0_35(tmp_path):
     """C2b guard: a metric-less RLM run is capped at the 0.35 degraded ceiling.
 
@@ -290,7 +295,9 @@ def test_score_reproduction_caps_degraded_run_at_0_35(tmp_path):
 
     result = score_reproduction(TINY_TREE, tmp_path, _HighScoreLlmClient())
 
-    # The lenient LLM said 0.9; the honest ceiling is 0.35.
+    # The honest degraded result is bounded by the 0.35 ceiling. The
+    # implementation is allowed to short-circuit to zero without spending an LLM
+    # grader call because a metric-less run has no measured reproduction signal.
     assert result["overall_score"] <= 0.35 + 1e-9, (
         f"degraded run not capped — overall_score={result['overall_score']}; "
         "the in-loop honesty backstop is missing from score_reproduction"
@@ -307,6 +314,22 @@ def test_score_reproduction_caps_degraded_run_at_0_35(tmp_path):
     assert result.get("degraded") is True, (
         "score_reproduction should mark a metric-less run as degraded=True"
     )
+
+
+def test_score_reproduction_short_circuits_metricless_degraded_runs(tmp_path):
+    """Metric-less runs are honest failures; do not spend grader calls on them."""
+    report = _rlm_report_dict()
+    report["baseline_metrics"] = {}
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = score_reproduction(TINY_TREE, tmp_path, _FailingLlmClient())
+
+    assert result["degraded"] is True
+    assert result["overall_score"] == 0.0
+    assert result["graded"] == 0
+    assert {rec["justification"] for rec in result["leaf_scores"]} == {
+        "degraded_no_metrics"
+    }
 
 
 def test_score_reproduction_does_not_cap_honest_run(tmp_path):
@@ -465,17 +488,16 @@ def test_round_trip_real_rlmfinalreport_through_scorer(tmp_path):
     assert after["rubric"]["degraded"] is True
 
     # Pre-existing reconcile_verdict_with_score honesty work (2e1ce37): a score
-    # capped at 0.35 sits above the partial floor (0.15) but below the
-    # reproduced floor (0.60), so the over-claimed "reproduced" verdict is
-    # downgraded to "partial" — never to anything its score does not support.
-    assert after["verdict"] == "partial"
+    # A metric-less run is now short-circuited to zero, so the over-claimed
+    # "reproduced" verdict is downgraded all the way to "failed".
+    assert after["verdict"] == "failed"
 
-    # Markdown's "Overall score" line reflects the capped leaf score.
-    assert "0.350" in md, (
-        "expected capped overall_score (0.350) in rubric block of markdown"
+    # Markdown's "Overall score" line reflects the deterministic degraded score.
+    assert "0.000" in md, (
+        "expected deterministic degraded overall_score (0.000) in markdown"
     )
     # And the markdown banner reflects the reconciled verdict.
-    assert "PARTIAL REPRODUCTION" in md
+    assert "REPRODUCTION FAILED" in md
 
 
 def test_amend_final_report_leaves_non_rlm_markdown_untouched():

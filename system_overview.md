@@ -62,6 +62,11 @@ canonical full-text artifact — what the RLM root model is seeded from.
 
 ## Rubric-driven harness (`--mode rdr`, 2026-05)
 
+The default CLI mode, `--mode rlm`, is hybrid as of PR #80: Phase 1 runs the
+RDR controller without repair, then Phase 2 launches RLM adaptive repair only
+when weak rubric clusters remain. `--mode rdr` keeps the pure controller path,
+and `--mode rlm-pure` keeps the pre-hybrid root-loop escape hatch.
+
 `--mode rdr` is a parallel reproduction path that **makes the official
 PaperBench rubric the spine of the run** instead of grading only at the end.
 A deterministic Python controller (`backend/agents/rdr/controller.py`)
@@ -95,7 +100,10 @@ is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 3. UI opens an **SSE** stream (`/api/demo/events` → backend `/runs/<id>/events`).
 4. SSE event types: `repl_iteration`, `primitive_call`, `sub_rlm_spawned`,
    `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`,
-   `rubric_score`, `user_message`, `user_message_response`. All events route
+   `rubric_score`, `user_message`, `user_message_response`, `run_warning`, and
+   `iteration_heartbeat`. RDR runs also emit `rdr_*` lifecycle events and the
+   spec-named cluster events `cluster_started`, `cluster_artifact_emitted`,
+   `cluster_scored`, and `repair_dispatched`. All RLM iteration events route
    through `sse_bridge.sanitize_iteration` — the single egress chokepoint that
    strips REPL locals and bounds stdout/stderr to metadata prefixes. The paper
    corpus never reaches the stream.
@@ -169,10 +177,9 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 ## Docs
 
 - `docs/design/rlm-pivot-brief.md` — the canonical architecture reference and design rationale.
-- `docs/design/project-state-audit-2026-05-22.md` — read-only whole-repo audit captured 2026-05-22.
-- `docs/superpowers/plans/2026-05-22-infrastructure-improvement-plan.md` —
-  sandbox + cost-safety improvement catalog (7 candidates, phased) with a
-  detailed Phase 1 TDD plan for a `max_pod_seconds` pod-time budget cap.
+- `docs/runbooks/e2e-testing.md` — canonical end-to-end testing and debug reference.
+- `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
+  locked launch decisions, including the hybrid default and leaderboard surface.
 - `learn.md` — post-mortems: bugs shipped + the guardrail for each.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model

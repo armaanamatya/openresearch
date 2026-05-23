@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import re
 
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend import __version__
@@ -203,12 +204,12 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
 
     When ``configured_secret`` is empty the gate is disabled (local dev).
     When set, the caller must present a matching secret; a mismatch or a
-    missing secret raises 403. The comparison is constant-time.
+    missing secret raises 401. The comparison is constant-time.
     """
     if not configured_secret:
         return
     if not provided_secret or not hmac.compare_digest(provided_secret, configured_secret):
-        raise HTTPException(status_code=403, detail="A valid demo access secret is required.")
+        raise HTTPException(status_code=401, detail="A valid demo access secret is required.")
 
 
 def create_app(*, run_service: Any | None = None) -> FastAPI:
@@ -269,6 +270,18 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         version=__version__,
         debug=settings.debug,
     )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logging.getLogger(__name__).exception(
+            "Unhandled route error: %s %s",
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc) or "Internal Server Error"},
+        )
 
     @app.get("/health")
     async def health() -> dict:
@@ -539,7 +552,8 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         )
 
     @app.delete("/runs/{project_id}")
-    async def stop_run(project_id: str):
+    async def stop_run(project_id: str, x_demo_secret: str | None = Header(default=None)):
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         state = await service.stop_run(project_id)
         if state is None:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -662,7 +676,11 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             db.close()
 
     @app.post("/phase2/approvals/evaluate")
-    async def phase2_approval_evaluate(request: ApprovalEvaluateRequest) -> dict:
+    async def phase2_approval_evaluate(
+        request: ApprovalEvaluateRequest,
+        x_demo_secret: str | None = Header(default=None),
+    ) -> dict:
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         db = _database(settings.database_url)
         try:
             approval_service = ApprovalService(db)
@@ -694,21 +712,30 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     async def phase2_approval_resolve(
         approval_id: str,
         request: ApprovalResolveRequest,
+        x_demo_secret: str | None = Header(default=None),
     ) -> dict:
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         db = _database(settings.database_url)
         try:
-            resolved = ApprovalService(db).resolve(
-                approval_id,
-                state=request.state,
-                resolved_by=request.resolved_by,
-                note=request.note,
-            )
+            try:
+                resolved = ApprovalService(db).resolve(
+                    approval_id,
+                    state=request.state,
+                    resolved_by=request.resolved_by,
+                    note=request.note,
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Approval not found") from exc
             return resolved.model_dump(mode="json")
         finally:
             db.close()
 
     @app.post("/phase2/datasets/plan")
-    async def phase2_dataset_plan(request: DatasetPlanRequest) -> dict:
+    async def phase2_dataset_plan(
+        request: DatasetPlanRequest,
+        x_demo_secret: str | None = Header(default=None),
+    ) -> dict:
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         db = _database(settings.database_url)
         try:
             entry = DatasetCacheService(db).plan(
@@ -725,7 +752,11 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             db.close()
 
     @app.post("/phase2/failures/diagnose")
-    async def phase2_failure_diagnose(request: FailureDiagnoseRequest) -> dict:
+    async def phase2_failure_diagnose(
+        request: FailureDiagnoseRequest,
+        x_demo_secret: str | None = Header(default=None),
+    ) -> dict:
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
         db = _database(settings.database_url)
         try:
             event = FailureDiagnosisService(db).diagnose(

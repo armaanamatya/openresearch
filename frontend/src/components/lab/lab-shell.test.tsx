@@ -17,6 +17,7 @@ describe("LabShell", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    window.history.pushState({}, "", "/lab");
     // useRun persists the active run's projectId to localStorage so a
     // refresh can auto-resume it. Without clearing between tests, the
     // previous test's projectId leaks and the next mount fires a
@@ -37,11 +38,7 @@ describe("LabShell", () => {
 
   it("shows upload view when ?new=1 is present even if initialRun is provided", () => {
     // Simulate ?new=1 in the URL.
-    vi.stubGlobal("window", {
-      ...window,
-      location: { ...window.location, search: "?new=1" },
-      localStorage: window.localStorage
-    });
+    window.history.pushState({}, "", "/lab?new=1");
 
     render(
       <LabShell

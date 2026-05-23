@@ -7,12 +7,15 @@ Appends a user message to runs/<id>/user_messages.jsonl and emits a
 from __future__ import annotations
 
 import json
+import hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
+
+from backend.config import get_settings
 
 router = APIRouter()
 
@@ -39,14 +42,26 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> None:
+    if not configured_secret:
+        return
+    if not provided_secret or not hmac.compare_digest(provided_secret, configured_secret):
+        raise HTTPException(status_code=401, detail="A valid demo access secret is required.")
+
+
 @router.post("/runs/{project_id}/messages", status_code=202)
-async def post_message(project_id: str, body: UserMessageIn) -> dict:
+async def post_message(
+    project_id: str,
+    body: UserMessageIn,
+    x_demo_secret: str | None = Header(default=None),
+) -> dict:
     """Append a user message to the run's user_messages.jsonl.
 
     Validates that the run directory exists (404 otherwise) and that
     content is non-empty (400 otherwise). Returns {"ok": true} on success.
     Emits a `user_message` dashboard event so the SSE stream surfaces it.
     """
+    _enforce_demo_gate(x_demo_secret, get_settings().demo_secret)
     if not body.content or not body.content.strip():
         raise HTTPException(status_code=400, detail="content must be non-empty")
 

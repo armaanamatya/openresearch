@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { test, expect } from "@playwright/test";
 
 // Frontend static-values audit (2026-05-22) — post-Phase-6 regression guard.
@@ -43,11 +44,11 @@ const ROUTES = ["/lab", "/library", "/paperbench", "/unlock"] as const;
 const SCREENSHOT_DIR = path.join(
   __dirname,
   "..",
-  "..",
-  "docs",
-  "design",
-  "audit-2026-05-22-screenshots"
+  "tmp-screens",
+  "static-values-route-pass"
 );
+
+fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
 for (const route of ROUTES) {
   test(`route ${route} renders honest empty state with no leak markers`, async ({ page }) => {

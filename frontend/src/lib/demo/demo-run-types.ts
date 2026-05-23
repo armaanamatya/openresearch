@@ -1,4 +1,4 @@
-export type DemoRunMode = "rlm" | "rdr";
+export type DemoRunMode = "rlm" | "rdr" | "rlm-pure";
 
 export type DemoProvider = "anthropic" | "openai";
 
@@ -173,5 +173,10 @@ export const RUN_MODE_OPTIONS: ReadonlyArray<{
     value: "rdr",
     label: "RDR (Rubric-driven)",
     description: "Deterministic rubric controller. No LLM repair. Predictable cost."
+  },
+  {
+    value: "rlm-pure",
+    label: "RLM pure",
+    description: "Pre-hybrid RLM path for compatibility and regression checks."
   }
 ] as const;

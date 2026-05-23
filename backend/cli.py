@@ -477,7 +477,23 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     repair_target: float = getattr(args, "repair_target", 0.6)
 
     from backend.agents.execution import resolve_sandbox_mode
+    from backend.agents.resilience import RunBudget
 
+    _max_pod_seconds = _resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None))
+    _max_invocations = _max_invocations_from_arg(getattr(args, "max_invocations", None))
+    run_budget = None
+    if (
+        getattr(args, "max_usd", None) is not None
+        or getattr(args, "max_wall_clock", None) is not None
+        or _max_pod_seconds is not None
+        or _max_invocations
+    ):
+        run_budget = RunBudget(
+            max_usd=getattr(args, "max_usd", None),
+            max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+            max_pod_seconds=_max_pod_seconds,
+            max_invocations_per_agent=_max_invocations,
+        )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode="rdr")
 
     print(f"[rdr] paper_id  : {paper_id}", file=sys.stderr)
@@ -499,6 +515,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
                 max_repair_iterations=max_repair_iterations,
                 repair_target=repair_target,
                 resume=resume,
+                run_budget=run_budget,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -602,10 +619,19 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     run_budget = None
-    if getattr(args, "max_usd", None) is not None or getattr(args, "max_wall_clock", None) is not None:
+    _max_pod_seconds = _resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None))
+    _max_invocations = _max_invocations_from_arg(getattr(args, "max_invocations", None))
+    if (
+        getattr(args, "max_usd", None) is not None
+        or getattr(args, "max_wall_clock", None) is not None
+        or _max_pod_seconds is not None
+        or _max_invocations
+    ):
         run_budget = RunBudget(
             max_usd=getattr(args, "max_usd", None),
             max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+            max_pod_seconds=_max_pod_seconds,
+            max_invocations_per_agent=_max_invocations,
         )
     sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
 
@@ -1167,6 +1193,23 @@ def main(argv: list[str] | None = None) -> int:
     return int(args.func(args))
 
 
+def _module_main(argv: list[str] | None = None) -> None:
+    """Entrypoint for ``python -m backend.cli``.
+
+    Reproduction runs may leave SDK cleanup threads behind after a bounded
+    timeout. Once ``main`` has closed stores and printed its result, bypass
+    interpreter atexit cleanup for that subcommand so the CLI itself remains
+    bounded.
+    """
+    selected_argv = list(sys.argv[1:] if argv is None else argv)
+    code = main(argv)
+    if selected_argv and selected_argv[0] == "reproduce":
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    raise SystemExit(code)
+
+
 def _source_from_cli(raw: str, source_kind: str):
     if source_kind == "pdf_path":
         return PdfPath(path=str(Path(raw).expanduser().resolve()))
@@ -1231,4 +1274,4 @@ def _max_invocations_from_arg(raw: str | None) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _module_main()

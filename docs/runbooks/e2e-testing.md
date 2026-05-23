@@ -248,7 +248,7 @@ pkill -9 -f "claude_agent_sdk/_bundled/claude"
 
 The in-flight run subprocess is **resumable** from `runs/<id>/rlm_state/` if it was checkpointed; otherwise it stops with `status: "failed"`. **Frontend resilience (F7)** keeps the lab UI usable even while the backend is wedged — no 502 spam — so the user can navigate, read the existing log, and start a fresh run after the restart.
 
-Tracking: see `learn.md` 2026-05-22 (Workaround B), `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`. Long-term: upstream SDK fix.
+Tracking: see `learn.md` 2026-05-22 (Workaround B). Long-term: upstream SDK fix.
 
 ### 4g. Orphan `claude` SDK subprocesses lingering
 

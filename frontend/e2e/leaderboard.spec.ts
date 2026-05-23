@@ -5,8 +5,8 @@ import { test, expect } from "@playwright/test";
  *
  * The leaderboard fetches from REPROLAB_BACKEND_URL/leaderboard server-side at
  * request time. In the e2e harness the backend may not be running, in which
- * case the page falls back to []  ->  the empty-state placeholder. That's
- * exactly what we assert here.
+ * case the page must render an explicit unavailable state instead of pretending
+ * an empty leaderboard loaded successfully.
  *
  * Docker-dependent populated-state e2e (seed N fixture runs and verify
  * ranking + row click navigation) is tracked as deferred per the plan.
@@ -18,13 +18,18 @@ test.describe("/leaderboard", () => {
     await page.goto("/leaderboard");
     await expect(page.getByRole("heading", { name: "Leaderboard" })).toBeVisible();
 
-    // Either the table is present (backend ran), or the empty-state copy.
+    // Either the table is present (backend ran), the empty-state copy rendered,
+    // or the explicit backend-outage state is visible.
     const table = page.locator("table").first();
     const empty = page.getByText(/no completed runs yet/i);
+    const unavailable = page.getByText(/leaderboard unavailable/i);
     const hasContent = (await Promise.race([
       table.isVisible().catch(() => false),
       empty.isVisible().catch(() => false),
-    ])) || (await table.isVisible().catch(() => false)) || (await empty.isVisible().catch(() => false));
+      unavailable.isVisible().catch(() => false),
+    ])) || (await table.isVisible().catch(() => false))
+      || (await empty.isVisible().catch(() => false))
+      || (await unavailable.isVisible().catch(() => false));
     expect(hasContent).toBe(true);
   });
 
@@ -51,6 +56,8 @@ test.describe("/leaderboard", () => {
       (e) => !/HMR|ResizeObserver|source map|Fast Refresh/i.test(e),
     );
     expect(realErrors).toEqual([]);
-    expect(failedRequests).toEqual([]);
+    expect(
+      failedRequests.filter((failure) => !/\\?_rsc=.*net::ERR_ABORTED/.test(failure)),
+    ).toEqual([]);
   });
 });

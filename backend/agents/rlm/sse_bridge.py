@@ -42,6 +42,81 @@ RUBRIC_AREA_PARTIAL_THRESHOLD: float = 0.4
 
 
 # ---------------------------------------------------------------------------
+# RDR cluster event builders
+# ---------------------------------------------------------------------------
+
+_REQUIRED_CLUSTER_LEAF_KEYS = frozenset({"id", "weight", "requirements"})
+
+
+def build_cluster_started(
+    *,
+    cluster_id: str,
+    cluster_title: str,
+    leaves: list[dict[str, Any]],
+    iteration: int,
+) -> dict[str, Any]:
+    """Build the public ``cluster_started`` RDR SSE payload."""
+    for leaf in leaves:
+        missing = _REQUIRED_CLUSTER_LEAF_KEYS.difference(leaf)
+        if missing:
+            raise KeyError(f"cluster leaf missing required keys: {sorted(missing)}")
+    return {
+        "cluster_id": cluster_id,
+        "cluster_title": cluster_title,
+        "leaves": leaves,
+        "iteration": iteration,
+    }
+
+
+def build_cluster_artifact_emitted(
+    *,
+    cluster_id: str,
+    artifact_path: str,
+    byte_size: int,
+    language: str | None,
+) -> dict[str, Any]:
+    """Build the public ``cluster_artifact_emitted`` RDR SSE payload."""
+    return {
+        "cluster_id": cluster_id,
+        "artifact_path": artifact_path,
+        "byte_size": byte_size,
+        "language": language,
+    }
+
+
+def build_cluster_scored(
+    *,
+    cluster_id: str,
+    score: float,
+    leaf_scores: dict[str, float],
+    degraded: bool,
+) -> dict[str, Any]:
+    """Build the public ``cluster_scored`` RDR SSE payload."""
+    return {
+        "cluster_id": cluster_id,
+        "score": score,
+        "leaf_scores": leaf_scores,
+        "degraded": degraded,
+    }
+
+
+def build_repair_dispatched(
+    *,
+    cluster_id: str,
+    attempt: int,
+    prior_score: float,
+    failed_leaves: list[str],
+) -> dict[str, Any]:
+    """Build the public ``repair_dispatched`` RDR SSE payload."""
+    return {
+        "cluster_id": cluster_id,
+        "attempt": attempt,
+        "prior_score": prior_score,
+        "failed_leaves": failed_leaves,
+    }
+
+
+# ---------------------------------------------------------------------------
 # M-REDACT corpus-leak guard — applied at every egress point
 # ---------------------------------------------------------------------------
 
@@ -641,9 +716,13 @@ __all__ = [
     "RUBRIC_AREA_PARTIAL_THRESHOLD",
     "RUBRIC_AREA_PASS_THRESHOLD",
     "ReproLabRLMLogger",
+    "build_cluster_artifact_emitted",
+    "build_cluster_scored",
+    "build_cluster_started",
     "build_candidate_outcome_event",
     "build_candidate_proposed_event",
     "build_iteration_heartbeat_event",
+    "build_repair_dispatched",
     "build_rubric_score_event",
     "build_run_complete_event",
     "build_run_warning_event",

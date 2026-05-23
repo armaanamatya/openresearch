@@ -34,7 +34,7 @@ describe("/api/demo backend proxy", () => {
   it("forwards uploaded-paper runs to the FastAPI upload route", async () => {
     const { POST } = await import("./route");
     const formData = new FormData();
-    formData.set("mode", "sdk");
+    formData.set("mode", "rlm");
     formData.set("provider", "anthropic");
     formData.set("verificationProvider", "openai");
     formData.set(
@@ -123,7 +123,7 @@ describe("/api/demo backend proxy", () => {
 
     const { POST } = await import("./route");
     const response = await POST(
-      new Request("http://localhost:3000/api/demo?mode=sdk&sandbox=docker", {
+      new Request("http://localhost:3000/api/demo?mode=rlm&sandbox=docker", {
         method: "POST"
       })
     );

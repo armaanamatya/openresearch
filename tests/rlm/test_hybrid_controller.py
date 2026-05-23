@@ -208,6 +208,106 @@ class TestRunPipelineHybrid:
         assert result.status == "completed"
         assert result.iterations == 3
 
+    @pytest.mark.asyncio
+    async def test_phase2_null_score_restores_phase1_report(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """A failed repair pass must not erase Phase 1's scored report."""
+        project_id = "hybrid_restore_phase1"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.0, "justification": "metricless"},
+            {"id": "l2", "score": 0.2, "justification": "partial"},
+        ])
+        phase1_json = report_path.read_text(encoding="utf-8")
+        report_path.with_suffix(".md").write_text("# Phase 1 report\n", encoding="utf-8")
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.1,
+            final_report_path=str(report_path),
+            clusters_total=2,
+            clusters_failed=1,
+            status="partial",
+        )
+
+        async def _failing_rlm(pid, root, wcm, **kw):  # noqa: ANN001
+            report_path.write_text(
+                json.dumps({"rubric": {"overall_score": None}, "mode": "rlm"}),
+                encoding="utf-8",
+            )
+            report_path.with_suffix(".md").write_text("# Null Phase 2 report\n", encoding="utf-8")
+            return RLMRunResult(
+                project_id=project_id,
+                status="failed",
+                iterations=0,
+                rubric_score=None,
+                cost_usd=0.0,
+                final_report_path=str(report_path),
+            )
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=_failing_rlm,
+        )
+
+        assert result.status == "failed"
+        assert result.rubric_score == pytest.approx(0.1)
+        assert report_path.read_text(encoding="utf-8") == phase1_json
+        assert report_path.with_suffix(".md").read_text(encoding="utf-8") == "# Phase 1 report\n"
+
+    @pytest.mark.asyncio
+    async def test_budget_threads_to_rdr_and_preserves_pod_seconds_for_phase2(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        from backend.agents.resilience import RunBudget
+
+        project_id = "hybrid_budget"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [{"id": "l1", "score": 0.1}])
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.1,
+            final_report_path=str(report_path),
+            clusters_total=1,
+            clusters_failed=0,
+        )
+        captured_rdr: list[dict] = []
+        captured_rlm: list[dict] = []
+
+        async def _capture_rdr(*args, **kwargs):  # noqa: ANN001
+            captured_rdr.append(kwargs)
+            return rdr_result
+
+        async def _capture_rlm(pid, root, wcm, **kwargs):  # noqa: ANN001
+            captured_rlm.append(kwargs)
+            return _make_rlm_result(project_id)
+
+        budget = RunBudget(
+            max_usd=1.0,
+            max_wall_clock_seconds=600,
+            max_pod_seconds=90,
+            max_invocations_per_agent={"rdr": 1},
+        )
+
+        await run_pipeline_hybrid(
+            project_id,
+            tmp_path,
+            claim_map,
+            run_budget=budget,
+            repair_target=0.6,
+            _rdr_runner=_capture_rdr,
+            _rlm_runner=_capture_rlm,
+        )
+
+        assert captured_rdr[0]["run_budget"] is budget
+        phase2_budget = captured_rlm[0]["run_budget"]
+        assert phase2_budget.max_pod_seconds == 90
+        assert phase2_budget.max_invocations_per_agent == {"rdr": 1}
+
     # ------------------------------------------------------------------
     # Test: Phase 2 reuses the same project_id
     # ------------------------------------------------------------------

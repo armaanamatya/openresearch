@@ -148,7 +148,7 @@ def test_resolve_auto_on_wsl_no_docker_returns_local(monkeypatch):
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
-    result = resolve_sandbox_mode("auto", pipeline_mode="sdk")
+    result = resolve_sandbox_mode("auto", pipeline_mode="rlm")
     assert result is SandboxMode.local
 
     _is_wsl.cache_clear()
@@ -165,7 +165,7 @@ def test_resolve_auto_on_wsl_with_docker_uses_default(monkeypatch):
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: True)
 
-    result = resolve_sandbox_mode("auto", pipeline_mode="sdk")
+    result = resolve_sandbox_mode("auto", pipeline_mode="rlm")
     # Should NOT be forced to local — docker is reachable so we use the default.
     assert result is DEFAULT_SANDBOX_MODE
     assert result is not SandboxMode.local
@@ -182,7 +182,7 @@ def test_explicit_docker_not_overridden_on_wsl(monkeypatch):
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
-    result = resolve_sandbox_mode("docker", pipeline_mode="sdk")
+    result = resolve_sandbox_mode("docker", pipeline_mode="rlm")
     assert result is SandboxMode.docker
 
     _is_wsl.cache_clear()
@@ -197,7 +197,7 @@ def test_REPROLAB_FORCE_SANDBOX_still_wins(monkeypatch):
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
-    result = resolve_sandbox_mode("auto", pipeline_mode="sdk")
+    result = resolve_sandbox_mode("auto", pipeline_mode="rlm")
     assert result is SandboxMode.runpod
 
     _is_wsl.cache_clear()

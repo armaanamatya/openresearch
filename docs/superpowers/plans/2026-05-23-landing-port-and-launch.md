@@ -8,7 +8,7 @@
 
 **Tech Stack:** Next.js 16 App Router, React 19, TypeScript, CSS Modules + co-located global CSS, `next/font/google`. No new runtime deps (the `tweaks-panel.jsx` Edit Mode tool stays in the archived source — not for production).
 
-**Supersedes:** `docs/superpowers/plans/2026-05-23-landing-polish.md`. The polish plan assumed my hand-built dark landing was the canonical design; the user produced a fully-fleshed `LANDING/index.html` that replaces it wholesale.
+**Supersedes:** the retired landing-polish plan. The polish plan assumed my hand-built dark landing was the canonical design; the user produced a fully-fleshed `LANDING/index.html` that replaces it wholesale.
 
 **Phasing strategy (per advisor):** Land Phases 1–3 before touching the lab. The lab repaint is reversible but disruptive — if it surfaces dense-data-readability problems mid-flight, you don't want the landing port held back. Each phase commits cleanly; if the user wants Phase 4 atomic with the landing, they can hold the PR until both land.
 
@@ -39,7 +39,7 @@
 - `LANDING/` → `docs/design/landing-source/` (preserves index.html, tweaks.jsx, tweaks-panel.jsx, .thumbnail, uploads/)
 
 **Deleted:**
-- `docs/superpowers/plans/2026-05-23-landing-polish.md` (superseded by this file)
+- The retired landing-polish plan (superseded by this file)
 
 ---
 
@@ -57,19 +57,19 @@ ACCENT_HEX_FALLBACK = #E8A24A
 
 ## Verification approach
 
-Per task: lint + types must pass cleanly for new files. Visual fidelity is the contract — every task that touches CSS or JSX gets a Playwright screenshot diff against the corresponding section of `docs/design/landing-source/index.html` (loaded standalone). For lab repaint tasks, Playwright captures `/lab`, `/library`, and the lab in upload+running states; compare against the screenshots in `docs/design/audit-2026-05-22-screenshots/` for "did I break what existed" check.
+Per task: lint + types must pass cleanly for new files. Visual fidelity is the contract — every task that touches CSS or JSX gets a Playwright screenshot diff against the corresponding section of `docs/design/landing-source/index.html` (loaded standalone). For lab repaint tasks, Playwright captures `/lab`, `/library`, and the lab in upload+running states; compare against the current committed lab screenshots when present.
 
-**Single helper script** lives at `frontend/scripts/landing-screenshots.sh` (already exists from prior plan — if not, create per template):
+**Single helper script** lives at `scripts/landing-screenshots.sh`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 URL="${1:-http://localhost:3001}"
 NAME="${2:-page}"
-mkdir -p ./tmp-screens
-npx playwright screenshot "$URL" "./tmp-screens/${NAME}-full.png" --viewport-size=1440,900 --full-page
-npx playwright screenshot "$URL" "./tmp-screens/${NAME}-mobile.png" --viewport-size=390,844 --full-page
-echo "OK → ./tmp-screens/${NAME}-*.png"
+mkdir -p ./frontend/tmp-screens
+npx playwright screenshot "$URL" "./frontend/tmp-screens/${NAME}-full.png" --viewport-size=1440,900 --full-page
+npx playwright screenshot "$URL" "./frontend/tmp-screens/${NAME}-mobile.png" --viewport-size=390,844 --full-page
+echo "OK -> ./frontend/tmp-screens/${NAME}-*.png"
 ```
 
 ---
@@ -81,7 +81,7 @@ echo "OK → ./tmp-screens/${NAME}-*.png"
 **Files:**
 - Rename: `LANDING/` → `docs/design/landing-source/`
 - Delete: `frontend/src/components/landing/landing.tsx`, `landing.module.css`, `landing.global.css` (the old scaffold)
-- Delete: `docs/superpowers/plans/2026-05-23-landing-polish.md`
+- Delete: the retired landing-polish plan
 - Rename branch: `feat/landing-polish` → `feat/landing-launch`
 
 - [ ] **Step 1: Verify current branch and that nothing is committed yet**
@@ -117,7 +117,7 @@ Expected: directory listing shows `index.html`, `tweaks.jsx`, `tweaks-panel.jsx`
 rm frontend/src/components/landing/landing.tsx
 rm frontend/src/components/landing/landing.module.css
 rm frontend/src/components/landing/landing.global.css
-rm docs/superpowers/plans/2026-05-23-landing-polish.md
+# Remove the retired landing-polish plan if it is still present.
 # Leave the landing/ directory itself — Phase 2 fills it.
 ls frontend/src/components/landing/ 2>&1
 ```
@@ -161,12 +161,11 @@ chore(landing): archive source, delete obsolete scaffold, rename branch
 - LANDING/ → docs/design/landing-source/ (preserves index.html prototype
   and tweaks.jsx Edit Mode tool for future design iteration)
 - Removed the prior generic-dark React landing component and its CSS
-- Superseded docs/superpowers/plans/2026-05-23-landing-polish.md
+- Superseded the retired landing-polish plan
 - Branch renamed feat/landing-polish → feat/landing-launch
 - app/page.tsx temporarily reverts to redirect("/lab") until Phase 2
   lands the ported landing component
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -259,7 +258,6 @@ zero CLS). Keeps existing --font-inter / --font-jetbrains-mono CSS-var
 names so the 30+ token consumers don't need to update. Adds
 --font-serif for Instrument Serif (used by Phase 2's landing).
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -455,7 +453,6 @@ component CSS from the LANDING/index.html source, with var(--*) names
 prefixed --landing-* to prevent collision with lab tokens. Mounted at
 / via app/page.tsx.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -672,7 +669,6 @@ on-scroll border. HeroTree extracted into figures/. Nav rewires the
 incoherent source hrefs: "Open lab" CTA → /lab, GitHub → real repo URL.
 Drops "RLM paper" nav link since the source has no #paper section.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -783,7 +779,6 @@ cd /Volumes/CS_Stuff/openresearch
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §1.0 Comprehension + §2.0 Environment sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -811,7 +806,6 @@ Same header shape as Comprehension/Environment, with verbatim text from source l
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §3.0 Implementation + §4.0 Experiments sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -835,7 +829,6 @@ BenchmarkSection (§6.0): different shape — no figure; instead a `.bench-numbe
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §5.0 Verification + §6.0 Benchmarks sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1021,7 +1014,6 @@ NavScrollMount augments behavior (IntersectionObserver class toggle on
 .reveal targets, nav.scrolled class on scroll past 8px). Honors
 prefers-reduced-motion.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1119,7 +1111,6 @@ fix(landing): wire all interactive elements, remove broken substep anchors
 - All real CTAs (hero, nav, CTA footer, footer) confirmed wired to
   /lab or the GitHub URL. None remain as href="#".
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1191,7 +1182,6 @@ Lab sidebar wordmark wraps in <Link href="/"> so users can return to
 the marketing surface — standard product-app affordance. Removes the
 unused onBrandClick callback prop.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1321,7 +1311,6 @@ repaints automatically. Hardcoded callsites are fixed in the next
 commit. Accepts the dense-data-on-dark readability tradeoff per
 explicit user direction.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1390,7 +1379,6 @@ command-palette.css, shortcut-overlay.css. Each #fff / rgba(0,0,0,..)
 spot now goes through var(--ink) / var(--panel) / var(--chip) /
 var(--shadow-*) so the dark theme paints uniformly.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1508,7 +1496,7 @@ git log --oneline ^main | head -20
 ### Task 14: Dead-file and orphan purge
 
 **Files (to inspect, possibly delete):**
-- `frontend/scripts/landing-screenshots.sh` — keep, useful
+- `scripts/landing-screenshots.sh` — keep, useful
 - `frontend/tmp-screens/` — `.gitignore` it; never commit
 - `*.png` at repo root from earlier sessions (e.g. `landing-hero.png`, `landing-full.png`, `lab-after-landing.png`) — delete
 
@@ -1531,7 +1519,7 @@ ls /Volumes/CS_Stuff/openresearch/*.png 2>&1
 # Examples to delete: landing-hero.png, landing-section-*.png, lab-after-landing.png
 ```
 
-If any of these are intentional reference assets (you want them in the repo), commit them to a sensible location (`docs/design/2026-05-23-launch-screenshots/`). Otherwise delete.
+If any of these are intentional reference assets (you want them in the repo), commit them to a sensible existing design-artifact location. Otherwise delete.
 
 - [ ] **Step 3: Commit cleanup**
 
@@ -1541,7 +1529,6 @@ git add .gitignore
 git rm -f landing-hero.png landing-full.png landing-full2.png landing-section-1.png landing-section-2.png landing-section-4.png landing-section-5.png landing-tree.png landing-nav-fix.png landing-nav-solid.png lab-after-landing.png 2>/dev/null || true
 git commit -m "chore: gitignore landing screenshots, remove orphaned PNGs
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---

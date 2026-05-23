@@ -152,7 +152,7 @@ REPROLAB_RUNPOD_SSH_KEY_PATH=~/.ssh/id_ed25519
 Then run a paper with:
 
 ```bash
-python -m backend.cli reproduce path/to/paper.pdf --mode sdk --sandbox runpod
+python -m backend.cli reproduce path/to/paper.pdf --mode rlm --sandbox runpod
 ```
 
 The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/reprolab/<project>/baseline/work`, runs commands from `/work`, syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
@@ -282,8 +282,7 @@ swap-in steps are in `third_party/paperbench/README.md`.
 Phase 2 adds durable workspace services for graph navigation, reusable
 cross-project memory, dataset cache state, approval checkpoints, failure
 diagnosis, reproducibility scoring, and multi-paper comparison summaries.
-For the end-to-end agent state model, see
-[`docs/agent-lifecycle.md`](agent-lifecycle.md).
+For the end-to-end agent state model, see `system_overview.md`.
 
 Start the backend:
 
@@ -362,7 +361,7 @@ the 30 s default SIGKILL.
 
 ## 12. Provider resilience and subscription fallbacks
 
-SDK agent runs write provider recovery artifacts beside the project:
+Agent runs write provider recovery artifacts beside the project:
 
 ```text
 runs/<project_id>/agent_telemetry.jsonl
@@ -374,7 +373,7 @@ Use budget flags when you want hard stops before a fallback can spend more:
 
 ```bash
 python -m backend.cli reproduce paper.pdf \
-  --mode sdk \
+  --mode rlm \
   --max-usd 25 \
   --max-wall-clock 7200 \
   --max-invocations paper-understanding=3,artifact-discovery=5

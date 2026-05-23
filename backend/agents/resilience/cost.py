@@ -33,11 +33,17 @@ class CostLedgerEntry:
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["timestamp"] = self.timestamp.isoformat()
+        data["primitive"] = self.agent_id
+        data["cost_usd"] = self.estimated_usd or 0.0
+        data["tokens_in"] = self.input_tokens
+        data["tokens_out"] = self.output_tokens
         return data
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "CostLedgerEntry":
         payload = dict(data)
+        for alias in ("primitive", "cost_usd", "tokens_in", "tokens_out"):
+            payload.pop(alias, None)
         ts = payload.get("timestamp")
         if isinstance(ts, str):
             payload["timestamp"] = datetime.fromisoformat(ts)

@@ -67,8 +67,7 @@ function readStorage(): PanelSizes {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useResizablePanels() {
-  // Start with defaults for SSR; hydrate from localStorage on mount.
-  const [sizes, setSizes] = useState<PanelSizes>(defaultSizes);
+  const [sizes, setSizes] = useState<PanelSizes>(() => readStorage());
 
   // viewport-aware collapse flags
   const [collapsedByViewport, setCollapsedByViewport] = useState({
@@ -81,10 +80,20 @@ export function useResizablePanels() {
 
   // ── Mount: read localStorage + set up matchMedia listeners ──────────────
   useEffect(() => {
-    setSizes(readStorage());
-
-    const mq1200 = window.matchMedia("(max-width: 1199px)");
-    const mq900  = window.matchMedia("(max-width: 899px)");
+    const matchMedia = typeof window.matchMedia === "function"
+      ? window.matchMedia.bind(window)
+      : ((query: string) => ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }) as MediaQueryList);
+    const mq1200 = matchMedia("(max-width: 1199px)");
+    const mq900  = matchMedia("(max-width: 899px)");
 
     function sync() {
       setCollapsedByViewport({

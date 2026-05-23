@@ -1,10 +1,9 @@
 # Rubric-Driven Reproduction Harness (`rdr`) — Design Spec
 
-_Date: 2026-05-22 · Status: **design approved** (brainstorming) · Next: implementation._
-_Companion: `2026-05-22-rubric-driven-harness-implementation.md` — the executable implementation handoff._
+_Date: 2026-05-22 · Status: **implemented**._
 
 This spec is self-contained: §1–§11 are the design; §12 captures the session
-context and standing instructions so the work survives a conversation compaction.
+context and standing instructions preserved from the original implementation handoff.
 
 ---
 
@@ -275,7 +274,7 @@ Methodology principles:
   SSE bridge.
 - **New opt-in run mode** `rdr` — wired into `backend/cli.py` (`reproduce
   --mode rdr`) and a `scripts/rdr_paperbench.py` launcher paralleling
-  `scripts/rlm_paperbench.py`. `rlm` / `sdk` / `offline` modes stay untouched —
+  `scripts/rlm_paperbench.py`. `rlm` and `rlm-pure` stay untouched —
   backward-compatible; existing tests/runs unaffected.
 - **Scope** — `rdr` targets **PaperBench bundle papers** (official rubric
   required). arXiv papers can use `rdr` with a generated rubric, secondarily.
@@ -293,7 +292,7 @@ Methodology principles:
 
 ## 11. Non-goals
 
-- Not replacing `rlm` / `sdk` / `offline` — `rdr` is additive.
+- Not replacing `rlm` / `rlm-pure` — `rdr` is additive.
 - Not RunPod / multi-GPU compute — local-GPU budget.
 - Not primary support for arXiv papers (no official rubric) — secondary mode.
 - Not a re-write of ingestion, the sandbox, or the leaf scorer — those are reused.
