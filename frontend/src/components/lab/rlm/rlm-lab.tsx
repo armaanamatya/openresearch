@@ -164,6 +164,30 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
         error={runError}
         onRerun={rerun}
         rerunBusy={rerunBusy}
+        inFlightPrimitive={(() => {
+          // Find the most recent primitive_call with status="start" that has
+          // no matching ok/error landing AFTER it. Walk backwards through the
+          // chronologically-ordered primitiveCalls array. When we find a
+          // "start", check whether any subsequent (later-indexed) entry for
+          // the same primitive name terminated it.
+          const calls = state.primitiveCalls;
+          for (let i = calls.length - 1; i >= 0; i--) {
+            const c = calls[i];
+            if (c.status !== "start") continue;
+            // Look forward from i+1 to end for a terminator of the same primitive.
+            let terminated = false;
+            for (let j = i + 1; j < calls.length; j++) {
+              if (calls[j].primitive === c.primitive && calls[j].status !== "start") {
+                terminated = true;
+                break;
+              }
+            }
+            if (!terminated) {
+              return { name: c.primitive, startedAt: c.timestamp };
+            }
+          }
+          return null;
+        })()}
       />
 
       {/* Band 2 */}

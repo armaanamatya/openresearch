@@ -178,35 +178,56 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
 
     void (async () => {
-      try {
-        const response = await fetch(`/api/demo?projectId=${encodeURIComponent(candidate)}`, {
-          cache: "no-store"
-        });
-        if (response.status === 504) {
+      // Retry-with-backoff for 504s — when the backend is busy mid-primitive
+      // the SSR GET can time out, and the previous "return on 504" left the
+      // user stranded on the UploadView even though they navigated to a
+      // specific projectId URL. Backoff: 2s, 4s, 8s, 12s, 16s (5 tries,
+      // ~42s budget) — long enough to bridge a heavy implement_baseline
+      // burst, short enough to give up on a truly missing project.
+      const backoffMs = [2000, 4000, 8000, 12000, 16000];
+      for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+        try {
+          const response = await fetch(`/api/demo?projectId=${encodeURIComponent(candidate)}`, {
+            cache: "no-store"
+          });
+          if (response.status === 504) {
+            if (attempt < backoffMs.length) {
+              await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+              continue;
+            }
+            // Exhausted retries — leave the user on UploadView. Don't clear
+            // lastRun (the project may exist; backend is just persistently
+            // slow). The poll-once loop below will keep trying once a run is
+            // restored.
+            return;
+          }
+          if (!response.ok) {
+            clearLastRun();
+            if (urlPid) {
+              setRunUrl(null);
+            }
+            return;
+          }
+          const restored = (await response.json()) as LiveDemoRunState | null;
+          if (!restored || !restored.projectId) {
+            clearLastRun();
+            if (urlPid) {
+              setRunUrl(null);
+            }
+            return;
+          }
+          setRun(restored);
+          setRunUrl(restored.projectId);
+          writeLastRun(restored.projectId);
           return;
-        }
-        if (!response.ok) {
-          clearLastRun();
-          if (urlPid) {
-            setRunUrl(null);
+        } catch {
+          // Network error — back off and retry (same budget as 504).
+          if (attempt < backoffMs.length) {
+            await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+            continue;
           }
           return;
         }
-        const restored = (await response.json()) as LiveDemoRunState | null;
-        if (!restored || !restored.projectId) {
-          clearLastRun();
-          if (urlPid) {
-            setRunUrl(null);
-          }
-          return;
-        }
-        setRun(restored);
-        setRunUrl(restored.projectId);
-        writeLastRun(restored.projectId);
-        // dashboardEvents are seeded in the useEffect([run?.projectId, run?.status])
-        // block below — no action needed here for terminal runs.
-      } catch {
-        // Network error — next visit retries.
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -28,6 +28,13 @@ interface RlmHeaderProps {
   onRerun?: () => Promise<void>;
   /** True while the rerun POST is in-flight (disables button, shows spinner). */
   rerunBusy?: boolean;
+  /** Name of the primitive currently executing (most recent start with no
+   *  matching ok/error). When set, the heartbeat-stale chip renders as an
+   *  informational "running <primitive> (Xs)" instead of an alarming
+   *  "no signal Xs" — the gap was always expected during long primitives
+   *  (e.g. implement_baseline at 5-15 min) and the old chip caused
+   *  unnecessary panic. */
+  inFlightPrimitive?: { name: string; startedAt: string } | null;
 }
 
 function statusTone(status: RlmRunStatus): { bg: string; fg: string; dot: string; pulse: boolean } {
@@ -59,6 +66,7 @@ export function RlmHeader({
   error = null,
   onRerun,
   rerunBusy = false,
+  inFlightPrimitive = null,
 }: RlmHeaderProps) {
   const tone = statusTone(status);
   const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
@@ -112,21 +120,51 @@ export function RlmHeader({
           </span>
 
           {noSignalSecs !== null && (
-            <span
-              title={`No heartbeat received for ${noSignalSecs}s — the run may be wedged.`}
-              style={{
-                background: "var(--warn-soft)",
-                color: "var(--warn)",
-                borderRadius: "4px",
-                padding: "2px 8px",
-                fontSize: "0.72rem",
-                fontWeight: 600,
-                display: "inline-block",
-                verticalAlign: "middle",
-              }}
-            >
-              no signal {noSignalSecs}s
-            </span>
+            inFlightPrimitive !== null ? (
+              // Informational: a primitive is still in flight. The heartbeat
+              // gap is expected (implement_baseline at 5-15 min, build_environment
+              // at 1-5 min). Surface what's actually running so the user knows
+              // the agent is working, not wedged.
+              (() => {
+                const primSecs = Math.floor(
+                  (heartbeatNowMs ?? Date.now()) - new Date(inFlightPrimitive.startedAt).getTime(),
+                ) / 1000;
+                const primSecsRounded = Math.max(0, Math.floor(primSecs));
+                return (
+                  <span
+                    title={`Primitive ${inFlightPrimitive.name} has been running for ${primSecsRounded}s. Heartbeats pause during long primitives — this is normal.`}
+                    style={{
+                      background: "var(--accent-soft)",
+                      color: "var(--accent-ink)",
+                      borderRadius: "4px",
+                      padding: "2px 8px",
+                      fontSize: "0.72rem",
+                      fontWeight: 600,
+                      display: "inline-block",
+                      verticalAlign: "middle",
+                    }}
+                  >
+                    running {inFlightPrimitive.name} ({primSecsRounded}s)
+                  </span>
+                );
+              })()
+            ) : (
+              <span
+                title={`No primitive in flight and no heartbeat for ${noSignalSecs}s — the run may be wedged. Check runner.stderr.log for errors.`}
+                style={{
+                  background: "var(--warn-soft)",
+                  color: "var(--warn)",
+                  borderRadius: "4px",
+                  padding: "2px 8px",
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                  display: "inline-block",
+                  verticalAlign: "middle",
+                }}
+              >
+                no signal {noSignalSecs}s
+              </span>
+            )
           )}
 
           {latestWarning !== null && (

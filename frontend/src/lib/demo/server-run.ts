@@ -9,8 +9,13 @@ export function backendBaseUrl(): string {
 
 // Backend GET timeout for the lab page's status polling. Single-worker
 // uvicorn (--reload) blocks on long SSE streams, so we cap how long the
-// browser waits and let the client retry with backoff.
-export const BACKEND_GET_TIMEOUT_MS = 4000;
+// browser waits and let the client retry with backoff. Bumped from 4s →
+// 10s on 2026-05-23 after a mid-run Playwright snapshot captured the
+// SSR fetch 504-ing while the backend was mid-implement_baseline (lab
+// page rendered with an empty <main>). 10s still feels snappy on the
+// warm path while tolerating the occasional 5-8s tail when the FastAPI
+// worker is processing a heavy SSE event payload.
+export const BACKEND_GET_TIMEOUT_MS = 10000;
 
 // Soft cap on payload enrichment so a slow filesystem read or
 // buildLiveDemoDashboard pass cannot stall the GET response. On timeout
