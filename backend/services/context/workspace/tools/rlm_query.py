@@ -53,6 +53,7 @@ from typing import Any, Protocol
 from backend.schemas.citations import Citation
 from backend.services.context.workspace.model import Cited
 from backend.services.context.workspace.projections import WorkspaceView
+from backend.services.context.workspace.tools._retry import with_429_backoff
 from backend.services.context.workspace.tools.interface import WorkspaceToolError
 
 
@@ -480,6 +481,7 @@ class ClaudeLlmClient:
         self._model = model
         self._max_turns = max_turns
 
+    @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
         """Synchronous wrapper around the async claude-agent-sdk query."""
         import asyncio
