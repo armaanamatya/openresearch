@@ -9,6 +9,7 @@ See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -364,7 +365,14 @@ async def run_rdr(
     # ------------------------------------------------------------------
     # Step 7: Initial scoring
     # ------------------------------------------------------------------
-    scores = score_reproduction(rubric, ctx.project_dir, ctx.llm_client)
+    # score_reproduction is sync but its ClaudeLlmClient.complete() internally
+    # calls asyncio.run() — which deadlocks if we invoke it from the running
+    # event-loop thread.  Run in a worker thread so the scorer's own loop is
+    # independent.  Surfaced live: "asyncio.run() cannot be called from a
+    # running event loop" in seqnn's score batches.
+    scores = await asyncio.to_thread(
+        score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+    )
 
     # ------------------------------------------------------------------
     # Step 8: Repair loop
@@ -443,8 +451,10 @@ async def run_rdr(
                     ctx.project_id, type(exc).__name__, exc,
                 )
 
-        # Re-score
-        scores = score_reproduction(rubric, ctx.project_dir, ctx.llm_client)
+        # Re-score (off-loop, see Step 7 note).
+        scores = await asyncio.to_thread(
+            score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+        )
         repair_iterations += 1
 
     # ------------------------------------------------------------------
