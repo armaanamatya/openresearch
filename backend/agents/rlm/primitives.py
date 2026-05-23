@@ -755,7 +755,22 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
 
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     # A2-C1: bound the entire command loop (not just each individual command).
-    timeout = _timeout_for(ctx, 7200)
+    # 2026-05-23: reduced default cap from 7200 s (2 h) → 1800 s (30 min). The
+    # 2 h cap held up B2 of the paper sweep when the model upgraded its
+    # baseline to a real VLM training that was CPU-infeasible: we sat for the
+    # full 2 h before the pipeline could iterate. 30 min covers legitimate
+    # multi-command runs while letting CPU-bound regressions surface fast so
+    # the RLM root can try a smaller approach. Tunable via env var for callers
+    # who genuinely need longer; respects the run-budget deadline as before.
+    _default_cap_s = 1800.0
+    try:
+        import os as _os_env
+        _override = _os_env.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S")
+        if _override:
+            _default_cap_s = float(_override)
+    except (TypeError, ValueError):
+        pass
+    timeout = _timeout_for(ctx, _default_cap_s)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
