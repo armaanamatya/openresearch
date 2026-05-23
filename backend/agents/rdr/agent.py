@@ -162,9 +162,16 @@ def _run_sdk_in_thread(
             timeout=timeout_s,
         ))
 
-    with concurrent.futures.ThreadPoolExecutor(
+    # NOTE: deliberately NOT using `with ThreadPoolExecutor(...) as ex` because
+    # the default `__exit__` calls `shutdown(wait=True)` which would block on a
+    # hung worker (defeating the isolation: if Defect 2 — WSL2 futex hang in
+    # `transport.close()` — fires, the worker never returns). Instead we
+    # `shutdown(wait=False)` in `finally` so an abandoned worker is left to
+    # GC / process-exit while the controller continues.
+    ex = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="rdr-sdk-worker"
-    ) as ex:
+    )
+    try:
         future = ex.submit(_worker)
         try:
             return future.result(timeout=timeout_s + _THREAD_TEARDOWN_SLACK_S)
@@ -175,6 +182,12 @@ def _run_sdk_in_thread(
                 f"rdr SDK worker thread exceeded {timeout_s + _THREAD_TEARDOWN_SLACK_S:.0f}s "
                 f"(SDK aclose deadlock workaround)"
             ) from exc
+    finally:
+        # `wait=False`: do NOT block on a hung worker. The worker thread may
+        # leak briefly (until the underlying SDK subprocess is killed via the
+        # SDK's atexit hook in subprocess_cli.py:_ACTIVE_CHILDREN) but the
+        # controller continues and the watchdog stays bounded.
+        ex.shutdown(wait=False)
 
 
 def _render_prompt(agent_context: AgentContext, code_dir: Path) -> str:

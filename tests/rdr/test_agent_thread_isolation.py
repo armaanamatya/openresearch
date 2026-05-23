@@ -238,3 +238,71 @@ async def test_reproduce_uses_thread_isolation(tmp_path, make_context, monkeypat
     assert result.notes == known_output, (
         f"Expected notes={known_output!r}; got {result.notes!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — non-blocking shutdown: hung worker does not stall the controller
+# ---------------------------------------------------------------------------
+
+
+def test_thread_isolation_unblocks_on_hung_worker(tmp_path, monkeypatch):
+    """_run_sdk_in_thread() returns TimeoutError within a bounded wall-clock time
+    even when the worker is permanently hung (simulating a WSL2 futex stall).
+
+    If the old `with ThreadPoolExecutor(...) as ex` form were used, __exit__
+    would call shutdown(wait=True), blocking until the hung worker returns
+    (which is never). The test would hang indefinitely (or until pytest's own
+    timeout). With shutdown(wait=False) the controller continues immediately
+    after the timeout fires.
+
+    The abandoned-worker behavior is intentional and not asserted here.
+    """
+    import time
+
+    # Reduce timeout and slack so the whole thing completes in ~0.6 s
+    # instead of waiting for the default 30 s slack.
+    timeout_s = 0.3
+    monkeypatch.setattr(agent_mod, "_THREAD_TEARDOWN_SLACK_S", 0.3)
+
+    async def hung_collect(
+        agent_id: str,
+        prompt: str,
+        *,
+        project_dir: Path,
+        **kwargs: Any,
+    ) -> str:
+        # An Event that is never set — simulates a worker stuck awaiting
+        # SDK subprocess teardown with no cancellation escape.
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    import backend.agents.runtime.invoke as invoke_mod
+    monkeypatch.setattr(invoke_mod, "collect_agent_text", hung_collect)
+
+    t0 = time.perf_counter()
+    with pytest.raises(TimeoutError):
+        _run_sdk_in_thread(
+            prompt="test prompt",
+            code_dir=tmp_path,
+            model=None,
+            provider=None,
+            runtime=None,
+            max_turns=None,
+            timeout_s=timeout_s,
+        )
+    elapsed = time.perf_counter() - t0
+
+    # The call must complete well within the default agent timeout (5400 s)
+    # and also within a generous tolerance above the expected window.
+    # Expected: timeout_s + slack + epsilon ≈ 0.6 s. Cap at 1.5 s to
+    # give CI some headroom without allowing a regression to go unnoticed.
+    assert elapsed < 1.5, (
+        f"_run_sdk_in_thread took {elapsed:.2f}s — expected <1.5s. "
+        "Likely regression: shutdown(wait=True) is blocking on the hung worker."
+    )
+    # Guard: must complete far below _DEFAULT_AGENT_TIMEOUT_S to catch any
+    # revert to the blocking form.
+    assert elapsed < agent_mod._DEFAULT_AGENT_TIMEOUT_S, (
+        f"elapsed {elapsed:.2f}s >= _DEFAULT_AGENT_TIMEOUT_S — "
+        "the timeout is not working at all."
+    )
