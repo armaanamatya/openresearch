@@ -7,7 +7,7 @@ import { EnvironmentMock } from "./figures/EnvironmentMock";
 import { ImplementationMock } from "./figures/ImplementationMock";
 import { ExperimentsMock } from "./figures/ExperimentsMock";
 import { VerificationMock } from "./figures/VerificationMock";
-import { NavScrollMount } from "./client-bits";
+import { NavScrollMount, RevealMount } from "./client-bits";
 
 const GITHUB_URL = "https://github.com/armaanamatya/openresearch";
 
@@ -15,6 +15,7 @@ export function LandingPage(): React.JSX.Element {
   return (
     <div className={styles.shell}>
       <NavScrollMount targetId="nav" scrolledClass={styles.scrolled} />
+      <RevealMount />
       <Nav />
       <Hero />
       <ComprehensionSection />
@@ -23,7 +24,8 @@ export function LandingPage(): React.JSX.Element {
       <ExperimentsSection />
       <VerificationSection />
       <BenchmarkSection />
-      {/* Task 7 adds closing + footer */}
+      <CTAFooter />
+      <Footer />
     </div>
   );
 }
@@ -426,6 +428,50 @@ function BenchmarkSection(): React.JSX.Element {
         </div>
       </div>
     </section>
+  );
+}
+
+function CTAFooter(): React.JSX.Element {
+  return (
+    <section className={styles["cta-foot"]} id="github">
+      <div className={`${styles.wrap} ${styles.reveal}`}>
+        <div className={styles["h-eyebrow"]} style={{ marginBottom: 22 }}>§ 7.0 — Try it</div>
+        <h2>An end-to-end reproduction,<br />in one command.</h2>
+        <p className={styles.lede}>
+          Point ReproLab at an arXiv ID. Get back a sealed environment, an implementation,
+          a scorecard, and an audit trail. If a claim doesn&apos;t reproduce, you&apos;ll see exactly which one.
+        </p>
+        <div className={styles.actions}>
+          <Link href="/lab" className={`${styles.btn} ${styles["btn-primary"]}`}>
+            <span>Open the lab</span>
+            <span aria-hidden>→</span>
+          </Link>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className={`${styles.btn} ${styles["btn-ghost"]}`}>
+            <GitHubIcon />
+            <span>github.com/armaanamatya/openresearch</span>
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Footer(): React.JSX.Element {
+  return (
+    <footer className={styles.foot}>
+      <div className={`${styles.wrap} ${styles["foot-inner"]}`}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span className={styles["brand-mark"]} style={{ width: 18, height: 18 }} aria-hidden />
+          <span>ReproLab · 2026</span>
+        </div>
+        <div className={styles.links}>
+          <a href="#pipeline">How it works</a>
+          <a href="#benchmarks">Benchmarks</a>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+        <div className={styles.mono}>§ end · v0.1.0</div>
+      </div>
+    </footer>
   );
 }
 
