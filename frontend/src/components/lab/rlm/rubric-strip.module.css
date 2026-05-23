@@ -1,0 +1,154 @@
+/* RubricStrip — score band (spec §7.1 / §9).
+ * Forest-green accent (var(--accent) = #1d7a3c) for the rubric fill and sparkline.
+ * Flat surface, hairline bottom border, dense layout.
+ *
+ * Bar geometry: the track spans 0→1 (full width = 100%). Fill = current score.
+ * Baseline and target are absolute-positioned markers on the track.
+ */
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  min-height: 44px;
+  flex-wrap: wrap;
+}
+
+/* ── Score block ────────────────────────────────────────────── */
+
+.scoreBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 48px;
+  flex-shrink: 0;
+}
+
+.scoreValue {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.scorePlaceholder {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--muted-2);
+  line-height: 1;
+}
+
+.scoreLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
+/* ── Progress bar ───────────────────────────────────────────── */
+
+.barBlock {
+  flex: 1;
+  min-width: 120px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.barTrack {
+  position: relative;
+  height: 6px;
+  background: var(--chip);
+  border-radius: var(--r-xs);
+  overflow: visible;
+}
+
+.barFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-xs);
+  transition: width 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .barFill {
+    transition: none;
+  }
+}
+
+/* Baseline marker — a vertical tick below the track */
+.baselineMarker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: var(--muted-2);
+  border-radius: 1px;
+  transform: translateX(-50%);
+}
+
+/* Target marker — a vertical tick, forest green */
+.targetMarker {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: translateX(-50%);
+  opacity: 0.6;
+}
+
+/* .barLabels, .baselineLabel, .targetLabel removed — labels live in
+   the climb annotation block to keep the DOM unambiguous for tests. */
+
+/* ── Sparkline ──────────────────────────────────────────────── */
+
+.sparkBlock {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.sparkBar {
+  display: inline-block;
+  width: 4px;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+/* ── Climb annotation ───────────────────────────────────────── */
+
+.climbBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.climbAnnotation {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.deltaAnnotation {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--accent-ink);
+  white-space: nowrap;
+}

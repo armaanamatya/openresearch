@@ -92,7 +92,7 @@ everything the earlier brief planned to hand-build:
 | Root-iteration cap | `max_iterations` (default 30) |
 | Cost / time / token caps | `max_budget`, `max_timeout`, `max_tokens` |
 | Cheaper sub-call model | `other_backends` |
-| Live UI events | `on_iteration_start/complete`, `on_subcall_start/complete` callbacks |
+| Live UI events | `on_subcall_start/complete` callbacks; per-iteration via a custom `RLMLogger` (`on_iteration_*` are declared but never fire) |
 | Trajectory logging | `RLMLogger` → JSONL |
 | System-prompt override | `custom_system_prompt` |
 
@@ -254,9 +254,11 @@ gate stated in §7.
 
 ## 9. Events and UI
 
-**Events.** Wire SSE emission into the library's callbacks
-(`on_iteration_start/complete`, `on_subcall_start/complete`) and into the
-primitive wrappers. Event types (the full schema lives in code): `repl_iteration`,
+**Events.** Wire SSE emission into the library's `on_subcall_start/complete`
+callbacks, a custom `RLMLogger` subclass for per-iteration events (`rlm` calls
+`logger.log(iteration)` once per loop — `on_iteration_start/complete` are
+declared but never fire; see `rlms-spike-report.md`), and the primitive
+wrappers. Event types (the full schema lives in code): `repl_iteration`,
 `primitive_call`, `candidate_proposed`, `candidate_outcome`, `sub_rlm_spawned`,
 `rubric_score`, `root_reasoning`, `run_complete`. Only *metadata* about stdout
 goes to the model history (Algorithm 1) and to the UI — never full stdout.

@@ -10,7 +10,10 @@ import { LabShell, stateMapForRun } from "./lab-shell";
 // run). jsdom doesn't mount Next's app-router context, so we stub it.
 const routerReplaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), prefetch: vi.fn() })
+  useRouter: () => ({ replace: routerReplaceMock, push: vi.fn(), prefetch: vi.fn() }),
+  // useSearchParams is used by the ?rlmFixture=1 dev path; return null params
+  // (fixture mode off) in all existing tests.
+  useSearchParams: () => ({ get: () => null })
 }));
 
 describe("LabShell", () => {
@@ -537,6 +540,52 @@ describe("LabShell", () => {
     ).toBe("done");
     // Sanity: a completed run shows all 12 nodes done.
     expect(doneCount("complete")).toBe(12);
+  });
+
+  it("renders RlmLab when runMode is rlm", () => {
+    render(
+      <LabShell
+        initialTopology={defaultTopologyFixture}
+        initialRun={{
+          projectId: "prj_rlm_test",
+          outputDir: "runs/prj_rlm_test",
+          runMode: "rlm" as import("@/lib/demo/demo-run-types").DemoRunMode,
+          status: "running",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "Attention is all you need",
+          sourceNote: "rlm mode run",
+          payload: null,
+          log: ""
+        }}
+      />
+    );
+    // RlmLab exposes a stable test id; the existing 14-stage LabCanvas does not.
+    expect(screen.getByTestId("rlm-lab")).toBeInTheDocument();
+    // The 14-stage workflow header must NOT be present.
+    expect(screen.queryByText(/agents complete/i)).not.toBeInTheDocument();
+  });
+
+  it("still renders the 14-stage workflow for sdk and offline runModes", () => {
+    render(
+      <LabShell
+        initialTopology={defaultTopologyFixture}
+        initialRun={{
+          projectId: "prj_sdk_test",
+          outputDir: "runs/prj_sdk_test",
+          runMode: "sdk",
+          status: "running",
+          sourceKind: "uploaded_pdf",
+          sourceLabel: "sdk-paper.pdf",
+          sourceNote: "sdk mode run",
+          payload: null,
+          log: ""
+        }}
+      />
+    );
+    // The 14-stage workflow header with "agents complete" must be present.
+    expect(screen.getByText(/agents complete/i)).toBeInTheDocument();
+    // RlmLab must NOT be shown.
+    expect(screen.queryByTestId("rlm-lab")).not.toBeInTheDocument();
   });
 
   it("does not show '12/12 agents complete' when status=completed but stage halted before the final stage", () => {

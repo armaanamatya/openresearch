@@ -1,0 +1,223 @@
+/* ReportRail — right rail of the RLM lab (spec §7.1 / §9 / §14).
+ * Flat surface, hairline left border, sentence case, dense layout.
+ * Uses tokens.css variables throughout.
+ *
+ * Outcome palette (§9):
+ *   pass     → forest green (--accent)
+ *   partial  → amber       (--warn)
+ *   fail     → coral       (--err)
+ *   running  → hermes purple (--hermes, pulsing)
+ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  width: 240px;
+  min-width: 200px;
+  overflow-y: auto;
+}
+
+/* ── Verdict pill ──────────────────────────────────────────────── */
+
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px var(--sp-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  align-self: flex-start;
+}
+
+.verdictPass {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.verdictPartial {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.verdictFail {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+.verdictRunning {
+  background: var(--hermes-soft);
+  color: var(--hermes-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .verdictRunning {
+    animation: pulse 2s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
+/* ── Rubric score header ──────────────────────────────────────── */
+
+.scoreHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scoreLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
+.scoreValue {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1;
+}
+
+/* Degraded note — spec §14 (0.35 cap). Visible, honest, not alarming. */
+.degradedNote {
+  font-size: var(--fs-xs);
+  color: var(--warn-ink);
+  background: var(--warn-soft);
+  border-radius: var(--r-xs);
+  padding: 2px var(--sp-1);
+  margin-top: 2px;
+  display: inline-block;
+}
+
+/* ── Stat grid ────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2);
+  background: var(--chip);
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line);
+}
+
+.tileValue {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.tilePlaceholder {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--muted-2);
+  line-height: 1;
+}
+
+.tileLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-transform: lowercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Rubric breakdown ─────────────────────────────────────────── */
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.breakdownHeading {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-transform: lowercase;
+  margin: 0;
+}
+
+.areaList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.areaRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  padding: 2px var(--sp-1);
+  border-radius: var(--r-xs);
+}
+
+/* Outcome row backgrounds — subtle, not overwhelming. */
+.areaPass {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.areaPartial {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.areaFail {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+.areaMarker {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+}
+
+.areaName {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.areaScore {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* ── Visually hidden (screen-reader only) ────────────────────────── */
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
