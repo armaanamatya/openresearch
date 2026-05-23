@@ -62,6 +62,7 @@ The RLM path has **two distinct LLM auth surfaces** and they are NOT interchange
    - `--model claude` → `ANTHROPIC_API_KEY` (Anthropic API credits, raw HTTP)
    - default / `--model gpt-5` → `OPENAI_API_KEY` (OpenAI credits)
    - `--model qwen3-coder-featherless` → `FEATHERLESS_API_KEY` (cheapest)
+   - `--model azure` (aliases: `azure-openai`, `gpt-4o-azure`) → `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_DEPLOYMENT` (production target on Azure)
 2. **Sub-agents** (`implement_baseline` and other Sonnet calls, via `claude-agent-sdk`) accept either `ANTHROPIC_API_KEY` *or* OAuth via the local `claude` CLI subscription. The Claude Code subscription path is per-message-free; the API-key path is per-token-billed against your Anthropic API balance.
 
 **The 2026-05-22 pitfall (see `docs/superpowers/specs/2026-05-22-rlm-debug-harden-handoff.md` §auth):** if you set `ANTHROPIC_API_KEY` to a key whose Anthropic *API account* has no credits, the SDK tries it first, hits 400 *"credit balance too low"*, and does **not** fall back to OAuth — every reproduction dies at the first Sonnet sub-call with `cost_usd=0.0`. Working `claude --print "ping"` proves only the *subscription* works; the *API key* needs its own credits. **Safest local dev**: leave `ANTHROPIC_API_KEY=` (empty) in `.env`, `claude login` once, and use OpenAI/Featherless for the root (or `claude-oauth` if you want both surfaces on the same subscription). Comment block in `.env` lines 14–18 is the canonical reference.

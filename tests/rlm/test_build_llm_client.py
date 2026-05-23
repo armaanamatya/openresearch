@@ -165,7 +165,78 @@ class TestAnthropicRaw:
 
 
 # ---------------------------------------------------------------------------
-# Branch 5: plain openai (no base_url) → OpenAILlmClient
+# Branch 4.5: azure_openai → AzureOpenAILlmClient
+# ---------------------------------------------------------------------------
+
+class TestAzureOpenAI:
+
+    def test_azure_routes_to_azure_client(self):
+        from unittest.mock import patch, MagicMock
+        from backend.services.context.workspace.tools.azure_openai_client import AzureOpenAILlmClient
+
+        root = _make_root_model(
+            "azure_openai",
+            backend_kwargs={
+                "model_name": "gpt-4o",
+                "azure_deployment": "gpt-4o",
+                "azure_endpoint": "https://myresource.openai.azure.com",
+                "api_key": "fake-azure-key",
+            },
+            key="azure-gpt-4o",
+        )
+        with patch("openai.AzureOpenAI") as mock_azure:
+            mock_azure.return_value = MagicMock()
+            client, label = _build_llm_client(None, root)
+
+        assert isinstance(client, AzureOpenAILlmClient)
+        assert label == "gpt-4o"
+
+    def test_azure_label_matches_model_name(self):
+        from unittest.mock import patch, MagicMock
+
+        root = _make_root_model(
+            "azure_openai",
+            backend_kwargs={
+                "model_name": "gpt-4o",
+                "azure_endpoint": "https://example.openai.azure.com",
+                "api_key": "k",
+            },
+            key="azure-gpt-4o",
+        )
+        with patch("openai.AzureOpenAI") as mock_azure:
+            mock_azure.return_value = MagicMock()
+            _, label = _build_llm_client(None, root)
+
+        assert label == "gpt-4o"
+
+    def test_azure_missing_endpoint_raises(self):
+        """_build_llm_client raises ValueError when azure_endpoint is not resolved."""
+        root = _make_root_model(
+            "azure_openai",
+            backend_kwargs={
+                "model_name": "gpt-4o",
+                # deliberately NO azure_endpoint
+                "api_key": "k",
+            },
+            key="azure-gpt-4o",
+        )
+        with pytest.raises(ValueError, match="azure_endpoint was not resolved"):
+            _build_llm_client(None, root)
+
+    def test_resolve_root_model_azure_alias(self, monkeypatch):
+        """resolve_root_model('azure') returns the azure-gpt-4o registry entry."""
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fake-azure-key")
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://myresource.openai.azure.com")
+        from backend.agents.rlm.models import resolve_root_model
+
+        entry = resolve_root_model("azure")
+        assert entry.key == "azure-gpt-4o"
+        assert entry.rlm_backend == "azure_openai"
+        assert "azure_endpoint" in entry.backend_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Branch 6: plain openai (no base_url) → OpenAILlmClient
 # ---------------------------------------------------------------------------
 
 class TestPlainOpenAI:

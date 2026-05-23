@@ -183,17 +183,40 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
         model = sub_bk.get("model_name") or bk.get("model_name", "")
         return OpenAILlmClient(model=model, api_key=api_key, base_url="https://openrouter.ai/api/v1"), model
 
-    # 4. Anthropic raw HTTP — uses ANTHROPIC_API_KEY through claude-agent-sdk's resolution
+    # 4. Azure OpenAI — rlm has a built-in AzureOpenAIClient; wrap it in an
+    #    OpenAILlmClient-compatible shim so primitives get the same .complete()
+    #    interface.  The shim delegates to openai.AzureOpenAI directly, mirroring
+    #    how OpenAILlmClient wraps openai.OpenAI.
+    if backend == "azure_openai":
+        from backend.services.context.workspace.tools.azure_openai_client import AzureOpenAILlmClient
+        api_key = bk.get("api_key")
+        azure_endpoint = bk.get("azure_endpoint")
+        azure_deployment = bk.get("azure_deployment")
+        model = bk.get("model_name", "gpt-4o")
+        if not azure_endpoint:
+            raise ValueError(
+                f"Root model {root_model.key!r} uses backend 'azure_openai' but "
+                "azure_endpoint was not resolved — _build_llm_client requires a "
+                "RootModel from resolve_root_model()."
+            )
+        return AzureOpenAILlmClient(
+            model=model,
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            azure_deployment=azure_deployment,
+        ), model
+
+    # 5. Anthropic raw HTTP — uses ANTHROPIC_API_KEY through claude-agent-sdk's resolution
     if backend == "anthropic":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
         return ClaudeLlmClient(), "claude"
 
-    # 5. Plain OpenAI
+    # 6. Plain OpenAI
     if backend == "openai":
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         return OpenAILlmClient(), "gpt-4o-mini"
 
-    # 6. Unknown backend — respect explicit `provider` arg, else default to Claude.
+    # 7. Unknown backend — respect explicit `provider` arg, else default to Claude.
     #    Removed the old "OPENAI_API_KEY env → assume OpenAI" heuristic; it
     #    misrouted claude-oauth runs when a stale key was in env.
     if (provider or "").lower() == "openai":

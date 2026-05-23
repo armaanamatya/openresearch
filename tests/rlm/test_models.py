@@ -168,7 +168,7 @@ class TestRegistryContract:
     def test_all_registry_entries_present(self):
         from backend.agents.rlm.models import ROOT_MODELS
 
-        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "claude-oauth", "qwen3-coder-featherless"}
+        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "claude-oauth", "qwen3-coder-featherless", "azure-gpt-4o"}
 
     def test_all_backends_are_valid_rlm_literals(self):
         from backend.agents.rlm.models import ROOT_MODELS

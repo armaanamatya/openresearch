@@ -124,3 +124,34 @@ class TestQwenAlias:
         assert "qwen3" in _MODEL_ALIASES
         assert _MODEL_ALIASES["qwen3"] == "qwen3-coder"
         assert "qwen3-coder" in ROOT_MODELS
+
+
+class TestAzureAliases:
+    """Azure OpenAI aliases must resolve to 'azure-gpt-4o' registry key."""
+
+    def _assert_alias(self, alias: str) -> None:
+        from backend.agents.rlm.models import ROOT_MODELS, _MODEL_ALIASES
+
+        assert alias in _MODEL_ALIASES, f"alias {alias!r} missing from _MODEL_ALIASES"
+        assert _MODEL_ALIASES[alias] == "azure-gpt-4o", (
+            f"alias {alias!r} → {_MODEL_ALIASES[alias]!r}, expected 'azure-gpt-4o'"
+        )
+        assert "azure-gpt-4o" in ROOT_MODELS
+
+    def test_azure_alias(self):
+        self._assert_alias("azure")
+
+    def test_azure_openai_alias(self):
+        self._assert_alias("azure-openai")
+
+    def test_gpt_4o_azure_alias(self):
+        self._assert_alias("gpt-4o-azure")
+
+    def test_azure_gpt4o_registry_entry(self):
+        """azure-gpt-4o registry entry uses azure_openai backend."""
+        from backend.agents.rlm.models import ROOT_MODELS
+
+        entry = ROOT_MODELS["azure-gpt-4o"]
+        assert entry.rlm_backend == "azure_openai"
+        assert entry.api_key_env == "AZURE_OPENAI_API_KEY"
+        assert entry.backend_kwargs.get("model_name") == "gpt-4o"

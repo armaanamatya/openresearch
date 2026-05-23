@@ -210,6 +210,20 @@ def _build_registry() -> dict[str, RootModel]:
             paper_validated=True,
             api_key_env="FEATHERLESS_API_KEY",
         ),
+        "azure-gpt-4o": RootModel(
+            key="azure-gpt-4o",
+            rlm_backend="azure_openai",
+            # azure_endpoint and azure_deployment are env-driven — injected at
+            # resolve time by _inject_api_key (extended for azure_openai backend).
+            # model_name identifies the model; azure_deployment names the
+            # Azure-side deployment (may differ from the model name).
+            backend_kwargs={"model_name": "gpt-4o", "azure_deployment": "gpt-4o"},
+            sub_backend="azure_openai",
+            sub_backend_kwargs={"model_name": "gpt-4o", "azure_deployment": "gpt-4o"},
+            prompt_addendum="",
+            paper_validated=False,
+            api_key_env="AZURE_OPENAI_API_KEY",
+        ),
     }
 
 
@@ -244,6 +258,7 @@ _BACKEND_ENV_KEY: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "azure_openai": "AZURE_OPENAI_API_KEY",
 }
 
 
@@ -269,6 +284,38 @@ def _inject_api_key(env_var: str | None, kwargs: dict) -> dict:
         api_key = os.environ.get(env_var)
         if api_key:
             out["api_key"] = api_key
+    return out
+
+
+def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
+    """Return a copy of *kwargs* with Azure-specific env vars injected.
+
+    ``rlm.clients.azure_openai.AzureOpenAIClient`` needs three values beyond
+    the standard ``api_key``:
+
+    - ``azure_endpoint`` (required): the Azure OpenAI resource URL, e.g.
+      ``https://<resource>.openai.azure.com``.
+    - ``azure_deployment`` (optional override): the deployment name.  Defaults
+      to the registry's ``backend_kwargs["azure_deployment"]`` value but can be
+      overridden per-environment via ``AZURE_OPENAI_DEPLOYMENT``.
+
+    Raises ``ValueError`` with an actionable message when ``azure_endpoint``
+    is missing — the Azure backend cannot function without it.
+    """
+    out = dict(kwargs)
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if not endpoint:
+        raise ValueError(
+            f"Root model {model_key!r} uses the 'azure_openai' backend but "
+            "AZURE_OPENAI_ENDPOINT is not set. "
+            "Set AZURE_OPENAI_ENDPOINT to your Azure OpenAI resource URL "
+            "(e.g. https://<resource>.openai.azure.com) and optionally "
+            "AZURE_OPENAI_DEPLOYMENT to your deployment name."
+        )
+    out["azure_endpoint"] = endpoint
+    deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+    if deployment:
+        out["azure_deployment"] = deployment
     return out
 
 
@@ -311,6 +358,10 @@ _MODEL_ALIASES: dict[str, str] = {
     "qwen": "qwen3-coder",
     "qwen3": "qwen3-coder",
     "Qwen/Qwen3-Coder-480B-A35B-Instruct": "qwen3-coder-featherless",
+    # Azure OpenAI aliases
+    "azure": "azure-gpt-4o",
+    "azure-openai": "azure-gpt-4o",
+    "gpt-4o-azure": "azure-gpt-4o",
 }
 
 
@@ -415,8 +466,14 @@ def resolve_root_model(name: str | None) -> RootModel:
     # Inject the API key into backend_kwargs / sub_backend_kwargs — rlm's
     # AnthropicClient requires it as a constructor argument (it does not read
     # the environment). The registry itself stays secret-free.
-    return replace(
-        entry,
-        backend_kwargs=_inject_api_key(root_env, entry.backend_kwargs),
-        sub_backend_kwargs=_inject_api_key(sub_env, entry.sub_backend_kwargs),
-    )
+    root_bk = _inject_api_key(root_env, entry.backend_kwargs)
+    sub_bk = _inject_api_key(sub_env, entry.sub_backend_kwargs)
+
+    # Azure OpenAI additionally needs azure_endpoint (required) and
+    # azure_deployment (optional override) injected from env.
+    if entry.rlm_backend == "azure_openai":
+        root_bk = _inject_azure_kwargs(root_bk, model_key=name)
+    if entry.sub_backend == "azure_openai":
+        sub_bk = _inject_azure_kwargs(sub_bk, model_key=name)
+
+    return replace(entry, backend_kwargs=root_bk, sub_backend_kwargs=sub_bk)

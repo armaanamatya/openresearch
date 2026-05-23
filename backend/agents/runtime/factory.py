@@ -113,6 +113,17 @@ def _has_claude_subscription_oauth() -> bool:
     return False
 
 
+def _has_azure_openai_credentials() -> bool:
+    """Return True iff both AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are set.
+
+    Azure OpenAI requires both an API key and a resource endpoint — unlike plain
+    OpenAI where only the key is needed.  Neither alone is sufficient.
+    """
+    return bool(
+        os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
+
+
 def selected_provider(provider: ProviderName | str | None = None) -> ProviderName:
     """Resolve the requested provider from argument, env, or settings."""
     raw = (
@@ -134,6 +145,17 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
 
 def validate_provider_credentials(provider: ProviderName | str | None = None) -> ProviderName:
     """Validate API credentials for explicit SDK-mode invocations."""
+    # Azure OpenAI is not a ProviderName literal — validate separately.
+    if str(provider or "").lower() in {"azure-openai", "azure_openai", "azure"}:
+        if not _has_azure_openai_credentials():
+            raise ProviderConfigurationError(
+                provider="azure-openai",
+                reason=(
+                    "Azure OpenAI credentials are missing; set both "
+                    "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
+                ),
+            )
+        return "openai"  # closest ProviderName for callers that need one
     resolved = selected_provider(provider)
     settings = get_settings(_force_reload=True)
     if resolved == "anthropic":
@@ -181,6 +203,10 @@ def has_provider_credentials(provider: ProviderName | str | None = None) -> bool
     configured. ``validate_provider_credentials`` raises on missing creds
     which is the wrong shape for predicate use.
     """
+    # Azure OpenAI is not a ProviderName literal — handle it before the
+    # selected_provider() call which would raise on unknown providers.
+    if str(provider or "").lower() in {"azure-openai", "azure_openai", "azure"}:
+        return _has_azure_openai_credentials()
     try:
         resolved = selected_provider(provider)
     except ProviderConfigurationError:
@@ -262,6 +288,7 @@ def make_runtime(
 
 
 __all__ = [
+    "_has_azure_openai_credentials",
     "_has_claude_subscription_oauth",
     "_scan_wsl_windows_credentials",
     "configure_openai_agents_sdk_credentials",
