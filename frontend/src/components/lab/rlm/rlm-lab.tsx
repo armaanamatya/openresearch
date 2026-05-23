@@ -8,6 +8,7 @@ import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
 import { RlmHeader } from "./rlm-header";
+import { LiveActivityStrip } from "./live-activity-strip";
 import { RubricStrip } from "./rubric-strip";
 import { ReplStateRail } from "./repl-state-rail";
 import { ExplorationCanvas } from "./exploration-canvas";
@@ -188,6 +189,22 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           }
           return null;
         })()}
+      />
+
+      {/* Band 1.5 — always-visible live activity narration.
+       *  Built 2026-05-23 after the user reported "just 7 mins doing nothing"
+       *  with a near-blank canvas while the agent was actively running a
+       *  long primitive. The strip never goes blank: it derives the current
+       *  activity from primitiveCalls + subRlms + iterationCount and ticks
+       *  a seconds counter so the UI is visibly alive. */}
+      <LiveActivityStrip
+        status={state.status}
+        iterationCount={state.iterationCount}
+        primitiveCalls={state.primitiveCalls}
+        subRlms={state.subRlms}
+        lastHeartbeatAt={state.lastHeartbeatAt}
+        nowMs={nowMs}
+        startedAt={runMeta.startedAt}
       />
 
       {/* Band 2 */}
