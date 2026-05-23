@@ -427,6 +427,7 @@ async def run_with_sdk(
     provider: ProviderName | str | None = None,
     runtime: AgentRuntime | None = None,
     repair_context: dict[str, Any] | None = None,
+    sandbox_mode: object = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -448,6 +449,41 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
+    # 2026-05-23 (final): sandbox-aware guidance. When the sandbox is local
+    # docker (CPU-only, no GPU), instruct the agent to write a CPU-feasible
+    # baseline — small dataset, ≤5-min runtime, smoke-test or mock mode by
+    # default. B2 of the paper sweep wrote a real VLM training loop that
+    # hung forever on CPU; this nudge prevents that recurrence at the
+    # source (the agent picks the right strategy) rather than via a cap.
+    _sandbox_str = str(sandbox_mode).lower() if sandbox_mode else ""
+    _cpu_sandbox = _sandbox_str in {"docker", "local", "none", "sandboxmode.docker", "sandboxmode.local"}
+    sandbox_guidance = ""
+    if _cpu_sandbox:
+        sandbox_guidance = (
+            "\n\nIMPORTANT — SANDBOX CONSTRAINT:\n"
+            "The experiment will run in a CPU-ONLY docker container (no GPU "
+            "available). Your baseline MUST be feasible on CPU within 5 "
+            "minutes wall-clock:\n"
+            "  - Train on tiny subsets of data (1-10 samples per class, not "
+            "    full datasets)\n"
+            "  - Use mock model calls / cached embeddings / pre-computed "
+            "    features where possible (skip real LLM/VLM API calls)\n"
+            "  - For evaluation papers: implement the evaluation pipeline "
+            "    with HARDCODED mock model outputs that produce realistic-"
+            "    looking metrics; do NOT call real APIs from inside the "
+            "    sandbox (no network, no GPU)\n"
+            "  - If the paper requires training a model from scratch, write "
+            "    a 1-epoch smoke test on a tiny shard with toy hyperparams; "
+            "    the metrics.json must still be produced even if scores are "
+            "    illustrative\n"
+            "  - Always include `--smoke-test` or equivalent flag in your "
+            "    commands.json so the experiment finishes fast; never write "
+            "    `python train.py` without a smoke/quick mode\n"
+            "  - metrics.json MUST be produced in under 5 minutes from "
+            "    container start; if your design can't hit that, scale down "
+            "    further until it does\n"
+        )
+
     if repair_context:
         prompt = (
             f"The baseline for project {project_id} was already implemented in "
@@ -461,6 +497,7 @@ async def run_with_sdk(
             f"Experiment failure:\n```json\n"
             f"{json.dumps(repair_context, indent=2, default=str)}\n```\n\n"
             f"Reproduction context:\n```json\n{json.dumps(context, indent=2)}\n```"
+            f"{sandbox_guidance}"
         )
     else:
         prompt = (
@@ -470,6 +507,7 @@ async def run_with_sdk(
             f"object (metric name → number) to a file named metrics.json in the code "
             f"root, because that file is how the reproduction's metrics are read back.\n"
             f"Context:\n```json\n{json.dumps(context, indent=2)}\n```"
+            f"{sandbox_guidance}"
         )
 
     await collect_agent_text(

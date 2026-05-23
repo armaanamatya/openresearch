@@ -458,10 +458,15 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
         # baseline-implementation agent (Opus). None -> registry default.
+        # 2026-05-23 (final): thread ctx.sandbox_mode through so the agent can
+        # pick a CPU-friendly baseline (smoke-test mode) when the sandbox has
+        # no GPU. Without this, B2 of the paper sweep wrote a real VLM
+        # training that hung indefinitely on docker (CPU-only).
         return await _run_baseline_with_sdk(
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
             runtime=ctx.runtime, model=ctx.agent_model,
-            repair_context=repair_context)
+            repair_context=repair_context,
+            sandbox_mode=ctx.sandbox_mode)
 
     timeout = _timeout_for(ctx, 3600)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
@@ -754,23 +759,30 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         })
 
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
-    # A2-C1: bound the entire command loop (not just each individual command).
-    # 2026-05-23: reduced default cap from 7200 s (2 h) → 1800 s (30 min). The
-    # 2 h cap held up B2 of the paper sweep when the model upgraded its
-    # baseline to a real VLM training that was CPU-infeasible: we sat for the
-    # full 2 h before the pipeline could iterate. 30 min covers legitimate
-    # multi-command runs while letting CPU-bound regressions surface fast so
-    # the RLM root can try a smaller approach. Tunable via env var for callers
-    # who genuinely need longer; respects the run-budget deadline as before.
-    _default_cap_s = 1800.0
+    # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
+    # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
+    # (b) the run-budget deadline via ctx.remaining_s() (the --max-wall-clock
+    # CLI flag). Without either set, run_experiment is unbounded — long-running
+    # experiments must use the env var or the --max-wall-clock budget if they
+    # need a cap. (User mandate 2026-05-23: "no cost cap until set".)
+    # The pattern that previously hung B2 — model writes CPU-bound train.py —
+    # is now addressed at the agent prompt layer (sandbox-aware
+    # implement_baseline picks --smoke-test for CPU sandboxes), not via cap.
+    _cap_s = None
     try:
         import os as _os_env
         _override = _os_env.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S")
         if _override:
-            _default_cap_s = float(_override)
+            _cap_s = float(_override)
     except (TypeError, ValueError):
         pass
-    timeout = _timeout_for(ctx, _default_cap_s)
+    if _cap_s is None:
+        # No explicit env-var cap: respect only the run-budget. ctx.remaining_s()
+        # returns None when no budget is set, which becomes timeout=None below
+        # → .result(timeout=None) waits indefinitely.
+        timeout = ctx.remaining_s()
+    else:
+        timeout = _timeout_for(ctx, _cap_s)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
@@ -788,7 +800,11 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             result = {
                 "success": False,
                 "metrics": {},
-                "error": f"run_experiment: timed out after {timeout:.0f} s",
+                "error": (
+                    f"run_experiment: timed out after {timeout:.0f} s"
+                    if timeout is not None
+                    else "run_experiment: timed out (run-budget deadline reached)"
+                ),
             }
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
