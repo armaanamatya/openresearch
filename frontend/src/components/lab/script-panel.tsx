@@ -107,7 +107,7 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
               {benchmark?.benchmarkName ?? "—"}
             </div>
             <div className="benchmark-subtitle">
-              {benchmark?.paperbenchTaskId ?? "pending evaluator output"}
+              {benchmark?.paperbenchTaskId ?? "—"}
             </div>
           </div>
           <div className="benchmark-score">{score}</div>

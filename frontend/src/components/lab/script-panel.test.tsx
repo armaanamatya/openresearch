@@ -126,3 +126,43 @@ describe("ScriptPanel — item 3: benchmark name fallback", () => {
     expect(title?.textContent).toBe("—");
   });
 });
+
+// ------------------------------------------------------------------
+// Item 4 — benchmark?.paperbenchTaskId ?? "pending evaluator output"  (script-panel.tsx:109)
+// ------------------------------------------------------------------
+
+describe("ScriptPanel — item 4: benchmark task-id fallback", () => {
+  it("renders the real paperbenchTaskId when benchmark is present", () => {
+    render(
+      <ScriptPanel
+        run={baseRun({
+          benchmark: {
+            benchmarkName: "My Benchmark",
+            paperbenchTaskId: "reprolab/ppo-cartpole-v1",
+            overallScore: 80,
+            targetMetric: "accuracy",
+            targetValue: 90,
+            reproducedValue: 80,
+            deltaValue: -10,
+            verdict: "partial_reproduction",
+            reportPath: "runs/prj_test/code/final_benchmark_report.md",
+            comparisonPath: "runs/prj_test/code/comparison.json",
+            logPath: "runs/prj_test/code/logs/eval.log"
+          },
+          payload: { summary: { stage: "complete" } } as never
+        })}
+      />
+    );
+    const subtitle = document.querySelector(".benchmark-subtitle");
+    expect(subtitle?.textContent).toBe("reprolab/ppo-cartpole-v1");
+  });
+
+  it("renders '—' (not 'pending evaluator output') when benchmark is absent", () => {
+    render(<ScriptPanel run={baseRun({ benchmark: null })} />);
+    const subtitle = document.querySelector(".benchmark-subtitle");
+    // Must NOT show the fabricated evaluator-state framing
+    expect(subtitle?.textContent).not.toBe("pending evaluator output");
+    // Must show honest-empty dash
+    expect(subtitle?.textContent).toBe("—");
+  });
+});
