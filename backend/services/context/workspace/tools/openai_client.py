@@ -6,6 +6,8 @@ Pins temperature=0 for deterministic recursion replay.
 
 from __future__ import annotations
 
+from backend.services.context.workspace.tools._retry import with_429_backoff
+
 
 class OpenAILlmClient:
     """LlmClient backed by OpenAI's Chat Completions.
@@ -42,6 +44,7 @@ class OpenAILlmClient:
         self._model = model
         self._max_tokens = max_tokens
 
+    @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
         resp = self._client.chat.completions.create(
             model=self._model,

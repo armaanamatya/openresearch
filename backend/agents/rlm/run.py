@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -332,7 +332,13 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
-def _write_demo_status(project_dir: Path, status: str, *, error: str | None = None) -> None:
+def _write_demo_status(
+    project_dir: Path,
+    status: str,
+    *,
+    error: str | None = None,
+    primitive_provider: str = "real",  # T21 / review I8
+) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
     The HTTP layer's ``GET /runs/{id}`` reads this snapshot via
@@ -366,6 +372,7 @@ def _write_demo_status(project_dir: Path, status: str, *, error: str | None = No
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
+    payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -532,6 +539,7 @@ async def run_pipeline_rlm(
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
+        deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
 
     # 5. Primitives — real #59 binding or the stub provider.
@@ -655,6 +663,7 @@ async def run_pipeline_rlm(
             project_dir=project_dir,
             emit=emit,
             corpus_sentinels=corpus_sentinels,
+            tools_label=tools_label,  # T21 / review I8
         )
     finally:
         try:
@@ -672,6 +681,7 @@ def _finalize(
     project_dir: Path,
     emit: Any,
     corpus_sentinels: list[str] | None = None,
+    tools_label: str = "real",  # T21 / review I8
 ) -> RLMRunResult:
     """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
     if result_obj is not None:
@@ -687,6 +697,15 @@ def _finalize(
     # A crashed or budget-exhausted run is never a clean completion — force "failed".
     if run_failed:
         report.verdict = "failed"
+
+    # T21 / review I8: stub-run honesty — mark degraded, cap verdict.
+    if "stub" in tools_label.lower():
+        report.primitive_provider = "stub"
+        report.degraded = True
+        # A stub run cannot honestly claim "reproduced" — the primitives are
+        # deterministic placeholders, not real ML training or evaluation.
+        if report.verdict == "reproduced":
+            report.verdict = "partial"
 
     # M-REDACT (A1-C1): scrub corpus content from the report summary before writing
     # to disk or streaming — the root model may copy context["paper_text"] slices
@@ -721,7 +740,11 @@ def _finalize(
     # demo_status.json terminal write: a produced report means the run-process
     # completed; a crash means it failed. The reproduction verdict (incl.
     # "partial") is a separate axis recorded in final_report.json.
-    _write_demo_status(project_dir, "failed" if run_failed else "completed")
+    _write_demo_status(
+        project_dir,
+        "failed" if run_failed else "completed",
+        primitive_provider=report.primitive_provider,  # T21 / review I8
+    )
     return RLMRunResult(
         project_id=ctx.project_id,
         status=status,

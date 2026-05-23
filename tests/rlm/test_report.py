@@ -367,3 +367,304 @@ class TestWriteFinalReport:
         assert json_path.exists()
         md = md_path.read_text(encoding="utf-8")
         assert "REPRODUCTION FAILED" in md
+
+
+# ---------------------------------------------------------------------------
+# Tests: evidence-based verdict reconciliation (T6 / P0-I9)
+# ---------------------------------------------------------------------------
+
+
+class TestEvidenceBasedVerdictReconciliation:
+    """Symptom: ftrl run scored 0.0 yet self-reported verdict='reproduced'.
+
+    The pre-T6 honesty guard only dropped fabricated metrics; it did not
+    downgrade an over-claimed verdict when (a) run_experiment never ran,
+    (b) baseline_metrics is empty, or (c) rubric.overall_score < 0.5
+    (handoff P0-I9 / plan T6).
+    """
+
+    def test_verdict_downgraded_when_evidence_contradicts(self, make_context, tmp_path):
+        """Verify: a 'reproduced' claim with rubric score 0.0 (but run_experiment
+        DID run, with measured metrics) still downgrades to 'partial' due to the
+        score threshold.
+        """
+        ctx = _record_run_experiment(make_context(tmp_path))
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {"mean_reward": 487.3},  # has metrics
+            "rubric": {"overall_score": 0.0, "meets_target": False},  # but score == 0
+            "paper": {"id": "ftrl"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"  # downgraded by evidence guard
+        assert "0.000 < 0.5" in report.reproduction_summary  # reason surfaced
+
+    def test_verdict_not_downgraded_when_score_sufficient(self, make_context, tmp_path):
+        """A 'reproduced' claim with rubric score >= 0.5, non-empty metrics, and
+        run_experiment in the ledger is NOT downgraded."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {"accuracy": 0.92},
+            "rubric": {"overall_score": 0.75, "meets_target": True},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "reproduced"
+
+    def test_partial_verdict_not_downgraded_by_evidence_guard(self, make_context, tmp_path):
+        """'partial' verdict is passed through unchanged regardless of evidence."""
+        ctx = make_context(tmp_path)  # run_experiment never ran
+        raw = json.dumps({
+            "verdict": "partial",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"
+
+    def test_failed_verdict_not_touched_by_evidence_guard(self, make_context, tmp_path):
+        """'failed' verdict is passed through unchanged."""
+        ctx = make_context(tmp_path)
+        raw = json.dumps({
+            "verdict": "failed",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "failed"
+
+    def test_no_run_experiment_downgrades_reproduced(self, make_context, tmp_path):
+        """'reproduced' with no run_experiment entry is downgraded (via the
+        metric-fabrication guard which fires first when metrics are present,
+        then evidence guard for the no-metrics case)."""
+        ctx = make_context(tmp_path)  # empty ledger
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},  # no metrics, no run_experiment
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"
+
+    def test_no_run_experiment_in_isolation_downgrades_reproduced(self, make_context, tmp_path):
+        """Symptom: a 'reproduced' verdict with a high score but where run_experiment
+        never ran could slip past the evidence guard if only the score and metrics
+        branches were tested.
+
+        Pin the never-ran branch: empty baseline_metrics (so the prior
+        metric-fabrication guard does NOT fire), high rubric score, and
+        no run_experiment entry on the ledger. Both "never ran" and
+        "no measured baseline metrics" fire — the score branch does not.
+        """
+        # Empty baseline_metrics in payload — metric-fabrication guard is a no-op.
+        # High overall_score — score branch is a no-op.
+        # No _record_run_experiment(ctx) — never-ran + empty-metrics branches fire.
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.8, "meets_target": True},
+            "paper": {"id": "p"},
+        })
+        ctx = make_context(tmp_path)  # no _record_run_experiment(ctx) call
+
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+        assert report.verdict == "partial"
+        assert "run_experiment never ran" in report.reproduction_summary
+        # Score branch must NOT fire — score is 0.8, well above 0.5:
+        assert "< 0.5" not in report.reproduction_summary
+
+    def test_empty_baseline_metrics_in_isolation_downgrades_reproduced(self, make_context, tmp_path):
+        """Symptom: a 'reproduced' verdict with a high score and a run_experiment
+        call on the ledger but baseline_metrics={} in the parsed payload could
+        slip past the evidence guard if only the score branch were tested.
+
+        Pin the empty-metrics branch in isolation: run_experiment DID run
+        (so the never-ran branch is a no-op), score is high (so the score
+        branch is a no-op), but the parsed payload claims reproduction with
+        no measured metrics.
+        """
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.75, "meets_target": True},
+            "paper": {"id": "p"},
+        })
+        ctx = make_context(tmp_path)
+        _record_run_experiment(ctx)  # never-ran branch is a no-op
+
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+        assert report.verdict == "partial"
+        assert "no measured baseline metrics" in report.reproduction_summary
+        # Score branch must NOT fire — score is 0.75, well above 0.5:
+        assert "< 0.5" not in report.reproduction_summary
+        # Never-ran branch must NOT fire — run_experiment is on the ledger:
+        assert "run_experiment never ran" not in report.reproduction_summary
+
+
+def test_render_markdown_graded_defaults_to_zero_not_leaf_count():
+    """Symptom: a rubric dict with no `graded` key falsely claims full N/N coverage.
+
+    _render_markdown used `rubric.get('graded', leaf_count)` as a default — a
+    missing `graded` field rendered "N/N rubric leaves graded" (review M1 / T27).
+    Verify: default is 0, not leaf_count.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(rubric={"leaf_count": 5, "overall_score": 0.5})
+    md = _render_markdown(report)
+    assert "0/5 rubric leaves graded" in md, (
+        "missing `graded` field should default to 0, not the leaf_count"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C2c second pass — unscored default rubric must read as null, not fabricated
+#
+# Symptom uncovered 2026-05-22: two RunPod reproductions died at the first
+# Anthropic call (no API credit). Their final_report.json carried
+# rubric.meets_target=false despite never being scored — a fabricated boolean
+# the audit's original C2c finding had not traced. The C2c amend-write fix
+# only touched the post-scoring path; the pre-scoring default (in
+# RLMFinalReport.rubric default_factory + _HONEST_DEFAULTS["rubric"]) still
+# hardcoded {"overall_score": 0.0, "meets_target": False}, which persisted
+# verbatim to disk when the run failed before reaching the scorer.
+#
+# These tests pin the unscored honesty contract: a brand-new RLMFinalReport
+# rubric reads as null on every field that requires scoring, and the markdown
+# renderer surfaces "not scored" instead of "below target" / 0.000.
+# ---------------------------------------------------------------------------
+
+
+def test_rlm_final_report_default_rubric_is_unscored_null():
+    """A fresh RLMFinalReport carries null score / target / degraded / meets_target.
+
+    Persisted via write_final_report_rlm on a no-score path (run died before
+    amend_final_report), this is what readers actually see on disk. None is
+    honest; 0.0 + False is a fabricated claim of "scored zero, below target."
+    """
+    report = RLMFinalReport()
+    assert report.rubric["overall_score"] is None
+    assert report.rubric["meets_target"] is None
+    assert report.rubric["target_score"] is None
+    assert report.rubric["degraded"] is None
+    assert report.rubric["areas"] == []
+
+
+def test_render_markdown_unscored_run_says_not_scored(tmp_path):
+    """An unscored run renders "not scored", never "0.000 (✘ below target)".
+
+    The 2026-05-22 RunPod failures wrote a rubric block of
+    {"overall_score": 0.0, "meets_target": False, ...} to disk. The markdown
+    renderer turned that into "**Overall score:** 0.000  (✘ below target)" —
+    a precise-looking number for a score that does not exist. With the C2c
+    second-pass fix, an unscored rubric (None on overall_score) must instead
+    render "not scored".
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(verdict="failed", iterations=0)
+    md = _render_markdown(report)
+
+    assert "not scored" in md, (
+        "unscored run must render 'not scored', not a fabricated overall_score "
+        "+ below-target verdict"
+    )
+    # Isolate the rubric section ("## Rubric Score" → next "## "); the assertion
+    # must not be confused by the cost table's $0.000000 entries.
+    rubric_start = md.index("## Rubric Score")
+    rubric_end_search = md.find("\n## ", rubric_start + 1)
+    rubric_section = md[rubric_start:rubric_end_search] if rubric_end_search != -1 else md[rubric_start:]
+    assert "0.000" not in rubric_section, (
+        "unscored run must not render a 0.000 overall_score — that's a "
+        f"claim of 'scored zero' for a run that was never graded.\n"
+        f"Rubric section was:\n{rubric_section}"
+    )
+    assert "below target" not in rubric_section, (
+        "unscored run must not claim 'below target' — the target was never "
+        "compared against, because there was no score"
+    )
+
+
+def test_render_markdown_scored_run_with_no_target_says_no_target_set():
+    """A genuinely-scored run whose rubric has no target_score must render
+    "no target set", not "✘ below target".
+
+    This was the original audit C2c — amend_final_report wrote
+    meets_target=False when target was missing, flipping a legitimate high
+    score to "below target". The fix wrote None instead; the renderer must
+    render that None honestly.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(
+        rubric={
+            "overall_score": 0.80,
+            "meets_target": None,  # target_score was None → meets_target None
+            "target_score": None,
+            "leaf_count": 12,
+            "graded": 12,
+        },
+    )
+    md = _render_markdown(report)
+
+    assert "0.800" in md
+    assert "no target set" in md, (
+        "scored run with no target should render 'no target set', not "
+        "'below target' which would be a fabricated comparison"
+    )
+    assert "below target" not in md
+    assert "meets target" not in md  # the ✔ variant
+
+
+def test_amend_final_report_overwrites_unscored_defaults_with_real_scores(tmp_path):
+    """The honest-null defaults must not block legitimate scoring.
+
+    Round-trip: write_final_report_rlm(report-with-null-rubric) → on-disk file
+    with null fields → amend_final_report(score-dict-with-real-values) →
+    on-disk file now has real numeric overall_score / meets_target / etc.
+    Without this guarantee, the C2c second-pass fix would have created a
+    new bug where successful scoring couldn't overwrite the defaults.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+    from backend.evals.paperbench.leaf_scorer import amend_final_report
+
+    # An unscored report — what the failing-early path writes.
+    report = RLMFinalReport(
+        paper={"id": "test", "title": "Test"},
+        verdict="failed",
+        iterations=0,
+    )
+    write_final_report_rlm(report, tmp_path)
+
+    pre = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    assert pre["rubric"]["overall_score"] is None
+    assert pre["rubric"]["meets_target"] is None
+
+    # The scorer ran later (in some other invocation) and now amends the report.
+    amend_final_report(tmp_path, {
+        "overall_score": 0.72,
+        "rubric_source": "paperbench_bundle",
+        "leaf_count": 10,
+        "graded": 10,
+        "target_score": 0.60,
+        "degraded": False,
+    })
+
+    post = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    assert post["rubric"]["overall_score"] == 0.72
+    assert post["rubric"]["meets_target"] is True  # 0.72 >= 0.60
+    assert post["rubric"]["target_score"] == 0.60
+    assert post["rubric"]["degraded"] is False

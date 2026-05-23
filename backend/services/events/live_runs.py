@@ -1113,6 +1113,74 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
+def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
+    """Build the benchmark summary from final_report.json, RLM- or SDK-schema-aware.
+
+    Returns ``{"benchmark": <dict>}`` on success or ``{"benchmark": None}`` when
+    the report is missing or unparseable.  The two schemas are auto-detected:
+
+    * **RLM** — presence of ``"baseline_metrics"`` or ``"verdict"`` (without the
+      SDK-only ``"rubric_overall_score"`` float key).
+    * **SDK** — presence of ``"rubric_overall_score"`` or other SDK-only keys.
+    """
+    report_path = run_dir / "final_report.json"
+    if not report_path.exists():
+        return {"benchmark": None}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {"benchmark": None}
+    if not isinstance(report, dict):
+        return {"benchmark": None}
+
+    # RLM schema detector: has "verdict" string + "rubric" dict but NOT the
+    # SDK-only "rubric_overall_score" float key.
+    is_rlm = (
+        isinstance(report.get("verdict"), str)
+        and isinstance(report.get("rubric"), dict)
+        and "rubric_overall_score" not in report
+    ) or "baseline_metrics" in report
+
+    if is_rlm:
+        rubric = report.get("rubric") or {}
+        cost = report.get("cost") or {}
+        return {
+            "benchmark": {
+                "verdict": report.get("verdict", ""),
+                "rubric_score": rubric.get("overall_score"),
+                "metrics": report.get("baseline_metrics") or {},
+                "cost_usd": cost.get("llm_usd"),
+            }
+        }
+
+    # Legacy SDK schema — preserve existing behaviour.
+    rv = report.get("rubric_verification") or {}
+    base_rv = report.get("baseline_rubric_verification") or {}
+    return {
+        "benchmark": {
+            "overallScore": round((report.get("rubric_overall_score") or 0.0) * 100, 1),
+            "targetMetric": report.get("primary_metric"),
+            "targetValue": report.get("paper_primary_target"),
+            "reproducedValue": report.get("reproduction_primary_value"),
+            "deltaValue": report.get("reproduction_delta_vs_paper"),
+            "verdict": report.get("reproduction_status"),
+            "reproductionScore": report.get("reproduction_score"),
+            "rubricOverallScore": report.get("rubric_overall_score"),
+            "bestPathId": report.get("best_path_id"),
+            "bestImprovementPct": report.get("best_overall_improvement_pct"),
+            "paperbenchBaseline": report.get("paperbench_baseline"),
+            "ourRubricScore": rv.get("overall_score"),
+            "verificationDelta": report.get("verification_delta"),
+            "improvementIterations": report.get("improvement_iterations") or 0,
+            "meetsTarget": rv.get("meets_target"),
+            "comparisonSummary": report.get("comparison_summary") or "",
+            "rubricAreas": rv.get("areas") or [],
+            "baselineRubricAreas": base_rv.get("areas") or [],
+            "source": "computed_final_report",
+        }
+    }
+
+
 def _fixture_project_id(request: StartRunRequest) -> str:
     review = request.verificationProvider or "same"
     if request.mode == "sdk":
@@ -1656,6 +1724,7 @@ __all__ = [
     "FileLiveRunService",
     "LiveRunState",
     "StartRunRequest",
+    "finalize_benchmark",
     "project_id_for_pdf_path",
     "sse_event",
 ]

@@ -139,6 +139,8 @@ def sanitize_iteration(
     response = iteration.response or ""
     if len(response) > _RESPONSE_MAX_CHARS:
         response = response[:_RESPONSE_MAX_CHARS]
+    if _sentinels:
+        response = redact_corpus(response, _sentinels)  # close the M-REDACT egress
 
     return {
         "iteration": index,

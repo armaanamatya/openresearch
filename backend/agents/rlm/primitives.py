@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level alias so tests can monkeypatch RuntimeAppService without
+# requiring a live Docker daemon.
+from backend.services.runtime.service import RuntimeAppService
+
 
 def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
     """Return the tightest timeout (seconds) for a primitive given the run deadline.
@@ -71,6 +75,28 @@ def _extract_json(text: str) -> dict:
                 raise ValueError("truncated JSON object in LLM response") from exc
         idx = text.find("{", idx + 1)
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
+
+
+def _extract_json_array(text: str) -> list:
+    """Pull the first JSON array out of an LLM response.
+
+    Mirrors _extract_json but scans for `[` instead of `{`. Same EOF-truncation
+    guard. Used by leaf-scorer's batch-response parser (review M3 / T26).
+    """
+    import json
+    decoder = json.JSONDecoder()
+    end_of_text = len(text.rstrip())
+    idx = text.find("[")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, list):
+                return obj
+        except json.JSONDecodeError as exc:
+            if exc.pos >= end_of_text:
+                raise ValueError("truncated JSON array in LLM response") from exc
+        idx = text.find("[", idx + 1)
+    raise ValueError(f"no JSON array in LLM response: {text[:200]!r}")
 
 
 def _clamp01(val: object) -> float:
@@ -512,19 +538,26 @@ async def _execute_in_sandbox(
     Any unsupported mode falls back to ``LocalDockerBackend`` with a WARNING.
     """
     import asyncio
+    import json as _json
     from pathlib import Path
 
     from backend.services.runtime.interface import SandboxConfig
     from backend.services.runtime.service import (
-        CreateSandbox, DestroySandbox, ExecuteCommand, RuntimeAppService,
+        CreateSandbox, DestroySandbox, ExecuteCommand,
     )
+
+    code_dir = Path(code_path)
+    # Per-call artifact dir: deterministic per run_id so retries don't clobber.
+    artifact_root = code_dir / "outputs" / run_id
+    artifact_root.mkdir(parents=True, exist_ok=True)
 
     service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
         image=env_id,
-        project_root=Path(code_path),
+        project_root=code_dir,
+        artifact_root=artifact_root,
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -533,6 +566,12 @@ async def _execute_in_sandbox(
         # into this container (only agent-written code is), so this is not a
         # corpus-leak vector. Scoped here; the global default stays disabled.
         network_disabled=False,
+        environment={
+            "OUTPUT_DIR": "/artifacts",
+            "REPROLAB_ARTIFACT_DIR": "/artifacts",
+            "MPLCONFIGDIR": "/artifacts/.matplotlib",
+            "PYTHONUNBUFFERED": "1",
+        },
     )
     sandbox = await service.create_sandbox(CreateSandbox(config=config))
     results = []
@@ -546,43 +585,34 @@ async def _execute_in_sandbox(
         # wait_for / thread-pool timeout cancels this coroutine (A2-C1).
         await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
 
-    # Read metrics from the host filesystem (the mount is rw; the experiment
-    # writes METRICS_FILENAME to the code root or outputs/ sub-dir).
-    import json as _json
+    # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
     metrics: dict = {}
-    for candidate in (
-        Path(code_path) / METRICS_FILENAME,
-        Path(code_path) / "outputs" / METRICS_FILENAME,
-    ):
-        if not candidate.exists():
-            continue
-        # File exists — try to parse it. Whether it succeeds or fails, stop
-        # here (don't fall through to the next candidate for a file that exists
-        # but is malformed — that would silently use stale data from outputs/).
+    metrics_path = artifact_root / METRICS_FILENAME
+    if metrics_path.exists():
         try:
-            data = _json.loads(candidate.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                metrics = data
+            loaded = _json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                metrics = loaded
             else:
                 logger.warning(
                     "_execute_in_sandbox: %s is valid JSON but not a dict (%s) — "
                     "falling back to {}",
-                    candidate,
-                    type(data).__name__,
+                    metrics_path,
+                    type(loaded).__name__,
                 )
-        except Exception as exc:  # noqa: BLE001 — fail-soft: malformed file
+        except (_json.JSONDecodeError, OSError) as exc:
             logger.warning(
                 "_execute_in_sandbox: could not parse %s as JSON (%s) — "
                 "falling back to {}",
-                candidate,
+                metrics_path,
                 exc,
             )
-        break  # stop at the first existing candidate regardless of parse result
 
     return {
         "success": all(r.succeeded for r in results),
         "metrics": metrics,
         "logs": _cap_logs(_combine_command_output(results)),
+        "artifact_dir": str(artifact_root),
     }
 
 
@@ -726,11 +756,24 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
+        # C2b in-loop wiring: derive `degraded` from the `results` dict we
+        # already have. The leaf scorer's auto-detection reads
+        # final_report.json, but in-loop (called from the improvement loop
+        # before _finalize) that file has not been written yet, so
+        # auto-detection returns False and the cap would not fire. Pass it
+        # explicitly so the in-loop optimization signal matches what the
+        # post-run authoritative score will become.
+        # Two-layer degraded predicate: post-run path checks verdict+metrics via
+        # final_report.json (_is_degraded_run); in-loop path checks success+metrics
+        # via the live run_experiment result dict (verdict is a report-level concept
+        # not yet written at this point).  Both are correct at their respective layer.
+        degraded = (not results.get("success")) or (not (results.get("metrics") or {}))
         scored = score_reproduction(
             rubric_tree=rubric,
             run_dir=ctx.project_dir,
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
+            degraded=degraded,
         )
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
@@ -750,6 +793,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "leaf_count": scored.get("leaf_count", 0),
             "graded": scored.get("graded", 0),
             "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
+            "degraded": degraded,
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
                  "justification": e.get("justification", "")}
@@ -795,8 +839,14 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
           'object {"hypotheses": [ImprovementHypothesis, ...]}. Each hypothesis '
           "carries a free-form `category` tag of your choosing."
     )
-    raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
-    items = _extract_json(raw).get("hypotheses", [])
+    try:
+        raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
+        items = _extract_json(raw).get("hypotheses", [])
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3 / T11 / review I3)
+        return [{
+            "success": False,
+            "error": f"propose_improvements: {type(exc).__name__}: {exc}",
+        }]
 
     out: list[dict] = []
     for item in items:
