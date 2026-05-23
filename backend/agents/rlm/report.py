@@ -16,7 +16,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from rlm.core.types import RLMChatCompletion
 
@@ -47,6 +47,36 @@ class RLMFinalReport(BaseModel):
         description="Measured metrics; may be {} until Phase 5.",
     )
     paper_claims: dict = Field(default_factory=dict)
+    # ── paper_claims coercer ──
+    # The root model occasionally returns paper_claims as a LIST of claim
+    # dicts (e.g. [{"method": "RLM(GPT-5,…)", "expected_result": "62.0"}, …])
+    # instead of the keyed dict the schema expects. Rather than rejecting the
+    # entire run at the final-report step (which discards 30+ minutes of work),
+    # coerce list → dict by keying on the first available identity field
+    # (method/claim/id/name) and falling back to integer index. The downstream
+    # report renderer at line 578-584 only iterates over the dict's keys for
+    # display, so any stable string key works.
+    @field_validator("paper_claims", mode="before")
+    @classmethod
+    def _coerce_paper_claims(cls, v: object) -> dict:
+        if isinstance(v, dict):
+            return v
+        if not isinstance(v, list):
+            return {}
+        out: dict = {}
+        for i, item in enumerate(v):
+            if not isinstance(item, dict):
+                continue
+            key = (
+                item.get("method")
+                or item.get("claim")
+                or item.get("claim_id")
+                or item.get("id")
+                or item.get("name")
+                or f"claim_{i}"
+            )
+            out[str(key)] = item
+        return out
     rubric: dict = Field(
         # C2c (second pass, 2026-05-22): unscored runs honestly read as null on
         # both overall_score and meets_target — never a fabricated 0.0 / False.
