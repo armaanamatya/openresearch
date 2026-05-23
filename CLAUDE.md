@@ -143,5 +143,11 @@ When `REPROLAB_DEMO_SECRET` is set, run-start endpoints require a matching `X-De
 ## Maintaining this doc and `system_overview.md`
 `system_overview.md` documents the "why" and "how it fits together"; this file documents the day-to-day. When you add a new primitive, a new SSE event type, a new sandbox, or a new fail-soft/fail-closed mode, update both. Don't document "what's where" — the code is named by function.
 
+## In-flight design docs and plans
+Read whichever is relevant before non-trivial changes:
+- `docs/design/rlm-pivot-brief.md` — canonical architecture reference for the RLM orchestrator.
+- `docs/design/project-state-audit-2026-05-22.md` — read-only whole-repo audit captured 2026-05-22.
+- `docs/superpowers/plans/2026-05-22-infrastructure-improvement-plan.md` — infra improvement catalog (7 candidates, phased) + detailed Phase 1 TDD plan for a `max_pod_seconds` pod-time budget cap that closes the runaway-RunPod-pod cost gap. Sandbox + resilience layer only.
+
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.
