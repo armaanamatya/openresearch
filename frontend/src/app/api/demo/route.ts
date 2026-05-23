@@ -29,7 +29,13 @@ function search(request: Request): URLSearchParams {
 
 function toRunMode(request: Request): DemoRunMode | undefined {
   const value = search(request).get("mode");
-  return value === "offline" || value === "sdk" ? value : undefined;
+  return value === "offline" || value === "sdk" || value === "rlm" || value === "rdr"
+    ? (value as DemoRunMode)
+    : undefined;
+}
+
+function toPaperId(request: Request): string | undefined {
+  return search(request).get("paperId") || undefined;
 }
 
 function toProjectId(request: Request): string | undefined {
@@ -163,19 +169,26 @@ export async function POST(request: Request) {
       );
     }
 
+    const runMode = toRunMode(request) ?? "offline";
+    const paperId = toPaperId(request);
+    const runBody: Record<string, unknown> = {
+      mode: runMode,
+      provider: toProvider(request) ?? "anthropic",
+      verificationProvider: toVerificationProvider(request),
+      executionMode: toExecutionMode(request) ?? "efficient",
+      sandbox: toSandboxMode(request) ?? "runpod",
+      gpuMode: toGpuMode(request) ?? "auto",
+      model: toModelChoice(request) ?? "sonnet"
+    };
+    // rdr mode: pass paper_id (bundle name) to the backend.
+    if (runMode === "rdr" && paperId) {
+      runBody.paper_id = paperId;
+    }
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",
         headers: { "content-type": "application/json", ...demoSecretHeaders() },
-        body: JSON.stringify({
-          mode: toRunMode(request) ?? "offline",
-          provider: toProvider(request) ?? "anthropic",
-          verificationProvider: toVerificationProvider(request),
-          executionMode: toExecutionMode(request) ?? "efficient",
-          sandbox: toSandboxMode(request) ?? "runpod",
-          gpuMode: toGpuMode(request) ?? "auto",
-          model: toModelChoice(request) ?? "sonnet"
-        })
+        body: JSON.stringify(runBody)
       })
     );
   } catch (error) {

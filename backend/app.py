@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import json
 import re
 
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,6 +26,177 @@ from backend.services.datasets import DatasetCacheService
 from backend.services.diagnostics import FailureDiagnosisService
 from backend.services.events.live_runs import FileLiveRunService, StartRunRequest
 from backend.services.research_workspace import ResearchWorkspaceService
+
+# ---------------------------------------------------------------------------
+# rdr introspection helpers
+# ---------------------------------------------------------------------------
+
+_PAPER_FULL_KEYWORDS = frozenset(["paper_full", "paper_text", "raw_paper", "corpus"])
+_MAX_JUSTIFICATION_CHARS = 1000
+
+
+def _redact_corpus_keys(d: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow copy of *d* with corpus-text keys stripped.
+
+    Never include raw paper text in API responses — corpus-leak redaction.
+    Applies to the top-level dict of a cluster or leaf-score record.
+    """
+    return {k: v for k, v in d.items() if k.lower() not in _PAPER_FULL_KEYWORDS}
+
+
+def _truncate_justification(text: str) -> str:
+    if len(text) <= _MAX_JUSTIFICATION_CHARS:
+        return text
+    return text[:_MAX_JUSTIFICATION_CHARS] + "…"
+
+
+def _runs_root() -> Path:
+    """Resolve the runs root, mirroring the logic in ``create_app``."""
+    import os as _os
+    from backend.config import get_settings as _gs
+    s = _gs()
+    env_val = _os.environ.get("REPROLAB_RUNS_ROOT")
+    if s.runs_root is not None:
+        return Path(s.runs_root)
+    if env_val:
+        return Path(env_val)
+    return Path(__file__).resolve().parents[1] / "runs"
+
+
+def _read_rdr_clusters(project_id: str) -> dict[str, Any] | None:
+    """Read per-cluster status from ``runs/<id>/iterations/``.
+
+    Returns None when the run directory does not exist; returns the
+    response dict (clusters list possibly empty) when the dir exists.
+    """
+    run_dir = _runs_root() / project_id
+    if not run_dir.is_dir():
+        return None
+    iterations_dir = run_dir / "iterations"
+    if not iterations_dir.is_dir():
+        return {"project_id": project_id, "clusters": []}
+
+    # Index cluster checkpoints by cluster_id; accumulate repair history.
+    # cluster_<index>_<uuid>.json → primary entry
+    # repair_<n>_cluster_<uuid>.json → appended to repair_history
+    cluster_map: dict[str, dict[str, Any]] = {}
+    repair_map: dict[str, list[dict[str, Any]]] = {}
+
+    for path in sorted(iterations_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        payload = _redact_corpus_keys(payload)
+        cluster_id = payload.get("cluster_id", "")
+        if path.name.startswith("cluster_"):
+            # Parse index from cluster_<index>_<uuid>.json
+            parts = path.stem.split("_", 2)
+            try:
+                index = int(parts[1])
+            except (IndexError, ValueError):
+                index = -1
+            cluster_map[cluster_id] = {
+                "index": index,
+                "cluster_id": cluster_id,
+                "title": payload.get("cluster_title", ""),
+                "leaf_ids": payload.get("leaf_ids", []),
+                "failed": payload.get("failed", False),
+                "file_count": payload.get("file_count", 0),
+                "repair_history": [],
+            }
+        elif path.name.startswith("repair_"):
+            rep_n = payload.get("repair_pass", 0)
+            repair_map.setdefault(cluster_id, []).append({
+                "pass": rep_n,
+                "failed": payload.get("failed", False),
+                "file_count": payload.get("file_count", 0),
+            })
+
+    # Merge repair history into cluster entries
+    for cid, repairs in repair_map.items():
+        if cid in cluster_map:
+            cluster_map[cid]["repair_history"] = sorted(repairs, key=lambda r: r["pass"])
+        else:
+            # Repair without initial cluster checkpoint (partial run) — create stub
+            cluster_map[cid] = {
+                "index": -1,
+                "cluster_id": cid,
+                "title": "",
+                "leaf_ids": [],
+                "failed": None,
+                "file_count": 0,
+                "repair_history": sorted(repairs, key=lambda r: r["pass"]),
+            }
+
+    clusters = sorted(cluster_map.values(), key=lambda c: c["index"])
+    return {"project_id": project_id, "clusters": clusters}
+
+
+def _read_rdr_repair_iterations(project_id: str) -> dict[str, Any] | None:
+    """Summarize repair passes from ``runs/<id>/iterations/repair_*.json``."""
+    run_dir = _runs_root() / project_id
+    if not run_dir.is_dir():
+        return None
+    iterations_dir = run_dir / "iterations"
+    if not iterations_dir.is_dir():
+        return {"project_id": project_id, "passes": []}
+
+    # Group repair checkpoints by pass number.
+    by_pass: dict[int, list[dict[str, Any]]] = {}
+    for path in iterations_dir.glob("repair_*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rep_n = int(payload.get("repair_pass", 0))
+        by_pass.setdefault(rep_n, []).append(payload)
+
+    passes = []
+    for rep_n in sorted(by_pass):
+        entries = by_pass[rep_n]
+        passes.append({
+            "pass": rep_n,
+            "cluster_count": len(entries),
+            "failed_count": sum(1 for e in entries if e.get("failed", False)),
+        })
+    return {"project_id": project_id, "passes": passes}
+
+
+def _read_rdr_leaf_scores(project_id: str) -> dict[str, Any] | None:
+    """Read per-leaf scores from ``runs/<id>/final_report.json``.
+
+    Returns None when the run dir does not exist or ``final_report.json`` is absent.
+    """
+    run_dir = _runs_root() / project_id
+    if not run_dir.is_dir():
+        return None
+    report_path = run_dir / "final_report.json"
+    if not report_path.exists():
+        return None
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    rubric = report.get("rubric") or {}
+    overall_score = float(rubric.get("overall_score") or 0.0)
+    raw_leaf_scores = rubric.get("leaf_scores") or []
+
+    leaf_scores = []
+    for entry in raw_leaf_scores:
+        if not isinstance(entry, dict):
+            continue
+        leaf_id = str(entry.get("id") or entry.get("leaf_id") or "")
+        score = float(entry.get("score") or 0.0)
+        justification = _truncate_justification(str(entry.get("justification") or ""))
+        leaf_scores.append({"id": leaf_id, "score": score, "justification": justification})
+
+    return {
+        "project_id": project_id,
+        "overall_score": overall_score,
+        "leaf_scores": leaf_scores,
+    }
 
 
 def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> None:
@@ -327,6 +501,47 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # rdr-specific introspection endpoints
+    # ------------------------------------------------------------------ #
+
+    @app.get("/runs/{project_id}/clusters")
+    async def get_rdr_clusters(project_id: str) -> dict:
+        """Per-cluster status for an rdr run.
+
+        Reads ``runs/<id>/iterations/cluster_*.json`` and ``repair_*.json``.
+        Returns 404 when the run directory does not exist; 200 + empty list
+        when the iterations directory is absent or empty.
+        Corpus-leak redaction: raw paper-text keys are stripped before response.
+        """
+        result = await asyncio.to_thread(_read_rdr_clusters, project_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return result
+
+    @app.get("/runs/{project_id}/repair-iterations")
+    async def get_rdr_repair_iterations(project_id: str) -> dict:
+        """Repair-pass summary for an rdr run.
+
+        Returns 404 when the run directory does not exist.
+        """
+        result = await asyncio.to_thread(_read_rdr_repair_iterations, project_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return result
+
+    @app.get("/runs/{project_id}/leaf-scores")
+    async def get_rdr_leaf_scores(project_id: str) -> dict:
+        """Per-leaf scores from the rdr run's ``final_report.json``.
+
+        Returns 404 when the run dir or final_report.json do not exist yet.
+        Justification strings are capped at 1000 characters to bound payload size.
+        """
+        result = await asyncio.to_thread(_read_rdr_leaf_scores, project_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Run not found or scoring not complete")
+        return result
 
     # ------------------------------------------------------------------ #
     # Pipeline topology (canonical graph metadata for the frontend)

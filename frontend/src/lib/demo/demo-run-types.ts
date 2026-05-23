@@ -1,6 +1,6 @@
 import type { LiveDemoPayload } from "./pipeline-dashboard";
 
-export type DemoRunMode = "offline" | "sdk";
+export type DemoRunMode = "offline" | "sdk" | "rlm" | "rdr";
 
 export type DemoProvider = "anthropic" | "openai";
 

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk", "rlm"]
+RunMode = Literal["offline", "sdk", "rlm", "rdr"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -43,6 +43,10 @@ class StartRunRequest(BaseModel):
     sandbox: SandboxMode = "runpod"
     gpuMode: GpuMode = "auto"
     model: ModelChoice = "sonnet"
+    # rdr-specific: PaperBench bundle paper_id (directory name under
+    # third_party/paperbench/ or an absolute path). Only required when
+    # mode='rdr'; ignored for other modes.
+    paper_id: str | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -1213,6 +1217,10 @@ def _python_script(
         # in the non-uploaded rlm path (run_pipeline_rlm call below).
         "max_usd": None,
         "max_wall_clock": None,
+        # rdr-specific: PaperBench bundle identifier (only used when mode='rdr').
+        "paper_id": request.paper_id if request.mode == "rdr" else None,
+        "max_repair_iterations": 2,
+        "repair_target": 0.6,
     }
     return f"""
 import asyncio
@@ -1424,6 +1432,26 @@ try:
                 execution_profile=profile,
                 sandbox_mode=SandboxMode(config["sandbox"]),
                 run_budget=_run_budget,
+            ))
+        elif config["run_mode"] == "rdr":
+            # rdr: rubric-driven harness on a PaperBench bundle.
+            # paper_id is the bundle directory name (e.g. "sequential-neural-score-estimation")
+            # or an absolute path to the bundle.
+            _paper_id = config.get("paper_id") or ""
+            if not _paper_id:
+                raise ValueError("mode='rdr' requires paper_id in the run request")
+            from backend.agents.rdr.run import run_pipeline_rdr
+            from backend.agents.execution import resolve_sandbox_mode
+            _sandbox = resolve_sandbox_mode(config["sandbox"], pipeline_mode="rdr")
+            asyncio.run(run_pipeline_rdr(
+                project_id,
+                runs_root,
+                paper_id=_paper_id,
+                provider=config["provider"],
+                model=config["model"],
+                sandbox_mode=_sandbox,
+                max_repair_iterations=config.get("max_repair_iterations") or 2,
+                repair_target=config.get("repair_target") or 0.6,
             ))
         else:
             run_pipeline_offline(
