@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { RunWarning } from "../../../hooks/use-rlm-run";
 import styles from "./rlm-header.module.css";
 
@@ -63,12 +63,24 @@ export function RlmHeader({
   // Transient inline error shown when the rerun POST itself fails.
   const [rerunError, setRerunError] = useState<string | null>(null);
 
-  // Derive "wedged" signal: running + no heartbeat for >60 s.
-  const noSignalSecs = useMemo(() => {
-    if (status !== "running") return null;
-    if (lastHeartbeatAt === null) return null;
-    const elapsed = Date.now() - new Date(lastHeartbeatAt).getTime();
-    return elapsed > HEARTBEAT_STALE_MS ? Math.floor(elapsed / 1000) : null;
+  // Derive "wedged" signal: running + no heartbeat for >60 s. Date.now() is
+  // wall-clock-impure, so we drive recomputation from a ticking effect rather
+  // than calling it during render. The interval fires every 5s — sub-second
+  // precision is not needed for a >60s stale threshold.
+  const [noSignalSecs, setNoSignalSecs] = useState<number | null>(null);
+  useEffect(() => {
+    if (status !== "running" || lastHeartbeatAt === null) {
+      queueMicrotask(() => setNoSignalSecs(null));
+      return;
+    }
+    const heartbeatMs = new Date(lastHeartbeatAt).getTime();
+    function recompute() {
+      const elapsed = Date.now() - heartbeatMs;
+      setNoSignalSecs(elapsed > HEARTBEAT_STALE_MS ? Math.floor(elapsed / 1000) : null);
+    }
+    const id = setInterval(recompute, 5_000);
+    queueMicrotask(recompute);
+    return () => clearInterval(id);
   }, [status, lastHeartbeatAt]);
 
   const handleRerun = onRerun

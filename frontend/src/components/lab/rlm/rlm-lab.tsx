@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect } from "react";
 import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
 import { useRlmRun } from "../../../hooks/use-rlm-run";
@@ -78,27 +78,24 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
   //
   // SSR-safety: `nowMs` starts as `null`, so the server-rendered markup and the
   // client's first hydration pass both compute elapsed = 0 against the same
-  // startedAtMs — no hydration mismatch. The useEffect below populates nowMs on
-  // mount (client-only), starting the tick. This avoids the classic
-  // "Date.now() during render differs server vs client" hydration error.
+  // startedAtMs — no hydration mismatch. The interval below populates nowMs on
+  // its first async tick (after mount), starting the visible clock. Because
+  // setNowMs runs inside the interval callback (not synchronously in the effect
+  // body), this does not violate the set-state-in-effect rule.
   const startedAtMs = useMemo(
     () => (runMeta.startedAt ? new Date(runMeta.startedAt).getTime() : null),
     [runMeta.startedAt]
   );
   const [nowMs, setNowMs] = useState<number | null>(null);
-  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (startedAtMs === null) return;
-    setNowMs(Date.now());
-    tickRef.current = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => {
-      if (tickRef.current !== null) clearInterval(tickRef.current);
-    };
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
   }, [startedAtMs]);
   const elapsedMs = useMemo(() => {
     if (startedAtMs !== null) {
       // SSR + first client render: nowMs === null → render 0; matches server.
-      // After mount the interval populates nowMs and the display ticks.
+      // After mount the store yields Date.now() each second and the display ticks.
       return nowMs === null ? 0 : Math.max(0, nowMs - startedAtMs);
     }
     // Fallback: derive from first/last event timestamps (static, SSR-safe).

@@ -198,13 +198,15 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       // auto-resume effect (or will be seeded below from the current run).
       // Clearing here would wipe them — so only clear for live runs.
       const isTerminal = run?.status === "failed" || run?.status === "completed" || run?.status === "stopped";
+      // Defer dashboard-event mutation past this effect's commit — keeps the
+      // setState out of the effect body so the React Compiler can still
+      // memoize this hook (set-state-in-effect rule).
       if (!isTerminal) {
-        setDashboardEvents([]);
+        queueMicrotask(() => setDashboardEvents([]));
       } else {
-        // Navigation to a terminal run: seed from payload.events if present.
         const rawEvents = Array.isArray(run?.payload?.events) ? run.payload.events : [];
         const rlmEvents = rawEvents.filter(isRlmEvent) as DashboardLiveEvent[];
-        setDashboardEvents(rlmEvents);
+        queueMicrotask(() => setDashboardEvents(rlmEvents));
       }
     }
 

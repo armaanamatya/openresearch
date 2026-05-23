@@ -11,7 +11,7 @@
  * a real event replaces it.
  */
 
-import { useMemo, useState, useCallback, useRef } from "react";
+import { useMemo, useState, useCallback } from "react";
 import type { RlmDashboardEvent } from "../lib/events/rlm-events";
 
 export interface ChatMessage {
@@ -36,17 +36,16 @@ export function useSteeringChat(
   const [error, setError] = useState<string | null>(null);
   // Optimistic messages keyed by a locally-generated id, removed when replaced.
   const [optimistic, setOptimistic] = useState<ChatMessage[]>([]);
-  // Track content of confirmed server-echoed user messages so we can drop
-  // the matching optimistic entry. We use the content string as the key because
-  // the backend echo event has no client-side id.
-  const confirmedContents = useRef<Set<string>>(new Set());
 
-  // Derive confirmed messages from the event stream.
-  const serverMessages = useMemo<ChatMessage[]>(() => {
+  // Derive confirmed server messages and a content-set in a single pass over
+  // `events`. Deriving (rather than accumulating via a ref) keeps the hook
+  // pure: every render computes from the same input, no mutation during render.
+  const { serverMessages, confirmedContents } = useMemo(() => {
     const out: ChatMessage[] = [];
+    const confirmed = new Set<string>();
     for (const ev of events) {
       if (ev.event === "user_message") {
-        confirmedContents.current.add(ev.content);
+        confirmed.add(ev.content);
         out.push({
           id: `server-user-${ev.timestamp}`,
           role: "user",
@@ -62,21 +61,15 @@ export function useSteeringChat(
         });
       }
     }
-    return out;
+    return { serverMessages: out, confirmedContents: confirmed };
   }, [events]);
 
-  // Drop optimistic entries whose content has been confirmed by an SSE echo.
-  const pendingOptimistic = useMemo(
-    () => optimistic.filter((m) => !confirmedContents.current.has(m.content)),
-    [optimistic]
-  );
-
-  // Merge: server messages first (in stream order), then any still-pending
-  // optimistic messages appended at the end so they appear newest-last.
-  const messages = useMemo<ChatMessage[]>(
-    () => [...serverMessages, ...pendingOptimistic],
-    [serverMessages, pendingOptimistic]
-  );
+  // Merge: server messages first (stream order), then any optimistic entry
+  // whose content the server hasn't echoed yet.
+  const messages = useMemo<ChatMessage[]>(() => {
+    const pending = optimistic.filter((m) => !confirmedContents.has(m.content));
+    return [...serverMessages, ...pending];
+  }, [serverMessages, confirmedContents, optimistic]);
 
   const send = useCallback(
     async (content: string) => {

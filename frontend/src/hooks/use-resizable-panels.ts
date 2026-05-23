@@ -81,7 +81,10 @@ export function useResizablePanels() {
 
   // ── Mount: read localStorage + set up matchMedia listeners ──────────────
   useEffect(() => {
-    setSizes(readStorage());
+    // Defer the storage-derived state update past the effect's commit so it
+    // doesn't run synchronously inside the effect body (which the React
+    // Compiler flags as a cascading-render smell).
+    queueMicrotask(() => setSizes(readStorage()));
 
     const mq1200 = window.matchMedia("(max-width: 1199px)");
     const mq900  = window.matchMedia("(max-width: 899px)");
