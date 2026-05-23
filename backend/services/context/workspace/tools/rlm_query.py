@@ -481,10 +481,46 @@ class ClaudeLlmClient:
         self._max_turns = max_turns
 
     def complete(self, *, system: str, user: str) -> str:
-        """Synchronous wrapper around the async claude-agent-sdk query."""
-        import asyncio
+        """Synchronous wrapper around the async claude-agent-sdk query.
 
-        return asyncio.run(self._async_complete(system=system, user=user))
+        Loop-safe: if called from inside a running event loop, the async work
+        runs in a fresh-loop worker thread (mirrors
+        ``hermes_audit/providers.py::ClaudeCodeSdkProvider.call``). Otherwise
+        ``asyncio.run`` is used directly.
+
+        This guard makes ``ClaudeLlmClient`` safe to call from any context —
+        sync callers, async callers, REPL worker threads, primitive
+        implementations — without forcing every consumer to remember to
+        wrap it in ``asyncio.to_thread``.
+        """
+        import asyncio
+        import concurrent.futures
+
+        coro_factory = lambda: self._async_complete(system=system, user=user)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is not None and running.is_running():
+            # Inside a running event loop — run on a worker thread with its
+            # own loop so the SDK's nested-generator aclose race + WSL2
+            # futex hang (see docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md)
+            # stays trapped in the worker, not the caller's loop.
+            # `shutdown(wait=False)` so a hung worker can be abandoned without
+            # blocking the caller's loop (matches the rdr Workaround B fix in
+            # commit 33c787d).
+            ex = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="rlm-query-sdk-worker"
+            )
+            try:
+                future = ex.submit(lambda: asyncio.run(coro_factory()))
+                return future.result()
+            finally:
+                ex.shutdown(wait=False)
+
+        return asyncio.run(coro_factory())
 
     async def _async_complete(self, *, system: str, user: str) -> str:
         from claude_agent_sdk import (
