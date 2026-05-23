@@ -156,7 +156,7 @@ class TestWorkspaceClaimMapHasRubricSpec:
             return result
 
         monkeypatch.setattr(
-            "backend.agents.pipeline.run_pipeline_rlm",
+            "backend.agents.rlm.run.run_pipeline_rlm",
             _fake_run_pipeline_rlm,
         )
         # Patch ensure_sandbox_mode_available to no-op.
