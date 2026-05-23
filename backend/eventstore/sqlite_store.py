@@ -123,7 +123,12 @@ def _new_connection(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA foreign_keys=OFF")
-    conn.execute("PRAGMA busy_timeout=5000")
+    # 2026-05-23: bumped from 5_000 → 30_000 ms. Two parallel /runs/arxiv ingests
+    # overlap their heavy parser+indexer writes; 5s was insufficient. With WAL +
+    # BEGIN IMMEDIATE below, this gives concurrent writers a 30s window to
+    # serialize cleanly instead of erroring with "database is locked". A2 of the
+    # 2026-05-23 paper sweep died at ingest because of this.
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -208,7 +213,11 @@ class SqliteEventStore(EventStore):
 
         conn = self._conn()
         try:
-            conn.execute("BEGIN")
+            # 2026-05-23: BEGIN IMMEDIATE (was BEGIN, i.e. BEGIN DEFERRED) so
+            # writers acquire RESERVED upfront and serialize cleanly under
+            # busy_timeout. DEFERRED + concurrent ingest = SQLITE_BUSY on the
+            # SHARED→RESERVED upgrade and the parallel paper sweep died.
+            conn.execute("BEGIN IMMEDIATE")
 
             # Check for whole-batch duplicate event_ids: every id already
             # in store with matching aggregate (idempotent re-emit) -> no-op.
@@ -419,7 +428,11 @@ class SqliteEventStore(EventStore):
         """
         conn = self._conn()
         try:
-            conn.execute("BEGIN")
+            # 2026-05-23: BEGIN IMMEDIATE (was BEGIN, i.e. BEGIN DEFERRED) so
+            # writers acquire RESERVED upfront and serialize cleanly under
+            # busy_timeout. DEFERRED + concurrent ingest = SQLITE_BUSY on the
+            # SHARED→RESERVED upgrade and the parallel paper sweep died.
+            conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 """
                 DELETE FROM event_store_events
