@@ -38,7 +38,7 @@ class LeaderboardRow(BaseModel):
     paper_title: str | None
     mode: Literal["rlm", "rdr"] = "rlm"
     models: RoleModels = Field(default_factory=RoleModels)
-    overall_score: float
+    overall_score: float | None
     meets_target: bool
     degraded: bool
     cost_usd: float | None
@@ -81,10 +81,11 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
             wall_clock_s = None
 
     # Honest score handling: the post-fix C2c default is `None` (no fabrication).
-    # Treat None as 0.0 for the ranking key, but propagate None on the row so the
-    # UI can tell the difference between "scored 0" and "not scored".
+    # Propagate None on the row so the UI can tell the difference between
+    # "scored 0" and "not scored". The aggregator's sort_key coerces None to
+    # the lowest rank below.
     score_raw = rubric.get("overall_score")
-    overall_score = float(score_raw) if score_raw is not None else 0.0
+    overall_score: float | None = float(score_raw) if score_raw is not None else None
 
     return LeaderboardRow(
         project_id=run_dir.name,
@@ -138,7 +139,8 @@ def aggregate_leaderboard(
 
     def _sort_key(r: LeaderboardRow):
         if order_by == "score":
-            return -r.overall_score
+            # Push None scores to the bottom; rank scored runs by -score (desc).
+            return (r.overall_score is None, -(r.overall_score or 0.0))
         if order_by == "cost":
             return (r.cost_usd is None, r.cost_usd if r.cost_usd is not None else 0.0)
         if order_by == "time":

@@ -14,7 +14,7 @@ export interface LeaderboardRow {
     verifier: string | null;
     grader: string | null;
   };
-  overall_score: number;
+  overall_score: number | null;
   meets_target: boolean;
   degraded: boolean;
   cost_usd: number | null;
@@ -168,7 +168,7 @@ export function LeaderboardTable({ rows }: LeaderboardTableProps) {
                 <td>{r.models.planner ?? <Dash />}</td>
                 <td>{r.models.executor ?? <Dash />}</td>
                 <td className={`${styles.numeric} ${scoreCls}`.trim()}>
-                  {r.overall_score.toFixed(2)}
+                  {r.overall_score !== null ? r.overall_score.toFixed(2) : <Dash />}
                 </td>
                 <td className={styles.numeric}>
                   {r.cost_usd !== null ? `$${r.cost_usd.toFixed(2)}` : <Dash />}

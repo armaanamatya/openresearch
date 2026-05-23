@@ -168,6 +168,39 @@ def test_aggregate_order_by_cost(tmp_path: Path):
     assert [r.project_id for r in rows] == ["b", "a"]
 
 
+def test_aggregate_propagates_null_score_not_zero(tmp_path: Path):
+    """A run that exited before scoring (rubric.overall_score is null) must
+    surface as overall_score=None on the leaderboard row — not coerced to 0.0
+    — so the UI can tell 'not scored' apart from 'scored zero'."""
+    d = tmp_path / "prj_unscored"
+    d.mkdir()
+    (d / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "p1", "title": "P"},
+        "verdict": "failed",
+        "reproduction_summary": "x",
+        "baseline_metrics": {},
+        "paper_claims": {},
+        "rubric": {"overall_score": None, "meets_target": None, "areas": []},
+        "improvements": [],
+        "primitive_trace": {},
+        "cost": {"llm_usd": None, "primitives": 0.0},
+        "iterations": 0,
+    }))
+    (d / "demo_status.json").write_text("{}")
+
+    rows = aggregate_leaderboard(tmp_path)
+    assert len(rows) == 1
+    assert rows[0].overall_score is None
+    # Sort key must put None scores at the bottom — adding a scored run
+    # should keep the scored row first.
+    _write_run(tmp_path, "scored", paper_id="p1", paper_title="P",
+               overall_score=0.42, cost_usd=1.0, iterations=1,
+               planner=None, executor=None)
+    rows = aggregate_leaderboard(tmp_path, order_by="score")
+    assert rows[0].project_id == "scored"
+    assert rows[1].project_id == "prj_unscored"
+
+
 def test_aggregate_computes_wall_clock_from_timestamps(tmp_path: Path):
     _write_run(tmp_path, "a", paper_id="p1", paper_title="P",
                overall_score=0.5, cost_usd=1, iterations=1,
