@@ -536,6 +536,47 @@ def test_amend_final_report_preserves_in_loop_areas(tmp_path):
     ]
 
 
+def test_amend_final_report_rerenders_when_report_lacks_optional_schema_fields(tmp_path):
+    """Symptom: a schema addition to RLMFinalReport silently broke markdown re-render.
+
+    The prior guard used `RLMFinalReport.model_fields.issubset(report.keys())`
+    — when the schema grew (T21 added primitive_provider + degraded), every
+    existing on-disk report fell out of the subset and the markdown was never
+    re-rendered (regression discovered by test_amend_final_report_rerenders_markdown).
+    Verify: a report dict missing the new optional fields still gets re-rendered.
+    """
+    import json
+    from backend.evals.paperbench.leaf_scorer import amend_final_report
+
+    # A minimal RLM-mode report missing the T21 fields (primitive_provider, degraded).
+    minimal = {
+        "verdict": "reproduced",
+        "baseline_metrics": {},
+        "paper": {"id": "x", "title": "Test"},
+        "paper_claims": {},
+        "rubric": {"overall_score": 0.0, "meets_target": False, "areas": []},
+        "improvements": [],
+        "primitive_trace": {"calls": 0, "by_primitive": {}},
+        "cost": {"llm_usd": 0.0, "primitives": 0.0},
+        "iterations": 0,
+        "reproduction_summary": "",
+    }
+    (tmp_path / "final_report.json").write_text(json.dumps(minimal), encoding="utf-8")
+    (tmp_path / "final_report.md").write_text("# REPRODUCED\nold content\n", encoding="utf-8")
+
+    amend_final_report(tmp_path, {
+        "overall_score": 0.0, "leaf_count": 10, "graded": 10,
+        "rubric_source": "paperbench_bundle", "leaf_scores": [],
+        "degraded": False, "target_score": 0.0,
+    })
+
+    md = (tmp_path / "final_report.md").read_text(encoding="utf-8")
+    # The re-render must have run — the original "old content" line is gone.
+    assert "old content" not in md, (
+        "markdown re-render did not run on a report missing optional schema fields"
+    )
+
+
 def test_is_degraded_run_caps_failed_verdict_even_with_metrics(tmp_path):
     """Symptom: a verdict='failed' run with metrics escapes the 0.35 honesty cap.
 

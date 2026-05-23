@@ -91,6 +91,12 @@ def roll_up(node: dict[str, Any], leaf_scores: dict[str, float]) -> float:
 
 DEGRADED_LEAF_CEILING: float = 0.35
 
+# Minimal field set that distinguishes an RLM-mode final_report from an SDK-mode
+# one. Used by _rerender_report_markdown to detect RLM reports without requiring
+# ALL RLMFinalReport fields — that prior approach re-broke every time the schema
+# gained a new field (regression of T21: primitive_provider + degraded added).
+_RLM_SIGNATURE_FIELDS: frozenset[str] = frozenset({"verdict", "baseline_metrics", "paper", "rubric"})
+
 
 def _is_degraded_run(run_dir: Path) -> bool:
     """Decide whether the run produced no measured metrics.
@@ -455,10 +461,12 @@ def _rerender_report_markdown(run_dir: Path, report: dict[str, Any]) -> None:
         # Lazy import — keeps backend.evals import-light and breaks no cycle.
         from backend.agents.rlm.report import RLMFinalReport, _render_markdown
 
-        fields = set(RLMFinalReport.model_fields)
-        if not fields.issubset(report.keys()):
+        # Detect RLM-mode reports by signature fields, not by full-set equality —
+        # the schema can grow without breaking this re-render path (regression of T21).
+        if not _RLM_SIGNATURE_FIELDS.issubset(report.keys()):
             return  # not an RLM-mode report — leave its markdown untouched
-        obj = RLMFinalReport(**{k: v for k, v in report.items() if k in fields})
+        all_fields = set(RLMFinalReport.model_fields)
+        obj = RLMFinalReport(**{k: v for k, v in report.items() if k in all_fields})
         md = _render_markdown(obj)
     except Exception as exc:  # noqa: BLE001 — markdown refresh is best-effort
         logger.warning(
