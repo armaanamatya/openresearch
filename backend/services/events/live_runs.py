@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk", "rlm", "rdr"]
+RunMode = Literal["rlm", "rdr"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -36,7 +36,7 @@ _MODEL_IDS: dict[str, str] = {
 
 
 class StartRunRequest(BaseModel):
-    mode: RunMode = "offline"
+    mode: RunMode = "rlm"
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "efficient"
@@ -224,7 +224,7 @@ class FileLiveRunService:
         if status is None:
             return None
         merged = {
-            "mode": status.get("runMode", "offline"),
+            "mode": status.get("runMode", "rlm"),
             "provider": status.get("llmProvider", "anthropic"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode", "efficient"),
@@ -452,7 +452,7 @@ class FileLiveRunService:
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,
-                    **({"REPROLAB_LLM_PROVIDER": request.provider} if request.mode in ("sdk", "rlm") else {}),
+                    "REPROLAB_LLM_PROVIDER": request.provider,
                     **(
                         {"REPROLAB_VERIFICATION_PROVIDER": request.verificationProvider}
                         if request.verificationProvider
@@ -853,7 +853,7 @@ class FileLiveRunService:
             "projectId": project_id,
             "outputDir": status.get("outputDir") or str(self.runs_root / project_id),
             "sourceKind": status.get("sourceKind") or "workspace_fixture",
-            "runMode": status.get("runMode") or "offline",
+            "runMode": status.get("runMode") or "rlm",
             "llmProvider": status.get("llmProvider"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode"),
@@ -873,7 +873,7 @@ class FileLiveRunService:
                 "stage": stage,
                 "meanReward": _mean_reward(pipeline_state),
                 "improvementCount": len((pipeline_state or {}).get("path_results") or []),
-                "runModeLabel": _run_mode_label(meta["runMode"], meta.get("llmProvider")),
+                "runModeLabel": _run_mode_label(meta.get("llmProvider")),
                 "llmProvider": meta.get("llmProvider"),
                 "verificationProvider": meta.get("verificationProvider"),
                 "executionMode": meta.get("executionMode"),
@@ -1117,15 +1117,78 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
         return False
 
 
+def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
+    """Build the benchmark summary from final_report.json, RLM- or SDK-schema-aware.
+
+    Returns ``{"benchmark": <dict>}`` on success or ``{"benchmark": None}`` when
+    the report is missing or unparseable.  The two schemas are auto-detected:
+
+    * **RLM** — presence of ``"baseline_metrics"`` or ``"verdict"`` (without the
+      SDK-only ``"rubric_overall_score"`` float key).
+    * **SDK** — presence of ``"rubric_overall_score"`` or other SDK-only keys.
+    """
+    report_path = run_dir / "final_report.json"
+    if not report_path.exists():
+        return {"benchmark": None}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {"benchmark": None}
+    if not isinstance(report, dict):
+        return {"benchmark": None}
+
+    # RLM schema detector: has "verdict" string + "rubric" dict but NOT the
+    # SDK-only "rubric_overall_score" float key.
+    is_rlm = (
+        isinstance(report.get("verdict"), str)
+        and isinstance(report.get("rubric"), dict)
+        and "rubric_overall_score" not in report
+    ) or "baseline_metrics" in report
+
+    if is_rlm:
+        rubric = report.get("rubric") or {}
+        cost = report.get("cost") or {}
+        return {
+            "benchmark": {
+                "verdict": report.get("verdict", ""),
+                "rubric_score": rubric.get("overall_score"),
+                "metrics": report.get("baseline_metrics") or {},
+                "cost_usd": cost.get("llm_usd"),
+            }
+        }
+
+    # Legacy SDK schema — preserve existing behaviour.
+    rv = report.get("rubric_verification") or {}
+    base_rv = report.get("baseline_rubric_verification") or {}
+    return {
+        "benchmark": {
+            "overallScore": round((report.get("rubric_overall_score") or 0.0) * 100, 1),
+            "targetMetric": report.get("primary_metric"),
+            "targetValue": report.get("paper_primary_target"),
+            "reproducedValue": report.get("reproduction_primary_value"),
+            "deltaValue": report.get("reproduction_delta_vs_paper"),
+            "verdict": report.get("reproduction_status"),
+            "reproductionScore": report.get("reproduction_score"),
+            "rubricOverallScore": report.get("rubric_overall_score"),
+            "bestPathId": report.get("best_path_id"),
+            "bestImprovementPct": report.get("best_overall_improvement_pct"),
+            "paperbenchBaseline": report.get("paperbench_baseline"),
+            "ourRubricScore": rv.get("overall_score"),
+            "verificationDelta": report.get("verification_delta"),
+            "improvementIterations": report.get("improvement_iterations") or 0,
+            "meetsTarget": rv.get("meets_target"),
+            "comparisonSummary": report.get("comparison_summary") or "",
+            "rubricAreas": rv.get("areas") or [],
+            "baselineRubricAreas": base_rv.get("areas") or [],
+            "source": "computed_final_report",
+        }
+    }
+
+
 def _fixture_project_id(request: StartRunRequest) -> str:
-    review = request.verificationProvider or "same"
-    if request.mode == "sdk":
-        return f"ui_sdk_{request.provider}_review_{review}_demo_{int(datetime.now().timestamp() * 1000)}"
-    if request.mode == "rlm":
-        # A4-4: rlm runs get a distinct prefix so the provider is recoverable
-        # from the project_id and IDs cannot collide with offline/sdk runs.
-        return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
-    return f"ui_demo_{int(datetime.now().timestamp() * 1000)}"
+    # A4-4: rlm runs get a distinct prefix so the provider is recoverable
+    # from the project_id and IDs cannot collide with legacy run IDs.
+    return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
 
 
 def _initial_status(
@@ -1152,10 +1215,6 @@ def _initial_status(
         "startedAt": now,
         "updatedAt": now,
     }
-    if request.mode == "sdk":
-        status["llmProvider"] = request.provider
-        if request.verificationProvider:
-            status["verificationProvider"] = request.verificationProvider
     if uploaded_paper:
         status.update(
             {
@@ -1384,8 +1443,8 @@ try:
             "agent": "default",
             "mode": config["run_mode"],
             "model": config["model"],
-            "provider": config["provider"] if config["run_mode"] in ("sdk", "rlm") else None,
-            "verification_provider": config["verification_provider"] if config["run_mode"] == "sdk" else None,
+            "provider": config["provider"],
+            "verification_provider": None,
             "execution_mode": config["execution_mode"],
             "sandbox": config["sandbox"],
             "gpu_mode": config["gpu_mode"],
@@ -1400,16 +1459,16 @@ try:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
         profile = ExecutionProfile.from_mode(config["execution_mode"], gpu_mode=config["gpu_mode"])
+        # A4-7: build run_budget once from threaded-through config fields so
+        # an API-set budget is honored on both the rlm and rdr paths.
+        _run_budget = None
+        if config["max_usd"] is not None or config["max_wall_clock"] is not None:
+            from backend.agents.resilience import RunBudget
+            _run_budget = RunBudget(
+                max_usd=config["max_usd"],
+                max_wall_clock_seconds=config["max_wall_clock"],
+            )
         if config["run_mode"] == "rlm":
-            # A4-7: build run_budget from threaded-through config fields so
-            # an API-set budget is honored in the non-uploaded rlm path.
-            _run_budget = None
-            if config["max_usd"] is not None or config["max_wall_clock"] is not None:
-                from backend.agents.resilience import RunBudget
-                _run_budget = RunBudget(
-                    max_usd=config["max_usd"],
-                    max_wall_clock_seconds=config["max_wall_clock"],
-                )
             asyncio.run(run_pipeline_rlm(
                 project_id,
                 runs_root,
@@ -1607,14 +1666,12 @@ def _mean_reward(pipeline_state: dict[str, Any] | None) -> float | int | None:
     return value if isinstance(value, (float, int)) else None
 
 
-def _run_mode_label(run_mode: Any, provider: Any) -> str:
-    if run_mode != "sdk":
-        return "Offline"
+def _run_mode_label(provider: Any) -> str:
     if provider == "openai":
-        return "SDK: OpenAI"
+        return "RLM: OpenAI"
     if provider == "anthropic":
-        return "SDK: Anthropic"
-    return "SDK"
+        return "RLM: Anthropic"
+    return "RLM"
 
 
 def _pid_exists(pid: Any) -> bool:
@@ -1668,6 +1725,7 @@ __all__ = [
     "FileLiveRunService",
     "LiveRunState",
     "StartRunRequest",
+    "finalize_benchmark",
     "project_id_for_pdf_path",
     "sse_event",
 ]

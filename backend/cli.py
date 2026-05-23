@@ -7,7 +7,7 @@
   $ python -m backend.cli inspect <project_id> [--variable VAR]
       Prints the materialized workspace state.
 
-  $ python -m backend.cli reproduce <pdf-path> [--mode offline|sdk]
+  $ python -m backend.cli reproduce <pdf-path> [--mode rlm]
       Full pipeline: ingest paper -> build workspace -> run agent pipeline.
 
 This is a thin sequential composer: it wires Intake -> Parser ->
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -27,6 +28,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from backend.agents.execution import DEFAULT_SANDBOX_MODE
 from backend.config import get_settings
@@ -79,23 +82,20 @@ _ARXIV_RE = re.compile(
 
 
 def _build_workspace_claim_map(
-    variables: dict, project_id: str, mode: str, runs_root: Path | None = None
+    variables: dict, project_id: str, runs_root: Path | None = None
 ) -> dict:
     """Build the workspace claim map handed to a run.
 
-    `variables` is the workspace view's `{name: Cited}` dict. SDK/offline modes
-    truncate each excerpt to 600 chars (the excerpt goes into an LLM prompt).
+    `variables` is the workspace view's `{name: Cited}` dict.
 
-    RLM mode offloads the paper whole into the REPL `context` variable, never a
-    prompt (rlm-pivot-brief.md §7). It sources the corpus, in order: (1)
-    `parsed_full_text.txt` — the parser's direct full-text output, the clean
-    source of truth; (2) the workspace `paper_text` variable; (3) one entry per
-    variable. The workspace variable is reassembled from indexed chunks and has
-    been observed to lose content, so the parser blob is preferred.
+    The RLM orchestrator is the only pipeline. It offloads the paper whole
+    into the REPL `context` variable, never a prompt (rlm-pivot-brief.md §7).
+    Sources the corpus in order: (1) `parsed_full_text.txt` — the parser's
+    direct full-text output, the clean source of truth; (2) the workspace
+    `paper_text` variable; (3) one entry per variable. The workspace variable
+    is reassembled from indexed chunks and has been observed to lose content,
+    so the parser blob is preferred.
     """
-    def _truncate(text: str, max_chars: int = 600) -> str:
-        return text if len(text) <= max_chars else text[:max_chars] + "..."
-
     def _value_str(cited: Any) -> str:
         return (
             cited.value if isinstance(cited.value, str)
@@ -111,46 +111,46 @@ def _build_workspace_claim_map(
             ],
         }
 
-    if mode == "rlm":
-        # 1. parsed_full_text.txt — the parser's clean, complete output.
-        if runs_root is not None:
-            blob = Path(runs_root) / project_id / "parsed_full_text.txt"
+    # Phase 6: RLM is the only run mode; drop the `if mode == "rlm":` wrapper
+    # and use the same 3-tier resolution unconditionally. Keep main's parser-
+    # failure warnings (post-honesty improvement, not present in 295ab4e).
+    # 1. parsed_full_text.txt — the parser's clean, complete output.
+    if runs_root is not None:
+        blob = Path(runs_root) / project_id / "parsed_full_text.txt"
+        if not blob.exists():
+            logger.warning(
+                "parsed_full_text.txt missing — parser likely failed; "
+                "falling back to workspace variable (lossy)"
+            )
+            blob_text = ""
+        else:
             try:
                 blob_text = blob.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 blob_text = ""
-            if blob_text.strip():
-                return _one_entry(blob_text)
-        # 2. The workspace `paper_text` variable.
-        paper_cited = variables.get("paper_text")
-        if paper_cited is not None:
-            val = paper_cited.value
-            if isinstance(val, dict) and isinstance(val.get("text"), str):
-                full_text = val["text"]
-            elif isinstance(val, str):
-                full_text = val
-            else:
-                full_text = None
-            if full_text is not None:
-                return _one_entry(full_text)
-        # 3. Fallback: one entry per variable, un-truncated.
-        return {
-            "project_id": project_id,
-            "entries": [
-                {"source_id": name, "title": name, "excerpt": _value_str(cited)}
-                for name, cited in variables.items()
-            ],
-        }
-
-    # SDK / offline: one entry per variable, truncated to keep LLM prompt manageable.
+            if not blob_text.strip():
+                logger.warning(
+                    "parsed_full_text.txt is empty — parser likely failed"
+                )
+        if blob_text.strip():
+            return _one_entry(blob_text)
+    # 2. The workspace `paper_text` variable.
+    paper_cited = variables.get("paper_text")
+    if paper_cited is not None:
+        val = paper_cited.value
+        if isinstance(val, dict) and isinstance(val.get("text"), str):
+            full_text = val["text"]
+        elif isinstance(val, str):
+            full_text = val
+        else:
+            full_text = None
+        if full_text is not None:
+            return _one_entry(full_text)
+    # 3. Fallback: one entry per variable, un-truncated.
     return {
         "project_id": project_id,
         "entries": [
-            {
-                "source_id": name,
-                "title": name,
-                "excerpt": _truncate(_value_str(cited)),
-            }
+            {"source_id": name, "title": name, "excerpt": _value_str(cited)}
             for name, cited in variables.items()
         ],
     }
@@ -371,83 +371,6 @@ def _summarize_value(value: object) -> object:
     return value
 
 
-def cmd_eval(args: argparse.Namespace) -> int:
-    """Evaluate a completed pipeline run (reproduction + innovation)."""
-    from backend.agents.orchestrator import PipelineState
-    from backend.evals import EvalRunner, EvalStore
-    from backend.evals.runner import print_innovation_report, print_reproduction_report
-
-    runs_root = Path(args.runs_root)
-    state = PipelineState.load_checkpoint(runs_root, args.project_id)
-    if state is None:
-        print(f"No pipeline state found for {args.project_id}", file=sys.stderr)
-        return 2
-
-    store = EvalStore(args.db)
-    runner = EvalRunner(store=store)
-
-    # Parse paper metrics
-    paper_metrics: dict[str, float] = {}
-    if args.paper_metrics:
-        paper_metrics = json.loads(args.paper_metrics)
-    elif state.experiment_artifacts and state.experiment_artifacts.metrics:
-        # Default: use experiment's own metrics as ground truth (self-comparison)
-        paper_metrics = {
-            k: v for k, v in state.experiment_artifacts.metrics.items()
-            if isinstance(v, (int, float))
-        }
-
-    # Run reproduction eval
-    repro = runner.evaluate_reproduction(
-        state, paper_metrics, version=args.version, paper_id=args.project_id,
-    )
-    print_reproduction_report(repro)
-
-    # Run innovation eval if improvements exist
-    if state.improvement_hypotheses and state.research_map:
-        innov = runner.evaluate_innovation(state, version=args.version, paper_id=args.project_id)
-        print_innovation_report(innov)
-
-    store.close()
-
-    # JSON output
-    result = {
-        "project_id": args.project_id,
-        "version": args.version,
-        "reproduction_composite": repro.composite_score(),
-        "innovation_hypothesis_quality": (
-            innov.mean_hypothesis_quality() if state.improvement_hypotheses else None
-        ),
-        "innovation_integrity_pass_rate": (
-            innov.integrity_pass_rate() if state.improvement_hypotheses else None
-        ),
-    }
-    json.dump(result, sys.stdout, indent=2)
-    sys.stdout.write("\n")
-    return 0
-
-
-def _resolve_sdk_providers(
-    args: argparse.Namespace,
-) -> tuple[str | None, str | None]:
-    if getattr(args, "mode", None) != "sdk":
-        return None, None
-
-    from backend.agents.runtime import selected_provider, validate_provider_credentials
-
-    provider = selected_provider(getattr(args, "provider", None))
-    requested_verification_provider = getattr(args, "verification_provider", None)
-    verification_provider = (
-        selected_provider(requested_verification_provider)
-        if requested_verification_provider
-        else None
-    )
-    if provider == "openai":
-        validate_provider_credentials(provider)
-    if verification_provider == "openai":
-        validate_provider_credentials(verification_provider)
-    return provider, verification_provider
-
 
 _REPRODUCE_DEFAULTS = {
     "database_url": get_settings().database_url,
@@ -471,11 +394,13 @@ _REPRODUCE_DEFAULTS = {
     "sandbox_cpus": None,
     "max_usd": None,
     "max_wall_clock": None,
+    "max_pod_seconds": None,
     "max_invocations": None,
     "seed": None,
     "attempt_id": None,
     "run_group_id": None,
     "blacklist": None,
+    "project_id": None,
 }
 
 
@@ -741,6 +666,9 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
+    # The RLM orchestrator is the only pipeline; defensively ignore any stale
+    # mode value an external/CLI caller may still pass.
+    args.mode = "rlm"
     # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
     # module gets a chance to emit. This is the *subprocess* hot path
     # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),
@@ -763,20 +691,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     if args.mode == "rlm" and _is_paperbench_bundle_id(args.source, runs_root):
         return _cmd_reproduce_rlm_paperbench(args, runs_root)
 
-    from backend.agents.runtime import ProviderConfigurationError
-
-    try:
-        provider, verification_provider = _resolve_sdk_providers(args)
-    except ProviderConfigurationError as exc:
-        print(f"SDK provider preflight failed: {exc}", file=sys.stderr)
-        if getattr(args, "mode", None) == "sdk":
-            print(
-                "Set the matching provider key, choose --provider anthropic "
-                "when Claude Code session auth is available, or use "
-                "--mode offline for a deterministic local run.",
-                file=sys.stderr,
-            )
-        return 2
+    provider = getattr(args, "provider", None)
+    verification_provider = getattr(args, "verification_provider", None)
 
     # --- Phase 1: Ingest ---
     store, intake, parser, discovery, indexer, workspace = _make_services(
@@ -799,6 +715,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
     project_id = intake.register_project(RegisterProject(source=source))
+    # T15 / handoff P1-I8: when the REST API spawns the CLI it passes --project-id
+    # so the CLI writes to the same runs/<id>/ directory the API watches.  The
+    # override replaces the source-derived id *after* registration so the event-
+    # store aggregate (keyed by the source-derived id) is still created correctly.
+    if getattr(args, "project_id", None):
+        project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
 
     print("[ingest 2/6] Fetching paper", file=sys.stderr)
@@ -828,7 +750,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     view = workspace.materialize_view(workspace_id)
 
     workspace_claim_map = _build_workspace_claim_map(
-        view.variables, project_id, args.mode, runs_root
+        view.variables, project_id, runs_root
     )
 
     print(f"\n{'='*60}", file=sys.stderr)
@@ -863,12 +785,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     run_budget = None
-    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations:
+    _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
+    if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations or _max_pod_seconds is not None:
         from backend.agents.resilience import RunBudget
 
         run_budget = RunBudget(
             max_usd=args.max_usd,
             max_wall_clock_seconds=args.max_wall_clock,
+            max_pod_seconds=_max_pod_seconds,
             max_invocations_per_agent=_max_invocations_from_arg(args.max_invocations),
         )
     sandbox_mode = resolve_sandbox_mode(args.sandbox, pipeline_mode=args.mode)
@@ -884,15 +808,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        if args.mode == "offline":
-            print(
-                "Error: --mode offline is no longer supported (backend.agents.pipeline was "
-                "removed in the RLM-only refactor). Use --mode rlm instead.",
-                file=sys.stderr,
-            )
-            store.close()
-            return 1
-        elif args.mode == "rlm":
+        if args.mode == "rlm":
             from backend.agents.rlm.run import run_pipeline_rlm
 
             rlm_result = asyncio.run(run_pipeline_rlm(
@@ -910,8 +826,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             ))
         else:
             print(
-                f"Error: --mode {args.mode!r} is no longer supported (backend.agents.pipeline "
-                "was removed in the RLM-only refactor). Use --mode rlm instead.",
+                f"Error: --mode {args.mode!r} is no longer supported "
+                "(backend.agents.pipeline was removed in the RLM-only refactor). "
+                "Use --mode rlm or --mode rdr instead.",
                 file=sys.stderr,
             )
             store.close()
@@ -946,49 +863,33 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     # Print final summary
     out_dir = runs_root / project_id
-    if args.mode == "rlm":
-        # RLMRunResult — no PipelineState fields
-        result = {
-            "project_id": rlm_result.project_id,
-            "status": rlm_result.status,
-            "output_dir": str(out_dir),
-            "iterations": rlm_result.iterations,
-            "rubric_score": rlm_result.rubric_score,
-            "cost_usd": rlm_result.cost_usd,
-            "final_report_path": rlm_result.final_report_path,
-            "execution_mode": execution_profile.mode.value,
-            "sandbox": sandbox_mode.value,
-        }
-        # A4-6: a budget-exhausted (or otherwise failed) rlm run must exit
-        # non-zero. run_pipeline_rlm never raises on budget breach — it
-        # returns status="failed" (set by Batch O). Return 3 to match the
-        # BudgetExhausted exit code used by the sdk path above.
-        if rlm_result.status == "failed":
-            json.dump(result, sys.stdout, indent=2)
-            sys.stdout.write("\n")
-            return 3
-    else:
-        result = {
-            "project_id": project_id,
-            "stage": state.stage.value,
-            "output_dir": str(out_dir),
-            "gates": {
-                "gate_1": state.gate_1.passed if state.gate_1 else None,
-                "gate_2": state.gate_2.passed if state.gate_2 else None,
-                "gate_3": state.gate_3.passed if state.gate_3 else None,
-            },
-            "assumptions": len(state.assumption_ledger),
-            "improvement_paths": len(state.path_results),
-            "research_map": state.research_map is not None,
-            "execution_mode": execution_profile.mode.value,
-            "sandbox": sandbox_mode.value,
-        }
+    # RLMRunResult — no PipelineState fields
+    result = {
+        "project_id": rlm_result.project_id,
+        "status": rlm_result.status,
+        "output_dir": str(out_dir),
+        "iterations": rlm_result.iterations,
+        "rubric_score": rlm_result.rubric_score,
+        "cost_usd": rlm_result.cost_usd,
+        "final_report_path": rlm_result.final_report_path,
+        "execution_mode": execution_profile.mode.value,
+        "sandbox": sandbox_mode.value,
+    }
+    # A4-6: a budget-exhausted (or otherwise failed) rlm run must exit
+    # non-zero. run_pipeline_rlm never raises on budget breach — it
+    # returns status="failed" (set by Batch O). Exit code 3 signals
+    # budget exhaustion to callers (same as BudgetExhausted exceptions).
+    if rlm_result.status == "failed":
+        json.dump(result, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 3
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """Build and return the reprolab argument parser (testable without calling main)."""
     parser = argparse.ArgumentParser(prog="reprolab")
     parser.add_argument(
         "--database-url",
@@ -1020,16 +921,6 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--variable", default=None, help="Print one variable's full payload.")
     inspect.set_defaults(func=cmd_inspect)
 
-    evaluate = sub.add_parser("eval", help="Evaluate a completed pipeline run.")
-    evaluate.add_argument("project_id", help="Project ID to evaluate.")
-    evaluate.add_argument("--version", default="dev", help="Agent version label.")
-    evaluate.add_argument(
-        "--paper-metrics", default=None,
-        help="JSON string of paper's reported metrics (e.g. '{\"mean_reward\": 500}').",
-    )
-    evaluate.add_argument("--db", default="evals.db", help="Eval store database path.")
-    evaluate.set_defaults(func=cmd_eval)
-
     reproduce = sub.add_parser("reproduce", help="Full pipeline: ingest + agent pipeline.")
     reproduce.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
     reproduce.add_argument(
@@ -1039,10 +930,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument("--agent", default="default", help="Agent name for the workspace.")
     reproduce.add_argument(
-        "--mode", choices=("offline", "sdk", "rlm", "rdr"), default="rlm",
-        help="Pipeline mode: 'rlm' (default) uses the RLM orchestrator (Recursive Language Models, arXiv 2512.24601), 'sdk' uses the legacy 14-stage SDK pipeline, 'offline' is deterministic, 'rdr' uses the rubric-driven harness on a PaperBench bundle.",
+        "--mode", choices=("rlm", "rdr"), default="rlm",
+        help="Pipeline mode: 'rlm' (default) uses the RLM orchestrator (Recursive Language Models, arXiv 2512.24601); 'rdr' uses the rubric-driven harness on a PaperBench bundle (see docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md). Legacy 'offline'/'sdk' modes were removed in the RLM-only refactor.",
     )
-    reproduce.add_argument("--model", default=None, help="Model override for SDK mode.")
+    reproduce.add_argument("--model", default=None, help="Model override for the RLM orchestrator.")
     reproduce.add_argument(
         "--provider",
         choices=("anthropic", "openai"),
@@ -1122,6 +1013,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum whole-run wall-clock seconds before blocking the next SDK invocation.",
     )
     reproduce.add_argument(
+        "--max-pod-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Maximum elapsed seconds a RunPod pod may run AFTER SSH connect "
+            "(not from POST /pods — boot time is not budgeted) before the next "
+            "exec() raises BudgetExhausted and the pod is force-destroyed. "
+            "Persistent pods (REPROLAB_RUNPOD_POD_ID) are NOT auto-deleted; "
+            "an ERROR log is emitted and manual cleanup is required. "
+            "Also read from REPROLAB_MAX_POD_SECONDS env var."
+        ),
+    )
+    reproduce.add_argument(
         "--max-invocations",
         default=None,
         help=(
@@ -1192,9 +1096,10 @@ def main(argv: list[str] | None = None) -> int:
         dest="project_id",
         default=None,
         help=(
-            "(rdr mode) explicit project_id / run directory name to use or resume. "
-            "Overrides the auto-generated timestamped name. "
-            "Useful when --resume should target a specific prior run."
+            "Override the project id (writes to runs/<project-id>/). When unset, "
+            "an id is derived from the paper source. Used by the REST API so the "
+            "spawned CLI writes to the directory the API watches (T15 / P1-I8). "
+            "In rdr mode, also used with --resume to target a specific prior run."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)
@@ -1202,6 +1107,11 @@ def main(argv: list[str] | None = None) -> int:
     from backend.cli_paperbench import add_paperbench_subparser
     add_paperbench_subparser(sub)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
 
@@ -1233,6 +1143,22 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _resolve_max_pod_seconds(cli_value: float | None) -> float | None:
+    """CLI flag wins; falls back to REPROLAB_MAX_POD_SECONDS env var.
+
+    Explicit None from the CLI (flag unset) triggers env fallback;
+    an explicit float value (including 0.0, the kill-switch) is honored
+    as-is. This is `is None`-checked rather than truthy-checked precisely
+    so that ``--max-pod-seconds 0`` does not silently fall through to env.
+    """
+    if cli_value is not None:
+        return cli_value
+    env_value = os.environ.get("REPROLAB_MAX_POD_SECONDS")
+    if env_value:
+        return float(env_value)
+    return None
 
 
 def _max_invocations_from_arg(raw: str | None) -> dict[str, int]:

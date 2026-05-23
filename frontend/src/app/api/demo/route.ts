@@ -5,9 +5,8 @@ import type {
   DemoExecutionMode,
   DemoGpuMode,
   DemoModelChoice,
-  DemoProvider,
-  LiveDemoRunState,
   DemoRunMode,
+  LiveDemoRunState,
   DemoSandboxMode
 } from "@/lib/demo/demo-run-types";
 import { backendBaseUrl, BACKEND_GET_TIMEOUT_MS, enrichOrTimeout } from "@/lib/demo/server-run";
@@ -40,16 +39,6 @@ function toProjectId(request: Request): string | undefined {
   return search(request).get("projectId") || undefined;
 }
 
-function toProvider(request: Request): DemoProvider | undefined {
-  const value = search(request).get("provider");
-  return value === "anthropic" || value === "openai" ? value : undefined;
-}
-
-function toVerificationProvider(request: Request): DemoProvider | undefined {
-  const value = search(request).get("verificationProvider");
-  return value === "anthropic" || value === "openai" ? value : undefined;
-}
-
 function toExecutionMode(request: Request): DemoExecutionMode | undefined {
   const value = search(request).get("executionMode");
   return value === "efficient" || value === "max" ? value : undefined;
@@ -77,16 +66,12 @@ function toModelChoice(request: Request): DemoModelChoice | undefined {
 function backendQuery(request: Request): URLSearchParams {
   const params = new URLSearchParams();
   const mode = toRunMode(request);
-  const provider = toProvider(request);
   const executionMode = toExecutionMode(request);
   const sandbox = toSandboxMode(request);
-  const verificationProvider = toVerificationProvider(request);
   const gpuMode = toGpuMode(request);
   if (mode) params.set("mode", mode);
-  if (provider) params.set("provider", provider);
   if (executionMode) params.set("executionMode", executionMode);
   if (sandbox) params.set("sandbox", sandbox);
-  if (verificationProvider) params.set("verificationProvider", verificationProvider);
   if (gpuMode) params.set("gpuMode", gpuMode);
   return params;
 }

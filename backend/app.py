@@ -16,7 +16,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend import __version__
-from backend.agents.topology import PipelineTopology, default_topology
 from backend.config import get_settings
 from backend.persistence.database import Database
 from backend.services.approval import ApprovalAction, ApprovalService, ApprovalState
@@ -361,7 +360,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if not safe_stem.lower().endswith(".pdf"):
             safe_stem = f"{safe_stem}.pdf"
         run_request = StartRunRequest(
-            mode=request.mode or "offline",
+            mode=request.mode or "rlm",
             provider=request.provider or "anthropic",
             verificationProvider=request.verificationProvider,
             executionMode=request.executionMode or "efficient",
@@ -395,7 +394,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="Upload a PDF before starting a lab run.")
         run_request = StartRunRequest(
-            mode=_form_value(form, "mode", "offline"),
+            mode=_form_value(form, "mode", "rlm"),
             provider=_form_value(form, "provider", "anthropic"),
             verificationProvider=_optional_form_value(form, "verificationProvider"),
             executionMode=_form_value(form, "executionMode", "efficient"),
@@ -542,14 +541,6 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         if result is None:
             raise HTTPException(status_code=404, detail="Run not found or scoring not complete")
         return result
-
-    # ------------------------------------------------------------------ #
-    # Pipeline topology (canonical graph metadata for the frontend)
-    # ------------------------------------------------------------------ #
-
-    @app.get("/pipeline/topology", response_model=PipelineTopology)
-    async def pipeline_topology() -> PipelineTopology:
-        return default_topology()
 
     # ------------------------------------------------------------------ #
     # Models (LLM choices surfaced in the upload-view dropdown)
@@ -725,7 +716,7 @@ class StartArxivRunRequest(BaseModel):
 
     All run-config fields are optional so the client only has to send the URL.
     Defaults are resolved server-side to mirror what the multipart upload path
-    provides (mode=offline, provider=anthropic, sandbox=<settings default>, …).
+    provides (mode=rlm, provider=anthropic, sandbox=<settings default>, …).
     """
 
     url: str = ""
