@@ -600,6 +600,144 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     return 0 if rdr_result.status in ("completed", "partial") else 3
 
 
+def _is_paperbench_bundle_id(source: str, runs_root: Path) -> bool:  # noqa: ARG001
+    """Return True when *source* names a vendored PaperBench bundle directory.
+
+    The source is treated as a bundle ID — not an arXiv/DOI/PDF — when it
+    matches a subdirectory inside ``third_party/paperbench/`` relative to the
+    repo root.  Absolute paths, arXiv IDs, and DOIs all fail this check and
+    fall through to the normal ingest pipeline.
+    """
+    # Repo root = the parent of the ``backend/`` package (two levels up from cli.py).
+    repo_root = Path(__file__).resolve().parent.parent
+    bundles_root = repo_root / "third_party" / "paperbench"
+    return (bundles_root / source).is_dir()
+
+
+def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> int:
+    """Dispatch ``--mode rlm`` on a vendored PaperBench bundle.
+
+    Mirror of ``_cmd_reproduce_rdr`` for the RLM path: the source arg is a
+    bundle paper_id, not an arXiv/DOI.  This lets callers use:
+
+        python -m backend.cli reproduce sequential-neural-score-estimation \\
+            --mode rlm --model claude-oauth --sandbox local
+
+    without needing the arxiv ID or a full ``scripts/rlm_paperbench.py`` invocation.
+    """
+    import re
+    import time
+
+    paper_id = args.source
+    project_id_override: str | None = getattr(args, "project_id", None)
+
+    def _safe(s: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_\-]", "_", s)
+
+    if project_id_override:
+        project_id = project_id_override
+    else:
+        project_id = f"pb_{_safe(paper_id)}_{int(time.time())}"[:80]
+
+    # Load bundle from the canonical third_party location.
+    repo_root = Path(__file__).resolve().parent.parent
+    bundles_root = repo_root / "third_party" / "paperbench"
+
+    from backend.evals.paperbench.bundle import load_paperbench_bundle, PaperBenchBundleError
+    try:
+        bundle = load_paperbench_bundle(bundles_root, paper_id)
+    except PaperBenchBundleError as exc:
+        print(f"[rlm] PaperBench bundle error: {exc}", file=sys.stderr)
+        return 2
+
+    from backend.services.ingestion.paperbench import bundle_to_workspace_claim_map
+    workspace_claim_map = bundle_to_workspace_claim_map(bundle)
+    # Override the project_id so artifacts land in the right directory.
+    workspace_claim_map["project_id"] = project_id
+    # Pass the bundle's rubric into the claim map so run_pipeline_rlm skips
+    # the rubric-generation step (which would try to call the LLM unnecessarily
+    # when the bundle already ships a complete rubric.json).
+    workspace_claim_map["rubric_spec"] = bundle.rubric()
+
+    from backend.agents.execution import (
+        ExecutionProfile,
+        ensure_sandbox_mode_available,
+        resolve_sandbox_mode,
+    )
+    from backend.agents.resilience import RunBudget
+    from backend.services.runtime import SandboxRuntimeError
+
+    execution_profile = ExecutionProfile.from_mode(
+        getattr(args, "execution_mode", "efficient"),
+        command_timeout_seconds=getattr(args, "command_timeout", None),
+        sandbox_network_disabled=not getattr(args, "allow_sandbox_network", False),
+        sandbox_memory_limit=getattr(args, "sandbox_memory", None),
+        sandbox_cpus=getattr(args, "sandbox_cpus", None),
+        sandbox_platform=getattr(args, "sandbox_platform", None),
+        gpu_mode=getattr(args, "gpu_mode", "auto"),
+    )
+    run_budget = None
+    if getattr(args, "max_usd", None) is not None or getattr(args, "max_wall_clock", None) is not None:
+        run_budget = RunBudget(
+            max_usd=getattr(args, "max_usd", None),
+            max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+        )
+    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
+
+    print(f"[rlm] paper_id  : {paper_id}", file=sys.stderr)
+    print(f"[rlm] project_id: {project_id}", file=sys.stderr)
+    print(f"[rlm] runs_root : {runs_root}", file=sys.stderr)
+    print(f"[rlm] sandbox   : {sandbox_mode.value}", file=sys.stderr)
+
+    try:
+        ensure_sandbox_mode_available(sandbox_mode)
+    except SandboxRuntimeError as exc:
+        print(f"[rlm] Sandbox preflight failed: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        from backend.agents.pipeline import run_pipeline_rlm
+        rlm_result = asyncio.run(run_pipeline_rlm(
+            project_id,
+            runs_root,
+            workspace_claim_map,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            run_budget=run_budget,
+            sandbox_mode=sandbox_mode,
+            seed=getattr(args, "seed", None),
+            execution_profile=execution_profile,
+            attempt_id=getattr(args, "attempt_id", None),
+            run_group_id=getattr(args, "run_group_id", None),
+        ))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print(
+            "\n[reprolab] RLM pipeline interrupted (Ctrl-C). Exiting.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 130
+    except Exception as exc:
+        from backend.agents.resilience import BudgetExhausted
+        if isinstance(exc, BudgetExhausted):
+            print(f"[rlm] Pipeline budget exhausted: {exc}", file=sys.stderr)
+            return 3
+        raise
+
+    result = {
+        "project_id": rlm_result.project_id,
+        "status": rlm_result.status,
+        "output_dir": str(runs_root / rlm_result.project_id),
+        "iterations": rlm_result.iterations,
+        "rubric_score": rlm_result.rubric_score,
+        "cost_usd": rlm_result.cost_usd,
+        "final_report_path": rlm_result.final_report_path,
+    }
+    json.dump(result, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0 if rlm_result.status in ("completed", "partial") else 3
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
@@ -617,6 +755,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
     if args.mode == "rdr":
         return _cmd_reproduce_rdr(args, runs_root)
+
+    # rlm mode with a PaperBench bundle ID: bypass ingest, load the bundle
+    # directly and dispatch to run_pipeline_rlm.  This mirrors the rdr shortcut
+    # and lets callers pass a bundle paper_id (e.g. "sequential-neural-score-estimation")
+    # instead of an arXiv ID or PDF path.
+    if args.mode == "rlm" and _is_paperbench_bundle_id(args.source, runs_root):
+        return _cmd_reproduce_rlm_paperbench(args, runs_root)
 
     from backend.agents.runtime import ProviderConfigurationError
 
