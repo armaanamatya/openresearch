@@ -7,6 +7,7 @@ deterministic and does not require network, API keys, or Docker.
 from __future__ import annotations
 
 import json
+import logging
 import pickle
 import time
 from pathlib import Path
@@ -896,3 +897,146 @@ def test_watchdog_disarm_is_idempotent() -> None:
     wd.arm()
     wd.disarm()
     wd.disarm()  # second disarm — must be silent
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: scorer exception propagation (CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_rdr_survives_scorer_exception(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """run_rdr returns an RdrResult even when score_reproduction raises.
+
+    The result must carry rubric_score=0.0 and the run must still write
+    final_report.json.
+    """
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch)
+
+    def _raising_scorer(rubric: Any, run_dir: Any, llm: Any) -> dict:
+        raise RuntimeError("simulated scorer OOM")
+
+    _patch_score(monkeypatch, _raising_scorer)
+
+    result: RdrResult = await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_make_reproduce_fn(),
+        max_repair_iterations=0,
+    )
+
+    assert isinstance(result, RdrResult), "run_rdr must return RdrResult even on scorer failure"
+    assert result.rubric_score == pytest.approx(0.0), (
+        f"rubric_score should be 0.0 on scorer exception; got {result.rubric_score}"
+    )
+    # final_report.json must still be written
+    assert (ctx.project_dir / "final_report.json").exists(), (
+        "final_report.json was not written after scorer exception"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: path-traversal in merge-write (CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_controller_merge_write_rejects_path_traversal(
+    tmp_path: Path, make_context: Any, monkeypatch: Any, caplog: Any
+) -> None:
+    """Artifacts with escape paths (../…) are silently rejected; safe paths are written.
+
+    Verifies both the initial-pass merge and that nothing escapes code_dir.
+    """
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
+
+    async def _reproduce_with_traversal(agent_context: Any, *, ctx: Any) -> Artifacts:
+        return Artifacts(
+            cluster_id=agent_context.cluster.id,
+            files={
+                "../escape.txt": "evil traversal content",
+                "../../backend/evil.py": "# should never appear",
+                "good.py": "print('ok')",
+            },
+            commands=["python good.py"],
+            failed=False,
+        )
+
+    with caplog.at_level(logging.WARNING, logger="backend.agents.rdr.controller"):
+        result: RdrResult = await run_rdr(
+            bundle,
+            ctx=ctx,
+            reproduce_fn=_reproduce_with_traversal,
+            max_repair_iterations=0,
+        )
+
+    # The run must complete successfully (escape paths are silently rejected)
+    assert isinstance(result, RdrResult)
+
+    # Safe file was written
+    assert (ctx.project_dir / "code" / "good.py").exists(), (
+        "good.py should have been written into code_dir"
+    )
+
+    # Escape paths were NOT written anywhere outside code_dir
+    assert not (tmp_path / "escape.txt").exists(), (
+        "escape.txt must not have been written outside code_dir"
+    )
+    assert not (ctx.project_dir / "escape.txt").exists(), (
+        "escape.txt must not have been written in project_dir"
+    )
+
+    # At least one warning about refusing to write was logged
+    refuse_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "refusing to write" in r.message
+    ]
+    assert refuse_warnings, (
+        "Expected at least one 'refusing to write' warning for the escape paths"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Finding 5: watchdog writes emergency final_report before os._exit (IMPORTANT)
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_fire_writes_emergency_report(tmp_path: Path) -> None:
+    """_ClusterWatchdog._fire writes a minimal final_report.json before os._exit(124)."""
+    exit_calls: list[int] = []
+
+    def fake_exit(code: int) -> None:
+        exit_calls.append(code)
+
+    project_dir = tmp_path / "watchdog_test_run"
+    project_dir.mkdir()
+
+    with patch("backend.agents.rdr.controller.os._exit", side_effect=fake_exit):
+        wd = _ClusterWatchdog(
+            timeout_s=0.05,
+            label="test_fire_report",
+            project_dir=project_dir,
+        )
+        wd.arm()
+        time.sleep(0.25)
+
+    # os._exit must still have been called
+    assert exit_calls == [124], f"Expected os._exit(124), got: {exit_calls}"
+
+    # final_report.json must have been written
+    report_path = project_dir / "final_report.json"
+    assert report_path.exists(), "final_report.json was not written by watchdog._fire"
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report.get("status") == "watchdog_killed", (
+        f"Expected status='watchdog_killed'; got {report.get('status')!r}"
+    )
+    assert report.get("verdict") == "failed"
+    assert report.get("label") == "test_fire_report"

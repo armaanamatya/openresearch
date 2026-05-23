@@ -995,6 +995,20 @@ def main(argv: list[str] | None = None) -> int:
             "so the re-run starts with a clean slate."
         ),
     )
+    reproduce.add_argument(
+        "--max-repair-iterations",
+        dest="max_repair_iterations",
+        type=int,
+        default=2,
+        help="(rdr mode) maximum repair-pass iterations after initial scoring.",
+    )
+    reproduce.add_argument(
+        "--repair-target",
+        dest="repair_target",
+        type=float,
+        default=0.6,
+        help="(rdr mode) cluster score threshold below which a cluster is queued for repair.",
+    )
     reproduce.set_defaults(func=cmd_reproduce)
 
     from backend.cli_paperbench import add_paperbench_subparser

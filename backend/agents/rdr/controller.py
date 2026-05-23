@@ -54,13 +54,20 @@ class _ClusterWatchdog:
     controller wedges in futex_wait_queue indefinitely. This watchdog runs
     in a daemon thread (independent of the asyncio loop) so it fires even
     when the loop deadlocks. When fired, it calls ``os._exit(124)`` — abrupt
-    but reliable. No final_report is written; the operator sees the watchdog
-    log line in the run log.
+    but reliable. A best-effort ``final_report.json`` is written to
+    ``project_dir`` before exit so the operator has something to inspect.
     """
 
-    def __init__(self, timeout_s: float = _RDR_WATCHDOG_DEFAULT_S, *, label: str = ""):
+    def __init__(
+        self,
+        timeout_s: float = _RDR_WATCHDOG_DEFAULT_S,
+        *,
+        label: str = "",
+        project_dir: Path | None = None,
+    ):
         self.timeout_s = float(timeout_s)
         self.label = label
+        self.project_dir = project_dir
         self._timer: threading.Timer | None = None
 
     def _fire(self) -> None:
@@ -69,6 +76,24 @@ class _ClusterWatchdog:
             "This usually means the Claude SDK deadlocked on aclose() after a subprocess exit.",
             self.timeout_s, self.label,
         )
+        # Best-effort emergency report so the operator finds *something*.
+        if self.project_dir is not None:
+            try:
+                report = {
+                    "status": "watchdog_killed",
+                    "label": self.label,
+                    "timeout_s": self.timeout_s,
+                    "verdict": "failed",
+                    "rubric": {"overall_score": None, "rubric_source": "watchdog"},
+                    "reproduction_summary": (
+                        f"rdr watchdog fired at {self.label}; the run was terminated."
+                    ),
+                }
+                (self.project_dir / "final_report.json").write_text(
+                    json.dumps(report, indent=2), encoding="utf-8"
+                )
+            except Exception:  # noqa: BLE001 — never raise from the watchdog thread
+                pass
         os._exit(124)
 
     def arm(self) -> None:
@@ -298,7 +323,7 @@ async def run_rdr(
             artifacts=done,
             prior_scores=None,
         )
-        wd = _ClusterWatchdog(label=f"cluster_{idx}_{cluster.id}")
+        wd = _ClusterWatchdog(label=f"cluster_{idx}_{cluster.id}", project_dir=ctx.project_dir)
         wd.arm()
         try:
             art = await _reproduce(agctx, ctx=ctx)
@@ -324,6 +349,17 @@ async def run_rdr(
         # exclusions) so a single bad path doesn't kill the run.
         for rel_path, content in art.files.items():
             dest = code_dir / rel_path
+            # Containment guard: reject any path that resolves outside code_dir.
+            try:
+                if not dest.resolve().is_relative_to(code_dir.resolve()):
+                    logger.warning(
+                        "rdr/controller: refusing to write %r — outside code_dir (cluster %s)",
+                        rel_path, cluster.id,
+                    )
+                    continue
+            except (OSError, ValueError):
+                logger.warning("rdr/controller: refusing to resolve %r — skipping", rel_path)
+                continue
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
@@ -376,7 +412,7 @@ async def run_rdr(
             env_spec: dict[str, Any] = {"dockerfile": dockerfile_content}
         else:
             method_spec = {"core_contribution": meta.get("title", "")}
-            env_spec = detect_environment(method_spec, ctx=ctx)
+            env_spec = await asyncio.to_thread(detect_environment, method_spec, ctx)
             if env_spec.get("success") is False:
                 logger.warning(
                     "run_rdr[%s]: detect_environment failed: %s",
@@ -385,7 +421,7 @@ async def run_rdr(
                 env_spec = {}
 
         if env_spec:
-            build = build_environment(env_spec, ctx=ctx)
+            build = await asyncio.to_thread(build_environment, env_spec, ctx)
             if build.get("ok"):
                 env_id = build.get("image_tag", "")
             else:
@@ -407,7 +443,7 @@ async def run_rdr(
     exp: dict[str, Any] = {"success": False, "metrics": {}}
     if env_id:
         try:
-            exp = run_experiment(str(code_dir), env_id, ctx=ctx)
+            exp = await asyncio.to_thread(run_experiment, str(code_dir), env_id, ctx)
         except Exception as exc:  # noqa: BLE001 — fail-soft
             logger.warning(
                 "run_rdr[%s]: run_experiment raised %s: %s",
@@ -422,9 +458,27 @@ async def run_rdr(
     # event-loop thread.  Run in a worker thread so the scorer's own loop is
     # independent.  Surfaced live: "asyncio.run() cannot be called from a
     # running event loop" in seqnn's score batches.
-    scores = await asyncio.to_thread(
-        score_reproduction, rubric, ctx.project_dir, ctx.llm_client
-    )
+    #
+    # Fail-soft: flatten_leaves(), _gather_evidence(), or any OOM/OSError on the
+    # rubric tree may raise through asyncio.to_thread — catch and substitute safe
+    # zero-scores so the run always produces a final_report.
+    _ZERO_SCORES: dict[str, Any] = {
+        "overall_score": 0.0,
+        "leaf_count": 0,
+        "graded": 0,
+        "rubric_source": "paperbench_bundle",
+        "leaf_scores": [],
+    }
+    try:
+        scores = await asyncio.to_thread(
+            score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        logger.warning(
+            "rdr/controller: score_reproduction raised %s: %s — defaulting to zero scores",
+            type(exc).__name__, exc,
+        )
+        scores = dict(_ZERO_SCORES)
 
     # ------------------------------------------------------------------
     # Step 8: Repair loop
@@ -454,7 +508,7 @@ async def run_rdr(
                 artifacts=done,
                 prior_scores=scores,
             )
-            wd = _ClusterWatchdog(label=f"repair_{rep_n}_cluster_{cluster.id}")
+            wd = _ClusterWatchdog(label=f"repair_{rep_n}_cluster_{cluster.id}", project_dir=ctx.project_dir)
             wd.arm()
             try:
                 art = await _reproduce(agctx, ctx=ctx)
@@ -477,6 +531,17 @@ async def run_rdr(
             # initial-pass note above).
             for rel_path, content in art.files.items():
                 dest = code_dir / rel_path
+                # Containment guard: reject any path that resolves outside code_dir.
+                try:
+                    if not dest.resolve().is_relative_to(code_dir.resolve()):
+                        logger.warning(
+                            "rdr/controller: refusing to write %r — outside code_dir (cluster %s)",
+                            rel_path, cluster.id,
+                        )
+                        continue
+                except (OSError, ValueError):
+                    logger.warning("rdr/controller: refusing to resolve %r — skipping", rel_path)
+                    continue
                 try:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(content, encoding="utf-8")
@@ -500,7 +565,7 @@ async def run_rdr(
         # Re-experiment (only if env is available)
         if env_id:
             try:
-                exp = run_experiment(str(code_dir), env_id, ctx=ctx)
+                exp = await asyncio.to_thread(run_experiment, str(code_dir), env_id, ctx)
             except Exception as exc:  # noqa: BLE001 — fail-soft
                 logger.warning(
                     "run_rdr[%s]: repair run_experiment raised %s: %s",
@@ -508,9 +573,16 @@ async def run_rdr(
                 )
 
         # Re-score (off-loop, see Step 7 note).
-        scores = await asyncio.to_thread(
-            score_reproduction, rubric, ctx.project_dir, ctx.llm_client
-        )
+        try:
+            scores = await asyncio.to_thread(
+                score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft
+            logger.warning(
+                "rdr/controller: score_reproduction raised %s: %s — defaulting to zero scores",
+                type(exc).__name__, exc,
+            )
+            scores = dict(_ZERO_SCORES)
         repair_iterations += 1
 
     # ------------------------------------------------------------------

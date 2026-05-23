@@ -443,8 +443,8 @@ def test_snapshot_excludes_ephemeral_and_cache_dirs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cwd_guard_restores_cwd_on_success(tmp_path, make_context, monkeypatch):
-    """After a successful reproduce(), the working directory is restored to what it was before."""
+async def test_cwd_not_changed_on_success(tmp_path, make_context, monkeypatch):
+    """reproduce() does NOT change the process CWD — the SDK receives cwd via project_dir kwarg."""
     run_ctx = make_context(tmp_path, project_id="cwd_success_test")
     cwd_before = Path.cwd()
 
@@ -464,12 +464,13 @@ async def test_cwd_guard_restores_cwd_on_success(tmp_path, make_context, monkeyp
     ac = _make_agent_context()
     await reproduce(ac, ctx=run_ctx)
 
+    # CWD must be unchanged — os.chdir was removed; SDK receives cwd via project_dir.
     assert Path.cwd() == cwd_before
 
 
 @pytest.mark.asyncio
-async def test_cwd_guard_restores_cwd_on_failure(tmp_path, make_context, monkeypatch):
-    """Even when collect_agent_text raises, the working directory is restored."""
+async def test_cwd_not_changed_on_failure(tmp_path, make_context, monkeypatch):
+    """CWD is never modified even when collect_agent_text raises."""
     run_ctx = make_context(tmp_path, project_id="cwd_fail_test")
     cwd_before = Path.cwd()
 
@@ -482,9 +483,42 @@ async def test_cwd_guard_restores_cwd_on_failure(tmp_path, make_context, monkeyp
     ac = _make_agent_context()
     result = await reproduce(ac, ctx=run_ctx)
 
-    # The outer fail-soft wrapper returns Artifacts(failed=True) — CWD must still be restored.
+    # The outer fail-soft wrapper returns Artifacts(failed=True) — CWD must still be unchanged.
     assert result.failed is True
     assert Path.cwd() == cwd_before
+
+
+@pytest.mark.asyncio
+async def test_sdk_receives_code_dir_as_project_dir(tmp_path, make_context, monkeypatch):
+    """collect_agent_text is called with project_dir=code_dir so the SDK sets cwd correctly.
+
+    This replaces the old os.chdir approach (Finding 4 — Option A).
+    """
+    run_ctx = make_context(tmp_path, project_id="sdk_cwd_test")
+    code_dir = run_ctx.project_dir / "code"
+    received_project_dirs: list[Path] = []
+
+    async def capturing_collect(
+        agent_id: str,
+        prompt: str,
+        *,
+        project_dir: Path,
+        **kwargs: Any,
+    ) -> str:
+        received_project_dirs.append(project_dir)
+        (project_dir / "commands.json").write_text("[]", encoding="utf-8")
+        return ""
+
+    import backend.agents.runtime.invoke as invoke_mod
+    monkeypatch.setattr(invoke_mod, "collect_agent_text", capturing_collect)
+
+    ac = _make_agent_context()
+    await reproduce(ac, ctx=run_ctx)
+
+    assert received_project_dirs, "collect_agent_text was not called"
+    assert received_project_dirs[0] == code_dir, (
+        f"Expected project_dir={code_dir}; got {received_project_dirs[0]}"
+    )
 
 
 @pytest.mark.asyncio

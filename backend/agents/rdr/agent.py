@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import shutil
 import traceback
 from pathlib import Path
@@ -318,13 +317,14 @@ async def _reproduce_inner(
 
     # 5. Run the SDK coding agent (same infrastructure as run_with_sdk),
     #    bounded by the run's remaining wall-clock budget.
-    #    Guard: snapshot repo-root entries before, chdir into code_dir, then
-    #    detect + clean any top-level stray paths created by the agent (e.g.
-    #    a cloned repo at the repo root rather than inside code_dir).
-    cwd_before = Path.cwd()
+    #
+    #    CWD note: os.chdir was removed (it modifies process-global CWD and is
+    #    unsafe under concurrency).  The SDK already receives cwd=code_dir via
+    #    ClaudeAgentOptions(cwd=...) through collect_agent_text's project_dir kwarg
+    #    → to_runtime_spec(working_directory=project_dir) → ClaudeAgentOptions(cwd=str(...)).
+    #    _cleanup_repo_root_escape remains as the after-the-fact safety net.
     root_before = _snapshot_repo_root_entries()
     try:
-        os.chdir(code_dir)
         agent_text = await asyncio.wait_for(
             collect_agent_text(
                 "baseline-implementation",
@@ -338,10 +338,6 @@ async def _reproduce_inner(
             timeout=timeout_s,
         )
     finally:
-        try:
-            os.chdir(cwd_before)
-        except OSError:
-            pass
         _cleanup_repo_root_escape(root_before, cluster_id)
 
     # 6. Snapshot files written by the agent.
