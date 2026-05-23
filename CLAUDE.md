@@ -88,7 +88,7 @@ Each run is a **long-lived subprocess** spawned by the backend. Run state lives 
 - `demo_status.json` — UI-facing status snapshot (atomic write)
 - `rlm_state/` — per-iteration checkpoints; resume-safe
 - `dashboard_events.jsonl` — append-only SSE event log
-- `final_report.{json,md}` — the computed benchmark output
+- `final_report.{json,md}` — the computed benchmark output. Since 2026-05-23 also carries `mode` (`"rlm"` \| `"rdr"`), `models` (`{planner, executor, verifier, grader}` — `verifier`/`grader` null until the per-role picker lands), `started_at` (lifted from `demo_status.json::startedAt`), and `completed_at` (stamped at write time). These four fields are forward-compatible with the cleanup-spec Phase 4 leaderboard projection.
 - `cost_ledger.jsonl` — per-primitive USD spend
 - `experiment_runs.jsonl` — every `run_experiment` result (logs, success, metrics)
 - `code/` — the reproduced project
@@ -126,6 +126,12 @@ Time is bounded three ways: `rlm`'s `max_timeout` (between iterations), per-prim
 
 A `localStorage` pointer auto-resumes an in-flight run when the user lands on a bare `/lab`.
 
+### Leaderboard surface (2026-05-23)
+A read-only `/leaderboard` page ranks completed runs across models and papers. Implementation summary:
+- Backend: `GET /leaderboard?paper&mode&order_by&limit` (`backend/routes/leaderboard.py`) aggregates `runs/<id>/final_report.json` + `demo_status.json` at request time. No SQLite projection at this scale; not gated by `REPROLAB_DEMO_SECRET`.
+- Frontend: `/leaderboard` server-component page (`frontend/src/app/leaderboard/`) reads via the `/api/demo/leaderboard` proxy and renders a sortable `LeaderboardTable`. Row click → `/lab?projectId=<id>`.
+- Live rubric climb panel: the existing `RubricStrip` (`frontend/src/components/lab/rlm/rubric-strip.tsx`) is enriched with a count-up tween on the big score, an SVG line-chart sparkline, per-area status chips with fail→pass flip highlights, and a "from candidate <title>" attribution tail. Derived from existing SSE events (`rubric_score`, `candidate_proposed`, `candidate_outcome`); no new event types added.
+
 ### Where to look first
 - HTTP layer: `backend/app.py`
 - CLI / non-UI runs: `backend/cli.py`
@@ -135,6 +141,7 @@ A `localStorage` pointer auto-resumes an in-flight run when the user lands on a 
 - SSE bridge (egress chokepoint): `backend/agents/rlm/sse_bridge.py`
 - Subprocess spawn + SSE bridge: `backend/services/events/live_runs.py`
 - Paper ingestion: `backend/services/ingestion/parser/resolving_parser.py` (`ResolvingParser` — HTML > PDF > OCR cascade; `ArxivFetcher` writes the HTML sibling)
+- Leaderboard: `backend/routes/leaderboard.py` (aggregator + `GET /leaderboard`) and `frontend/src/app/leaderboard/` (page + table).
 - `backend/{agents,services}/` is named by function — read it directly.
 
 ## Sandboxes

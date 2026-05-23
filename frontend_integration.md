@@ -38,6 +38,7 @@ on disk under `runs/<project_id>/`.
 | `GET /runs/{id}/final-report` | the final benchmark report |
 | `GET /runs/{id}/source-pdf` | the source paper PDF |
 | `DELETE /runs/{id}` | delete a run |
+| `GET /leaderboard` | ranked list of completed runs (since 2026-05-23) |
 | `GET /health` · `/models` | health check, model registry |
 
 ## SSE event stream
@@ -71,6 +72,36 @@ is the single egress chokepoint: it strips REPL `locals`, bounds `response` to
 4 KB, and reduces stdout/stderr to ≤200-char metadata prefixes. `vars` carries
 variable **shapes** (`{type, size}`), never values. Build the UI around
 summaries and shapes — full values are not, and will not be, on the wire.
+
+## Leaderboard endpoint
+
+`GET /leaderboard` returns ranked rows aggregated at request time from
+`runs/*/final_report.json` (no SQLite projection at this scale). Read-only;
+not gated by `REPROLAB_DEMO_SECRET`. Mounted by `backend/routes/leaderboard.py`.
+
+Query params:
+
+| param | type | default | meaning |
+|---|---|---|---|
+| `paper` | string | — | filter by `paper.id` |
+| `mode` | `rlm` \| `rdr` | — | filter by mode |
+| `order_by` | `score` \| `cost` \| `time` \| `finished_at` | `score` | server-side sort |
+| `limit` | int | 50 | row cap (1–500) |
+
+Row shape (Pydantic, `LeaderboardRow`):
+- `project_id, paper_id, paper_title, mode, verdict`
+- `models: {planner, executor, verifier, grader}` — per-role model ids; `verifier` and `grader` are nullable until the per-role picker lands
+- `overall_score, meets_target, degraded`
+- `cost_usd, iterations, wall_clock_s, sandbox`
+- `started_at, completed_at` (ISO-8601, optional on legacy runs)
+
+`final_report.json` now also carries `mode`, `models`, `started_at`,
+`completed_at` for forward compatibility. Legacy reports without these fields
+parse with the documented defaults — no migration required.
+
+Frontend proxy: `/api/demo/leaderboard` forwards query params verbatim to the
+backend; returns 502 when the backend is unreachable. The browser never talks
+to the backend directly.
 
 ## Run artifacts — `runs/<project_id>/`
 
