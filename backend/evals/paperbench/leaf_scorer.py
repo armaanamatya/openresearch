@@ -339,10 +339,8 @@ def _parse_batch_response(
     # Try to extract JSON array from response
     raw = raw.strip()
     try:
-        # Find first '[' and last ']'
-        start = raw.index("[")
-        end = raw.rindex("]") + 1
-        parsed = json.loads(raw[start:end])
+        from backend.agents.rlm.primitives import _extract_json_array
+        parsed = _extract_json_array(raw)
         if isinstance(parsed, list):
             for item in parsed:
                 if not isinstance(item, dict):

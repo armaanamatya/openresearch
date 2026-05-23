@@ -77,6 +77,28 @@ def _extract_json(text: str) -> dict:
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
 
 
+def _extract_json_array(text: str) -> list:
+    """Pull the first JSON array out of an LLM response.
+
+    Mirrors _extract_json but scans for `[` instead of `{`. Same EOF-truncation
+    guard. Used by leaf-scorer's batch-response parser (review M3 / T26).
+    """
+    import json
+    decoder = json.JSONDecoder()
+    end_of_text = len(text.rstrip())
+    idx = text.find("[")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, list):
+                return obj
+        except json.JSONDecodeError as exc:
+            if exc.pos >= end_of_text:
+                raise ValueError("truncated JSON array in LLM response") from exc
+        idx = text.find("[", idx + 1)
+    raise ValueError(f"no JSON array in LLM response: {text[:200]!r}")
+
+
 def _clamp01(val: object) -> float:
     """Coerce an LLM-returned value into [0.0, 1.0]; None / garbage -> 0.0."""
     try:

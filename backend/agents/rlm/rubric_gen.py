@@ -147,13 +147,11 @@ def generate_rubric_tree(
 
 
 def _extract_json_object(raw: str) -> dict | None:
-    """Extract the first complete JSON object from a string (first { to last })."""
-    raw = raw.strip()
+    """Extract the first JSON object from a string (reuses primitives._extract_json — review M3 / T26)."""
+    from backend.agents.rlm.primitives import _extract_json
     try:
-        start = raw.index("{")
-        end = raw.rindex("}") + 1
-        return json.loads(raw[start:end])
-    except (ValueError, json.JSONDecodeError):
+        return _extract_json(raw)
+    except ValueError:
         return None
 
 

@@ -594,3 +594,18 @@ def test_is_degraded_run_caps_failed_verdict_even_with_metrics(tmp_path):
     (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
 
     assert _is_degraded_run(tmp_path) is True
+
+
+def test_leaf_scorer_parses_response_with_prose_braces():
+    """Symptom: prose braces in the LLM response burn a retry.
+
+    First-`{`-to-last-`}` slicing over-grabs on prose braces (review M3 / T26).
+    Verify: a response like 'Here {x} is the array: [{...}]' parses on first try.
+    """
+    from backend.evals.paperbench.leaf_scorer import _parse_batch_response
+
+    raw = 'Note: the {answer} is below.\n[{"leaf_id":"L1","score":0.8,"justification":"x"}]'
+    batch = [{"id": "L1"}]
+    out = _parse_batch_response(raw, batch)
+    assert out[0]["score"] == 0.8
+    assert out[0]["justification"] == "x"
