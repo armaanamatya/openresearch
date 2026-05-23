@@ -166,3 +166,38 @@ describe("ScriptPanel — item 4: benchmark task-id fallback", () => {
     expect(subtitle?.textContent).toBe("—");
   });
 });
+
+// ------------------------------------------------------------------
+// Item 5 — shortHash() returns "pending" → sha256:pending  (script-panel.tsx:74)
+// ------------------------------------------------------------------
+
+describe("ScriptPanel — item 5: sha256 hash row visibility", () => {
+  it("renders the sha256 hash row when sha256 is present", () => {
+    render(
+      <ScriptPanel
+        run={baseRun({
+          sourcePdf: {
+            fileName: "paper.pdf",
+            title: "Title",
+            sizeBytes: 1024,
+            sha256: "abcdef1234567890",
+            runPath: "runs/prj_test/raw_paper.pdf",
+            codePath: "runs/prj_test/code/"
+          }
+        })}
+      />
+    );
+    const hashDiv = document.querySelector(".pdf-hash");
+    expect(hashDiv).not.toBeNull();
+    // Shows the truncated hash, not "sha256:pending"
+    expect(hashDiv?.textContent).toContain("abcdef123456");
+    expect(hashDiv?.textContent).not.toContain("pending");
+  });
+
+  it("does not render the sha256 hash row at all when sha256 is absent", () => {
+    render(<ScriptPanel run={baseRun({ sourcePdf: null })} />);
+    const hashDiv = document.querySelector(".pdf-hash");
+    // The row must be suppressed entirely — no "sha256:pending" rendered
+    expect(hashDiv).toBeNull();
+  });
+});

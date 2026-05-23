@@ -71,7 +71,7 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
             {pdf?.fileName ?? "—"} · {formatBytes(pdf?.sizeBytes)}
             {pdf?.pageCount ? ` · ${pdf.pageCount} pages` : ""}
           </div>
-          <div className="pdf-hash mono">sha256:{shortHash(pdf?.sha256)}</div>
+          {pdf?.sha256 ? <div className="pdf-hash mono">sha256:{shortHash(pdf.sha256)}</div> : null}
           <div className="pdf-actions">
             <a className="btn btn-sm btn-dark" href={pdfUrl} target="_blank" rel="noreferrer">
               Preview PDF

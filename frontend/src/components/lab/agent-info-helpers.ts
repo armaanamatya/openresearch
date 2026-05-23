@@ -27,7 +27,7 @@ export function formatBytes(bytes?: number | null) {
 }
 
 export function shortHash(value?: string | null) {
-  return value ? value.slice(0, 12) : "pending";
+  return value ? value.slice(0, 12) : "";
 }
 
 export function verdictLabel(value?: string) {
