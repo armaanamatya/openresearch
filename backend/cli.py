@@ -476,6 +476,7 @@ _REPRODUCE_DEFAULTS = {
     "attempt_id": None,
     "run_group_id": None,
     "blacklist": None,
+    "project_id": None,
 }
 
 
@@ -534,6 +535,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
     project_id = intake.register_project(RegisterProject(source=source))
+    # T15 / handoff P1-I8: when the REST API spawns the CLI it passes --project-id
+    # so the CLI writes to the same runs/<id>/ directory the API watches.  The
+    # override replaces the source-derived id *after* registration so the event-
+    # store aggregate (keyed by the source-derived id) is still created correctly.
+    if getattr(args, "project_id", None):
+        project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
 
     print("[ingest 2/6] Fetching paper", file=sys.stderr)
@@ -916,6 +923,16 @@ def main(argv: list[str] | None = None) -> int:
             "Purge any prior run of the same paper before starting. "
             "Deletes runs/<project_id>/ and all event-store rows for the project "
             "so the re-run starts with a clean slate."
+        ),
+    )
+    reproduce.add_argument(
+        "--project-id",
+        default=None,
+        help=(
+            "Override the project id (writes to runs/<project-id>/). "
+            "When unset, an id is derived from the paper source. "
+            "Used by the REST API to ensure the spawned CLI writes to the same "
+            "directory the API watches (T15 / handoff P1-I8)."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)
