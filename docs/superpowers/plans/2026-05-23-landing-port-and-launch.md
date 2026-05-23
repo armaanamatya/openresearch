@@ -166,7 +166,6 @@ chore(landing): archive source, delete obsolete scaffold, rename branch
 - app/page.tsx temporarily reverts to redirect("/lab") until Phase 2
   lands the ported landing component
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -259,7 +258,6 @@ zero CLS). Keeps existing --font-inter / --font-jetbrains-mono CSS-var
 names so the 30+ token consumers don't need to update. Adds
 --font-serif for Instrument Serif (used by Phase 2's landing).
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -455,7 +453,6 @@ component CSS from the LANDING/index.html source, with var(--*) names
 prefixed --landing-* to prevent collision with lab tokens. Mounted at
 / via app/page.tsx.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -672,7 +669,6 @@ on-scroll border. HeroTree extracted into figures/. Nav rewires the
 incoherent source hrefs: "Open lab" CTA → /lab, GitHub → real repo URL.
 Drops "RLM paper" nav link since the source has no #paper section.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -783,7 +779,6 @@ cd /Volumes/CS_Stuff/openresearch
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §1.0 Comprehension + §2.0 Environment sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -811,7 +806,6 @@ Same header shape as Comprehension/Environment, with verbatim text from source l
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §3.0 Implementation + §4.0 Experiments sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -835,7 +829,6 @@ BenchmarkSection (§6.0): different shape — no figure; instead a `.bench-numbe
 git add frontend/src/components/landing/
 git commit -m "feat(landing): port §5.0 Verification + §6.0 Benchmarks sections
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1021,7 +1014,6 @@ NavScrollMount augments behavior (IntersectionObserver class toggle on
 .reveal targets, nav.scrolled class on scroll past 8px). Honors
 prefers-reduced-motion.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1119,7 +1111,6 @@ fix(landing): wire all interactive elements, remove broken substep anchors
 - All real CTAs (hero, nav, CTA footer, footer) confirmed wired to
   /lab or the GitHub URL. None remain as href="#".
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1191,7 +1182,6 @@ Lab sidebar wordmark wraps in <Link href="/"> so users can return to
 the marketing surface — standard product-app affordance. Removes the
 unused onBrandClick callback prop.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1321,7 +1311,6 @@ repaints automatically. Hardcoded callsites are fixed in the next
 commit. Accepts the dense-data-on-dark readability tradeoff per
 explicit user direction.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1390,7 +1379,6 @@ command-palette.css, shortcut-overlay.css. Each #fff / rgba(0,0,0,..)
 spot now goes through var(--ink) / var(--panel) / var(--chip) /
 var(--shadow-*) so the dark theme paints uniformly.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1541,7 +1529,6 @@ git add .gitignore
 git rm -f landing-hero.png landing-full.png landing-full2.png landing-section-1.png landing-section-2.png landing-section-4.png landing-section-5.png landing-tree.png landing-nav-fix.png landing-nav-solid.png lab-after-landing.png 2>/dev/null || true
 git commit -m "chore: gitignore landing screenshots, remove orphaned PNGs
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
