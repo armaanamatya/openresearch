@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import json
 import os
@@ -10,12 +11,22 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+
+# ---------------------------------------------------------------------------
+# Watchdog configuration
+# ---------------------------------------------------------------------------
+
+_ACLOSE_PATTERN = "RuntimeError: aclose(): asynchronous generator is already running"
+_WATCHDOG_THRESHOLD = 3          # occurrences required to trigger
+_WATCHDOG_WINDOW_SECONDS = 30    # rolling window in seconds
+_WATCHDOG_POLL_INTERVAL = 2.0    # seconds between stderr re-reads
 
 from pydantic import BaseModel, Field
 
@@ -145,6 +156,110 @@ class LiveRunState(BaseModel):
 def sse_event(event: str, data: Any, *, event_id: str | None = None) -> str:
     prefix = f"id: {event_id}\n" if event_id else ""
     return f"{prefix}event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+async def _stderr_watchdog(
+    project_id: str,
+    run_dir: Path,
+    pid: int,
+) -> None:
+    """Tail runner.stderr.log; flag the run as degraded on repeated aclose errors.
+
+    Reads the last N bytes of the stderr log every _WATCHDOG_POLL_INTERVAL
+    seconds. Maintains a rolling deque of timestamps for each occurrence of
+    _ACLOSE_PATTERN. When _WATCHDOG_THRESHOLD occurrences land within
+    _WATCHDOG_WINDOW_SECONDS the run is flagged:
+      - demo_status.json: degraded=True, degraded_reason set
+      - dashboard_events.jsonl: run_warning event appended
+
+    The watchdog exits when the subprocess terminates (pid gone) or the task
+    is cancelled (normal cleanup on run completion).
+    """
+    stderr_path = run_dir / "runner.stderr.log"
+    events_path = run_dir / "dashboard_events.jsonl"
+    status_path = run_dir / "demo_status.json"
+    timestamps: collections.deque[float] = collections.deque()
+    flagged = False
+    # Track how many bytes we have already scanned so each pass we only look
+    # at the new tail (not the entire file from scratch).
+    last_size: int = 0
+
+    while True:
+        await asyncio.sleep(_WATCHDOG_POLL_INTERVAL)
+
+        # Exit once the subprocess is gone.
+        if not _pid_exists(pid):
+            return
+
+        if not stderr_path.exists():
+            continue
+
+        try:
+            current_size = stderr_path.stat().st_size
+        except OSError:
+            continue
+
+        if current_size <= last_size:
+            continue
+
+        # Read only the newly appended bytes.
+        try:
+            with stderr_path.open("rb") as fh:
+                fh.seek(last_size)
+                chunk = fh.read(current_size - last_size).decode("utf-8", errors="replace")
+        except OSError:
+            continue
+
+        last_size = current_size
+
+        # Count new occurrences in the fresh chunk.
+        now = time.monotonic()
+        count_in_chunk = chunk.count(_ACLOSE_PATTERN)
+        for _ in range(count_in_chunk):
+            timestamps.append(now)
+
+        # Evict timestamps older than the window.
+        cutoff = now - _WATCHDOG_WINDOW_SECONDS
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.popleft()
+
+        if flagged or len(timestamps) < _WATCHDOG_THRESHOLD:
+            continue
+
+        # Threshold crossed — flag once.
+        flagged = True
+        iso_now = datetime.now(timezone.utc).isoformat()
+
+        # Update demo_status.json atomically.
+        try:
+            existing: dict[str, Any] = {}
+            if status_path.exists():
+                existing = json.loads(status_path.read_text(encoding="utf-8"))
+            existing["degraded"] = True
+            existing["degraded_reason"] = "SDK aclose loop detected"
+            existing["updatedAt"] = iso_now
+            tmp = status_path.with_suffix(status_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            os.replace(tmp, status_path)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Append run_warning event to dashboard_events.jsonl.
+        warning_event: dict[str, Any] = {
+            "event": "run_warning",
+            "timestamp": iso_now,
+            "level": "warn",
+            "code": "sdk_aclose_loop",
+            "message": (
+                "Backend SDK aclose deadlock detected"
+                " — run is degraded; consider restarting"
+            ),
+        }
+        try:
+            with events_path.open("a", encoding="utf-8") as ef:
+                ef.write(json.dumps(warning_event) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> StartRunRequest:
@@ -466,6 +581,15 @@ class FileLiveRunService:
 
         meta.update({"pid": process.pid, "updatedAt": _now()})
         await asyncio.to_thread(self._write_status, project_id, meta)
+
+        # Launch the stderr watchdog as a fire-and-forget asyncio task.
+        # It self-terminates when the subprocess exits (pid gone) and is also
+        # cancelled by the event loop on normal shutdown — no extra cleanup needed.
+        asyncio.get_event_loop().create_task(
+            _stderr_watchdog(project_id, output_dir, process.pid),
+            name=f"stderr-watchdog-{project_id}",
+        )
+
         return (await self.get_run(project_id)) or LiveRunState(**meta, payload=None, log="")
 
     def _load_run(self, project_id: str) -> LiveRunState | None:

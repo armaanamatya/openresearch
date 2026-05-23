@@ -1,8 +1,13 @@
 "use client";
 
+import { useMemo } from "react";
+import type { RunWarning } from "../../../hooks/use-rlm-run";
 import styles from "./rlm-header.module.css";
 
 export type RlmRunStatus = "queued" | "running" | "completed" | "partial" | "failed";
+
+/** Threshold in milliseconds after which a running-but-silent run is considered wedged. */
+const HEARTBEAT_STALE_MS = 60_000;
 
 interface RlmHeaderProps {
   paperTitle: string;
@@ -11,6 +16,9 @@ interface RlmHeaderProps {
   status: RlmRunStatus;
   iterationCount: number;
   costUsd: number | null;
+  warnings?: RunWarning[];
+  /** ISO-8601 timestamp of the last heartbeat, or null if none received yet. */
+  lastHeartbeatAt?: string | null;
 }
 
 function statusTone(status: RlmRunStatus): { bg: string; fg: string; dot: string; pulse: boolean } {
@@ -36,8 +44,19 @@ export function RlmHeader({
   status,
   iterationCount,
   costUsd,
+  warnings = [],
+  lastHeartbeatAt = null,
 }: RlmHeaderProps) {
   const tone = statusTone(status);
+  const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
+
+  // Derive "wedged" signal: running + no heartbeat for >60 s.
+  const noSignalSecs = useMemo(() => {
+    if (status !== "running") return null;
+    if (lastHeartbeatAt === null) return null;
+    const elapsed = Date.now() - new Date(lastHeartbeatAt).getTime();
+    return elapsed > HEARTBEAT_STALE_MS ? Math.floor(elapsed / 1000) : null;
+  }, [status, lastHeartbeatAt]);
 
   return (
     <header className={styles.header}>
@@ -59,6 +78,48 @@ export function RlmHeader({
           />
           {status}
         </span>
+
+        {noSignalSecs !== null && (
+          <span
+            title={`No heartbeat received for ${noSignalSecs}s — the run may be wedged.`}
+            style={{
+              background: "var(--warn-soft)",
+              color: "var(--warn)",
+              borderRadius: "4px",
+              padding: "2px 8px",
+              fontSize: "0.72rem",
+              fontWeight: 600,
+              display: "inline-block",
+              verticalAlign: "middle",
+            }}
+          >
+            no signal {noSignalSecs}s
+          </span>
+        )}
+
+        {latestWarning !== null && (
+          <span
+            title={latestWarning.message}
+            style={{
+              background: "var(--err-soft)",
+              color: "var(--err)",
+              borderRadius: "4px",
+              padding: "2px 8px",
+              fontSize: "0.72rem",
+              fontWeight: 600,
+              maxWidth: "220px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              display: "inline-block",
+              verticalAlign: "middle",
+            }}
+          >
+            {latestWarning.message.length > 48
+              ? latestWarning.message.slice(0, 48) + "…"
+              : latestWarning.message}
+          </span>
+        )}
 
         <span className={styles.iterBlock}>
           <span className={styles.iterLabel}>iteration</span>

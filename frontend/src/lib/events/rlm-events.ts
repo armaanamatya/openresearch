@@ -123,6 +123,28 @@ export interface UserMessageResponseEvent {
   message: string;
 }
 
+/** Emitted by the stderr watchdog when a degraded condition is detected. */
+export interface RunWarningEvent {
+  event: "run_warning";
+  timestamp: string;
+  level: "warn" | "error";
+  code: string;
+  message: string;
+}
+
+// ─── §4.4 Heartbeat event — liveness signal ────────────────────────────────────
+
+export interface IterationHeartbeatEvent {
+  event: "iteration_heartbeat";
+  timestamp: string;
+  /** 1-based root-loop iteration, or null before the first iteration is logged. */
+  iteration: number | null;
+  /** Monotonic per-process counter; increments on every heartbeat() call. */
+  counter: number;
+  /** Optional note from the root model, e.g. "about to implement_baseline". */
+  note: string;
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -134,6 +156,8 @@ export const RLM_EVENT_TYPES = [
   "rubric_score",
   "user_message",
   "user_message_response",
+  "run_warning",
+  "iteration_heartbeat",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -146,7 +170,9 @@ export type RlmDashboardEvent =
   | CandidateOutcomeEvent
   | RubricScoreEvent
   | UserMessageEvent
-  | UserMessageResponseEvent;
+  | UserMessageResponseEvent
+  | RunWarningEvent
+  | IterationHeartbeatEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

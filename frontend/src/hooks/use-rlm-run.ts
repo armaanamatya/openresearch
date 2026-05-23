@@ -19,6 +19,8 @@ import type {
   CandidateOutcomeEvent,
   SubRlmSpawnedEvent,
   SubRlmCompleteEvent,
+  RunWarningEvent,
+  IterationHeartbeatEvent,
 } from "../lib/events/rlm-events";
 
 // ─── Member types ─────────────────────────────────────────────────────────────
@@ -57,6 +59,14 @@ export interface SubRlmView {
   error: string | null;
   spawnedAt: string;
   completedAt: string | null;
+}
+
+/** A warning emitted by the backend watchdog (e.g. SDK aclose deadlock). */
+export interface RunWarning {
+  level: RunWarningEvent["level"];
+  code: string;
+  message: string;
+  timestamp: string;
 }
 
 /** Display-annotation phase a trunk (`work`) node belongs to — §6. Not load-bearing. */
@@ -158,6 +168,16 @@ export interface RlmRunState {
       promoted: number;
     };
   } | null;
+
+  /** Watchdog warnings accumulated during the run. Newest last. */
+  warnings: RunWarning[];
+
+  /**
+   * ISO-8601 timestamp of the most recent ``iteration_heartbeat`` event, or
+   * ``null`` if no heartbeat has arrived yet.  The UI derives "wedged" status
+   * when ``status === "running"`` and ``Date.now() - new Date(lastHeartbeatAt) > 60_000``.
+   */
+  lastHeartbeatAt: string | null;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -182,6 +202,8 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   subRlms: [],
   _pendingOutcomes: {},
   report: null,
+  warnings: [],
+  lastHeartbeatAt: null,
 };
 
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
@@ -616,6 +638,19 @@ function foldSubRlmComplete(
   return { ...state, subRlms };
 }
 
+function foldRunWarning(
+  state: RlmRunState,
+  ev: RunWarningEvent
+): RlmRunState {
+  const warning: RunWarning = {
+    level: ev.level,
+    code: ev.code,
+    message: ev.message,
+    timestamp: ev.timestamp,
+  };
+  return { ...state, warnings: [...state.warnings, warning] };
+}
+
 function foldRunComplete(
   state: RlmRunState,
   ev: RunCompleteEvent
@@ -670,9 +705,15 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
       return foldSubRlmComplete(seeded, event);
     case "run_complete":
       return foldRunComplete(seeded, event);
+    case "run_warning":
+      return foldRunWarning(seeded, event);
+    case "iteration_heartbeat":
+      // Store the heartbeat timestamp so the UI can detect a wedged run
+      // (status === "running" && Date.now() - new Date(lastHeartbeatAt) > 60_000).
+      return { ...seeded, lastHeartbeatAt: (event as IterationHeartbeatEvent).timestamp };
     case "user_message":
     case "user_message_response":
-      // Consumed by the chat hook; tree reducer is a no-op.
+      // Consumed by other hooks; tree reducer is a no-op.
       return seeded;
     default:
       // Exhaustiveness guard; unknown events return state unchanged.

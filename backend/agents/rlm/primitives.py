@@ -1106,6 +1106,55 @@ def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
     return {"sent": True}
 
 
+# Module-level monotonic counter for heartbeat events (thread-safe via GIL for
+# int increment; each run process is single-worker so collisions are impossible).
+_heartbeat_counter: int = 0
+
+
+def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
+    """Emit a liveness signal so the operator knows the root is still alive.
+
+    Near-no-op computation — the only side effect is appending one
+    ``iteration_heartbeat`` JSON line to ``dashboard_events.jsonl`` and
+    incrementing a module-level monotonic counter.
+
+    The ``wrap_primitive`` wrapper in ``binding.py`` also emits a standard
+    ``primitive_call`` event (primitive="heartbeat") for the primitive trace.
+    This dedicated ``iteration_heartbeat`` event lets the UI filter heartbeats
+    without walking the full primitive_call stream.
+
+    Returns ``{"alive": True, "counter": <int>, "note": note}``.
+
+    Never raises — fail-soft (D3 pattern): an IO error returns the success dict
+    anyway because the caller (root model) must not be interrupted by an
+    observability write failure.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    global _heartbeat_counter
+    _heartbeat_counter += 1
+    counter = _heartbeat_counter
+    ts = datetime.now(timezone.utc).isoformat()
+
+    event = {
+        "event": "iteration_heartbeat",
+        "timestamp": ts,
+        "iteration": getattr(ctx, "current_iteration", None),
+        "counter": counter,
+        "note": note,
+    }
+
+    try:
+        dashboard_path = ctx.project_dir / "dashboard_events.jsonl"
+        with dashboard_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(event, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — observability must never interrupt the run
+        logger.exception("heartbeat: failed to write iteration_heartbeat event")
+
+    return {"alive": True, "counter": counter, "note": note}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -1119,6 +1168,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "record_candidate_outcome": record_candidate_outcome,
     "check_user_messages": check_user_messages,
     "respond_to_user": respond_to_user,
+    "heartbeat": heartbeat,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -1178,4 +1228,9 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "reply to the conversation and emit it to the live dashboard. Returns "
         "{sent: true} on success. Call after check_user_messages returns messages "
         "you want to acknowledge or answer.",
+    "heartbeat": "heartbeat(note='') -> dict — emit a liveness signal so the "
+        "operator knows the root is still progressing. Returns {alive: True, "
+        "counter: int, note: str}. Call this BEFORE any operation that may take "
+        ">30 s: implement_baseline, run_experiment, rlm_query. Example: "
+        "heartbeat('about to implement_baseline').",
 }

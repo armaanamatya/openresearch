@@ -583,14 +583,70 @@ def build_rubric_score_event(
     }
 
 
+def build_iteration_heartbeat_event(
+    *,
+    iteration: int | None,
+    counter: int,
+    note: str,
+) -> dict:
+    """Build an ``iteration_heartbeat`` dashboard event.
+
+    Emitted by the ``heartbeat()`` primitive directly (not via ``wrap_primitive``
+    alone) to give the UI a dedicated, easily-filterable liveness signal.
+
+    Args:
+        iteration:  Current root-loop iteration index (1-based), or ``None`` when
+                    called before the first iteration has been logged.
+        counter:    Monotonic per-process counter incremented on every call.
+        note:       Optional human-readable note from the root model, e.g.
+                    ``"about to implement_baseline"``.
+    """
+    return {
+        "event": "iteration_heartbeat",
+        "timestamp": _now_iso(),
+        "iteration": iteration,
+        "counter": counter,
+        "note": note,
+    }
+
+
+def build_run_warning_event(
+    *,
+    level: str = "warn",
+    code: str,
+    message: str,
+) -> dict:
+    """Build a ``run_warning`` dashboard event.
+
+    Emitted by the stderr watchdog when a degraded condition is detected
+    (e.g. the SDK aclose deadlock pattern).  Passes through the SSE egress
+    unchanged — the egress sanitizer treats ``run_warning`` like any other
+    dashboard event; its payload carries no corpus data.
+
+    Args:
+        level:   Severity string, typically ``"warn"`` or ``"error"``.
+        code:    Machine-readable tag, e.g. ``"sdk_aclose_loop"``.
+        message: Human-readable description surfaced in the UI chip.
+    """
+    return {
+        "event": "run_warning",
+        "timestamp": _now_iso(),
+        "level": level,
+        "code": code,
+        "message": message,
+    }
+
+
 __all__ = [
     "RUBRIC_AREA_PARTIAL_THRESHOLD",
     "RUBRIC_AREA_PASS_THRESHOLD",
     "ReproLabRLMLogger",
     "build_candidate_outcome_event",
     "build_candidate_proposed_event",
+    "build_iteration_heartbeat_event",
     "build_rubric_score_event",
     "build_run_complete_event",
+    "build_run_warning_event",
     "build_sub_rlm_complete_event",
     "build_sub_rlm_spawned_event",
     "make_emit",

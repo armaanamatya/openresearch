@@ -245,6 +245,21 @@ verify and propose improvements — all driven by REPL code you write, not a
 prescribed workflow.
 """
 
+_HEARTBEAT_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  HEARTBEAT — STAYING VISIBLE TO THE OPERATOR
+═══════════════════════════════════════════════════════════════
+
+Call `heartbeat("about to <action>")` BEFORE any operation that may take more
+than 30 seconds: `implement_baseline`, `run_experiment`, and any `rlm_query`
+call over a large slice.  This lets the operator see you are alive and
+progressing — without it, a long-running primitive looks identical to a silent
+crash from the outside.  A single line suffices:
+
+  heartbeat("about to implement_baseline")
+  code_path = implement_baseline(plan)
+"""
+
 _TRIAGE_INSTRUCTION = """\
 ═══════════════════════════════════════════════════════════════
   TRIAGE — COST AND TIME ARE FINITE
@@ -309,6 +324,7 @@ def build_system_prompt(
         _TERMINATION_CONTRACT,
         _DECOMPOSITION_EXAMPLE,
         _TRIAGE_INSTRUCTION,
+        _HEARTBEAT_SECTION,
     ]
 
     if root_model.prompt_addendum:

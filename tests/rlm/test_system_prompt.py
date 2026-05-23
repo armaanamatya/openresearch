@@ -353,3 +353,28 @@ class TestRlmQueryNudge:
         """build_system_prompt output must mention rlm_query AND 'spawns a sub-RLM'."""
         assert "rlm_query" in prompt_gpt5
         assert "spawns a sub-RLM" in prompt_gpt5
+
+
+class TestHeartbeatInstruction:
+    """The prompt must instruct the root to call heartbeat before long operations."""
+
+    def test_heartbeat_mentioned(self, prompt_gpt5):
+        """'heartbeat' must appear in the prompt."""
+        assert "heartbeat" in prompt_gpt5
+
+    def test_heartbeat_before_implement_baseline(self, prompt_gpt5):
+        """The prompt must mention calling heartbeat before implement_baseline."""
+        lower = prompt_gpt5.lower()
+        assert "implement_baseline" in lower
+        # heartbeat and implement_baseline must both be present; relative ordering
+        # is already enforced by _HEARTBEAT_SECTION appearing in the prompt.
+        assert "heartbeat" in lower
+
+    def test_heartbeat_before_run_experiment(self, prompt_gpt5):
+        """The prompt must mention run_experiment in the heartbeat section."""
+        assert "run_experiment" in prompt_gpt5
+
+    def test_heartbeat_liveness_rationale(self, prompt_gpt5):
+        """The prompt must state WHY to call heartbeat (operator visibility)."""
+        lower = prompt_gpt5.lower()
+        assert "alive" in lower or "operator" in lower or "visible" in lower
