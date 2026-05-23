@@ -104,7 +104,10 @@ Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod crea
 | 2026-05-23 18:58 | 5× understand_section + 1× extract_hyperparameters | paper claims being mapped |
 | 2026-05-23 18:59 | detect_environment ERROR (ValidationError) | root passed dict[6] failing PaperClaimMap validation; primitive raised; root caught & adapted |
 | 2026-05-23 19:02 | detect_environment ok → build_environment ok → plan_reproduction start | root self-recovered from the ValidationError without dropping the iteration; environment is built |
-| | | (implement_baseline + run_experiment + verify_against_rubric still ahead) |
+| 2026-05-23 19:04 | plan_reproduction ok → implement_baseline start (iter 3) | docker image `reprolab/prj_5b5fe266b0b83f3d:env-9caa8f013eab` staged locally for runpod |
+| 2026-05-23 19:09–19:10 | sub-agent writing `code/rlm/{repl.py,system_prompt.py,llm_client.py}` | the meta-reproduction in motion — ReproLab's sub-agent is implementing a fresh rlm package; files growing actively (44KB total so far) |
+| 2026-05-23 19:08 | F7 verification | latest 3 `screenshots/console-errors-*.json` files all 3 entries (down from 7 pre-fix) ✓ |
+| | | (implement_baseline finish + run_experiment + verify_against_rubric still ahead) |
 
 ## Observation: ValidationError handling is fragile but didn't block
 
