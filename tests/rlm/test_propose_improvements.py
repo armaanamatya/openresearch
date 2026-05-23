@@ -63,3 +63,27 @@ def test_propose_improvements_clamps_nonpositive_k(make_context, tmp_path):
     ctx = make_context(tmp_path, llm_responses=[three])
     result = propose_improvements({"success": True}, {"areas": []}, k=0, ctx=ctx)
     assert len(result) == 1
+
+
+def test_propose_improvements_failsoft_on_truncated_json(make_context, tmp_path):
+    """Symptom: a truncated LLM response crashes the primitive with ValueError.
+
+    propose_improvements diverged from plan_reproduction / verify_against_rubric
+    (review I3 / T11) — both of those wrap _extract_json in a fail-soft except,
+    propose_improvements did not. Verify: a truncated JSON response yields a
+    single-item error list, never a raised ValueError.
+    """
+    # A truncated JSON object — _extract_json raises ValueError on this exact input.
+    truncated = '{"hypotheses": [{"path_id":"p1","hypothesis":"H'
+    ctx = make_context(tmp_path, llm_responses=[truncated])
+
+    # Must NOT raise.
+    result = propose_improvements({"success": True}, {}, ctx=ctx)
+
+    assert isinstance(result, list)
+    assert result, "fail-soft contract violated: empty list returned instead of error item"
+    assert result[0].get("success") is False
+    # The error string should surface the underlying exception type/class.
+    err = result[0].get("error", "")
+    assert "propose_improvements:" in err
+    assert ("ValueError" in err) or ("truncated" in err.lower())

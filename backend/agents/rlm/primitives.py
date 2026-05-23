@@ -817,8 +817,14 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
           'object {"hypotheses": [ImprovementHypothesis, ...]}. Each hypothesis '
           "carries a free-form `category` tag of your choosing."
     )
-    raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
-    items = _extract_json(raw).get("hypotheses", [])
+    try:
+        raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
+        items = _extract_json(raw).get("hypotheses", [])
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3 / T11 / review I3)
+        return [{
+            "success": False,
+            "error": f"propose_improvements: {type(exc).__name__}: {exc}",
+        }]
 
     out: list[dict] = []
     for item in items:
