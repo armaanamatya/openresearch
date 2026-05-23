@@ -726,6 +726,7 @@ async def run_pipeline_rlm(
             emit=emit,
             corpus_sentinels=corpus_sentinels,
             tools_label=tools_label,  # T21 / review I8
+            llm_model=llm_model,
         )
     finally:
         try:
@@ -744,6 +745,7 @@ def _finalize(
     emit: Any,
     corpus_sentinels: list[str] | None = None,
     tools_label: str = "real",  # T21 / review I8
+    llm_model: str | None = None,
 ) -> RLMRunResult:
     """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
     if result_obj is not None:
@@ -776,6 +778,26 @@ def _finalize(
         report.reproduction_summary = redact_corpus(
             report.reproduction_summary, corpus_sentinels
         )
+
+    # --- Phase-4-forward-compat metadata (spec 2026-05-23-rubric-climb-leaderboard §4.5)
+    # Lifts started_at from demo_status.json (written at run start); stamps
+    # completed_at at write time; records per-role models for leaderboard ranking.
+    report.mode = "rlm"
+    report.models = {
+        "planner": llm_model,
+        "executor": getattr(ctx, "agent_model", None),
+        "verifier": None,
+        "grader": None,
+    }
+    started_at: str | None = None
+    demo_status_path = project_dir / "demo_status.json"
+    if demo_status_path.exists():
+        try:
+            started_at = json.loads(demo_status_path.read_text()).get("startedAt")
+        except (OSError, json.JSONDecodeError):
+            started_at = None
+    report.started_at = started_at
+    report.completed_at = datetime.now(timezone.utc).isoformat()
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
