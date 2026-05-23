@@ -127,6 +127,30 @@ METRICS_FILENAME = "metrics.json"
 # settings / ctx rather than this module constant.
 _EXEC_TIMEOUT_SECONDS = 3600
 
+# CUDA OOM detection: markers observed in PyTorch / cuBLAS logs (spec 2026-05-23 §OOM).
+# Pattern set is intentionally tight to avoid false positives on unrelated CUDA errors.
+_CUDA_OOM_MARKERS: tuple[str, ...] = (
+    "CUDA out of memory",
+    "RuntimeError: CUDA error: out of memory",
+    "torch.cuda.OutOfMemoryError",
+    "cuBLAS error: CUBLAS_STATUS_ALLOC_FAILED",
+)
+
+
+def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
+    """True when exit-code or stderr tail indicates a CUDA OOM (spec 2026-05-23 §OOM).
+
+    `stderr_tail` should be the last ~4KB of combined stderr/stdout from the failed
+    experiment. Exit code 137 is SIGKILL (OOM killer); substring match covers the
+    documented PyTorch/cuBLAS variants. Pattern set is intentionally tight to avoid
+    false positives on unrelated CUDA errors.
+    """
+    if exit_code == 137:
+        return True
+    if not stderr_tail:
+        return False
+    return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
+
 
 def _cap_logs(text: str) -> str:
     """Bound an unbounded log string to a head+tail window for LLM consumption."""
@@ -879,7 +903,6 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
         })
 
-    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
     # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
     # (b) the run-budget deadline via ctx.remaining_s() (the --max-wall-clock
@@ -904,43 +927,115 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         timeout = ctx.remaining_s()
     else:
         timeout = _timeout_for(ctx, _cap_s)
+
     # Load cached gpu_plan if present (written by resolve_gpu_requirements).
-    import json as _json_re
-    _gpu_plan = None
-    _plan_path = ctx.project_dir / "rlm_state" / "gpu_plan.json"
-    if _plan_path.exists():
+    from backend.agents.schemas import GpuPlan as _GpuPlan
+    from backend.config import get_settings
+    from backend.services.runtime.gpu_catalog import CATALOG as _CATALOG
+
+    gpu_plan: "_GpuPlan | None" = None
+    plan_path = ctx.project_dir / "rlm_state" / "gpu_plan.json"
+    if plan_path.exists():
         try:
-            from backend.agents.schemas import GpuPlan as _GpuPlan
-            _gpu_plan = _GpuPlan(**_json_re.loads(_plan_path.read_text(encoding="utf-8")))
+            gpu_plan = _GpuPlan(**json.loads(plan_path.read_text(encoding="utf-8")))
         except Exception:  # noqa: BLE001
             logger.warning("run_experiment: gpu_plan.json present but unreadable; using legacy default")
 
-    # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
+    _settings = get_settings()
+    max_escalations = _settings.dynamic_gpu_max_escalations
+    escalations = 0
+    result: dict = {}
+
+    # Escalation loop (spec 2026-05-23 §OOM): on CUDA OOM, pop the next SKU from
+    # GpuPlan.ladder_remaining, persist the updated plan atomically, emit
+    # gpu_escalated, and retry. Capped by max_escalations. Non-OOM failures and
+    # success exit immediately. I12: explicit shutdown(wait=False) per iteration.
+    while True:
+        run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+        # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            result = pool.submit(
-                asyncio.run,
-                _execute_in_sandbox(
-                    code_path, env_id, commands,
-                    project_id=ctx.project_id, run_id=run_id,
-                    sandbox_mode=ctx.sandbox_mode,
-                    run_budget=ctx.run_budget,
-                    gpu_plan=_gpu_plan,
-                ),
-            ).result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
+            try:
+                result = pool.submit(
+                    asyncio.run,
+                    _execute_in_sandbox(
+                        code_path, env_id, commands,
+                        project_id=ctx.project_id, run_id=run_id,
+                        sandbox_mode=ctx.sandbox_mode,
+                        run_budget=ctx.run_budget,
+                        gpu_plan=gpu_plan,
+                    ),
+                ).result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                result = {
+                    "success": False,
+                    "metrics": {},
+                    "error": (
+                        f"run_experiment: timed out after {timeout:.0f} s"
+                        if timeout is not None
+                        else "run_experiment: timed out (run-budget deadline reached)"
+                    ),
+                }
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        # ---- Escalation gate ----
+        # Break immediately on success, or when no plan is loaded (no gpu_plan
+        # means legacy mode — no ladder to advance), or cap reached.
+        if result.get("success") or gpu_plan is None or escalations >= max_escalations:
+            break
+        stderr_tail = (result.get("logs") or "")[-4096:]
+        exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
+        if not _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+            break
+        if not gpu_plan.ladder_remaining:
             result = {
                 "success": False,
                 "metrics": {},
                 "error": (
-                    f"run_experiment: timed out after {timeout:.0f} s"
-                    if timeout is not None
-                    else "run_experiment: timed out (run-budget deadline reached)"
+                    f"CUDA OOM on {gpu_plan.short_name} ({gpu_plan.vram_gb} GB); "
+                    f"ladder exhausted. Cumulative SKU cost rate: ${gpu_plan.total_usd_per_hr}/hr."
                 ),
+                "logs": result.get("logs", ""),
             }
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+            break
+
+        # Advance ladder: find next SKU by short_name.
+        next_short = gpu_plan.ladder_remaining[0]
+        next_sku = next((s for s in _CATALOG if s.short_name == next_short), None)
+        if next_sku is None:
+            result = {
+                "success": False,
+                "metrics": {},
+                "error": f"ladder advance failed: short_name={next_short!r} not in catalog",
+                "logs": result.get("logs", ""),
+            }
+            break
+
+        new_plan = gpu_plan.model_copy(update={
+            "runpod_id": next_sku.runpod_id,
+            "short_name": next_sku.short_name,
+            "vram_gb": next_sku.vram_gb,
+            "cloud_type": next_sku.cloud_type,
+            "sku_usd_per_hr": next_sku.approx_usd_per_hr,
+            "total_usd_per_hr": round(next_sku.approx_usd_per_hr * gpu_plan.gpu_count, 4),
+            "container_disk_gb": max(50, next_sku.vram_gb),
+            "volume_gb": max(20, next_sku.vram_gb // 4),
+            "ladder_remaining": gpu_plan.ladder_remaining[1:],
+        })
+        # Persist atomically + emit escalation event.
+        tmp = plan_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(new_plan.model_dump(mode="json"), default=str), encoding="utf-8")
+        tmp.replace(plan_path)
+        _emit_dashboard_event(ctx, event_type="gpu_escalated", payload={
+            "from_sku": gpu_plan.short_name,
+            "to_sku": new_plan.short_name,
+            "escalation_index": escalations + 1,
+            "reason": "cuda_oom",
+        })
+        gpu_plan = new_plan
+        escalations += 1
+
     return _persist_experiment_result(ctx, result)
 
 
