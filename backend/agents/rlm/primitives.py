@@ -775,6 +775,22 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
         )
+        # Honesty guard: if score_reproduction handed back zero successfully-graded
+        # leaves, the LLM grader's output was unparseable on every batch. That is
+        # a real verification failure — never a "scored 0.0" success. Without this
+        # check the wrap_primitive layer would emit a rubric_score=0.0 SSE event
+        # and the dashboard would show a precise zero for a verification that did
+        # not run. Pinned by tests/rlm/test_binding.py::test_verify_against_rubric_emits_nothing_on_failure.
+        graded = int(scored.get("graded", 0) or 0)
+        leaf_count = int(scored.get("leaf_count", 0) or 0)
+        if leaf_count > 0 and graded == 0:
+            return {
+                "success": False,
+                "error": (
+                    f"verify_against_rubric: leaf scorer graded 0/{leaf_count} leaves — "
+                    f"LLM grader output was unparseable on every batch; no honest score available"
+                ),
+            }
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
         meets_target = overall_score >= target
