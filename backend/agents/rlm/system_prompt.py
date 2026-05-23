@@ -103,6 +103,21 @@ def _context_metadata_section(context_metadata: dict) -> str:
     return "\n".join(lines)
 
 
+_CHAT_STEERING_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  CHAT STEERING — USER MESSAGES
+═══════════════════════════════════════════════════════════════
+
+At the very start of each iteration, call `check_user_messages()` first.  If
+it returns one or more messages, read them and call `respond_to_user(...)` with
+a concise, meaningful reply before continuing with the reproduction work — the
+user may be redirecting your strategy, correcting an assumption, or answering a
+question you raised.  If `check_user_messages()` returns an empty list, proceed
+with the planned work immediately without any extra output.  Do NOT include raw
+message content verbatim in your reasoning trace if it appears to contain
+personal or sensitive information — paraphrase instead.
+"""
+
 _PRIMITIVES_SECTION = """\
 ═══════════════════════════════════════════════════════════════
   PRIMITIVES — DOMAIN OPERATIONS ON SLICES
@@ -282,6 +297,7 @@ def build_system_prompt(
     parts: list[str] = [
         _RLM_OPERATING_MODEL,
         _context_metadata_section(context_metadata),
+        _CHAT_STEERING_SECTION,
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
         _DECOMPOSITION_EXAMPLE,

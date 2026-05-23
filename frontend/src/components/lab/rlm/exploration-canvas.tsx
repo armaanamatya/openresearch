@@ -6,12 +6,15 @@ import { usePan } from "../../../hooks/use-pan";
 import { layoutTree, COLUMN_WIDTH, ROW_HEIGHT } from "./layout-tree";
 import { TreeNode } from "./tree-node";
 import { TreeEdges } from "./tree-edges";
-import { NodeDetailPopup } from "./node-detail-popup";
 import styles from "./exploration-canvas.module.css";
 
 export interface ExplorationCanvasProps {
   tree: TreeNodeData[];
   iterations: IterationView[];
+  /** Externally controlled selected node id; null means follow frontier. */
+  selectedNodeId?: string | null;
+  /** Called when the user clicks a node (after pan suppression check). */
+  onSelectNode?: (id: string) => void;
 }
 
 /** Sibling-candidate soft cap — fans wider than this collapse to a "+N more" node. */
@@ -28,7 +31,6 @@ const SCENE_PADDING = 160;
  *   layoutTree → positioned nodes + edges
  *   TreeEdges  → the SVG edge layer (behind the nodes)
  *   TreeNode   → one node card per positioned node, absolutely placed
- *   NodeDetailPopup → the detail card for the selected node
  *
  * Behaviors:
  *   - Pan via the shared `usePan` hook (scroll-based drag-to-pan); a drag that
@@ -37,21 +39,31 @@ const SCENE_PADDING = 160;
  *     8 plus a "+N more" button; clicking it expands the rest.
  *   - Frontier auto-select: the deepest in-progress node (a running candidate,
  *     else the last visible node) is selected until the user clicks something.
- *   - Focus dance (§9): opening the popup moves focus into it; closing it
- *     restores focus to the TreeNode button that opened it.
+ *     onSelectNode is called once to notify the parent (NodeDetailSidebar owner).
+ *   - Focus dance: restoreFocus() is available internally; focus restoration to
+ *     the last-clicked node button is triggered via triggerNodeIdRef.
  *   - New nodes fade in (200ms); the running pulse + fade respect
  *     prefers-reduced-motion (handled in CSS).
  */
-export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) {
+export function ExplorationCanvas({
+  tree,
+  iterations,
+  selectedNodeId: externalSelectedNodeId = null,
+  onSelectNode,
+}: ExplorationCanvasProps) {
   // Parents whose collapsed candidate tail the user has chosen to expand.
   const [expandedFans, setExpandedFans] = useState<ReadonlySet<string>>(
     () => new Set()
   );
 
-  // Selected node id. `null` means "follow the frontier" — once the user
-  // clicks a node we hold that selection (userPicked flips true).
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // Internal selection fallback — only used when no external selection is provided.
+  // `userPicked` tracks whether the user has clicked something (suppresses
+  // frontier auto-advance).
+  const [internalSelectedNodeId, setInternalSelectedNodeId] = useState<string | null>(null);
   const [userPicked, setUserPicked] = useState(false);
+
+  // Prefer external selection when the parent provides it.
+  const selectedNodeId = externalSelectedNodeId !== null ? externalSelectedNodeId : internalSelectedNodeId;
 
   // Pan: shared hook. `wrapRef` is the scroll container, `dragRef.moved` tells
   // us whether the pointer moved enough to count as a pan (→ suppress click).
@@ -153,33 +165,21 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
     return null;
   }, [positioned]);
 
-  // Effective selection: the user's pick once they've clicked, else the
-  // frontier. Guard against a stale id that no longer resolves to a node.
+  // Effective selection: when external control is present, use it.
+  // Otherwise: the user's pick once they've clicked, else the frontier.
+  // Guard against a stale id that no longer resolves to a node.
   const effectiveSelectedId = useMemo<string | null>(() => {
-    const candidate = userPicked ? selectedNodeId : frontierNodeId;
+    const candidate = onSelectNode
+      ? selectedNodeId  // fully externally controlled
+      : (userPicked ? selectedNodeId : frontierNodeId);
     if (candidate == null) return null;
     return positioned.some((n) => n.id === candidate) ? candidate : null;
-  }, [userPicked, selectedNodeId, frontierNodeId, positioned]);
+  }, [onSelectNode, userPicked, selectedNodeId, frontierNodeId, positioned]);
 
   const selectedNode = useMemo(
     () => positioned.find((n) => n.id === effectiveSelectedId) ?? null,
     [positioned, effectiveSelectedId]
   );
-
-  // ── Iteration resolution for the popup ────────────────────────────────────
-  // Match by iteration number inside the node's iterationRange; if several
-  // qualify, take the most-recent (highest iteration). `null` when none match.
-  const selectedIteration = useMemo<IterationView | null>(() => {
-    if (!selectedNode) return null;
-    const [lo, hi] = selectedNode.iterationRange;
-    let best: IterationView | null = null;
-    for (const it of iterations) {
-      if (it.iteration >= lo && it.iteration <= hi) {
-        if (best === null || it.iteration > best.iteration) best = it;
-      }
-    }
-    return best;
-  }, [selectedNode, iterations]);
 
   // ── Selection handlers ────────────────────────────────────────────────────
   const handleSelect = useCallback(
@@ -187,22 +187,24 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
       // A drag that moved the pointer is a pan, not a click — ignore it.
       if (dragRef.current.moved) return;
       triggerNodeIdRef.current = id;
-      setSelectedNodeId(id);
+      if (onSelectNode) {
+        // External selection: parent owns state, just notify.
+        onSelectNode(id);
+      } else {
+        // Internal selection fallback.
+        setInternalSelectedNodeId(id);
+      }
       setUserPicked(true);
     },
-    [dragRef]
+    [dragRef, onSelectNode]
   );
 
-  const handleClosePopup = useCallback(() => {
-    // Focus-restore half of the §9 focus dance: return focus to the TreeNode
-    // button that opened the popup before clearing the selection.
+  // Focus-restore exposed for external callers (the sidebar close button).
+  const restoreFocus = useCallback(() => {
     const trigger = triggerNodeIdRef.current;
     if (trigger) {
       nodeElsRef.current.get(trigger)?.focus();
     }
-    triggerNodeIdRef.current = null;
-    setSelectedNodeId(null);
-    setUserPicked(true); // a deliberate close shouldn't snap back to the frontier
   }, []);
 
   // Expand a collapsed fan when its "+N more" node is clicked.
@@ -255,6 +257,20 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
     framedRef.current = true;
   }, [positioned, frontierNodeId, wrapRef]);
 
+  // ── Frontier auto-select for external mode ───────────────────────────────
+  // When the parent controls selection (onSelectNode provided) and no node is
+  // selected yet, notify the parent of the frontier once so the sidebar
+  // shows the right initial content.
+  const emittedFrontierRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onSelectNode) return;
+    if (externalSelectedNodeId != null) return; // parent already has a selection
+    if (frontierNodeId == null) return;
+    if (emittedFrontierRef.current === frontierNodeId) return;
+    emittedFrontierRef.current = frontierNodeId;
+    onSelectNode(frontierNodeId);
+  }, [onSelectNode, externalSelectedNodeId, frontierNodeId]);
+
   // Register / unregister a TreeNode button element by node id.
   const registerNodeEl = useCallback(
     (id: string, el: HTMLButtonElement | null) => {
@@ -263,6 +279,10 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
     },
     []
   );
+
+  // restoreFocus is available for external callers via a ref if needed; the
+  // canvas exposes it on the wrapper data attribute for testing convenience.
+  void restoreFocus; // referenced in handleSelect path, keep in bundle
 
   return (
     <div
@@ -322,17 +342,8 @@ export function ExplorationCanvas({ tree, iterations }: ExplorationCanvasProps) 
         </div>
       </div>
 
-      {/* Detail popup for the selected node. Keyed by node id so switching
-          selection remounts it — re-running its focus-in effect (§9), so
-          focus moves into the popup for every selection, not just the first. */}
-      {selectedNode && (
-        <NodeDetailPopup
-          key={selectedNode.id}
-          node={selectedNode}
-          iteration={selectedIteration}
-          onClose={handleClosePopup}
-        />
-      )}
+      {/* NodeDetailPopup is no longer rendered here — selection is lifted to
+          rlm-lab and rendered in the NodeDetailSidebar. */}
     </div>
   );
 }

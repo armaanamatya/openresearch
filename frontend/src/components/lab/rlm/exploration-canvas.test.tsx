@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ExplorationCanvas } from "./exploration-canvas";
 import { fold, INITIAL_RLM_STATE } from "../../../hooks/use-rlm-run";
@@ -11,11 +11,27 @@ describe("ExplorationCanvas", () => {
     render(<ExplorationCanvas tree={state.tree} iterations={state.iterations} />);
     expect(screen.getAllByRole("button").length).toBeGreaterThanOrEqual(state.tree.length);
   });
-  it("opens the detail popup when a node is clicked", () => {
+
+  it("calls onSelectNode when a node is clicked", () => {
+    const onSelectNode = vi.fn();
+    render(
+      <ExplorationCanvas
+        tree={state.tree}
+        iterations={state.iterations}
+        selectedNodeId={null}
+        onSelectNode={onSelectNode}
+      />
+    );
+    fireEvent.click(screen.getAllByRole("button")[1]);
+    expect(onSelectNode).toHaveBeenCalled();
+  });
+
+  it("no longer renders a node-detail-popup (selection lifted to parent)", () => {
     render(<ExplorationCanvas tree={state.tree} iterations={state.iterations} />);
     fireEvent.click(screen.getAllByRole("button")[1]);
-    expect(screen.getByTestId("node-detail-popup")).toBeInTheDocument();
+    expect(screen.queryByTestId("node-detail-popup")).not.toBeInTheDocument();
   });
+
   it("collapses a fan beyond the 8-node soft cap into a +N node", () => {
     const big = [
       { id: "b", parentId: null, kind: "baseline", title: "baseline", iterationRange: [1, 1] },
@@ -26,5 +42,19 @@ describe("ExplorationCanvas", () => {
     ] as unknown as typeof state.tree;
     render(<ExplorationCanvas tree={big} iterations={[]} />);
     expect(screen.getByText(/\+\d+ more/)).toBeInTheDocument();
+  });
+
+  it("emits frontier via onSelectNode on first render when no external selection", () => {
+    const onSelectNode = vi.fn();
+    render(
+      <ExplorationCanvas
+        tree={state.tree}
+        iterations={state.iterations}
+        selectedNodeId={null}
+        onSelectNode={onSelectNode}
+      />
+    );
+    // Frontier auto-select should have been emitted.
+    expect(onSelectNode).toHaveBeenCalled();
   });
 });

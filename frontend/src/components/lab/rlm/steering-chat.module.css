@@ -1,0 +1,144 @@
+/* SteeringChat — chat panel docked inside the NodeDetailSidebar.
+ * Uses the same CSS variable tokens as node-detail-popup.module.css.
+ */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line-2);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+/* ── Message log ──────────────────────────────────────────────────── */
+
+.log {
+  height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  font-family: var(--font-sans);
+}
+
+.empty {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-style: italic;
+  margin: 0;
+  align-self: center;
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+/* ── Individual messages ──────────────────────────────────────────── */
+
+.msgUser,
+.msgAssistant {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.msgUser {
+  align-items: flex-end;
+}
+
+.msgAssistant {
+  align-items: flex-start;
+}
+
+.msgRole {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.msgContent {
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  line-height: 1.5;
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: var(--sp-1) var(--sp-2);
+  word-break: break-word;
+}
+
+.msgUser .msgContent {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Optimistic messages appear slightly dimmed */
+[data-optimistic="true"] .msgContent {
+  opacity: 0.7;
+}
+
+/* ── Input row ────────────────────────────────────────────────────── */
+
+.inputRow {
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+
+.input {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  background: var(--canvas-bg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  padding: var(--sp-1) var(--sp-2);
+  outline: none;
+  transition: border-color 120ms ease;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sendBtn {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-xs);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease;
+  white-space: nowrap;
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sendBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -969,6 +969,110 @@ def record_candidate_outcome(
     }
 
 
+def check_user_messages(*, ctx: "RunContext") -> list[dict]:
+    """Return new user messages since the last call; advance the read cursor.
+
+    Reads ``runs/<id>/user_messages.jsonl`` and returns only the lines whose
+    index is >= the cursor stored in ``runs/<id>/_user_message_cursor.json``.
+    The cursor is atomically updated so repeated calls return only new messages.
+
+    Returns a list of ``{role, content, ts}`` dicts (empty when no new messages).
+    Emit instrumentation follows the standard `primitive_call` pattern via the
+    `wrap_primitive` wrapper in `binding.py`.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    messages_path = ctx.project_dir / "user_messages.jsonl"
+    cursor_path = ctx.project_dir / "_user_message_cursor.json"
+
+    # Read cursor (default 0 = read from beginning)
+    cursor = 0
+    if cursor_path.exists():
+        try:
+            data = _json.loads(cursor_path.read_text(encoding="utf-8"))
+            cursor = int(data.get("offset", 0))
+        except Exception:  # noqa: BLE001 — fail-soft; a bad cursor resets to 0
+            cursor = 0
+
+    if not messages_path.exists():
+        return []
+
+    new_messages: list[dict] = []
+    lines = []
+    try:
+        lines = messages_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    for line in lines[cursor:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if entry.get("role") == "user":
+            new_messages.append({
+                "role": entry["role"],
+                "content": entry.get("content", ""),
+                "ts": entry.get("ts", ""),
+            })
+
+    # Advance cursor to total line count (includes blank lines, safe)
+    new_cursor = len(lines)
+    # Atomic write via temp + replace
+    import os as _os
+    tmp = cursor_path.with_suffix(".json.tmp")
+    tmp.write_text(
+        _json.dumps({"offset": new_cursor, "updated": datetime.now(timezone.utc).isoformat()}),
+        encoding="utf-8",
+    )
+    _os.replace(tmp, cursor_path)
+
+    return new_messages
+
+
+def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
+    """Append an assistant reply to user_messages.jsonl and emit a dashboard event.
+
+    The reply is appended as ``{role:"assistant", content:message, ts:iso8601}``.
+    A ``user_message_response`` event is also written to ``dashboard_events.jsonl``
+    so the SSE stream surfaces it to the frontend in real time.
+
+    Returns ``{"sent": true}`` on success; ``{"sent": false, "error": ...}`` on
+    validation failure (empty message). Never raises — fail-soft (D3 pattern).
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    if not message or not str(message).strip():
+        return {"sent": False, "error": "respond_to_user: message must be non-empty"}
+
+    ts = datetime.now(timezone.utc).isoformat()
+    assistant_entry = {"role": "assistant", "content": message, "ts": ts}
+    dashboard_entry = {
+        "event": "user_message_response",
+        "timestamp": ts,
+        "role": "assistant",
+        "content": message,
+    }
+
+    messages_path = ctx.project_dir / "user_messages.jsonl"
+    dashboard_path = ctx.project_dir / "dashboard_events.jsonl"
+
+    try:
+        with messages_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(assistant_entry, default=str) + "\n")
+        with dashboard_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(dashboard_entry, default=str) + "\n")
+    except OSError as exc:
+        return {"sent": False, "error": f"respond_to_user: IO error: {exc}"}
+
+    return {"sent": True}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -980,6 +1084,8 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "verify_against_rubric": verify_against_rubric,
     "propose_improvements": propose_improvements,
     "record_candidate_outcome": record_candidate_outcome,
+    "check_user_messages": check_user_messages,
+    "respond_to_user": respond_to_user,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -1031,4 +1137,12 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "outcome is one of: 'running', 'promoted', 'marginal', 'failed', "
         "'skipped', 'declined'. candidate_id must match the id from "
         "candidate_proposed. parent_id is the node this candidate branches from.",
+    "check_user_messages": "check_user_messages() -> list[dict] — return any new "
+        "user messages posted to this run since the last call. Each item is "
+        "{role, content, ts}. Returns an empty list when there are no new messages. "
+        "Call at the start of each iteration to check for steering input.",
+    "respond_to_user": "respond_to_user(message) -> dict — append an assistant "
+        "reply to the conversation and emit it to the live dashboard. Returns "
+        "{sent: true} on success. Call after check_user_messages returns messages "
+        "you want to acknowledge or answer.",
 }

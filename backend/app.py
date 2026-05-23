@@ -695,6 +695,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from backend.routes.leaderboard import router as leaderboard_router
     app.include_router(leaderboard_router)
 
+    # Chat-steering route — POST /runs/{project_id}/messages.
+    from backend.routes.messages import router as messages_router
+    app.include_router(messages_router)
+
     return app
 
 

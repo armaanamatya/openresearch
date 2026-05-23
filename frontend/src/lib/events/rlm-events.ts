@@ -109,6 +109,20 @@ export interface RubricScoreEvent {
 
 // ─── Union type + discriminant helpers ───────────────────────────────────────
 
+// ─── §4.3 Chat-steering events (user messages + assistant responses) ────────────
+
+export interface UserMessageEvent {
+  event: "user_message";
+  timestamp: string;
+  content: string;
+}
+
+export interface UserMessageResponseEvent {
+  event: "user_message_response";
+  timestamp: string;
+  message: string;
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -118,6 +132,8 @@ export const RLM_EVENT_TYPES = [
   "candidate_proposed",
   "candidate_outcome",
   "rubric_score",
+  "user_message",
+  "user_message_response",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -128,7 +144,9 @@ export type RlmDashboardEvent =
   | RunCompleteEvent
   | CandidateProposedEvent
   | CandidateOutcomeEvent
-  | RubricScoreEvent;
+  | RubricScoreEvent
+  | UserMessageEvent
+  | UserMessageResponseEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;
