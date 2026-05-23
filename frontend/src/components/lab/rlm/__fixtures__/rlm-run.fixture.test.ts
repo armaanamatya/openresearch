@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { rlmRunFixture } from "./rlm-run.fixture";
 import { isRlmEvent } from "../../../../lib/events/rlm-events";
+import { fold, INITIAL_RLM_STATE } from "../../../../hooks/use-rlm-run";
 
 describe("rlmRunFixture", () => {
   it("is a non-trivial event stream", () => {
@@ -47,5 +48,52 @@ describe("rlmRunFixture", () => {
     // a terminal run_complete, exactly one, last
     expect(byType("run_complete").length).toBe(1);
     expect(rlmRunFixture[rlmRunFixture.length - 1].event).toBe("run_complete");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Climb-scenario coverage pins (spec 2026-05-23-rubric-climb-leaderboard §6.3)
+// Future fixture edits that drop these scenarios fail this test, not the silent UI.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe("rlmRunFixture — climb scenario coverage", () => {
+  it("produces at least one not-yet-pass -> pass area flip across the run", () => {
+    let state = INITIAL_RLM_STATE;
+    let sawFlip = false;
+    for (const ev of rlmRunFixture) {
+      const before = state.rubric.areas.map((a) => ({ area: a.area, status: a.status }));
+      state = fold(state, ev);
+      if (ev.event === "rubric_score") {
+        for (const a of state.rubric.areas) {
+          const prior = before.find((p) => p.area === a.area);
+          if (prior && prior.status !== "pass" && a.status === "pass") {
+            sawFlip = true;
+            break;
+          }
+        }
+      }
+    }
+    expect(sawFlip).toBe(true);
+  });
+
+  it("produces at least one attributable jump of >= 0.05 with a live candidate", () => {
+    let state = INITIAL_RLM_STATE;
+    let prevScore: number | null = null;
+    let sawAttributable = false;
+    for (const ev of rlmRunFixture) {
+      state = fold(state, ev);
+      if (ev.event === "rubric_score") {
+        if (
+          prevScore !== null &&
+          ev.score - prevScore >= 0.05 &&
+          state.rubric.attributableCandidate
+        ) {
+          sawAttributable = true;
+          break;
+        }
+        prevScore = ev.score;
+      }
+    }
+    expect(sawAttributable).toBe(true);
   });
 });
