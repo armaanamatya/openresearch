@@ -55,6 +55,7 @@ describe("ScriptPanel — item 1: pdf.fileName fallback", () => {
 // ------------------------------------------------------------------
 // Item 2 — pdf?.codePath ?? `${run.outputDir}/code/paper.pdf`  (script-panel.tsx:88)
 // ------------------------------------------------------------------
+// NOTE: items are listed in order; tests for subsequent items are appended below.
 
 describe("ScriptPanel — item 2: code root path fallback", () => {
   it("renders the real codePath when sourcePdf is present", () => {
@@ -83,5 +84,45 @@ describe("ScriptPanel — item 2: code root path fallback", () => {
     expect(path?.textContent).not.toContain("runs/prj_test");
     // Must show honest-empty dash
     expect(path?.textContent).toBe("—");
+  });
+});
+
+// ------------------------------------------------------------------
+// Item 3 — benchmark?.benchmarkName ?? "PaperBench-style final benchmark"  (script-panel.tsx:106)
+// ------------------------------------------------------------------
+
+describe("ScriptPanel — item 3: benchmark name fallback", () => {
+  it("renders the real benchmarkName when benchmark is present", () => {
+    render(
+      <ScriptPanel
+        run={baseRun({
+          benchmark: {
+            benchmarkName: "My Custom Benchmark",
+            paperbenchTaskId: "custom/task-1",
+            overallScore: 80,
+            targetMetric: "accuracy",
+            targetValue: 90,
+            reproducedValue: 80,
+            deltaValue: -10,
+            verdict: "partial_reproduction",
+            reportPath: "runs/prj_test/code/final_benchmark_report.md",
+            comparisonPath: "runs/prj_test/code/comparison.json",
+            logPath: "runs/prj_test/code/logs/eval.log"
+          },
+          payload: { summary: { stage: "complete" } } as never
+        })}
+      />
+    );
+    const title = document.querySelector(".benchmark-title");
+    expect(title?.textContent).toBe("My Custom Benchmark");
+  });
+
+  it("renders '—' (not 'PaperBench-style final benchmark') when benchmark is absent", () => {
+    render(<ScriptPanel run={baseRun({ benchmark: null })} />);
+    const title = document.querySelector(".benchmark-title");
+    // Must NOT show the hardcoded descriptive literal
+    expect(title?.textContent).not.toBe("PaperBench-style final benchmark");
+    // Must show honest-empty dash
+    expect(title?.textContent).toBe("—");
   });
 });
