@@ -1,0 +1,1574 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReproLab — Reproduce any ML paper, end to end.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+/* -------- TWEAKABLE DEFAULTS -------- */
+:root {
+  --bg:           oklch(0.16 0.004 270);
+  --bg-2:         oklch(0.185 0.004 270);
+  --bg-elev:      oklch(0.205 0.004 270);
+  --ink:          oklch(0.96 0.005 90);
+  --ink-2:        oklch(0.78 0.005 90);
+  --ink-3:        oklch(0.56 0.005 90);
+  --ink-4:        oklch(0.40 0.005 90);
+  --rule:         oklch(0.28 0.004 270);
+  --rule-2:       oklch(0.235 0.004 270);
+  --accent:       oklch(0.80 0.16 70);   /* warm amber */
+  --accent-ink:   oklch(0.20 0.04 70);
+
+  --maxw:         1240px;
+  --gutter:       clamp(20px, 4vw, 56px);
+  --section-pad:  clamp(72px, 10vw, 160px);
+
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+body {
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11";
+  overflow-x: hidden;
+}
+
+/* faint paper grain — barely perceptible */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: .035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.35 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* subtle vertical gradient at top */
+body::after {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; height: 60vh;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(120% 80% at 50% -10%, oklch(0.22 0.01 70 / .55), transparent 60%);
+}
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+
+::selection { background: var(--accent); color: var(--accent-ink); }
+
+/* ---------- LAYOUT ---------- */
+.wrap {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding-inline: var(--gutter);
+}
+
+/* ---------- TYPE ---------- */
+.mono   { font-family: var(--mono); font-feature-settings: "ss01","ss02"; letter-spacing: 0.01em; }
+.h-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+h1, h2, h3, h4 { margin: 0; font-weight: 500; letter-spacing: -0.02em; line-height: 1.05; }
+
+.display {
+  font-size: clamp(40px, 6.4vw, 88px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+}
+.headline {
+  font-size: clamp(32px, 4.2vw, 56px);
+  font-weight: 500;
+  letter-spacing: -0.028em;
+  line-height: 1.04;
+  text-wrap: balance;
+}
+.lede {
+  font-size: clamp(17px, 1.55vw, 21px);
+  color: var(--ink-2);
+  font-weight: 400;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+/* ---------- NAV ---------- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: color-mix(in oklab, var(--bg) 78%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-bottom: 1px solid transparent;
+  transition: border-color .3s ease, background .3s ease;
+}
+.nav.scrolled { border-bottom-color: var(--rule-2); }
+.nav-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.brand-mark {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border: 1px solid var(--ink-3);
+  border-radius: 4px;
+  position: relative;
+}
+.brand-mark::before, .brand-mark::after {
+  content: ""; position: absolute;
+  background: var(--ink);
+}
+.brand-mark::before { left: 4px; right: 4px; top: 4px; height: 1.5px; }
+.brand-mark::after  { left: 4px; right: 8px; bottom: 5px; height: 1.5px; }
+.brand-name { font-size: 15px; }
+.brand-name .dot { color: var(--accent); }
+
+.nav-links {
+  display: flex; gap: 28px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.nav-links a:hover { color: var(--ink); }
+.nav-cta {
+  font-size: 13px;
+  padding: 8px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background .2s, border-color .2s;
+}
+.nav-cta:hover { border-color: var(--ink-3); background: var(--bg-2); }
+.nav-cta .ar { color: var(--ink-3); transition: transform .2s; }
+.nav-cta:hover .ar { transform: translateX(2px); color: var(--accent); }
+
+@media (max-width: 720px) {
+  .nav-links { display: none; }
+}
+
+/* ---------- HERO ---------- */
+.hero {
+  padding-top: clamp(72px, 10vw, 140px);
+  padding-bottom: clamp(56px, 8vw, 120px);
+  position: relative;
+}
+.hero-eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-bottom: 28px;
+}
+.hero-eyebrow .pip {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 20%, transparent);
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: clamp(28px, 6vw, 96px);
+  align-items: end;
+}
+@media (max-width: 920px) { .hero-grid { grid-template-columns: 1fr; gap: 32px; } }
+
+.hero h1 .accent-soft { color: var(--ink-3); }
+.hero-meta {
+  border-top: 1px solid var(--rule-2);
+  padding-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px 28px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.hero-meta dt { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-4); margin-bottom: 4px; }
+.hero-meta dd { margin: 0; color: var(--ink-2); }
+
+.hero-actions {
+  margin-top: 36px;
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 18px;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--rule);
+  background: var(--bg-elev);
+  transition: transform .15s, border-color .2s, background .2s;
+}
+.btn:hover { border-color: var(--ink-3); }
+.btn:active { transform: translateY(1px); }
+.btn-primary {
+  background: var(--ink);
+  color: oklch(0.14 0 0);
+  border-color: var(--ink);
+}
+.btn-primary:hover { background: oklch(0.99 0 0); }
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-2);
+}
+.btn-ghost:hover { color: var(--ink); }
+
+/* product hero frame */
+.hero-figure {
+  margin-top: clamp(60px, 8vw, 120px);
+  position: relative;
+}
+.hero-figure .fig-label {
+  position: absolute; top: -28px; left: 0;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+  color: var(--ink-4); text-transform: uppercase;
+}
+.frame {
+  position: relative;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.frame-bleed-r { margin-right: calc(var(--gutter) * -1); border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.frame-bleed-l { margin-left: calc(var(--gutter) * -1); border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+
+/* ---------- SECTION SPINE ---------- */
+section.spec {
+  padding-top: var(--section-pad);
+  padding-bottom: var(--section-pad);
+  border-top: 1px solid var(--rule-2);
+  position: relative;
+}
+.spec-header {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr;
+  gap: clamp(24px, 5vw, 80px);
+  align-items: start;
+}
+@media (max-width: 920px) {
+  .spec-header { grid-template-columns: 1fr; gap: 18px; }
+}
+
+/* numbered tag — distinctly ReproLab: rotated 90deg rail on desktop, inline on mobile */
+.spec-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.spec-num .glyph { color: var(--ink-4); }
+.spec-num .n { color: var(--ink); }
+
+.spec-title { display: flex; flex-direction: column; gap: 20px; }
+.spec-title .name {
+  display: flex; align-items: baseline; gap: 14px;
+  flex-wrap: wrap;
+}
+.spec-title .name .word { font-size: clamp(28px, 3.5vw, 44px); font-weight: 500; letter-spacing: -0.025em; line-height: 1; }
+.spec-title .name .rule {
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+  align-self: center;
+  min-width: 40px;
+}
+.spec-title .name .stage {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-4);
+}
+.spec-title .head {
+  font-size: clamp(28px, 3.2vw, 40px);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  text-wrap: balance;
+}
+
+.spec-blurb { color: var(--ink-2); font-size: clamp(16px, 1.3vw, 18px); line-height: 1.55; max-width: 44ch; text-wrap: pretty; }
+
+.spec-substeps {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 28px;
+  max-width: 520px;
+}
+.spec-substeps a, .spec-substeps span {
+  display: flex; gap: 12px; padding: 8px 0;
+  font-size: 14px; color: var(--ink-2);
+  border-top: 1px solid var(--rule-2);
+  transition: color .2s, padding-left .2s;
+}
+.spec-substeps a:hover { color: var(--ink); padding-left: 4px; }
+.spec-substeps .num { font-family: var(--mono); color: var(--ink-4); font-size: 12px; min-width: 30px; }
+
+.spec-visual {
+  margin-top: clamp(48px, 7vw, 96px);
+  position: relative;
+}
+.spec-visual .fig-label {
+  position: absolute; top: -28px; left: 0;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+  color: var(--ink-4); text-transform: uppercase;
+}
+
+/* ---------- PRODUCT MOCK SHARED ---------- */
+.mock {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.mock-chrome {
+  height: 36px;
+  display: flex; align-items: center;
+  padding: 0 14px;
+  gap: 12px;
+  border-bottom: 1px solid var(--rule-2);
+  background: oklch(from var(--bg-2) calc(l + 0.01) c h);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.mock-chrome .dots { display: flex; gap: 6px; }
+.mock-chrome .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--rule); }
+.mock-chrome .crumbs { color: var(--ink-3); }
+.mock-chrome .crumbs b { color: var(--ink); font-weight: 500; }
+.mock-chrome .right { margin-left: auto; color: var(--ink-4); }
+
+/* ---------- §1.0 PAPER COMPREHENSION MOCK ---------- */
+.mock-paper {
+  display: grid;
+  grid-template-columns: 1fr 1fr 320px;
+  min-height: 460px;
+}
+@media (max-width: 920px) {
+  .mock-paper { grid-template-columns: 1fr; }
+  .mock-paper > * + * { border-top: 1px solid var(--rule-2); border-left: 0 !important; }
+}
+.mock-paper .col { padding: 22px 22px 26px; border-left: 1px solid var(--rule-2); }
+.mock-paper .col:first-child { border-left: 0; }
+.mock-paper .doc-meta { font-size: 10.5px; color: var(--ink-4); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 14px; }
+.mock-paper h4.paper-title { font-family: var(--sans); font-size: 15px; font-weight: 500; color: var(--ink); letter-spacing: -0.01em; line-height: 1.25; margin-bottom: 10px; }
+.mock-paper .authors { font-size: 11px; color: var(--ink-3); margin-bottom: 18px; }
+.mock-paper .abstract {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.mock-paper .abstract mark {
+  background: color-mix(in oklab, var(--accent) 25%, transparent);
+  color: var(--ink);
+  padding: 1px 3px;
+  border-radius: 2px;
+}
+.mock-paper .abstract .hl-rule {
+  background: transparent;
+  border-bottom: 1px dashed color-mix(in oklab, var(--accent) 60%, transparent);
+  color: var(--ink-2);
+}
+
+.claim {
+  border: 1px solid var(--rule-2);
+  border-radius: 5px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: oklch(from var(--bg-2) calc(l + 0.012) c h);
+}
+.claim .cid { font-size: 10px; color: var(--ink-4); letter-spacing: .08em; }
+.claim .ctxt { font-family: var(--sans); font-size: 12px; color: var(--ink); margin-top: 4px; line-height: 1.4; }
+.claim .meta { display: flex; gap: 10px; margin-top: 8px; font-size: 10px; color: var(--ink-3); }
+.claim .meta .badge { padding: 1px 6px; border: 1px solid var(--rule); border-radius: 3px; }
+.claim .meta .badge.ok { color: var(--ink-2); }
+
+.graph-mini {
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  padding: 14px;
+  background: oklch(from var(--bg-2) calc(l + 0.008) c h);
+  margin-top: 14px;
+}
+.graph-mini .title { font-size: 10px; color: var(--ink-4); letter-spacing: .08em; margin-bottom: 8px; }
+
+/* ---------- §2.0 ENVIRONMENT MOCK ---------- */
+.mock-env { display: grid; grid-template-columns: 300px 1fr; min-height: 420px; }
+@media (max-width: 820px) { .mock-env { grid-template-columns: 1fr; } .mock-env .env-right { border-top: 1px solid var(--rule-2); border-left: 0 !important; } }
+.mock-env .env-left { padding: 18px; }
+.mock-env .env-right { border-left: 1px solid var(--rule-2); padding: 18px 20px; }
+.tree { font-family: var(--mono); font-size: 12px; line-height: 1.75; color: var(--ink-2); }
+.tree .root { color: var(--ink); }
+.tree .dim  { color: var(--ink-4); }
+.tree .ok::after { content: " ✓"; color: var(--accent); }
+.tree .pin { color: var(--ink-3); }
+.lockfile {
+  margin-top: 14px;
+  background: oklch(from var(--bg-2) calc(l - 0.01) c h);
+  border: 1px solid var(--rule-2);
+  border-radius: 5px;
+  padding: 12px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.lockfile .k { color: var(--ink-2); }
+.lockfile .v { color: var(--ink); }
+.cards-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 12px; }
+.env-card {
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  padding: 12px;
+  background: oklch(from var(--bg-2) calc(l + 0.008) c h);
+}
+.env-card .lbl { font-size: 10px; letter-spacing: .08em; color: var(--ink-4); text-transform: uppercase; }
+.env-card .val { font-family: var(--mono); font-size: 16px; color: var(--ink); margin-top: 4px; font-weight: 500; }
+.env-card .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+
+.log {
+  margin-top: 10px;
+  background: oklch(from var(--bg-2) calc(l - 0.012) c h);
+  border: 1px solid var(--rule-2);
+  border-radius: 5px;
+  padding: 12px 14px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--ink-3); line-height: 1.7;
+}
+.log .ts { color: var(--ink-4); }
+.log .ok { color: var(--accent); }
+.log .em { color: var(--ink); }
+
+/* ---------- §3.0 IMPLEMENTATION MOCK ---------- */
+.mock-impl { display: grid; grid-template-columns: 220px 1fr; min-height: 440px; }
+@media (max-width: 820px) { .mock-impl { grid-template-columns: 1fr; } .mock-impl .code-col { border-top: 1px solid var(--rule-2); border-left: 0 !important; } }
+.mock-impl .files-col { padding: 16px 0; }
+.mock-impl .files-col .files-h { padding: 0 18px 10px; font-size: 10px; letter-spacing: .12em; color: var(--ink-4); text-transform: uppercase; }
+.mock-impl .files-col .f {
+  padding: 5px 18px;
+  font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+  display: flex; gap: 10px; align-items: center;
+}
+.mock-impl .files-col .f.active { color: var(--ink); background: oklch(from var(--bg-2) calc(l + 0.018) c h); border-left: 2px solid var(--accent); padding-left: 16px; }
+.mock-impl .files-col .f .ic { color: var(--ink-4); }
+.mock-impl .code-col { border-left: 1px solid var(--rule-2); }
+.code-tabs { display: flex; border-bottom: 1px solid var(--rule-2); font-family: var(--mono); font-size: 11px; }
+.code-tabs .tab { padding: 10px 16px; color: var(--ink-3); border-right: 1px solid var(--rule-2); }
+.code-tabs .tab.active { color: var(--ink); background: oklch(from var(--bg-2) calc(l + 0.012) c h); }
+pre.code {
+  margin: 0; padding: 18px 22px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.7;
+  color: var(--ink-2); overflow-x: auto;
+}
+.code .ln { color: var(--ink-4); user-select: none; display: inline-block; width: 24px; }
+.code .kw { color: oklch(0.78 0.05 250); }
+.code .fn { color: var(--ink); }
+.code .st { color: oklch(0.80 0.10 130); }
+.code .cm { color: var(--ink-4); font-style: italic; }
+.code .add { background: color-mix(in oklab, oklch(0.68 0.15 145) 14%, transparent); display: block; padding-left: 4px; }
+.code .add::before { content: "+"; color: oklch(0.78 0.14 145); margin-right: 4px; }
+.code .del { background: color-mix(in oklab, oklch(0.65 0.18 25) 13%, transparent); display: block; padding-left: 4px; color: var(--ink-3); text-decoration: line-through; text-decoration-color: oklch(0.55 0.10 25 / .5); }
+.code .del::before { content: "−"; color: oklch(0.70 0.12 25); margin-right: 4px; text-decoration: none; }
+
+/* ---------- §4.0 EXPERIMENTS MOCK ---------- */
+.mock-exp { display: grid; grid-template-columns: 1fr 360px; min-height: 440px; }
+@media (max-width: 820px) { .mock-exp { grid-template-columns: 1fr; } .mock-exp > * + * { border-top: 1px solid var(--rule-2); border-left: 0 !important; } }
+.mock-exp .chart-col { padding: 22px; }
+.mock-exp .runs-col { border-left: 1px solid var(--rule-2); padding: 16px 0; }
+.chart-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+.chart-head h5 { font-family: var(--sans); font-weight: 500; font-size: 14px; color: var(--ink); margin: 0; letter-spacing: -0.01em; }
+.chart-head .legend { display: flex; gap: 14px; margin-left: auto; font-size: 11px; color: var(--ink-3); }
+.chart-head .legend .sw { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 6px; }
+.run-row {
+  padding: 10px 18px;
+  border-top: 1px solid var(--rule-2);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.run-row:first-of-type { border-top: 0; }
+.run-row .id { font-family: var(--mono); font-size: 11px; color: var(--ink-4); }
+.run-row .name { font-size: 13px; color: var(--ink); margin-top: 2px; }
+.run-row .score { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+.run-row .status {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 3px; border: 1px solid var(--rule);
+  color: var(--ink-3);
+}
+.run-row.match .status { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
+.run-row.match .score { color: var(--ink); }
+.runs-h {
+  padding: 0 18px 12px;
+  font-size: 10px; letter-spacing: .12em; color: var(--ink-4); text-transform: uppercase;
+}
+
+/* ---------- §5.0 VERIFICATION MOCK ---------- */
+.mock-verify { padding: 22px; min-height: 420px; }
+.rubric-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+.rubric-head h5 { font-family: var(--sans); font-weight: 500; font-size: 14px; color: var(--ink); margin: 0; }
+.rubric-head .meta { font-family: var(--mono); font-size: 11px; color: var(--ink-4); margin-left: auto; }
+.rubric-table { width: 100%; border-collapse: collapse; }
+.rubric-table th, .rubric-table td {
+  text-align: left;
+  padding: 11px 12px;
+  border-top: 1px solid var(--rule-2);
+  font-size: 13px;
+}
+.rubric-table th {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .12em;
+  color: var(--ink-4); text-transform: uppercase; font-weight: 400;
+  border-top: 0;
+}
+.rubric-table td.cid { font-family: var(--mono); font-size: 11px; color: var(--ink-4); width: 60px; }
+.rubric-table td.cl { color: var(--ink-2); }
+.rubric-table td.tgt, .rubric-table td.obs { font-family: var(--mono); font-size: 12px; color: var(--ink); width: 110px; text-align: right; }
+.rubric-table td.delta { font-family: var(--mono); font-size: 12px; width: 90px; text-align: right; }
+.rubric-table td.delta.pos { color: oklch(0.78 0.13 145); }
+.rubric-table td.delta.neg { color: oklch(0.72 0.14 28); }
+.rubric-table td.judge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-3); width: 110px; text-align: right;
+}
+.rubric-table td.judge .pill {
+  border: 1px solid var(--rule);
+  padding: 2px 7px; border-radius: 3px;
+}
+.rubric-table td.judge .pill.match { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
+
+.score-strip {
+  margin-top: 26px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--rule-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.score-strip .cell {
+  background: oklch(from var(--bg-2) calc(l + 0.012) c h);
+  padding: 14px 16px;
+}
+.score-strip .cell .lbl { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-4); }
+.score-strip .cell .v { font-family: var(--mono); font-size: 20px; color: var(--ink); margin-top: 6px; font-weight: 500; letter-spacing: -0.01em; }
+.score-strip .cell .v.placeholder { color: var(--ink-3); }
+.score-strip .cell .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+@media (max-width: 720px) { .score-strip { grid-template-columns: repeat(2, 1fr); } }
+
+/* ---------- BENCHMARK SECTION ---------- */
+.bench {
+  padding-block: var(--section-pad);
+  border-top: 1px solid var(--rule-2);
+}
+.bench .row {
+  display: grid; grid-template-columns: 80px 1fr 1fr; gap: clamp(24px, 5vw, 80px);
+  align-items: start;
+}
+@media (max-width: 920px) { .bench .row { grid-template-columns: 1fr; } }
+.bench-numbers {
+  margin-top: 56px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--rule-2);
+  border: 1px solid var(--rule-2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+@media (max-width: 820px) { .bench-numbers { grid-template-columns: repeat(2, 1fr); } }
+.bench-cell {
+  background: var(--bg);
+  padding: 28px 28px 32px;
+  position: relative;
+}
+.bench-cell .lbl { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-4); }
+.bench-cell .v {
+  font-family: var(--mono);
+  font-size: clamp(34px, 4.2vw, 56px);
+  color: var(--ink);
+  margin-top: 14px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+.bench-cell .v.placeholder { color: var(--ink-3); }
+.bench-cell .v sup { font-size: 0.45em; color: var(--ink-3); margin-left: 4px; vertical-align: super; font-family: var(--mono); }
+.bench-cell .sub { font-size: 12px; color: var(--ink-3); margin-top: 10px; max-width: 32ch; line-height: 1.45; }
+.bench-cell .pl-note {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+  color: var(--ink-4); text-transform: uppercase;
+  position: absolute; top: 28px; right: 28px;
+  border: 1px solid var(--rule); padding: 2px 6px; border-radius: 3px;
+}
+
+/* ---------- CTA FOOTER ---------- */
+.cta-foot {
+  padding-block: clamp(72px, 10vw, 140px);
+  border-top: 1px solid var(--rule-2);
+  text-align: center;
+}
+.cta-foot h2 {
+  font-size: clamp(36px, 5.5vw, 72px);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  text-wrap: balance;
+}
+.cta-foot .lede { margin: 22px auto 0; max-width: 56ch; }
+.cta-foot .actions { margin-top: 36px; display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+footer.foot {
+  border-top: 1px solid var(--rule-2);
+  padding-block: 32px 48px;
+}
+.foot-inner { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; font-size: 12px; color: var(--ink-4); }
+.foot-inner .links { display: flex; gap: 22px; }
+.foot-inner .links a:hover { color: var(--ink-2); }
+.foot-inner .mono { letter-spacing: .08em; }
+
+/* ---------- SCROLL REVEAL ---------- */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease-out, transform .5s ease-out; }
+.reveal.in  { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1; transform: none; transition: none; }
+}
+
+/* placeholder-token style */
+.tok {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--ink-3);
+  background: oklch(from var(--bg-2) calc(l + 0.02) c h);
+  border: 1px dashed var(--rule);
+  border-radius: 3px;
+  padding: 1px 6px;
+  letter-spacing: 0.01em;
+}
+
+/* utility */
+.hr-thin { height: 1px; background: var(--rule-2); border: 0; margin: 0; }
+
+</style>
+</head>
+<body>
+
+<!-- =================== NAV =================== -->
+<nav class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a href="#top" class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">ReproLab<span class="dot">.</span></span>
+    </a>
+    <div class="nav-links">
+      <a href="#pipeline">How it works</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#paper">RLM paper</a>
+      <a href="#github">GitHub</a>
+    </div>
+    <a href="#github" class="nav-cta">
+      <span>Open lab</span>
+      <span class="ar">→</span>
+    </a>
+  </div>
+</nav>
+
+<!-- =================== HERO =================== -->
+<header class="hero" id="top">
+  <div class="wrap">
+
+    <div class="hero-eyebrow mono reveal">
+      <span class="pip" aria-hidden="true"></span>
+      <span>RLM&nbsp;&nbsp;·&nbsp;&nbsp;§ 0.0 — Reproducibility, automated.</span>
+    </div>
+
+    <div class="hero-grid">
+      <h1 class="display reveal" data-comment-anchor="hero-headline">
+        Reproduce any ML paper, <span class="accent-soft">end&nbsp;to&nbsp;end.</span>
+      </h1>
+      <div class="reveal">
+        <p class="lede" style="margin: 0 0 24px;">
+          ReproLab is a paper-reproduction agent built on the Recursive Language Model paradigm.
+          It reads a paper, builds the environment, implements the method, runs the
+          experiments, and grades itself against the paper's own claims.
+        </p>
+        <dl class="hero-meta">
+          <div>
+            <dt>Paradigm</dt>
+            <dd>Recursive Language Models (RLM)</dd>
+          </div>
+          <div>
+            <dt>Stages</dt>
+            <dd>§ 1.0&nbsp;→&nbsp;5.0&nbsp;&nbsp;·&nbsp;&nbsp;closed-loop</dd>
+          </div>
+          <div>
+            <dt>Modality</dt>
+            <dd>Code, configs, container, claims</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd>Research preview · <span class="tok">{{REPRODUCTION_SCORE}}</span></dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+
+    <div class="hero-actions reveal">
+      <a class="btn btn-primary" href="#pipeline">
+        <span>Read the spec</span>
+        <span aria-hidden="true">↓</span>
+      </a>
+      <a class="btn btn-ghost" href="#github">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.72-.49.06-.48.06-.48.8.06 1.22.82 1.22.82.71 1.21 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>View on GitHub</span>
+      </a>
+    </div>
+
+    <figure class="hero-figure reveal">
+      <span class="fig-label">FIG&nbsp;§ 0.1&nbsp;&nbsp;—&nbsp;&nbsp;Lab UI / exploration tree</span>
+      <div class="frame" id="LAB_UI_EXPLORATION_TREE_HERO">
+        <div class="mock-chrome">
+          <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+          <span class="crumbs">lab&nbsp;/&nbsp;<b>arxiv:2410.04265 — Recursive Language Models</b></span>
+          <span class="right">run · rlm-7e3a · 02:14:08</span>
+        </div>
+        <div id="hero-tree" style="padding: 22px 24px 28px;">
+          <!-- exploration tree SVG -->
+          <svg viewBox="0 0 1200 360" width="100%" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <defs>
+              <style>
+                .nlbl { font-family: "Geist Mono", ui-monospace, monospace; font-size: 10px; fill: oklch(0.56 0.005 90); letter-spacing: 0.04em; }
+                .nlbl-em { fill: oklch(0.96 0.005 90); }
+                .nlbl-accent { fill: oklch(0.80 0.16 70); }
+                .edge { stroke: oklch(0.28 0.004 270); stroke-width: 1; fill: none; }
+                .edge-live { stroke: oklch(0.80 0.16 70 / .8); }
+                .node-bg { fill: oklch(0.205 0.004 270); stroke: oklch(0.28 0.004 270); }
+                .node-bg-live { fill: oklch(0.205 0.004 270); stroke: oklch(0.80 0.16 70 / .9); }
+                .node-bg-done { fill: oklch(0.205 0.004 270); stroke: oklch(0.40 0.005 90); }
+                .pulse { animation: pulse 2.2s ease-out infinite; }
+                @keyframes pulse { 0% { r: 4; opacity: 1; } 100% { r: 14; opacity: 0; } }
+              </style>
+            </defs>
+
+            <!-- edges -->
+            <path class="edge" d="M150,180 C 230,180 230,80 310,80"/>
+            <path class="edge" d="M150,180 C 230,180 230,180 310,180"/>
+            <path class="edge" d="M150,180 C 230,180 230,280 310,280"/>
+
+            <path class="edge" d="M450,80  C 530,80  530,40  610,40"/>
+            <path class="edge" d="M450,80  C 530,80  530,120 610,120"/>
+            <path class="edge edge-live" d="M450,180 C 530,180 530,180 610,180"/>
+            <path class="edge" d="M450,280 C 530,280 530,240 610,240"/>
+            <path class="edge" d="M450,280 C 530,280 530,320 610,320"/>
+
+            <path class="edge edge-live" d="M750,180 C 830,180 830,140 910,140"/>
+            <path class="edge edge-live" d="M750,180 C 830,180 830,220 910,220"/>
+
+            <!-- nodes -->
+            <g>
+              <rect class="node-bg-done" x="60" y="160" width="180" height="44" rx="5"/>
+              <text class="nlbl" x="78" y="180">§ 1.0  COMPREHENSION</text>
+              <text class="nlbl nlbl-em" x="78" y="196">Paper parsed · 47 claims</text>
+            </g>
+
+            <g>
+              <rect class="node-bg-done" x="310" y="60" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="324" y="78">§ 2.0 ENV · CUDA</text>
+              <text class="nlbl nlbl-em" x="324" y="92">torch 2.4 · py3.11</text>
+            </g>
+            <g>
+              <rect class="node-bg-done" x="310" y="160" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="324" y="178">§ 3.0 IMPL · baseline</text>
+              <text class="nlbl nlbl-em" x="324" y="192">commit 7e3a · diff +428</text>
+            </g>
+            <g>
+              <rect class="node-bg-done" x="310" y="260" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="324" y="278">§ 3.2 EXPLORE</text>
+              <text class="nlbl nlbl-em" x="324" y="292">12 branches</text>
+            </g>
+
+            <!-- branches -->
+            <g>
+              <rect class="node-bg" x="610" y="20" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="624" y="38">3.2a · lr ×2</text>
+              <text class="nlbl" x="624" y="52">acc 0.611 → 0.624</text>
+            </g>
+            <g>
+              <rect class="node-bg" x="610" y="100" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="624" y="118">3.2b · bs 256</text>
+              <text class="nlbl" x="624" y="132">acc 0.598</text>
+            </g>
+            <g>
+              <rect class="node-bg-live" x="610" y="160" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="624" y="178">§ 4.0 EXPERIMENTS</text>
+              <text class="nlbl nlbl-accent" x="624" y="192">running · seed 0…4</text>
+              <circle cx="740" cy="180" r="4" fill="oklch(0.80 0.16 70)"/>
+              <circle cx="740" cy="180" r="4" fill="oklch(0.80 0.16 70)" class="pulse"/>
+            </g>
+            <g>
+              <rect class="node-bg" x="610" y="220" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="624" y="238">3.2c · adamw → lion</text>
+              <text class="nlbl" x="624" y="252">acc 0.582</text>
+            </g>
+            <g>
+              <rect class="node-bg" x="610" y="300" width="140" height="40" rx="5"/>
+              <text class="nlbl" x="624" y="318">3.2d · cosine sched</text>
+              <text class="nlbl" x="624" y="332">acc 0.607</text>
+            </g>
+
+            <!-- verify -->
+            <g>
+              <rect class="node-bg-live" x="910" y="120" width="160" height="40" rx="5"/>
+              <text class="nlbl" x="924" y="138">§ 5.0 VERIFY · seed 0</text>
+              <text class="nlbl nlbl-accent" x="924" y="152">0.627 vs 0.631 paper</text>
+            </g>
+            <g>
+              <rect class="node-bg-live" x="910" y="200" width="160" height="40" rx="5"/>
+              <text class="nlbl" x="924" y="218">§ 5.0 VERIFY · seed 1</text>
+              <text class="nlbl nlbl-accent" x="924" y="232">0.623 vs 0.631 paper</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </figure>
+  </div>
+</header>
+
+<!-- =================== §1.0 COMPREHENSION =================== -->
+<section class="spec" id="pipeline">
+  <div class="wrap">
+    <div class="spec-header reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">1.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Comprehension</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">stage 01 / 05</span>
+        </div>
+        <h2 class="head">Read the paper like an author would.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">The agent ingests the PDF and source repo, extracts every quantitative claim, and builds a citation graph linking each claim to the table, figure, or equation that supports it.</p>
+        <div class="spec-substeps">
+          <a href="#"><span class="num">§ 1.1</span><span>Parsing</span></a>
+          <a href="#"><span class="num">§ 1.2</span><span>Claim extraction</span></a>
+          <a href="#"><span class="num">§ 1.3</span><span>Citation graph</span></a>
+          <a href="#"><span class="num">§ 1.4</span><span>Rubric induction</span></a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="spec-visual reveal">
+      <span class="fig-label">FIG&nbsp;§ 1.2&nbsp;&nbsp;—&nbsp;&nbsp;Claim extraction · rubric induction</span>
+      <div class="frame frame-bleed-r" id="LAB_UI_COMPREHENSION">
+        <div class="mock-chrome">
+          <span class="crumbs">comprehension&nbsp;/&nbsp;<b>arxiv:2410.04265</b></span>
+          <span class="right">47 claims · 23 figures · 9 tables</span>
+        </div>
+        <div class="mock mock-paper">
+          <div class="col">
+            <div class="doc-meta">PAPER&nbsp;&nbsp;·&nbsp;&nbsp;PG&nbsp;3 / 17</div>
+            <h4 class="paper-title">Recursive Language Models: Self-Refining Reasoning via Bounded Sub-Calls</h4>
+            <div class="authors">Anonymous · arXiv:2410.04265 · v2</div>
+            <p class="abstract">
+              We introduce <mark>Recursive Language Models (RLM)</mark>, a paradigm in which a model
+              decomposes a task, invokes itself on sub-tasks under a bounded depth budget,
+              and aggregates partial results. On a suite of reasoning benchmarks, RLM agents
+              <span class="hl-rule">improve absolute accuracy by 7–14 points</span> over a flat
+              baseline at matched inference compute. Improvements are largest on tasks with
+              <mark>verifiable intermediate state</mark>, suggesting RLM is best suited to
+              domains where each sub-call can be checked against a rubric…
+            </p>
+          </div>
+
+          <div class="col">
+            <div class="doc-meta">EXTRACTED&nbsp;CLAIMS&nbsp;&nbsp;·&nbsp;&nbsp;47</div>
+
+            <div class="claim">
+              <div class="cid">C-014 · §4.2 · TABLE 1, ROW 3</div>
+              <div class="ctxt">RLM-7B beats flat-7B by <b>+9.2 pts</b> on GSM8K (pass@1).</div>
+              <div class="meta">
+                <span class="badge ok">QUANTITATIVE</span>
+                <span class="badge">REPRODUCIBLE</span>
+              </div>
+            </div>
+
+            <div class="claim">
+              <div class="cid">C-018 · §4.3 · FIG 4</div>
+              <div class="ctxt">Depth budget d=3 dominates d≤2 across 4 of 5 benchmarks.</div>
+              <div class="meta">
+                <span class="badge ok">QUANTITATIVE</span>
+                <span class="badge">REPRODUCIBLE</span>
+              </div>
+            </div>
+
+            <div class="claim">
+              <div class="cid">C-022 · §5.1 · INLINE</div>
+              <div class="ctxt">Sub-call cost grows sub-linearly with task length.</div>
+              <div class="meta">
+                <span class="badge">QUALITATIVE</span>
+              </div>
+            </div>
+
+            <div class="claim">
+              <div class="cid">C-031 · §6 · TABLE 3</div>
+              <div class="ctxt">Verifier ablation drops accuracy by <b>−4.1 pts</b>.</div>
+              <div class="meta">
+                <span class="badge ok">QUANTITATIVE</span>
+                <span class="badge">REPRODUCIBLE</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="doc-meta">RUBRIC&nbsp;&nbsp;·&nbsp;&nbsp;INDUCED</div>
+            <div class="graph-mini">
+              <div class="title">CITATION GRAPH · §4.2 ↔ TABLE 1</div>
+              <svg viewBox="0 0 280 150" width="100%" aria-hidden="true">
+                <line x1="40"  y1="40"  x2="140" y2="40"  stroke="oklch(0.28 0.004 270)"/>
+                <line x1="40"  y1="40"  x2="140" y2="80"  stroke="oklch(0.80 0.16 70 / .8)"/>
+                <line x1="40"  y1="40"  x2="140" y2="120" stroke="oklch(0.28 0.004 270)"/>
+                <line x1="140" y1="80"  x2="240" y2="60"  stroke="oklch(0.80 0.16 70 / .8)"/>
+                <line x1="140" y1="80"  x2="240" y2="110" stroke="oklch(0.28 0.004 270)"/>
+                <circle cx="40"  cy="40"  r="5" fill="oklch(0.205 0.004 270)" stroke="oklch(0.56 0.005 90)"/>
+                <circle cx="140" cy="40"  r="5" fill="oklch(0.205 0.004 270)" stroke="oklch(0.56 0.005 90)"/>
+                <circle cx="140" cy="80"  r="5" fill="oklch(0.80 0.16 70)" stroke="oklch(0.80 0.16 70)"/>
+                <circle cx="140" cy="120" r="5" fill="oklch(0.205 0.004 270)" stroke="oklch(0.56 0.005 90)"/>
+                <circle cx="240" cy="60"  r="5" fill="oklch(0.205 0.004 270)" stroke="oklch(0.56 0.005 90)"/>
+                <circle cx="240" cy="110" r="5" fill="oklch(0.205 0.004 270)" stroke="oklch(0.56 0.005 90)"/>
+                <text x="50"  y="36"  class="nlbl">§4.2</text>
+                <text x="150" y="36"  class="nlbl">TBL 1</text>
+                <text x="150" y="76"  class="nlbl nlbl-accent">ROW 3</text>
+                <text x="150" y="116" class="nlbl">FIG 4</text>
+                <text x="250" y="56"  class="nlbl">C-014</text>
+                <text x="250" y="106" class="nlbl">C-018</text>
+              </svg>
+            </div>
+            <div class="graph-mini" style="margin-top: 10px;">
+              <div class="title">RUBRIC · TASK COVERAGE</div>
+              <div style="font-family: var(--mono); font-size: 11px; color: var(--ink-2); line-height: 1.85;">
+                <div><span style="color: var(--ink-4)">→</span> GSM8K · pass@1</div>
+                <div><span style="color: var(--ink-4)">→</span> MATH · pass@1</div>
+                <div><span style="color: var(--ink-4)">→</span> ARC-Challenge</div>
+                <div><span style="color: var(--ink-4)">→</span> HumanEval+</div>
+                <div><span style="color: var(--ink-4)">→</span> StrategyQA</div>
+                <div style="color: var(--ink-4); margin-top: 4px;">+ 4 ablations · §6</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- =================== §2.0 ENVIRONMENT =================== -->
+<section class="spec">
+  <div class="wrap">
+    <div class="spec-header reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">2.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Environment</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">stage 02 / 05</span>
+        </div>
+        <h2 class="head">Stand up exactly the machine the paper ran on.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">Pinned CUDA, pinned wheels, pinned data hashes. A reproducible container is built, verified against the paper's dependencies, and locked before a single training step runs.</p>
+        <div class="spec-substeps">
+          <a href="#"><span class="num">§ 2.1</span><span>Toolchain</span></a>
+          <a href="#"><span class="num">§ 2.2</span><span>Lockfile</span></a>
+          <a href="#"><span class="num">§ 2.3</span><span>Dataset hashes</span></a>
+          <a href="#"><span class="num">§ 2.4</span><span>GPU provisioning</span></a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="spec-visual reveal">
+      <span class="fig-label">FIG&nbsp;§ 2.2&nbsp;&nbsp;—&nbsp;&nbsp;Lockfile · GPU provisioning</span>
+      <div class="frame" id="LAB_UI_ENV">
+        <div class="mock-chrome">
+          <span class="crumbs">env&nbsp;/&nbsp;<b>rlm-7e3a / container</b></span>
+          <span class="right">image · sha256:9a4f…02e1</span>
+        </div>
+        <div class="mock mock-env">
+          <div class="env-left">
+            <div class="tree" aria-hidden="true">
+<span class="root">rlm-7e3a/</span><br>
+<span class="dim">├─</span> Dockerfile&nbsp;<span class="ok pin">pinned</span><br>
+<span class="dim">├─</span> environment.lock<br>
+<span class="dim">├─</span> data/<br>
+<span class="dim">│&nbsp;&nbsp;├─</span> gsm8k.parquet&nbsp;<span class="dim">·</span> <span class="pin">sha 4f8a…</span><br>
+<span class="dim">│&nbsp;&nbsp;├─</span> math.parquet&nbsp;&nbsp;<span class="dim">·</span> <span class="pin">sha c102…</span><br>
+<span class="dim">│&nbsp;&nbsp;└─</span> humaneval.json <span class="dim">·</span> <span class="pin">sha 71e4…</span><br>
+<span class="dim">├─</span> src/<br>
+<span class="dim">│&nbsp;&nbsp;├─</span> model.py<br>
+<span class="dim">│&nbsp;&nbsp;├─</span> recurse.py<br>
+<span class="dim">│&nbsp;&nbsp;└─</span> verify.py<br>
+<span class="dim">└─</span> runs/&nbsp;<span class="dim">(12)</span>
+            </div>
+            <div class="lockfile">
+              <div><span class="k">cuda</span>&nbsp;&nbsp;<span class="v">12.4.1</span></div>
+              <div><span class="k">python</span>&nbsp;<span class="v">3.11.9</span></div>
+              <div><span class="k">torch</span>&nbsp;&nbsp;<span class="v">2.4.0+cu124</span></div>
+              <div><span class="k">flash-attn</span>&nbsp;<span class="v">2.6.3</span></div>
+              <div><span class="k">transformers</span>&nbsp;<span class="v">4.44.2</span></div>
+              <div><span class="k">datasets</span>&nbsp;<span class="v">2.20.0</span></div>
+            </div>
+          </div>
+          <div class="env-right">
+            <div class="cards-row">
+              <div class="env-card">
+                <div class="lbl">GPU</div>
+                <div class="val">H100 · 80GB</div>
+                <div class="sub">×4 · interconnect NVLink</div>
+              </div>
+              <div class="env-card">
+                <div class="lbl">Build</div>
+                <div class="val">2m 47s</div>
+                <div class="sub">cache hit · 11 / 14 layers</div>
+              </div>
+              <div class="env-card">
+                <div class="lbl">Image</div>
+                <div class="val">4.2 GB</div>
+                <div class="sub">reproducible · bit-identical rebuild</div>
+              </div>
+              <div class="env-card">
+                <div class="lbl">Dataset</div>
+                <div class="val">3 / 3</div>
+                <div class="sub">hashes match paper appendix</div>
+              </div>
+            </div>
+            <div class="log">
+              <div><span class="ts">[00:00.12]</span> pulling base &nbsp; nvidia/cuda:12.4.1-cudnn-runtime</div>
+              <div><span class="ts">[00:14.81]</span> installing pinned wheels …</div>
+              <div><span class="ts">[01:09.20]</span> verifying flash-attn @ 2.6.3 &nbsp; <span class="ok">ok</span></div>
+              <div><span class="ts">[02:01.55]</span> hashing data/ &nbsp; gsm8k.parquet &nbsp; <span class="ok">match</span></div>
+              <div><span class="ts">[02:18.30]</span> hashing data/ &nbsp; math.parquet &nbsp;&nbsp; <span class="ok">match</span></div>
+              <div><span class="ts">[02:22.04]</span> hashing data/ &nbsp; humaneval.json <span class="ok">match</span></div>
+              <div><span class="ts">[02:47.18]</span> <span class="em">image sealed</span> · sha256:9a4f…02e1</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- =================== §3.0 IMPLEMENTATION =================== -->
+<section class="spec">
+  <div class="wrap">
+    <div class="spec-header reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">3.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Implementation</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">stage 03 / 05</span>
+        </div>
+        <h2 class="head">Write the method, then improve it.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">A baseline implementation is generated from the paper's pseudocode and figures. The RLM then explores bounded variations against the induced rubric — every edit attributed, every diff reviewable.</p>
+        <div class="spec-substeps">
+          <a href="#"><span class="num">§ 3.1</span><span>Baseline</span></a>
+          <a href="#"><span class="num">§ 3.2</span><span>Improvement exploration</span></a>
+          <a href="#"><span class="num">§ 3.3</span><span>Diff review</span></a>
+          <a href="#"><span class="num">§ 3.4</span><span>Attribution</span></a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="spec-visual reveal">
+      <span class="fig-label">FIG&nbsp;§ 3.2&nbsp;&nbsp;—&nbsp;&nbsp;Baseline vs. improvement · diff view</span>
+      <div class="frame frame-bleed-l" id="LAB_UI_IMPL">
+        <div class="mock-chrome">
+          <span class="crumbs">implementation&nbsp;/&nbsp;<b>recurse.py</b></span>
+          <span class="right">branch 3.2a · +18 / −6</span>
+        </div>
+        <div class="mock mock-impl">
+          <div class="files-col">
+            <div class="files-h">SRC · rlm-7e3a</div>
+            <div class="f"><span class="ic">›</span> model.py</div>
+            <div class="f active"><span class="ic">›</span> recurse.py</div>
+            <div class="f"><span class="ic">›</span> verify.py</div>
+            <div class="f"><span class="ic">›</span> rubric.py</div>
+            <div class="f"><span class="ic">›</span> data.py</div>
+            <div class="files-h" style="margin-top: 18px;">RUNS</div>
+            <div class="f"><span class="ic">●</span> baseline</div>
+            <div class="f"><span class="ic">●</span> 3.2a · lr×2</div>
+            <div class="f"><span class="ic">●</span> 3.2b · bs 256</div>
+            <div class="f"><span class="ic">●</span> 3.2c · lion</div>
+            <div class="f"><span class="ic">●</span> 3.2d · cosine</div>
+          </div>
+          <div class="code-col">
+            <div class="code-tabs">
+              <div class="tab active">recurse.py</div>
+              <div class="tab">verify.py</div>
+              <div class="tab">rubric.py</div>
+              <div class="tab" style="color: var(--ink-4)">+ open</div>
+            </div>
+<pre class="code"><span class="ln"> 1</span> <span class="kw">def</span> <span class="fn">recurse</span>(task, depth, budget):
+<span class="ln"> 2</span>     <span class="kw">if</span> depth &gt;= budget.max_depth:
+<span class="ln"> 3</span>         <span class="kw">return</span> <span class="fn">flat_solve</span>(task)
+<span class="ln"> 4</span>     plan = <span class="fn">decompose</span>(task)              <span class="cm"># §3 fig 2</span>
+<span class="ln"> 5</span>     subs = []
+<span class="ln"> 6</span>     <span class="kw">for</span> sub <span class="kw">in</span> plan.children:
+<span class="del"><span class="ln"> 7</span>         partial = <span class="fn">recurse</span>(sub, depth+1, budget)</span>
+<span class="add"><span class="ln"> 7</span>         partial = <span class="fn">recurse</span>(sub, depth+1, budget.tighten(depth))</span>
+<span class="add"><span class="ln"> 8</span>         <span class="kw">if</span> <span class="kw">not</span> <span class="fn">verify_partial</span>(sub, partial):   <span class="cm"># §6 ablation</span></span>
+<span class="add"><span class="ln"> 9</span>             partial = <span class="fn">recurse</span>(sub, depth+1, budget.retry())</span>
+<span class="ln">10</span>         subs.append(partial)
+<span class="ln">11</span>     <span class="kw">return</span> <span class="fn">aggregate</span>(plan, subs, rubric=<span class="st">"task"</span>)
+<span class="ln">12</span>
+<span class="ln">13</span> <span class="cm"># attribution: paper §3.1 alg 1 · diff 3.2a · 2 of 5 seeds verified</span></pre>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- =================== §4.0 EXPERIMENTS =================== -->
+<section class="spec">
+  <div class="wrap">
+    <div class="spec-header reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">4.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Experiments</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">stage 04 / 05</span>
+        </div>
+        <h2 class="head">Run the table the paper claims.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">Every row, every column, every seed. Experiments are scheduled across the rubric, results stream into the lab UI, and intermediate state is logged so a failed run is debuggable, not opaque.</p>
+        <div class="spec-substeps">
+          <a href="#"><span class="num">§ 4.1</span><span>Run scheduler</span></a>
+          <a href="#"><span class="num">§ 4.2</span><span>Seed sweeps</span></a>
+          <a href="#"><span class="num">§ 4.3</span><span>Live metrics</span></a>
+          <a href="#"><span class="num">§ 4.4</span><span>Run registry</span></a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="spec-visual reveal">
+      <span class="fig-label">FIG&nbsp;§ 4.3&nbsp;&nbsp;—&nbsp;&nbsp;Live metrics · run registry</span>
+      <div class="frame" id="LAB_UI_RUBRIC_CHART">
+        <div class="mock-chrome">
+          <span class="crumbs">experiments&nbsp;/&nbsp;<b>GSM8K · pass@1</b></span>
+          <span class="right">5 seeds · 32 runs · 4h 12m</span>
+        </div>
+        <div class="mock mock-exp">
+          <div class="chart-col">
+            <div class="chart-head">
+              <h5>Reproduction trajectory</h5>
+              <div class="legend">
+                <span><span class="sw" style="background: var(--ink)"></span>baseline</span>
+                <span><span class="sw" style="background: var(--accent)"></span>RLM</span>
+                <span><span class="sw" style="background: var(--ink-4); border-top: 1px dashed; height: 0; border-color: var(--ink-3);"></span>paper</span>
+              </div>
+            </div>
+            <svg viewBox="0 0 700 280" width="100%" aria-hidden="true">
+              <defs>
+                <pattern id="grid" width="70" height="28" patternUnits="userSpaceOnUse">
+                  <path d="M70 0 L0 0 0 28" fill="none" stroke="oklch(0.235 0.004 270)" stroke-width="1"/>
+                </pattern>
+              </defs>
+              <rect x="40" y="10" width="640" height="230" fill="url(#grid)"/>
+
+              <!-- y axis labels -->
+              <text x="32" y="20"  text-anchor="end" class="nlbl">0.70</text>
+              <text x="32" y="77"  text-anchor="end" class="nlbl">0.65</text>
+              <text x="32" y="134" text-anchor="end" class="nlbl">0.60</text>
+              <text x="32" y="191" text-anchor="end" class="nlbl">0.55</text>
+              <text x="32" y="244" text-anchor="end" class="nlbl">0.50</text>
+
+              <!-- x axis -->
+              <text x="40"  y="266" class="nlbl">step 0</text>
+              <text x="200" y="266" class="nlbl">2k</text>
+              <text x="360" y="266" class="nlbl">4k</text>
+              <text x="520" y="266" class="nlbl">6k</text>
+              <text x="660" y="266" class="nlbl" text-anchor="end">8k</text>
+
+              <!-- paper target dashed line @ 0.631 -->
+              <line x1="40" y1="92" x2="680" y2="92" stroke="oklch(0.56 0.005 90)" stroke-dasharray="3 4" stroke-width="1"/>
+              <text x="676" y="86" class="nlbl" text-anchor="end">PAPER · 0.631</text>
+
+              <!-- baseline curve (gray) -->
+              <path d="M40,230 C 120,210 180,180 260,160 S 420,140 540,138 L 680,140"
+                    fill="none" stroke="oklch(0.78 0.005 90)" stroke-width="1.5"/>
+
+              <!-- RLM curve (accent) -->
+              <path d="M40,235 C 120,210 180,170 260,140 S 420,108 540,98 L 680,96"
+                    fill="none" stroke="oklch(0.80 0.16 70)" stroke-width="1.5"/>
+
+              <!-- band -->
+              <path d="M40,237 C 120,212 180,172 260,142 S 420,110 540,100 L 680,98 L 680,94 C 540,96 420,106 260,138 S 120,208 40,233 Z"
+                    fill="oklch(0.80 0.16 70 / .10)"/>
+
+              <!-- dots last -->
+              <circle cx="680" cy="96"  r="3" fill="oklch(0.80 0.16 70)"/>
+              <circle cx="680" cy="140" r="3" fill="oklch(0.78 0.005 90)"/>
+            </svg>
+
+            <div style="display: flex; gap: 24px; margin-top: 14px; font-family: var(--mono); font-size: 11px; color: var(--ink-3);">
+              <span>step <span style="color: var(--ink)">8,000</span></span>
+              <span>seed <span style="color: var(--ink)">0…4</span></span>
+              <span>budget·d <span style="color: var(--ink)">3</span></span>
+              <span style="margin-left: auto; color: var(--accent)">▲ 0.627 ± 0.004</span>
+            </div>
+          </div>
+
+          <div class="runs-col">
+            <div class="runs-h" style="padding-top: 6px;">ACTIVE RUNS · 32</div>
+            <div class="run-row match">
+              <div>
+                <div class="id">RUN-7e3a-s0 · §4.2</div>
+                <div class="name">GSM8K · pass@1 · seed 0</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">0.627</div>
+                <div class="status">match</div>
+              </div>
+            </div>
+            <div class="run-row match">
+              <div>
+                <div class="id">RUN-7e3a-s1 · §4.2</div>
+                <div class="name">GSM8K · pass@1 · seed 1</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">0.623</div>
+                <div class="status">match</div>
+              </div>
+            </div>
+            <div class="run-row">
+              <div>
+                <div class="id">RUN-7e3a-s2 · §4.2</div>
+                <div class="name">GSM8K · pass@1 · seed 2</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">…</div>
+                <div class="status">running</div>
+              </div>
+            </div>
+            <div class="run-row match">
+              <div>
+                <div class="id">RUN-7e3a · §4.3</div>
+                <div class="name">MATH · pass@1</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">0.412</div>
+                <div class="status">match</div>
+              </div>
+            </div>
+            <div class="run-row">
+              <div>
+                <div class="id">RUN-7e3a · §4.3</div>
+                <div class="name">HumanEval+ · pass@1</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">0.586</div>
+                <div class="status">−0.018</div>
+              </div>
+            </div>
+            <div class="run-row">
+              <div>
+                <div class="id">RUN-7e3a · §6.1</div>
+                <div class="name">Ablation · no-verifier</div>
+              </div>
+              <div style="text-align: right;">
+                <div class="score">…</div>
+                <div class="status">queued</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- =================== §5.0 VERIFICATION =================== -->
+<section class="spec">
+  <div class="wrap">
+    <div class="spec-header reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">5.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Verification</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">stage 05 / 05</span>
+        </div>
+        <h2 class="head">Score the result against the paper's own claims.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">Each observed metric is graded against the rubric induced in §1.4 — match, deviation, or contradiction — with the supporting table cell and confidence interval surfaced for every cell.</p>
+        <div class="spec-substeps">
+          <a href="#"><span class="num">§ 5.1</span><span>Rubric scoring</span></a>
+          <a href="#"><span class="num">§ 5.2</span><span>Confidence intervals</span></a>
+          <a href="#"><span class="num">§ 5.3</span><span>Report artifact</span></a>
+          <a href="#"><span class="num">§ 5.4</span><span>Audit trail</span></a>
+        </div>
+      </div>
+    </div>
+
+    <figure class="spec-visual reveal">
+      <span class="fig-label">FIG&nbsp;§ 5.1&nbsp;&nbsp;—&nbsp;&nbsp;Reproduction scorecard</span>
+      <div class="frame frame-bleed-r" id="LAB_UI_VERIFY">
+        <div class="mock-chrome">
+          <span class="crumbs">verification&nbsp;/&nbsp;<b>scorecard · rlm-7e3a</b></span>
+          <span class="right">artifact · report.md · 14 KB</span>
+        </div>
+        <div class="mock mock-verify">
+          <div class="rubric-head">
+            <h5>Reproduction scorecard · arxiv:2410.04265</h5>
+            <span class="meta">induced rubric · 18 cells · 5 seeds</span>
+          </div>
+          <table class="rubric-table">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>claim</th>
+                <th>paper</th>
+                <th>observed</th>
+                <th>Δ</th>
+                <th>judge</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="cid">C-014</td>
+                <td class="cl">GSM8K · pass@1 · RLM-7B</td>
+                <td class="tgt">0.631</td>
+                <td class="obs">0.627 ± 0.004</td>
+                <td class="delta neg">−0.004</td>
+                <td class="judge"><span class="pill match">match</span></td>
+              </tr>
+              <tr>
+                <td class="cid">C-014b</td>
+                <td class="cl">GSM8K · gain vs. flat-7B</td>
+                <td class="tgt">+9.2 pts</td>
+                <td class="obs">+8.9 pts</td>
+                <td class="delta neg">−0.3</td>
+                <td class="judge"><span class="pill match">match</span></td>
+              </tr>
+              <tr>
+                <td class="cid">C-017</td>
+                <td class="cl">MATH · pass@1 · RLM-7B</td>
+                <td class="tgt">0.418</td>
+                <td class="obs">0.412 ± 0.006</td>
+                <td class="delta neg">−0.006</td>
+                <td class="judge"><span class="pill match">match</span></td>
+              </tr>
+              <tr>
+                <td class="cid">C-018</td>
+                <td class="cl">depth d=3 dominates d≤2</td>
+                <td class="tgt">4 of 5</td>
+                <td class="obs">4 of 5</td>
+                <td class="delta">·</td>
+                <td class="judge"><span class="pill match">match</span></td>
+              </tr>
+              <tr>
+                <td class="cid">C-022</td>
+                <td class="cl">HumanEval+ · pass@1</td>
+                <td class="tgt">0.604</td>
+                <td class="obs">0.586 ± 0.009</td>
+                <td class="delta neg">−0.018</td>
+                <td class="judge">deviation</td>
+              </tr>
+              <tr>
+                <td class="cid">C-031</td>
+                <td class="cl">verifier ablation drop</td>
+                <td class="tgt">−4.1 pts</td>
+                <td class="obs">−3.8 pts</td>
+                <td class="delta pos">+0.3</td>
+                <td class="judge"><span class="pill match">match</span></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="score-strip">
+            <div class="cell">
+              <div class="lbl">Claims verified</div>
+              <div class="v placeholder"><span class="tok">{{N_VERIFIED}}</span> / <span class="tok">{{N_CLAIMS}}</span></div>
+              <div class="sub">scorecard cells · 5 seeds</div>
+            </div>
+            <div class="cell">
+              <div class="lbl">Reproduction score</div>
+              <div class="v placeholder"><span class="tok">{{REPRODUCTION_SCORE}}</span></div>
+              <div class="sub">PaperBench · v0 protocol</div>
+            </div>
+            <div class="cell">
+              <div class="lbl">Drift band</div>
+              <div class="v placeholder">± <span class="tok">{{DRIFT_BAND}}</span></div>
+              <div class="sub">median |Δ| across cells</div>
+            </div>
+            <div class="cell">
+              <div class="lbl">Artifact</div>
+              <div class="v" style="font-size: 14px; letter-spacing: 0;">report.md · run.json</div>
+              <div class="sub">signed · seed-pinned · reproducible</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<!-- =================== BENCHMARK PROOF =================== -->
+<section class="bench" id="benchmarks">
+  <div class="wrap">
+    <div class="row reveal">
+      <div class="spec-num"><span class="glyph">§</span><span class="n">6.0</span></div>
+      <div class="spec-title">
+        <div class="name">
+          <span class="word">Benchmarks</span>
+          <span class="rule" aria-hidden="true"></span>
+          <span class="stage">measured · not promised</span>
+        </div>
+        <h2 class="head">Numbers go here once real runs say so.</h2>
+      </div>
+      <div>
+        <p class="spec-blurb">ReproLab reports a reproduction score per paper on the PaperBench v0 protocol. Every figure on this page is a placeholder until a sealed, seed-pinned run confirms it. We will not ship a number we cannot rerun.</p>
+      </div>
+    </div>
+
+    <div class="bench-numbers reveal">
+      <div class="bench-cell">
+        <span class="pl-note">placeholder</span>
+        <div class="lbl">PaperBench v0 · score</div>
+        <div class="v placeholder"><span class="tok">{{REPRODUCTION_SCORE}}</span><sup>↗ target {{TARGET_SCORE}}</sup></div>
+        <div class="sub">Median per-cell rubric match across the suite.</div>
+      </div>
+      <div class="bench-cell">
+        <span class="pl-note">placeholder</span>
+        <div class="lbl">Papers reproduced</div>
+        <div class="v placeholder"><span class="tok">{{N_PAPERS}}</span></div>
+        <div class="sub">End-to-end. Comprehension through sealed scorecard.</div>
+      </div>
+      <div class="bench-cell">
+        <span class="pl-note">placeholder</span>
+        <div class="lbl">Median drift</div>
+        <div class="v placeholder">± <span class="tok">{{MEDIAN_DRIFT}}</span></div>
+        <div class="sub">Absolute deviation between observed and paper-reported metrics.</div>
+      </div>
+      <div class="bench-cell">
+        <span class="pl-note">placeholder</span>
+        <div class="lbl">Wall-clock per paper</div>
+        <div class="v placeholder"><span class="tok">{{HOURS_PER_PAPER}}</span></div>
+        <div class="sub">Median, includes environment build and verification.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== CTA FOOTER =================== -->
+<section class="cta-foot" id="github">
+  <div class="wrap reveal">
+    <div class="h-eyebrow" style="margin-bottom: 22px;">§ 7.0 — Try it</div>
+    <h2>An end-to-end reproduction,<br>in one command.</h2>
+    <p class="lede">
+      Point ReproLab at an arXiv ID. Get back a sealed environment, an implementation,
+      a scorecard, and an audit trail. If a claim doesn't reproduce, you'll see exactly which one.
+    </p>
+    <div class="actions">
+      <a class="btn btn-primary" href="#">
+        <span>Open the lab</span>
+        <span aria-hidden="true">→</span>
+      </a>
+      <a class="btn btn-ghost" href="#">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.72-.49.06-.48.06-.48.8.06 1.22.82 1.22.82.71 1.21 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>github.com/reprolab</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span class="brand-mark" style="width:18px; height:18px;" aria-hidden="true"></span>
+      <span>ReproLab · 2026</span>
+    </div>
+    <div class="links">
+      <a href="#pipeline">How it works</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#paper">RLM paper</a>
+      <a href="#github">GitHub</a>
+    </div>
+    <div class="mono">§ end · v0.1.0</div>
+  </div>
+</footer>
+
+<script>
+// scroll reveal
+(() => {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) {
+    document.querySelectorAll('.reveal').forEach(el => el.classList.add('in'));
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    });
+  }, { rootMargin: '-8% 0px -8% 0px', threshold: 0.05 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+})();
+
+// nav border on scroll
+(() => {
+  const nav = document.getElementById('nav');
+  const onScroll = () => {
+    if (window.scrollY > 8) nav.classList.add('scrolled');
+    else nav.classList.remove('scrolled');
+  };
+  document.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+
+<!-- React + Tweaks panel (accent + density + numbering style) -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<div id="tweaks-root"></div>
+<script type="text/babel" src="tweaks.jsx"></script>
+
+</body>
+</html>
