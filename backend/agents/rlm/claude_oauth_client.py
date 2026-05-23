@@ -4,11 +4,12 @@ The standard ``rlm.clients.anthropic.AnthropicClient`` requires a literal
 ``api_key`` constructor argument because it calls ``anthropic.Anthropic(api_key=...)``
 directly — incompatible with Claude Code OAuth (no extractable bearer token).
 
-``ClaudeOauthClient`` replaces that path: each ``completion()`` runs through the
-Claude Agent SDK (``collect_agent_text``), which resolves auth itself (API key
-*or* the logged-in ``claude`` CLI's OAuth credentials). All SDK calls are
-thread-isolated via Workaround B (see ``backend/agents/rdr/agent.py``) so the
-SDK's aclose() race cannot deadlock the rlm root loop.
+``ClaudeOauthClient`` replaces that path: each ``completion()`` delegates to
+``ClaudeLlmClient`` (rlm_query.py), which calls ``claude_agent_sdk.query()`` with
+``ClaudeAgentOptions(tools=[], ...)`` — no tool use possible, so the model must
+emit text on turn 1. This is correct for the RLM root, which is a pure
+text-generation task. ``ClaudeLlmClient`` instances are cached per model to avoid
+per-call ThreadPoolExecutor overhead.
 
 Usage tracking is best-effort — the SDK does not return token counts, so per-call
 input/output tokens are recorded as 0. The dominant cost signal comes from
@@ -65,40 +66,50 @@ class ClaudeOauthClient(BaseLM):
         self.model_total_tokens: dict[str, int] = defaultdict(int)
         # For get_last_usage compatibility
         self._last_model: str = self.model_name
+        # Cached per-model ClaudeLlmClient instances — avoids per-call
+        # ThreadPoolExecutor overhead and reuses the same SDK session per model.
+        self._claude_clients: dict[str, Any] = {}
 
     def completion(
         self, prompt: str | list[dict[str, Any]], model: str | None = None
     ) -> str:
-        """Sync completion. The rlm root loop calls this synchronously."""
+        """Sync completion. The rlm root loop calls this synchronously.
+
+        Delegates to ``ClaudeLlmClient`` (rlm_query.py) which calls
+        ``claude_agent_sdk.query()`` with ``ClaudeAgentOptions(tools=[], ...)`` —
+        no tool use possible, so the model must emit text on turn 1. This is
+        correct for the RLM root, which is a pure text-generation task (the
+        rdr-specific ``_run_sdk_in_thread`` path is for the tool-using
+        ``baseline-implementation`` agent and is not appropriate here).
+
+        ``ClaudeLlmClient`` is OAuth-capable (uses Claude Agent SDK, which
+        resolves auth from API key OR the ``claude`` CLI's OAuth login) AND
+        loop-safe (commit ``0c5fe4d`` added a running-loop guard).
+        """
         text_prompt, system = self._render_prompt(prompt)
         resolved_model = model or self.model_name or "claude-sonnet-4-6"
 
-        # Workaround B: thread-isolate the SDK call.
-        from backend.agents.rdr.agent import _run_sdk_in_thread
-        from pathlib import Path
-        import tempfile
+        # Lazily build a per-model ClaudeLlmClient and cache it. The same
+        # client instance is reused across completion() calls for the same
+        # model — avoids per-call ThreadPoolExecutor overhead.
+        client = self._claude_clients.get(resolved_model)
+        if client is None:
+            from backend.services.context.workspace.tools.rlm_query import (
+                ClaudeLlmClient,
+            )
+            # max_turns=1 is correct here because tools=[] is enforced inside
+            # ClaudeLlmClient — the model must emit text on turn 1.
+            client = ClaudeLlmClient(model=resolved_model, max_turns=1)
+            self._claude_clients[resolved_model] = client
 
-        # The SDK needs a cwd; use a throwaway temp dir for the root LLM call
-        # since the RLM root just emits REPL code, not files.
-        with tempfile.TemporaryDirectory(prefix="rlm-root-oauth-") as tmp:
-            tmp_path = Path(tmp)
-            # Combine system + user into a single prompt the SDK can consume.
-            full_prompt = f"{system}\n\n{text_prompt}" if system else text_prompt
-            try:
-                text = _run_sdk_in_thread(
-                    prompt=full_prompt,
-                    code_dir=tmp_path,
-                    model=resolved_model,
-                    provider="anthropic",
-                    runtime=None,  # collect_agent_text re-creates per call
-                    max_turns=1,   # single-shot completion — no tool loop
-                    timeout_s=self.timeout_s,
-                )
-            except TimeoutError as exc:
-                logger.warning(
-                    "ClaudeOauthClient.completion: SDK timeout — %s", exc
-                )
-                raise
+        try:
+            text = client.complete(system=system or "", user=text_prompt)
+        except Exception as exc:
+            logger.warning(
+                "ClaudeOauthClient.completion: ClaudeLlmClient.complete failed — %s",
+                exc,
+            )
+            raise
 
         # Update usage tracking (best-effort — no token counts from SDK).
         self.model_call_counts[resolved_model] += 1

@@ -6,7 +6,6 @@ All SDK calls are mocked — no real network or Claude credentials required.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,33 +20,19 @@ class TestCompletionPassesPromptThroughThreadIsolation:
     """test_completion_passes_prompt_through_thread_isolation"""
 
     def test_completion_passes_prompt_through_thread_isolation(self, monkeypatch):
-        """_run_sdk_in_thread is called with the correct args; the returned text
-        is propagated back to the caller unchanged."""
+        """ClaudeLlmClient.complete is called with system="" and user="hello";
+        the returned text is propagated back to the caller unchanged."""
         from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
 
-        monkeypatch.setattr(
-            "backend.agents.rdr.agent._run_sdk_in_thread",
-            lambda **kw: "sdk-response",
-        )
+        mock_complete = MagicMock(return_value="sdk-response")
+        monkeypatch.setattr(ClaudeLlmClient, "complete", mock_complete)
 
         client = ClaudeOauthClient(model_name="claude-sonnet-4-6")
-
-        captured: list[dict] = []
-
-        def _fake_run(**kw):
-            captured.append(kw)
-            return "sdk-response"
-
-        monkeypatch.setattr("backend.agents.rdr.agent._run_sdk_in_thread", _fake_run)
-
         result = client.completion("hello")
 
         assert result == "sdk-response"
-        assert len(captured) == 1
-        call = captured[0]
-        assert call["prompt"] == "hello"
-        assert call["provider"] == "anthropic"
-        assert call["max_turns"] == 1
+        mock_complete.assert_called_once_with(system="", user="hello")
 
 
 class TestCompletionRendersListPromptWithSystem:
@@ -55,14 +40,10 @@ class TestCompletionRendersListPromptWithSystem:
 
     def test_completion_renders_list_prompt_with_system(self, monkeypatch):
         from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
 
-        captured: list[dict] = []
-
-        def _fake_run(**kw):
-            captured.append(kw)
-            return "response"
-
-        monkeypatch.setattr("backend.agents.rdr.agent._run_sdk_in_thread", _fake_run)
+        mock_complete = MagicMock(return_value="response")
+        monkeypatch.setattr(ClaudeLlmClient, "complete", mock_complete)
 
         client = ClaudeOauthClient()
         prompt = [
@@ -71,10 +52,57 @@ class TestCompletionRendersListPromptWithSystem:
         ]
         client.completion(prompt)
 
-        assert len(captured) == 1
-        full_prompt = captured[0]["prompt"]
-        assert "S" in full_prompt
-        assert "U" in full_prompt
+        mock_complete.assert_called_once()
+        call_kwargs = mock_complete.call_args[1]
+        assert call_kwargs["system"] == "S"
+        assert call_kwargs["user"] == "U"
+
+
+class TestCompletionCachesClientsPerModel:
+    """ClaudeLlmClient instances are cached and reused per model."""
+
+    def test_completion_caches_clients_per_model(self, monkeypatch):
+        from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+        from backend.services.context.workspace.tools import rlm_query
+
+        init_calls: list[dict] = []
+        original_init = rlm_query.ClaudeLlmClient.__init__
+
+        def _tracking_init(self, model=None, max_turns=1):
+            init_calls.append({"model": model, "max_turns": max_turns})
+            original_init(self, model=model, max_turns=max_turns)
+
+        monkeypatch.setattr(rlm_query.ClaudeLlmClient, "__init__", _tracking_init)
+        monkeypatch.setattr(rlm_query.ClaudeLlmClient, "complete", lambda self, **kw: "ok")
+
+        client = ClaudeOauthClient(model_name="claude-sonnet-4-6")
+
+        # Two calls with the same model — init should fire only once.
+        client.completion("first call")
+        client.completion("second call")
+        assert len(init_calls) == 1
+
+        # A call with a different model — init should fire a second time.
+        client.completion("third call", model="claude-haiku-4-5")
+        assert len(init_calls) == 2
+
+
+class TestCompletionPropagatesExceptions:
+    """Exceptions from ClaudeLlmClient.complete propagate out of completion()."""
+
+    def test_completion_propagates_exceptions(self, monkeypatch):
+        from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+        monkeypatch.setattr(
+            ClaudeLlmClient,
+            "complete",
+            MagicMock(side_effect=ValueError("synthetic")),
+        )
+
+        client = ClaudeOauthClient()
+        with pytest.raises(ValueError, match="synthetic"):
+            client.completion("will fail")
 
 
 class TestAcompletionRoutesThroughToThread:
@@ -82,31 +110,17 @@ class TestAcompletionRoutesThroughToThread:
 
     def test_acompletion_routes_through_to_thread(self, monkeypatch):
         from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
 
         monkeypatch.setattr(
-            "backend.agents.rdr.agent._run_sdk_in_thread",
-            lambda **kw: "async-response",
+            ClaudeLlmClient,
+            "complete",
+            MagicMock(return_value="async-response"),
         )
 
         client = ClaudeOauthClient()
         result = asyncio.run(client.acompletion("async test"))
         assert result == "async-response"
-
-
-class TestTimeoutPropagatesAsTimeoutError:
-    """A TimeoutError from _run_sdk_in_thread is re-raised by completion."""
-
-    def test_timeout_propagates_as_timeouterror(self, monkeypatch):
-        from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
-
-        def _raise_timeout(**kw):
-            raise TimeoutError("sdk timed out")
-
-        monkeypatch.setattr("backend.agents.rdr.agent._run_sdk_in_thread", _raise_timeout)
-
-        client = ClaudeOauthClient()
-        with pytest.raises(TimeoutError):
-            client.completion("will timeout")
 
 
 class TestNoApiKeyRequiredAtConstruction:
