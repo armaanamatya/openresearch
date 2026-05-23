@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level alias so tests can monkeypatch RuntimeAppService without
+# requiring a live Docker daemon.
+from backend.services.runtime.service import RuntimeAppService
+
 
 def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
     """Return the tightest timeout (seconds) for a primitive given the run deadline.
@@ -71,6 +75,28 @@ def _extract_json(text: str) -> dict:
                 raise ValueError("truncated JSON object in LLM response") from exc
         idx = text.find("{", idx + 1)
     raise ValueError(f"no JSON object in LLM response: {text[:200]!r}")
+
+
+def _extract_json_array(text: str) -> list:
+    """Pull the first JSON array out of an LLM response.
+
+    Mirrors _extract_json but scans for `[` instead of `{`. Same EOF-truncation
+    guard. Used by leaf-scorer's batch-response parser (review M3 / T26).
+    """
+    import json
+    decoder = json.JSONDecoder()
+    end_of_text = len(text.rstrip())
+    idx = text.find("[")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            if isinstance(obj, list):
+                return obj
+        except json.JSONDecodeError as exc:
+            if exc.pos >= end_of_text:
+                raise ValueError("truncated JSON array in LLM response") from exc
+        idx = text.find("[", idx + 1)
+    raise ValueError(f"no JSON array in LLM response: {text[:200]!r}")
 
 
 def _clamp01(val: object) -> float:
@@ -433,14 +459,20 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     return str(code_dir)
 
 
-def _backend_for_sandbox_mode(sandbox_mode: object):
+def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None):
     """Return a RuntimeBackend instance for the given sandbox mode.
 
-    Only ``SandboxMode.docker`` (and ``None`` / the default) are supported in
-    the RLM path — RLM experiments run inside Docker containers.  Any other
-    mode falls back to ``LocalDockerBackend`` with a WARNING rather than
-    crashing, so existing docker runs are behaviour-identical and an unsupported
-    mode still produces a useful (if not precisely targeted) result.
+    ``SandboxMode.docker`` (and ``None`` / the default) map to
+    ``LocalDockerBackend``.  ``SandboxMode.runpod`` is now fully wired: this
+    function calls ``ensure_runpod_available()`` (fast fail on missing creds)
+    and constructs a real ``RunpodBackend``, forwarding ``run_budget`` so the
+    ``max_pod_seconds`` cap is enforced at each ``exec()`` call.
+
+    Any other unsupported mode (local, auto, brev, simulate) falls back to
+    ``LocalDockerBackend`` with a WARNING rather than crashing, so the run still
+    produces a result while making the misconfiguration visible.
+
+    ``run_budget=None`` is safe for all modes — no cap is enforced.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -459,12 +491,19 @@ def _backend_for_sandbox_mode(sandbox_mode: object):
     if mode is SandboxMode.docker:
         return LocalDockerBackend()
 
-    # All other modes (runpod, brev, local, auto, simulate) are not yet wired
+    if mode is SandboxMode.runpod:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.runpod_backend import RunpodBackend
+
+        _runtime.ensure_runpod_available()
+        return RunpodBackend(run_budget=run_budget)
+
+    # All other modes (local, auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "RLM experiments are docker-centric; plumb the backend here when needed.",
+        "Set --sandbox docker or --sandbox runpod for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -495,6 +534,7 @@ async def _execute_in_sandbox(
     project_id: str,
     run_id: str,
     sandbox_mode: object = None,
+    run_budget: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -509,22 +549,31 @@ async def _execute_in_sandbox(
 
     I7: `sandbox_mode` selects the runtime backend; ``None`` / ``docker`` map to
     ``LocalDockerBackend`` (behaviour-identical to the previous hardcoded path).
-    Any unsupported mode falls back to ``LocalDockerBackend`` with a WARNING.
+    ``runpod`` constructs a real ``RunpodBackend`` with the given ``run_budget``
+    (so ``max_pod_seconds`` is enforced).  Any unsupported mode falls back to
+    ``LocalDockerBackend`` with a WARNING.
     """
     import asyncio
+    import json as _json
     from pathlib import Path
 
     from backend.services.runtime.interface import SandboxConfig
     from backend.services.runtime.service import (
-        CreateSandbox, DestroySandbox, ExecuteCommand, RuntimeAppService,
+        CreateSandbox, DestroySandbox, ExecuteCommand,
     )
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode))
+    code_dir = Path(code_path)
+    # Per-call artifact dir: deterministic per run_id so retries don't clobber.
+    artifact_root = code_dir / "outputs" / run_id
+    artifact_root.mkdir(parents=True, exist_ok=True)
+
+    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
         image=env_id,
-        project_root=Path(code_path),
+        project_root=code_dir,
+        artifact_root=artifact_root,
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -533,6 +582,12 @@ async def _execute_in_sandbox(
         # into this container (only agent-written code is), so this is not a
         # corpus-leak vector. Scoped here; the global default stays disabled.
         network_disabled=False,
+        environment={
+            "OUTPUT_DIR": "/artifacts",
+            "REPROLAB_ARTIFACT_DIR": "/artifacts",
+            "MPLCONFIGDIR": "/artifacts/.matplotlib",
+            "PYTHONUNBUFFERED": "1",
+        },
     )
     sandbox = await service.create_sandbox(CreateSandbox(config=config))
     results = []
@@ -546,43 +601,34 @@ async def _execute_in_sandbox(
         # wait_for / thread-pool timeout cancels this coroutine (A2-C1).
         await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
 
-    # Read metrics from the host filesystem (the mount is rw; the experiment
-    # writes METRICS_FILENAME to the code root or outputs/ sub-dir).
-    import json as _json
+    # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
     metrics: dict = {}
-    for candidate in (
-        Path(code_path) / METRICS_FILENAME,
-        Path(code_path) / "outputs" / METRICS_FILENAME,
-    ):
-        if not candidate.exists():
-            continue
-        # File exists — try to parse it. Whether it succeeds or fails, stop
-        # here (don't fall through to the next candidate for a file that exists
-        # but is malformed — that would silently use stale data from outputs/).
+    metrics_path = artifact_root / METRICS_FILENAME
+    if metrics_path.exists():
         try:
-            data = _json.loads(candidate.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                metrics = data
+            loaded = _json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                metrics = loaded
             else:
                 logger.warning(
                     "_execute_in_sandbox: %s is valid JSON but not a dict (%s) — "
                     "falling back to {}",
-                    candidate,
-                    type(data).__name__,
+                    metrics_path,
+                    type(loaded).__name__,
                 )
-        except Exception as exc:  # noqa: BLE001 — fail-soft: malformed file
+        except (_json.JSONDecodeError, OSError) as exc:
             logger.warning(
                 "_execute_in_sandbox: could not parse %s as JSON (%s) — "
                 "falling back to {}",
-                candidate,
+                metrics_path,
                 exc,
             )
-        break  # stop at the first existing candidate regardless of parse result
 
     return {
         "success": all(r.succeeded for r in results),
         "metrics": metrics,
         "logs": _cap_logs(_combine_command_output(results)),
+        "artifact_dir": str(artifact_root),
     }
 
 
@@ -689,6 +735,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     code_path, env_id, commands,
                     project_id=ctx.project_id, run_id=run_id,
                     sandbox_mode=ctx.sandbox_mode,
+                    run_budget=ctx.run_budget,
                 ),
             ).result(timeout=timeout)
         except concurrent.futures.TimeoutError:
@@ -702,6 +749,40 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     return _persist_experiment_result(ctx, result)
 
 
+def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
+    """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
+
+    Each top-level sub_task becomes one area entry:
+      {"name": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>}
+
+    This gives the root model named, scored areas it can include verbatim in
+    the final report instead of fabricating blank placeholders.  Fail-soft:
+    if the rubric has no sub_tasks (e.g. a flat generated rubric) the list
+    is empty and the caller continues normally.
+    """
+    from backend.evals.paperbench.leaf_scorer import roll_up
+
+    sub_tasks = [c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)]
+    if not sub_tasks:
+        return []
+
+    # Build a {leaf_id: score} map from the leaf_scores list for roll_up.
+    leaf_score_map: dict[str, float] = {
+        str(e["id"]): float(e.get("score", 0.0))
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
+    areas: list[dict] = []
+    for task in sub_tasks:
+        name = str(task.get("requirements") or "")[:120]
+        score = _clamp01(roll_up(task, leaf_score_map))
+        weight = task.get("weight")
+        areas.append({"name": name, "score": score, "weight": weight})
+    return areas
+
+
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
     """Score the run against `rubric` using the authoritative PaperBench leaf scorer.
 
@@ -713,6 +794,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     Returns:
         overall_score (float), meets_target (bool), target_score (float),
         leaf_count (int), graded (int), rubric_source (str),
+        areas (list of {name, score, weight} per top-level sub_task),
         weak_leaves (list of up to 8 lowest-scoring leaf dicts), leaf_scores (list).
 
     Fail-soft (A2-H3 / D3 pattern): any exception returns an error dict.
@@ -726,12 +808,41 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
+        # C2b in-loop wiring: derive `degraded` from the `results` dict we
+        # already have. The leaf scorer's auto-detection reads
+        # final_report.json, but in-loop (called from the improvement loop
+        # before _finalize) that file has not been written yet, so
+        # auto-detection returns False and the cap would not fire. Pass it
+        # explicitly so the in-loop optimization signal matches what the
+        # post-run authoritative score will become.
+        # Two-layer degraded predicate: post-run path checks verdict+metrics via
+        # final_report.json (_is_degraded_run); in-loop path checks success+metrics
+        # via the live run_experiment result dict (verdict is a report-level concept
+        # not yet written at this point).  Both are correct at their respective layer.
+        degraded = (not results.get("success")) or (not (results.get("metrics") or {}))
         scored = score_reproduction(
             rubric_tree=rubric,
             run_dir=ctx.project_dir,
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
+            degraded=degraded,
         )
+        # Honesty guard: if score_reproduction handed back zero successfully-graded
+        # leaves, the LLM grader's output was unparseable on every batch. That is
+        # a real verification failure — never a "scored 0.0" success. Without this
+        # check the wrap_primitive layer would emit a rubric_score=0.0 SSE event
+        # and the dashboard would show a precise zero for a verification that did
+        # not run. Pinned by tests/rlm/test_binding.py::test_verify_against_rubric_emits_nothing_on_failure.
+        graded = int(scored.get("graded", 0) or 0)
+        leaf_count = int(scored.get("leaf_count", 0) or 0)
+        if leaf_count > 0 and graded == 0:
+            return {
+                "success": False,
+                "error": (
+                    f"verify_against_rubric: leaf scorer graded 0/{leaf_count} leaves — "
+                    f"LLM grader output was unparseable on every batch; no honest score available"
+                ),
+            }
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
         meets_target = overall_score >= target
@@ -750,6 +861,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "leaf_count": scored.get("leaf_count", 0),
             "graded": scored.get("graded", 0),
             "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
+            "degraded": degraded,
+            "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
                  "justification": e.get("justification", "")}
@@ -795,16 +908,65 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
           'object {"hypotheses": [ImprovementHypothesis, ...]}. Each hypothesis '
           "carries a free-form `category` tag of your choosing."
     )
-    raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
-    items = _extract_json(raw).get("hypotheses", [])
+    try:
+        raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
+        items = _extract_json(raw).get("hypotheses", [])
+    except Exception as exc:  # noqa: BLE001 — fail-soft (D3 / T11 / review I3)
+        return [{
+            "success": False,
+            "error": f"propose_improvements: {type(exc).__name__}: {exc}",
+        }]
 
     out: list[dict] = []
     for item in items:
         try:
+            # Ensure title is never empty — derive a fallback from hypothesis text
+            # so candidate_proposed events always carry a human-readable label.
+            if not item.get("title"):
+                hypothesis_text = (item.get("hypothesis") or "").strip()
+                item["title"] = (
+                    hypothesis_text.split(".")[0][:80]
+                    or hypothesis_text[:80]
+                    or item.get("path_id", "candidate")
+                )
             out.append(ImprovementHypothesis(**item).model_dump())
         except Exception:
             continue  # fail-soft: skip a malformed hypothesis
     return out[:target]
+
+
+def record_candidate_outcome(
+    candidate_id: str,
+    outcome: str,
+    parent_id: str | None = None,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Record the root model's outcome decision for a candidate (Option B, handoff §5).
+
+    Near-no-op computation — the primitive exists purely so its ``wrap_primitive``
+    wrapper can emit a ``candidate_outcome`` SSE event that reflects the root's
+    actual decision (not a backend-inferred approximation).  The root calls this
+    after evaluating each improvement candidate:
+
+        outcome = "promoted" if score > rubric_target else "failed"
+        record_candidate_outcome(candidate_id=cid, outcome=outcome)
+
+    Valid outcomes: ``"running"``, ``"promoted"``, ``"marginal"``, ``"failed"``,
+    ``"skipped"``, ``"declined"``.  ``parent_id`` is the node this candidate
+    branches from (passed through to the ``candidate_outcome`` event's
+    ``parent_id`` field so the UI can build the exploration tree).
+
+    Returns a plain ``{"success": True, ...}`` dict — no ``error`` key — so
+    ``wrap_primitive``'s fail-soft check does not misclassify it as a failure.
+    ``ctx`` is required by the primitive-wrapper protocol (design decision D4).
+    """
+    return {
+        "success": True,
+        "candidate_id": candidate_id,
+        "outcome": outcome,
+        "parent_id": parent_id,
+    }
 
 
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
@@ -817,6 +979,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "run_experiment": run_experiment,
     "verify_against_rubric": verify_against_rubric,
     "propose_improvements": propose_improvements,
+    "record_candidate_outcome": record_candidate_outcome,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -855,8 +1018,17 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "score the run against a PaperBench tree rubric using the authoritative "
         "leaf scorer (flatten→LLM-grade→weighted-rollup). Returns: overall_score "
         "(float), meets_target (bool), target_score (float), leaf_count (int), "
-        "graded (int), rubric_source (str), weak_leaves (up to 8 lowest-scoring "
-        "leaf dicts), leaf_scores (all leaf scores).",
+        "graded (int), rubric_source (str), areas (list of {name, score, weight} "
+        "per top-level rubric sub_task — use these directly in the final report's "
+        "rubric.areas field), weak_leaves (up to 8 lowest-scoring leaf dicts), "
+        "leaf_scores (all leaf scores).",
     "propose_improvements": "propose_improvements(current_results, rubric_scores, "
-        "k=None) -> list[dict] — paper-specific improvement hypotheses.",
+        "k=None) -> list[dict] — paper-specific improvement hypotheses. Each "
+        "hypothesis includes a `title` field (short name for the candidate node).",
+    "record_candidate_outcome": "record_candidate_outcome(candidate_id, outcome, "
+        "parent_id=None) -> dict — record the root's outcome decision for a "
+        "candidate. Call this after evaluating each improvement candidate. "
+        "outcome is one of: 'running', 'promoted', 'marginal', 'failed', "
+        "'skipped', 'declined'. candidate_id must match the id from "
+        "candidate_proposed. parent_id is the node this candidate branches from.",
 }
