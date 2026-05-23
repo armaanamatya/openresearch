@@ -694,6 +694,11 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
+    # Cross-platform path normalization — converts Windows paths to WSL mount
+    # paths, strips surrounding quotes, expands tilde-home, etc.
+    # Identity-preserving for non-path inputs (arXiv IDs, URLs, DOIs).
+    from backend.services.paths import normalize_path_input
+    args.source = normalize_path_input(args.source)
     # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
     # module gets a chance to emit. This is the *subprocess* hot path
     # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),

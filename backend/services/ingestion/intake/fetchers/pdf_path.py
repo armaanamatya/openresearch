@@ -12,6 +12,7 @@ from backend.services.ingestion.intake.fetchers.interface import (
     IntakeFetcher,
 )
 from backend.services.ingestion.intake.sources import PaperSource, PdfPath
+from backend.services.paths import normalize_path_input
 
 
 _PDF_MAGIC = b"%PDF-"
@@ -46,7 +47,7 @@ class PdfPathFetcher(IntakeFetcher):
                 retryable=False,
             )
 
-        src_path = Path(source.path).expanduser()
+        src_path = Path(normalize_path_input(source.path)).expanduser()
         if not src_path.exists():
             raise IntakeFetchError(
                 f"PDF not found at {src_path!s}",
