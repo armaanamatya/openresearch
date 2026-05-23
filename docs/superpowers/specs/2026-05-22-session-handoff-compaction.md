@@ -151,12 +151,24 @@ Order matters; this is the work-queue.
 - [ ] Tests: `test_resume_skips_completed_clusters`,
       `test_resume_handles_missing_iterations_dir`.
 
-### 7.3 SDK aclose investigation result
+### 7.3 SDK aclose investigation — RETURNED, fix is workaround B
 
-- [ ] When agent `a4c0d8038906e84c9` returns, decide between workarounds A/B/C
-      from its report. **Likely choice:** workaround B (run SDK in a worker
-      thread) or workaround A (separate Python subprocess) depending on
-      complexity score.
+The investigation completed before compaction. Full report:
+**`docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`**.
+
+Verdict: SDK bug (triple-nested async generator race + WSL2 SIGCHLD hang).
+Apply **Workaround B**: run `collect_agent_text` in a `threading.Thread` with
+its own `asyncio.run()` inside — the worker thread's event loop is isolated
+from the main controller's `shutdown_asyncgens`, so the main process never
+deadlocks even if the SDK still raises the RuntimeError internally.
+
+- [ ] Implement Workaround B (~20 lines) in `backend/agents/rdr/agent.py`
+      `_reproduce_inner`. After this lands, re-run `mechanistic-understanding`
+      end-to-end to validate that the wedge no longer recurs. Then the
+      `_ClusterWatchdog` becomes defense-in-depth, not the primary mitigation.
+- [ ] (Post-merge / v2) File upstream PRs against `claude-agent-sdk`:
+      `client.py:83` swallow `RuntimeError("already running")`,
+      `subprocess_cli.py:583` bound `process.wait()` with a 5s timeout.
 
 ### 7.4 Adversarial follow-up (user-requested)
 
