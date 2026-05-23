@@ -32,4 +32,25 @@ test.describe("/leaderboard", () => {
     await page.goto("/leaderboard");
     await expect(page.getByRole("link", { name: "Lab" })).toBeVisible();
   });
+
+  test("emits no console errors or failed network requests (criterion 7)", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const failedRequests: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("requestfailed", (req) => {
+      failedRequests.push(`${req.method()} ${req.url()} — ${req.failure()?.errorText}`);
+    });
+
+    await page.goto("/leaderboard");
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.waitForTimeout(500);
+
+    const realErrors = consoleErrors.filter(
+      (e) => !/HMR|ResizeObserver|source map|Fast Refresh/i.test(e),
+    );
+    expect(realErrors).toEqual([]);
+    expect(failedRequests).toEqual([]);
+  });
 });

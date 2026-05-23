@@ -34,4 +34,27 @@ test.describe("Rubric climb panel", () => {
     // candidates between rubric_score events; the strip should show "from candidate ...".
     await expect(page.getByText(/from candidate/i).first()).toBeVisible({ timeout: 8000 });
   });
+
+  test("emits no console errors or failed network requests (criterion 7)", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const failedRequests: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    page.on("requestfailed", (req) => {
+      failedRequests.push(`${req.method()} ${req.url()} — ${req.failure()?.errorText}`);
+    });
+
+    await page.goto("/lab?rlmFixture=1");
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.waitForTimeout(500);
+
+    // Filter known dev-mode noise: HMR pings, ResizeObserver loops, dev-only
+    // source-map 404s — none of these reflect a real production-visible defect.
+    const realErrors = consoleErrors.filter(
+      (e) => !/HMR|ResizeObserver|source map|Fast Refresh/i.test(e),
+    );
+    expect(realErrors).toEqual([]);
+    expect(failedRequests).toEqual([]);
+  });
 });
