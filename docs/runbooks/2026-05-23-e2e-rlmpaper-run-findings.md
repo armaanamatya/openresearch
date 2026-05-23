@@ -121,6 +121,14 @@ Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod crea
 - **Tests:** 16/16 existing tests pass (rlm-header.test.tsx + use-rdr-artifacts.test.ts). TypeScript clean.
 - **Verified:** pending next Playwright snapshot on prj_20457ea6673b5a32.
 
+## F11 — Nodes unclickable after panning the exploration canvas
+
+- **Severity:** UX (functional bug — feature appeared broken).
+- **Symptom:** user screenshot at 14:34 PT showed the lab page with the new LiveActivityStrip working ("▶ Running implement_baseline 100s") and two canvas nodes (Environment, Baseline build), but reported "nodes unclickable" — the NodeDetailSidebar never opened when the nodes were tapped.
+- **Cause:** `frontend/src/hooks/use-pan.ts` set `dragRef.current.moved = true` during a pan but the `onUp` handler only reset `active`, not `moved`. The exploration-canvas's `handleSelect` uses `if (dragRef.current.moved) return` to discriminate pan-vs-click, so after any pan operation, every subsequent click on a node silently early-returned. The Environment and Baseline build nodes were rendered off-center, so the user had to pan to see them — guaranteeing the bug fired.
+- **Fix:** commit pending — reset `dragRef.current.moved = false` in `onUp`. 5/5 existing exploration-canvas tests still pass; behavior change is additive.
+- **Verified:** pending — user can refresh the lab page and click nodes again.
+
 ## Run 2 — prj_20457ea6673b5a32 (fresh restart 19:17 UTC)
 
 After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into the code-writing phase, the user requested a full restart to bake in the new UI/backend fixes from a clean state. Old run subprocess killed, headless tail + chromium killed, MCP playwright closed, runpod pods enumerated (0 active), docker reprolab containers stopped. Fresh kickoff via curl POST `/api/demo/arxiv` with same body: `{url, mode:rlm, sandbox:runpod, model:sonnet}`. Returned `projectId=prj_20457ea6673b5a32, sandboxMode=runpod` — F2 fix verified working end-to-end on the fresh run too.
