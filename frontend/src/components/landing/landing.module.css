@@ -678,6 +678,40 @@
   .hero-figure     { transition-delay: 320ms; }
 }
 
+/* ---------- SECTION SCROLL ENTRANCE (animation-timeline: view()) ----------
+ * Each .spec-header and .spec-visual fades up as it enters the viewport.
+ *
+ * The @supports gate is critical: in Safari/Firefox (no animation-timeline
+ * support as of 2026), the keyframes never bind to a timeline and never fire.
+ * Element stays at its rendered (visible) state. SSR-safe.
+ *
+ * `animation-range: entry 0% entry 50%` runs the animation from when the
+ * element enters the viewport to when it's 50% in. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .spec-header,
+    .spec-visual,
+    .bench .row,
+    .bench-numbers,
+    .cta-foot > .wrap {
+      animation: spec-fade-up 600ms ease-out both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 50%;
+    }
+  }
+}
+
+@keyframes spec-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* ---------- REDUCED-MOTION GLOBAL OVERRIDE ----------
  * Belt-and-suspenders: every new animation in this file is already wrapped
  * in @media (prefers-reduced-motion: no-preference). This is the global
