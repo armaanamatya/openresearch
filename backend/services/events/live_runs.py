@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["offline", "sdk", "rlm"]
+RunMode = Literal["rlm"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -36,7 +36,7 @@ _MODEL_IDS: dict[str, str] = {
 
 
 class StartRunRequest(BaseModel):
-    mode: RunMode = "offline"
+    mode: RunMode = "rlm"
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "efficient"
@@ -220,7 +220,7 @@ class FileLiveRunService:
         if status is None:
             return None
         merged = {
-            "mode": status.get("runMode", "offline"),
+            "mode": status.get("runMode", "rlm"),
             "provider": status.get("llmProvider", "anthropic"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode", "efficient"),
@@ -448,7 +448,7 @@ class FileLiveRunService:
                 env={
                     **os.environ,
                     "REPROLAB_GPU_MODE": request.gpuMode,
-                    **({"REPROLAB_LLM_PROVIDER": request.provider} if request.mode in ("sdk", "rlm") else {}),
+                    "REPROLAB_LLM_PROVIDER": request.provider,
                     **(
                         {"REPROLAB_VERIFICATION_PROVIDER": request.verificationProvider}
                         if request.verificationProvider
@@ -849,7 +849,7 @@ class FileLiveRunService:
             "projectId": project_id,
             "outputDir": status.get("outputDir") or str(self.runs_root / project_id),
             "sourceKind": status.get("sourceKind") or "workspace_fixture",
-            "runMode": status.get("runMode") or "offline",
+            "runMode": status.get("runMode") or "rlm",
             "llmProvider": status.get("llmProvider"),
             "verificationProvider": status.get("verificationProvider"),
             "executionMode": status.get("executionMode"),
@@ -869,7 +869,7 @@ class FileLiveRunService:
                 "stage": stage,
                 "meanReward": _mean_reward(pipeline_state),
                 "improvementCount": len((pipeline_state or {}).get("path_results") or []),
-                "runModeLabel": _run_mode_label(meta["runMode"], meta.get("llmProvider")),
+                "runModeLabel": _run_mode_label(meta.get("llmProvider")),
                 "llmProvider": meta.get("llmProvider"),
                 "verificationProvider": meta.get("verificationProvider"),
                 "executionMode": meta.get("executionMode"),
@@ -1182,14 +1182,9 @@ def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
 
 
 def _fixture_project_id(request: StartRunRequest) -> str:
-    review = request.verificationProvider or "same"
-    if request.mode == "sdk":
-        return f"ui_sdk_{request.provider}_review_{review}_demo_{int(datetime.now().timestamp() * 1000)}"
-    if request.mode == "rlm":
-        # A4-4: rlm runs get a distinct prefix so the provider is recoverable
-        # from the project_id and IDs cannot collide with offline/sdk runs.
-        return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
-    return f"ui_demo_{int(datetime.now().timestamp() * 1000)}"
+    # A4-4: rlm runs get a distinct prefix so the provider is recoverable
+    # from the project_id and IDs cannot collide with legacy run IDs.
+    return f"ui_rlm_{request.provider}_{int(datetime.now().timestamp() * 1000)}"
 
 
 def _initial_status(
@@ -1216,10 +1211,6 @@ def _initial_status(
         "startedAt": now,
         "updatedAt": now,
     }
-    if request.mode == "sdk":
-        status["llmProvider"] = request.provider
-        if request.verificationProvider:
-            status["verificationProvider"] = request.verificationProvider
     if uploaded_paper:
         status.update(
             {
@@ -1290,7 +1281,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk, run_pipeline_rlm
+from backend.agents.rlm.run import run_pipeline_rlm
 from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
 
 config = json.loads({json.dumps(json.dumps(common))})
@@ -1444,8 +1435,8 @@ try:
             "agent": "default",
             "mode": config["run_mode"],
             "model": config["model"],
-            "provider": config["provider"] if config["run_mode"] in ("sdk", "rlm") else None,
-            "verification_provider": config["verification_provider"] if config["run_mode"] == "sdk" else None,
+            "provider": config["provider"],
+            "verification_provider": None,
             "execution_mode": config["execution_mode"],
             "sandbox": config["sandbox"],
             "gpu_mode": config["gpu_mode"],
@@ -1460,47 +1451,25 @@ try:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
         profile = ExecutionProfile.from_mode(config["execution_mode"], gpu_mode=config["gpu_mode"])
-        if config["run_mode"] == "sdk":
-            asyncio.run(run_pipeline_sdk(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                provider=config["provider"],
-                verification_provider=config["verification_provider"],
-                model=config["model"],
-                user_hints=["Keep this as a lightweight smoke test"],
-                n_improvement_paths=1,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
-            ))
-        elif config["run_mode"] == "rlm":
-            # A4-7: build run_budget from threaded-through config fields so
-            # an API-set budget is honored in the non-uploaded rlm path.
-            _run_budget = None
-            if config["max_usd"] is not None or config["max_wall_clock"] is not None:
-                from backend.agents.resilience import RunBudget
-                _run_budget = RunBudget(
-                    max_usd=config["max_usd"],
-                    max_wall_clock_seconds=config["max_wall_clock"],
-                )
-            asyncio.run(run_pipeline_rlm(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                provider=config["provider"],
-                model=config["model"],
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
-                run_budget=_run_budget,
-            ))
-        else:
-            run_pipeline_offline(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
+        # A4-7: build run_budget from threaded-through config fields so
+        # an API-set budget is honored in the non-uploaded rlm path.
+        _run_budget = None
+        if config["max_usd"] is not None or config["max_wall_clock"] is not None:
+            from backend.agents.resilience import RunBudget
+            _run_budget = RunBudget(
+                max_usd=config["max_usd"],
+                max_wall_clock_seconds=config["max_wall_clock"],
             )
+        asyncio.run(run_pipeline_rlm(
+            project_id,
+            runs_root,
+            DEMO_WORKSPACE,
+            provider=config["provider"],
+            model=config["model"],
+            execution_profile=profile,
+            sandbox_mode=SandboxMode(config["sandbox"]),
+            run_budget=_run_budget,
+        ))
     finalize_benchmark()
     write_status("completed", completed_at=now())
 except Exception as exc:
@@ -1663,14 +1632,12 @@ def _mean_reward(pipeline_state: dict[str, Any] | None) -> float | int | None:
     return value if isinstance(value, (float, int)) else None
 
 
-def _run_mode_label(run_mode: Any, provider: Any) -> str:
-    if run_mode != "sdk":
-        return "Offline"
+def _run_mode_label(provider: Any) -> str:
     if provider == "openai":
-        return "SDK: OpenAI"
+        return "RLM: OpenAI"
     if provider == "anthropic":
-        return "SDK: Anthropic"
-    return "SDK"
+        return "RLM: Anthropic"
+    return "RLM"
 
 
 def _pid_exists(pid: Any) -> bool:

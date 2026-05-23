@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 
-import { readTelemetryTail } from "@/lib/demo/node-runner";
+import { readTelemetryTail } from "@/lib/demo/server-fs";
 
 export const runtime = "nodejs";
 

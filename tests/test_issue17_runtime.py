@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import sys
 import tarfile
 from pathlib import Path
 
@@ -169,7 +170,7 @@ def test_local_process_backend_executes_commands_with_artifact_env(tmp_path: Pat
         sandbox = await backend.create_sandbox(config)
         result = await backend.exec(
             sandbox,
-            "python -c \"import os, pathlib; pathlib.Path(os.environ['OUTPUT_DIR'], 'metrics.json').write_text('{\\\"ok\\\": true}'); print('done')\"",
+            sys.executable + " -c \"import os, pathlib; pathlib.Path(os.environ['OUTPUT_DIR'], 'metrics.json').write_text('{\\\"ok\\\": true}'); print('done')\"",
             timeout=30,
         )
         copied = await backend.copy_out(sandbox, "/artifacts/metrics.json")

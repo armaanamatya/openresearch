@@ -29,6 +29,7 @@ After baseline verification passes, select N improvement hypotheses and brief ea
   "hypotheses": [
     {
       "path_id": "path_1",
+      "title": "Lower Entropy Coefficient",
       "hypothesis": "Reduce entropy coefficient from 0.01 to 0.005 to prevent premature convergence",
       "rationale": "Baseline shows reward plateau at ~400; entropy term may be too aggressive",
       "expected_outcome": "Mean reward improves from 475 to 490+",
@@ -38,6 +39,8 @@ After baseline verification passes, select N improvement hypotheses and brief ea
   ]
 }
 ```
+
+`title` is REQUIRED: a short (≤10 words) human-readable name for the candidate.
 """
 
 ADAPTIVE_POOL_GENERATION_PROMPT = """\

@@ -15,7 +15,7 @@ def test_live_run_prepares_fixture_pdf_and_benchmark_bundle(tmp_path: Path) -> N
     output_dir = runs_root / "ui_demo_test"
 
     source_pdf, benchmark = service._prepare_source_artifacts(  # noqa: SLF001
-        StartRunRequest(mode="sdk"),
+        StartRunRequest(mode="rlm"),
         "ui_demo_test",
         output_dir,
         None,
@@ -44,7 +44,7 @@ def test_live_run_copies_uploaded_pdf_to_generated_code_root(tmp_path: Path) -> 
     output_dir = runs_root / "prj_upload"
 
     source_pdf, benchmark = service._prepare_source_artifacts(  # noqa: SLF001
-        StartRunRequest(mode="sdk"),
+        StartRunRequest(mode="rlm"),
         "prj_upload",
         output_dir,
         {"path": str(uploaded), "fileName": "paper.pdf"},

@@ -240,6 +240,11 @@ candidate is worth attempting.  Before running an improvement, triage it:
 
 A candidate declined early saves Docker build time, experiment wall-clock, and
 LLM cost.  The goal is a verified reproduction, not exhaustive exploration.
+
+After you evaluate each improvement candidate (by running and re-verifying it,
+or by deciding to skip/decline it), call `record_candidate_outcome(candidate_id,
+outcome)` where `outcome` is one of "promoted", "marginal", "failed", "skipped",
+or "declined".  This keeps the exploration tree accurate in the live UI.
 """
 
 

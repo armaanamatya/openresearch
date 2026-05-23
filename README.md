@@ -1,45 +1,38 @@
 # ReproLab
 
-**Agent pipeline that reproduces ML papers end-to-end and scores the result.**
+**Agent that reproduces ML papers end-to-end and scores the result.**
 
-ReproLab takes a paper (PDF upload, arXiv ID, or DOI), reconstructs its
-implementation environment inside a Docker or RunPod sandbox, reproduces the core
-algorithm on the same dataset, explores improvements, and emits a benchmark
-report — a computed PaperBench-style rubric plus a statistical comparison against
-the paper's claimed results.
-
-> **Architecture pivot in progress (2026-05).** ReproLab is being re-architected
-> from a fixed 14-stage pipeline to an **RLM-based orchestrator** built on the
-> `rlms` library (Recursive Language Models, arXiv 2512.24601). The canonical
-> plan is [`docs/design/rlm-pivot-brief.md`](docs/design/rlm-pivot-brief.md) —
-> read it first. The sections below describe the current (pre-pivot) code;
-> setup, CLI, and deployment instructions remain valid through the pivot.
+ReproLab takes a paper (PDF upload, arXiv ID, or DOI), offloads it into a
+persistent Python REPL, and runs an RLM root model that writes code to navigate
+and decompose the paper, detect and build the experiment environment, implement
+and run a baseline, score against a PaperBench-style rubric, and explore
+improvements — producing a `final_report.{json,md}` with a real rubric score.
 
 ---
 
 ## Architecture
 
-**Current (pre-pivot).** A 14-stage agent pipeline driven by a `PipelineStage`
-state machine with three verification gates: ingest → paper-understanding →
-artifact-discovery → environment-detective → reproduction-planner → Gate 1 →
-baseline-implementation → experiment-runner → Gate 2 → improvement-selection →
-improvement-paths → Gate 3 → research-map → complete.
+ReproLab is built on the **Recursive Language Model** paradigm (arXiv 2512.24601,
+Zhang/Kraska/Khattab, MIT CSAIL). The `rlms` library (`pip install rlms`) is the
+engine; our code is the domain layer. The root model never receives the paper
+text — it is offloaded as a REPL `context` variable and the model accesses it
+programmatically via slices and recursive sub-calls. Domain primitives
+(`understand_section`, `detect_environment`, `build_environment`,
+`implement_baseline`, `run_experiment`, `verify_against_rubric`,
+`propose_improvements`, and others) are exposed as REPL callables in
+`backend/agents/rlm/primitives.py`. The root decides what to call and in what
+order by writing Python — there is no fixed stage order.
 
-**Target (RLM pivot).** The 14 stages become callable *primitives*. An RLM root
-model — running the `rlms` library's recursive loop — drives them by writing
-Python in a REPL, with the paper offloaded as a REPL variable rather than fed
-into the model's context. No fixed stage order, no gate control-flow. See the
-pivot brief for the full design and build order.
+The live run UI (`frontend/src/components/lab/rlm/`) shows the dynamic
+exploration tree, a REPL-state panel, a live iteration view, a rubric score bar,
+and a primitive-call history. See `docs/design/rlm-pivot-brief.md` for the full
+architecture, and `frontend_integration.md` for the SSE event contract.
 
-**Shared infrastructure (unchanged by the pivot):**
-
-- **FastAPI backend** (`backend/`) — REST API + SSE event stream, run lifecycle,
-  sandbox management
+**Infrastructure (unchanged):**
+- **FastAPI backend** (`backend/`) — REST API + SSE event stream, run lifecycle
 - **Next.js lab frontend** (`frontend/`) — live run UI and benchmark report view
-- **Sandbox execution** — Docker (local, network/memory/CPU controlled) or
-  RunPod GPU pods (remote, configurable GPU type/count/region)
-- **File-backed run state** — `runs/<project_id>/`; SQLite event store with CQRS
-  projections, persisted atomically
+- **Sandbox execution** — Docker (local, network/memory/CPU controlled) or RunPod GPU pods
+- **File-backed run state** — `runs/<project_id>/`; SQLite event store, persisted atomically
 
 ---
 
@@ -48,7 +41,7 @@ pivot brief for the full design and build order.
 | Requirement | Version |
 |---|---|
 | Python | 3.14 (3.11+ supported) |
-| Node.js | >=20.19.0 and <21, OR >=22.12.0 (Node 21 is excluded by `engines` in `package.json`) |
+| Node.js | >=20.19.0 and <21, OR >=22.12.0 |
 | Docker | Engine 26+ / Desktop 4.30+ |
 | RunPod account | Required only for `--sandbox runpod` |
 
@@ -56,8 +49,8 @@ API keys — at minimum one of `ANTHROPIC_API_KEY` (Anthropic/Claude) or `OPENAI
 
 - **Root model** (the `rlm` library orchestrator) talks raw HTTP and needs a real, **credited** API key in `os.environ`. Pick one of:
   - `--model claude` → needs `ANTHROPIC_API_KEY` with Anthropic API credits (≈ $2–3 per reproduction)
-  - default / `--model gpt-5` → needs `OPENAI_API_KEY` with OpenAI credits (≈ $3–5 per reproduction)
-  - `--model qwen3-coder-featherless` → needs `FEATHERLESS_API_KEY` (cheapest, ≈ $0.40/MTok)
+  - default / `--model gpt-5` → needs `OPENAI_API_KEY` with OpenAI credits (≈ $3–5 per reproduction) — paper-validated RLM root
+  - `--model qwen3-coder-featherless` → needs `FEATHERLESS_API_KEY` (cheapest, ≈ $0.40/MTok); Qwen3-Coder via OpenRouter requires separate credentials
 - **Sub-agents** (`implement_baseline` etc., via `claude-agent-sdk`) accept either an API key **or** OAuth via the local `claude` CLI subscription (no per-token billing). For local dev the cheapest setup is: **leave `ANTHROPIC_API_KEY` empty** in `.env`, run `claude login` once, and the SDK uses your subscription for every Sonnet sub-call.
 
 **Pitfall:** if you set `ANTHROPIC_API_KEY` to a key whose **Anthropic API account has no credits**, the SDK tries that key first, gets a 400 *"credit balance too low"*, and **does not fall back to OAuth** — so your reproductions die at the first sub-call with `cost_usd=0.0`. The Anthropic *API* balance and the Claude Code *subscription* are billed separately; running `claude --print "ping"` proves the subscription works, but the API key still needs its own credits if you choose to set it. The safest default is **empty `ANTHROPIC_API_KEY` + working OAuth + a credited root model (OpenAI or Featherless)**.
@@ -133,34 +126,29 @@ npm run dev        # starts on http://localhost:3000 (default Next.js port)
 2. Upload a paper PDF (or paste an arXiv/DOI URL)
 3. Choose provider (Anthropic / OpenAI), execution mode (efficient / max), and
    sandbox (docker / runpod / local)
-4. Click **Start Run** and watch the run progress in real time
-5. When the run reaches `complete`, open the final benchmark report
+4. Click **Start Run** and watch the dynamic exploration tree populate live
+5. When the run finishes, open the final benchmark report
 
 ### Via the CLI
 
 ```bash
-# Full SDK pipeline (uses LLM) — PDF, arXiv ID, or DOI all work
+# Full pipeline — PDF, arXiv ID, or DOI all work
 python -m backend.cli reproduce paper.pdf --provider anthropic --sandbox docker
+python -m backend.cli reproduce 2512.24601   # arXiv ID
 
 # Key flags
-#   --mode offline          deterministic, no LLM (for testing)
-#   --mode sdk              LLM-powered (default)
 #   --provider anthropic|openai
 #   --verification-provider anthropic|openai   (separate model for verification)
 #   --sandbox auto|local|docker|runpod
 #   --execution-mode efficient|max
-#   --n-paths 3             number of parallel improvement hypotheses
 #   --max-usd 5.00          hard spend cap
 #   --max-wall-clock 3600   wall-clock limit in seconds
-#   --model claude-sonnet-4-6   override model
+#   --model <name>          override root model
 #   --seed 42               reproducible run
 
 # Ingest only (no agent pipeline)
 python -m backend.cli ingest paper.pdf
-python -m backend.cli ingest 2512.24601          # arXiv ID
-
-# Evaluate a completed run
-python -m backend.cli eval <project_id> --paper-metrics '{"mean_reward": 500}'
+python -m backend.cli ingest 2512.24601      # arXiv ID
 ```
 
 ---
@@ -171,21 +159,16 @@ Each run writes to `runs/<project_id>/`:
 
 | File / Dir | Contents |
 |---|---|
-| `pipeline_state.json` | Full serialized run state including all checkpoints |
 | `final_report.json` | Computed benchmark report (structured) |
 | `final_report.md` | Human-readable benchmark report |
-| `assumption_ledger.json` | Every agent assumption with citations |
-| `agent_telemetry.jsonl` | Per-invocation timing and token counts |
-| `cost_ledger.jsonl` | Per-agent USD spend and token ledger |
-| `Dockerfile` | Generated environment Dockerfile |
+| `dashboard_events.jsonl` | Append-only SSE event log |
+| `cost_ledger.jsonl` | Per-primitive USD spend and token ledger |
+| `experiment_runs.jsonl` | Every `run_experiment` result (logs, success, metrics) |
+| `rlm_state/` | Per-iteration checkpoints (resume-safe) |
+| `generated_rubric.json` | Auto-derived rubric (arXiv runs without a vendored bundle) |
 | `code/` | Reproduced baseline implementation |
 | `hermes/` | Verification audit chain checkpoints |
 | `raw_paper.pdf` | Stored copy of the input paper |
-
-The **final report** (`final_report.md`) contains: reproduction fidelity score,
-paper-vs-reproduction metric delta table, computed PaperBench rubric
-(weight-aware), statistical rigor assessment, improvement summaries, and a
-research map of promising directions and negative results.
 
 ---
 
@@ -219,10 +202,10 @@ npm test
 ## Project Layout
 
 ```
-backend/          FastAPI app, agent pipeline, sandbox runtimes, evals
-frontend/         Next.js lab UI: run dashboard, report viewer
+backend/          FastAPI app, RLM orchestrator, primitives, sandbox runtimes
+frontend/         Next.js lab UI: live run dashboard, report viewer
 tests/            Python test suite (unit, integration, e2e)
-docs/             Pivot brief, design notes, setup + deployment guides
+docs/             Architecture brief, design notes, setup + deployment guides
 runs/             Per-run artifact directories (gitignored, mount as volume in prod)
 third_party/      Vendored PaperBench bundles
 docker/           Container entrypoint script
@@ -232,5 +215,6 @@ scripts/          RunPod preflight and utility scripts
 ---
 
 See [`docs/design/rlm-pivot-brief.md`](docs/design/rlm-pivot-brief.md) for the
-RLM pivot plan, and [`docs/guides/deployment.md`](docs/guides/deployment.md) for
-production deployment.
+full architecture reference, [`frontend_integration.md`](frontend_integration.md)
+for the SSE event contract, and
+[`docs/guides/deployment.md`](docs/guides/deployment.md) for production deployment.
