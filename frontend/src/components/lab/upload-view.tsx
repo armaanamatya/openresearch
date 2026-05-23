@@ -4,6 +4,7 @@ import { useRef } from "react";
 
 import type { DemoModelChoice, DemoRunMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
+import { PRESET_PAPERS } from "@/lib/demo/preset-papers";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { ICONS } from "./icons";
 
@@ -117,6 +118,22 @@ export function UploadView({
           {busy ? "Starting..." : "Begin ->"}
         </button>
       </form>
+      <div className="preset-row">
+        <span className="preset-row-label">Or pick a preset paper</span>
+        {PRESET_PAPERS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className="preset-chip"
+            disabled={busy}
+            title={p.title}
+            onClick={() => onArxivChange(`arxiv.org/abs/${p.arxivId}`)}
+          >
+            <span className="preset-chip-short">{p.short}</span>
+            <span className="preset-chip-id">{p.arxivId}</span>
+          </button>
+        ))}
+      </div>
       <div className="upload-config-row">
         <label className="upload-config-label" htmlFor="model-select">Model</label>
         <select

@@ -178,6 +178,62 @@
   border-color: var(--accent);
 }
 
+/* Preset paper chips */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-row-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.preset-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+  font-family: inherit;
+}
+.preset-chip:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.preset-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.preset-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.preset-chip-short {
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.preset-chip-id {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
 @media (max-width: 900px) {
   .upload-shell {
     margin: 12px auto 0;
