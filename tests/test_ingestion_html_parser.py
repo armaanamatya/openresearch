@@ -198,6 +198,21 @@ def test_html_section_char_offsets_are_correct(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# T25 guard test — dead _extract_references must not re-appear (P2-I13)
+# ---------------------------------------------------------------------------
+
+def test_html_parser_no_dead_extract_references():
+    """Symptom: _extract_references always returned []; dead code (handoff P2-I13 / T25).
+
+    Verify the symbol is gone — a future caller would silently get [] forever.
+    """
+    from backend.services.ingestion.parser import html_parser
+    assert not hasattr(html_parser.HtmlPaperParser, "_extract_references"), (
+        "dead _extract_references must not be added to HtmlPaperParser"
+    )
+
+
+# ---------------------------------------------------------------------------
 # T17 guard test — deeply-nested HTML must not escape as RecursionError (review I5)
 # ---------------------------------------------------------------------------
 
