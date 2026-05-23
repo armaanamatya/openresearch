@@ -44,7 +44,15 @@ export function usePan() {
       }
     }
     function onUp() {
+      // Reset BOTH flags. The previous code only cleared `active` and left
+      // `moved` sticky, so after the user panned the canvas once
+      // `dragRef.current.moved` stayed true forever — and the exploration
+      // canvas's `handleSelect` would silently early-return on every node
+      // click (line: "if (dragRef.current.moved) return"). Found
+      // 2026-05-23: user reported "nodes unclickable" after panning to find
+      // the Environment / Baseline build nodes.
       dragRef.current.active = false;
+      dragRef.current.moved = false;
       if (wrapRef.current) {
         wrapRef.current.style.cursor = "grab";
       }
