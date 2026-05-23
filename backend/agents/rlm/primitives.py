@@ -253,6 +253,115 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     return spec.model_dump()
 
 
+def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) -> None:
+    """Append a JSON event line to runs/<id>/dashboard_events.jsonl.
+
+    Fail-soft (D3): any IO error is logged but never propagates — observability
+    must never interrupt a run.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path as _Path
+
+    events_file = _Path(ctx.project_dir) / "dashboard_events.jsonl"
+    line = {
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "event": event_type,
+        "data": payload,
+    }
+    try:
+        with events_file.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(line, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — observability must never break the run
+        logger.exception("dashboard event emit failed for %s", event_type)
+
+
+def resolve_gpu_requirements(
+    requirements: "GpuRequirements | dict",
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Plan-time GPU resolver primitive (RLM #dynamic-gpu spec 2026-05-23).
+
+    The RLM root supplies LLM-derived GpuRequirements (from accumulated
+    PaperClaimMap.hardware_clues + reasoning over env_spec and the full workload).
+    This primitive maps them to a GpuPlan via the catalog, caches the plan in run
+    state for idempotency, and emits a ``gpu_resolved`` SSE event for UI / audit.
+
+    Idempotent: subsequent calls in the same run return the cached plan even if
+    the caller passes different requirements. This avoids cost drift across
+    re-resolution attempts and matches RLM-loop expectations.
+
+    Args:
+        requirements: Either a typed ``GpuRequirements`` instance or a plain dict
+            with the same keys — the REPL typically produces dicts, so both are
+            accepted.
+
+    Returns:
+        A ``GpuPlan`` serialised as a plain dict (JSON-safe via ``model_dump``).
+
+    Never raises — returns an error dict on validation failure so the REPL root
+    can handle it gracefully.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from backend.agents.schemas import GpuRequirements as _Req
+    from backend.config import get_settings
+    from backend.services.runtime import gpu_resolver
+
+    # ---- Idempotency: return cached plan if present.
+    state_dir = _Path(ctx.project_dir) / "rlm_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = state_dir / "gpu_plan.json"
+    if cache_file.exists():
+        try:
+            cached = _json.loads(cache_file.read_text(encoding="utf-8"))
+            return cached
+        except Exception:  # noqa: BLE001 — corrupt cache → recompute
+            logger.warning("resolve_gpu_requirements: cache file unreadable, recomputing")
+
+    # ---- Coerce payload.
+    if isinstance(requirements, dict):
+        req = _Req(**requirements)
+    elif isinstance(requirements, _Req):
+        req = requirements
+    else:
+        raise ValueError(
+            f"resolve_gpu_requirements: requirements must be GpuRequirements or dict, "
+            f"got {type(requirements).__name__}"
+        )
+
+    settings = get_settings()
+    cloud_types: tuple[str, ...] = (
+        ("COMMUNITY", "SECURE")
+        if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
+        else ("COMMUNITY",)
+    )
+
+    from backend.agents.schemas import GpuPlan as _GpuPlan
+    plan: "_GpuPlan" = gpu_resolver.resolve(
+        req,
+        dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+        force_single_gpu=settings.force_single_gpu,
+        max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+        headroom_multiplier=settings.dynamic_gpu_headroom,
+        fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
+        cloud_types=cloud_types,
+    )
+
+    # ---- Persist atomically.
+    payload = plan.model_dump(mode="json")
+    tmp = cache_file.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(payload, default=str), encoding="utf-8")
+    tmp.replace(cache_file)
+
+    # ---- Emit SSE event.
+    _emit_dashboard_event(ctx, event_type="gpu_resolved", payload=payload)
+
+    return payload
+
+
 # Indirection so tests can monkeypatch the async Docker build.
 def _build_image(dockerfile_path, context_dir, tag, **kw):
     from backend.services.runtime.local_docker import build_image
@@ -1327,6 +1436,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "respond_to_user": respond_to_user,
     "heartbeat": heartbeat,
     "recommend_next_tool": recommend_next_tool,
+    "resolve_gpu_requirements": resolve_gpu_requirements,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -1396,4 +1506,12 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "description of the current situation. Returns {tool, reason, alternatives}. "
         "Use sparingly at major branch points (pre-baseline, post-failure, before "
         "sub-RLM spawn) — costs one LLM call.",
+    "resolve_gpu_requirements": "resolve_gpu_requirements(requirements) -> dict — "
+        "plan-time GPU resolver. `requirements` is a dict (or GpuRequirements) with: "
+        "estimated_vram_gb (int|None), paper_gpu_string (str|None), "
+        "paper_gpu_count (int|None), reasoning (str), confidence (float 0-1). "
+        "Returns a GpuPlan dict: {runpod_id, short_name, vram_gb, gpu_count, "
+        "cloud_type, sku_usd_per_hr, total_usd_per_hr, source, ladder_remaining, ...}. "
+        "Call ONCE per run after accumulating hardware clues from understand_section. "
+        "Idempotent — subsequent calls return the cached plan.",
 }

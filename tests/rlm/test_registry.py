@@ -7,6 +7,7 @@ EXPECTED = {
     "run_experiment", "verify_against_rubric", "propose_improvements",
     "record_candidate_outcome", "check_user_messages", "respond_to_user",
     "heartbeat", "recommend_next_tool",
+    "resolve_gpu_requirements",  # dynamic-GPU spec 2026-05-23
 }
 
 

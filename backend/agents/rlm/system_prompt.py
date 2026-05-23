@@ -272,6 +272,34 @@ Use sparingly — it costs one LLM call.  Prefer it at major branch points
 (pre-baseline, post-failure, before sub-RLM spawn) rather than every iteration.
 """
 
+_GPU_SELECTION_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  GPU SELECTION — `resolve_gpu_requirements`
+═══════════════════════════════════════════════════════════════
+
+After your initial `understand_section` passes cover the abstract, method, and
+experiments sections, construct a GpuRequirements payload from the accumulated
+`hardware_clues`. Estimate `estimated_vram_gb` for the WHOLE workload — not just
+training. Include inference, evaluation harness, any auxiliary models the paper
+loads (e.g., a frozen scoring model), and KV cache for generative inference.
+Then call:
+
+    resolve_gpu_requirements({
+        "estimated_vram_gb": <int or None>,
+        "paper_gpu_string": "<verbatim string from paper or None>",
+        "paper_gpu_count": <int or None>,
+        "reasoning": "<one-line rationale>",
+        "confidence": <float 0.0-1.0>,
+    })
+
+Call `resolve_gpu_requirements` ONCE per run. Subsequent calls return the
+cached plan automatically — you do not need to call it again from any later
+iteration. The plan determines pod provisioning for every later `run_experiment`
+call. If you cannot estimate VRAM (paper doesn't mention hardware), set
+`estimated_vram_gb=None` and `confidence` low — the resolver will fall back to
+a safe default SKU and emit a warning event.
+"""
+
 _TRIAGE_INSTRUCTION = """\
 ═══════════════════════════════════════════════════════════════
   TRIAGE — COST AND TIME ARE FINITE
@@ -363,6 +391,7 @@ def build_system_prompt(
         _TRIAGE_INSTRUCTION,
         _HEARTBEAT_SECTION,
         _DECISION_ADVISOR_SECTION,
+        _GPU_SELECTION_SECTION,
     ]
 
     if root_model.prompt_addendum:
