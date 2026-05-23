@@ -84,6 +84,22 @@ def main() -> int:
         default="runs",
         help="Root directory where run artefacts are written.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help=(
+            "Resume from the most-recently-modified run directory for the same paper_id, "
+            "skipping clusters that have existing checkpoints. "
+            "Passed automatically by rdr_paperbench_retry.sh after a watchdog kill (exit 124)."
+        ),
+    )
+    parser.add_argument(
+        "--project-id",
+        dest="project_id",
+        default=None,
+        help="Explicit run directory name to use or resume (overrides auto-generated name).",
+    )
 
     args = parser.parse_args()
 
@@ -96,8 +112,34 @@ def main() -> int:
     paper_title = meta.get("title", bundle.paper_id)
 
     # ---- 2. Build project_id ---------------------------------------------------
-    raw_id = f"pb_rdr_{bundle.paper_id}_{int(time.time())}"
-    project_id = _safe_dir_name(raw_id)
+    runs_root = Path(args.runs_root).resolve()
+    resume: bool = args.resume
+    project_id_override: str | None = getattr(args, "project_id", None)
+
+    if project_id_override:
+        project_id = project_id_override
+    elif resume:
+        # Find most-recently-modified pb_rdr_<paper_id>_* directory.
+        import re as _re
+        safe_pid = _safe_dir_name(bundle.paper_id)
+        prefix = f"pb_rdr_{safe_pid}_"
+        candidates = [
+            d for d in runs_root.iterdir()
+            if d.is_dir() and d.name.startswith(prefix)
+        ] if runs_root.is_dir() else []
+        if candidates:
+            project_id = max(candidates, key=lambda d: d.stat().st_mtime).name
+            print(f"[rdr_paperbench] --resume: reusing run dir {project_id}", file=sys.stderr)
+        else:
+            raw_id = f"pb_rdr_{bundle.paper_id}_{int(time.time())}"
+            project_id = _safe_dir_name(raw_id)
+            print(
+                f"[rdr_paperbench] --resume: no prior dir found, starting fresh as {project_id}",
+                file=sys.stderr,
+            )
+    else:
+        raw_id = f"pb_rdr_{bundle.paper_id}_{int(time.time())}"
+        project_id = _safe_dir_name(raw_id)
 
     print(f"project_id : {project_id}", file=sys.stderr)
     print(f"paper      : {paper_title}", file=sys.stderr)
@@ -126,7 +168,7 @@ def main() -> int:
     rdr_result = asyncio.run(
         run_pipeline_rdr(
             project_id,
-            Path(args.runs_root),
+            runs_root,
             paper_id=args.paper_id,
             provider=args.provider,
             model=args.model,
@@ -134,6 +176,7 @@ def main() -> int:
             max_repair_iterations=args.max_repair_iterations,
             repair_target=args.repair_target,
             bundles_root=str(bundle.root.parent),
+            resume=resume,
         )
     )
 

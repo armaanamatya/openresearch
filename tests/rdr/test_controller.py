@@ -1040,3 +1040,241 @@ def test_watchdog_fire_writes_emergency_report(tmp_path: Path) -> None:
     )
     assert report.get("verdict") == "failed"
     assert report.get("label") == "test_fire_report"
+
+
+# ---------------------------------------------------------------------------
+# Feature A: Retry-on-watchdog — resume tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_hydrates_done_from_checkpoints(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """resume=True loads existing cluster checkpoints and skips those clusters.
+
+    Pre-creates a checkpoint for cluster 0 in iterations/ and asserts that
+    the reproduce_fn is NOT called for that cluster (it is loaded from disk),
+    while the second cluster IS reproduced normally.
+    """
+    ctx = make_context(tmp_path)
+    # Two leaves → two clusters (flat rubric; decompose groups them)
+    leaves = [_make_leaf("leaf-a", 0.5), _make_leaf("leaf-b", 0.5)]
+    bundle = FakeBundle(leaves=leaves)
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
+
+    # Run once with resume=False to get the cluster decomposition and create
+    # a checkpoint — then we read back the cluster_id from the checkpoint.
+    called_cluster_ids: list[str] = []
+
+    async def _tracking_fn(agent_context: Any, *, ctx: Any) -> Artifacts:
+        called_cluster_ids.append(agent_context.cluster.id)
+        return Artifacts(
+            cluster_id=agent_context.cluster.id,
+            files={"train.py": "print('hello')"},
+            commands=["python train.py"],
+            failed=False,
+        )
+
+    # ---- First pass: capture cluster decomposition ----
+    ctx_first = make_context(tmp_path, project_id="rdr_resume_first")
+    await run_rdr(
+        bundle,
+        ctx=ctx_first,
+        reproduce_fn=_tracking_fn,
+        max_repair_iterations=0,
+    )
+    iterations_dir_first = ctx_first.project_dir / "iterations"
+    initial_checkpoints = sorted(iterations_dir_first.glob("cluster_*.json"))
+    assert initial_checkpoints, "Expected at least one cluster checkpoint from initial run"
+
+    # Determine the first cluster's id from the checkpoint
+    first_checkpoint_data = json.loads(initial_checkpoints[0].read_text(encoding="utf-8"))
+    skipped_cluster_id = first_checkpoint_data["cluster_id"]
+
+    # ---- Second pass: resume with pre-existing checkpoint for cluster 0 ----
+    ctx_resume = make_context(tmp_path, project_id="rdr_resume_second")
+    iterations_dir_resume = ctx_resume.project_dir / "iterations"
+    iterations_dir_resume.mkdir(parents=True, exist_ok=True)
+
+    # Manually plant the checkpoint for cluster 0
+    checkpoint_name = initial_checkpoints[0].name
+    checkpoint_dest = iterations_dir_resume / checkpoint_name
+    checkpoint_dest.write_text(
+        initial_checkpoints[0].read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    resume_called_ids: list[str] = []
+
+    async def _must_not_call_skipped(agent_context: Any, *, ctx: Any) -> Artifacts:
+        cid = agent_context.cluster.id
+        resume_called_ids.append(cid)
+        assert cid != skipped_cluster_id, (
+            f"reproduce_fn was called for cluster {cid!r} which has an existing checkpoint!"
+        )
+        return Artifacts(
+            cluster_id=cid,
+            files={"train.py": "print('resumed')"},
+            commands=["python train.py"],
+            failed=False,
+        )
+
+    result = await run_rdr(
+        bundle,
+        ctx=ctx_resume,
+        reproduce_fn=_must_not_call_skipped,
+        max_repair_iterations=0,
+        resume=True,
+    )
+
+    assert isinstance(result, RdrResult)
+    # The skipped cluster must appear in done (hydrated from checkpoint)
+    # and NOT appear in resume_called_ids.
+    assert skipped_cluster_id not in resume_called_ids, (
+        f"cluster {skipped_cluster_id!r} was reproduced despite having a checkpoint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_with_missing_iterations_dir(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """resume=True but no iterations/ dir exists → proceeds as a fresh run.
+
+    Verifies that the absence of checkpoints does not cause errors and that
+    all clusters are reproduced normally.
+    """
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
+
+    # Ensure iterations/ does NOT exist before calling run_rdr
+    iterations_dir = ctx.project_dir / "iterations"
+    assert not iterations_dir.exists(), "iterations/ should not exist for this test"
+
+    dispatched: list[str] = []
+
+    async def _tracking_fn(agent_context: Any, *, ctx: Any) -> Artifacts:
+        dispatched.append(agent_context.cluster.id)
+        return Artifacts(
+            cluster_id=agent_context.cluster.id,
+            files={"train.py": "print('fresh')"},
+            commands=["python train.py"],
+            failed=False,
+        )
+
+    result = await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_tracking_fn,
+        max_repair_iterations=0,
+        resume=True,  # no checkpoints → fresh run
+    )
+
+    assert isinstance(result, RdrResult)
+    # All clusters were reproduced (no skips)
+    assert len(dispatched) >= 1, "Expected at least one cluster to be dispatched"
+    assert (ctx.project_dir / "final_report.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Feature B: SSE / dashboard_event emission
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rdr_emits_lifecycle_events(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """run_rdr emits the expected lifecycle dashboard_event types in order.
+
+    Uses a fake DashboardEmitter that records (event_type, payload) pairs.
+    Asserts:
+    - required event types appear in the expected order
+    - no payload contains the raw paper text fixture (corpus-leak check)
+    """
+    paper_text = "SECRET PAPER CONTENT abcdef123"
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle(paper_md=f"# Paper\n\n{paper_text}")
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
+
+    emitted: list[tuple[str, dict]] = []
+
+    class FakeEmitter:
+        def emit(self, event_type: str, payload: dict) -> None:
+            emitted.append((event_type, dict(payload)))
+
+    # Inject the fake emitter into ctx
+    ctx.dashboard = FakeEmitter()
+
+    await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_make_reproduce_fn(),
+        max_repair_iterations=0,
+    )
+
+    event_types = [et for et, _ in emitted]
+
+    # Required events must be present
+    required = [
+        "rdr_run_started",
+        "rdr_cluster_started",
+        "rdr_cluster_completed",
+        "rdr_environment_started",
+        "rdr_environment_completed",
+        "rdr_experiment_started",
+        "rdr_experiment_completed",
+        "rdr_scoring_started",
+        "rdr_scoring_completed",
+        "rdr_run_completed",
+    ]
+    for ev in required:
+        assert ev in event_types, f"Expected event {ev!r} but not found in {event_types}"
+
+    # Order: run_started must come before cluster events, which precede scoring,
+    # which precedes run_completed.
+    def _first_idx(ev: str) -> int:
+        return next((i for i, (et, _) in enumerate(emitted) if et == ev), -1)
+
+    assert _first_idx("rdr_run_started") < _first_idx("rdr_cluster_started"), (
+        "rdr_run_started must precede rdr_cluster_started"
+    )
+    assert _first_idx("rdr_scoring_completed") < _first_idx("rdr_run_completed"), (
+        "rdr_scoring_completed must precede rdr_run_completed"
+    )
+
+    # Corpus-leak check: no payload must contain the raw paper text
+    for ev_type, payload in emitted:
+        payload_str = json.dumps(payload)
+        assert paper_text not in payload_str, (
+            f"Event {ev_type!r} payload contains raw paper text — corpus-leak!"
+        )
+
+
+@pytest.mark.asyncio
+async def test_rdr_handles_none_dashboard(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """run_rdr with ctx.dashboard=None completes without raising."""
+    ctx = make_context(tmp_path)
+    bundle = FakeBundle()
+    _patch_primitives(monkeypatch)
+    _patch_score(monkeypatch, _FAKE_SCORES_HIGH)
+
+    # Explicitly set dashboard to None
+    ctx.dashboard = None
+
+    result = await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_make_reproduce_fn(),
+        max_repair_iterations=0,
+    )
+
+    assert isinstance(result, RdrResult)
+    assert (ctx.project_dir / "final_report.json").exists()

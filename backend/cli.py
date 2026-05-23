@@ -487,6 +487,25 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def _find_latest_rdr_project_dir(runs_root: Path, paper_id: str) -> str | None:
+    """Find the most-recently-modified ``pb_<paper_id>_*`` directory under *runs_root*.
+
+    Returns the directory *name* (not the full path) so the caller can reuse it
+    as a project_id, or ``None`` when no match is found.
+    """
+    import re as _re
+
+    safe_pid = _re.sub(r"[^a-zA-Z0-9_\-]", "_", paper_id)
+    prefix = f"pb_{safe_pid}_"
+    candidates = [
+        d for d in runs_root.iterdir()
+        if d.is_dir() and d.name.startswith(prefix)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda d: d.stat().st_mtime).name
+
+
 def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     """Dispatch ``--mode rdr``: run the rubric-driven harness on a PaperBench bundle.
 
@@ -501,12 +520,33 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     from backend.agents.rdr.run import run_pipeline_rdr
 
     paper_id = args.source
+    resume: bool = getattr(args, "resume", False)
+    project_id_override: str | None = getattr(args, "project_id", None)
 
     def _safe_dir_name(s: str) -> str:
         return re.sub(r"[^a-zA-Z0-9_\-]", "_", s)
 
-    raw_id = f"pb_{_safe_dir_name(paper_id)}_{int(time.time())}"
-    project_id = raw_id[:80]
+    if resume:
+        # Reuse an existing run directory: explicit --project-id wins, then
+        # most-recently-modified pb_<paper_id>_* dir, then a fresh timestamped one.
+        if project_id_override:
+            project_id = project_id_override
+        else:
+            found = _find_latest_rdr_project_dir(runs_root, paper_id)
+            if found:
+                project_id = found
+            else:
+                logger.warning(
+                    "[rdr] --resume: no prior run dir found for %s — starting fresh", paper_id
+                )
+                raw_id = f"pb_{_safe_dir_name(paper_id)}_{int(time.time())}"
+                project_id = raw_id[:80]
+    else:
+        if project_id_override:
+            project_id = project_id_override
+        else:
+            raw_id = f"pb_{_safe_dir_name(paper_id)}_{int(time.time())}"
+            project_id = raw_id[:80]
 
     max_repair_iterations: int = getattr(args, "max_repair_iterations", 2)
     repair_target: float = getattr(args, "repair_target", 0.6)
@@ -519,6 +559,8 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     print(f"[rdr] project_id: {project_id}", file=sys.stderr)
     print(f"[rdr] runs_root : {runs_root}", file=sys.stderr)
     print(f"[rdr] sandbox   : {sandbox_mode.value}", file=sys.stderr)
+    if resume:
+        print(f"[rdr] resume    : True", file=sys.stderr)
 
     try:
         rdr_result = asyncio.run(
@@ -531,6 +573,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
                 sandbox_mode=sandbox_mode,
                 max_repair_iterations=max_repair_iterations,
                 repair_target=repair_target,
+                resume=resume,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1008,6 +1051,26 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=0.6,
         help="(rdr mode) cluster score threshold below which a cluster is queued for repair.",
+    )
+    reproduce.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help=(
+            "(rdr mode) resume from the most-recently-modified run directory for the "
+            "same paper_id, skipping clusters that have existing checkpoints. "
+            "Use after a watchdog kill (exit 124) to continue without restarting from scratch."
+        ),
+    )
+    reproduce.add_argument(
+        "--project-id",
+        dest="project_id",
+        default=None,
+        help=(
+            "(rdr mode) explicit project_id / run directory name to use or resume. "
+            "Overrides the auto-generated timestamped name. "
+            "Useful when --resume should target a specific prior run."
+        ),
     )
     reproduce.set_defaults(func=cmd_reproduce)
 

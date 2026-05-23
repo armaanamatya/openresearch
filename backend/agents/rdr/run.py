@@ -117,6 +117,7 @@ async def run_pipeline_rdr(
     max_repair_iterations: int = 2,
     repair_target: float = 0.6,
     bundles_root: "str | Path | None" = None,
+    resume: bool = False,
 ) -> RdrResult:
     """Run one paper reproduction using the rubric-driven ``rdr`` harness.
 
@@ -135,6 +136,8 @@ async def run_pipeline_rdr(
         repair_target: Cluster-level score threshold passed to ``run_rdr``.
         bundles_root: Override the default ``third_party/paperbench/`` root when
             resolving ``paper_id``.  ``None`` → use the canonical vendored root.
+        resume: When True, reuse the existing project_dir and resume from
+            cluster checkpoints rather than starting fresh.
 
     Returns:
         An :class:`~backend.agents.rdr.models.RdrResult`.
@@ -216,6 +219,7 @@ async def run_pipeline_rdr(
         ctx=ctx,
         max_repair_iterations=max_repair_iterations,
         repair_target=repair_target,
+        resume=resume,
     )
 
 

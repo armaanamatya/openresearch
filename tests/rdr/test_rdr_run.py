@@ -111,3 +111,137 @@ def test_build_llm_client_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     _client, model, label = _build_llm_client("anthropic", "claude-sonnet-4-6")
     assert label == "anthropic"
     assert model == "claude-sonnet-4-6"
+
+
+# ---------------------------------------------------------------------------
+# Feature A: resume flag threading through run_pipeline_rdr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_rdr_resume_flag_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_pipeline_rdr accepts resume=True without raising.
+
+    Monkeypatches run_rdr and load_paperbench_bundle so no LLM or bundle I/O
+    occurs. Verifies the resume flag is forwarded to run_rdr.
+    """
+    from backend.agents.rdr.models import RdrResult
+
+    captured: dict = {}
+
+    async def _fake_run_rdr(bundle, *, ctx, **kwargs):  # type: ignore[override]
+        captured.update(kwargs)
+        return RdrResult(
+            project_id=ctx.project_id,
+            status="partial",
+            rubric_score=0.0,
+            clusters_total=0,
+            clusters_failed=0,
+            repair_iterations=0,
+            final_report_path="",
+            cost_usd=None,
+        )
+
+    class _FakeBundle:
+        paper_id = "test-paper"
+
+        def rubric(self):
+            return {"id": "root", "requirements": "r", "weight": 1.0, "sub_tasks": []}
+
+        def read_paper_markdown(self):
+            return "# Test"
+
+        def metadata(self):
+            return {"id": "test-paper", "title": "Test Paper"}
+
+    monkeypatch.setattr("backend.agents.rdr.run.run_rdr", _fake_run_rdr)
+    # load_paperbench_bundle is a local (lazy) import inside run_pipeline_rdr;
+    # patch it on the bundle module where it lives.
+    monkeypatch.setattr(
+        "backend.evals.paperbench.bundle.load_paperbench_bundle",
+        lambda path: _FakeBundle(),
+    )
+    # Also patch _resolve_bundle_path to avoid FileNotFoundError
+    monkeypatch.setattr(
+        "backend.agents.rdr.run._resolve_bundle_path",
+        lambda paper_id, bundles_root=None: tmp_path,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    from backend.agents.rdr.run import run_pipeline_rdr
+
+    result = await run_pipeline_rdr(
+        "test_project",
+        tmp_path,
+        paper_id="test-paper",
+        resume=True,
+    )
+
+    assert result.status == "partial"
+    assert captured.get("resume") is True, (
+        f"resume=True was not forwarded to run_rdr; captured kwargs: {captured}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_rdr_resume_defaults_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_pipeline_rdr defaults resume=False (backward compatibility)."""
+    from backend.agents.rdr.models import RdrResult
+
+    captured: dict = {}
+
+    async def _fake_run_rdr(bundle, *, ctx, **kwargs):  # type: ignore[override]
+        captured.update(kwargs)
+        return RdrResult(
+            project_id=ctx.project_id,
+            status="partial",
+            rubric_score=0.0,
+            clusters_total=0,
+            clusters_failed=0,
+            repair_iterations=0,
+            final_report_path="",
+            cost_usd=None,
+        )
+
+    class _FakeBundle:
+        paper_id = "test-paper"
+
+        def rubric(self):
+            return {"id": "root", "requirements": "r", "weight": 1.0, "sub_tasks": []}
+
+        def read_paper_markdown(self):
+            return "# Test"
+
+        def metadata(self):
+            return {"id": "test-paper", "title": "Test Paper"}
+
+    monkeypatch.setattr("backend.agents.rdr.run.run_rdr", _fake_run_rdr)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.bundle.load_paperbench_bundle",
+        lambda path: _FakeBundle(),
+    )
+    monkeypatch.setattr(
+        "backend.agents.rdr.run._resolve_bundle_path",
+        lambda paper_id, bundles_root=None: tmp_path,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    from backend.agents.rdr.run import run_pipeline_rdr
+
+    result = await run_pipeline_rdr(
+        "test_project_default",
+        tmp_path,
+        paper_id="test-paper",
+        # resume not specified — should default to False
+    )
+
+    assert result.status == "partial"
+    assert captured.get("resume") is False, (
+        f"resume should default to False; captured kwargs: {captured}"
+    )

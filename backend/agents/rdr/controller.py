@@ -256,6 +256,44 @@ def _resolve_reproduce_fn(reproduce_fn: Callable | None) -> Callable:
 # ---------------------------------------------------------------------------
 
 
+def _load_resume_done(iterations_dir: Path, clusters: list[Any]) -> dict[str, Any]:
+    """Hydrate ``done`` from existing cluster checkpoints for resume runs.
+
+    Returns a mapping from cluster_id → placeholder :class:`Artifacts` for
+    every checkpoint that exists under *iterations_dir*. The placeholder
+    carries the checkpointed ``failed`` flag; files/commands are empty because
+    file content is already on disk in ``code/``.
+    """
+    done: dict[str, Any] = {}
+    if not iterations_dir.is_dir():
+        return done
+
+    # Build a lookup so we can match checkpoint cluster_id → WorkCluster
+    cluster_by_id: dict[str, Any] = {c.id: c for c in clusters}
+
+    for checkpoint in iterations_dir.glob("cluster_*.json"):
+        try:
+            data = json.loads(checkpoint.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — corrupt checkpoint: skip
+            logger.warning("rdr/resume: could not parse checkpoint %s — skipping", checkpoint)
+            continue
+        cid = data.get("cluster_id", "")
+        if not cid or cid not in cluster_by_id:
+            continue
+        if cid in done:
+            continue  # already hydrated (take the first / only one)
+        done[cid] = Artifacts(
+            cluster_id=cid,
+            failed=bool(data.get("failed", False)),
+            files={},
+            commands=[],
+            notes="resumed",
+            error="",
+        )
+        logger.info("rdr/resume: skipping cluster %s (checkpoint exists)", cid)
+    return done
+
+
 async def run_rdr(
     bundle: Any,
     *,
@@ -264,6 +302,7 @@ async def run_rdr(
     repair_target: float = 0.6,
     max_leaves_per_cluster: int = 12,
     reproduce_fn: Callable | None = None,
+    resume: bool = False,
 ) -> RdrResult:
     """Deterministic controller for a rubric-driven paper reproduction run.
 
@@ -279,6 +318,8 @@ async def run_rdr(
             Defaults to the real ``backend.agents.rdr.agent.reproduce``
             (lazy-imported so this module stays importable even if agent.py
             does not exist yet).
+        resume: When True, load completed cluster checkpoints from
+            ``ctx.project_dir/iterations/`` and skip those clusters.
 
     Returns:
         An :class:`RdrResult` — always; per-cluster and per-phase failures
@@ -311,12 +352,58 @@ async def run_rdr(
     iterations_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
+    # SSE helper — defensive: skip silently when dashboard is absent
+    # ------------------------------------------------------------------
+    def _emit(event_type: str, payload: dict[str, Any]) -> None:
+        """Emit a dashboard_event via ctx.dashboard.emit (if available)."""
+        try:
+            emitter = ctx.dashboard
+            if emitter is None:
+                return
+            emit_fn = getattr(emitter, "emit", None)
+            if callable(emit_fn):
+                emit_fn(event_type, payload)
+        except Exception:  # noqa: BLE001 — never raise from emitter
+            pass
+
+    # ------------------------------------------------------------------
+    # SSE: rdr_run_started
+    # ------------------------------------------------------------------
+    _emit("rdr_run_started", {
+        "project_id": ctx.project_id,
+        "paper_id": getattr(bundle, "paper_id", ""),
+        "cluster_count": len(clusters),
+    })
+
+    # ------------------------------------------------------------------
     # Step 3: Cluster loop
     # ------------------------------------------------------------------
+    # On resume, hydrate done from existing checkpoints so completed
+    # clusters are skipped.
     done: dict[str, Artifacts] = {}
+    if resume:
+        done = _load_resume_done(iterations_dir, clusters)
+
     clusters_failed = 0
 
     for idx, cluster in enumerate(clusters):
+        # Resume: skip clusters that have existing checkpoints.
+        if cluster.id in done:
+            existing_art = done[cluster.id]
+            if existing_art.failed:
+                clusters_failed += 1
+            continue
+
+        # SSE: rdr_cluster_started
+        _emit("rdr_cluster_started", {
+            "cluster_id": cluster.id,
+            "cluster_index": idx,
+            "cluster_title": cluster.title,
+            "leaf_count": len(cluster.leaves),
+            "weight": cluster.weight,
+            "dominant_category": cluster.dominant_category,
+        })
+
         agctx = build_context(
             cluster,
             paper=paper,
@@ -341,6 +428,14 @@ async def run_rdr(
             wd.disarm()
 
         done[cluster.id] = art
+
+        # SSE: rdr_cluster_completed
+        _emit("rdr_cluster_completed", {
+            "cluster_id": cluster.id,
+            "cluster_index": idx,
+            "failed": art.failed,
+            "file_count": len(art.files),
+        })
 
         # Merge files into the shared code/ dir (agent writes its own copies;
         # files dict carries the canonical content from the agent's
@@ -398,6 +493,7 @@ async def run_rdr(
     # ------------------------------------------------------------------
     meta = bundle.metadata()
     env_id: str = ""
+    _emit("rdr_environment_started", {"project_id": ctx.project_id})
     try:
         agent_dockerfile = code_dir / "Dockerfile"
         root_dockerfile = ctx.project_dir / "Dockerfile"
@@ -436,11 +532,13 @@ async def run_rdr(
             "run_rdr[%s]: env detect/build raised %s: %s — skipping experiment",
             ctx.project_id, type(exc).__name__, exc,
         )
+    _emit("rdr_environment_completed", {"project_id": ctx.project_id, "env_id": env_id})
 
     # ------------------------------------------------------------------
     # Step 6: Experiment (fail-soft; only if env_id available)
     # ------------------------------------------------------------------
     exp: dict[str, Any] = {"success": False, "metrics": {}}
+    _emit("rdr_experiment_started", {"project_id": ctx.project_id})
     if env_id:
         try:
             exp = await asyncio.to_thread(run_experiment, str(code_dir), env_id, ctx)
@@ -449,6 +547,10 @@ async def run_rdr(
                 "run_rdr[%s]: run_experiment raised %s: %s",
                 ctx.project_id, type(exc).__name__, exc,
             )
+    _emit("rdr_experiment_completed", {
+        "success": exp.get("success", False),
+        "metrics_keys": list(exp.get("metrics", {}).keys()),
+    })
 
     # ------------------------------------------------------------------
     # Step 7: Initial scoring
@@ -469,6 +571,7 @@ async def run_rdr(
         "rubric_source": "paperbench_bundle",
         "leaf_scores": [],
     }
+    _emit("rdr_scoring_started", {"project_id": ctx.project_id})
     try:
         scores = await asyncio.to_thread(
             score_reproduction, rubric, ctx.project_dir, ctx.llm_client
@@ -479,6 +582,11 @@ async def run_rdr(
             type(exc).__name__, exc,
         )
         scores = dict(_ZERO_SCORES)
+    _emit("rdr_scoring_completed", {
+        "overall_score": scores.get("overall_score"),
+        "leaf_count": scores.get("leaf_count"),
+        "graded": scores.get("graded"),
+    })
 
     # ------------------------------------------------------------------
     # Step 8: Repair loop
@@ -490,6 +598,19 @@ async def run_rdr(
     # Initial pass already dispatched one call per cluster.
     total_agent_dispatches = len(clusters)
 
+    # Build a set of already-completed repair checkpoints for resume.
+    _completed_repair_keys: set[str] = set()
+    if resume and iterations_dir.is_dir():
+        for _rcp in iterations_dir.glob("repair_*.json"):
+            try:
+                _rcdata = json.loads(_rcp.read_text(encoding="utf-8"))
+                _rn = _rcdata.get("repair_pass")
+                _rcid = _rcdata.get("cluster_id", "")
+                if _rn is not None and _rcid:
+                    _completed_repair_keys.add(f"{_rn}:{_rcid}")
+            except Exception:  # noqa: BLE001
+                pass
+
     for _rep in range(max_repair_iterations):
         weak = [c for c in clusters if _cluster_score(c, scores) < repair_target]
         if not weak:
@@ -500,8 +621,17 @@ async def run_rdr(
             "run_rdr[%s]: repair iteration %d — %d weak clusters",
             ctx.project_id, rep_n, len(weak),
         )
+        _emit("rdr_repair_pass_started", {"pass": rep_n, "weak_count": len(weak)})
 
         for cluster in weak:
+            # Resume: skip repair clusters that have existing checkpoints.
+            if f"{rep_n}:{cluster.id}" in _completed_repair_keys:
+                logger.info(
+                    "rdr/resume: skipping repair pass %d cluster %s (checkpoint exists)",
+                    rep_n, cluster.id,
+                )
+                continue
+
             agctx = build_context(
                 cluster,
                 paper=paper,
@@ -526,6 +656,13 @@ async def run_rdr(
                 wd.disarm()
             done[cluster.id] = art
             total_agent_dispatches += 1
+
+            # SSE: rdr_repair_cluster_completed
+            _emit("rdr_repair_cluster_completed", {
+                "pass": rep_n,
+                "cluster_id": cluster.id,
+                "failed": art.failed,
+            })
 
             # Merge repaired files back into code/ (defensive — see the
             # initial-pass note above).
@@ -644,6 +781,15 @@ async def run_rdr(
     # completed when scoring produced a real score; partial when scoring
     # returned 0.0 default due to failure.
     status = "completed" if scores.get("graded", 0) > 0 else "partial"
+
+    # SSE: rdr_run_completed
+    _emit("rdr_run_completed", {
+        "status": status,
+        "rubric_score": overall_score,
+        "clusters_total": len(clusters),
+        "clusters_failed": clusters_failed_count,
+        "repair_iterations": repair_iterations,
+    })
 
     return RdrResult(
         project_id=ctx.project_id,
