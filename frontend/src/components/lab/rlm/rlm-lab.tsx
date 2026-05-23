@@ -106,6 +106,16 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
     [selectedNodeId, state.tree]
   );
 
+  // Derived aggregate counters for the sidebar strip.
+  const candidatesProposed = useMemo(
+    () => state.tree.filter((n) => n.kind === "candidate").length,
+    [state.tree]
+  );
+  const candidatesPromoted = useMemo(
+    () => state.tree.filter((n) => n.kind === "candidate" && n.outcome === "promoted").length,
+    [state.tree]
+  );
+
   const selectedIteration = useMemo(() => {
     if (!selectedNode) return null;
     const [lo, hi] = selectedNode.iterationRange;
@@ -173,6 +183,10 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
           chatMessages={chatMessages}
           onSendChat={sendChat}
           chatSending={chatSending}
+          subRlms={state.subRlms}
+          iterationCount={state.iterationCount}
+          candidatesProposed={candidatesProposed}
+          candidatesPromoted={candidatesPromoted}
         />
       </div>
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { TreeNode, IterationView, PrimitiveCallView } from "../../../hooks/use-rlm-run";
+import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView } from "../../../hooks/use-rlm-run";
 import type { ChatMessage } from "../../../hooks/use-steering-chat";
 import { SteeringChat } from "./steering-chat";
 import styles from "./node-detail-sidebar.module.css";
@@ -15,6 +15,10 @@ export interface NodeDetailSidebarProps {
   chatMessages: ChatMessage[];
   onSendChat: (content: string) => Promise<void>;
   chatSending?: boolean;
+  subRlms: SubRlmView[];
+  iterationCount: number;
+  candidatesProposed: number;
+  candidatesPromoted: number;
 }
 
 const COMPREHENSION_PRIMITIVES = new Set([
@@ -28,6 +32,19 @@ const ENVIRONMENT_PRIMITIVES = new Set([
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Score threshold labels — mirrors sse_bridge.py thresholds (≥0.7 pass, ≥0.4 partial). */
+function rubricStatusLabel(score: number): { label: string; className: string } {
+  if (score >= 0.7) return { label: "pass", className: styles.chipPass };
+  if (score >= 0.4) return { label: "partial", className: styles.chipPartial };
+  return { label: "fail", className: styles.chipFail };
 }
 
 /** Kind badge label. */
@@ -137,11 +154,13 @@ function SidebarBody({
   iteration,
   primitiveCalls,
   paperMeta,
+  subRlms,
 }: {
   node: TreeNode;
   iteration: IterationView | null;
   primitiveCalls: PrimitiveCallView[];
   paperMeta: string;
+  subRlms: SubRlmView[];
 }) {
   const { kind } = node;
 
@@ -197,14 +216,68 @@ function SidebarBody({
   }
 
   if (kind === "subrlm") {
+    // Node id is "subrlm-N" (1-indexed). Extract N to index into subRlms[].
+    const match = node.id.match(/^subrlm-(\d+)$/);
+    const subRlmView = match ? subRlms[parseInt(match[1], 10) - 1] ?? null : null;
+
     return (
       <div className={styles.body}>
-        {nowBlock || <p className={styles.noDetail}>no iteration detail</p>}
+        {subRlmView ? (
+          <>
+            <dl className={styles.metaList}>
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>model</dt>
+                <dd className={styles.metaVal}>{subRlmView.model}</dd>
+              </div>
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>depth</dt>
+                <dd className={styles.metaVal}>{subRlmView.depth}</dd>
+              </div>
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>duration</dt>
+                <dd className={styles.metaVal}>{formatDuration(subRlmView.duration_ms)}</dd>
+              </div>
+              {subRlmView.error && (
+                <div className={styles.metaRow}>
+                  <dt className={styles.metaKey}>error</dt>
+                  <dd className={styles.metaValError}>{subRlmView.error}</dd>
+                </div>
+              )}
+            </dl>
+            <pre className={styles.promptPreview}>
+              {truncate(subRlmView.prompt_preview, 400)}
+            </pre>
+          </>
+        ) : (
+          <p className={styles.noDetail}>no sub-RLM detail</p>
+        )}
+        {nowBlock}
       </div>
     );
   }
 
-  // baseline, declined-group, or unknown
+  if (kind === "baseline") {
+    const score = node.rubricScore ?? null;
+    return (
+      <div className={styles.body}>
+        {score !== null ? (
+          <div className={styles.baselineMeta}>
+            <span className={styles.baselineScore}>
+              Rubric score: {score.toFixed(2)}
+            </span>
+            <span className={rubricStatusLabel(score).className}>
+              {rubricStatusLabel(score).label}
+            </span>
+          </div>
+        ) : (
+          <p className={styles.noDetail}>no rubric score yet</p>
+        )}
+        {nowBlock}
+      </div>
+    );
+  }
+
+  // declined-group, or unknown
   return (
     <div className={styles.body}>
       {nowBlock || <p className={styles.noDetail}>no iteration detail</p>}
@@ -223,6 +296,10 @@ export function NodeDetailSidebar({
   chatMessages,
   onSendChat,
   chatSending = false,
+  subRlms,
+  iterationCount,
+  candidatesProposed,
+  candidatesPromoted,
 }: NodeDetailSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -276,6 +353,26 @@ export function NodeDetailSidebar({
         )}
       </div>
 
+      {/* Aggregate counters — always visible */}
+      <div className={styles.countersStrip} data-testid="aggregate-counters">
+        <div className={styles.counterTile}>
+          <span className={styles.counterNum}>{iterationCount}</span>
+          <span className={styles.counterLabel}>iterations</span>
+        </div>
+        <div className={styles.counterTile}>
+          <span className={styles.counterNum}>{primitiveCalls.length}</span>
+          <span className={styles.counterLabel}>primitive calls</span>
+        </div>
+        <div className={styles.counterTile}>
+          <span className={styles.counterNum}>{candidatesProposed}</span>
+          <span className={styles.counterLabel}>proposed</span>
+        </div>
+        <div className={styles.counterTile}>
+          <span className={styles.counterNum}>{candidatesPromoted}</span>
+          <span className={styles.counterLabel}>promoted</span>
+        </div>
+      </div>
+
       {/* Kind-specific content */}
       <div className={styles.content}>
         {node ? (
@@ -284,6 +381,7 @@ export function NodeDetailSidebar({
             iteration={iteration}
             primitiveCalls={primitiveCalls}
             paperMeta={paperMeta}
+            subRlms={subRlms}
           />
         ) : (
           <p className={styles.noDetail}>click a node to see details</p>
