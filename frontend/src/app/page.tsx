@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { LandingPage } from "@/components/landing/landing";
 
-export default function HomePage(): never {
-  redirect("/lab");
+export default function HomePage(): React.JSX.Element {
+  return <LandingPage />;
 }
