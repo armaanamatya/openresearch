@@ -126,8 +126,8 @@ function LeafScoreList({
 export function RubricBreakdown({ projectId, isActive }: RubricBreakdownProps) {
   const { clusters, leafScores, repairPasses } = useRdrArtifacts(projectId, isActive);
 
-  const hasData = clusters.length > 0 || leafScores.length > 0;
-  if (!hasData) return null;
+  const hasAny = clusters.length > 0 || leafScores.length > 0 || repairPasses.length > 0;
+  if (!hasAny) return null;
 
   return (
     <div className={styles.panel} data-testid="rubric-breakdown">

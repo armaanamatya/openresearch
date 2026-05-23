@@ -12,11 +12,20 @@ export interface RdrArtifacts {
   clusters: DemoClusterStatus[];
   leafScores: DemoLeafScore[];
   repairPasses: DemoRepairPass[];
+  /**
+   * True after 3 consecutive poll cycles where all 3 endpoints returned 404.
+   * Signals "this run will never have rdr artifacts" — callers can use this
+   * to suppress any UI placeholder rather than showing an indefinite empty state.
+   */
+  noRdrArtifacts: boolean;
 }
 
 const EMPTY_CLUSTERS: DemoClusterStatus[] = [];
 const EMPTY_LEAVES: DemoLeafScore[] = [];
 const EMPTY_PASSES: DemoRepairPass[] = [];
+
+/** Number of consecutive all-404 poll cycles before polling stops entirely. */
+const STOP_AFTER_404_CYCLES = 3;
 
 /**
  * Polls the three RDR artifact endpoints while the run is active.
@@ -40,39 +49,65 @@ export function useRdrArtifacts(
   const [clusters, setClusters] = useState<DemoClusterStatus[]>([]);
   const [leafScores, setLeafScores] = useState<DemoLeafScore[]>([]);
   const [repairPasses, setRepairPasses] = useState<DemoRepairPass[]>([]);
+  // Count consecutive poll cycles where every endpoint returned 404.
+  // After STOP_AFTER_404_CYCLES we stop polling — the run has no rdr artifacts.
+  const [noArtifactsCount, setNoArtifactsCount] = useState(0);
 
   useEffect(() => {
     if (!projectId) return;
 
     let cancelled = false;
+    // Shadow the outer count inside the effect so the interval closure always
+    // reads the latest value without re-registering on every state change.
+    let localNoArtifactsCount = 0;
+
+    type FetchResult = { status: number; data: unknown };
+
+    const fetchOne = async (endpoint: string): Promise<FetchResult> => {
+      try {
+        const r = await fetch(
+          `/api/demo/runs/${encodeURIComponent(projectId)}/${endpoint}`,
+          { cache: "no-store" },
+        );
+        if (r.ok) return { status: r.status, data: await r.json() };
+        return { status: r.status, data: null };
+      } catch {
+        return { status: 0, data: null }; // network error
+      }
+    };
 
     const fetchOnce = async () => {
-      try {
-        const [c, l, r] = await Promise.all([
-          fetch(`/api/demo/runs/${encodeURIComponent(projectId)}/clusters`, {
-            cache: "no-store",
-          }).then((x) => (x.ok ? (x.json() as Promise<unknown>) : null)),
-          fetch(`/api/demo/runs/${encodeURIComponent(projectId)}/leaf-scores`, {
-            cache: "no-store",
-          }).then((x) => (x.ok ? (x.json() as Promise<unknown>) : null)),
-          fetch(
-            `/api/demo/runs/${encodeURIComponent(projectId)}/repair-iterations`,
-            { cache: "no-store" },
-          ).then((x) => (x.ok ? (x.json() as Promise<unknown>) : null)),
-        ]);
-        if (cancelled) return;
+      // If we have already confirmed this run has no rdr artifacts, bail early
+      // so the interval doesn't fire additional requests.
+      if (localNoArtifactsCount >= STOP_AFTER_404_CYCLES) return;
 
-        const cData = c as { clusters?: DemoClusterStatus[] } | null;
-        const lData = l as { leaf_scores?: DemoLeafScore[] } | null;
-        const rData = r as { passes?: DemoRepairPass[] } | null;
+      const [c, l, r] = await Promise.all([
+        fetchOne("clusters"),
+        fetchOne("leaf-scores"),
+        fetchOne("repair-iterations"),
+      ]);
 
-        if (Array.isArray(cData?.clusters)) setClusters(cData.clusters);
-        if (Array.isArray(lData?.leaf_scores)) setLeafScores(lData.leaf_scores);
-        if (Array.isArray(rData?.passes)) setRepairPasses(rData.passes);
-        setActiveProjectId(projectId);
-      } catch {
-        // Poll quietly; network errors are non-fatal.
+      if (cancelled) return;
+
+      const all404 = [c, l, r].every((res) => res.status === 404);
+      if (all404) {
+        localNoArtifactsCount += 1;
+        setNoArtifactsCount(localNoArtifactsCount);
+        return;
       }
+
+      // At least one endpoint returned data (or a non-404 error) — reset counter.
+      localNoArtifactsCount = 0;
+      setNoArtifactsCount(0);
+
+      const cData = c.data as { clusters?: DemoClusterStatus[] } | null;
+      const lData = l.data as { leaf_scores?: DemoLeafScore[] } | null;
+      const rData = r.data as { passes?: DemoRepairPass[] } | null;
+
+      if (Array.isArray(cData?.clusters)) setClusters(cData.clusters);
+      if (Array.isArray(lData?.leaf_scores)) setLeafScores(lData.leaf_scores);
+      if (Array.isArray(rData?.passes)) setRepairPasses(rData.passes);
+      setActiveProjectId(projectId);
     };
 
     void fetchOnce();
@@ -90,8 +125,18 @@ export function useRdrArtifacts(
   // data by returning empty arrays. This avoids setState-in-effect while still
   // presenting a clean state when the project changes.
   if (!projectId || activeProjectId !== projectId) {
-    return { clusters: EMPTY_CLUSTERS, leafScores: EMPTY_LEAVES, repairPasses: EMPTY_PASSES };
+    return {
+      clusters: EMPTY_CLUSTERS,
+      leafScores: EMPTY_LEAVES,
+      repairPasses: EMPTY_PASSES,
+      noRdrArtifacts: noArtifactsCount >= STOP_AFTER_404_CYCLES,
+    };
   }
 
-  return { clusters, leafScores, repairPasses };
+  return {
+    clusters,
+    leafScores,
+    repairPasses,
+    noRdrArtifacts: noArtifactsCount >= STOP_AFTER_404_CYCLES,
+  };
 }

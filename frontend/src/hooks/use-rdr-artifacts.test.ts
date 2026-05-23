@@ -36,22 +36,25 @@ function makeFetch(
     if (path.includes("/clusters")) {
       return Promise.resolve({
         ok: clustersData !== null,
+        status: clustersData !== null ? 200 : 404,
         json: () => Promise.resolve(clustersData),
       });
     }
     if (path.includes("/leaf-scores")) {
       return Promise.resolve({
         ok: leafData !== null,
+        status: leafData !== null ? 200 : 404,
         json: () => Promise.resolve(leafData),
       });
     }
     if (path.includes("/repair-iterations")) {
       return Promise.resolve({
         ok: repairData !== null,
+        status: repairData !== null ? 200 : 404,
         json: () => Promise.resolve(repairData),
       });
     }
-    return Promise.resolve({ ok: false, json: () => Promise.resolve(null) });
+    return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) });
   });
 }
 
@@ -92,7 +95,7 @@ describe("useRdrArtifacts", () => {
 
   it("does not set state when a fetch returns non-ok (404)", async () => {
     const fetchMock = vi.fn(() =>
-      Promise.resolve({ ok: false, json: () => Promise.resolve(null) })
+      Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -159,5 +162,116 @@ describe("useRdrArtifacts", () => {
     expect(result.current.clusters).toEqual([]);
     expect(result.current.leafScores).toEqual([]);
     expect(result.current.repairPasses).toEqual([]);
+  });
+
+  it("test_hook_stops_polling_after_3_404_cycles: stops after 3 all-404 cycles and exposes noRdrArtifacts", async () => {
+    vi.useFakeTimers();
+
+    // All 3 endpoints return 404 on every call.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_all404", true, 10));
+
+    // Cycle 1: initial fetch (3 calls)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+
+    // After 3 cycles, noRdrArtifacts should be true and fetch count exactly 9.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(result.current.noRdrArtifacts).toBe(true);
+
+    // Advance further — no more fetches should fire.
+    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(9);
+  });
+
+  it("test_hook_keeps_polling_when_data_arrives: resets counter and continues when data appears", async () => {
+    vi.useFakeTimers();
+
+    let callCount = 0;
+    const fetchMock = vi.fn((url: string | URL | Request) => {
+      const path = typeof url === "string" ? url : url.toString();
+      // First 6 calls (2 full cycles × 3 endpoints) return 404, then return data.
+      callCount += 1;
+      if (callCount <= 6) {
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) });
+      }
+      // Cycle 3 onwards: return real data per endpoint.
+      if (path.includes("/clusters")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ clusters: [CLUSTER] }),
+        });
+      }
+      if (path.includes("/leaf-scores")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ leaf_scores: [LEAF] }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ passes: [] }),
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_late_data", true, 10));
+
+    // Cycle 1 (all 404)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2 (all 404 — counter = 2, not yet stopped)
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3 (data arrives — counter resets to 0)
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+
+    expect(result.current.noRdrArtifacts).toBe(false);
+    expect(result.current.clusters).toEqual([CLUSTER]);
+    expect(result.current.leafScores).toEqual([LEAF]);
+
+    // Polling should continue after data arrives — advance one more interval.
+    const callsBeforeExtra = fetchMock.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeExtra);
+  });
+
+  it("test_hook_handles_mixed_404_and_data: continues polling when at least one endpoint returns data", async () => {
+    vi.useFakeTimers();
+
+    // /leaf-scores returns 200; the other two return 404.
+    const fetchMock = vi.fn((url: string | URL | Request) => {
+      const path = typeof url === "string" ? url : url.toString();
+      if (path.includes("/leaf-scores")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ leaf_scores: [LEAF] }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_mixed", true, 10));
+
+    await act(async () => { await Promise.resolve(); });
+
+    // noRdrArtifacts must remain false — not all 3 returned 404.
+    expect(result.current.noRdrArtifacts).toBe(false);
+    expect(result.current.leafScores).toEqual([LEAF]);
+
+    // Polling continues — advance 3 intervals and confirm more fetches happen.
+    const callsBefore = fetchMock.mock.calls.length;
+    await act(async () => { vi.advanceTimersByTime(30); await Promise.resolve(); });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore);
   });
 });

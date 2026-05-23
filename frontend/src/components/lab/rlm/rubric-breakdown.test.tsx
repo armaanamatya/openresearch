@@ -56,6 +56,7 @@ describe("RubricBreakdown", () => {
       clusters: [],
       leafScores: [],
       repairPasses: [],
+      noRdrArtifacts: false,
     });
     const { container } = render(<RubricBreakdown projectId="prj_empty" isActive={false} />);
     expect(container.firstChild).toBeNull();
@@ -66,6 +67,7 @@ describe("RubricBreakdown", () => {
       clusters: [CLUSTER_OK, CLUSTER_FAILED],
       leafScores: [],
       repairPasses: [],
+      noRdrArtifacts: false,
     });
     render(<RubricBreakdown projectId="prj_clusters" isActive={false} />);
     expect(screen.getByTestId("rubric-breakdown")).toBeInTheDocument();
@@ -78,6 +80,7 @@ describe("RubricBreakdown", () => {
       clusters: [],
       leafScores: [LEAF],
       repairPasses: [],
+      noRdrArtifacts: false,
     });
     render(<RubricBreakdown projectId="prj_leaves" isActive={false} />);
     expect(screen.getByTestId("rubric-breakdown")).toBeInTheDocument();
@@ -91,6 +94,7 @@ describe("RubricBreakdown", () => {
       clusters: [CLUSTER_OK],
       leafScores: [],
       repairPasses: [REPAIR],
+      noRdrArtifacts: false,
     });
     render(<RubricBreakdown projectId="prj_repair" isActive={false} />);
     expect(screen.getByText("Repair pass 1")).toBeInTheDocument();
@@ -102,6 +106,7 @@ describe("RubricBreakdown", () => {
       clusters: [CLUSTER_OK],
       leafScores: [],
       repairPasses: [],
+      noRdrArtifacts: false,
     });
     render(<RubricBreakdown projectId="prj_no_repair" isActive={false} />);
     expect(screen.queryByText(/Repair pass/)).not.toBeInTheDocument();
@@ -112,8 +117,33 @@ describe("RubricBreakdown", () => {
       clusters: [CLUSTER_OK],
       leafScores: [],
       repairPasses: [],
+      noRdrArtifacts: false,
     });
     render(<RubricBreakdown projectId="prj_active" isActive={true} />);
     expect(mockUseRdrArtifacts).toHaveBeenCalledWith("prj_active", true);
+  });
+
+  it("test_renders_null_when_no_data: returns null DOM when all arrays are empty", () => {
+    mockUseRdrArtifacts.mockReturnValue({
+      clusters: [],
+      leafScores: [],
+      repairPasses: [],
+      noRdrArtifacts: true,
+    });
+    const { container } = render(<RubricBreakdown projectId="prj_null" isActive={false} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("test_renders_when_data_present: renders breakdown panel when cluster and leaf data exist", () => {
+    mockUseRdrArtifacts.mockReturnValue({
+      clusters: [CLUSTER_OK],
+      leafScores: [LEAF],
+      repairPasses: [],
+      noRdrArtifacts: false,
+    });
+    render(<RubricBreakdown projectId="prj_has_data" isActive={false} />);
+    expect(screen.getByTestId("rubric-breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Introduction")).toBeInTheDocument();
+    expect(screen.getByText("leaf-a")).toBeInTheDocument();
   });
 });
