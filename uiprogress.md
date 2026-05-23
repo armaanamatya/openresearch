@@ -14,6 +14,111 @@ _Append-only log of UI-facing work. Newest first. Each entry: **what shipped →
 
 ---
 
+## 2026-05-23 (afternoon) — Stability + behavior-quality + Azure-path sprint (`30d243f…ad460ff`)
+
+### Shipped (8 commits, in dependency order)
+
+| # | SHA | Subject | Lines |
+|---|---|---|---|
+| 1 | `30d243f → 1316b8a` | Rubric area key contract aligned — no more duplicate empty `key=""` React warnings | +95/-14 |
+| 2 | `f7c43c1` | uiprogress.md created as the regression-prevention log | +134 |
+| 3 | `0cc2e77` | SSR-safe elapsed clock — `nowMs=null` until mount kills the hydration mismatch | +13/-3 |
+| 4 | `ad32198` | Upload nav item above Lab/Library — one-shot `?new=1` reset | +72/-1 |
+| 5 | `c6511be` | Aggregate counter strip + enriched `subrlm`/`baseline` node detail in sidebar | +343/-8 |
+| 6 | `9d7f8e9` | Counter strip layout pinned + wrap_primitive arg coercion + rlm_query nudge | +157/-4 |
+| 7 | `8c3371e` | The root was ignoring rlm_query — primitives now ask for it themselves on big slices | +229/-17 |
+| 8 | `4e3bd38` | Two stability levers so SDK-deadlock runs stop pretending to be alive | (W1a + W1b) |
+| 9 | `ad460ff` | Azure OpenAI joins the root-model lineup — the path to Azure deployment opens | (W2c) |
+
+### New surfaces (afternoon)
+
+| Feature | Component / endpoint | Source of truth |
+|---|---|---|
+| `heartbeat(note)` primitive (13th) | `backend/agents/rlm/primitives.py` | System prompt instructs root to call before any long op |
+| `iteration_heartbeat` SSE event | `sse_bridge.build_iteration_heartbeat_event` | Reducer stores `lastHeartbeatAt` on RlmRunState |
+| Stderr watchdog (asyncio task per run) | `backend/services/events/live_runs.py:_stderr_watchdog` | Detects `aclose()` loop ≥3× in 30s |
+| `run_warning` SSE event | `sse_bridge.build_run_warning_event` | Reducer accumulates into `warnings[]` |
+| `degraded: True` + `degraded_reason` on demo_status.json | watchdog atomic write | UI surfaces via run_warning chip |
+| Amber "no signal Ns" chip | `rlm-header.tsx` | When running AND last heartbeat >60s stale |
+| Red warning chip | `rlm-header.tsx` | When `warnings.length > 0` |
+| `azure-gpt-4o` root model + aliases (`azure`, `azure-openai`, `gpt-4o-azure`) | `models.py` + `factory.py` + `run.py` | Reads AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT |
+| `AzureOpenAILlmClient` (primitives-layer wrapper) | `backend/services/context/workspace/tools/azure_openai_client.py` | Wraps `openai.AzureOpenAI` for the primitive `complete(system=, user=)` protocol |
+| In-band `_meta.hint` on understand_section / extract_hyperparameters | `primitives.py` | Threshold 10K chars; result_summary prefixed `[hint]`; sidebar amber dot |
+| Aggregate counter strip (iterations / primitive calls / proposed / promoted) | `node-detail-sidebar.tsx` | Always-visible in expanded sidebar |
+| Enriched `subrlm` panel | `node-detail-sidebar.tsx` | Matches `subrlm-N` → `subRlms[N-1]`; shows model + depth + duration + prompt_preview |
+| Enriched `baseline` panel | `node-detail-sidebar.tsx` | Rubric score + pass/partial/fail chip |
+| Real-time elapsed clock | `rlm-lab.tsx` | `startedAt` + `setInterval(1000)` — SSR-safe via `nowMs=null` initial state |
+| Upload nav item (first in sidebar) | `lab-sidebar.tsx` | One-shot `?new=1` clears localStorage + sets upload view |
+
+### Failures we burned time on (F9–F14)
+
+| # | Symptom seen | Root cause | Rule for next time |
+|---|---|---|---|
+| F9 | 6 React duplicate-key `=""` chips in rubric strip + breakdown | Silent key mismatch: `_rubric_areas` emitted `"name"`, `binding.py` read `"area"` → both became `""` for blank-requirement rubrics | Pin wire-contract field names at the seam test. **Defensive React keys**: always `key={x.id \|\| `__idx_${i}`}` — never trust upstream non-empty |
+| F10 | SSR hydration mismatch on elapsed tile (24m 16s vs 24m 21s) | `useState(() => Date.now())` ran server-side and client-side with different values | Client-side dynamic values (Date.now / Math.random / locale-formatted) MUST be initialized to `null` and populated in useEffect — server + first-client render must match |
+| F11 | Sidebar counter strip values ran into labels ("19primitive calls") | CSS missing `display: block; white-space: nowrap` on counter value + label spans; tile lacked min-width/overflow guards | Always pin tile geometry: `flex-shrink: 0; min-width: 0; overflow: hidden` and explicit `display: block` on stacked value/label |
+| F12 | Backend wedged in `do_wai`; UI showed running + ticking elapsed indefinitely (no signal to user that SDK was dead) | aclose deadlock blocks repl_iteration emission but leaves the worker alive | **Heartbeat primitive** (root calls between ops) + **stderr watchdog** (detects aclose loop pattern) + UI chips for both. Operator now sees the difference between "thinking", "no signal", and "SDK wedged". |
+| F13 | Root underused `rlm_query` for big slices (sometimes 0 sub-RLM spawns on a 9MB paper) | System-prompt-only nudges fade after a few iterations; model attention drops on early prompt | **In-band feedback** > upfront prompting. Primitives now return `_meta.hint` on >10K slices that travels via `result_summary` — root re-encounters the nudge every iteration |
+| F14 | Run subprocess accumulated transient ValidationErrors costing root iterations on schema-repair | wrap_primitive raised immediately on type mismatch with no coercion attempt | `wrap_primitive` now attempts ONE conservative coercion pass (int↔str-of-digits, scalar→str when str expected); never coerces dicts (would invent values) — events carry `coerced: bool` so the operator sees when it fired |
+
+### Architecture decisions worth preserving (afternoon additions)
+
+- **Heartbeat is observational, not enforcing.** It does not abort or retry — it just emits a signal. The operator decides what to do. RLM autonomy intact.
+- **Watchdog flags but never kills.** When `sdk_aclose_loop` is detected, the run subprocess keeps running (it may still progress; aclose RuntimeError is post-call generator cleanup noise). The user gets the warning and can `pkill` if they want.
+- **In-band hints carry through SSE.** A `[hint] ` prefix on `result_summary` is the seam — backend writes it, frontend recognizes it. Don't introduce a separate "hints" field; cheap embedding is enough and survives schema evolution.
+- **Azure provider plugs through the same abstraction as the others.** No conditional code in the orchestrator; the dispatch is purely on `root_model.rlm_backend`. Adding a 5th provider (Bedrock, Gemini, etc.) follows the same shape.
+
+### Files-of-record (afternoon additions)
+
+| File | Owns | Don't break |
+|---|---|---|
+| `backend/agents/rlm/primitives.py:heartbeat` | The "alive signal" primitive | Must remain side-effect-free; only emits one event |
+| `backend/services/events/live_runs.py:_stderr_watchdog` | Aclose-loop detection | Must NEVER terminate the subprocess; idempotent (flag once per run) |
+| `backend/services/context/workspace/tools/azure_openai_client.py` | Primitive-layer Azure wrapper | Mirror the `LlmClient` protocol used by Anthropic + OpenAI wrappers |
+| `backend/agents/rlm/models.py:_inject_azure_kwargs` | Azure endpoint/deployment env injection | Both AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_DEPLOYMENT required; raise ValueError if either missing |
+| `frontend/src/components/lab/rlm/rlm-header.tsx` | Status + heartbeat-staleness + warnings chips | Three distinct chip states must coexist visually |
+
+### Production-readiness scoring (May 2026)
+
+| Goal | Status | Notes |
+|---|---|---|
+| Single-user local dev | ✅ Excellent | All recent work refines this |
+| OAuth subscription path | ✅ Works | F12 detection makes hangs survivable |
+| Local GPU sandbox | ✅ Works | F12 + F13 make demos more reliable |
+| Azure OpenAI provider | ✅ Wired | W2c — backend abstraction ready; needs end-to-end test on real Azure deployment |
+| Vercel frontend hosting | 🟡 Works as static / proxy | Confirmed since the frontend is plain Next.js 16 |
+| Vercel backend hosting | ❌ Not viable | File-state + long-lived subprocesses + 30+ min SSE conflict with Vercel Functions; needs Azure Container Apps or similar (W2 full migration) |
+| Multi-tenant SaaS | ❌ Not yet | W5 (per-user auth boundary) + W3 (distributed state) outstanding |
+| Concurrent run scaling | 🟡 Single-worker uvicorn | W2 (gunicorn + N workers) is 2 days work |
+| Telemetry stack | ❌ Not yet | W10 outstanding |
+| Cost ledger | ⚠️ API-key only | W6 — OAuth doesn't surface tokens; documented limitation |
+
+### Open / deferred (afternoon additions)
+
+- **W4 — Tool router primitive**: queued; conflicts with W1a's primitives.py edit; do next turn after rebase
+- **Subprocess restart-on-degraded recovery**: only ship if E2E loop shows we're losing too many runs to aclose. Heartbeat + watchdog detection is the prerequisite; recovery is a separate decision.
+- **Azure real-deployment smoke test**: wire works in tests; needs one actual `AZURE_OPENAI_API_KEY` smoke run before prod cutover.
+- **`degraded` field plumb through `/runs/<id>` response**: backend writes it to demo_status.json, but `LiveDemoRunState` pydantic excludes it. Cosmetic; UI gets the warning via SSE event regardless. Patch later if the UI needs to render the chip on a refresh-without-SSE.
+
+### Best practices distilled (additions)
+
+9. **Detect, don't enforce.** Observational telemetry (heartbeat, watchdog) preserves autonomy. Save enforcement (timeouts, kills) for cases where the cost of inaction is catastrophic.
+10. **Wire contracts are seams; field names cross them.** Every cross-process payload field gets at least one contract test that pins its exact name. F9 cost an hour because we didn't.
+11. **Hydration mismatches are silent until prod.** Any dynamic value (Date.now, locale, random) in a client component MUST defer to useEffect; initial state must be SSR-stable.
+12. **In-band feedback beats upfront prompting for frontier models.** When you want the model to learn a behavior, attach the hint to the *result* of the operation you want it to change, not the system prompt header.
+
+### Live-link smoke after this sprint
+
+`http://localhost:3000/lab?projectId=prj_d118333894223202` (active run) — shows:
+- `● running` + `iteration N` (heartbeat-driven)
+- Real-time elapsed clock (SSR-safe)
+- Tree: Paper → Comprehension → Environment (work) → sub-RLM (depth=1)
+- Sidebar counters: `iterations / primitive_calls / proposed / promoted` (not crushed)
+- Red `run_warning` chip with "Backend SDK aclose deadlock detected — run is degraded; consider restarting"
+- No console errors, no duplicate keys, no hydration mismatch
+
+---
+
 ## 2026-05-23 — Lab UI hardening sprint (commits `78f0870…1316b8a`)
 
 ### Shipped (7 commits, in dependency order)
