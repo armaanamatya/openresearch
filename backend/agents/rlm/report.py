@@ -129,6 +129,39 @@ def _parse_response(raw: str) -> dict | None:
     return None
 
 
+def _reconcile_verdict_against_evidence(
+    verdict: str,
+    *,
+    baseline_metrics: dict,
+    rubric: dict,
+    primitive_trace: dict,
+) -> tuple[str, str | None]:
+    """Downgrade an over-claimed verdict; return (verdict, reason_or_None).
+
+    A run can only claim "reproduced" if all three honesty checks pass:
+      - run_experiment was actually called (primitive_trace records it)
+      - baseline_metrics is non-empty (real measured numbers exist)
+      - rubric.overall_score >= 0.5 (the score actually shows reproduction)
+
+    Any failure downgrades "reproduced" -> "partial" with a reason string.
+    "partial" and "failed" verdicts are passed through unchanged.
+    """
+    if verdict != "reproduced":
+        return verdict, None
+    score = float((rubric or {}).get("overall_score", 0.0) or 0.0)
+    ran_experiment = bool(primitive_trace.get("by_primitive", {}).get("run_experiment"))
+    reasons: list[str] = []
+    if not ran_experiment:
+        reasons.append("run_experiment never ran")
+    if not baseline_metrics:
+        reasons.append("no measured baseline metrics")
+    if score < 0.5:
+        reasons.append(f"rubric score {score:.3f} < 0.5")
+    if reasons:
+        return "partial", "; ".join(reasons)
+    return verdict, None
+
+
 def _reconcile_verdict(parsed: dict) -> str:
     """Return an honest verdict.
 
@@ -307,6 +340,22 @@ def build_final_report(
         ).strip()
         if verdict == "reproduced":
             verdict = "partial"
+
+    # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
+    verdict, downgrade_reason = _reconcile_verdict_against_evidence(
+        verdict,
+        baseline_metrics=baseline_metrics,
+        rubric=parsed.get("rubric") or {},
+        primitive_trace=trace,
+    )
+    if downgrade_reason:
+        summary = (
+            summary
+            + f"\n\n[verdict guard] Downgraded to 'partial': {downgrade_reason}."
+        ).strip()
+        logger.warning(
+            "report: verdict downgraded to partial — %s", downgrade_reason,
+        )
 
     kwargs: dict[str, Any] = {
         "verdict": verdict,

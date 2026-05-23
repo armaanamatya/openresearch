@@ -367,3 +367,95 @@ class TestWriteFinalReport:
         assert json_path.exists()
         md = md_path.read_text(encoding="utf-8")
         assert "REPRODUCTION FAILED" in md
+
+
+# ---------------------------------------------------------------------------
+# Tests: evidence-based verdict reconciliation (T6 / P0-I9)
+# ---------------------------------------------------------------------------
+
+
+class TestEvidenceBasedVerdictReconciliation:
+    """Symptom: ftrl run scored 0.0 yet self-reported verdict='reproduced'.
+
+    The pre-T6 honesty guard only dropped fabricated metrics; it did not
+    downgrade an over-claimed verdict when (a) run_experiment never ran,
+    (b) baseline_metrics is empty, or (c) rubric.overall_score < 0.5
+    (handoff P0-I9 / plan T6).
+    """
+
+    def test_verdict_downgraded_when_evidence_contradicts(self, make_context, tmp_path):
+        """Verify: a 'reproduced' claim with rubric score 0.0 (but run_experiment
+        DID run, with measured metrics) still downgrades to 'partial' due to the
+        score threshold.
+        """
+        ctx = _record_run_experiment(make_context(tmp_path))
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {"mean_reward": 487.3},  # has metrics
+            "rubric": {"overall_score": 0.0, "meets_target": False},  # but score == 0
+            "paper": {"id": "ftrl"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"  # downgraded by evidence guard
+        assert "0.000 < 0.5" in report.reproduction_summary  # reason surfaced
+
+    def test_verdict_not_downgraded_when_score_sufficient(self, make_context, tmp_path):
+        """A 'reproduced' claim with rubric score >= 0.5, non-empty metrics, and
+        run_experiment in the ledger is NOT downgraded."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {"accuracy": 0.92},
+            "rubric": {"overall_score": 0.75, "meets_target": True},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "reproduced"
+
+    def test_partial_verdict_not_downgraded_by_evidence_guard(self, make_context, tmp_path):
+        """'partial' verdict is passed through unchanged regardless of evidence."""
+        ctx = make_context(tmp_path)  # run_experiment never ran
+        raw = json.dumps({
+            "verdict": "partial",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"
+
+    def test_failed_verdict_not_touched_by_evidence_guard(self, make_context, tmp_path):
+        """'failed' verdict is passed through unchanged."""
+        ctx = make_context(tmp_path)
+        raw = json.dumps({
+            "verdict": "failed",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "failed"
+
+    def test_no_run_experiment_downgrades_reproduced(self, make_context, tmp_path):
+        """'reproduced' with no run_experiment entry is downgraded (via the
+        metric-fabrication guard which fires first when metrics are present,
+        then evidence guard for the no-metrics case)."""
+        ctx = make_context(tmp_path)  # empty ledger
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},  # no metrics, no run_experiment
+            "rubric": {"overall_score": 0.0, "meets_target": False},
+            "paper": {"id": "test"},
+        })
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+
+        assert report.verdict == "partial"
