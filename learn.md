@@ -11,6 +11,48 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-23 — Lab UI was blank on failed-run navigation because EventSource never opened for terminal states
+
+**Symptom.** User clicks a failed run in the Recent sidebar → navigates to `/lab?projectId=<id>` → blank lab UI. Tree empty, sidebar empty, no error displayed.
+
+**Root cause.** `useRun` opens SSE EventSource only when `status ∈ {"queued","running"}` (line 196 of `use-run.ts`). For failed/completed/stopped runs the source never opens, `dashboardEvents` stays `[]`, the reducer renders initial state. No fallback path loaded historical events from `/api/demo?projectId=X` (which already returns them in `payload.events`).
+
+**Fix.** In the auto-resume effect, for terminal-status runs (`failed` / `completed` / `stopped`), seed `dashboardEvents` from `restored.payload.events.filter(isRlmEvent)` once on mount. SSE is correctly skipped (run is terminal — nothing to stream). Plus: failed status now shows an error banner in `rlm-header.tsx` + a "Rerun" button that POSTs `/runs/<id>/rerun` and navigates to the new project.
+
+**Lesson.** When the live channel is gated (e.g. only opens for active state), the static fallback channel (HTTP snapshot) must seed the same store. Otherwise users see "blank" instead of "here's what happened."
+
+**Guardrail.** Tests TBD (frontend vitest blocked on Node 21 / vitest 4 in this env; ship lands with the integration). Add `useRun` behavioural test once Node is upgraded.
+
+---
+
+## 2026-05-23 — Backend SDK aclose() deadlock made wedged runs indistinguishable from running ones
+
+**Symptom.** Backend uvicorn worker stuck in `do_wai` syscall (99% CPU, 30+ min, all endpoints time out at 5s). UI showed `running` with stale `iteration N` and stale elapsed. Operator couldn't tell "model is thinking" from "SDK is wedged."
+
+**Root cause.** `claude-agent-sdk`'s nested async-generator `aclose()` race (see 2026-05-22 entry); root subprocess alive but no events emitted. Workaround B exists but doesn't catch every codepath.
+
+**Fix.** Two observational levers: (a) `heartbeat(note)` REPL primitive emits `iteration_heartbeat` SSE event; UI `rlm-header` shows amber "no signal Ns" chip when stale >60s. (b) `_stderr_watchdog` asyncio task tails `runner.stderr.log`, detects pattern ≥3× in 30s, atomically writes `degraded: True` + emits `run_warning` SSE event; UI shows red warning chip.
+
+**Lesson.** Observational telemetry preserves model autonomy. Save enforcement (timeouts, kills) for catastrophic-cost cases. Three failure modes (thinking / no-signal / SDK-wedged) had been collapsed to one indistinguishable "running" — now they're visible.
+
+**Guardrail.** `tests/services/events/test_live_runs_watchdog.py` (3 tests: threshold detection, below-threshold no-flag, flag-once idempotency); `tests/rlm/test_heartbeat_primitive.py` (5 tests covering return shape + event payload + counter monotonicity).
+
+---
+
+## 2026-05-23 — RLMFinalReport rejected list-shaped paper_claims, crashing 30-min runs at the last step
+
+**Symptom.** Live arXiv run completed 5 iterations + 5 sub-RLMs + 3 candidates + 1 rubric_score (66 primitive calls, 30+ min wall clock), then died at `build_final_report` with `pydantic.ValidationError: paper_claims Input should be a valid dictionary [type=dict_type, input_value=[{'method': ...}], input_type=list]`.
+
+**Root cause.** `RLMFinalReport.paper_claims: dict` schema; root sometimes returns it as `list[dict]` (`[{"method": "RLM(GPT-5)", "expected_result": "62.0"}, …]`). Schema is too strict; a list of claim objects keyed by method is a perfectly reasonable representation.
+
+**Fix.** `@field_validator("paper_claims", mode="before")` coerces list → dict by keying on first available identity field (`method` / `claim` / `claim_id` / `id` / `name`), fallback to `claim_{i}`. Dict input passes through unchanged.
+
+**Lesson.** Schemas at process seams that accept any long-running computation's output must be liberal about shape and strict about types. Reject only what's structurally meaningless (`None`, primitives where a record is expected) — coerce when user intent is unambiguous.
+
+**Guardrail.** `tests/rlm/test_paper_claims_coercion.py` pins all six shapes (dict passthrough · list with identity key · list with index fallback · identity-field precedence · mixed-list-with-garbage-skip · default empty).
+
+---
+
 ## 2026-05-22 — Claude Agent SDK aclose() deadlock wedged rdr cluster 23 for 900s
 
 **Symptom.** A live `--mode rdr` run on `sequential-neural-score-estimation`
