@@ -244,7 +244,16 @@ describe("useRdrArtifacts", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeExtra);
   });
 
-  it("keeps polling missing artifacts while the run is active", async () => {
+  it("stops polling after 3 all-404 cycles even on an active run", async () => {
+    // Regression: previously the hook kept polling 404s for the full
+    // duration of any active run, producing constant "Failed to load
+    // resource: 404" console spam during rlm-mode runs without a
+    // PaperBench bundle. The fix: treat sustained 404s as a strong
+    // "this run-shape will never produce rdr artifacts" signal and
+    // stop polling after STOP_AFTER_NO_ARTIFACT_CYCLES, even when
+    // the run is still active. Distinct from 200+empty (data not yet
+    // produced — keep polling) and 5xx during active (transient — keep
+    // polling).
     vi.useFakeTimers();
 
     const fetchMock = vi.fn(() =>
@@ -253,6 +262,38 @@ describe("useRdrArtifacts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useRdrArtifacts("prj_active_missing", true, 10));
+
+    // Cycle 1: initial fetch (3 calls)
+    await act(async () => { await Promise.resolve(); });
+    // Cycle 2: +3 calls = 6 total
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Cycle 3: +3 calls = 9 total, threshold reached, polling stops
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    // Past threshold — no further calls expected.
+    await act(async () => { vi.advanceTimersByTime(100); await Promise.resolve(); });
+
+    expect(result.current.noRdrArtifacts).toBe(true);
+    expect(fetchMock.mock.calls.length).toBe(9);
+  });
+
+  it("keeps polling 200+empty during active run (run-shape supports artifacts but they're not ready)", async () => {
+    // Counterpart to the 404 case: when the route exists but returns an
+    // empty array, the run-shape supports rdr artifacts and they're just
+    // not produced yet. Keep polling.
+    vi.useFakeTimers();
+
+    const fetchMock = vi.fn((url: string) => {
+      const isClusters = url.includes("/clusters");
+      const isLeaves = url.includes("/leaf-scores");
+      const isPasses = url.includes("/repair-iterations");
+      const key = isClusters ? "clusters" : isLeaves ? "leaf_scores" : isPasses ? "passes" : null;
+      const body: Record<string, unknown[]> = {};
+      if (key) body[key] = [];
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_active_empty", true, 10));
 
     await act(async () => { await Promise.resolve(); });
     await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });

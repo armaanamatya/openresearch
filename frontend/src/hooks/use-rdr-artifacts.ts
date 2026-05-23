@@ -105,15 +105,26 @@ export function useRdrArtifacts(
         return false;
       }
       const allMissing = isMissing(c, "clusters") && isMissing(l, "leaf_scores") && isMissing(r, "passes");
+      // Strong "this run will never have rdr artifacts" signal: all three
+      // endpoints returned 404. Distinct from 200+empty (run-shape supports
+      // them, just not produced yet) and from 5xx (transient backend issue).
+      // 404 means the project simply has no rdr-iterations directory.
+      const allReturned404 =
+        c.status === 404 && l.status === 404 && r.status === 404;
       if (allMissing) {
-        if (isActive) {
-          localNoArtifactsCount = 0;
-          setNoArtifactsCount(0);
-        } else {
+        // Even on active runs, repeated 404s tell us the run-shape will never
+        // produce these (e.g. rlm mode without a PaperBench bundle). Count up
+        // and stop polling after STOP_AFTER_NO_ARTIFACT_CYCLES to silence the
+        // console-error spam that otherwise lasts the entire run.
+        if (allReturned404 || !isActive) {
           localNoArtifactsCount += 1;
           setNoArtifactsCount(localNoArtifactsCount);
+        } else {
+          // 200+empty or 5xx during active run — keep polling, expect data.
+          localNoArtifactsCount = 0;
+          setNoArtifactsCount(0);
         }
-        return isActive || localNoArtifactsCount < STOP_AFTER_NO_ARTIFACT_CYCLES;
+        return localNoArtifactsCount < STOP_AFTER_NO_ARTIFACT_CYCLES;
       }
 
       // At least one endpoint returned 2xx data — reset counter.
