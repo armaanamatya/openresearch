@@ -11,6 +11,97 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-23 (late evening) — A run wrote `final_report.json` cleanly but `demo_status.json` was stuck on `running` forever because atexit hung
+
+**Symptom.** `prj_6b9acbfd8afcd789` ran 18 min, produced `final_report.json` with rubric 0.244, printed the success JSON to stdout — but `demo_status.json::status` stayed `"running"` indefinitely (12+ hours). UI showed the run as in-flight forever even though the work was done.
+
+**Root cause.** The demo wrapper template (`backend/services/events/live_runs.py:_python_script`) called `finalize_benchmark()` BEFORE `write_status("completed")`. The pipeline returned, then Python's atexit hooks fired — claude-agent-sdk's atexit handler does an unbounded `subprocess.wait()` on child processes that hangs in `futex_wait_queue` on WSL2 after SIGKILL. The wrapper process sat in atexit forever; the `write_status("completed")` line never executed.
+
+**Fix.** Reorder + escape hatch. `write_status("completed")` now fires the instant `cmd_reproduce` returns 0 — BEFORE `finalize_benchmark`. Wrap `finalize_benchmark` in try/except so its failure cannot revert the already-written completed status. Add `finally:` block that calls `os._exit(0 if completed else 1)` — bypasses atexit entirely so a hung SDK subprocess cleanup can't keep the runner alive after status is on disk.
+
+**Lesson.** Side-effect ordering at any wrapper layer: **the visible state transition must come BEFORE any post-pipeline computation that could hang**. atexit hooks from third-party libraries (especially anything that spawns subprocesses) MUST be bypassable via `os._exit` in the wrapper's `finally:`. "It worked when I tested it" doesn't catch atexit hangs — they only fire when the process is genuinely trying to exit.
+
+**Guardrail.** `tests/services/events/test_live_runs_status_ordering.py` — 5 tests that COMPILE the rendered wrapper string and assert: write_status("completed") before finalize_benchmark, finalize wrapped in try/except, finally block with os._exit, exit code follows status, failure path also reaches finally.
+
+---
+
+## 2026-05-23 (late evening) — Parallel `/runs/arxiv` ingests crashed the second one with "database is locked" under WAL
+
+**Symptom.** Triggering two `/runs/arxiv` calls within seconds — the second died with `AppendError: SQLite error during append: database is locked` at the ingest's first event append.
+
+**Root cause.** `backend/eventstore/sqlite_store.py:append` used bare `BEGIN` (= `BEGIN DEFERRED`). The transaction held SHARED and tried to upgrade to RESERVED on the first INSERT. With WAL mode, that SHARED→RESERVED upgrade can fail-fast with SQLITE_BUSY in some SQLite versions WITHOUT honoring `busy_timeout` (which was 5 s — also too short).
+
+**Fix.** All write paths now `BEGIN IMMEDIATE` — writers acquire RESERVED upfront, serialize cleanly under `busy_timeout`. Bumped `busy_timeout` 5000 → 30000 ms.
+
+**Lesson.** WAL + DEFERRED transactions is a footgun for parallel writers. If a SQLite-backed system needs to support N concurrent writers, use `BEGIN IMMEDIATE` everywhere — it's a 1-line change with no perf cost in the common case and turns contention into busy_timeout-handled queueing instead of fail-fast errors. `busy_timeout` defaults of 5 s are too short for any non-trivial write under contention.
+
+**Guardrail.** `tests/test_eventstore_sqlite_concurrent.py` — 3 tests: 2 threads × different aggregates both succeed; 4 threads × 20 events all complete under 25 s (proves busy_timeout honored); same aggregate same expected_version → exactly one wins, loser gets `ConcurrencyError` NOT `"database is locked"`.
+
+---
+
+## 2026-05-23 (late evening) — Every `candidate_outcome` SSE event carried `candidate_id="None"` because three layers conspired silently
+
+**Symptom.** UI's exploration tree couldn't match `candidate_outcome` events back to their `candidate_proposed` parents. Wire was carrying the literal string `"None"` as candidate_id on every outcome event.
+
+**Root cause.** Three-layer silence:
+1. `record_candidate_outcome` primitive accepted `None` without validation.
+2. `binding.py` ran `str(result.get("candidate_id", ""))` — `str(None)` = `"None"`.
+3. System prompt mentioned the primitive but didn't say WHICH IDs were valid — root passed `None` because it didn't know `propose_improvements` returned IDs like `"path_1"`.
+
+The user's "promoted candidate" success gate was unreachable because outcomes couldn't link to candidates even when the model wanted to promote one.
+
+**Fix.** Defense in depth at every seam: primitive validates (rejects None/'None'/'null'/''); binding skips emit unless `success=True` + both fields present; system_prompt explicitly says "use the `id` from the most recent `propose_improvements` result".
+
+**Lesson.** Wire-contract bugs need defense at every seam they touch. A single defense lets the upstream bug recur differently. Three defenses make the regression require 3 simultaneous bypasses — almost certain to surface in a test.
+
+**Guardrail.** `tests/rlm/test_binding.py` — 4 new tests pinning the validation at the binding boundary across all bad-input variants.
+
+---
+
+## 2026-05-23 (late evening) — Root declined every candidate "to save cost" because the prompt rewarded declining
+
+**Symptom.** A1 (RLM paper) and A2 (LLM CodeGen) both finished with rubric 9-14% and 0/3 candidates promoted. Same model, same provider, two unrelated papers — same "decline all" pattern. The proposed candidates included small achievable items (e.g. "Implement Algorithm 1 Final Variable Termination") that the model declined without trying.
+
+**Root cause.** The system prompt's IMPROVEMENT_LOOP section framed declining as virtuous: "A candidate declined early saves Docker build time, experiment wall-clock, and LLM cost. The goal is a verified reproduction, not exhaustive exploration." The model optimized for that framing.
+
+**Fix.** Rewrote with anti-bias framing: "Success target is at least one PROMOTED candidate per run, not 'every candidate declined for cost reasons'. If all candidates look too big, IMPLEMENT A SCOPED-DOWN SUBSET. Decline only after at least one HONEST attempt that ran the experiment."
+
+**Lesson.** Prompt biases ARE bugs. A system-prompt sentence that frames laziness as efficiency will produce lazy behavior. When a behavior metric (promoted count, rubric improvement) is the target, the prompt must REWARD that metric, not its opposite. "Verified reproduction" was the wrong target — the user's gate was "verified IMPROVEMENT" and the prompt didn't reflect that.
+
+**Guardrail.** Behavioral validation: B1 (first run with the new prompt) promoted 1/3 candidates and reached rubric 31.88% — 3× higher than A1/A2 under the old prompt. Structural tests in `test_system_prompt.py` (44) still pass — the fix is text content under existing structure.
+
+---
+
+## 2026-05-23 (late evening) — Leaderboard 500'd on legacy `final_report` shapes because `or {}` keeps a truthy list
+
+**Symptom.** `GET /leaderboard` returned `{"detail": "'list' object has no attribute 'get'"}` HTTP 500 — 3 legacy fixtures had `rubric` as a list-of-areas (old shape). One bad row killed the whole endpoint.
+
+**Root cause.** `rubric = data.get("rubric") or {}` — a non-empty list is truthy, so the list stayed; next `.get()` blew up.
+
+**Fix.** Tiny `_as_dict(v)` helper: returns v if dict, {} otherwise. Applied to `paper`, `rubric`, `cost`, `models` at the read boundary. Malformed row gets None score (sorts to bottom) but the aggregation continues.
+
+**Lesson.** `something or {}` is NOT a defensive shape coercer for non-`None` truthy values. A list, an int, a string all bypass it. Use explicit `isinstance` checks. "Defensive coercion at READ boundaries beats defensive write contracts" — reads see whatever historical data exists, even data that pre-dates current write-side validation.
+
+**Guardrail.** `tests/routes/test_leaderboard_http.py::test_get_leaderboard_survives_legacy_list_shaped_rubric` — seeds a legacy run with `rubric`/`cost`/`models` all as lists alongside a normal run, asserts 200 with both rows aggregating.
+
+---
+
+## 2026-05-23 (late evening) — `run_experiment` 7200 s cap was paranoid; B2 would have wedged for 2 hours
+
+**Symptom.** B2 wrote a 40 KB `train.py` doing real VLM training. `commands.json: ["python train.py"]` (no --smoke-test). On CPU sandbox the training won't converge. With the 7200 s cap, the pipeline would have waited the full 2 hours before iterating.
+
+**Root cause.** `_timeout_for(ctx, 7200)` was sized for multi-command experiments (1 hr × 2 commands). Paranoid for the common case where a single bad `train.py` spins forever on CPU.
+
+**Fix.** Default cap reduced 7200 → 1800 s (30 min). New env var `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` for callers who genuinely need longer. Invalid values fall back silently.
+
+**Lesson.** Per-step timeouts must be sized for the worst common case, not the worst conceivable case. 30 min covers 99% of real reproduction experiments; the 1% that legitimately need longer set the env var. Letting the slow path leak past iteration budget penalizes EVERY paper.
+
+Sub-lesson: when killing a process inside a docker container from the host, the PIDs visible in `docker top` are HOST-namespace PIDs and are NOT what `os.kill` inside the container uses. Use `docker exec $CID ls /proc | grep '^[0-9]\+$'` to enumerate container-namespace PIDs, then kill via `docker exec $CID python -c "import os, signal; os.kill(<container_pid>, 9)"`.
+
+**Guardrail.** `tests/rlm/test_run_experiment_timeout.py` — 3 tests: default cap is 1800 s; env var override works; invalid env var falls back to default.
+
+---
+
 ## 2026-05-23 — Lab UI was blank on failed-run navigation because EventSource never opened for terminal states
 
 **Symptom.** User clicks a failed run in the Recent sidebar → navigates to `/lab?projectId=<id>` → blank lab UI. Tree empty, sidebar empty, no error displayed.

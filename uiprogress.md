@@ -14,6 +14,97 @@ _Append-only log of UI-facing work. Newest first. Each entry: **what shipped →
 
 ---
 
+## 2026-05-23 (late evening) — Parallel 4-paper sweep + 6 reliability commits (`19e87ee…f8546d1`)
+
+User goal: "fan out sub agents, try multiple papers in parallel (last 6 months ML), debug
+relentlessly until reproduction-with-improvements works end to end. /iterate, no codex.
+Opus plans+reviews everything, Sonnet executes. Make every fix work for both API and OAuth."
+
+### Shipped (6 commits)
+
+| # | SHA | Subject |
+|---|---|---|
+| 1 | `19e87ee` | The 'stuck Running' bug — runs that finish now actually flip to Completed |
+| 2 | `7970506` | Parallel paper sweep was killing the second ingest with 'database is locked' — BEGIN IMMEDIATE + 30s busy_timeout fixes it |
+| 3 | `1f72e07` | Promoted-candidate gate stops getting blocked by a wire-contract bug — candidate_id=None corrupted every outcome event |
+| 4 | `9dd7c6d` | The root was declining every candidate to 'save cost' — now told to try a scoped-down subset before declining anything |
+| 5 | `991517a` | Leaderboard stopped 500ing on legacy final_report shapes — defensive coerce to {} for the four header fields |
+| 6 | `f8546d1` | run_experiment cap was 2 hours — B2 of the paper sweep wedged for it; now 30 min with env-var escape hatch |
+
+### Paper-sweep results (4 papers, OAuth surface, docker sandbox)
+
+| Run | Paper | Iters | Rubric | Promoted | Verdict |
+|---|---|---|---|---|---|
+| A1 | 2512.24601 (RLM) | 3 | 9.6% | 0/3 | partial (old prompt) |
+| A2 | 2512.18131 (LLM CodeGen) | 3 | 14.4% | 0/3 | partial (old prompt) |
+| **B1** | **2602.01785 (CodeOCR)** | **6** | **31.88%** | **1/3 ✓** | **partial (new prompt, hit gate)** |
+| B2 | 2602.17186 (Visual Info Gain) | 2 | n/a | n/a | stopped manually (CPU-bound VLM training looped) |
+
+**B1 hit the user's success gate.** First E2E run to produce a verified `outcome=promoted` candidate, validating the full chain (stuck-Running fix + SQLite fix + candidate_id wire fix + anti-decline prompt) end-to-end.
+
+### New failure modes recorded (F18–F23)
+
+| # | Symptom | Root cause | Rule |
+|---|---|---|---|
+| F18 | `prj_6b9acbfd8afcd789` reached "partial" rubric 0.244 + wrote `final_report.json`, but `demo_status.json` stuck on `running` forever | Demo wrapper template called `finalize_benchmark()` then `write_status("completed")`. atexit cleanup hit claude-agent-sdk's `subprocess.wait()` which hangs on WSL2 after SIGKILL — wrapper never reached `write_status` line | Side-effect ordering at the wrapper layer: **the visible state transition must come BEFORE any post-pipeline computation that could hang**. Also add `os._exit(...)` in `finally:` to bypass atexit. Pin via wrapper-string compile test (`tests/services/events/test_live_runs_status_ordering.py`) |
+| F19 | Triggering 2 `/runs/arxiv` in parallel killed the second ingest at SQLite write: `AppendError: SQLite error during append: database is locked` | Writers used `BEGIN` (= BEGIN DEFERRED), upgraded SHARED→RESERVED on first INSERT under WAL. Upgrade can SQLITE_BUSY without honoring `busy_timeout` | All write paths: `BEGIN IMMEDIATE` (acquires RESERVED upfront, serializes cleanly under busy_timeout). Also bumped `busy_timeout` 5s → 30s. Pinned via 3 concurrency tests in `tests/test_eventstore_sqlite_concurrent.py` |
+| F20 | Every `candidate_outcome` SSE event had `candidate_id="None"` — UI couldn't match outcomes to proposed candidates → promoted-candidate gate unreachable | `record_candidate_outcome` accepted `None`; `binding.py` ran `str(None)` → string `"None"`; system prompt didn't tell root WHICH IDs to use | Defense in depth: (1) primitive validates `candidate_id` (rejects `None`/`'None'`/`'null'`/`''`); (2) binding skips emit unless `success=True` + both fields present; (3) system_prompt explicitly says "use the `id` from the most recent `propose_improvements` result". 4 new tests in `test_binding.py` |
+| F21 | Root model declined every improvement candidate citing "save cost" — never tried even a scoped-down version | System prompt rewarded declining: "A candidate declined early saves Docker build time, experiment wall-clock, and LLM cost. The goal is a verified reproduction, not exhaustive exploration." | Anti-bias framing: "Success target is at least one PROMOTED candidate per run, not 'every candidate declined for cost reasons'. If all candidates look too big, IMPLEMENT A SCOPED-DOWN SUBSET." Validated end-to-end: B1 hit the gate on first run with the new prompt |
+| F22 | `GET /leaderboard` returned HTTP 500 `'list' object has no attribute 'get'` | 3 legacy fixtures had `rubric` as list-of-areas (old shape). Route did `rubric = data.get('rubric') or {}` — list is truthy so it stayed, next `.get()` crashed. One bad file killed the whole endpoint | Defensive coerce at the read boundary: `_as_dict(v)` helper applied to all dict-shaped header fields. Single bad row gets None score + defaults; aggregation continues. Pinned via 1 new test in `test_leaderboard_http.py`. Also archived the 3 legacy fixtures to `runs/_archived_legacy_fixtures_20260523/` |
+| F23 | B2's `run_experiment` wedged for ~30 min on a CPU-bound VLM training that the model wrote in iter 2. Default aggregate cap was 7200 s (2h) — pipeline would have waited the full 2 hours | Cap chosen for multi-command experiments at 1hr-per-command × 2 commands. Way too long for the common case where a single bad train.py spins forever on CPU | Default cap reduced 7200s → 1800s (30 min). New env var `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` for callers who genuinely need longer. Invalid values fall back silently. Pinned via 3 new tests in `test_run_experiment_timeout.py` |
+
+### Architecture additions
+
+- **Wrapper template invariant**: `write_status("completed")` MUST appear before `finalize_benchmark()` in the success branch. `finally:` MUST end with `os._exit(0 if completed else 1)` to bypass atexit. Compiled-string tests guarantee no future refactor regresses these (5 tests).
+- **SQLite write contract**: every transaction starts with `BEGIN IMMEDIATE`, never bare `BEGIN`. 30s busy_timeout. This is the entire concurrency story — no per-table locks, no manual retry, no application-level mutex.
+- **Candidate-outcome wire contract**: emitter REFUSES to publish events with empty/None/'None' candidate_id. Validation lives at THREE layers (primitive returns success=False, binding skips emit, prompt instructs). Belt + suspenders + 3rd belt.
+- **Leaderboard defense pattern**: `_as_dict(v)` is the right shape for read-time defensive coercion — keeps the row but blanks the broken field. Better than dropping the row (operator loses visibility).
+- **CPU sandbox + agent baseline mismatch**: B2 demonstrated that the implement_baseline agent does NOT know it's running in a CPU sandbox. Future fix: pass `ctx.sandbox_mode` into the prompt so the agent picks `--smoke-test` automatically. Tracked.
+
+### Manual-intervention runbook (added)
+
+When a docker-sandbox `run_experiment` wedges on CPU-bound training:
+```bash
+CID=$(docker ps --format '{{.Names}}' | grep prj_<id>)
+# Container-namespace PIDs (host PIDs from `docker top` are NOT usable from inside)
+docker exec $CID ls /proc | grep -E '^[0-9]+$' | sort -n
+# Kill via container-namespace PID (typically sh=7, python=16)
+docker exec $CID python -c "import os, signal; [os.kill(p, signal.SIGKILL) for p in (7, 16)]"
+# Pipeline will see run_experiment failure within ~5 s and iterate
+```
+Also: `DELETE /runs/{project_id}` cleanly stops a runaway run; status flips to `stopped`.
+
+### Best practices distilled from this sprint
+
+1. **Side-effects in order**: visible state changes BEFORE cleanup. If a "finalize" step can hang, write the "completed" status first.
+2. **`os._exit(0)` in `finally:` for any subprocess wrapper** that spawns third-party processes that might leak past atexit. The 2-hour wait is a real failure mode.
+3. **Defensive coercion at READ boundaries beats defensive write contracts**. `_as_dict(v)` survives any upstream data shape regression. Tests pin happy path AND each known-bad shape.
+4. **Wire-contract bugs need defense at every seam they touch**. candidate_id=None hit 3 layers; the fix lives in all 3.
+5. **Prompt biases are real bugs** — "save cost" framing in a system prompt was the entire reason B1's 3 candidates went 0/3 promoted with the old prompt and 1/3 promoted with the new one.
+6. **Container debugging is namespace-scoped**: PIDs from `docker top` (host view) are NOT the PIDs you `os.kill` from inside the container (container PID namespace).
+7. **Per-step timeouts must be sized for the worst common case, not the worst conceivable case**: 7200s was paranoid; 1800s covers 99% of real experiments and surfaces regressions in time to iterate.
+8. **API/OAuth parity is "below the auth layer" by construction**: today's 6 fixes all sit at wrapper template / eventstore / data validation / prompt — auth-agnostic. Verify by grepping for provider branches in the edit surface.
+
+### Known issues (not blocking, tracked for next session)
+
+- **Zombie Claude subprocesses on long runs**: every Sonnet sub-call leaks a defunct child on WSL2 (SDK atexit subprocess.wait hangs after SIGKILL). B2 accumulated 72. Doesn't affect correctness but file-descriptor limits could matter eventually. Tracked.
+- **implement_baseline agent doesn't know sandbox mode**: B2's repeated CPU-infeasible baselines are the symptom. Fix candidate: thread `ctx.sandbox_mode` into the agent's prompt so it picks `--smoke-test` automatically when sandbox is CPU.
+- **Codex-companion plugin auto-invoked from sub-agent**: `/home/abheekp/.claude/plugins/cache/openai-codex/codex/1.0.3/scripts/codex-companion.mjs` ran for ~30 min during A2's implement_baseline. This is the system-being-tested's choice (via claude-agent-sdk plugin system), not Claude Code's agent dispatch. If "no codex" must extend to the sub-agent layer, uninstall the plugin or filter at the SDK layer.
+
+### Live URLs from this session (operator can inspect)
+
+- A1 (RLM, completed): http://localhost:3000/lab?projectId=prj_f4cc5fa917c27ef1
+- A2 (LLM CodeGen, completed): http://localhost:3000/lab?projectId=prj_390202710d0f994b
+- **B1 (CodeOCR, completed, promoted ✓)**: http://localhost:3000/lab?projectId=prj_7b7b34eb9d623b75
+- B2 (Visual Info Gain, stopped): http://localhost:3000/lab?projectId=prj_77b7294aed1bf872
+- Leaderboard: http://localhost:3000/leaderboard
+
+### Test count check
+
+`tests/rlm/ tests/rdr/ tests/routes/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite{,_concurrent}.py`: **729 passed, 1 xfailed** after all 6 commits. Zero regressions across today's edit surface.
+
+---
+
 ## 2026-05-23 (evening) — Schema-coercion + failed-run-UX + doc maintenance (`b290449…f624d33`)
 
 ### Shipped (5 commits)

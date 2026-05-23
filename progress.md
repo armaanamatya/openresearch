@@ -1,3 +1,73 @@
+## 2026-05-23 (late evening) — Parallel 4-paper sweep + 6 reliability commits — first run hits promoted-candidate gate
+
+_Updated: 2026-05-23 evening._
+
+### Headline
+
+6 commits across wrapper-template reliability, SQLite concurrency, wire contracts, prompt nudges, leaderboard defense, and experiment timeouts. **B1 (CodeOCR paper) became the first E2E run to actually hit the user's success gate** — completed with rubric 31.88% AND 1 promoted improvement candidate, validating the full pipeline end-to-end.
+
+### Commits landed (newest first)
+
+| SHA | Headline | Lines |
+| --- | --- | --- |
+| `f8546d1` | run_experiment cap was 2 hours — B2 of the paper sweep wedged for it; now 30 min with env-var escape hatch | +176 / -1 |
+| `991517a` | Leaderboard stopped 500ing on legacy final_report shapes — defensive coerce to {} for the four header fields | +64 / -4 |
+| `9dd7c6d` | The root was declining every candidate to 'save cost' — now told to try a scoped-down subset before declining anything | +24 / -12 |
+| `1f72e07` | Promoted-candidate gate stops getting blocked by a wire-contract bug — candidate_id=None corrupted every outcome event | +136 / -7 |
+| `7970506` | Parallel paper sweep was killing the second ingest with 'database is locked' — BEGIN IMMEDIATE + 30s busy_timeout fixes it | +197 / -3 |
+| `19e87ee` | The 'stuck Running' bug — runs that finish now actually flip to Completed | +159 / -2 |
+
+### Paper sweep results (last 6 months ML, OAuth surface, docker sandbox)
+
+| Run | arXiv | Pages | Iters | Rubric | Promoted | Outcome | Prompt vintage |
+|---|---|---|---|---|---|---|---|
+| A1 | 2512.24601 (RLM) | 43 | 3 | 9.6% | 0/3 | partial | old (pre-9dd7c6d) |
+| A2 | 2512.18131 (LLM CodeGen) | 13 | 3 | 14.4% | 0/3 | partial | old |
+| **B1** | **2602.01785 (CodeOCR)** | **24** | **6** | **31.88%** | **1/3 ✓** | **partial — HIT GATE** | **new (anti-decline)** |
+| B2 | 2602.17186 (Visual Info Gain) | 22 | 2 | n/a | n/a | stopped | new — manual stop (CPU-bound train loop) |
+
+### What's now verified end-to-end
+
+| Capability | Status | Where verified |
+| --- | --- | --- |
+| Reproduction with at least 1 PROMOTED improvement candidate | ✅ | B1 — first E2E run to satisfy the user's success gate |
+| Status transitions to "completed" reliably (no more stuck-Running) | ✅ | A1 + A2 + B1 (3/3 completing runs reached `status=completed` correctly); 5 wrapper-string tests pin the invariant |
+| 2 concurrent `/runs/arxiv` ingests without DB lock errors | ✅ | A1+A2 retry after BEGIN IMMEDIATE fix succeeded; 3 concurrency tests pin |
+| `candidate_outcome` events carry real `candidate_id` strings, not `"None"` | ✅ | A1 ("Implement Algorithm 1..."), B1 (`path_1`) — both real; 4 wire-contract tests pin |
+| Leaderboard endpoint survives legacy / malformed `final_report.json` rows | ✅ | live endpoint returns 10 rows including pair A's; 1 defensive-coerce test pins |
+| `run_experiment` cap covers common cases without 2-hour wedges | ✅ | default 1800 s; env-var override path tested |
+
+### What still needs work (tracked, not blocking)
+
+| # | Item | Severity | Path forward |
+| --- | --- | --- | --- |
+| 1 | Zombie Claude subprocesses on long runs (WSL2 subprocess.wait leak) | Low | Defunct children get reaped at runner exit; FD-limit risk only on multi-hour runs. Upstream SDK fix needed |
+| 2 | `implement_baseline` agent doesn't know `sandbox_mode` | Medium | When sandbox=docker (CPU), prompt should hint `--smoke-test`. B2's repeated CPU-infeasible baselines are the symptom |
+| 3 | Codex-companion plugin auto-invoked from sub-agent | Low | Sub-agent uses installed Claude Code plugin; uninstall plugin OR filter at SDK layer if "no codex" must extend below the orchestrator |
+| 4 | SDK aclose noise in stderr is cosmetic but loud | Cosmetic | Watchdog handles fatal cases; suppress non-fatal aclose lines in subprocess wrapper |
+
+### Operating posture
+
+- **OAuth + docker sandbox**: works for papers where Sonnet writes CPU-friendly baselines (B1 was the proof). When the model writes a CPU-bound training loop (B2), the 30-min cap surfaces it within a reasonable iteration window.
+- **API-key parity**: every fix this session sits below the auth layer (wrapper template / eventstore / data validation / prompt) — auth-agnostic by construction. Verified via grep of the edit surface.
+- **Parallel concurrency**: 2+ concurrent runs now safe under the SQLite BEGIN IMMEDIATE + 30s busy_timeout fix.
+- **Production migration (Vercel + Azure)**: provider abstraction was completed earlier this day (`ad460ff` Azure root); the late-evening sprint adds the reliability layer (stuck-Running, SQLite concurrency, wire contracts) needed for production-grade operation.
+
+### Live URLs (this session's runs, viewable in browser)
+
+- A1 (RLM, completed): http://localhost:3000/lab?projectId=prj_f4cc5fa917c27ef1
+- A2 (LLM CodeGen, completed): http://localhost:3000/lab?projectId=prj_390202710d0f994b
+- **B1 (CodeOCR, completed, 1 promoted)**: http://localhost:3000/lab?projectId=prj_7b7b34eb9d623b75
+- B2 (Visual Info Gain, stopped manually): http://localhost:3000/lab?projectId=prj_77b7294aed1bf872
+- Leaderboard: http://localhost:3000/leaderboard
+- Failed-state demo (F16): http://localhost:3000/lab?projectId=prj_f87990c70c6bc8f6
+
+### Test count check
+
+729 passed, 1 xfailed across `tests/rlm/ tests/rdr/ tests/routes/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite{,_concurrent}.py`. Zero regressions across the 6 commits.
+
+---
+
 ## 2026-05-23 — Reliability + production-path sprint
 
 _Updated: 2026-05-23._

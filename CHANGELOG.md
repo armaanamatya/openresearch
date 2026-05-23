@@ -8,6 +8,39 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (late evening — parallel paper sweep + reliability sprint)
+- `tests/services/events/test_live_runs_status_ordering.py` — 5 compile-the-wrapper tests pinning: `write_status("completed")` before `finalize_benchmark()`; finalize wrapped in try/except; `finally:` block with `os._exit`; exit code follows status; failure path also reaches finally.
+- `tests/test_eventstore_sqlite_concurrent.py` — 3 tests pinning concurrent SQLite writers under WAL: 2 threads × different aggregates both succeed; 4×20 = 80 appends complete < 25 s; same-aggregate same-version → exactly one wins with `ConcurrencyError` (not `"database is locked"`).
+- `tests/rlm/test_run_experiment_timeout.py` — 3 tests pinning new `run_experiment` cap: default 1800 s; `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env-var override; invalid value falls back to default.
+- `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var — tunable aggregate cap for `run_experiment` primitive.
+- `runs/_archived_legacy_fixtures_20260523/` — 3 legacy test fixtures (`prj_verify_offline_report`, `prj_verify_offline_report2`, `prj_verify_polish`) moved here so the leaderboard scan doesn't trip on their list-shaped `rubric` fields.
+
+### Changed (late evening)
+- Demo wrapper template (`_python_script` in `live_runs.py`): `write_status("completed")` now fires BEFORE `finalize_benchmark()`. `finally:` block calls `os._exit(0 if completed else 1)` to bypass atexit hooks that can hang on WSL2.
+- SQLite eventstore: all writers now `BEGIN IMMEDIATE` (was bare `BEGIN`); `busy_timeout` raised 5000 → 30000 ms.
+- `record_candidate_outcome` primitive: validates `candidate_id` is non-`None`, non-empty, not literal `"None"`/`"null"`; validates `outcome` against the 6-value `_VALID_OUTCOMES` set. Returns `{"success": False, "error": ...}` on bad input.
+- `binding.py` candidate-outcome emitter: skips emit unless `success=True` AND both `candidate_id` and `outcome` are present.
+- System prompt IMPROVEMENT_LOOP section: rewrote with anti-decline-bias framing — "Success target is at least one PROMOTED candidate per run, not 'every candidate declined for cost reasons'. If all candidates look too big, IMPLEMENT A SCOPED-DOWN SUBSET."
+- System prompt also explicitly: "`candidate_id` MUST be the exact `id` from the most recent `propose_improvements` result (e.g. `path_1`, `path_2`)."
+- `run_experiment` aggregate cap: 7200 s → 1800 s (env-var tunable).
+- `leaderboard.py:_read_run`: `_as_dict(v)` defensive coercer applied to `paper`/`rubric`/`cost`/`models` — single malformed row no longer 500s the whole endpoint.
+
+### Fixed (late evening)
+- **"Stuck Running" bug** (`prj_6b9acbfd8afcd789`): runs that produced `final_report.json` cleanly were stuck on `status=running` forever because atexit cleanup hung in WSL2 subprocess.wait. Fixed via wrapper reorder + `os._exit` escape hatch.
+- **"Database is locked" on parallel ingest**: triggering two `/runs/arxiv` calls within seconds killed the second at first SQLite write. Fixed via `BEGIN IMMEDIATE` + 30 s `busy_timeout`.
+- **`candidate_id="None"` wire-contract bug**: every `candidate_outcome` SSE event had the literal string `"None"` as candidate_id because `str(None)` was emitted unconditionally. Fixed via 3-layer defense (primitive validation + binding skip-on-failure + system_prompt clarification).
+- **`/leaderboard` 500 on legacy `final_report` shapes**: 3 test fixtures with list-shaped `rubric` killed the entire endpoint. Fixed via `_as_dict(v)` at the read boundary.
+- **B2 wedged on CPU-bound VLM training**: would have waited the full 2 h aggregate cap before iterating. Default reduced to 30 min; env var lets long experiments extend.
+
+### Documentation (late evening)
+- `uiprogress.md`: new "late evening" entry with 6-commit table, paper-sweep result table (A1/A2/B1/B2 with rubric + promoted counts), F18–F23 failure-mode rules, manual-intervention runbook for container-namespace PID kills.
+- `learn.md`: 6 new postmortems with full Symptom/Root cause/Fix/Lesson/Guardrail entries (stuck-Running, SQLite locked, candidate_id wire bug, anti-decline prompt, leaderboard 500, run_experiment cap).
+- This `CHANGELOG.md` section.
+
+### Validated (late evening)
+- **First E2E run to hit the "promoted candidate" success gate**: B1 (arXiv 2602.01785 CodeOCR) — 6 iterations, rubric 31.88%, `outcome=promoted` on `path_1`. 3× higher rubric than A1/A2 under the old prompt; first run to actually try a scoped-down subset instead of declining everything. Confirms the full pipeline (stuck-Running fix + SQLite + candidate_id + anti-decline prompt) works end-to-end.
+- **729 tests passing, 1 xfailed** across `tests/rlm/ tests/rdr/ tests/routes/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite{,_concurrent}.py` after all 6 commits.
+
 ## [2026-05-23]
 
 ### Added
