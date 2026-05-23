@@ -100,3 +100,15 @@ reprolab.db-wal
 
 # Playwright MCP screenshot artifacts
 .playwright-mcp/
+
+# DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
+.deepeval/
+
+# Landing-page exploration artifact (figma/AI export). Canonical mockups
+# live in docs/idealui/; this dir is local working state, not source.
+/LANDING/
+
+# Stale "output" snapshots — committed once as test inputs, never referenced.
+# Recreate via the live test suite if needed.
+/runs_e2e_local/
+/runs_e2e_docker/
