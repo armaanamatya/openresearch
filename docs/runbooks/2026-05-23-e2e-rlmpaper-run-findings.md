@@ -60,6 +60,12 @@ symptom → root cause → fix (commit SHA when shipped) → verification.
 - **Test:** replaced the test codifying the bug with two new tests asserting the new contract. `frontend/src/hooks/use-rdr-artifacts.test.ts` — 14/14 passing.
 - **Verified:** pending — fix landed mid-run; verification deferred to next wakeup cycle (Next.js dev HMR may need a full bundle rebuild on some hooks).
 
+## F7 — F5 was incomplete; real signature is mixed 404 + 200-empty
+
+- **Symptom:** even after `4097a20`, console-error files showed ~7 entries per 30s screenshot cycle — no improvement. Cause: the F5 fix only triggered the early-exit when ALL three endpoints returned 404. The real Next.js dev access log showed `/clusters` returning 200+empty, `/leaf-scores` returning 404, and `/repair-iterations` returning 200+empty. `allReturned404` was false; counter reset to 0 every cycle.
+- **Fix:** real fix is to count up unconditionally on `allMissing` (whether each endpoint is 404, 5xx, or 200+empty). The shipped commit also relaxes the over-narrow assertion on the test that encoded the wrong contract.
+- **Status:** SHIPPED in subsequent commit (pending verification on next screenshot cycle once Next.js hot-reload picks up the change).
+
 ## F6 — `repl_iteration` landed at age=104s — runpod cold path within budget
 
 - **Not a defect, a milestone.** Per the advisor's runpod-cold-path budget (8 min from kickoff for first `repl_iteration` OR `primitive_call=build_environment`), we landed at 104s — well within budget. The aclose deadlock fix (commit `532e010`) is verified working: the SDK runs to completion despite the expected non-fatal aclose warnings.
@@ -91,5 +97,22 @@ Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod crea
 | time (UTC) | event | note |
 |---|---|---|
 | 2026-05-23 18:48 | kickoff | sandbox=runpod, model=sonnet (→claude-oauth) |
-| | ingest 1-6 done | "Workspace ready — 4 variables" |
-| | | |
+| 2026-05-23 18:48 | ingest 1-6 done | "Workspace ready — 4 variables" |
+| 2026-05-23 18:51 | first repl_iteration @ 104s | runpod cold path cleared 8-min advisor budget |
+| 2026-05-23 18:55 | sub_rlm_spawned | root recursively queried paper for title/authors |
+| 2026-05-23 18:56 | sub_rlm_complete, repl_iteration #2 | 53.1s sub-rlm duration |
+| 2026-05-23 18:58 | 5× understand_section + 1× extract_hyperparameters | paper claims being mapped |
+| 2026-05-23 18:59 | detect_environment ERROR (ValidationError) | root passed dict[6] failing PaperClaimMap validation; primitive raised; root caught & adapted |
+| 2026-05-23 19:02 | detect_environment ok → build_environment ok → plan_reproduction start | root self-recovered from the ValidationError without dropping the iteration; environment is built |
+| | | (implement_baseline + run_experiment + verify_against_rubric still ahead) |
+
+## Observation: ValidationError handling is fragile but didn't block
+
+The detect_environment ValidationError was opaque in the SSE stream
+(`result_summary="ValidationError"` — `binding.py:165` strips the
+exception message to avoid leaking raw LLM/paper text into the UI).
+The exception itself was re-raised, so the REPL surfaced the full
+pydantic detail to the root, which adapted and retried successfully
+within the same iteration. **No fix needed for THIS run.** Worth a
+follow-up to make pydantic ValidationError details safe-to-emit (just
+field locations + types, no values) so the UI shows what went wrong.
