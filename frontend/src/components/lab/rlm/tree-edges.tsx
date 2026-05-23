@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useMemo } from "react";
 import type { PositionedNode, Edge } from "./layout-tree";
 import type { TreeNode } from "../../../hooks/use-rlm-run";
 
@@ -21,6 +22,34 @@ const STROKE_WIDTH = 1.5;
 const STROKE_DASHARRAY = "4 3";
 const FALLBACK_STROKE = "var(--line)";
 
+// ─── Per-edge component ───────────────────────────────────────────────────────
+
+interface EdgePathProps {
+  from: PositionedNode;
+  to: PositionedNode;
+  outcome: Edge["outcome"];
+}
+
+const EdgePath = memo(function EdgePath({ from, to, outcome }: EdgePathProps) {
+  const stroke = outcome ? (OUTCOME_STROKE[outcome] ?? FALLBACK_STROKE) : FALLBACK_STROKE;
+  const dashed = outcome && DASHED_OUTCOMES.has(outcome);
+
+  // Cubic bezier: depart horizontally from the parent, arrive horizontally
+  // at the child — midpoint x is the inflection column.
+  const midX = (from.x + to.x) / 2;
+  const d = `M ${from.x},${from.y} C ${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`;
+
+  return (
+    <path
+      d={d}
+      stroke={stroke}
+      strokeWidth={STROKE_WIDTH}
+      strokeDasharray={dashed ? STROKE_DASHARRAY : undefined}
+      fill="none"
+    />
+  );
+});
+
 // ─── TreeEdges ────────────────────────────────────────────────────────────────
 
 export interface TreeEdgesProps {
@@ -39,36 +68,19 @@ export interface TreeEdgesProps {
  *
  * The <svg> uses overflow="visible" so it never clips paths that extend
  * beyond the nominal bounding box. It is purely decorative (aria-hidden).
+ *
+ * D3: per-edge rendering is memoized via EdgePath (React.memo) — unchanged
+ * edges skip reconciliation even when the positioned array grows (new nodes
+ * appended). posById is memoized via useMemo to avoid rebuilding the Map on
+ * every render.
  */
 export function TreeEdges({ positioned, edges }: TreeEdgesProps) {
-  // Build a fast id → position lookup.
-  const posById = new Map<string, PositionedNode>();
-  for (const n of positioned) posById.set(n.id, n);
-
-  const paths = edges.flatMap((edge) => {
-    const from = posById.get(edge.from);
-    const to = posById.get(edge.to);
-    if (!from || !to) return []; // skip unresolved edges
-
-    const stroke = edge.outcome ? (OUTCOME_STROKE[edge.outcome] ?? FALLBACK_STROKE) : FALLBACK_STROKE;
-    const dashed = edge.outcome && DASHED_OUTCOMES.has(edge.outcome);
-
-    // Cubic bezier: depart horizontally from the parent, arrive horizontally
-    // at the child — midpoint x is the inflection column.
-    const midX = (from.x + to.x) / 2;
-    const d = `M ${from.x},${from.y} C ${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`;
-
-    return [
-      <path
-        key={`${edge.from}-${edge.to}`}
-        d={d}
-        stroke={stroke}
-        strokeWidth={STROKE_WIDTH}
-        strokeDasharray={dashed ? STROKE_DASHARRAY : undefined}
-        fill="none"
-      />,
-    ];
-  });
+  // D3: memoize the id → position lookup so it is only rebuilt when positioned changes.
+  const posById = useMemo(() => {
+    const m = new Map<string, PositionedNode>();
+    for (const n of positioned) m.set(n.id, n);
+    return m;
+  }, [positioned]);
 
   return (
     <svg
@@ -76,7 +88,19 @@ export function TreeEdges({ positioned, edges }: TreeEdgesProps) {
       overflow="visible"
       style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
     >
-      {paths}
+      {edges.map((edge) => {
+        const from = posById.get(edge.from);
+        const to = posById.get(edge.to);
+        if (!from || !to) return null; // skip unresolved edges
+        return (
+          <EdgePath
+            key={`${edge.from}-${edge.to}`}
+            from={from}
+            to={to}
+            outcome={edge.outcome}
+          />
+        );
+      })}
     </svg>
   );
 }
