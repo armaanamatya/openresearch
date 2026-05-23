@@ -21,6 +21,7 @@ import type {
   SubRlmCompleteEvent,
   RunWarningEvent,
   IterationHeartbeatEvent,
+  GpuResolvedEvent,
 } from "../lib/events/rlm-events";
 
 // ─── Member types ─────────────────────────────────────────────────────────────
@@ -67,6 +68,33 @@ export interface RunWarning {
   code: string;
   message: string;
   timestamp: string;
+}
+
+/**
+ * GpuPlan — the resolved GPU provisioning plan, populated when a gpu_resolved
+ * SSE event is received.  Mirrors the backend GpuPlan Pydantic model fields
+ * that are relevant to the UI badge (§4.5, dynamic-gpu-selection 2026-05-23).
+ */
+export interface GpuPlan {
+  runpod_id: string;
+  short_name: string;
+  vram_gb: number;
+  gpu_count: number;
+  cloud_type: string;
+  sku_usd_per_hr: number;
+  total_usd_per_hr: number;
+  container_disk_gb: number;
+  volume_gb: number;
+  source: "paper" | "fallback" | "catalog";
+  requirements: {
+    estimated_vram_gb: number | null;
+    paper_gpu_string: string | null;
+    paper_gpu_count: number | null;
+    reasoning: string;
+    confidence: number;
+  };
+  ladder_remaining: number;
+  resolved_at: string;
 }
 
 /** Display-annotation phase a trunk (`work`) node belongs to — §6. Not load-bearing. */
@@ -202,6 +230,13 @@ export interface RlmRunState {
    * when ``status === "running"`` and ``Date.now() - new Date(lastHeartbeatAt) > 60_000``.
    */
   lastHeartbeatAt: string | null;
+
+  /**
+   * The most-recent gpu_resolved payload for this run, or null before the
+   * resolve_gpu_requirements primitive completes.  Consumed by the
+   * NodeDetailSidebar GpuPlan badge (dynamic-gpu-selection 2026-05-23).
+   */
+  gpuPlan: GpuPlan | null;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -228,6 +263,7 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   report: null,
   warnings: [],
   lastHeartbeatAt: null,
+  gpuPlan: null,
 };
 
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
@@ -773,6 +809,28 @@ function foldRunWarning(
   return { ...state, warnings: [...state.warnings, warning] };
 }
 
+function foldGpuResolved(
+  state: RlmRunState,
+  ev: GpuResolvedEvent
+): RlmRunState {
+  const gpuPlan: GpuPlan = {
+    runpod_id: ev.runpod_id,
+    short_name: ev.short_name,
+    vram_gb: ev.vram_gb,
+    gpu_count: ev.gpu_count,
+    cloud_type: ev.cloud_type,
+    sku_usd_per_hr: ev.sku_usd_per_hr,
+    total_usd_per_hr: ev.total_usd_per_hr,
+    container_disk_gb: ev.container_disk_gb,
+    volume_gb: ev.volume_gb,
+    source: ev.source,
+    requirements: { ...ev.requirements },
+    ladder_remaining: ev.ladder_remaining,
+    resolved_at: ev.resolved_at,
+  };
+  return { ...state, gpuPlan };
+}
+
 function foldRunComplete(
   state: RlmRunState,
   ev: RunCompleteEvent
@@ -837,6 +895,8 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
     case "user_message_response":
       // Consumed by other hooks; tree reducer is a no-op.
       return seeded;
+    case "gpu_resolved":
+      return foldGpuResolved(seeded, event);
     default:
       // Exhaustiveness guard; unknown events return state unchanged.
       return seeded;

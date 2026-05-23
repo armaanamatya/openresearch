@@ -274,6 +274,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           iterationCount={state.iterationCount}
           candidatesProposed={candidatesProposed}
           candidatesPromoted={candidatesPromoted}
+          gpuPlan={state.gpuPlan}
           collapsed={sidebarCollapsed}
           onCollapsedChange={setSidebarCollapsed}
           style={{ width: sidebarCollapsed ? undefined : sizes.detailSidebar }}
