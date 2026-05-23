@@ -620,24 +620,52 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         print(f"[rlm] Sandbox preflight failed: {exc}", file=sys.stderr)
         return 2
 
+    # Route by mode: default 'rlm' → hybrid; 'rlm-pure' → pure RLM.
+    mode = getattr(args, "mode", "rlm")
+    if mode == "rlm-pure":
+        print(f"[rlm-pure] paper_id  : {paper_id}", file=sys.stderr)
+        print(f"[rlm-pure] project_id: {project_id}", file=sys.stderr)
+        _runner_label = "rlm-pure"
+    else:
+        print(f"[hybrid] paper_id  : {paper_id}", file=sys.stderr)
+        print(f"[hybrid] project_id: {project_id}", file=sys.stderr)
+        _runner_label = "hybrid"
+
     try:
-        from backend.agents.rlm.run import run_pipeline_rlm
-        rlm_result = asyncio.run(run_pipeline_rlm(
-            project_id,
-            runs_root,
-            workspace_claim_map,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            run_budget=run_budget,
-            sandbox_mode=sandbox_mode,
-            seed=getattr(args, "seed", None),
-            execution_profile=execution_profile,
-            attempt_id=getattr(args, "attempt_id", None),
-            run_group_id=getattr(args, "run_group_id", None),
-        ))
+        if mode == "rlm-pure":
+            from backend.agents.rlm.run import run_pipeline_rlm
+            rlm_result = asyncio.run(run_pipeline_rlm(
+                project_id,
+                runs_root,
+                workspace_claim_map,
+                model=getattr(args, "model", None),
+                provider=getattr(args, "provider", None),
+                run_budget=run_budget,
+                sandbox_mode=sandbox_mode,
+                seed=getattr(args, "seed", None),
+                execution_profile=execution_profile,
+                attempt_id=getattr(args, "attempt_id", None),
+                run_group_id=getattr(args, "run_group_id", None),
+            ))
+        else:
+            # Default: hybrid (Phase 1 RDR + Phase 2 RLM repair)
+            from backend.agents.hybrid.controller import run_pipeline_hybrid
+            rlm_result = asyncio.run(run_pipeline_hybrid(
+                project_id,
+                runs_root,
+                workspace_claim_map,
+                model=getattr(args, "model", None),
+                provider=getattr(args, "provider", None),
+                run_budget=run_budget,
+                sandbox_mode=sandbox_mode,
+                seed=getattr(args, "seed", None),
+                execution_profile=execution_profile,
+                attempt_id=getattr(args, "attempt_id", None),
+                run_group_id=getattr(args, "run_group_id", None),
+            ))
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
-            "\n[reprolab] RLM pipeline interrupted (Ctrl-C). Exiting.",
+            f"\n[reprolab] {_runner_label} pipeline interrupted (Ctrl-C). Exiting.",
             file=sys.stderr,
             flush=True,
         )
@@ -645,7 +673,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
     except Exception as exc:
         from backend.agents.resilience import BudgetExhausted
         if isinstance(exc, BudgetExhausted):
-            print(f"[rlm] Pipeline budget exhausted: {exc}", file=sys.stderr)
+            print(f"[{_runner_label}] Pipeline budget exhausted: {exc}", file=sys.stderr)
             return 3
         raise
 
@@ -666,9 +694,6 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
-    # The RLM orchestrator is the only pipeline; defensively ignore any stale
-    # mode value an external/CLI caller may still pass.
-    args.mode = "rlm"
     # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
     # module gets a chance to emit. This is the *subprocess* hot path
     # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),
@@ -684,11 +709,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     if args.mode == "rdr":
         return _cmd_reproduce_rdr(args, runs_root)
 
-    # rlm mode with a PaperBench bundle ID: bypass ingest, load the bundle
-    # directly and dispatch to run_pipeline_rlm.  This mirrors the rdr shortcut
-    # and lets callers pass a bundle paper_id (e.g. "sequential-neural-score-estimation")
-    # instead of an arXiv ID or PDF path.
-    if args.mode == "rlm" and _is_paperbench_bundle_id(args.source, runs_root):
+    # rlm (default hybrid) or rlm-pure with a PaperBench bundle ID:
+    # bypass ingest, load the bundle directly.
+    if args.mode in ("rlm", "rlm-pure") and _is_paperbench_bundle_id(args.source, runs_root):
         return _cmd_reproduce_rlm_paperbench(args, runs_root)
 
     provider = getattr(args, "provider", None)
@@ -808,7 +831,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        if args.mode == "rlm":
+        if args.mode == "rlm-pure":
+            # Escape hatch: pure RLM, no rubric decomposition.
             from backend.agents.rlm.run import run_pipeline_rlm
 
             rlm_result = asyncio.run(run_pipeline_rlm(
@@ -824,11 +848,28 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_service=workspace,
                 workspace_id=workspace_id,
             ))
+        elif args.mode in ("rlm", None):
+            # Default: hybrid Phase 1 (RDR) + Phase 2 (RLM repair).
+            from backend.agents.hybrid.controller import run_pipeline_hybrid
+
+            rlm_result = asyncio.run(run_pipeline_hybrid(
+                project_id, runs_root, workspace_claim_map,
+                model=args.model,
+                provider=provider,
+                run_budget=run_budget,
+                sandbox_mode=sandbox_mode,
+                seed=args.seed,
+                execution_profile=execution_profile,
+                attempt_id=args.attempt_id,
+                run_group_id=args.run_group_id,
+                workspace_service=workspace,
+                workspace_id=workspace_id,
+            ))
         else:
             print(
-                f"Error: --mode {args.mode!r} is no longer supported "
-                "(backend.agents.pipeline was removed in the RLM-only refactor). "
-                "Use --mode rlm or --mode rdr instead.",
+                f"Error: --mode {args.mode!r} is not supported here. "
+                "Use --mode rlm (default hybrid), --mode rlm-pure (pure RLM), "
+                "or --mode rdr instead.",
                 file=sys.stderr,
             )
             store.close()
@@ -930,8 +971,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument("--agent", default="default", help="Agent name for the workspace.")
     reproduce.add_argument(
-        "--mode", choices=("rlm", "rdr"), default="rlm",
-        help="Pipeline mode: 'rlm' (default) uses the RLM orchestrator (Recursive Language Models, arXiv 2512.24601); 'rdr' uses the rubric-driven harness on a PaperBench bundle (see docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md). Legacy 'offline'/'sdk' modes were removed in the RLM-only refactor.",
+        "--mode", choices=("rlm", "rdr", "rlm-pure"), default="rlm",
+        help=(
+            "Pipeline mode: "
+            "'rlm' (default) — hybrid Phase 1 RDR + Phase 2 RLM adaptive repair; "
+            "'rdr' — pure rubric-driven harness, predictable cost ceiling (PaperBench bundles only); "
+            "'rlm-pure' — pure RLM, no rubric decomposition (debug/escape hatch)."
+        ),
     )
     reproduce.add_argument("--model", default=None, help="Model override for the RLM orchestrator.")
     reproduce.add_argument(

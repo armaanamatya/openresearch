@@ -612,6 +612,14 @@ async def run_pipeline_rlm(
         tools_label,
     )
 
+    # Hybrid-repair-only mode (set by backend.agents.hybrid.controller when
+    # run_pipeline_rlm is called as Phase 2 of a hybrid run).
+    # The RDR Phase 1 already produced a code_dir; we skip full reproduction
+    # and focus the root model on repairing the weak clusters identified by
+    # Phase 1 scoring.
+    _hybrid_repair_only: bool = bool(workspace_claim_map.get("_hybrid_repair_only", False))
+    _phase1_weak_clusters: list[Any] = workspace_claim_map.get("_phase1_weak_clusters") or []
+
     # 6. The offloaded corpus + 7. the system prompt.
     context_dict = _build_context(workspace_claim_map)
 
@@ -633,6 +641,35 @@ async def run_pipeline_rlm(
             logger.info("run_pipeline_rlm: using a self-generated rubric (persisted to generated_rubric.json)")
         else:
             logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
+
+    # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
+    # so the root model repairs rather than reproduces from scratch.
+    active_prompt = _ROOT_PROMPT
+    if _hybrid_repair_only:
+        code_dir = project_dir / "code"
+        context_dict["_hybrid_repair_only"] = True
+        context_dict["_phase1_code_dir"] = str(code_dir)
+        context_dict["_phase1_weak_clusters"] = _phase1_weak_clusters
+        logger.info(
+            "run_pipeline_rlm[%s]: hybrid-repair-only mode — "
+            "%d weak cluster(s); code_dir=%s",
+            project_id, len(_phase1_weak_clusters), code_dir,
+        )
+        active_prompt = (
+            "You are the repair agent for a hybrid RDR+RLM reproduction run. "
+            "Phase 1 (RDR) already produced a code directory at "
+            "`context['_phase1_code_dir']`. "
+            "The weak clusters that need repair are listed in "
+            "`context['_phase1_weak_clusters']` — each entry has "
+            "{'id', 'score', 'justification'}. "
+            "Your goal is to improve the reproduction for those specific clusters. "
+            "Inspect the existing code, understand what each weak cluster requires "
+            "(see the rubric in context['rubric_spec']), implement targeted fixes, "
+            "re-run the experiment with run_experiment, and re-score with "
+            "score_against_rubric. Do NOT rewrite passing clusters. "
+            "When finished, call FINAL_VAR on the updated report dict — "
+            "exactly as the system prompt's termination contract describes."
+        )
 
     # M-REDACT: build sentinels once; threaded into logger + _finalize (A1-M2, A1-C1).
     corpus_sentinels = _corpus_sentinels(context_dict)
@@ -708,7 +745,7 @@ async def run_pipeline_rlm(
     result_obj: Any = None
     run_failed = False
     try:
-        result_obj = await asyncio.to_thread(rlm.completion, context_dict, _ROOT_PROMPT)
+        result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
     except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
         run_failed = True
         logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
