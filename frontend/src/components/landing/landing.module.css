@@ -648,6 +648,36 @@
 /* utility */
 .hr-thin { height: 1px; background: var(--landing-rule-2); border: 0; margin: 0; }
 
+/* ---------- HERO ENTRANCE (page-load, @starting-style) ----------
+ * Animates from translateY(16px) + opacity:0 to natural state at first paint.
+ * In browsers without @starting-style: element renders at final state, no
+ * animation. Staggered via transition-delay so eyebrow leads → headline →
+ * subhead column → CTAs → figure. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero-eyebrow,
+  .hero-grid > h1,
+  .hero-grid > div,
+  .hero-actions,
+  .hero-figure {
+    transition: opacity 300ms ease-out, transform 300ms ease-out;
+  }
+  @starting-style {
+    .hero-eyebrow,
+    .hero-grid > h1,
+    .hero-grid > div,
+    .hero-actions,
+    .hero-figure {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+  }
+  .hero-eyebrow    { transition-delay: 0ms; }
+  .hero-grid > h1  { transition-delay: 80ms; }
+  .hero-grid > div { transition-delay: 160ms; }
+  .hero-actions    { transition-delay: 240ms; }
+  .hero-figure     { transition-delay: 320ms; }
+}
+
 /* ---------- REDUCED-MOTION GLOBAL OVERRIDE ----------
  * Belt-and-suspenders: every new animation in this file is already wrapped
  * in @media (prefers-reduced-motion: no-preference). This is the global
