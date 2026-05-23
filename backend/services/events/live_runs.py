@@ -1400,6 +1400,8 @@ def _python_script(
         # in the non-uploaded rlm path (run_pipeline_rlm call below).
         "max_usd": None,
         "max_wall_clock": None,
+        "max_pod_seconds": None,
+        "max_invocations": None,
         # rdr-specific: PaperBench bundle identifier (only used when mode='rdr').
         "paper_id": request.paper_id if request.mode == "rdr" else None,
         "max_repair_iterations": 2,
@@ -1414,7 +1416,12 @@ from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
 from backend.agents.rlm.run import run_pipeline_rlm
-from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
+from backend.cli import (
+    cmd_reproduce,
+    _REPRODUCE_DEFAULTS,
+    _max_invocations_from_arg,
+    _resolve_max_pod_seconds,
+)
 
 config = json.loads({json.dumps(json.dumps(common))})
 project_id = config["project_id"]
@@ -1578,6 +1585,8 @@ try:
             "database_url": config["database_url"],
             "max_usd": config["max_usd"],
             "max_wall_clock": config["max_wall_clock"],
+            "max_pod_seconds": config["max_pod_seconds"],
+            "max_invocations": config["max_invocations"],
         }}))
         if exit_code != 0:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
@@ -1586,11 +1595,20 @@ try:
         # A4-7: build run_budget once from threaded-through config fields so
         # an API-set budget is honored on both the rlm and rdr paths.
         _run_budget = None
-        if config["max_usd"] is not None or config["max_wall_clock"] is not None:
+        _max_pod_seconds = _resolve_max_pod_seconds(config["max_pod_seconds"])
+        _max_invocations = _max_invocations_from_arg(config["max_invocations"])
+        if (
+            config["max_usd"] is not None
+            or config["max_wall_clock"] is not None
+            or _max_pod_seconds is not None
+            or _max_invocations
+        ):
             from backend.agents.resilience import RunBudget
             _run_budget = RunBudget(
                 max_usd=config["max_usd"],
                 max_wall_clock_seconds=config["max_wall_clock"],
+                max_pod_seconds=_max_pod_seconds,
+                max_invocations_per_agent=_max_invocations,
             )
         if config["run_mode"] == "rlm":
             # Default: hybrid Phase 1 (RDR) + Phase 2 (RLM adaptive repair).
@@ -1636,6 +1654,7 @@ try:
                 sandbox_mode=_sandbox,
                 max_repair_iterations=config.get("max_repair_iterations") or 2,
                 repair_target=config.get("repair_target") or 0.6,
+                run_budget=_run_budget,
             ))
         else:
             raise ValueError(

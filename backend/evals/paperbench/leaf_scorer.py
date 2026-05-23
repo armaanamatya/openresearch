@@ -264,6 +264,36 @@ def score_reproduction(
     leaf_score_records: list[dict[str, Any]] = []
     graded_count = 0
 
+    if degraded:
+        for leaf in leaves:
+            lid = str(leaf.get("id", ""))
+            leaf_scores[lid] = 0.0
+            leaf_score_records.append(
+                {
+                    "id": lid,
+                    "score": 0.0,
+                    "justification": "degraded_no_metrics",
+                }
+            )
+
+        raw_target = rubric_tree.get("target_score")
+        try:
+            target_score: float | None = (
+                None if raw_target is None else max(0.0, min(1.0, float(raw_target)))
+            )
+        except (TypeError, ValueError):
+            target_score = None
+
+        return {
+            "overall_score": roll_up(rubric_tree, leaf_scores),
+            "leaf_count": len(leaves),
+            "graded": graded_count,
+            "rubric_source": rubric_source,
+            "leaf_scores": leaf_score_records,
+            "degraded": True,
+            "target_score": target_score,
+        }
+
     for batch_num, start in enumerate(range(0, len(leaves), batch_size), 1):
         batch = leaves[start : start + batch_size]
         tasks_payload = [
@@ -287,7 +317,12 @@ def score_reproduction(
                 len(batch),
             )
             results = [
-                {"id": str(leaf.get("id", "")), "score": 0.0, "justification": "batch_error"}
+                {
+                    "id": str(leaf.get("id", "")),
+                    "score": 0.0,
+                    "justification": "batch_error",
+                    "_graded": False,
+                }
                 for leaf in batch
             ]
 

@@ -261,3 +261,48 @@ async def test_run_pipeline_rdr_resume_defaults_false(
     assert captured.get("resume") is False, (
         f"resume should default to False; captured kwargs: {captured}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_rdr_threads_run_budget_to_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend.agents.rdr.models import RdrResult
+    from backend.agents.resilience import RunBudget
+
+    captured: dict[str, object] = {}
+
+    async def _fake_run_rdr(bundle, *, ctx, **kwargs):  # type: ignore[override]
+        captured["run_budget"] = ctx.run_budget
+        captured["deadline_utc"] = ctx.deadline_utc
+        return RdrResult(project_id=ctx.project_id, status="partial")
+
+    class _FakeBundle:
+        def rubric(self):
+            return {"id": "root", "requirements": "r", "weight": 1.0, "sub_tasks": []}
+
+        def read_paper_markdown(self):
+            return "# Test"
+
+        def metadata(self):
+            return {"id": "test-paper", "title": "Test Paper"}
+
+    monkeypatch.setattr("backend.agents.rdr.run.run_rdr", _fake_run_rdr)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.bundle.load_paperbench_bundle",
+        lambda path: _FakeBundle(),
+    )
+    monkeypatch.setattr(
+        "backend.agents.rdr.run._resolve_bundle_path",
+        lambda paper_id, bundles_root=None: tmp_path,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    budget = RunBudget(max_wall_clock_seconds=60, max_pod_seconds=30)
+    from backend.agents.rdr.run import run_pipeline_rdr
+
+    await run_pipeline_rdr("budgeted", tmp_path, paper_id="test-paper", run_budget=budget)
+
+    assert captured["run_budget"] is budget
+    assert captured["deadline_utc"] is not None

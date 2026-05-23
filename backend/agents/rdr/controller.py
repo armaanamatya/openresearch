@@ -16,12 +16,14 @@ import os
 import pickle
 import shutil
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from backend.agents.rdr.decomposer import decompose
 from backend.agents.rdr.context_engineer import build_context
 from backend.agents.rdr.models import Artifacts, RdrResult, WorkCluster
+from backend.agents.resilience.cost import CostLedgerEntry
 from backend.agents.rlm.primitives import (
     detect_environment,
     build_environment,
@@ -32,6 +34,12 @@ from backend.agents.rlm.report import (
     RLMFinalReport,
     reconcile_verdict_with_score,
     write_final_report_rlm,
+)
+from backend.agents.rlm.sse_bridge import (
+    build_cluster_artifact_emitted,
+    build_cluster_scored,
+    build_cluster_started,
+    build_repair_dispatched,
 )
 
 if TYPE_CHECKING:
@@ -134,6 +142,98 @@ def _cluster_score(cluster: WorkCluster, scores: dict[str, Any]) -> float:
         by_id.get(leaf.id, 0.0) * leaf.weight for leaf in cluster.leaves
     )
     return weighted_sum / total_weight
+
+
+_LANG_BY_SUFFIX: dict[str, str] = {
+    ".py": "python",
+    ".ipynb": "jupyter",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".json": "json",
+    ".md": "markdown",
+    ".sh": "shell",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
+
+
+def _artifact_language(path: str) -> str | None:
+    """Return a lightweight language hint for UI artifact chips."""
+    return _LANG_BY_SUFFIX.get(Path(path).suffix.lower())
+
+
+def _leaf_scores_for_cluster(cluster: WorkCluster, scores: dict[str, Any]) -> dict[str, float]:
+    """Return leaf-score mapping scoped to one cluster."""
+    leaf_scores_list: list[dict[str, Any]] = scores.get("leaf_scores", [])
+    by_id: dict[str, float] = {
+        entry["id"]: float(entry.get("score", 0.0))
+        for entry in leaf_scores_list
+        if isinstance(entry, dict) and "id" in entry
+    }
+    return {leaf.id: by_id.get(leaf.id, 0.0) for leaf in cluster.leaves}
+
+
+def _failed_leaves_for_cluster(
+    cluster: WorkCluster,
+    scores: dict[str, Any],
+    threshold: float,
+) -> list[str]:
+    """Return cluster leaf ids below the repair threshold."""
+    leaf_scores = _leaf_scores_for_cluster(cluster, scores)
+    return [leaf_id for leaf_id, score in leaf_scores.items() if score < threshold]
+
+
+def _is_degraded_experiment(exp: dict[str, Any]) -> bool:
+    """Metricless experiments must be scored through the degraded honesty cap."""
+    return not bool(exp.get("metrics") or {})
+
+
+def _zero_scores(*, degraded: bool) -> dict[str, Any]:
+    """Safe scorer fallback; degraded runs stay capped and visible in reports."""
+    return {
+        "overall_score": 0.0,
+        "leaf_count": 0,
+        "graded": 0,
+        "rubric_source": "paperbench_bundle",
+        "leaf_scores": [],
+        "degraded": degraded,
+        "target_score": None,
+    }
+
+
+def _record_primitive_cost(ctx: "RunContext", primitive: str) -> None:
+    """Record direct RDR calls into RLM primitives in the run cost ledger."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return
+    try:
+        ledger.append(
+            CostLedgerEntry(
+                timestamp=datetime.now(timezone.utc),
+                agent_id=primitive,
+                attempt_index=0,
+                provider=getattr(ctx, "provider", "anthropic"),
+                model=getattr(ctx, "model", ""),
+            )
+        )
+    except Exception:  # noqa: BLE001 — ledger writes must never break a run
+        logger.warning("rdr/controller: failed to append cost ledger row for %s", primitive)
+
+
+async def _call_primitive(
+    ctx: "RunContext",
+    primitive: str,
+    fn: Callable[..., Any],
+    *args: Any,
+) -> Any:
+    """Call an RLM primitive from RDR and always ledger the attempt."""
+    try:
+        return await asyncio.to_thread(fn, *args, ctx=ctx)
+    finally:
+        _record_primitive_cost(ctx, primitive)
 
 
 def _dedup_commands(done: dict[str, Artifacts]) -> list[str]:
@@ -327,6 +427,7 @@ async def run_rdr(
         An :class:`RdrResult` — always; per-cluster and per-phase failures
         are fail-soft and produce an honest partial or completed result.
     """
+    run_started_at = datetime.now(timezone.utc).isoformat()
     _reproduce = _resolve_reproduce_fn(reproduce_fn)
 
     # ------------------------------------------------------------------
@@ -405,6 +506,19 @@ async def run_rdr(
             "weight": cluster.weight,
             "dominant_category": cluster.dominant_category,
         })
+        _emit("cluster_started", build_cluster_started(
+            cluster_id=cluster.id,
+            cluster_title=cluster.title,
+            leaves=[
+                {
+                    "id": leaf.id,
+                    "weight": leaf.weight,
+                    "requirements": leaf.requirements,
+                }
+                for leaf in cluster.leaves
+            ],
+            iteration=idx + 1,
+        ))
 
         agctx = build_context(
             cluster,
@@ -461,6 +575,13 @@ async def run_rdr(
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
+                artifact_path = str(rel_path).replace("\\", "/")
+                _emit("cluster_artifact_emitted", build_cluster_artifact_emitted(
+                    cluster_id=cluster.id,
+                    artifact_path=artifact_path,
+                    byte_size=len(content.encode("utf-8")),
+                    language=_artifact_language(artifact_path),
+                ))
             except (PermissionError, OSError) as exc:
                 logger.warning(
                     "rdr/controller: skipping %r (%s: %s)",
@@ -511,7 +632,12 @@ async def run_rdr(
             env_spec: dict[str, Any] = {"dockerfile": dockerfile_content}
         else:
             method_spec = {"core_contribution": meta.get("title", "")}
-            env_spec = await asyncio.to_thread(detect_environment, method_spec, ctx)
+            env_spec = await _call_primitive(
+                ctx,
+                "detect_environment",
+                detect_environment,
+                method_spec,
+            )
             if env_spec.get("success") is False:
                 logger.warning(
                     "run_rdr[%s]: detect_environment failed: %s",
@@ -520,7 +646,12 @@ async def run_rdr(
                 env_spec = {}
 
         if env_spec:
-            build = await asyncio.to_thread(build_environment, env_spec, ctx)
+            build = await _call_primitive(
+                ctx,
+                "build_environment",
+                build_environment,
+                env_spec,
+            )
             if build.get("ok"):
                 env_id = build.get("image_tag", "")
             else:
@@ -544,7 +675,13 @@ async def run_rdr(
     _emit("rdr_experiment_started", {"project_id": ctx.project_id})
     if env_id:
         try:
-            exp = await asyncio.to_thread(run_experiment, str(code_dir), env_id, ctx)
+            exp = await _call_primitive(
+                ctx,
+                "run_experiment",
+                run_experiment,
+                str(code_dir),
+                env_id,
+            )
         except Exception as exc:  # noqa: BLE001 — fail-soft
             logger.warning(
                 "run_rdr[%s]: run_experiment raised %s: %s",
@@ -567,29 +704,36 @@ async def run_rdr(
     # Fail-soft: flatten_leaves(), _gather_evidence(), or any OOM/OSError on the
     # rubric tree may raise through asyncio.to_thread — catch and substitute safe
     # zero-scores so the run always produces a final_report.
-    _ZERO_SCORES: dict[str, Any] = {
-        "overall_score": 0.0,
-        "leaf_count": 0,
-        "graded": 0,
-        "rubric_source": "paperbench_bundle",
-        "leaf_scores": [],
-    }
+    degraded_run = _is_degraded_experiment(exp)
     _emit("rdr_scoring_started", {"project_id": ctx.project_id})
     try:
         scores = await asyncio.to_thread(
-            score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+            score_reproduction,
+            rubric,
+            ctx.project_dir,
+            ctx.llm_client,
+            degraded=degraded_run,
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft
         logger.warning(
             "rdr/controller: score_reproduction raised %s: %s — defaulting to zero scores",
             type(exc).__name__, exc,
         )
-        scores = dict(_ZERO_SCORES)
+        scores = _zero_scores(degraded=degraded_run)
+    if degraded_run:
+        scores["degraded"] = True
     _emit("rdr_scoring_completed", {
         "overall_score": scores.get("overall_score"),
         "leaf_count": scores.get("leaf_count"),
         "graded": scores.get("graded"),
     })
+    for cluster in clusters:
+        _emit("cluster_scored", build_cluster_scored(
+            cluster_id=cluster.id,
+            score=_cluster_score(cluster, scores),
+            leaf_scores=_leaf_scores_for_cluster(cluster, scores),
+            degraded=bool(scores.get("degraded", False)),
+        ))
 
     # ------------------------------------------------------------------
     # Step 8: Repair loop
@@ -635,6 +779,12 @@ async def run_rdr(
                 )
                 continue
 
+            _emit("repair_dispatched", build_repair_dispatched(
+                cluster_id=cluster.id,
+                attempt=rep_n,
+                prior_score=_cluster_score(cluster, scores),
+                failed_leaves=_failed_leaves_for_cluster(cluster, scores, repair_target),
+            ))
             agctx = build_context(
                 cluster,
                 paper=paper,
@@ -686,6 +836,13 @@ async def run_rdr(
                 try:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(content, encoding="utf-8")
+                    artifact_path = str(rel_path).replace("\\", "/")
+                    _emit("cluster_artifact_emitted", build_cluster_artifact_emitted(
+                        cluster_id=cluster.id,
+                        artifact_path=artifact_path,
+                        byte_size=len(content.encode("utf-8")),
+                        language=_artifact_language(artifact_path),
+                    ))
                 except (PermissionError, OSError) as exc:
                     logger.warning(
                         "rdr/controller: skipping %r (%s: %s)",
@@ -706,7 +863,13 @@ async def run_rdr(
         # Re-experiment (only if env is available)
         if env_id:
             try:
-                exp = await asyncio.to_thread(run_experiment, str(code_dir), env_id, ctx)
+                exp = await _call_primitive(
+                    ctx,
+                    "run_experiment",
+                    run_experiment,
+                    str(code_dir),
+                    env_id,
+                )
             except Exception as exc:  # noqa: BLE001 — fail-soft
                 logger.warning(
                     "run_rdr[%s]: repair run_experiment raised %s: %s",
@@ -714,16 +877,30 @@ async def run_rdr(
                 )
 
         # Re-score (off-loop, see Step 7 note).
+        degraded_run = _is_degraded_experiment(exp)
         try:
             scores = await asyncio.to_thread(
-                score_reproduction, rubric, ctx.project_dir, ctx.llm_client
+                score_reproduction,
+                rubric,
+                ctx.project_dir,
+                ctx.llm_client,
+                degraded=degraded_run,
             )
         except Exception as exc:  # noqa: BLE001 — fail-soft
             logger.warning(
                 "rdr/controller: score_reproduction raised %s: %s — defaulting to zero scores",
                 type(exc).__name__, exc,
             )
-            scores = dict(_ZERO_SCORES)
+            scores = _zero_scores(degraded=degraded_run)
+        if degraded_run:
+            scores["degraded"] = True
+        for cluster in clusters:
+            _emit("cluster_scored", build_cluster_scored(
+                cluster_id=cluster.id,
+                score=_cluster_score(cluster, scores),
+                leaf_scores=_leaf_scores_for_cluster(cluster, scores),
+                degraded=bool(scores.get("degraded", False)),
+            ))
         repair_iterations += 1
 
     # ------------------------------------------------------------------
@@ -750,6 +927,21 @@ async def run_rdr(
 
     # total_agent_dispatches counts the actual number of agent calls:
     # one per cluster on the initial pass + one per weak cluster per repair pass.
+    started_at: str | None = run_started_at
+    try:
+        status_path = ctx.project_dir / "demo_status.json"
+        if status_path.exists():
+            status_data = json.loads(status_path.read_text(encoding="utf-8"))
+            if isinstance(status_data, dict):
+                raw_started_at = status_data.get("startedAt") or status_data.get("started_at")
+                if isinstance(raw_started_at, str):
+                    started_at = raw_started_at
+    except Exception:  # noqa: BLE001 — metadata is best-effort
+        started_at = run_started_at
+
+    model_name = getattr(ctx, "model", None)
+    agent_model = getattr(ctx, "agent_model", None) or model_name
+    degraded = bool(scores.get("degraded", False))
     report = RLMFinalReport(
         paper=meta,
         verdict=verdict,
@@ -761,6 +953,16 @@ async def run_rdr(
         primitive_trace={},
         cost=cost_dict or {"llm_usd": 0.0, "primitives": 0.0},
         iterations=total_agent_dispatches,
+        degraded=degraded,
+        mode="rdr",
+        models={
+            "planner": model_name,
+            "executor": agent_model,
+            "verifier": None,
+            "grader": model_name,
+        },
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc).isoformat(),
     )
 
     json_path, _md_path = write_final_report_rlm(report, ctx.project_dir)

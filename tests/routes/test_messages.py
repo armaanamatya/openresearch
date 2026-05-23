@@ -90,6 +90,26 @@ def test_multiple_messages_accumulate(client, existing_run):
     assert len(lines) == 3
 
 
+def test_post_message_rejects_missing_demo_secret(monkeypatch, _isolate_settings, existing_run):
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
+    _reset_settings_cache()
+    from backend.app import create_app
+
+    client = TestClient(create_app())
+    r = client.post(
+        "/runs/prj_test/messages",
+        json={"role": "user", "content": "focus on methods"},
+    )
+    assert r.status_code == 401
+
+    ok = client.post(
+        "/runs/prj_test/messages",
+        json={"role": "user", "content": "focus on methods"},
+        headers={"X-Demo-Secret": "topsecret"},
+    )
+    assert ok.status_code == 202
+
+
 # ---------------------------------------------------------------------------
 # Validation: empty content → 400
 # ---------------------------------------------------------------------------
