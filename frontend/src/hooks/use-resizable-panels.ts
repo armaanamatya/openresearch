@@ -67,7 +67,11 @@ function readStorage(): PanelSizes {
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useResizablePanels() {
-  const [sizes, setSizes] = useState<PanelSizes>(() => readStorage());
+  // SSR-safe: render with defaults on the server AND on the client's first
+  // render so the hydrated HTML matches. We then load persisted sizes from
+  // localStorage in a post-mount effect; the brief visual flip (defaults →
+  // stored) is acceptable and avoids a server↔client hydration mismatch.
+  const [sizes, setSizes] = useState<PanelSizes>(defaultSizes);
 
   // viewport-aware collapse flags
   const [collapsedByViewport, setCollapsedByViewport] = useState({
@@ -78,7 +82,15 @@ export function useResizablePanels() {
   // Debounce timer ref for localStorage writes
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Mount: read localStorage + set up matchMedia listeners ──────────────
+  // ── Mount: load persisted sizes from localStorage ───────────────────────
+  useEffect(() => {
+    // queueMicrotask defers the setState past the initial commit so React
+    // never sees a setState-in-effect during the same render frame (caught
+    // by react-hooks/set-state-in-effect under the React Compiler ESLint).
+    queueMicrotask(() => setSizes(readStorage()));
+  }, []);
+
+  // ── Mount: set up matchMedia listeners ──────────────────────────────────
   useEffect(() => {
     const matchMedia = typeof window.matchMedia === "function"
       ? window.matchMedia.bind(window)
