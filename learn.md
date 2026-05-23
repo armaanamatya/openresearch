@@ -11,6 +11,105 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-22 — Claude Agent SDK aclose() deadlock wedged rdr cluster 23 for 900s
+
+**Symptom.** A live `--mode rdr` run on `sequential-neural-score-estimation`
+reproducibly hung at the 23rd of 27 work-clusters. The controller-level
+`_ClusterWatchdog` (`threading.Timer` watching for 900s of no progress) fired
+and `os._exit(124)`'d the process. Same wedge observed on
+`mechanistic-understanding`. Iteration checkpoints 0–22 saved cleanly; the
+SDK call at cluster 23 never returned.
+
+**Root cause.** Two compounding defects in `claude-agent-sdk` v0.1.80, captured
+in `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`:
+
+1. **Triple-nested async-generator shutdown race.** `query()` → `process_query()`
+   → `_process_query_inner()` are all tracked by asyncio's
+   `BaseEventLoop._asyncgen_firstiter_hook`. `asyncio.run()`'s
+   `shutdown_asyncgens()` runs `asyncio.gather(*[ag.aclose() ...])` —
+   concurrent. Closing `process_query` enters its `finally` and awaits
+   `inner.aclose()`, which sets `_process_query_inner.ag_running = True`;
+   the concurrent `aclose(_process_query_inner)` from the gather hits
+   `ag_running = True` and raises `RuntimeError: aclose(): asynchronous
+   generator is already running`. The cleanup chain stalls.
+2. **WSL2 futex hang on `transport.close()`.** After SIGKILLing the SDK's
+   Node.js subprocess, `transport.close()` does
+   `with suppress(Exception): await self._process.wait()` — *no timeout*.
+   On WSL2 (`Linux 6.6.114.1-microsoft-standard-WSL2`) SIGCHLD for the killed
+   subprocess can be lost/delayed by the WSL2 compat layer; `process.wait()`
+   parks indefinitely in `futex_wait_queue`. We confirmed live mech runs
+   wedged in `futex_wait_queue`.
+
+**Fix.** Two commits (`4ac89f7` + `33c787d`), Workaround B from the
+investigation doc.
+
+  - `_run_sdk_in_thread()` in `backend/agents/rdr/agent.py` wraps every SDK
+    call (`collect_agent_text(...)`) in a `concurrent.futures.ThreadPoolExecutor`
+    worker that runs the call inside its OWN `asyncio.run(asyncio.wait_for(...))`.
+    The worker thread's loop is isolated, so its `shutdown_asyncgens()` race
+    cannot block the controller's loop. (Defect 1 contained.)
+  - The wrapper uses explicit `try/finally` with `ex.shutdown(wait=False)`
+    instead of the `with ThreadPoolExecutor(...) as ex:` context manager —
+    because `__exit__` calls `shutdown(wait=True)` by default, which would
+    block the controller on a worker that's stuck in `transport.close()`'s
+    unbounded `process.wait()`. With `wait=False` the worker thread is
+    abandoned (the SDK's `_ACTIVE_CHILDREN` atexit hook SIGTERMs the
+    subprocess at process exit) but the controller continues. (Defect 2
+    contained.)
+  - `concurrent.futures.TimeoutError` is re-raised as builtin `TimeoutError`
+    so the existing fail-soft path in `reproduce()` treats it identically
+    to the prior `asyncio.wait_for` path.
+
+**Lesson.** When integrating an async SDK with **known cleanup races**, two
+invariants are non-negotiable: (a) isolate each SDK call in a worker thread
+with its OWN event loop so the SDK's `shutdown_asyncgens` cannot race against
+the controller's, and (b) make the wrapper able to abandon a stuck worker
+(`shutdown(wait=False)`), because the worker may still hit defects you don't
+control. The process-level watchdog is then a defense-in-depth net, not the
+primary mitigation. Resist the `with ThreadPoolExecutor(...) as ex:` form
+when the worker can be unkillable — `with` blocks on shutdown by default.
+
+**Guardrail.** `tests/rdr/test_agent_thread_isolation.py` — five tests:
+`test_thread_isolation_runs_sdk_in_separate_loop`,
+`test_thread_isolation_timeout`,
+`test_thread_isolation_propagates_exceptions`,
+`test_reproduce_uses_thread_isolation`, and especially
+`test_thread_isolation_unblocks_on_hung_worker` (the regression guard for
+the `with`-block bug — mocks `collect_agent_text` to
+`await asyncio.Event().wait()` and asserts the wrapper returns within
+~1.5s). Had we kept `with ThreadPoolExecutor(...) as ex:` this test would
+hang indefinitely.
+
+---
+
+## 2026-05-22 — pytest module-name collisions across sibling test dirs
+
+**Symptom.** `pytest tests/` (full suite) failed with `import file mismatch:
+imported module 'test_run' has this __file__ attribute:
+tests/rdr/test_run.py which is not the same as the test file we want to
+collect: tests/rlm/test_run.py`. `pytest tests/rdr/ -q` (subdir alone) passed;
+only the full collection broke.
+
+**Root cause.** Neither `tests/rdr/` nor `tests/rlm/` has `__init__.py`. Under
+pytest's default `prepend` import mode this is fine *until* two sibling test
+dirs share a basename — `tests/rdr/test_models.py` and
+`tests/rlm/test_models.py` both want to import as the module `test_models`,
+and pytest refuses to resolve the clash.
+
+**Fix.** Renamed the rdr files to `test_rdr_models.py` / `test_rdr_run.py`
+(via `git mv`) — unique basenames so the basename-import works. Matches the
+existing `test_rdr_offline_e2e.py` convention in the same directory.
+
+**Lesson.** When two test directories share the parent (no `__init__.py`),
+file basenames must be globally unique across them. Prefix test files in a
+new subpackage with the subpackage name (`test_rdr_<thing>.py`) — Python
+imports test modules by basename in this layout, so siblings collide.
+
+**Guardrail.** The naming convention is the guardrail. CI's full-suite run
+catches a regression immediately (`Interrupted: 2 errors during collection`).
+
+---
+
 ## 2026-05-22 — I3 root-prompt change backfired: a "read the paper" emphasis made the root loop on understanding
 
 **Symptom.** Run 3 (GoRL, arXiv) burned all 21 root iterations calling

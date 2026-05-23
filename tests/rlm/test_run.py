@@ -71,6 +71,59 @@ class TestBuildContext:
         ctx = _build_context({"entries": [], "rubric_spec": {"areas": ["a"]}})
         assert ctx["rubric_spec"] == {"areas": ["a"]}
 
+    # ---
+    # Regression: PaperBench bundle paper identity must flow into paper_metadata.
+    #
+    # The run that surfaced this bug (rlm_e2e_1779517795) produced
+    #   paper.id = "unknown", paper.title = "PaperBench paper markdown"
+    # because _build_context used entries[0]["title"] as the title and had no
+    # id field at all.  The root model copied context["paper_metadata"] directly
+    # into the final report, so both fields were wrong.  The fix: when the claim
+    # map carries a "paperbench" block, pull id+title from its metadata dict.
+    # ---
+
+    def test_paperbench_block_provides_real_paper_id_and_title(self):
+        """Bundle paper id + title from 'paperbench.metadata' override entry title."""
+        claim_map = {
+            "entries": [
+                {
+                    "source_id": "paper.md",
+                    "title": "PaperBench paper markdown",
+                    "excerpt": "text",
+                },
+            ],
+            "paperbench": {
+                "paper_id": "sequential-neural-score-estimation",
+                "metadata": {
+                    "id": "sequential-neural-score-estimation",
+                    "title": "Sequential Neural Score Estimation: Likelihood-Free "
+                             "Inference with Conditional Score Based Diffusion Models",
+                },
+            },
+        }
+        ctx = _build_context(claim_map)
+        meta = ctx["paper_metadata"]
+        assert meta["id"] == "sequential-neural-score-estimation"
+        assert meta["title"].startswith("Sequential Neural Score Estimation")
+        # The generic fallback title must NOT appear.
+        assert meta["title"] != "PaperBench paper markdown"
+
+    def test_paperbench_block_absent_falls_back_to_entry_title(self):
+        """Without a 'paperbench' block, title falls back to the first entry (legacy path)."""
+        claim_map = {
+            "entries": [
+                {"source_id": "s1", "title": "Abstract", "excerpt": "text"},
+            ],
+        }
+        ctx = _build_context(claim_map)
+        assert ctx["paper_metadata"]["title"] == "Abstract"
+        assert ctx["paper_metadata"]["id"] == ""
+
+    def test_id_key_always_present_in_paper_metadata(self):
+        """paper_metadata must always carry an 'id' key so the root can use it."""
+        ctx = _build_context({"entries": []})
+        assert "id" in ctx["paper_metadata"]
+
 
 # ---------------------------------------------------------------------------
 # _context_metadata
@@ -205,6 +258,36 @@ class TestBuildLlmClient:
     def test_client_exposes_complete(self):
         client, _ = _build_llm_client("anthropic", self._anthropic_root_model())
         assert hasattr(client, "complete")
+
+    def test_claude_oauth_root_builds_claude_client_even_when_openai_key_set(
+        self, monkeypatch
+    ):
+        """When the root model is claude-oauth (rlm_backend="anthropic-oauth"),
+        the primitive LLM client must be ClaudeLlmClient — never OpenAILlmClient —
+        regardless of OPENAI_API_KEY being set.  A stale/invalid OPENAI_API_KEY
+        must NOT cause plan_reproduction and rubric_gen to fail with 401.
+        """
+        from backend.agents.rlm.models import RootModel
+
+        oauth_root = RootModel(
+            key="claude-oauth",
+            rlm_backend="anthropic-oauth",
+            backend_kwargs={"model_name": "claude-sonnet-4-6"},
+            sub_backend="anthropic-oauth",
+            sub_backend_kwargs={"model_name": "claude-haiku-4-5-20251001"},
+            api_key_env=None,
+        )
+        # Simulate an env that has a (stale/invalid) OPENAI_API_KEY alongside OAuth.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-invalid-key-for-testing")
+        client, model = _build_llm_client(None, oauth_root)
+        assert client.__class__.__name__ == "ClaudeLlmClient", (
+            f"Expected ClaudeLlmClient for claude-oauth root with OPENAI_API_KEY set, "
+            f"got {client.__class__.__name__}"
+        )
+        # The linter-expanded implementation labels the OAuth path as "claude-oauth".
+        assert model in ("claude", "claude-oauth"), (
+            f"Expected 'claude' or 'claude-oauth' model label for OAuth path, got {model!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

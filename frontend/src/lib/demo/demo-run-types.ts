@@ -1,4 +1,4 @@
-export type DemoRunMode = "rlm";
+export type DemoRunMode = "rlm" | "rdr";
 
 export type DemoProvider = "anthropic" | "openai";
 

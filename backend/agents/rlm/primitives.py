@@ -749,6 +749,40 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     return _persist_experiment_result(ctx, result)
 
 
+def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
+    """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
+
+    Each top-level sub_task becomes one area entry:
+      {"name": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>}
+
+    This gives the root model named, scored areas it can include verbatim in
+    the final report instead of fabricating blank placeholders.  Fail-soft:
+    if the rubric has no sub_tasks (e.g. a flat generated rubric) the list
+    is empty and the caller continues normally.
+    """
+    from backend.evals.paperbench.leaf_scorer import roll_up
+
+    sub_tasks = [c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)]
+    if not sub_tasks:
+        return []
+
+    # Build a {leaf_id: score} map from the leaf_scores list for roll_up.
+    leaf_score_map: dict[str, float] = {
+        str(e["id"]): float(e.get("score", 0.0))
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
+    areas: list[dict] = []
+    for task in sub_tasks:
+        name = str(task.get("requirements") or "")[:120]
+        score = _clamp01(roll_up(task, leaf_score_map))
+        weight = task.get("weight")
+        areas.append({"name": name, "score": score, "weight": weight})
+    return areas
+
+
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
     """Score the run against `rubric` using the authoritative PaperBench leaf scorer.
 
@@ -760,6 +794,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     Returns:
         overall_score (float), meets_target (bool), target_score (float),
         leaf_count (int), graded (int), rubric_source (str),
+        areas (list of {name, score, weight} per top-level sub_task),
         weak_leaves (list of up to 8 lowest-scoring leaf dicts), leaf_scores (list).
 
     Fail-soft (A2-H3 / D3 pattern): any exception returns an error dict.
@@ -827,6 +862,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "graded": scored.get("graded", 0),
             "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
             "degraded": degraded,
+            "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
                  "justification": e.get("justification", "")}
@@ -982,8 +1018,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "score the run against a PaperBench tree rubric using the authoritative "
         "leaf scorer (flatten→LLM-grade→weighted-rollup). Returns: overall_score "
         "(float), meets_target (bool), target_score (float), leaf_count (int), "
-        "graded (int), rubric_source (str), weak_leaves (up to 8 lowest-scoring "
-        "leaf dicts), leaf_scores (all leaf scores).",
+        "graded (int), rubric_source (str), areas (list of {name, score, weight} "
+        "per top-level rubric sub_task — use these directly in the final report's "
+        "rubric.areas field), weak_leaves (up to 8 lowest-scoring leaf dicts), "
+        "leaf_scores (all leaf scores).",
     "propose_improvements": "propose_improvements(current_results, rubric_scores, "
         "k=None) -> list[dict] — paper-specific improvement hypotheses. Each "
         "hypothesis includes a `title` field (short name for the candidate node).",

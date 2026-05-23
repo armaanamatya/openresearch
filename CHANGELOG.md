@@ -9,6 +9,39 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added
+- **`rdr` — rubric-driven paper-reproduction harness (`--mode rdr`).**
+  A deterministic Python controller (`backend/agents/rdr/`) decomposes the
+  official PaperBench rubric into agent-sized work-clusters and dispatches
+  one scoped Claude coding agent per cluster, each with a precisely-engineered
+  context window (verbatim leaf requirements + cited paper excerpts +
+  dependency artifacts + repair feedback). The cluster outputs are assembled
+  into a shared project, run through `run_experiment`, scored against the
+  exact rubric by the existing leaf scorer, and weak clusters are re-attacked
+  in a capped repair loop fed the scorer's own justifications. **No LLM in
+  the control flow** — the wander/loop failure mode of the free-form RLM root
+  is structurally impossible.
+  - New package `backend/agents/rdr/` (`models`, `decomposer`,
+    `context_engineer`, `agent`, `controller`, `run`); new CLI mode
+    `reproduce --mode rdr <paper_id>`; new launcher
+    `scripts/rdr_paperbench.py` (parallel to `scripts/rlm_paperbench.py`).
+  - Provider/model is fully dynamic — the agent reuses the repo's
+    `collect_agent_text` (the same SDK path `run_with_sdk` uses) and inherits
+    the runtime resolution, so the same harness runs on Claude OAuth (Sonnet)
+    locally OR Azure OpenAI without code changes.
+  - Bounded everywhere: agent calls go through `asyncio.wait_for(timeout_s)`
+    against `ctx.remaining_s()`; per-cluster fail-soft; deterministic
+    termination — the controller assembles the report from structured
+    artifacts, never an LLM "final answer."
+  - All four #62 DC#4 artifacts: `final_report.{json,md}`,
+    `iterations/cluster_*.json` per cluster, `repl_state.pickle`
+    (corpus-redacted — file counts / notes only, never raw paper text).
+    Verdict reconciled against the leaf score via the existing
+    `reconcile_verdict_with_score`.
+  - 112 rdr tests (decomposer, context engineer, agent contract, controller
+    flow + repair + fail-soft, run.py bundle resolution, full offline e2e on
+    the real `sequential-neural-score-estimation` bundle). Full suite green:
+    1362 passed, 3 skipped.
+  - Design spec: `docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`.
 - **RLM Phase 4 — RLM lab frontend (feat/rlm-phase4-frontend, #61).** Ships the
   RLM lab UI: a live, branching **exploration-tree canvas** (the centerpiece) wrapped
   in a lab-notebook shell — rich header (paper metadata, project id, status pill,
@@ -490,6 +523,13 @@ version + date and start a new `[Unreleased]` block above it.
   kwargs (`workspace_service`, `workspace_id`).
 
 ### Fixed
+- **`rdr` — production-hardened against the Claude SDK `aclose()` deadlock + 6 Codex-surfaced bugs from the first live e2e runs.** The first live runs of `--mode rdr` on `sequential-neural-score-estimation` and `mechanistic-understanding` surfaced one wedge and six smaller bugs. Six commits on top of the harness (`ee51f02`) brought the path to live-stable:
+  - **`5b53a10` + `3e95752` — Snapshot exclusion + defensive merge writes.** `_snapshot_code_dir()` walked the entire code dir including `hf_cache`, `.locks`, `wandb`, etc. — restricted-perm lock files written inside the experiment container caused `PermissionError` on the repair-pass rewrite. Added `_EXCLUDE_DIRS` frozenset + hidden-component skip + `try/except OSError` on the snapshot read; also removed a stale `tsnpe_neurips` submodule reference exposed by the cleanup.
+  - **`96b0b63` — Scorer + env primitives off the event loop.** `score_reproduction()` internally calls `ClaudeLlmClient.complete()` which calls `asyncio.run(...)`. Invoking it from inside the controller's already-running loop raised `RuntimeError: asyncio.run() cannot be called from a running event loop`. Wrapped via `await asyncio.to_thread(score_reproduction, ...)` at both call sites; same treatment applied to `detect_environment`, `build_environment`, and `run_experiment`.
+  - **`3a73903` — Controller watchdog + agent CWD guard.** `_ClusterWatchdog` (`threading.Timer` per cluster) ceilings each cluster at 900s of no progress, writing an emergency `final_report.json` + SSE `watchdog_killed` event before `os._exit(124)`. CWD guard: `_snapshot_repo_root_entries()` before and after each cluster — if the agent escaped its `code_dir` via `git clone <stuff>` etc., the new entries are detected and `shutil.rmtree`-cleaned (caught the agent leaking a `tsnpe_neurips` repo at repo root). Later, the `os.chdir(code_dir)` was removed entirely in favor of the SDK's `ClaudeAgentOptions(cwd=code_dir)` (process-global `chdir` is unsafe under concurrency).
+  - **`c928fb7` — Codex adversarial review sweep (2 CRITICAL + 4 IMPORTANT).** CRITICAL: scorer exception propagation (no `try/except` — a leaf-scorer crash crashed the whole run), path traversal in merge-write (`Artifacts.files` paths weren't `is_relative_to`-validated before write). IMPORTANT: event-loop blocking primitives, `os.chdir` process-global, watchdog missing emergency report, CLI args unregistered. All addressed.
+  - **`06d0087` — Retry-on-watchdog + `dashboard_event` SSE emission.** `scripts/rdr_paperbench_retry.sh` wraps `rdr_paperbench.py` and re-invokes with `--resume` when the exit code is 124 (watchdog kill), up to `RDR_MAX_RETRIES` (default 3). Resume hydrates `done` from `iterations/cluster_*.json` checkpoints so completed clusters are not re-executed. New `DashboardEmitter.emit(event_type, payload)` generic method + 11 lifecycle events emitted by the controller — UI parity with `--mode rlm`.
+  - **`4ac89f7` + **`33c787d`** — SDK thread isolation (Workaround B + non-blocking executor).** The wedge at cluster 23 was root-caused (see `learn.md` 2026-05-22, `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`) to two compounding defects in `claude-agent-sdk` v0.1.80: (1) `asyncio.shutdown_asyncgens()` concurrently closing three nested async generators raises `RuntimeError: aclose(): asynchronous generator is already running`; (2) `transport.close()` does unbounded `await process.wait()` after SIGKILL which hangs in `futex_wait_queue` on WSL2 when SIGCHLD is lost. Workaround B: `_run_sdk_in_thread()` in `backend/agents/rdr/agent.py` wraps each `collect_agent_text(...)` call in a `concurrent.futures.ThreadPoolExecutor(max_workers=1)` worker that runs the call inside its own `asyncio.run(asyncio.wait_for(...))`, so the SDK's shutdown race is loop-isolated. The wrapper uses explicit `try/finally` + `ex.shutdown(wait=False)` instead of `with ThreadPoolExecutor(...) as ex:` — `__exit__` would call `shutdown(wait=True)`, blocking the controller on a hung worker. `concurrent.futures.TimeoutError` is re-raised as builtin `TimeoutError` so the existing fail-soft path in `reproduce()` is unchanged. The process-level watchdog remains a defense-in-depth net. Five new tests (`tests/rdr/test_agent_thread_isolation.py`), full suite: 1416 passed, 3 skipped.
 - **Workspace `paper_text` now equals the parser's full text (I4).** It was
   reassembled from indexed chunks — lossy, and degraded or empty for some
   papers. `build_workspace` now loads `paper_text` from the parser's full-text

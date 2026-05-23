@@ -253,6 +253,23 @@ class DashboardEmitter:
             "summary": summary,
         })
 
+    def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Generic event emitter for rdr lifecycle events.
+
+        Appends a ``dashboard_event``-shaped JSONL line so the SSE stream can
+        forward arbitrary typed events to the frontend without coupling the rdr
+        controller to the specific structured methods above.
+
+        ``payload`` must NOT contain raw paper corpus text or full file contents
+        (corpus-leak invariant). Pass counts, IDs, and scores only.
+        """
+        self._emit({
+            "event": "dashboard_event",
+            "timestamp": _now(),
+            "event_type": event_type,
+            "payload": payload,
+        })
+
     def hermes_check_updated(
         self,
         title: str,

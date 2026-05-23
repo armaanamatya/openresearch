@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-# Valid ClientBackend literals from rlm/core/types.py.
+# Valid ClientBackend literals from rlm/core/types.py plus our custom extension.
 _VALID_RLM_BACKENDS = frozenset(
     {
         "openai",
@@ -26,6 +26,7 @@ _VALID_RLM_BACKENDS = frozenset(
         "vllm",
         "litellm",
         "anthropic",
+        "anthropic-oauth",
         "azure_openai",
         "gemini",
     }
@@ -112,8 +113,14 @@ class TestLayeredDefault:
 
     def test_default_without_openai_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # qwen3-coder default needs it (A1-H1)
+        # Patch OAuth so this test is deterministic regardless of local claude login.
+        monkeypatch.setattr(
+            "backend.agents.runtime.factory.has_provider_credentials",
+            lambda provider=None: False,
+        )
         mod = _reload_models()
         result = mod.resolve_root_model(None)
         assert result.key == "qwen3-coder"
@@ -161,7 +168,7 @@ class TestRegistryContract:
     def test_all_registry_entries_present(self):
         from backend.agents.rlm.models import ROOT_MODELS
 
-        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "qwen3-coder-featherless"}
+        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "claude-oauth", "qwen3-coder-featherless"}
 
     def test_all_backends_are_valid_rlm_literals(self):
         from backend.agents.rlm.models import ROOT_MODELS

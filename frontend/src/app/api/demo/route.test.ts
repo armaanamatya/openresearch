@@ -87,6 +87,8 @@ describe("/api/demo backend proxy", () => {
         headers: expect.objectContaining({ "content-type": "application/json" }),
         body: JSON.stringify({
           mode: "rlm",
+          provider: "anthropic",
+          verificationProvider: undefined,
           executionMode: "max",
           sandbox: "docker",
           gpuMode: "prefer",

@@ -1,0 +1,457 @@
+"""Phase-3 Reproduction Agent — runs one scoped Claude coding agent per WorkCluster.
+
+Public API::
+
+    from backend.agents.rdr.agent import reproduce
+    artifacts = await reproduce(agent_context, ctx=run_ctx)
+
+See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
+
+**v1 tool surface — design §4.4 deferred to v2.**  v1 reuses the
+``baseline-implementation`` SDK agent (tools: Read / Write / Edit / Bash).
+The design's "9 primitives as SDK tools" plus a custom ``paper_search`` tool
+are deferred to v2.  The escape hatch for v1 is the agent's Bash access to
+``../paper_full.md`` (relative to the code working directory), which covers
+the paper-lookup use-case without a dedicated tool.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import shutil
+import traceback
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from backend.agents.rdr.models import AgentContext, Artifacts
+
+if TYPE_CHECKING:
+    from backend.agents.rlm.context import RunContext
+
+logger = logging.getLogger(__name__)
+
+# Maximum byte size for a single file snapshot in Artifacts.files.
+_MAX_FILE_BYTES = 100 * 1024  # 100 KB
+
+# Hard cap for the agent when no deadline is set (90 minutes).
+_DEFAULT_AGENT_TIMEOUT_S = 5_400.0
+
+# Directories whose contents are ephemeral / build / cache. Snapshotting them
+# back into Artifacts.files causes a downstream PermissionError when the
+# repair loop tries to rewrite e.g. HuggingFace cache lock files created
+# inside the experiment container with restricted perms. Also skip pyc /
+# binary suffixes and any path component starting with "." (hidden / cache).
+_EXCLUDE_DIRS = frozenset({
+    "__pycache__", ".git", "hf_cache", ".cache", ".locks",
+    "node_modules", ".venv", "venv", "outputs", "sbi-logs",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "build",
+    ".huggingface", "wandb", "mlruns",
+})
+_EXCLUDE_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".so", ".o", ".lock", ".dylib", ".dll",
+})
+
+# ---------------------------------------------------------------------------
+# Repo-root CWD guard
+# ---------------------------------------------------------------------------
+
+# Repo root, resolved once at import time so the guard is cheap to invoke.
+# agent.py is at backend/agents/rdr/agent.py → parents[3] is the repo root.
+_REPO_ROOT: Path | None = Path(__file__).resolve().parents[3]
+if not (_REPO_ROOT / "backend").is_dir():
+    # Defensive: if the layout changed, disable the guard rather than rmtree the wrong place.
+    _REPO_ROOT = None  # type: ignore[assignment]
+
+
+def _snapshot_repo_root_entries() -> set[str]:
+    """Names of top-level entries at the repo root, excluding dotfiles."""
+    if _REPO_ROOT is None:
+        return set()
+    try:
+        return {p.name for p in _REPO_ROOT.iterdir() if not p.name.startswith(".")}
+    except OSError:
+        return set()
+
+
+def _cleanup_repo_root_escape(before: set[str], cluster_id: str) -> None:
+    """Detect + remove any top-level entries that appeared during a cluster."""
+    if _REPO_ROOT is None:
+        return
+    after = _snapshot_repo_root_entries()
+    new = after - before
+    if not new:
+        return
+    logger.warning(
+        "rdr/agent: cluster %r escaped its working dir — created %s at repo root; removing",
+        cluster_id, sorted(new),
+    )
+    for name in sorted(new):
+        path = _REPO_ROOT / name
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists() or path.is_symlink():
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("rdr/agent: cleanup of %r failed: %s", str(path), exc)
+
+
+# ---------------------------------------------------------------------------
+# SDK call thread-isolation (Workaround B from
+# docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md)
+# ---------------------------------------------------------------------------
+#
+# The Claude Agent SDK has a known deadlock: its triple-nested async generators
+# race with asyncio.shutdown_asyncgens(), and its transport.close() does an
+# unbounded `await self._process.wait()` after SIGKILL which hangs in
+# futex_wait_queue on WSL2 when SIGCHLD is delayed.
+#
+# We mitigate by running each SDK call in a worker thread with its OWN event
+# loop. Any aclose race or futex hang stays trapped in the worker — the main
+# controller loop continues to make progress and is bounded by
+# future.result(timeout=...).
+
+# Slack added on top of timeout_s for thread teardown / subprocess kill.
+_THREAD_TEARDOWN_SLACK_S = 30.0
+
+
+def _run_sdk_in_thread(
+    prompt: str,
+    code_dir: Path,
+    model: str | None,
+    provider: str | None,
+    runtime,
+    max_turns: int | None,
+    timeout_s: float,
+) -> str:
+    """Run `collect_agent_text(...)` in an isolated worker thread.
+
+    The worker thread starts its own asyncio event loop via `asyncio.run(...)`,
+    so the SDK's nested-generator aclose race and any `transport.close()`
+    futex hang are contained inside that thread and do not deadlock the
+    main controller loop.
+
+    Runtime is loop-safe — passed through: both ClaudeAgentRuntime and
+    OpenAiAgentRuntime are stateless plain objects (no cached httpx client,
+    no stored event-loop references). The SDK's async generators that are
+    actually loop-bound are created fresh inside asyncio.run() in the worker
+    thread, so they are bound to the worker's own loop, not the caller's.
+
+    Returns the agent's collected text, or raises `TimeoutError`
+    (for parity with `asyncio.wait_for`) if the worker exceeds
+    `timeout_s + _THREAD_TEARDOWN_SLACK_S`.
+    """
+    import concurrent.futures
+
+    # Import inside the function to avoid module-load-time circular issues.
+    from backend.agents.runtime.invoke import collect_agent_text
+
+    def _worker() -> str:
+        return asyncio.run(asyncio.wait_for(
+            collect_agent_text(
+                "baseline-implementation",
+                prompt,
+                project_dir=code_dir,
+                model=model,
+                provider=provider,
+                runtime=runtime,
+                max_turns=max_turns,
+            ),
+            timeout=timeout_s,
+        ))
+
+    # NOTE: deliberately NOT using `with ThreadPoolExecutor(...) as ex` because
+    # the default `__exit__` calls `shutdown(wait=True)` which would block on a
+    # hung worker (defeating the isolation: if Defect 2 — WSL2 futex hang in
+    # `transport.close()` — fires, the worker never returns). Instead we
+    # `shutdown(wait=False)` in `finally` so an abandoned worker is left to
+    # GC / process-exit while the controller continues.
+    ex = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="rdr-sdk-worker"
+    )
+    try:
+        future = ex.submit(_worker)
+        try:
+            return future.result(timeout=timeout_s + _THREAD_TEARDOWN_SLACK_S)
+        except concurrent.futures.TimeoutError as exc:
+            # Re-raise as asyncio.TimeoutError so the outer fail-soft path
+            # in `reproduce()` treats it the same as the prior `asyncio.wait_for` path.
+            raise TimeoutError(
+                f"rdr SDK worker thread exceeded {timeout_s + _THREAD_TEARDOWN_SLACK_S:.0f}s "
+                f"(SDK aclose deadlock workaround)"
+            ) from exc
+    finally:
+        # `wait=False`: do NOT block on a hung worker. The worker thread may
+        # leak briefly (until the underlying SDK subprocess is killed via the
+        # SDK's atexit hook in subprocess_cli.py:_ACTIVE_CHILDREN) but the
+        # controller continues and the watchdog stays bounded.
+        ex.shutdown(wait=False)
+
+
+def _render_prompt(agent_context: AgentContext, code_dir: Path) -> str:
+    """Build the full reproduction prompt from an AgentContext.
+
+    The prompt is the agent's entire task specification:
+      - the gradable leaf contract (what the scorer will judge)
+      - cited paper excerpts
+      - dependency artifacts already on disk
+      - optional repair feedback
+      - working summary of prior clusters
+    """
+    ac = agent_context
+    cluster = ac.cluster
+    parts: list[str] = []
+
+    parts.append(
+        f"# Reproduction Task: {cluster.title}\n\n"
+        "You are a scientific reproduction coding agent. Your job is to write "
+        "**real, runnable reproduction code** for the following research cluster.\n\n"
+        "You will be judged by an automated reproducibility scorer against the exact "
+        "requirements below — satisfy every one of them.\n"
+    )
+
+    # Leaf contract
+    parts.append("## Gradable Requirements (leaf contract)\n")
+    parts.append(ac.leaf_contract)
+    parts.append("")
+
+    # Paper sections
+    if ac.paper_sections:
+        parts.append("## Relevant Paper Excerpts\n")
+        for cs in ac.paper_sections:
+            heading = cs.heading or cs.citation
+            parts.append(f"### {heading}\n")
+            parts.append(cs.text)
+            parts.append("")
+        parts.append(
+            "_If the excerpts above are insufficient, the full paper is available at "
+            "`../paper_full.md` — read or grep it as needed._\n"
+        )
+
+    # Dependency artifacts
+    if ac.dependency_artifacts:
+        parts.append("## Existing Files from Prior Clusters\n")
+        parts.append(
+            "The following files already exist in the working directory. "
+            "Build on them — **do not rewrite or delete them**.\n"
+        )
+        for path, content in ac.dependency_artifacts.items():
+            parts.append(f"**`{path}`**")
+            parts.append("```")
+            parts.append(content)
+            parts.append("```")
+            parts.append("")
+
+    # Working summary
+    if ac.working_summary:
+        parts.append("## Project Structure So Far\n")
+        parts.append(ac.working_summary)
+        parts.append("")
+
+    # Prior feedback (repair pass)
+    if ac.prior_feedback is not None:
+        parts.append("## Repair Instructions\n")
+        parts.append(
+            "This is a **repair pass**. The following weaknesses were identified "
+            "by the leaf scorer in the previous attempt. Fix them:\n"
+        )
+        parts.append(ac.prior_feedback)
+        parts.append("")
+
+    # Output contract
+    parts.append("## Output Contract\n")
+    parts.append(
+        f"Write all files into the working directory (`{code_dir}`).\n\n"
+        "You MUST:\n"
+        "1. Write or update `commands.json` — a JSON array of shell command strings "
+        "   that, when run in order, fully execute this cluster's experiment.\n"
+        "2. Ensure that running those commands produces `metrics.json` in the code "
+        "   root — a flat JSON object mapping metric name to numeric value.\n"
+        "3. Satisfy every leaf requirement listed in the Gradable Requirements section.\n"
+    )
+
+    return "\n".join(parts)
+
+
+def _snapshot_code_dir(code_dir: Path) -> dict[str, str]:
+    """Snapshot all text files under *code_dir*, skipping binary / oversized files.
+
+    Returns a dict of ``{repo_relative_path: content}`` for all readable text
+    files up to ``_MAX_FILE_BYTES`` bytes each.
+    """
+    result: dict[str, str] = {}
+    if not code_dir.is_dir():
+        return result
+
+    for path in sorted(code_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        # Skip ephemeral / build / cache files — see _EXCLUDE_DIRS for why
+        # (esp. HuggingFace cache lock files written by the experiment
+        # container).  Skips any path with a hidden component (".foo").
+        rel_parts = path.relative_to(code_dir).parts
+        if any(
+            p in _EXCLUDE_DIRS or (p.startswith(".") and len(p) > 1)
+            for p in rel_parts
+        ):
+            continue
+        if path.suffix.lower() in _EXCLUDE_SUFFIXES:
+            continue
+        # Skip files that are too large.
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > _MAX_FILE_BYTES:
+            logger.debug("rdr/agent: skipping large file %s (%d bytes)", path, size)
+            continue
+        # Try to read as UTF-8 text; skip binary files.
+        try:
+            content = path.read_text(encoding="utf-8", errors="strict")
+        except (UnicodeDecodeError, OSError):
+            logger.debug("rdr/agent: skipping non-text file %s", path)
+            continue
+        rel = str(path.relative_to(code_dir))
+        result[rel] = content
+
+    return result
+
+
+def _parse_commands_json(code_dir: Path) -> list[str]:
+    """Parse ``commands.json`` written by the agent; return [] on any failure."""
+    commands_path = code_dir / "commands.json"
+    if not commands_path.exists():
+        return []
+    try:
+        data = json.loads(commands_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(cmd) for cmd in data]
+        logger.warning("rdr/agent: commands.json is not a list, ignoring")
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("rdr/agent: could not parse commands.json: %s", exc)
+    return []
+
+
+async def reproduce(agent_context: AgentContext, *, ctx: "RunContext") -> Artifacts:
+    """Run one scoped Claude coding agent to reproduce one rubric cluster's work.
+
+    Writes real code into ``ctx.project_dir / "code"`` (shared across all
+    clusters for a run), collects the resulting file snapshot and parsed
+    ``commands.json``, and returns an ``Artifacts``.
+
+    Fail-soft: any exception is caught and returned as ``Artifacts(failed=True)``.
+    """
+    cluster_id = agent_context.cluster.id
+
+    try:
+        return await _reproduce_inner(agent_context, ctx=ctx)
+    except Exception as exc:  # noqa: BLE001
+        error_msg = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "rdr/agent: cluster %r failed — %s\n%s",
+            cluster_id,
+            error_msg,
+            traceback.format_exc(),
+        )
+        return Artifacts(
+            cluster_id=cluster_id,
+            files={},
+            commands=[],
+            notes="",
+            failed=True,
+            error=error_msg,
+        )
+
+
+async def _reproduce_inner(
+    agent_context: AgentContext,
+    *,
+    ctx: "RunContext",
+) -> Artifacts:
+    """Inner (non-fail-soft) implementation; callers must wrap in try/except."""
+    cluster_id = agent_context.cluster.id
+
+    # 1. Ensure the shared code directory exists.
+    code_dir: Path = ctx.project_dir / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Render the agent prompt.
+    prompt = _render_prompt(agent_context, code_dir)
+
+    # 3. Resolve provider, model, and runtime dynamically from ctx.
+    #    agent_model takes precedence over model (same pattern as run_with_sdk).
+    model: str | None = ctx.agent_model or ctx.model or None
+    provider: str | None = ctx.provider or None
+    runtime = ctx.runtime  # may be None → make_runtime(provider) inside collect_agent_text
+
+    # 4. Deadline: bound the agent by the run's remaining wall-clock budget.
+    remaining = ctx.remaining_s()
+    timeout_s: float = (
+        min(_DEFAULT_AGENT_TIMEOUT_S, remaining)
+        if remaining is not None
+        else _DEFAULT_AGENT_TIMEOUT_S
+    )
+    # max_turns limits runaway turns; None relies on the provider's own caps.
+    # The wall-clock bound is enforced below via asyncio.wait_for(timeout_s).
+    max_turns: int | None = None
+
+    logger.info(
+        "rdr/agent: running cluster %r  provider=%s model=%s timeout_s=%.0f",
+        cluster_id,
+        provider,
+        model,
+        timeout_s,
+    )
+
+    # 5. Run the SDK coding agent (same infrastructure as run_with_sdk),
+    #    bounded by the run's remaining wall-clock budget.
+    #
+    #    CWD note: os.chdir was removed (it modifies process-global CWD and is
+    #    unsafe under concurrency).  The SDK already receives cwd=code_dir via
+    #    ClaudeAgentOptions(cwd=...) through collect_agent_text's project_dir kwarg
+    #    → to_runtime_spec(working_directory=project_dir) → ClaudeAgentOptions(cwd=str(...)).
+    #    _cleanup_repo_root_escape remains as the after-the-fact safety net.
+    root_before = _snapshot_repo_root_entries()
+    try:
+        # Workaround B: thread-isolate the SDK call so its aclose race / WSL2
+        # SIGCHLD hang cannot deadlock our controller. See
+        # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+        agent_text = await asyncio.to_thread(
+            _run_sdk_in_thread,
+            prompt,
+            code_dir,
+            model,
+            provider,
+            runtime,
+            max_turns,
+            timeout_s,
+        )
+    finally:
+        _cleanup_repo_root_escape(root_before, cluster_id)
+
+    # 6. Snapshot files written by the agent.
+    files = _snapshot_code_dir(code_dir)
+
+    # 7. Parse commands.json.
+    commands = _parse_commands_json(code_dir)
+
+    logger.info(
+        "rdr/agent: cluster %r done — %d files, %d commands",
+        cluster_id,
+        len(files),
+        len(commands),
+    )
+
+    return Artifacts(
+        cluster_id=cluster_id,
+        files=files,
+        commands=commands,
+        notes=agent_text.strip(),
+        failed=False,
+        error="",
+    )
+
+
+__all__ = ["reproduce"]

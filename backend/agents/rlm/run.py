@@ -63,6 +63,11 @@ from backend.agents.rlm.sse_bridge import (
 from backend.agents.rlm.stub_primitives import build_stub_custom_tools
 from backend.agents.rlm.system_prompt import build_system_prompt
 
+# Register the anthropic-oauth backend with rlm.clients.get_client — must run
+# before RLM(backend="anthropic-oauth", ...) is constructed below.
+from backend.agents.rlm._oauth_backend_patch import apply_oauth_backend_patch
+apply_oauth_backend_patch()
+
 logger = logging.getLogger(__name__)
 
 # --- Tuning constants ------------------------------------------------------
@@ -114,22 +119,47 @@ class RLMRunResult:
 def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any, str]:
     """Build the ``LlmClient`` for ``RunContext.llm_client`` and its model label.
 
-    Intentionally diverges from ``orchestrator._build_rlm_llm_client``: when the
-    root model runs on a custom OpenAI-compatible endpoint (e.g. Featherless), the
-    primitive client mirrors that endpoint so all LLM calls share the same host and
-    key rather than falling back to the standard OpenAI or Anthropic paths.
+    Primitives (build_environment, plan_reproduction, implement_baseline, etc.)
+    AND rubric-generation share this one client, so the choice must follow the
+    selected root model. Dispatch order:
 
-    Otherwise: ``openai`` provider → ``OpenAILlmClient``, else → ``ClaudeLlmClient``.
+      1. ``root_model.rlm_backend == "anthropic-oauth"``  → ``ClaudeLlmClient``
+         (OAuth-capable; no API key required — auth resolved by ``claude-agent-sdk``).
+      2. ``root_model.rlm_backend == "openai"`` AND a custom ``base_url`` is set
+         (e.g. Featherless) → ``OpenAILlmClient(model, api_key, base_url)`` mirroring
+         the root endpoint.
+      3. ``root_model.rlm_backend == "openrouter"`` → ``OpenAILlmClient(model, api_key,
+         base_url="https://openrouter.ai/api/v1")`` using ``OPENROUTER_API_KEY``.
+      4. ``root_model.rlm_backend == "anthropic"`` (raw HTTP, paid API key) →
+         ``ClaudeLlmClient`` (uses ANTHROPIC_API_KEY via the SDK auth resolution).
+      5. ``root_model.rlm_backend == "openai"`` (plain OpenAI) → ``OpenAILlmClient``
+         using ``OPENAI_API_KEY``.
+      6. Last resort — explicit ``provider`` arg wins over a guessed fallback:
+         ``provider == "openai"`` → ``OpenAILlmClient``; else → ``ClaudeLlmClient``.
+
+    Rationale: the previous implementation hard-coded "OpenAI when OPENAI_API_KEY is
+    set" — but a stale/invalid OPENAI_API_KEY (common in shared dev envs) silently
+    routed every primitive to OpenAI even when the user explicitly selected
+    claude-oauth. Dispatching on ``root_model.rlm_backend`` first respects the
+    user's intent.
 
     The ``LlmClient`` protocol is ``.complete(*, system, user) -> str`` — it
-    returns no token usage.  Primitive-internal LLM cost is therefore not
-    captured here; the dominant root + sub-call cost comes from ``rlm``'s
-    ``usage_summary`` (see ``report._cost_dict``).  Real per-primitive usage
-    needs the ``LlmClient`` protocol to carry usage — deferred.
+    returns no token usage; primitive-internal LLM cost is therefore not captured
+    here (the dominant cost is the root + sub-call accounted for in
+    ``report._cost_dict`` via ``rlm``'s ``usage_summary``). Real per-primitive
+    usage needs the ``LlmClient`` protocol to carry usage — deferred.
     """
-    # Custom OpenAI-compatible endpoint (e.g. Featherless): mirror it for primitives.
+    backend = root_model.rlm_backend
     bk = root_model.backend_kwargs
-    if root_model.rlm_backend == "openai" and bk.get("base_url"):
+    sub_bk = root_model.sub_backend_kwargs
+
+    # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
+    if backend == "anthropic-oauth":
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+        return ClaudeLlmClient(), "claude-oauth"
+
+    # 2. OpenAI-compatible custom endpoint (Featherless, vLLM-via-OpenAI, etc.)
+    if backend == "openai" and bk.get("base_url"):
         if not bk.get("api_key"):
             raise ValueError(
                 f"Root model {root_model.key!r} uses a custom base_url but its "
@@ -137,19 +167,39 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
                 f"from resolve_root_model()."
             )
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
+        model = sub_bk.get("model_name") or bk.get("model_name", "")
+        return OpenAILlmClient(model=model, api_key=bk["api_key"], base_url=bk["base_url"]), model
 
-        model = root_model.sub_backend_kwargs.get("model_name") or bk.get("model_name", "")
-        return OpenAILlmClient(model=model, api_key=bk.get("api_key"), base_url=bk["base_url"]), model
-
-    use_openai = (provider or "").lower() == "openai" or (
-        provider is None and bool(os.environ.get("OPENAI_API_KEY"))
-    )
-    if use_openai:
+    # 3. OpenRouter — also OpenAI-compatible; api_key from backend_kwargs (injected by resolve_root_model)
+    if backend == "openrouter":
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
+        api_key = bk.get("api_key")
+        if not api_key:
+            raise ValueError(
+                f"Root model {root_model.key!r} uses backend 'openrouter' but its "
+                f"api_key was not resolved — _build_llm_client requires a RootModel "
+                f"from resolve_root_model()."
+            )
+        model = sub_bk.get("model_name") or bk.get("model_name", "")
+        return OpenAILlmClient(model=model, api_key=api_key, base_url="https://openrouter.ai/api/v1"), model
 
+    # 4. Anthropic raw HTTP — uses ANTHROPIC_API_KEY through claude-agent-sdk's resolution
+    if backend == "anthropic":
+        from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+        return ClaudeLlmClient(), "claude"
+
+    # 5. Plain OpenAI
+    if backend == "openai":
+        from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
+        return OpenAILlmClient(), "gpt-4o-mini"
+
+    # 6. Unknown backend — respect explicit `provider` arg, else default to Claude.
+    #    Removed the old "OPENAI_API_KEY env → assume OpenAI" heuristic; it
+    #    misrouted claude-oauth runs when a stale key was in env.
+    if (provider or "").lower() == "openai":
+        from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         return OpenAILlmClient(), "gpt-4o-mini"
     from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-
     return ClaudeLlmClient(), "claude"
 
 
@@ -248,8 +298,8 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
         return build_stub_custom_tools(ctx), "stub (binding.py absent)"
     except Exception as exc:  # noqa: BLE001 — degrade loudly, don't crash the run
         logger.warning(
-            "run_pipeline_rlm: build_custom_tools is present but raised "
-            "(%s: %s) — falling back to stub primitives for this run.",
+            "run_pipeline_rlm: build_custom_tools raised (%s: %s) — "
+            "primitive layer incomplete; falling back to stub primitives.",
             type(exc).__name__,
             exc,
         )
@@ -266,6 +316,12 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
     ``workspace_claim_map`` shape (see ``pipeline._write_workspace_claim_map``):
     ``{"project_id": str, "entries": [{"source_id", "title", "excerpt"}, ...]}``.
 
+    For PaperBench bundle runs the map also carries a ``"paperbench"`` sub-dict
+    with ``{"paper_id": ..., "metadata": {"id": ..., "title": ...}, ...}``.
+    When present, ``paper_metadata.id`` and ``paper_metadata.title`` are sourced
+    from the bundle's real metadata rather than the first entry's generic title
+    (e.g. ``"PaperBench paper markdown"``).
+
     The full corpus — supplementary text, repo files, prior-work refs — is
     populated by later phases (#62).  For now ``paper_text`` / ``paper_metadata``
     are assembled from the claim-map entries; ``rubric_spec`` is passed through
@@ -278,10 +334,19 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
         excerpt = entry.get("excerpt", "")
         sections.append(f"## {title}\n\n{excerpt}" if title else excerpt)
 
+    # PaperBench bundle runs carry real paper identity in the "paperbench" block.
+    # Use it when available so the root model sees the actual paper id + title
+    # rather than the generic entry title produced by bundle_to_workspace_claim_map.
+    pb = workspace_claim_map.get("paperbench") or {}
+    pb_meta = pb.get("metadata") or {}
+    paper_id = pb_meta.get("id") or pb.get("paper_id") or ""
+    paper_title = pb_meta.get("title") or (entries[0].get("title", "") if entries else "")
+
     return {
         "paper_text": "\n\n".join(sections),
         "paper_metadata": {
-            "title": entries[0].get("title", "") if entries else "",
+            "id": paper_id,
+            "title": paper_title,
             "sections": [e.get("title", "") for e in entries],
             "source_ids": [e.get("source_id", "") for e in entries],
         },
