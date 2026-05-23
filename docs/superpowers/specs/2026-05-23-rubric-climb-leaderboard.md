@@ -259,7 +259,7 @@ The only new corpus-exposure surface to audit: `paper_title` in `LeaderboardRow`
 
 **Modified docs:**
 - `CLAUDE.md` — note the new `/leaderboard` route and the new `final_report.json` fields.
-- `frontend_integration.md` — document the leaderboard endpoint + the extended `final_report.json` shape. No new SSE events to document.
+- `system_overview.md` — document the leaderboard endpoint + the extended `final_report.json` shape. No new SSE events to document.
 - `system_overview.md` — one-line addition: the leaderboard surface is described.
 
 ## 6. Test strategy
@@ -342,7 +342,7 @@ A reviewer can confirm this delivery is complete by checking:
 6. The climb annotation surfaces "from candidate <title>" when a ≥+0.05 jump follows a `candidate_proposed`.
 7. `/leaderboard` renders ≥3 rows from fixture data and supports sort by any column.
 8. `final_report.json` of every new run carries `mode`, `models`, `started_at`, `completed_at`.
-9. `CLAUDE.md` + `frontend_integration.md` + `system_overview.md` reflect the new surface.
+9. `CLAUDE.md` + `system_overview.md` reflect the new surface.
 10. No new SSE event types; no widening of `sanitize_iteration`.
 11. Playwright in-session criteria (3, 5, 6, 7, 8) pass; docker-dependent criteria (1, 2, 4) documented as next-session work.
 

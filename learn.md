@@ -102,6 +102,20 @@ Sub-lesson: when killing a process inside a docker container from the host, the 
 
 ---
 
+## 2026-05-23 — Ship-readiness audit found state and honesty gaps across RDR, demo gate, and live UI
+
+**Symptom.** Mutating demo routes could bypass `REPROLAB_DEMO_SECRET`; metricless RDR runs could be scored without the degraded cap metadata; long live streams could drop final-report/chat/candidate context; SSE disconnects left the UI stale.
+
+**Root cause.** The hybrid landing changed the main data path, but several peer paths kept old assumptions: RDR called `score_reproduction` before a final report existed, live-run event buffers used a plain tail slice, and some newer routes were added outside the original demo-gate audit.
+
+**Fix.** Gate every mutating route or document it as public, call the scorer with explicit degraded state from RDR, write RDR report metadata, emit spec cluster events, preserve pinned event types during compaction, and poll after SSE errors.
+
+**Lesson.** Launch readiness needs contract checks on every sibling path, not only the default path. A feature can be correct in `rlm` while still silently wrong in `rdr`, live subprocess, or terminal-run replay.
+
+**Guardrail.** `tests/test_demo_gate.py`, `tests/routes/test_messages.py`, `tests/rdr/test_controller.py`, `tests/rdr/test_rdr_run.py`, `tests/rlm/test_hybrid_controller.py`, frontend `use-run`/RDR artifact tests, and `tests/test_paperbench_bundle_identity.py`.
+
+---
+
 ## 2026-05-23 — Lab UI was blank on failed-run navigation because EventSource never opened for terminal states
 
 **Symptom.** User clicks a failed run in the Recent sidebar → navigates to `/lab?projectId=<id>` → blank lab UI. Tree empty, sidebar empty, no error displayed.
@@ -153,8 +167,7 @@ and `os._exit(124)`'d the process. Same wedge observed on
 `mechanistic-understanding`. Iteration checkpoints 0–22 saved cleanly; the
 SDK call at cluster 23 never returned.
 
-**Root cause.** Two compounding defects in `claude-agent-sdk` v0.1.80, captured
-in `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`:
+**Root cause.** Two compounding defects in `claude-agent-sdk` v0.1.80:
 
 1. **Triple-nested async-generator shutdown race.** `query()` → `process_query()`
    → `_process_query_inner()` are all tracked by asyncio's

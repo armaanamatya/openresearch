@@ -158,7 +158,7 @@ Body:
 | 1 | Abheek confirms branch stable + invocation list received | (out-of-band) |
 | 2 | Phase 1 PR merged; both modes run; lab UI green | `python -m backend.cli reproduce 2512.24601 --mode rdr` + `npm test` |
 | 3 | Independent of 2; can run in parallel after Phase 1 merges | (none — start anytime) |
-| 4 | Phase 1 + Phase 2 both merged; honest scores in disk-runs | `cat docs/design/2026-05-23-honesty-rerun.md` |
+| 4 | Phase 1 + Phase 2 both merged; honest scores in disk-runs | Check the latest honesty-cap entry in `progress.md` |
 | 5 | Phase 4 backend + frontend merged; ≥2 runs in `/leaderboard` | `curl http://localhost:3000/leaderboard` |
 
 ---
@@ -170,7 +170,7 @@ The new session should produce these artifacts before declaring Phase 0 done:
 1. Commit `<hash>`: spec committed.
 2. Commit `<hash>`: kickoff prompt committed.
 3. A draft Abheek message ready (or user's explicit waiver).
-4. A `writing-plans` output for Phase 1, saved to `docs/superpowers/plans/2026-05-23-phase1-rdr-merge.md`, reviewed by the user, ready for execution.
+4. A Phase 1 merge plan reviewed by the user and ready for execution.
 
 ---
 

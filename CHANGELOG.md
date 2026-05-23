@@ -41,6 +41,17 @@ version + date and start a new `[Unreleased]` block above it.
 - **First E2E run to hit the "promoted candidate" success gate**: B1 (arXiv 2602.01785 CodeOCR) — 6 iterations, rubric 31.88%, `outcome=promoted` on `path_1`. 3× higher rubric than A1/A2 under the old prompt; first run to actually try a scoped-down subset instead of declining everything. Confirms the full pipeline (stuck-Running fix + SQLite + candidate_id + anti-decline prompt) works end-to-end.
 - **729 tests passing, 1 xfailed** across `tests/rlm/ tests/rdr/ tests/routes/ tests/services/events/ tests/agents/ tests/test_eventstore_sqlite{,_concurrent}.py` after all 6 commits.
 
+### Fixed (ship-readiness)
+- Gated remaining mutating backend routes, including run stop, chat steering, and Phase 2 service POSTs, and added JSON handling for uncaught route errors.
+- RDR metricless runs now call the scorer in degraded mode and write `mode`, `models`, `started_at`, `completed_at`, and degraded metadata into final reports.
+- RDR SSE now emits the spec cluster events (`cluster_started`, `cluster_artifact_emitted`, `cluster_scored`, `repair_dispatched`) alongside existing `rdr_*` lifecycle events.
+- Threaded `RunBudget.max_pod_seconds` through CLI PaperBench paths, live-run subprocesses, RDR, and hybrid Phase 1/Phase 2 budgets.
+- Frontend live-run state preserves terminal/chat/candidate/RDR cluster events across long streams and falls back to polling after SSE errors.
+- Library, leaderboard, and recent-run surfaces now show explicit backend-outage states instead of silent empty success states.
+
+### Added (ship-readiness)
+- Vendored PaperBench bundle identity guard covering `ftrl`, `mechanistic-understanding`, and `sequential-neural-score-estimation`.
+
 ## [2026-05-23]
 
 ### Added
@@ -125,10 +136,7 @@ version + date and start a new `[Unreleased]` block above it.
   A Playwright e2e (`e2e/rlm-lab.spec.ts`) drives the full fixture path end-to-end.
   The 3 candidate/rubric event types (`candidate_proposed`, `candidate_outcome`,
   `rubric_score`) are fixture-contract + a documented backend handoff
-  (`docs/superpowers/specs/2026-05-21-rlm-phase4-backend-events-handoff.md`), not yet
-  backend-emitted. Design spec:
-  `docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md`. Implementation
-  plan: `docs/superpowers/plans/2026-05-21-rlm-phase4-frontend.md`.
+  in the retired Phase 4 handoff docs), not yet backend-emitted.
 - **Dynamic best-source paper ingestion — HTML > PDF > OCR cascade.**
   Figure-heavy arXiv papers produce figure-label noise when PDF-parsed; arXiv's
   LaTeXML HTML rendering is clean (figures are images there). `ResolvingParser`
@@ -231,8 +239,8 @@ version + date and start a new `[Unreleased]` block above it.
   `repl_iteration` / `sub_rlm_*` / `run_complete` events), `checkpoint.py`
   (per-iteration `RLMRunIteration` events → the SQLite event store + a sanitized
   snapshot), `report.py`, and `stub_primitives.py`. Wired through `cli.py` /
-  `pipeline.py` / `live_runs.py` as `--mode {offline,sdk,rlm}`; `offline` and
-  `sdk` are unchanged. Decoupled from the #59 primitive layer — `run.py` lazily
+  `pipeline.py` / `live_runs.py`; later releases replaced the legacy modes with
+  the current `--mode {rlm,rdr,rlm-pure}` surface. Decoupled from the #59 primitive layer — `run.py` lazily
   resolves `build_custom_tools` and falls back to a stub provider, so the
   orchestrator runs and is integration-tested before #59 lands. The paper is
   offloaded as the `context` REPL variable; the `sanitize_iteration` chokepoint
@@ -557,7 +565,7 @@ version + date and start a new `[Unreleased]` block above it.
 - **Layer 2 semantic store** with Chroma vector embeddings + BM25
   fallback, auto-wired through `_make_services` when `chromadb` is
   installed (from upstream, second merge round).
-- **PaperBench section in `docs/setup-guide.md`** — 4-step workflow
+- **PaperBench section in `docs/guides/setup-guide.md`** — 4-step workflow
   from `list` → `summary` → `--no-pipeline` dry → real run + UI link.
 
 ### Changed
@@ -595,7 +603,7 @@ version + date and start a new `[Unreleased]` block above it.
   - **`3a73903` — Controller watchdog + agent CWD guard.** `_ClusterWatchdog` (`threading.Timer` per cluster) ceilings each cluster at 900s of no progress, writing an emergency `final_report.json` + SSE `watchdog_killed` event before `os._exit(124)`. CWD guard: `_snapshot_repo_root_entries()` before and after each cluster — if the agent escaped its `code_dir` via `git clone <stuff>` etc., the new entries are detected and `shutil.rmtree`-cleaned (caught the agent leaking a `tsnpe_neurips` repo at repo root). Later, the `os.chdir(code_dir)` was removed entirely in favor of the SDK's `ClaudeAgentOptions(cwd=code_dir)` (process-global `chdir` is unsafe under concurrency).
   - **`c928fb7` — Codex adversarial review sweep (2 CRITICAL + 4 IMPORTANT).** CRITICAL: scorer exception propagation (no `try/except` — a leaf-scorer crash crashed the whole run), path traversal in merge-write (`Artifacts.files` paths weren't `is_relative_to`-validated before write). IMPORTANT: event-loop blocking primitives, `os.chdir` process-global, watchdog missing emergency report, CLI args unregistered. All addressed.
   - **`06d0087` — Retry-on-watchdog + `dashboard_event` SSE emission.** `scripts/rdr_paperbench_retry.sh` wraps `rdr_paperbench.py` and re-invokes with `--resume` when the exit code is 124 (watchdog kill), up to `RDR_MAX_RETRIES` (default 3). Resume hydrates `done` from `iterations/cluster_*.json` checkpoints so completed clusters are not re-executed. New `DashboardEmitter.emit(event_type, payload)` generic method + 11 lifecycle events emitted by the controller — UI parity with `--mode rlm`.
-  - **`4ac89f7` + **`33c787d`** — SDK thread isolation (Workaround B + non-blocking executor).** The wedge at cluster 23 was root-caused (see `learn.md` 2026-05-22, `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`) to two compounding defects in `claude-agent-sdk` v0.1.80: (1) `asyncio.shutdown_asyncgens()` concurrently closing three nested async generators raises `RuntimeError: aclose(): asynchronous generator is already running`; (2) `transport.close()` does unbounded `await process.wait()` after SIGKILL which hangs in `futex_wait_queue` on WSL2 when SIGCHLD is lost. Workaround B: `_run_sdk_in_thread()` in `backend/agents/rdr/agent.py` wraps each `collect_agent_text(...)` call in a `concurrent.futures.ThreadPoolExecutor(max_workers=1)` worker that runs the call inside its own `asyncio.run(asyncio.wait_for(...))`, so the SDK's shutdown race is loop-isolated. The wrapper uses explicit `try/finally` + `ex.shutdown(wait=False)` instead of `with ThreadPoolExecutor(...) as ex:` — `__exit__` would call `shutdown(wait=True)`, blocking the controller on a hung worker. `concurrent.futures.TimeoutError` is re-raised as builtin `TimeoutError` so the existing fail-soft path in `reproduce()` is unchanged. The process-level watchdog remains a defense-in-depth net. Five new tests (`tests/rdr/test_agent_thread_isolation.py`), full suite: 1416 passed, 3 skipped.
+- **`4ac89f7` + **`33c787d`** — SDK thread isolation (Workaround B + non-blocking executor).** The wedge at cluster 23 was root-caused (see `learn.md` 2026-05-22) to two compounding defects in `claude-agent-sdk` v0.1.80: (1) `asyncio.shutdown_asyncgens()` concurrently closing three nested async generators raises `RuntimeError: aclose(): asynchronous generator is already running`; (2) `transport.close()` does unbounded `await process.wait()` after SIGKILL which hangs in `futex_wait_queue` on WSL2 when SIGCHLD is lost. Workaround B: `_run_sdk_in_thread()` in `backend/agents/rdr/agent.py` wraps each `collect_agent_text(...)` call in a `concurrent.futures.ThreadPoolExecutor(max_workers=1)` worker that runs the call inside its own `asyncio.run(asyncio.wait_for(...))`, so the SDK's shutdown race is loop-isolated. The wrapper uses explicit `try/finally` + `ex.shutdown(wait=False)` instead of `with ThreadPoolExecutor(...) as ex:` — `__exit__` would call `shutdown(wait=True)`, blocking the controller on a hung worker. `concurrent.futures.TimeoutError` is re-raised as builtin `TimeoutError` so the existing fail-soft path in `reproduce()` is unchanged. The process-level watchdog remains a defense-in-depth net. Five new tests (`tests/rdr/test_agent_thread_isolation.py`), full suite: 1416 passed, 3 skipped.
 - **Workspace `paper_text` now equals the parser's full text (I4).** It was
   reassembled from indexed chunks — lossy, and degraded or empty for some
   papers. `build_workspace` now loads `paper_text` from the parser's full-text
@@ -695,8 +703,7 @@ version + date and start a new `[Unreleased]` block above it.
   prevents recurrence — see `learn.md` 2026-05-09.
 
 ### Documentation
-- `docs/agent-lifecycle.md` — end-to-end agent pipeline stages, task states,
-  runtime statuses, verifier decisions, and Phase 2 service attach points.
+- `docs/guides/setup-guide.md` — setup, PaperBench workflow, and Phase 2 service attach points.
 - `learn.md` — durable post-mortem + practice runbook.
 - `third_party/paperbench/README.md` — instructions for swapping the
   FTRL placeholder bundle for the upstream PaperBench artifacts.

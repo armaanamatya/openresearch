@@ -114,7 +114,6 @@ ls runs/$PROJECT/iterations/ 2>/dev/null
 - **`learn.md`** — past bugs and the rules learned from them (especially the 2026-05-22 SDK aclose entry — Workaround B)
 - **`CHANGELOG.md`** — what landed when
 - **`CLAUDE.md`** — repo conventions, mode flags, RLM auth model (two surfaces — root vs sub-agent)
-- **`docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`** — RCA of the WSL SDK deadlock + Workaround B design
 - **`docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`** — RDR design spec
 
 ### Acceptance criteria for this session

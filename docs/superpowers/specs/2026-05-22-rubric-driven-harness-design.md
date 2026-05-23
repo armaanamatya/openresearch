@@ -275,7 +275,7 @@ Methodology principles:
   SSE bridge.
 - **New opt-in run mode** `rdr` — wired into `backend/cli.py` (`reproduce
   --mode rdr`) and a `scripts/rdr_paperbench.py` launcher paralleling
-  `scripts/rlm_paperbench.py`. `rlm` / `sdk` / `offline` modes stay untouched —
+  `scripts/rlm_paperbench.py`. `rlm` and `rlm-pure` stay untouched —
   backward-compatible; existing tests/runs unaffected.
 - **Scope** — `rdr` targets **PaperBench bundle papers** (official rubric
   required). arXiv papers can use `rdr` with a generated rubric, secondarily.
@@ -293,7 +293,7 @@ Methodology principles:
 
 ## 11. Non-goals
 
-- Not replacing `rlm` / `sdk` / `offline` — `rdr` is additive.
+- Not replacing `rlm` / `rlm-pure` — `rdr` is additive.
 - Not RunPod / multi-GPU compute — local-GPU budget.
 - Not primary support for arXiv papers (no official rubric) — secondary mode.
 - Not a re-write of ingestion, the sandbox, or the leaf scorer — those are reused.

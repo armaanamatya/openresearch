@@ -122,7 +122,7 @@ Abheek's branch already adds `--mode {rlm,rdr}` to `backend/cli.py`. Verify the 
 
 - `python -m backend.cli reproduce <paper> --mode rlm` dispatches to `backend/agents/rlm/run.py::run_pipeline_rlm`.
 - `python -m backend.cli reproduce <paper> --mode rdr` dispatches to `backend/agents/rdr/run.py::run_pipeline_rdr` (or whatever entrypoint Abheek named).
-- `--help` shows both modes cleanly. Remove any leftover `--mode sdk` / `--mode offline` references in `--help`, README, CLAUDE.md.
+- `--help` shows supported modes cleanly. Remove any leftover deleted-mode references in `--help`, README, CLAUDE.md.
 - Default mode remains `rlm` per §3 decision #1.
 
 **Acceptance.** Both modes run end-to-end against `2512.24601` (an arXiv ID that ingests cleanly).
@@ -175,7 +175,7 @@ Remove `@pytest.mark.xfail` from `tests/rlm/test_build_environment_timeout.py:11
 One-shot script `scripts/rerun_amend_2026-05-23.py`:
 - Walks `runs/pb_*/final_report.json`.
 - For each, calls `leaf_scorer.amend_final_report(run_dir)`.
-- Logs before/after `overall_score` + `degraded` flag to `docs/design/2026-05-23-honesty-rerun.md` as a single table.
+- Logs before/after `overall_score` + `degraded` flag to `progress.md` as a single table.
 
 **Acceptance.** One-page table committed; ftrl confirmed `degraded=True` capped ≤0.35; any other run with `baseline_metrics={}` honestly downgraded.
 
@@ -194,7 +194,7 @@ rdr reuses `leaf_scorer.score_reproduction` and `amend_final_report` (per the rd
 
 ### 5.4 Phase 3 — Aggressive condensation
 
-#### 5.4.1 Docs: 50+ files → 8 canonical (3.1)
+#### 5.4.1 Docs: 50+ files → ≤14 tracked docs (3.1)
 
 **Keep (the canonical 8):**
 
@@ -206,21 +206,20 @@ rdr reuses `leaf_scorer.score_reproduction` and `amend_final_report` (per the rd
 | `CHANGELOG.md` | Release log. |
 | `progress.md` | Project journal. |
 | `learn.md` | Post-mortem log. |
-| `docs/architecture.md` | **NEW** (replaces `rlm-pivot-brief.md`) — single architecture page covering rlm + rdr + the leaderboard surface. |
-| `docs/leaderboard-design.md` | **NEW** — Phase 4 spec. |
+| `docs/design/rlm-pivot-brief.md` | RLM architecture reference and design rationale. |
+| `docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md` | Leaderboard and rubric-climb spec. |
 
 **Delete (via `git rm`, no archive):**
 
-- `docs/design/phase2-*.md` (7 files — Phase 2 merged via #68).
-- `docs/design/phase3-5-review-findings.md` (closed by #75).
-- `docs/design/rlm-pivot-brief.md` (subsumed into `architecture.md`).
-- `docs/design/rlms-spike-report.md` (spike done).
-- `docs/design/project-state-audit-2026-05-22.md` (superseded by the 2026-05-23 audit conversation).
-- `docs/design/2026-05-23-project-state-analysis-prompt.md` (working artifact).
-- `docs/design/audit-2026-05-22-screenshots/` (working artifact).
+- Retired Phase 2 design files (Phase 2 merged via #68).
+- Retired Phase 3-5 review findings (closed by #75).
+- Retired spike reports.
+- The 2026-05-22 project-state audit artifact (superseded by the 2026-05-23 audit conversation).
+- The 2026-05-23 project-state analysis prompt artifact (working artifact).
+- The 2026-05-22 audit screenshots artifact (working artifact).
 - `docs/design/cross-platform-encoding-{audit,fix}.md` (resolved).
-- `docs/design/tier2-observability-plan.md`, `unified-logging-launcher.md` (superseded by current observability).
-- `docs/design/static-values-audit-2026-05-22.md` (merged via #78).
+- Retired observability notes superseded by current observability.
+- The 2026-05-22 static-values audit artifact (merged via #78).
 - All 12 `docs/superpowers/plans/2026-05-09-*.md` (issues #17–#21 all merged).
 - All 3 `docs/superpowers/plans/2026-05-14-*.md` (rebuild + polish merged).
 - All `docs/superpowers/plans/2026-05-2[12]-*.md` (Phase 4/5/6 + infra plan + debug-harden plan + static-values plan — all delivered).
@@ -453,7 +452,7 @@ A reviewer can confirm the plan is complete by checking:
 - Test suite: 1083 passed / 0 failed / 1 xfailed (`tests/rlm/test_build_environment_timeout.py`) / 5 skipped (optional-dep gated).
 - Honesty cap restored at `backend/evals/paperbench/leaf_scorer.py:92`.
 - Phase 6 (#72) merged; 14-stage pipeline fully deleted from `backend/`.
-- `--mode sdk` / `--mode offline` gone.
+- Deleted legacy CLI modes are gone.
 - Five real `runs/pb_*/final_report.{md,json}` exist on disk but were scored pre-fix; Phase 2.3 re-scores them.
 - `origin/rlm_rubric_orchestration` is 10 commits ahead of `main` with `--mode rdr` already implemented + `--mode {rlm,rdr}` flag added to `backend/cli.py` by Abheek.
 - Open issues: #63 (Phase 6 — merged via #72 but issue still open), #64 (RLM pivot umbrella — Phase 6 checkbox unticked).
