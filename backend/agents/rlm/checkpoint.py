@@ -1,4 +1,4 @@
-"""Per-iteration checkpoint layer: event store + sanitized REPL-state snapshot.
+"""Per-iteration event log: event store + sanitized REPL-state snapshot.
 
 Each time ``IterationCheckpointer.record(clean)`` is called:
 
@@ -13,6 +13,9 @@ Each time ``IterationCheckpointer.record(clean)`` is called:
 
 Both outputs are corpus-free by construction: this module only ever receives the
 output of :func:`~backend.agents.rlm.sse_bridge.sanitize_iteration`.
+
+Note: this module is one-way (emit-only). Reading ``iterations.jsonl`` back for
+replay is not implemented (T19 — deferred to a follow-up).
 
 Design spec §10.
 """
@@ -79,6 +82,13 @@ class IterationCheckpointer:
     ReproLabRLMLogger`).  The ``expected_version`` counter is therefore
     race-free without additional locking.
 
+    On instantiation the version counter is seeded from the event store so that
+    a process restart with the same ``project_id`` appends at version N+1 rather
+    than conflicting at version 0 (T19 / review I9).
+
+    Note: this class is emit-only.  Reading the iteration log back for replay is
+    not implemented (deferred — T19).
+
     Args:
         project_id:   The run's project identifier.  Used to form the aggregate
                       id ``"rlm-run:<project_id>"`` and as the ``correlation_id``
@@ -92,7 +102,7 @@ class IterationCheckpointer:
     Raises:
         ConcurrencyError: If the event store's current aggregate version does not
                           match ``self._version`` — this is a hard bug (two writers
-                          sharing one ``IterationCheckpointer``), surfaced immediately.
+                          racing on the same aggregate), surfaced immediately.
     """
 
     def __init__(
@@ -109,8 +119,10 @@ class IterationCheckpointer:
         self._snapshot_dir = Path(snapshot_dir)
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._snapshot_path = self._snapshot_dir / "iterations.jsonl"
-        self._version: int = 0  # tracks expected_version; starts at 0 (fresh aggregate)
         self._aggregate_id: str = f"rlm-run:{project_id}"
+        # Seed from the store so a process restart appends at version N+1
+        # instead of conflicting at version 0 (T19 / review I9).
+        self._version: int = event_store.get_aggregate_version(self._aggregate_id)
 
     def record(self, clean: dict) -> None:
         """Persist one sanitized iteration to the event store and JSONL snapshot.

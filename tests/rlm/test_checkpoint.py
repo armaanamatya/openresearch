@@ -266,6 +266,51 @@ class TestConcurrencyErrorSurfaced:
 
 
 # ---------------------------------------------------------------------------
+# Restart safety (T19 / review I9)
+# ---------------------------------------------------------------------------
+
+class TestRestartSafety:
+
+    def test_iteration_checkpointer_does_not_crash_on_restart(self, tmp_path):
+        """Symptom: a restarted run crashed on the first checkpoint with ConcurrencyError.
+
+        checkpoint.py hardcoded _version=0 — on a process restart with the same
+        project_id the aggregate was already at version N and the first record()
+        raised ConcurrencyError (review I9 / T19). Verify: instantiating a fresh
+        IterationCheckpointer for an existing project_id resumes the version
+        counter cleanly so the next record() appends without conflict.
+        """
+        db_path = tmp_path / "test.db"
+        store = SqliteEventStore(f"sqlite:///{db_path}")
+        snap = tmp_path / "snap"
+        snap.mkdir()
+        try:
+            # First run: record two iterations under project_id="p".
+            cp1 = IterationCheckpointer(
+                project_id="p", event_store=store, snapshot_dir=snap,
+            )
+            cp1.record(_make_clean(1))
+            cp1.record(_make_clean(2))
+
+            # Process restart: new IterationCheckpointer instance, same project_id.
+            cp2 = IterationCheckpointer(
+                project_id="p", event_store=store, snapshot_dir=snap,
+            )
+            # _version must be seeded to 2 (current aggregate version), not 0.
+            assert cp2._version == 2
+
+            # Must NOT raise ConcurrencyError — the version counter must resume.
+            cp2.record(_make_clean(3))
+
+            # Three events total in the store.
+            events = list(store.load("rlm-run:p"))
+            assert len(events) == 3
+            assert [e.aggregate_version for e in events] == [1, 2, 3]
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
 # IterationCheckpointer validation
 # ---------------------------------------------------------------------------
 
