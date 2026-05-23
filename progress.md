@@ -1,3 +1,59 @@
+## 2026-05-23 — Reliability + production-path sprint
+
+_Updated: 2026-05-23._
+
+### Headline
+
+15 commits across UI hardening, backend stability, Azure provider support, chat steering, and RLM behavior quality; repo is production-ready for single-user demo and staged for Vercel + Azure migration.
+
+### Commits landed (newest first)
+
+| SHA | Headline | Lines |
+| --- | --- | --- |
+| `b290449` | A 30-minute run was crashing at second-39 because paper_claims came back as a list | +116 / -1 |
+| `2b7bcf1` | The graph is the workspace now — side rails are drag-resizable and viewport-aware | +655 / -21 |
+| `ec76d91` | A second opinion at decision time: recommend_next_tool gives the root a Reflexion-lite advisor | +154 / -3 |
+| `ad460ff` | Azure OpenAI joins the root-model lineup — the path to Azure deployment opens | +387 / -10 |
+| `4e3bd38` | Two stability levers so SDK-deadlock runs stop pretending to be alive | +707 / -4 |
+| `8c3371e` | The root was ignoring rlm_query — primitives now ask for it themselves on big slices | +229 / -17 |
+| `9d7f8e9` | fix(lab+harness): counter strip layout + wrap_primitive arg coercion + system prompt rlm_query nudge | +157 / -4 |
+| `c6511be` | feat(sidebar): aggregate counter strip + enriched subrlm/baseline node detail | +343 / -8 |
+| `ad32198` | feat(sidebar): add Upload nav item above Lab/Library — one-shot ?new=1 trigger | +72 / -1 |
+| `0cc2e77` | fix(lab): SSR-safe elapsed clock — initialize nowMs=null to avoid hydration mismatch | +13 / -3 |
+| `1316b8a` | fix(rubric): align rubric_area key contract + defensive empty-name handling | +95 / -14 |
+| `e4c30a0` | fix(lab): live status flip on primitive_call + real-time elapsed clock + RDR polling stops on empty 200 | +90 / -8 |
+| `f664659` | docs+chore: runbook + CLAUDE.md + system_overview for chat steering / sidebar / F7 / backend-hang remedy | +134 / -11 |
+| `becfac8` | fix(landing): bench cells render cleanly without overlap | +16 / -8 |
+| `a07c336` | feat(rlm+ui): real-time chat steering + collapsible right sidebar with kind-specific node detail | +2034 / -55 |
+
+### What works end-to-end
+
+| Capability | Status | Where verified |
+| --- | --- | --- |
+| OAuth root + local GPU sandbox | ✅ | live arXiv run; watchdog/heartbeat flags surface accurately |
+| API-key root parity | ✅ | `tests/rlm/test_chat_steering_auth_parity.py` (6/6) |
+| Azure OpenAI provider | ✅ | `tests/rlm/test_build_llm_client.py::TestAzureOpenAI` (4/4) |
+| SDK aclose deadlock recovery | ⚠️ | flagged via watchdog + heartbeat; not yet auto-recovered (out of scope this session) |
+| paper_claims as list-of-dicts | ✅ | `tests/rlm/test_paper_claims_coercion.py` (7/7) |
+| Failed-run lab UI + Rerun button | ✅ | shipped this session (see commits) |
+| Chat steering POST → primitive round-trip | ✅ | curl verified; in-band UI |
+| Sub-RLM spawning under hint | ✅ | live run: 5 sub-RLMs with focused decomposition |
+| Resizable workspace | ✅ | shipped this session |
+
+### Open / deferred
+
+- W4 tool router landed but ROI untested in the wild — needs 3–5 runs to see if root actually calls `recommend_next_tool`.
+- aclose deadlock root cause is upstream SDK; we observe + flag but don't auto-recover. Future track: subprocess-level restart-on-degraded.
+- Cost ledger reports $0 for OAuth runs (SDK doesn't surface tokens). Documented in CLAUDE.md.
+- Vercel/Azure production migration: provider abstraction ready (W2c); state migration (Postgres + Blob) + multi-tenant auth not started.
+- Frontend vitest blocked on Node 21.7.3 (needs ≥22.12). Tests pass under Node 22; CI / coworker workflow notes in CLAUDE.md.
+
+### Test surface
+
+Backend: 681 passed, 1 xfailed (`tests/rlm/ tests/rdr/ tests/routes/ tests/agents/ tests/services/events/`). Frontend: tsc clean across all changes; vitest blocked on Node 21 (works under Node 22).
+
+---
+
 # RLM Phase 5/6 — Progress
 
 _Updated: 2026-05-22 — debug-and-harden session._
