@@ -127,3 +127,4 @@ reprolab.db-wal
 # Landing screenshot scratch dir
 frontend/tmp-screens
 frontend/tmp-screens/
+/playwright/

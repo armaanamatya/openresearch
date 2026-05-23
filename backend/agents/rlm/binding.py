@@ -160,9 +160,33 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         except Exception as exc:
             # Value-free event: an exception MESSAGE can carry raw LLM output,
             # paper text or paths, and result_summary is streamed to the UI.
-            # Only the type goes into the event. The WARNING and the `raise`
-            # below are server-side only.
-            ctx.dashboard.primitive_call(name, "error", result_summary=type(exc).__name__)
+            # Only the type + (for pydantic ValidationError) field paths +
+            # pydantic error types go into the event. Field paths and types
+            # come from the schema, not from user/LLM values, so they're safe
+            # to surface. The full traceback stays server-side.
+            #
+            # Before 2026-05-23 this only emitted `type(exc).__name__`, so the
+            # UI showed "Exception"/"ValidationError" with zero detail. That
+            # made the user think the run was stuck when the root was just
+            # adapting to a schema mismatch. See fix-plan §T2 / U2.
+            summary = type(exc).__name__
+            try:
+                from pydantic import ValidationError as _PydanticVE
+                if isinstance(exc, _PydanticVE):
+                    parts: list[str] = []
+                    for err in exc.errors()[:6]:  # cap at 6 for SSE payload bound
+                        loc = ".".join(str(p) for p in err.get("loc", ()))
+                        msg = str(err.get("msg", ""))[:80]
+                        etype = err.get("type", "")
+                        parts.append(f"{loc}: {msg} ({etype})")
+                    if parts:
+                        summary = "ValidationError: " + "; ".join(parts)
+                        # bound at 500 chars regardless of error count
+                        if len(summary) > 500:
+                            summary = summary[:497] + "..."
+            except Exception:  # noqa: BLE001 — defensive; pydantic import / .errors() must not break the wrapper
+                pass
+            ctx.dashboard.primitive_call(name, "error", result_summary=summary)
             _ledger()
             logger.warning("primitive %s raised %s", name, type(exc).__name__)
             raise

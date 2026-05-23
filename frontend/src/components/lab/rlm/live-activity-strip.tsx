@@ -136,6 +136,29 @@ function narrate(props: LiveActivityStripProps): Narration {
   if (iterationCount > 0) {
     const secs = diffSecs(lastHeartbeatAt, nowMs);
     const slow = secs !== null && secs > 120;
+    // If the most recent terminated primitive was an ERROR, the root is
+    // not just "thinking" — it's recovering from a failure. Surface the
+    // structured error detail (pydantic field paths etc., from binding.py's
+    // T2 fix) so the user sees what went wrong AND that recovery is in
+    // progress, not stuck.
+    const lastTerminated = [...primitiveCalls]
+      .reverse()
+      .find((c) => c.status === "ok" || c.status === "error");
+    if (lastTerminated && lastTerminated.status === "error") {
+      const errDetail = lastTerminated.result_summary?.trim() || "Exception";
+      return {
+        icon: "↻",
+        label: `Recovering from ${lastTerminated.primitive} error — root deciding retry path`,
+        secs,
+        detail:
+          `Last error: ${errDetail}\n\n` +
+          `The root REPL got the full traceback and is constructing the ` +
+          `next REPL turn (typically a retry, an alternative approach, or ` +
+          `a fallback primitive). No action needed — the rlm adaptive loop ` +
+          `is designed for this.`,
+        tone: "warn",
+      };
+    }
     return {
       icon: "…",
       label: `Iteration ${iterationCount} complete — root thinking about next turn`,
@@ -232,6 +255,11 @@ export function LiveActivityStrip(props: LiveActivityStripProps) {
         @keyframes rlmLivePulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.45; transform: scale(0.85); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          @keyframes rlmLivePulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+          }
         }
       `}</style>
     </div>
