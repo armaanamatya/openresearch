@@ -6,6 +6,7 @@ import { ComprehensionMock } from "./figures/ComprehensionMock";
 import { EnvironmentMock } from "./figures/EnvironmentMock";
 import { ImplementationMock } from "./figures/ImplementationMock";
 import { ExperimentsMock } from "./figures/ExperimentsMock";
+import { VerificationMock } from "./figures/VerificationMock";
 import { NavScrollMount } from "./client-bits";
 
 const GITHUB_URL = "https://github.com/armaanamatya/openresearch";
@@ -20,7 +21,9 @@ export function LandingPage(): React.JSX.Element {
       <EnvironmentSection />
       <ImplementationSection />
       <ExperimentsSection />
-      {/* Tasks 6-7 add §5.0 + §6.0 + closing + footer */}
+      <VerificationSection />
+      <BenchmarkSection />
+      {/* Task 7 adds closing + footer */}
     </div>
   );
 }
@@ -308,6 +311,119 @@ function ExperimentsSection(): React.JSX.Element {
             <ExperimentsMock />
           </div>
         </figure>
+      </div>
+    </section>
+  );
+}
+
+function VerificationSection(): React.JSX.Element {
+  return (
+    <section className={styles.spec}>
+      <div className={styles.wrap}>
+        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>5.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Verification</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>stage 05 / 05</span>
+            </div>
+            <h2 className={styles.head}>Score the result against the paper&apos;s own claims.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              Each observed metric is graded against the rubric induced in §1.4 —
+              match, deviation, or contradiction — with the supporting table cell
+              and confidence interval surfaced for every cell.
+            </p>
+            <div className={styles["spec-substeps"]}>
+              <a href="#"><span className={styles.num}>§ 5.1</span><span>Rubric scoring</span></a>
+              <a href="#"><span className={styles.num}>§ 5.2</span><span>Confidence intervals</span></a>
+              <a href="#"><span className={styles.num}>§ 5.3</span><span>Report artifact</span></a>
+              <a href="#"><span className={styles.num}>§ 5.4</span><span>Audit trail</span></a>
+            </div>
+          </div>
+        </div>
+
+        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
+          <span className={styles["fig-label"]}>FIG&nbsp;§ 5.1&nbsp;&nbsp;—&nbsp;&nbsp;Reproduction scorecard</span>
+          <div className={`${styles.frame} ${styles["frame-bleed-r"]}`}>
+            <div className={styles["mock-chrome"]}>
+              <span className={styles.crumbs}>verification&nbsp;/&nbsp;<b>scorecard · rlm-7e3a</b></span>
+              <span className={styles.right}>artifact · report.md · 14 KB</span>
+            </div>
+            <VerificationMock />
+          </div>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+function BenchmarkSection(): React.JSX.Element {
+  return (
+    <section className={styles.bench} id="benchmarks">
+      <div className={styles.wrap}>
+        <div className={`${styles.row} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>6.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Benchmarks</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>measured · not promised</span>
+            </div>
+            <h2 className={styles.head}>Numbers go here once real runs say so.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              ReproLab reports a reproduction score per paper on the PaperBench v0
+              protocol. Every figure on this page is a placeholder until a sealed,
+              seed-pinned run confirms it. We will not ship a number we cannot rerun.
+            </p>
+          </div>
+        </div>
+
+        <div className={`${styles["bench-numbers"]} ${styles.reveal}`}>
+          <div className={styles["bench-cell"]}>
+            <span className={styles["pl-note"]}>placeholder</span>
+            <div className={styles.lbl}>PaperBench v0 · score</div>
+            <div className={`${styles.v} ${styles.placeholder}`}>
+              <span className={styles.tok}>{"{{REPRODUCTION_SCORE}}"}</span>
+              <sup>↗ target {"{{TARGET_SCORE}}"}</sup>
+            </div>
+            <div className={styles.sub}>Median per-cell rubric match across the suite.</div>
+          </div>
+          <div className={styles["bench-cell"]}>
+            <span className={styles["pl-note"]}>placeholder</span>
+            <div className={styles.lbl}>Papers reproduced</div>
+            <div className={`${styles.v} ${styles.placeholder}`}>
+              <span className={styles.tok}>{"{{N_PAPERS}}"}</span>
+            </div>
+            <div className={styles.sub}>End-to-end. Comprehension through sealed scorecard.</div>
+          </div>
+          <div className={styles["bench-cell"]}>
+            <span className={styles["pl-note"]}>placeholder</span>
+            <div className={styles.lbl}>Median drift</div>
+            <div className={`${styles.v} ${styles.placeholder}`}>
+              ± <span className={styles.tok}>{"{{MEDIAN_DRIFT}}"}</span>
+            </div>
+            <div className={styles.sub}>Absolute deviation between observed and paper-reported metrics.</div>
+          </div>
+          <div className={styles["bench-cell"]}>
+            <span className={styles["pl-note"]}>placeholder</span>
+            <div className={styles.lbl}>Wall-clock per paper</div>
+            <div className={`${styles.v} ${styles.placeholder}`}>
+              <span className={styles.tok}>{"{{HOURS_PER_PAPER}}"}</span>
+            </div>
+            <div className={styles.sub}>Median, includes environment build and verification.</div>
+          </div>
+        </div>
       </div>
     </section>
   );
