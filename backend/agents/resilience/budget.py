@@ -13,6 +13,7 @@ from backend.agents.resilience.failures import BudgetExhausted
 class RunBudget:
     max_usd: float | None = None
     max_wall_clock_seconds: float | None = None
+    max_pod_seconds: float | None = None
     max_invocations_per_agent: dict[str, int] = field(default_factory=dict)
     rlm_calls_remaining: int = 120
 
@@ -48,6 +49,26 @@ class RunBudget:
                 f"{attempt_count} >= {max_attempts}",
                 provider=None,
                 agent_id=agent_id,
+            )
+
+    def check_pod_seconds(
+        self,
+        *,
+        pod_started_at: datetime | None,
+        agent_id: str,
+        now: datetime | None = None,
+    ) -> None:
+        if self.max_pod_seconds is None or pod_started_at is None:
+            return
+        current = now if now is not None else datetime.now(timezone.utc)
+        elapsed = (current - pod_started_at).total_seconds()
+        if elapsed >= self.max_pod_seconds:
+            raise BudgetExhausted(
+                f"Pod-time budget exhausted before invoking {agent_id}: "
+                f"{elapsed:.1f}s >= {self.max_pod_seconds:.1f}s",
+                provider=None,
+                agent_id=agent_id,
+                elapsed_seconds=elapsed,
             )
 
 
