@@ -520,11 +520,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     run_budget = None
-    _max_pod_seconds = args.max_pod_seconds or (
-        float(os.environ["REPROLAB_MAX_POD_SECONDS"])
-        if os.environ.get("REPROLAB_MAX_POD_SECONDS")
-        else None
-    )
+    _max_pod_seconds = args.max_pod_seconds
+    if _max_pod_seconds is None and os.environ.get("REPROLAB_MAX_POD_SECONDS"):
+        _max_pod_seconds = float(os.environ["REPROLAB_MAX_POD_SECONDS"])
     if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations or _max_pod_seconds is not None:
         from backend.agents.resilience import RunBudget
 
