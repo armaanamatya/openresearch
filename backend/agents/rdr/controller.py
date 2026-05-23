@@ -158,6 +158,7 @@ def _write_cluster_checkpoint(
         "cluster_title": cluster.title,
         "leaf_ids": [leaf.id for leaf in cluster.leaves],
         "failed": art.failed,
+        "error": art.error,    # surface the agent error string for diagnostics
         "notes": art.notes,
         "file_count": len(art.files),
     }

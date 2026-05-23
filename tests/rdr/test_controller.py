@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.rdr.controller import _ClusterWatchdog, run_rdr
+from backend.agents.rdr.controller import _ClusterWatchdog, _write_cluster_checkpoint, run_rdr
 from backend.agents.rdr.models import Artifacts, RdrResult, RubricLeaf, WorkCluster
 
 
@@ -1278,3 +1278,41 @@ async def test_rdr_handles_none_dashboard(
 
     assert isinstance(result, RdrResult)
     assert (ctx.project_dir / "final_report.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fix: _write_cluster_checkpoint persists art.error
+# ---------------------------------------------------------------------------
+
+
+def test_write_cluster_checkpoint_persists_error(tmp_path: Path) -> None:
+    """_write_cluster_checkpoint includes art.error in the JSON payload.
+
+    Previously art.error was dropped — cluster failures lost their error string
+    unless someone grepped logs. This guards the fix.
+    """
+    iterations_dir = tmp_path / "iterations"
+    leaf = _make_leaf("leaf-x", 0.5)
+    cluster = _make_cluster("cluster-err", [leaf])
+    art = Artifacts(
+        cluster_id="cluster-err",
+        failed=True,
+        error="AuthenticationError: 401",
+        notes="",
+        files={},
+        commands=[],
+    )
+
+    _write_cluster_checkpoint(iterations_dir, 0, cluster, art)
+
+    checkpoint_files = list(iterations_dir.glob("cluster_*.json"))
+    assert len(checkpoint_files) == 1, "Expected exactly one checkpoint file"
+
+    payload = json.loads(checkpoint_files[0].read_text(encoding="utf-8"))
+    assert "error" in payload, "Checkpoint JSON must contain 'error' key"
+    assert payload["error"] == "AuthenticationError: 401", (
+        f"Expected error='AuthenticationError: 401'; got {payload['error']!r}"
+    )
+    # Existing keys must still be present
+    assert payload["cluster_id"] == "cluster-err"
+    assert payload["failed"] is True

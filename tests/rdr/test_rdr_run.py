@@ -55,11 +55,19 @@ def test_effective_provider_explicit_anthropic(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_effective_provider_auto_openai(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Auto-detect: OPENAI_API_KEY set → openai."""
+    """Auto-detect: OPENAI_API_KEY set → openai (when no Anthropic credentials)."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY_PATH", raising=False)
-    assert _effective_provider(None) == "openai"
+    # Step 3: has_provider_credentials("anthropic") must also be False for
+    # the OPENAI_API_KEY env-var fall-through to fire.
+    from backend.agents.runtime import factory as _fac
+    original = _fac.has_provider_credentials
+    _fac.has_provider_credentials = lambda provider=None: False
+    try:
+        assert _effective_provider(None) == "openai"
+    finally:
+        _fac.has_provider_credentials = original
 
 
 def test_effective_provider_auto_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,11 +79,19 @@ def test_effective_provider_auto_anthropic(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_effective_provider_none_when_no_creds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Auto-detect: no env vars → None."""
+    """Auto-detect: no env vars and no Anthropic credentials → None."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY_PATH", raising=False)
-    assert _effective_provider(None) is None
+    # Step 3: has_provider_credentials("anthropic") must also be False for
+    # the function to reach the final None return.
+    from backend.agents.runtime import factory as _fac
+    original = _fac.has_provider_credentials
+    _fac.has_provider_credentials = lambda provider=None: False
+    try:
+        assert _effective_provider(None) is None
+    finally:
+        _fac.has_provider_credentials = original
 
 
 def test_build_llm_client_openai_uses_model(monkeypatch: pytest.MonkeyPatch) -> None:
