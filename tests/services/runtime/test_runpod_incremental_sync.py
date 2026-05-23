@@ -62,7 +62,7 @@ class _Attrs:
     def __init__(
         self,
         *,
-        permissions: int,
+        permissions: int | None,
         size: int | None = None,
         mtime: float | None = None,
         atime: float | None = None,
@@ -292,6 +292,38 @@ async def test_sync_refuses_symlinks(tmp_path: Path) -> None:
     local_file = sandbox.config.resolved_artifact_root() / "link.txt"
     assert not local_file.exists(), "Symlink should have been skipped — not created locally"
     assert "/artifacts/link.txt" not in fake_sftp.opened_paths
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_entries_with_no_permissions_attr(tmp_path: Path) -> None:
+    """Regression guard: asyncssh.SFTPAttrs.permissions is Optional[int].
+
+    A misbehaving SFTP server can return None; stat.S_ISLNK(None) would raise
+    TypeError and crash the sync. The implementation must skip such entries
+    defensively rather than propagating the error.
+    """
+    nullperm_attrs = _Attrs(
+        size=42,
+        mtime=1_000_000.0,
+        atime=1_000_000.0,
+        permissions=None,  # The case under test.
+    )
+    fake_sftp = FakeSFTP(
+        tree={
+            "/artifacts": _dir_attrs(),
+            "/artifacts/mystery.bin": nullperm_attrs,
+        },
+        file_data={"/artifacts/mystery.bin": b"data"},
+    )
+    sandbox = _make_sandbox(tmp_path=tmp_path)
+    backend = _build_backend(sandbox, fake_sftp)
+
+    # Must not raise TypeError or anything else.
+    await backend._sync_artifacts_to_host(sandbox)
+
+    # The entry must be skipped — neither created locally nor read remotely.
+    assert not (sandbox.config.resolved_artifact_root() / "mystery.bin").exists()
+    assert "/artifacts/mystery.bin" not in fake_sftp.opened_paths
 
 
 @pytest.mark.asyncio

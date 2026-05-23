@@ -586,6 +586,13 @@ class RunpodBackend(RuntimeBackend):
                     # the true type of the entry rather than the target.
                     attrs = await sftp.lstat(entry_remote_path)
 
+                    # asyncssh exposes attrs.permissions as Optional[int]. A
+                    # well-behaved SFTP server always populates it on lstat,
+                    # but a misbehaving one would feed None into stat.S_ISLNK
+                    # and crash the sync. Skip such entries defensively.
+                    if attrs.permissions is None:
+                        continue
+
                     # Refuse symlinks — skip silently (original tar behaviour).
                     if stat.S_ISLNK(attrs.permissions):
                         continue
