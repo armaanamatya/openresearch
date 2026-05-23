@@ -8,6 +8,39 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+## [2026-05-23]
+
+### Added
+- `heartbeat()` REPL primitive + `iteration_heartbeat` SSE event; root calls before long ops; `rlm-header` shows amber "no signal Ns" chip when stale >60s.
+- Stderr watchdog (`live_runs.py:_stderr_watchdog`): detects `aclose()` async-generator loop ≥3× in 30s; sets `degraded: True` on `demo_status.json` + emits `run_warning` SSE; never kills subprocess.
+- `recommend_next_tool(situation)` REPL primitive — Reflexion-lite advisor; one bounded `llm_query` call → `{tool, reason, alternatives}`.
+- Azure OpenAI provider: `azure-gpt-4o` registry entry + aliases (`azure`, `azure-openai`, `gpt-4o-azure`); `AzureOpenAILlmClient` wrapper; `factory.py:_has_azure_openai_credentials`; env vars `AZURE_OPENAI_{API_KEY,ENDPOINT,DEPLOYMENT}`.
+- Chat steering: `POST /runs/<id>/messages` endpoint + `check_user_messages` / `respond_to_user` primitives + frontend `SteeringChat` panel docked in sidebar.
+- Lab UI: right-docked `NodeDetailSidebar` (replaces floating popup); aggregate counter strip; enriched panels per node kind; preset arXiv chip row in upload view; Upload nav item; `useResizablePanels` hook + `ResizeHandle` for drag-resizable rails.
+- `uiprogress.md` regression-prevention log (append-only, F1–F14 rules).
+
+### Changed
+- 12 → 14 REPL primitives; pin tests bumped (`test_run.py`, `test_integration_custom_tools.py`, `test_registry.py`).
+- System prompt: new Heartbeat, Chat Steering, Decision Advisor, `rlm_query`-preference sections.
+- `useRlmRun.foldPrimitiveCall` flips status `queued→running` on first primitive (was only on first `repl_iteration`).
+- Real-time elapsed clock derives from `runMeta.startedAt` + ticking interval (was event-span; ticked nothing when wedged).
+- RDR polling proxies (clusters/leaf-scores/repair-iterations): 4s `AbortController` + normalize timeout/5xx → 404; `useRdrArtifacts` counts empty 200 as missing.
+- `understand_section` + `extract_hyperparameters` return `_meta.hint` on slices >10K chars; `[hint] ` prefix flows through `result_summary`; sidebar shows amber-dot indicator.
+
+### Fixed
+- React duplicate `key=""` in `rubric-strip` + `report-rail` — `_rubric_areas` now emits `"area"` (matches `binding.py`); frontend keys carry `__idx_${i}` fallback.
+- SSR hydration mismatch on elapsed tile — `nowMs=null` initial state matches server + first-client render; `useEffect` populates on mount.
+- `RLMFinalReport.paper_claims` rejected list-shaped root returns → 30-min runs crashed at final-report step; `@field_validator(mode="before")` coerces list → dict keyed by `method`/`claim`/`id`/`name`/`claim_{i}`.
+- `wrap_primitive` validation: one conservative coercion pass (int/float/bool → str, digit-str → int; never dict) before bubbling; saves one root iteration per type-mismatch.
+
+### Documentation
+- `CLAUDE.md`: Azure auth bullet, primitive count 12→14, new event types, Chat Steering + Collapsible Sidebar sections.
+- `system_overview.md`: matching primitive count + SSE event updates; Chat Steering + Sidebar sections.
+- `docs/runbooks/e2e-testing.md`: §4f Backend hangs (SDK aclose remedy), §6b chat-steering walkthrough, F7+F8 commit-table entries.
+- `uiprogress.md`: two top-level entries (morning + afternoon sprints).
+
+---
+
 ### Added
 - **`rdr` — rubric-driven paper-reproduction harness (`--mode rdr`).**
   A deterministic Python controller (`backend/agents/rdr/`) decomposes the
