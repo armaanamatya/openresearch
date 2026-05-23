@@ -1005,6 +1005,50 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
 
 _VALID_OUTCOMES = {"running", "promoted", "marginal", "failed", "skipped", "declined"}
 
+# 2026-05-23: outcome aliases (case-insensitive). The model often passes
+# natural-language variants — "success", "passed", "ok" instead of "promoted";
+# "fail", "error", "broken" instead of "failed"; etc. Mapping them here lets
+# the validator accept honest signals instead of rejecting them and emitting
+# zero outcome events (the C5 regression: 4 record_candidate_outcome calls
+# all rejected → 0 outcomes on the wire → UI couldn't see the model's intent).
+_OUTCOME_ALIASES = {
+    # → promoted
+    "success": "promoted", "successful": "promoted", "passed": "promoted",
+    "pass": "promoted", "ok": "promoted", "complete": "promoted",
+    "completed": "promoted", "improved": "promoted", "better": "promoted",
+    "promote": "promoted",
+    # → failed
+    "fail": "failed", "error": "failed", "broken": "failed", "crashed": "failed",
+    "exception": "failed", "regression": "failed", "regressed": "failed",
+    "worse": "failed",
+    # → marginal
+    "partial": "marginal", "mixed": "marginal", "inconclusive": "marginal",
+    "neutral": "marginal", "tied": "marginal", "no_change": "marginal",
+    "unchanged": "marginal",
+    # → declined
+    "decline": "declined", "skip": "skipped", "rejected": "declined",
+    "abandon": "declined", "abandoned": "declined", "deferred": "skipped",
+    # → running
+    "run": "running", "in_progress": "running", "started": "running",
+    "trying": "running",
+}
+
+
+def _canonicalize_outcome(outcome: object) -> str | None:
+    """Map a model-supplied outcome string to one of _VALID_OUTCOMES.
+
+    Returns the canonical value on success, None if no plausible mapping.
+    Case-insensitive; tolerates leading/trailing whitespace; accepts aliases.
+    """
+    if outcome is None:
+        return None
+    s = str(outcome).strip().lower().replace("-", "_").replace(" ", "_")
+    if not s:
+        return None
+    if s in _VALID_OUTCOMES:
+        return s
+    return _OUTCOME_ALIASES.get(s)
+
 
 def record_candidate_outcome(
     candidate_id: str,
@@ -1056,21 +1100,24 @@ def record_candidate_outcome(
             "outcome": str(outcome) if outcome is not None else "",
             "parent_id": parent_id,
         }
-    if str(outcome) not in _VALID_OUTCOMES:
-        return {
-            "success": False,
-            "error": (
-                f"record_candidate_outcome got outcome={outcome!r}; must be one of "
-                f"{sorted(_VALID_OUTCOMES)}."
-            ),
-            "candidate_id": cid_str,
-            "outcome": str(outcome) if outcome is not None else "",
-            "parent_id": parent_id,
-        }
+    # 2026-05-23: canonicalize outcome instead of strict-reject. The model
+    # often passes natural synonyms ("success", "fail", "partial"); rejecting
+    # them silently drops 100% of outcome events for that run (the C5 bug:
+    # 4 calls, 4 rejected, 0 outcome events emitted). Accept aliases via the
+    # case-insensitive map; only reject if the value is truly empty / None.
+    canonical = _canonicalize_outcome(outcome)
+    if canonical is None:
+        # Fall back gracefully: accept the model's literal value, log it, emit
+        # it as-is. Better to surface an unknown outcome string in the UI
+        # (which can render it as a gray pill) than to drop the event entirely.
+        # The structural data (which candidate, what iteration) is still useful.
+        canonical = str(outcome).strip() if outcome is not None else "unknown"
+        if not canonical:
+            canonical = "unknown"
     return {
         "success": True,
         "candidate_id": cid_str,
-        "outcome": str(outcome),
+        "outcome": canonical,
         "parent_id": parent_id,
     }
 

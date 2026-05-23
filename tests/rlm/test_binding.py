@@ -308,18 +308,82 @@ def test_record_candidate_outcome_with_literal_None_string_skips_emit(make_conte
     assert out == [], f"unexpected candidate_outcome events: {out}"
 
 
-def test_record_candidate_outcome_with_invalid_outcome_skips_emit(make_context, tmp_path):
-    """outcome must be one of the known terminal labels. 'maybe' / 'idk' /
-    arbitrary strings get rejected so the UI doesn't render unknown states."""
+def test_record_candidate_outcome_canonicalizes_outcome_aliases(make_context, tmp_path):
+    """2026-05-23 regression fix: previously the validator strictly rejected
+    any outcome not in the literal 6-value set. C5 of the paper sweep had
+    4 record_candidate_outcome calls with outcomes like 'success' / 'fail'
+    that the model meant to be promotions or failures — all 4 were rejected,
+    zero outcome events were emitted, the user's 'promoted candidate' gate
+    became unreachable. The fix: canonicalize via case-insensitive alias map
+    so the model can speak natural English and we still emit a valid event.
+    """
+    cases = [
+        ("success",   "promoted"),   # most common alias
+        ("PROMOTED",  "promoted"),   # case-insensitive
+        ("Pass",      "promoted"),
+        ("ok",        "promoted"),
+        ("improved",  "promoted"),
+        ("fail",      "failed"),
+        ("error",     "failed"),
+        ("regressed", "failed"),
+        ("partial",   "marginal"),
+        ("mixed",     "marginal"),
+        ("skip",      "skipped"),
+        ("decline",   "declined"),
+        ("rejected",  "declined"),
+        ("run",       "running"),
+        ("in_progress", "running"),
+        ("in progress", "running"),  # space becomes underscore
+        ("In-Progress", "running"),   # hyphen becomes underscore
+    ]
     ctx = make_context(tmp_path)
     tools = build_custom_tools(ctx)
-    for bad_outcome in ["maybe", "idk", "rejected", "", "PROMOTED"]:  # capital is rejected
+    for raw, canonical in cases:
         result = tools["record_candidate_outcome"]["tool"](
-            candidate_id="path_1", outcome=bad_outcome
+            candidate_id=f"path_{raw.replace(' ', '_')}",
+            outcome=raw,
         )
-        assert result.get("success") is False, f"expected failure for outcome={bad_outcome!r}"
+        assert result.get("success") is True, (
+            f"expected success on alias outcome={raw!r}, got {result!r}"
+        )
+        assert result.get("outcome") == canonical, (
+            f"alias {raw!r} should canonicalize to {canonical!r}, got {result.get('outcome')!r}"
+        )
     out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
-    assert out == [], f"unexpected candidate_outcome events: {out}"
+    assert len(out) == len(cases), (
+        f"expected {len(cases)} candidate_outcome events, got {len(out)}"
+    )
+
+
+def test_record_candidate_outcome_unknown_outcome_falls_back_to_literal_not_reject(make_context, tmp_path):
+    """Truly unknown outcomes are accepted-with-literal-value, NOT rejected.
+    The UI can render 'unknown' / arbitrary strings as gray; dropping the
+    event entirely is worse than showing an unfamiliar label."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    result = tools["record_candidate_outcome"]["tool"](
+        candidate_id="path_99", outcome="totally-novel-outcome"
+    )
+    assert result.get("success") is True, (
+        "unknown outcomes must NOT be rejected — the structural info is still useful"
+    )
+    # The literal value is preserved so the UI can render it as-is
+    assert result.get("outcome") == "totally-novel-outcome"
+    out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
+    assert len(out) == 1
+
+
+def test_record_candidate_outcome_empty_outcome_falls_back_to_unknown(make_context, tmp_path):
+    """Empty / None outcomes get the literal string 'unknown' (and still emit)
+    so the candidate appears in the UI tree even with no labeled outcome."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    for empty in ["", "   ", None]:
+        result = tools["record_candidate_outcome"]["tool"](
+            candidate_id=f"path_{id(empty)}", outcome=empty
+        )
+        assert result.get("success") is True
+        assert result.get("outcome") == "unknown"
 
 
 def test_record_candidate_outcome_happy_path_still_emits(make_context, tmp_path):
