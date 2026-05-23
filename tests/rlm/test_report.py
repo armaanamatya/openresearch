@@ -459,3 +459,59 @@ class TestEvidenceBasedVerdictReconciliation:
         report = build_final_report(result, ctx=ctx)
 
         assert report.verdict == "partial"
+
+    def test_no_run_experiment_in_isolation_downgrades_reproduced(self, make_context, tmp_path):
+        """Symptom: a 'reproduced' verdict with a high score but where run_experiment
+        never ran could slip past the evidence guard if only the score and metrics
+        branches were tested.
+
+        Pin the never-ran branch: empty baseline_metrics (so the prior
+        metric-fabrication guard does NOT fire), high rubric score, and
+        no run_experiment entry on the ledger. Both "never ran" and
+        "no measured baseline metrics" fire — the score branch does not.
+        """
+        # Empty baseline_metrics in payload — metric-fabrication guard is a no-op.
+        # High overall_score — score branch is a no-op.
+        # No _record_run_experiment(ctx) — never-ran + empty-metrics branches fire.
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.8, "meets_target": True},
+            "paper": {"id": "p"},
+        })
+        ctx = make_context(tmp_path)  # no _record_run_experiment(ctx) call
+
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+        assert report.verdict == "partial"
+        assert "run_experiment never ran" in report.reproduction_summary
+        # Score branch must NOT fire — score is 0.8, well above 0.5:
+        assert "< 0.5" not in report.reproduction_summary
+
+    def test_empty_baseline_metrics_in_isolation_downgrades_reproduced(self, make_context, tmp_path):
+        """Symptom: a 'reproduced' verdict with a high score and a run_experiment
+        call on the ledger but baseline_metrics={} in the parsed payload could
+        slip past the evidence guard if only the score branch were tested.
+
+        Pin the empty-metrics branch in isolation: run_experiment DID run
+        (so the never-ran branch is a no-op), score is high (so the score
+        branch is a no-op), but the parsed payload claims reproduction with
+        no measured metrics.
+        """
+        raw = json.dumps({
+            "verdict": "reproduced",
+            "baseline_metrics": {},
+            "rubric": {"overall_score": 0.75, "meets_target": True},
+            "paper": {"id": "p"},
+        })
+        ctx = make_context(tmp_path)
+        _record_run_experiment(ctx)  # never-ran branch is a no-op
+
+        result = _make_result(raw)
+        report = build_final_report(result, ctx=ctx)
+        assert report.verdict == "partial"
+        assert "no measured baseline metrics" in report.reproduction_summary
+        # Score branch must NOT fire — score is 0.75, well above 0.5:
+        assert "< 0.5" not in report.reproduction_summary
+        # Never-ran branch must NOT fire — run_experiment is on the ledger:
+        assert "run_experiment never ran" not in report.reproduction_summary
