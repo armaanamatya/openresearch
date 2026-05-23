@@ -169,8 +169,9 @@ def list_leaderboard_runs(
     Read-only; not gated by REPROLAB_DEMO_SECRET.
     """
     settings = get_settings()
-    runs_dir = getattr(settings, "runs_dir", "runs")
-    runs_root = Path(runs_dir)
+    # Reuse the existing REPROLAB_RUNS_ROOT setting (bound on Settings.runs_root)
+    # rather than introducing a parallel REPROLAB_RUNS_DIR.
+    runs_root = settings.runs_root if settings.runs_root is not None else Path("runs")
     try:
         return aggregate_leaderboard(
             runs_root, paper=paper, mode=mode, order_by=order_by, limit=limit

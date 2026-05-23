@@ -687,6 +687,14 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         finally:
             db.close()
 
+    # Leaderboard route — read-only ranking of completed runs across models.
+    # Mounted via include_router because it lives in its own module
+    # (backend/routes/leaderboard.py); spec
+    # docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4.
+    # No demo-gate; reads are public.
+    from backend.routes.leaderboard import router as leaderboard_router
+    app.include_router(leaderboard_router)
+
     return app
 
 
