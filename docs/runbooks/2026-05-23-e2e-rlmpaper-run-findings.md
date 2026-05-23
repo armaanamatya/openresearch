@@ -146,7 +146,9 @@ After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into t
 | 19:54 | implement_baseline ERROR | 22-min wall-clock — over the typical 5-15 min range. `result_summary=Exception` (binding.py:165 strips the message to avoid leaking LLM output, but root REPL gets the full traceback and recovered) |
 | 19:54 | repl_iteration #3 | root self-recovered immediately, deciding next move |
 | 14:34 PT | F11 found via user screenshot | "nodes unclickable" — usePan moved-flag never reset; fixed in commit `2e21223` |
-| | | (still running — likely retry path or move to verify/propose) |
+| 19:59 | iter 3 retry: detect_environment ok (2nd) → build_environment ok (2nd) → plan_reproduction start | adaptive repair after iter 2 implement_baseline ERROR |
+| 20:00 | plan_reproduction ERROR (2nd attempt failed) → implement_baseline start | root pushing forward despite planning failure |
+| | | (2 primitive errors so far, both rescued by RLM's adaptive loop — pipeline integrity verified even when individual primitives fail) |
 
 ## Open after both runs
 
