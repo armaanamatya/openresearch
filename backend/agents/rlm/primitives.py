@@ -775,11 +775,13 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     }
 
     areas: list[dict] = []
-    for task in sub_tasks:
+    for i, task in enumerate(sub_tasks):
         name = str(task.get("requirements") or "")[:120]
+        if not name:
+            name = f"Area {i + 1}"
         score = _clamp01(roll_up(task, leaf_score_map))
         weight = task.get("weight")
-        areas.append({"name": name, "score": score, "weight": weight})
+        areas.append({"area": name, "score": score, "weight": weight})
     return areas
 
 

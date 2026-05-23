@@ -105,7 +105,7 @@ export function RubricStrip({ rubric }: RubricStripProps) {
       {/* Per-area status chip row with fail→pass flip highlights. */}
       {areas.length > 0 && (
         <ul className={styles.areaChipRow} aria-live="polite" aria-label="Rubric areas">
-          {areas.map((a) => {
+          {areas.map((a, i) => {
             const flipped = justFlipped(a, previousAreas);
             const statusClass =
               a.status === "pass"
@@ -118,17 +118,17 @@ export function RubricStrip({ rubric }: RubricStripProps) {
               .join(" ");
             return (
               <li
-                key={a.area}
+                key={a.area || `__area_${i}`}
                 className={cls}
                 data-area-chip
                 data-area={a.area}
                 data-just-flipped={flipped ? "true" : "false"}
-                title={`${a.area}: ${a.status} (${a.score.toFixed(2)})`}
+                title={`${a.area || "—"}: ${a.status} (${a.score.toFixed(2)})`}
               >
                 <span className={styles.chipGlyph} aria-hidden="true">
                   {statusGlyph(a.status)}
                 </span>
-                <span className={styles.chipName}>{a.area}</span>
+                {a.area && <span className={styles.chipName}>{a.area}</span>}
               </li>
             );
           })}

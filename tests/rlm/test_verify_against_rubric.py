@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from backend.agents.rlm.primitives import verify_against_rubric
+from backend.agents.rlm.primitives import verify_against_rubric, _rubric_areas
 
 # Minimal 2-level PaperBench tree rubric (the new contract).
 RUBRIC = {
@@ -98,7 +98,9 @@ def test_verify_returns_named_areas(make_context, tmp_path):
     assert "areas" in result
     areas = result["areas"]
     assert len(areas) == 2  # one per top-level sub_task in RUBRIC
-    names = [a["name"] for a in areas]
+    # key must be "area", not "name" (binding.py reads "area")
+    assert all("area" in a for a in areas), "each area dict must have 'area' key"
+    names = [a["area"] for a in areas]
     assert "code is implemented" in names
     assert "results are reported" in names
 
@@ -107,7 +109,7 @@ def test_verify_areas_carry_rolled_up_scores(make_context, tmp_path):
     """Each area score is the weighted roll-up of its own sub-tree leaves."""
     ctx = make_context(tmp_path, llm_responses=[_LLM_BATCH_RESPONSE])
     result = verify_against_rubric({"success": True, "metrics": {"r": 1}}, RUBRIC, ctx=ctx)
-    areas = {a["name"]: a["score"] for a in result["areas"]}
+    areas = {a["area"]: a["score"] for a in result["areas"]}
     # "code is implemented" is a leaf itself (score 0.9) → area score == 0.9
     assert areas["code is implemented"] == pytest.approx(0.9)
     # "results are reported" is a leaf itself (score 0.8) → area score == 0.8
@@ -132,3 +134,46 @@ def test_verify_areas_empty_for_flat_rubric(make_context, tmp_path):
     )
     result = verify_against_rubric({"success": True, "metrics": {"r": 1}}, flat_rubric, ctx=ctx)
     assert result.get("areas") == []
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _rubric_areas — key contract and Area N fallback
+# ---------------------------------------------------------------------------
+
+def test_rubric_areas_uses_area_key():
+    """_rubric_areas output dicts must use the 'area' key, not 'name'."""
+    rubric = {
+        "id": "root",
+        "requirements": "reproduce",
+        "weight": 1.0,
+        "sub_tasks": [
+            {"id": "a", "requirements": "do the thing", "weight": 0.5, "sub_tasks": []},
+            {"id": "b", "requirements": "check it", "weight": 0.5, "sub_tasks": []},
+        ],
+    }
+    leaf_scores = [
+        {"id": "a", "score": 0.7},
+        {"id": "b", "score": 0.4},
+    ]
+    areas = _rubric_areas(rubric, leaf_scores)
+    assert len(areas) == 2
+    assert all("area" in a for a in areas), "each dict must have 'area' key"
+    assert all("name" not in a for a in areas), "'name' key must not be present"
+    assert areas[0]["area"] == "do the thing"
+    assert areas[1]["area"] == "check it"
+
+
+def test_rubric_areas_fallback_to_area_n_when_requirements_empty():
+    """When requirements is empty or missing, area name falls back to 'Area N'."""
+    rubric = {
+        "id": "root",
+        "requirements": "reproduce",
+        "weight": 1.0,
+        "sub_tasks": [
+            {"id": "x", "requirements": "", "weight": 1.0, "sub_tasks": []},
+            {"id": "y", "weight": 1.0, "sub_tasks": []},  # no requirements key
+        ],
+    }
+    areas = _rubric_areas(rubric, [])
+    assert areas[0]["area"] == "Area 1"
+    assert areas[1]["area"] == "Area 2"

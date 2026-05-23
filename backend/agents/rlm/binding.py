@@ -165,7 +165,7 @@ def _emit_supplemental(
                 score=float(score),
                 target=float(target) if target is not None else 0.0,
                 areas=[
-                    {"area": a.get("area", ""), "score": a.get("score", 0.0),
+                    {"area": a.get("area") or a.get("name") or "", "score": a.get("score", 0.0),
                      "weight": a.get("weight", 0.0)}
                     for a in areas if isinstance(a, dict)
                 ],

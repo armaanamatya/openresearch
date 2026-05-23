@@ -186,9 +186,9 @@ export function ReportRail({
         <section className={styles.breakdown} aria-label="Rubric breakdown">
           <p className={styles.breakdownHeading}>rubric breakdown</p>
           <ul className={styles.areaList}>
-            {rubric.areas.map((a) => (
+            {rubric.areas.map((a, i) => (
               <li
-                key={a.area}
+                key={a.area || `__area_${i}`}
                 className={`${styles.areaRow} ${
                   a.status === "pass"
                     ? styles.areaPass
@@ -201,7 +201,7 @@ export function ReportRail({
                   {areaMarker(a.status)}
                 </span>
                 <span className={styles.srOnly}>{a.status}</span>
-                <span className={styles.areaName}>{a.area}</span>
+                <span className={styles.areaName}>{a.area || "—"}</span>
                 <span className={styles.areaScore}>
                   {a.score.toFixed(2)}
                 </span>

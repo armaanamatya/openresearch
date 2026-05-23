@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
 import { RubricStrip } from "./rubric-strip";
@@ -106,6 +106,40 @@ describe("RubricStrip — per-area chip row (spec §4.1, §4.2)", () => {
     );
     const flipped = container.querySelectorAll('[data-just-flipped="true"]');
     expect(flipped.length).toBe(0);
+  });
+});
+
+describe("RubricStrip — blank area names (key dedup / React key warning)", () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("renders both chips and emits no duplicate-key warning when area is empty", () => {
+    const { container } = render(
+      <RubricStrip
+        rubric={{
+          ...CLIMB_RUBRIC,
+          areas: [
+            { area: "", score: 0.3, weight: 1, status: "fail" },
+            { area: "", score: 0.6, weight: 1, status: "partial" },
+          ],
+        }}
+      />,
+    );
+    // Both chips must be rendered
+    const chips = container.querySelectorAll("[data-area-chip]");
+    expect(chips.length).toBe(2);
+    // No React duplicate-key warning
+    const dupKeyWarning = consoleErrorSpy.mock.calls.some((args: unknown[]) =>
+      String(args[0]).includes("duplicate") || String(args[0]).includes("key"),
+    );
+    expect(dupKeyWarning).toBe(false);
   });
 });
 
