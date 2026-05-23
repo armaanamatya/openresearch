@@ -344,3 +344,12 @@ class TestFormatTemplate:
         rendered = prompt_gpt5.format(custom_tools_section="<<<PRIMITIVE_DOCS>>>")
         assert "<<<PRIMITIVE_DOCS>>>" in rendered
         assert rendered.index("PRIMITIVES") < rendered.index("<<<PRIMITIVE_DOCS>>>")
+
+
+class TestRlmQueryNudge:
+    """The prompt must contain the rlm_query preference guidance paragraph."""
+
+    def test_prompt_contains_rlm_query_nudge(self, prompt_gpt5):
+        """build_system_prompt output must mention rlm_query AND 'spawns a sub-RLM'."""
+        assert "rlm_query" in prompt_gpt5
+        assert "spawns a sub-RLM" in prompt_gpt5

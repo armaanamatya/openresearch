@@ -15,6 +15,7 @@ closure) — never through `dashboard._emit` directly.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -23,6 +24,73 @@ from backend.agents.resilience.cost import CostLedgerEntry
 from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_args(fn: Callable[..., Any], args: tuple, kwargs: dict) -> tuple[tuple, dict, bool]:
+    """Attempt one simple coercion pass when a positional arg has an obvious type mismatch.
+
+    Inspects the function's signature and tries conservative type coercions:
+      - str expected, non-string simple scalar given  → str(arg)
+      - int expected, string-of-digits given          → int(arg)
+
+    Does NOT attempt to fill missing required arguments or coerce dicts.
+    Returns (new_args, new_kwargs, coerced_flag).  On any failure the original
+    args/kwargs are returned unchanged with coerced=False.
+
+    Note: primitives.py uses ``from __future__ import annotations``, so all
+    annotations are stored as strings (PEP 563 lazy evaluation).  We read the
+    raw annotation string from the signature directly and map "str"/"int" to the
+    corresponding builtin types — no ``get_type_hints`` needed.
+    """
+    try:
+        # primitives.py uses TYPE_CHECKING guards so RunContext cannot be resolved
+        # via get_type_hints.  Read raw annotation strings from the signature and
+        # map the simple builtins we care about.
+        sig = inspect.signature(fn)
+        params = [
+            p for p in sig.parameters.values()
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.POSITIONAL_ONLY,
+            )
+            and p.name != "ctx"
+        ]
+        if not params or not args:
+            return args, kwargs, False
+
+        new_args = list(args)
+        coerced = False
+        for i, param in enumerate(params):
+            if i >= len(new_args):
+                break
+            raw_ann = param.annotation  # may be a string (PEP 563) or a type
+            # Resolve the annotation: if it's already a type, use it;
+            # if it's the string "str" / "int", map to the builtin.
+            if raw_ann is inspect.Parameter.empty:
+                continue
+            if raw_ann is str or raw_ann == "str":
+                ann = str
+            elif raw_ann is int or raw_ann == "int":
+                ann = int
+            else:
+                continue  # unknown annotation — skip, don't guess
+
+            val = new_args[i]
+            # str expected but not a str — coerce via str() for simple scalars only.
+            # Dicts are NOT coerced (a dict where str is expected is almost certainly
+            # a structural error the root should fix, not a trivial repr conversion).
+            if ann is str and not isinstance(val, str):
+                if isinstance(val, (int, float, bool)):
+                    new_args[i] = str(val)
+                    coerced = True
+            # int expected but a string-of-digits given
+            elif ann is int and isinstance(val, str) and val.strip().lstrip("-").isdigit():
+                new_args[i] = int(val.strip())
+                coerced = True
+
+        return tuple(new_args), kwargs, coerced
+    except Exception:  # noqa: BLE001 — never let coercion logic break a run
+        return args, kwargs, False
 
 
 def _summarize(args: tuple, kwargs: dict) -> dict:
@@ -70,6 +138,13 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         kwargs.pop("ctx", None)  # the wrapper supplies ctx; never let a caller double it
+        # Attempt one conservative coercion pass before calling the primitive.
+        # This repairs obvious type mismatches (str expected but int/list passed;
+        # int expected but string-of-digits passed) so the root does not burn
+        # a full iteration cycle on a trivially fixable ValidationError.
+        args, kwargs, coerced = _coerce_args(fn, args, kwargs)
+        if coerced:
+            logger.info("primitive %s: args auto-coerced", name)
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
         try:
             result = fn(*args, ctx=ctx, **kwargs)
@@ -93,6 +168,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         ctx.dashboard.primitive_call(
             name, "error" if failed else "ok",
             result_summary=_result_summary(result),
+            coerced=coerced,
         )
         _ledger()
         if failed:

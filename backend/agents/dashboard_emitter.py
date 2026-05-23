@@ -196,6 +196,7 @@ class DashboardEmitter:
         result_summary: str | None = None,
         iteration: int | None = None,
         rubric_delta: float | None = None,
+        coerced: bool = False,
     ) -> None:
         """Emit a `primitive_call` event (RLM Phase 2 — issue #61 schema).
 
@@ -206,6 +207,9 @@ class DashboardEmitter:
         (the verified per-iteration hook — `on_iteration_*` never fire), and
         that subclass stashes the index for the wrapper to read.
         `rubric_delta` is not applicable to a primitive call (always None).
+        `coerced` is True when `wrap_primitive` auto-coerced one or more args
+        to fix an obvious type mismatch before calling the primitive; the UI
+        can surface "(auto-coerced)" on these events.
         """
         self._emit({
             "event": "primitive_call",
@@ -216,6 +220,7 @@ class DashboardEmitter:
             "result_summary": result_summary,
             "iteration": iteration,
             "rubric_delta": rubric_delta,
+            "coerced": coerced,
         })
 
     def shared_state_updated(

@@ -140,6 +140,13 @@ structured specs from them.  Primitives take slices and specs, never the raw cor
 Primitives operate on slices and structured specifications you assemble.  Use
 `llm_query` and `rlm_query` to help you extract and summarize information from
 `context` before assembling inputs for the heavy-weight primitives.
+
+When you need structured information from a long passage (>10,000 chars), prefer
+`rlm_query(slice, specific_question)` over `understand_section(slice)`.
+`rlm_query` spawns a sub-RLM that focuses entirely on your question and returns
+a tight answer; `understand_section` returns a generic schema that you must then
+re-process.  For short slices, the primitives remain optimal.  The same applies
+to extracting numerical results, dataset details, or any cross-section synthesis.
 """
 
 _TERMINATION_CONTRACT = """\

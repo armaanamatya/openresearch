@@ -175,3 +175,49 @@ def test_record_candidate_outcome_emits_candidate_outcome(make_context, tmp_path
     assert len(out) == 1
     assert out[0]["candidate_id"] == "c1"
     assert out[0]["outcome"] == "promoted"
+
+
+# ---------------------------------------------------------------------------
+# wrap_primitive auto-coercion (Fix B)
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_primitive_coerces_int_to_str_when_str_expected(make_context, tmp_path):
+    """wrap_primitive converts int arg to str when the primitive expects str; event shows coerced=True."""
+    # understand_section expects text_slice: str
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    # Pass an int where str is expected — wrap_primitive should coerce int → str
+    # and the primitive should succeed (or at least not raise a TypeError).
+    result = tools["understand_section"]["tool"](42)
+    # The primitive ran (returned a dict) — coercion succeeded
+    assert isinstance(result, dict)
+    # The completion event carries coerced=True
+    events = _read_events(ctx)
+    completion = [e for e in events if e.get("event") == "primitive_call" and e.get("status") in ("ok", "error")]
+    assert completion, "no completion primitive_call event emitted"
+    assert completion[0].get("coerced") is True, (
+        f"expected coerced=True on completion event, got: {completion[0]}"
+    )
+
+
+def test_wrap_primitive_does_not_coerce_dict_to_str(make_context, tmp_path):
+    """wrap_primitive does NOT coerce dict → str; the primitive receives the dict as-is."""
+    # understand_section expects text_slice: str; passing a dict should NOT be coerced
+    # (the spec says: if a dict is missing required keys — bail, don't try to guess).
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    # A dict is not a scalar — _coerce_args skips it because str(dict) would produce
+    # Python repr that is semantically wrong as a paper text slice.
+    # Instead the primitive should receive the raw dict and either handle it fail-soft
+    # or raise. Either way coerced must be False.
+    try:
+        tools["understand_section"]["tool"]({"key": "value"})
+    except Exception:
+        pass  # raising is acceptable; we just need coerced=False
+    events = _read_events(ctx)
+    completion = [e for e in events if e.get("event") == "primitive_call" and e.get("status") in ("ok", "error")]
+    assert completion, "no completion primitive_call event emitted"
+    assert completion[0].get("coerced") is False, (
+        f"coerced must be False when dict passed where str expected, got: {completion[0]}"
+    )

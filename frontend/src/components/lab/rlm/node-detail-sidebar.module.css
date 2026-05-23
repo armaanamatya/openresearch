@@ -305,11 +305,12 @@
 
 .countersStrip {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: repeat(4, 1fr);
   gap: 1px;
   background: var(--line-2);
   border-bottom: 1px solid var(--line-2);
   flex-shrink: 0;
+  height: 52px;
 }
 
 .counterTile {
@@ -318,24 +319,33 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: var(--sp-2) var(--sp-1);
+  padding: 4px var(--sp-1);
   background: var(--panel);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .counterNum {
+  display: block;
   font-family: var(--font-mono);
   font-size: var(--fs-base);
   font-weight: 600;
   color: var(--ink);
   line-height: 1;
+  white-space: nowrap;
 }
 
 .counterLabel {
-  font-size: var(--fs-xs);
+  display: block;
+  font-size: 10px;
   color: var(--muted);
   font-family: var(--font-mono);
   text-align: center;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ── Sub-RLM prompt preview ──────────────────────────────────────── */
