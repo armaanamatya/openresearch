@@ -156,63 +156,69 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             logger.info("primitive %s: args auto-coerced", name)
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
         try:
-            result = fn(*args, ctx=ctx, **kwargs)
-        except Exception as exc:
-            # Value-free event: an exception MESSAGE can carry raw LLM output,
-            # paper text or paths, and result_summary is streamed to the UI.
-            # Only the type + (for pydantic ValidationError) field paths +
-            # pydantic error types go into the event. Field paths and types
-            # come from the schema, not from user/LLM values, so they're safe
-            # to surface. The full traceback stays server-side.
-            #
-            # Before 2026-05-23 this only emitted `type(exc).__name__`, so the
-            # UI showed "Exception"/"ValidationError" with zero detail. That
-            # made the user think the run was stuck when the root was just
-            # adapting to a schema mismatch. See fix-plan §T2 / U2.
-            summary = type(exc).__name__
             try:
-                from pydantic import ValidationError as _PydanticVE
-                if isinstance(exc, _PydanticVE):
-                    parts: list[str] = []
-                    for err in exc.errors()[:6]:  # cap at 6 for SSE payload bound
-                        loc = ".".join(str(p) for p in err.get("loc", ()))
-                        msg = str(err.get("msg", ""))[:80]
-                        etype = err.get("type", "")
-                        parts.append(f"{loc}: {msg} ({etype})")
-                    if parts:
-                        summary = "ValidationError: " + "; ".join(parts)
-                        # bound at 500 chars regardless of error count
-                        if len(summary) > 500:
-                            summary = summary[:497] + "..."
-            except Exception:  # noqa: BLE001 — defensive; pydantic import / .errors() must not break the wrapper
-                pass
-            ctx.dashboard.primitive_call(name, "error", result_summary=summary)
-            _ledger()
-            logger.warning("primitive %s raised %s", name, type(exc).__name__)
-            raise
-        # Most primitives are fail-soft: on failure they RETURN a failure-shaped
-        # dict instead of raising. Surface that as an `error` primitive_call and
-        # a server-side WARNING — otherwise it is silently logged as a success
-        # (a run-7 verify_against_rubric failure stayed invisible until traced
-        # by hand).
-        failed = isinstance(result, dict) and (
-            result.get("success") is False or bool(result.get("error"))
-        )
-        ctx.dashboard.primitive_call(
-            name, "error" if failed else "ok",
-            result_summary=_result_summary(result),
-            coerced=coerced,
-        )
-        _ledger()
-        if failed:
-            logger.warning(
-                "primitive %s returned a failure: %s",
-                name, result.get("error") or "(see dashboard_events.jsonl)",
+                result = fn(*args, ctx=ctx, **kwargs)
+            except Exception as exc:
+                # Value-free event: an exception MESSAGE can carry raw LLM output,
+                # paper text or paths, and result_summary is streamed to the UI.
+                # Only the type + (for pydantic ValidationError) field paths +
+                # pydantic error types go into the event. Field paths and types
+                # come from the schema, not from user/LLM values, so they're safe
+                # to surface. The full traceback stays server-side.
+                #
+                # Before 2026-05-23 this only emitted `type(exc).__name__`, so the
+                # UI showed "Exception"/"ValidationError" with zero detail. That
+                # made the user think the run was stuck when the root was just
+                # adapting to a schema mismatch. See fix-plan §T2 / U2.
+                summary = type(exc).__name__
+                try:
+                    from pydantic import ValidationError as _PydanticVE
+                    if isinstance(exc, _PydanticVE):
+                        parts: list[str] = []
+                        for err in exc.errors()[:6]:  # cap at 6 for SSE payload bound
+                            loc = ".".join(str(p) for p in err.get("loc", ()))
+                            msg = str(err.get("msg", ""))[:80]
+                            etype = err.get("type", "")
+                            parts.append(f"{loc}: {msg} ({etype})")
+                        if parts:
+                            summary = "ValidationError: " + "; ".join(parts)
+                            # bound at 500 chars regardless of error count
+                            if len(summary) > 500:
+                                summary = summary[:497] + "..."
+                except Exception:  # noqa: BLE001 — defensive; pydantic import / .errors() must not break the wrapper
+                    pass
+                ctx.dashboard.primitive_call(name, "error", result_summary=summary)
+                _ledger()
+                logger.warning("primitive %s raised %s", name, type(exc).__name__)
+                raise
+            # Most primitives are fail-soft: on failure they RETURN a failure-shaped
+            # dict instead of raising. Surface that as an `error` primitive_call and
+            # a server-side WARNING — otherwise it is silently logged as a success
+            # (a run-7 verify_against_rubric failure stayed invisible until traced
+            # by hand).
+            failed = isinstance(result, dict) and (
+                result.get("success") is False or bool(result.get("error"))
             )
-        else:
-            # --- Phase 6 (Task 13): post-success supplemental event emission ---
-            _emit_supplemental(name, result, ctx, _emit_extra)
-        return result
+            ctx.dashboard.primitive_call(
+                name, "error" if failed else "ok",
+                result_summary=_result_summary(result),
+                coerced=coerced,
+            )
+            _ledger()
+            if failed:
+                logger.warning(
+                    "primitive %s returned a failure: %s",
+                    name, result.get("error") or "(see dashboard_events.jsonl)",
+                )
+            else:
+                # --- Phase 6 (Task 13): post-success supplemental event emission ---
+                _emit_supplemental(name, result, ctx, _emit_extra)
+            return result
+        finally:
+            # Flush any buffered cost-ledger entries at the end of every primitive
+            # boundary so the file is always in a consistent state for inspection
+            # after each primitive completes.  flush() is idempotent and lock-safe.
+            ctx.cost_ledger.flush()
 
     wrapped.__name__ = name
     return wrapped
