@@ -288,7 +288,6 @@
   border-top: 1px solid var(--landing-rule-2);
   transition: color .2s, padding-left .2s;
 }
-.spec-substeps a:hover { color: var(--landing-ink); padding-left: 4px; }
 .spec-substeps .num { font-family: var(--font-jetbrains-mono), ui-monospace, monospace; color: var(--landing-ink-4); font-size: 12px; min-width: 30px; }
 
 .spec-visual {
@@ -648,3 +647,19 @@
 
 /* utility */
 .hr-thin { height: 1px; background: var(--landing-rule-2); border: 0; margin: 0; }
+
+/* ---------- REDUCED-MOTION GLOBAL OVERRIDE ----------
+ * Belt-and-suspenders: every new animation in this file is already wrapped
+ * in @media (prefers-reduced-motion: no-preference). This is the global
+ * escape hatch for any animation we forgot to wrap. Targets descendants of
+ * .shell only — does not affect lab/library. */
+@media (prefers-reduced-motion: reduce) {
+  .shell *,
+  .shell *::before,
+  .shell *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+  }
+}
