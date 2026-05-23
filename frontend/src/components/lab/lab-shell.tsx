@@ -3,7 +3,7 @@
 import { useState, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
-import type { DemoModelChoice, LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoModelChoice, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
@@ -15,7 +15,7 @@ import { useRun } from "@/hooks/use-run";
 import { useCommandPalette } from "@/hooks/use-command-palette";
 import { useShortcutOverlay } from "@/hooks/use-shortcut-overlay";
 import { PresentationModeProvider, type PresentationMode } from "@/lib/presentation-mode";
-import { readUserPrefs, writeUserPref } from "@/lib/user-prefs";
+import { readUserPrefs, writeUserPref, readProviderPrefs, writeProviderPrefs } from "@/lib/user-prefs";
 import { RlmLab } from "./rlm/rlm-lab";
 import { isRlmEvent } from "@/lib/events/rlm-events";
 import { replayFixture } from "./rlm/replay";
@@ -27,6 +27,7 @@ type LabShellProps = {
   initialRecents?: RecentRunSummary[];
   initialRecentsError?: string | null;
   initialModels?: ModelChoice[];
+  initialAuthStatus?: AuthStatus | null;
   presentationMode?: PresentationMode;
 };
 
@@ -79,11 +80,41 @@ export function LabShell({
   initialRecents = [],
   initialRecentsError = null,
   initialModels = [],
+  initialAuthStatus = null,
   presentationMode = "internal"
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
   const [over, setOver] = useState(false);
   const [model, setModel] = useState<DemoModelChoice>(() => readUserPrefs().model ?? "sonnet");
+
+  // Provider selection state (D3 — persisted to localStorage).
+  // If the persisted choice is unavailable per initialAuthStatus, fall back
+  // to the server-reported default (D3 fall-back rule).
+  const [rootProvider, setRootProvider] = useState<RootProvider>(() => {
+    const saved = readProviderPrefs().root_provider as RootProvider | undefined;
+    if (saved && initialAuthStatus) {
+      const providerStatus = initialAuthStatus.providers[saved];
+      if (!providerStatus?.available) {
+        return initialAuthStatus.defaults.root_provider;
+      }
+    }
+    return saved ?? initialAuthStatus?.defaults.root_provider ?? "anthropic_oauth";
+  });
+  const [subagentAuth, setSubagentAuth] = useState<SubagentAuth>(() => {
+    const saved = readProviderPrefs().subagent_auth as SubagentAuth | undefined;
+    if (saved && initialAuthStatus) {
+      const available = initialAuthStatus.subagent_auth[saved];
+      if (!available) {
+        return initialAuthStatus.defaults.subagent_auth;
+      }
+    }
+    return saved ?? initialAuthStatus?.defaults.subagent_auth ?? "anthropic_oauth";
+  });
+  const [dynamicGpu, setDynamicGpu] = useState<boolean>(() => readProviderPrefs().dynamic_gpu ?? false);
+  const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
+  const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
+  const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
+
   const {
     run,
     busy,
@@ -94,7 +125,14 @@ export function LabShell({
     startFixtureRun,
     startUploadedRun,
     startArxivRun
-  } = useRun(initialRun);
+  } = useRun(initialRun, {
+    rootProvider,
+    subagentAuth,
+    dynamicGpu: dynamicGpu || undefined,
+    forceSingleGpu: forceSingleGpu || undefined,
+    maxGpuUsdPerHour: maxGpuUsdPerHour > 0 ? maxGpuUsdPerHour : undefined,
+    vramGb: vramGb > 0 ? vramGb : undefined,
+  });
 
   const palette = useCommandPalette();
   const shortcuts = useShortcutOverlay();
@@ -115,6 +153,7 @@ export function LabShell({
           ) : (
             <UploadView
               arxiv={arxiv}
+              authStatus={initialAuthStatus}
               busy={busy}
               error={error}
               model={model}
@@ -134,6 +173,36 @@ export function LabShell({
               onRunModeChange={setRunMode}
               over={over}
               setOver={setOver}
+              rootProvider={rootProvider}
+              subagentAuth={subagentAuth}
+              dynamicGpu={dynamicGpu}
+              forceSingleGpu={forceSingleGpu}
+              maxGpuUsdPerHour={maxGpuUsdPerHour}
+              vramGb={vramGb}
+              onRootProviderChange={(value) => {
+                setRootProvider(value);
+                writeProviderPrefs({ ...readProviderPrefs(), root_provider: value });
+              }}
+              onSubagentAuthChange={(value) => {
+                setSubagentAuth(value);
+                writeProviderPrefs({ ...readProviderPrefs(), subagent_auth: value });
+              }}
+              onDynamicGpuChange={(value) => {
+                setDynamicGpu(value);
+                writeProviderPrefs({ ...readProviderPrefs(), dynamic_gpu: value });
+              }}
+              onForceSingleGpuChange={(value) => {
+                setForceSingleGpu(value);
+                writeProviderPrefs({ ...readProviderPrefs(), force_single_gpu: value });
+              }}
+              onMaxGpuUsdPerHourChange={(value) => {
+                setMaxGpuUsdPerHour(value);
+                writeProviderPrefs({ ...readProviderPrefs(), max_gpu_usd_per_hour: value });
+              }}
+              onVramGbChange={(value) => {
+                setVramGb(value);
+                writeProviderPrefs({ ...readProviderPrefs(), vram_gb: value });
+              }}
             />
           )}
         </RlmFixtureContent>

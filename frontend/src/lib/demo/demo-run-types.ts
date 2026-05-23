@@ -159,6 +159,32 @@ export interface DemoLeafScoresResponse {
   leaf_scores: DemoLeafScore[];
 }
 
+// ── Auth status types (provider picker, D1) ─────────────────────────────────
+
+export type RootProvider =
+  | "anthropic_api"
+  | "anthropic_oauth"
+  | "openai_api"
+  | "azure_openai"
+  | "featherless";
+
+export type SubagentAuth = "anthropic_api" | "anthropic_oauth";
+
+export interface ProviderStatus {
+  available: boolean;
+  detail: string;
+}
+
+export interface AuthStatus {
+  providers: Record<RootProvider, ProviderStatus>;
+  subagent_auth: Record<SubagentAuth, boolean>;
+  defaults: {
+    root_provider: RootProvider;
+    root_model: string;
+    subagent_auth: SubagentAuth;
+  };
+}
+
 export const RUN_MODE_OPTIONS: ReadonlyArray<{
   value: DemoRunMode;
   label: string;

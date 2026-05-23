@@ -234,6 +234,140 @@
   font-feature-settings: "tnum" 1;
 }
 
+/* ── Provider + subagent radio groups ───────────────────────────────────── */
+
+.upload-provider-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.upload-provider-fieldset legend {
+  margin-bottom: 6px;
+}
+
+.upload-provider-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.upload-provider-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--ink);
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.upload-provider-option:hover:not(.disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.upload-provider-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.upload-provider-option.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.upload-provider-option input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.upload-provider-name {
+  white-space: nowrap;
+}
+
+.upload-provider-badge {
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.upload-provider-badge.ok {
+  color: var(--accent);
+}
+
+.upload-provider-badge.err {
+  color: var(--err);
+}
+
+/* ── Advanced options collapsible ─────────────────────────────────────────── */
+
+.upload-advanced {
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 0;
+}
+
+.upload-advanced-summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.upload-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.upload-advanced-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.upload-advanced-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-advanced-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  min-width: 110px;
+}
+
+.upload-advanced-hint {
+  font-size: 11px;
+  color: var(--muted-2);
+}
+
+.upload-advanced-number {
+  width: 72px;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  background: var(--panel);
+  color: var(--ink);
+  outline: none;
+}
+
+.upload-advanced-number:focus {
+  border-color: var(--accent);
+}
+
 @media (max-width: 900px) {
   .upload-shell {
     margin: 12px auto 0;

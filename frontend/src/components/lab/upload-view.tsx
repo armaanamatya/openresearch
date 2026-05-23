@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
-import type { DemoModelChoice, DemoRunMode } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
 import { PRESET_PAPERS } from "@/lib/demo/preset-papers";
 import type { ModelChoice } from "@/lib/models/server-fetch";
@@ -10,8 +10,40 @@ import { ICONS } from "./icons";
 
 import "./upload-view.css";
 
+// ---------------------------------------------------------------------------
+// Provider label + env-var hint table
+// ---------------------------------------------------------------------------
+
+const PROVIDER_LABELS: Record<RootProvider, string> = {
+  anthropic_api: "Anthropic API",
+  anthropic_oauth: "Anthropic OAuth",
+  openai_api: "OpenAI",
+  azure_openai: "Azure OpenAI",
+  featherless: "Featherless",
+};
+
+const PROVIDER_ENV_HINTS: Record<RootProvider, string> = {
+  anthropic_api: "Set ANTHROPIC_API_KEY and reload",
+  anthropic_oauth: "Run `claude login` and reload",
+  openai_api: "Set OPENAI_API_KEY and reload",
+  azure_openai: "Set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT and reload",
+  featherless: "Set FEATHERLESS_API_KEY and reload",
+};
+
+const SUBAGENT_LABELS: Record<SubagentAuth, string> = {
+  anthropic_api: "Anthropic API (key)",
+  anthropic_oauth: "Anthropic OAuth (subscription)",
+};
+
+// ---------------------------------------------------------------------------
+// UploadView component
+// Auth status is fetched server-side by lab/page.tsx and passed as a prop.
+// This avoids a client-side fetch on render and keeps the component simple.
+// ---------------------------------------------------------------------------
+
 export function UploadView({
   arxiv,
+  authStatus,
   busy,
   error,
   model,
@@ -23,9 +55,22 @@ export function UploadView({
   onModelChange,
   onRunModeChange,
   over,
-  setOver
+  setOver,
+  rootProvider,
+  subagentAuth,
+  dynamicGpu,
+  forceSingleGpu,
+  maxGpuUsdPerHour,
+  vramGb,
+  onRootProviderChange,
+  onSubagentAuthChange,
+  onDynamicGpuChange,
+  onForceSingleGpuChange,
+  onMaxGpuUsdPerHourChange,
+  onVramGbChange,
 }: {
   arxiv: string;
+  authStatus: AuthStatus | null;
   busy: boolean;
   error: string | null;
   model: DemoModelChoice;
@@ -38,8 +83,31 @@ export function UploadView({
   onRunModeChange: (value: DemoRunMode) => void;
   over: boolean;
   setOver: (value: boolean) => void;
+  rootProvider: RootProvider;
+  subagentAuth: SubagentAuth;
+  dynamicGpu: boolean;
+  forceSingleGpu: boolean;
+  maxGpuUsdPerHour: number;
+  vramGb: number;
+  onRootProviderChange: (value: RootProvider) => void;
+  onSubagentAuthChange: (value: SubagentAuth) => void;
+  onDynamicGpuChange: (value: boolean) => void;
+  onForceSingleGpuChange: (value: boolean) => void;
+  onMaxGpuUsdPerHourChange: (value: number) => void;
+  onVramGbChange: (value: number) => void;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const providers: RootProvider[] = [
+    "anthropic_api",
+    "anthropic_oauth",
+    "openai_api",
+    "azure_openai",
+    "featherless",
+  ];
+
+  const subagentOptions: SubagentAuth[] = ["anthropic_api", "anthropic_oauth"];
 
   return (
     <div className="upload-shell">
@@ -177,6 +245,148 @@ export function UploadView({
           ))}
         </select>
       </div>
+
+      {/* ── LLM provider radio group ─────────────────────────────── */}
+      <fieldset className="upload-provider-fieldset" disabled={busy}>
+        <legend className="upload-config-label">LLM provider</legend>
+        <div className="upload-provider-options">
+          {providers.map((p) => {
+            const status = authStatus?.providers[p];
+            const available = status ? status.available : true; // optimistic until loaded
+            const hint = available
+              ? (status?.detail ?? "")
+              : PROVIDER_ENV_HINTS[p];
+            return (
+              <label
+                key={p}
+                className={`upload-provider-option${rootProvider === p ? " selected" : ""}${!available ? " disabled" : ""}`}
+                title={hint}
+                aria-disabled={!available ? "true" : undefined}
+              >
+                <input
+                  type="radio"
+                  name="root_provider"
+                  value={p}
+                  checked={rootProvider === p}
+                  disabled={!available}
+                  onChange={() => onRootProviderChange(p)}
+                />
+                <span className="upload-provider-name">{PROVIDER_LABELS[p]}</span>
+                {status ? (
+                  <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
+                    {available ? "✓" : "✗"}
+                  </span>
+                ) : null}
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      {/* ── Sub-agent auth radio group ───────────────────────────── */}
+      <fieldset className="upload-provider-fieldset" disabled={busy}>
+        <legend className="upload-config-label">Sub-agent auth</legend>
+        <div className="upload-provider-options">
+          {subagentOptions.map((s) => {
+            const available = authStatus ? authStatus.subagent_auth[s] : true;
+            const hint = available
+              ? SUBAGENT_LABELS[s]
+              : (s === "anthropic_api" ? "Set ANTHROPIC_API_KEY and reload" : "Run `claude login` and reload");
+            return (
+              <label
+                key={s}
+                className={`upload-provider-option${subagentAuth === s ? " selected" : ""}${!available ? " disabled" : ""}`}
+                title={hint}
+                aria-disabled={!available ? "true" : undefined}
+              >
+                <input
+                  type="radio"
+                  name="subagent_auth"
+                  value={s}
+                  checked={subagentAuth === s}
+                  disabled={!available}
+                  onChange={() => onSubagentAuthChange(s)}
+                />
+                <span className="upload-provider-name">{SUBAGENT_LABELS[s]}</span>
+                {authStatus ? (
+                  <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
+                    {available ? "✓" : "✗"}
+                  </span>
+                ) : null}
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      {/* ── Advanced options (collapsible) ──────────────────────── */}
+      <details
+        className="upload-advanced"
+        open={advancedOpen}
+        onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
+      >
+        <summary className="upload-advanced-summary upload-config-label">
+          Advanced options
+        </summary>
+        <div className="upload-advanced-body">
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="dynamic-gpu-toggle">
+              Dynamic GPU
+            </label>
+            <input
+              id="dynamic-gpu-toggle"
+              type="checkbox"
+              checked={dynamicGpu}
+              disabled={busy}
+              onChange={(e) => onDynamicGpuChange(e.target.checked)}
+            />
+            <span className="upload-advanced-hint">Escalate GPU tier on CUDA OOM</span>
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="force-single-gpu-toggle">
+              Force single GPU
+            </label>
+            <input
+              id="force-single-gpu-toggle"
+              type="checkbox"
+              checked={forceSingleGpu}
+              disabled={busy}
+              onChange={(e) => onForceSingleGpuChange(e.target.checked)}
+            />
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="max-gpu-usd-input">
+              Max GPU $/hr
+            </label>
+            <input
+              id="max-gpu-usd-input"
+              type="number"
+              min={0}
+              step={0.01}
+              className="upload-advanced-number"
+              value={maxGpuUsdPerHour}
+              disabled={busy}
+              onChange={(e) => onMaxGpuUsdPerHourChange(parseFloat(e.target.value) || 0)}
+            />
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="vram-gb-input">
+              VRAM (GB)
+            </label>
+            <input
+              id="vram-gb-input"
+              type="number"
+              min={0}
+              step={1}
+              className="upload-advanced-number"
+              value={vramGb}
+              disabled={busy}
+              onChange={(e) => onVramGbChange(parseInt(e.target.value, 10) || 0)}
+            />
+          </div>
+        </div>
+      </details>
+
       {error ? <p className="upload-error">{error}</p> : null}
     </div>
   );

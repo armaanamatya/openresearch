@@ -58,6 +58,17 @@ class StartRunRequest(BaseModel):
     # third_party/paperbench/ or an absolute path). Only required when
     # mode='rdr'; ignored for other modes.
     paper_id: str | None = None
+    # Provider selection from the upload form (D5).
+    # root_provider selects which LLM backend drives the RLM root model.
+    # subagent_auth selects how sub-agents (implement_baseline etc.) authenticate.
+    # All optional — when None, existing env-var / settings defaults apply.
+    root_provider: str | None = None
+    subagent_auth: str | None = None
+    # Advanced GPU options exposed via the "Advanced options" collapsible (D2).
+    dynamic_gpu: bool | None = None
+    force_single_gpu: bool | None = None
+    max_gpu_usd_per_hour: float | None = None
+    vram_gb: int | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
