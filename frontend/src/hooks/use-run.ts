@@ -95,6 +95,8 @@ export interface UseRunResult {
   busy: boolean;
   error: string | null;
   dashboardEvents: DashboardLiveEvent[];
+  runMode: DemoRunMode;
+  setRunMode: (mode: DemoRunMode) => void;
   startFixtureRun: (model: DemoModelChoice) => Promise<void>;
   startUploadedRun: (file: File, model: DemoModelChoice) => Promise<void>;
   startArxivRun: (url: string, model: DemoModelChoice) => Promise<void>;
@@ -108,6 +110,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dashboardEvents, setDashboardEvents] = useState<DashboardLiveEvent[]>([]);
+  const [runMode, setRunMode] = useState<DemoRunMode>("rlm");
   const eventSourceRef = useRef<EventSourceLike | null>(null);
   const pollTimer = useRef<number | null>(null);
   const dashboardProjectIdRef = useRef<string | null>(null);
@@ -312,7 +315,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       // mode, executionMode, sandbox, gpuMode, model so the
       // produced URL matches the contract asserted in lab-shell.test.tsx.
       const params = new URLSearchParams({
-        mode: "rlm" satisfies DemoRunMode,
+        mode: runMode,
         executionMode: prefs.executionMode ?? "efficient",
         sandbox: prefs.sandbox ?? "runpod",
         gpuMode: "auto",
@@ -334,7 +337,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       setError(describeStartError(startError, "Unable to start run"));
       setBusy(false);
     }
-  }, [setRunUrl]);
+  }, [setRunUrl, runMode]);
 
   const startUploadedRun = useCallback(async (file: File, model: DemoModelChoice) => {
     setBusy(true);
@@ -342,7 +345,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     try {
       const prefs = readUserPrefs();
       const formData = new FormData();
-      formData.set("mode", "rlm" satisfies DemoRunMode);
+      formData.set("mode", runMode);
       formData.set("executionMode", prefs.executionMode ?? "efficient");
       formData.set("sandbox", prefs.sandbox ?? "runpod");
       formData.set("gpuMode", "auto");
@@ -364,7 +367,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       setError(describeStartError(startError, "Unable to start uploaded run"));
       setBusy(false);
     }
-  }, [setRunUrl]);
+  }, [setRunUrl, runMode]);
 
   const startArxivRun = useCallback(async (url: string, model: DemoModelChoice) => {
     setBusy(true);
@@ -382,7 +385,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           url: normalisedUrl,
-          mode: "rlm" satisfies DemoRunMode,
+          mode: runMode,
           executionMode: prefs.executionMode ?? "efficient",
           sandbox: prefs.sandbox ?? "runpod",
           gpuMode: "auto",
@@ -410,7 +413,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
       setError(describeStartError(startError, "Unable to start arXiv run"));
       setBusy(false);
     }
-  }, [setRunUrl]);
+  }, [setRunUrl, runMode]);
 
   const resumeRun = useCallback(
     async (projectId: string, overrides: Record<string, string> = {}) => {
@@ -465,5 +468,5 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     }
   }, [run, resetToUpload]);
 
-  return { run, busy, error, dashboardEvents, startFixtureRun, startUploadedRun, startArxivRun, resumeRun, clearRun, resetToUpload };
+  return { run, busy, error, dashboardEvents, runMode, setRunMode, startFixtureRun, startUploadedRun, startArxivRun, resumeRun, clearRun, resetToUpload };
 }

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.rdr.controller import _ClusterWatchdog, run_rdr
+from backend.agents.rdr.controller import _ClusterWatchdog, _write_cluster_checkpoint, _write_repair_checkpoint, run_rdr
 from backend.agents.rdr.models import Artifacts, RdrResult, RubricLeaf, WorkCluster
 
 
@@ -1278,3 +1278,156 @@ async def test_rdr_handles_none_dashboard(
 
     assert isinstance(result, RdrResult)
     assert (ctx.project_dir / "final_report.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fix: _write_cluster_checkpoint persists art.error
+# ---------------------------------------------------------------------------
+
+
+def test_write_cluster_checkpoint_persists_error(tmp_path: Path) -> None:
+    """_write_cluster_checkpoint includes art.error in the JSON payload.
+
+    Previously art.error was dropped — cluster failures lost their error string
+    unless someone grepped logs. This guards the fix.
+    """
+    iterations_dir = tmp_path / "iterations"
+    leaf = _make_leaf("leaf-x", 0.5)
+    cluster = _make_cluster("cluster-err", [leaf])
+    art = Artifacts(
+        cluster_id="cluster-err",
+        failed=True,
+        error="AuthenticationError: 401",
+        notes="",
+        files={},
+        commands=[],
+    )
+
+    _write_cluster_checkpoint(iterations_dir, 0, cluster, art)
+
+    checkpoint_files = list(iterations_dir.glob("cluster_*.json"))
+    assert len(checkpoint_files) == 1, "Expected exactly one checkpoint file"
+
+    payload = json.loads(checkpoint_files[0].read_text(encoding="utf-8"))
+    assert "error" in payload, "Checkpoint JSON must contain 'error' key"
+    assert payload["error"] == "AuthenticationError: 401", (
+        f"Expected error='AuthenticationError: 401'; got {payload['error']!r}"
+    )
+    # Existing keys must still be present
+    assert payload["cluster_id"] == "cluster-err"
+    assert payload["failed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Fix: _write_repair_checkpoint persists art.error (follow-up to 94db854)
+# ---------------------------------------------------------------------------
+
+
+def test_write_repair_checkpoint_persists_error(tmp_path: Path) -> None:
+    """_write_repair_checkpoint includes art.error in the JSON payload.
+
+    Analogous to test_write_cluster_checkpoint_persists_error but for the
+    repair-pass checkpoint function.  Previously art.error was absent from
+    repair_<N>_cluster_<id>.json so repair failures were silently dropped.
+    """
+    iterations_dir = tmp_path / "iterations"
+    leaf = _make_leaf("leaf-r", 0.5)
+    cluster = _make_cluster("cluster-repair-err", [leaf])
+    art = Artifacts(
+        cluster_id="cluster-repair-err",
+        failed=True,
+        error="OOM: cluster died",
+        notes="",
+        files={},
+        commands=[],
+    )
+
+    _write_repair_checkpoint(iterations_dir, 1, cluster, art)
+
+    repair_files = list(iterations_dir.glob("repair_*.json"))
+    assert len(repair_files) == 1, "Expected exactly one repair checkpoint file"
+
+    payload = json.loads(repair_files[0].read_text(encoding="utf-8"))
+    assert "error" in payload, "Repair checkpoint JSON must contain 'error' key"
+    assert payload["error"] == "OOM: cluster died", (
+        f"Expected error='OOM: cluster died'; got {payload['error']!r}"
+    )
+    assert payload["cluster_id"] == "cluster-repair-err"
+    assert payload["failed"] is True
+    assert payload["repair_pass"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix: cluster dispatch events include art.error (follow-up to 94db854)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cluster_dispatch_event_includes_error(
+    tmp_path: Path, make_context: Any, monkeypatch: Any
+) -> None:
+    """rdr_cluster_completed and rdr_repair_cluster_completed events include 'error'.
+
+    Runs the controller with a reproduce_fn that returns a failed Artifacts
+    (error="X") for every cluster, then checks that at least one captured
+    rdr_cluster_completed event payload carries "error": "X".  Also exercises
+    the repair path (low initial scores) so rdr_repair_cluster_completed is
+    emitted, and asserts its payload includes "error" too.
+    """
+    ctx = make_context(tmp_path)
+    leaves = [_make_leaf("leaf-1", 0.5), _make_leaf("leaf-2", 0.5)]
+    bundle = FakeBundle(leaves=leaves)
+    _patch_primitives(monkeypatch)
+
+    # Initial score low so a repair pass fires and we also get repair events.
+    call_count = [0]
+
+    def _score_fn(rubric: Any, run_dir: Any, llm: Any) -> dict:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _FAKE_SCORES_LOW
+        return _FAKE_SCORES_HIGH
+
+    _patch_score(monkeypatch, _score_fn)
+
+    async def _failing_reproduce(agent_context: Any, *, ctx: Any) -> Artifacts:
+        return Artifacts(
+            cluster_id=agent_context.cluster.id,
+            failed=True,
+            error="X",
+        )
+
+    emitted: list[tuple[str, dict]] = []
+
+    class FakeEmitter:
+        def emit(self, event_type: str, payload: dict) -> None:
+            emitted.append((event_type, dict(payload)))
+
+    ctx.dashboard = FakeEmitter()
+
+    await run_rdr(
+        bundle,
+        ctx=ctx,
+        reproduce_fn=_failing_reproduce,
+        max_repair_iterations=1,
+        repair_target=0.6,
+    )
+
+    # rdr_cluster_completed payloads must all have "error"
+    completed_events = [p for et, p in emitted if et == "rdr_cluster_completed"]
+    assert completed_events, "Expected at least one rdr_cluster_completed event"
+    for payload in completed_events:
+        assert "error" in payload, (
+            f"rdr_cluster_completed payload missing 'error': {payload!r}"
+        )
+        assert payload["error"] == "X", (
+            f"Expected error='X' in rdr_cluster_completed; got {payload['error']!r}"
+        )
+
+    # rdr_repair_cluster_completed payloads must also have "error"
+    repair_events = [p for et, p in emitted if et == "rdr_repair_cluster_completed"]
+    assert repair_events, "Expected at least one rdr_repair_cluster_completed event"
+    for payload in repair_events:
+        assert "error" in payload, (
+            f"rdr_repair_cluster_completed payload missing 'error': {payload!r}"
+        )

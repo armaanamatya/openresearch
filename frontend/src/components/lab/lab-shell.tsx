@@ -39,10 +39,13 @@ function WorkflowView({
   const rlmEvents = dashboardEvents.filter(isRlmEvent);
   const paperTitle = run.sourceLabel ?? "Untitled paper";
   const paperMeta = run.sourceNote ?? "";
+  const isActive = run.status === "queued" || run.status === "running";
   return (
     <RlmLab
       events={rlmEvents}
       runMeta={{ projectId: run.projectId, paperTitle, paperMeta }}
+      runMode={run.runMode}
+      isActive={isActive}
     />
   );
 }
@@ -83,6 +86,8 @@ export function LabShell({
     busy,
     error,
     dashboardEvents,
+    runMode,
+    setRunMode,
     startFixtureRun,
     startUploadedRun,
     startArxivRun,
@@ -118,6 +123,7 @@ export function LabShell({
               error={error}
               model={model}
               models={initialModels}
+              runMode={runMode}
               onArxivChange={setArxiv}
               onArxivSubmit={() =>
                 arxiv.trim().length > 0
@@ -129,6 +135,7 @@ export function LabShell({
                 setModel(value);
                 writeUserPref("model", value);
               }}
+              onRunModeChange={setRunMode}
               over={over}
               setOver={setOver}
             />

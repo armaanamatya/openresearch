@@ -5,6 +5,7 @@ import type {
   DemoExecutionMode,
   DemoGpuMode,
   DemoModelChoice,
+  DemoProvider,
   DemoRunMode,
   LiveDemoRunState,
   DemoSandboxMode
@@ -61,6 +62,16 @@ function toGpuMode(request: Request): DemoGpuMode | undefined {
 function toModelChoice(request: Request): DemoModelChoice | undefined {
   const value = search(request).get("model");
   return value === "sonnet" || value === "opus" ? value : undefined;
+}
+
+function toProvider(request: Request): DemoProvider | undefined {
+  const value = search(request).get("provider");
+  return value === "anthropic" || value === "openai" ? value : undefined;
+}
+
+function toVerificationProvider(request: Request): DemoProvider | undefined {
+  const value = search(request).get("verificationProvider");
+  return value === "anthropic" || value === "openai" ? value : undefined;
 }
 
 function backendQuery(request: Request): URLSearchParams {

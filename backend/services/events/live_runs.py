@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 
-RunMode = Literal["rlm", "rdr"]
+RunMode = Literal["rlm", "rdr", "rlm-pure"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
@@ -1469,6 +1469,20 @@ try:
                 max_wall_clock_seconds=config["max_wall_clock"],
             )
         if config["run_mode"] == "rlm":
+            # Default: hybrid Phase 1 (RDR) + Phase 2 (RLM adaptive repair).
+            from backend.agents.hybrid.controller import run_pipeline_hybrid
+            asyncio.run(run_pipeline_hybrid(
+                project_id,
+                runs_root,
+                DEMO_WORKSPACE,
+                provider=config["provider"],
+                model=config["model"],
+                execution_profile=profile,
+                sandbox_mode=SandboxMode(config["sandbox"]),
+                run_budget=_run_budget,
+            ))
+        elif config["run_mode"] == "rlm-pure":
+            # Escape hatch: pure RLM, no rubric decomposition.
             asyncio.run(run_pipeline_rlm(
                 project_id,
                 runs_root,
@@ -1502,7 +1516,7 @@ try:
         else:
             raise ValueError(
                 f"run_mode={{config['run_mode']!r}} is not supported. "
-                "Use 'rlm' or 'rdr'."
+                "Use 'rlm', 'rlm-pure', or 'rdr'."
             )
     finalize_benchmark()
     write_status("completed", completed_at=now())

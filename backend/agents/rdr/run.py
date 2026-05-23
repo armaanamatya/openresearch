@@ -55,15 +55,53 @@ def _resolve_bundle_path(
     )
 
 
-def _effective_provider(provider: str | None) -> str | None:
+def _effective_provider(
+    provider: str | None,
+    model: str | None = None,
+) -> str | None:
     """Resolve the effective LLM provider.
 
-    Explicit ``provider`` arg wins; otherwise auto-detect from env.
-    Returns ``"anthropic"``, ``"openai"``, or ``None`` (means fall back to
-    whatever ``collect_agent_text`` resolves internally).
+    Resolution order (most-explicit-first):
+
+      1. Explicit ``provider`` arg wins.
+      2. Model name implies provider — ``claude-*`` / ``sonnet`` / ``opus`` /
+         ``haiku`` → anthropic; ``gpt-*`` / contains ``openai`` → openai.
+      3. ``has_provider_credentials("anthropic")`` (covers API key, Claude
+         OAuth subscription, macOS Keychain) — preferred over a possibly-
+         stale ``OPENAI_API_KEY``. Same root-cause class as commit 005e3b6
+         fixed for ``_build_llm_client`` in rlm: a revoked/invalid
+         ``OPENAI_API_KEY=sk-svcacct...`` in ``.env`` silently misrouted
+         every cluster agent to OpenAI (live smoke
+         ``rlm_hybrid_smoke_1779521608`` failed 27/27 clusters this way).
+      4. ``OPENAI_API_KEY`` present (fall-through; will still 401 if invalid
+         but at least the explicit-model path bypasses it).
+      5. ``None`` — fall back to whatever ``collect_agent_text`` resolves
+         internally.
+
+    Returns ``"anthropic"``, ``"openai"``, or ``None``.
     """
     if provider is not None:
         return provider.lower()
+    # 2. Model implies provider.
+    if model:
+        m = model.lower()
+        if (
+            m.startswith("claude")
+            or "sonnet" in m
+            or "opus" in m
+            or "haiku" in m
+        ):
+            return "anthropic"
+        if m.startswith("gpt") or "openai" in m:
+            return "openai"
+    # 3. Valid Anthropic credentials win over a possibly-stale OPENAI key.
+    try:
+        from backend.agents.runtime.factory import has_provider_credentials
+        if has_provider_credentials("anthropic"):
+            return "anthropic"
+    except Exception:  # noqa: BLE001 — defensive: factory import failure
+        pass
+    # 4. OPENAI_API_KEY presence as last resort.
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY_PATH"):
@@ -162,7 +200,7 @@ async def run_pipeline_rdr(
     dashboard = DashboardEmitter(project_id, runs_root)
 
     # Compute a single effective provider — explicit arg wins; auto-detect otherwise.
-    eff_provider = _effective_provider(provider)
+    eff_provider = _effective_provider(provider, model=model)
 
     # LLM client — dynamic; works with Claude OAuth, standard OpenAI, and Azure OpenAI.
     # model is passed at construction time so it is honoured immediately.

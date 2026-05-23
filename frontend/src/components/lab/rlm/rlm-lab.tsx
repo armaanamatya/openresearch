@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
 import { useRlmRun } from "../../../hooks/use-rlm-run";
 import { RlmHeader } from "./rlm-header";
@@ -9,6 +10,7 @@ import { ReplStateRail } from "./repl-state-rail";
 import { ExplorationCanvas } from "./exploration-canvas";
 import { ReportRail } from "./report-rail";
 import { PrimitiveHistoryBar } from "./primitive-history-bar";
+import { RubricBreakdown } from "./rubric-breakdown";
 import styles from "./rlm-lab.module.css";
 
 interface RlmLabProps {
@@ -18,6 +20,10 @@ interface RlmLabProps {
     paperTitle: string;
     paperMeta: string;
   };
+  /** Run mode — when "rlm" or "rdr" the RubricBreakdown panel is shown. */
+  runMode?: DemoRunMode;
+  /** Whether the run is still active (used to gate polling). */
+  isActive?: boolean;
 }
 
 /**
@@ -30,7 +36,7 @@ interface RlmLabProps {
  *
  * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
  */
-export function RlmLab({ events, runMeta }: RlmLabProps) {
+export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabProps) {
   const state = useRlmRun(events);
 
   // ReplStateRail collapse state is owned here (the rail itself is a pure
@@ -65,6 +71,11 @@ export function RlmLab({ events, runMeta }: RlmLabProps) {
 
       {/* Band 2 */}
       <RubricStrip rubric={state.rubric} />
+
+      {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
+      {(runMode === "rlm" || runMode === "rdr") && (
+        <RubricBreakdown projectId={runMeta.projectId} isActive={isActive} />
+      )}
 
       {/* Band 3: workspace */}
       <div className={styles.workspace}>

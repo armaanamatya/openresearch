@@ -158,6 +158,7 @@ def _write_cluster_checkpoint(
         "cluster_title": cluster.title,
         "leaf_ids": [leaf.id for leaf in cluster.leaves],
         "failed": art.failed,
+        "error": art.error,    # surface the agent error string for diagnostics
         "notes": art.notes,
         "file_count": len(art.files),
     }
@@ -227,6 +228,7 @@ def _write_repair_checkpoint(
         "cluster_title": cluster.title,
         "leaf_ids": [leaf.id for leaf in cluster.leaves],
         "failed": art.failed,
+        "error": art.error,
         "file_count": len(art.files),
         "repair_pass": rep_n,
     }
@@ -434,6 +436,7 @@ async def run_rdr(
             "cluster_id": cluster.id,
             "cluster_index": idx,
             "failed": art.failed,
+            "error": art.error,
             "file_count": len(art.files),
         })
 
@@ -662,6 +665,7 @@ async def run_rdr(
                 "pass": rep_n,
                 "cluster_id": cluster.id,
                 "failed": art.failed,
+                "error": art.error,
             })
 
             # Merge repaired files back into code/ (defensive — see the
