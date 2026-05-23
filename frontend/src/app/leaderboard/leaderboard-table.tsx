@@ -67,9 +67,10 @@ function Dash() {
 
 interface LeaderboardTableProps {
   rows: LeaderboardRow[];
+  error?: string | null;
 }
 
-export function LeaderboardTable({ rows }: LeaderboardTableProps) {
+export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -89,6 +90,14 @@ export function LeaderboardTable({ rows }: LeaderboardTableProps) {
     });
     return copy;
   }, [rows, sortKey, sortDir]);
+
+  if (error) {
+    return (
+      <div className={styles.emptyState} role="status">
+        {error}
+      </div>
+    );
+  }
 
   if (rows.length === 0) {
     return (
@@ -129,19 +138,20 @@ export function LeaderboardTable({ rows }: LeaderboardTableProps) {
               <th
                 key={k}
                 className={styles.sortable}
-                onClick={() => handleHeaderClick(k)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") handleHeaderClick(k);
-                }}
+                aria-sort={sortKey === k ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
               >
-                {label}
-                {sortKey === k && (
-                  <span aria-hidden="true" className={styles.sortIndicator}>
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
+                <button
+                  type="button"
+                  className={styles.sortButton}
+                  onClick={() => handleHeaderClick(k)}
+                >
+                  {label}
+                  {sortKey === k && (
+                    <span aria-hidden="true" className={styles.sortIndicator}>
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </button>
               </th>
             ))}
           </tr>

@@ -29,7 +29,9 @@ function search(request: Request): URLSearchParams {
 
 function toRunMode(request: Request): DemoRunMode | undefined {
   const value = search(request).get("mode");
-  return value === "rlm" || value === "rdr" ? (value as DemoRunMode) : undefined;
+  return value === "rlm" || value === "rdr" || value === "rlm-pure"
+    ? (value as DemoRunMode)
+    : undefined;
 }
 
 function toPaperId(request: Request): string | undefined {

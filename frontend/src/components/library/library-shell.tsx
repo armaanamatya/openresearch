@@ -12,12 +12,16 @@ import { LibraryTable } from "./library-table";
  */
 export function LibraryShell({
   initialRuns,
+  initialError,
   initialParams,
-  recents
+  recents,
+  recentsError
 }: {
   initialRuns: RunSummary[];
+  initialError?: string | null;
   initialParams: { status?: string; q?: string; order_by?: string };
   recents: RecentRunSummary[];
+  recentsError?: string | null;
 }) {
   return (
     <div className="reproLab">
@@ -25,9 +29,14 @@ export function LibraryShell({
         <LabSidebar
           active="library"
           recents={recents}
+          recentsError={recentsError}
         />
         <main className="content">
-          <LibraryTable initialRuns={initialRuns} initialParams={initialParams} />
+          <LibraryTable
+            initialRuns={initialRuns}
+            initialError={initialError}
+            initialParams={initialParams}
+          />
         </main>
       </div>
     </div>

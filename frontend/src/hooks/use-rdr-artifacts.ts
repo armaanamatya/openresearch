@@ -77,10 +77,12 @@ export function useRdrArtifacts(
       }
     };
 
-    const fetchOnce = async () => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const fetchOnce = async (): Promise<boolean> => {
       // If we have already confirmed this run has no rdr artifacts, bail early
       // so the interval doesn't fire additional requests.
-      if (localNoArtifactsCount >= STOP_AFTER_NO_ARTIFACT_CYCLES) return;
+      if (localNoArtifactsCount >= STOP_AFTER_NO_ARTIFACT_CYCLES) return false;
 
       const [c, l, r] = await Promise.all([
         fetchOne("clusters"),
@@ -88,7 +90,7 @@ export function useRdrArtifacts(
         fetchOne("repair-iterations"),
       ]);
 
-      if (cancelled) return;
+      if (cancelled) return false;
 
       // A fetch is "missing" if it returned a non-2xx status, OR if it returned
       // 200 with an empty array (e.g. {clusters: []}). The latter covers a live
@@ -104,9 +106,14 @@ export function useRdrArtifacts(
       }
       const allMissing = isMissing(c, "clusters") && isMissing(l, "leaf_scores") && isMissing(r, "passes");
       if (allMissing) {
-        localNoArtifactsCount += 1;
-        setNoArtifactsCount(localNoArtifactsCount);
-        return;
+        if (isActive) {
+          localNoArtifactsCount = 0;
+          setNoArtifactsCount(0);
+        } else {
+          localNoArtifactsCount += 1;
+          setNoArtifactsCount(localNoArtifactsCount);
+        }
+        return isActive || localNoArtifactsCount < STOP_AFTER_NO_ARTIFACT_CYCLES;
       }
 
       // At least one endpoint returned 2xx data — reset counter.
@@ -121,16 +128,24 @@ export function useRdrArtifacts(
       if (Array.isArray(lData?.leaf_scores)) setLeafScores(lData.leaf_scores);
       if (Array.isArray(rData?.passes)) setRepairPasses(rData.passes);
       setActiveProjectId(projectId);
+      return isActive;
     };
 
-    void fetchOnce();
-
-    if (!isActive) return;
-
-    const id = setInterval(() => void fetchOnce(), pollMs);
+    void fetchOnce().then((shouldPoll) => {
+      if (!cancelled && shouldPoll) {
+        intervalId = setInterval(() => {
+          void fetchOnce().then((keepPolling) => {
+            if (!keepPolling && intervalId !== null) {
+              clearInterval(intervalId);
+              intervalId = null;
+            }
+          });
+        }, pollMs);
+      }
+    });
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (intervalId !== null) clearInterval(intervalId);
     };
   }, [projectId, isActive, pollMs]);
 

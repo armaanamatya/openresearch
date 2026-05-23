@@ -12,11 +12,14 @@ export async function GET(request: Request): Promise<Response> {
       { cache: "no-store" }
     );
     if (!response.ok) {
-      return NextResponse.json([], { status: 200 });
+      return NextResponse.json(
+        { error: `Backend returned HTTP ${response.status}` },
+        { status: 502 }
+      );
     }
     const body = (await response.json()) as unknown;
     return NextResponse.json(body);
   } catch {
-    return NextResponse.json([], { status: 200 });
+    return NextResponse.json({ error: "Backend unavailable" }, { status: 502 });
   }
 }

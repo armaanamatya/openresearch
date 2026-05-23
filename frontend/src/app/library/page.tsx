@@ -1,4 +1,4 @@
-import { fetchRecentRuns, fetchRunList } from "@/lib/runs/server-list";
+import { fetchRecentRunsResult, fetchRunListResult } from "@/lib/runs/server-list";
 import { LibraryShell } from "@/components/library/library-shell";
 
 // The library page is a server component: it hydrates the table with
@@ -13,24 +13,26 @@ export default async function LibraryPage({
   searchParams: Promise<{ status?: string; q?: string; order_by?: string }>;
 }) {
   const params = await searchParams;
-  const [initialRuns, recents] = await Promise.all([
-    fetchRunList({
+  const [runResult, recentResult] = await Promise.all([
+    fetchRunListResult({
       limit: 100,
       status: params.status,
       q: params.q,
       order_by: params.order_by ?? "updated_at"
     }),
-    fetchRecentRuns(8)
+    fetchRecentRunsResult(8)
   ]);
   return (
     <LibraryShell
-      initialRuns={initialRuns}
+      initialRuns={runResult.runs}
+      initialError={runResult.error}
       initialParams={{
         status: params.status,
         q: params.q,
         order_by: params.order_by ?? "updated_at"
       }}
-      recents={recents}
+      recents={recentResult.runs}
+      recentsError={recentResult.error}
     />
   );
 }

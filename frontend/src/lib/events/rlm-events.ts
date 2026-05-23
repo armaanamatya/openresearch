@@ -145,6 +145,42 @@ export interface IterationHeartbeatEvent {
   note: string;
 }
 
+export interface ClusterStartedEvent {
+  event: "cluster_started";
+  timestamp?: string;
+  cluster_id: string;
+  cluster_title: string;
+  leaves: Array<{ id: string; weight: number; requirements: string }>;
+  iteration: number;
+}
+
+export interface ClusterArtifactEmittedEvent {
+  event: "cluster_artifact_emitted";
+  timestamp?: string;
+  cluster_id: string;
+  artifact_path: string;
+  byte_size: number;
+  language: string | null;
+}
+
+export interface ClusterScoredEvent {
+  event: "cluster_scored";
+  timestamp?: string;
+  cluster_id: string;
+  score: number;
+  leaf_scores: Record<string, number>;
+  degraded: boolean;
+}
+
+export interface RepairDispatchedEvent {
+  event: "repair_dispatched";
+  timestamp?: string;
+  cluster_id: string;
+  attempt: number;
+  prior_score: number;
+  failed_leaves: string[];
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -158,6 +194,10 @@ export const RLM_EVENT_TYPES = [
   "user_message_response",
   "run_warning",
   "iteration_heartbeat",
+  "cluster_started",
+  "cluster_artifact_emitted",
+  "cluster_scored",
+  "repair_dispatched",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -172,7 +212,11 @@ export type RlmDashboardEvent =
   | UserMessageEvent
   | UserMessageResponseEvent
   | RunWarningEvent
-  | IterationHeartbeatEvent;
+  | IterationHeartbeatEvent
+  | ClusterStartedEvent
+  | ClusterArtifactEmittedEvent
+  | ClusterScoredEvent
+  | RepairDispatchedEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

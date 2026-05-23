@@ -47,7 +47,6 @@ const SCENE_PADDING = 160;
  */
 export function ExplorationCanvas({
   tree,
-  iterations,
   selectedNodeId: externalSelectedNodeId = null,
   onSelectNode,
 }: ExplorationCanvasProps) {
@@ -175,11 +174,6 @@ export function ExplorationCanvas({
     if (candidate == null) return null;
     return positioned.some((n) => n.id === candidate) ? candidate : null;
   }, [onSelectNode, userPicked, selectedNodeId, frontierNodeId, positioned]);
-
-  const selectedNode = useMemo(
-    () => positioned.find((n) => n.id === effectiveSelectedId) ?? null,
-    [positioned, effectiveSelectedId]
-  );
 
   // ── Selection handlers ────────────────────────────────────────────────────
   const handleSelect = useCallback(

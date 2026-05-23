@@ -173,7 +173,7 @@ describe("useRdrArtifacts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useRdrArtifacts("prj_all404", true, 10));
+    const { result } = renderHook(() => useRdrArtifacts("prj_all404", false, 10));
 
     // Cycle 1: initial fetch (3 calls)
     await act(async () => { await Promise.resolve(); });
@@ -244,6 +244,25 @@ describe("useRdrArtifacts", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeExtra);
   });
 
+  it("keeps polling missing artifacts while the run is active", async () => {
+    vi.useFakeTimers();
+
+    const fetchMock = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useRdrArtifacts("prj_active_missing", true, 10));
+
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(10); await Promise.resolve(); });
+    await act(async () => { vi.advanceTimersByTime(50); await Promise.resolve(); });
+
+    expect(result.current.noRdrArtifacts).toBe(false);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(9);
+  });
+
   it("test_hook_stops_polling_after_3_502_cycles: stops after 3 all-502 cycles and exposes noRdrArtifacts", async () => {
     vi.useFakeTimers();
 
@@ -253,7 +272,7 @@ describe("useRdrArtifacts", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useRdrArtifacts("prj_all502", true, 10));
+    const { result } = renderHook(() => useRdrArtifacts("prj_all502", false, 10));
 
     // Cycle 1: initial fetch (3 calls)
     await act(async () => { await Promise.resolve(); });
@@ -278,7 +297,7 @@ describe("useRdrArtifacts", () => {
     const fetchMock = vi.fn(() => Promise.reject(new TypeError("network error")));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useRdrArtifacts("prj_all_net_err", true, 10));
+    const { result } = renderHook(() => useRdrArtifacts("prj_all_net_err", false, 10));
 
     // Cycle 1: initial fetch (3 calls)
     await act(async () => { await Promise.resolve(); });
@@ -313,7 +332,7 @@ describe("useRdrArtifacts", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useRdrArtifacts("prj_all_empty", true, 10));
+    const { result } = renderHook(() => useRdrArtifacts("prj_all_empty", false, 10));
 
     // Cycle 1: initial fetch (3 calls)
     await act(async () => { await Promise.resolve(); });

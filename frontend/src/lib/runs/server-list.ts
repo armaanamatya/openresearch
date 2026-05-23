@@ -88,18 +88,27 @@ function toRunSummary(raw: RawBackendRun): RunSummary | null {
 }
 
 export async function fetchRecentRuns(limit = 10): Promise<RecentRunSummary[]> {
+  return (await fetchRecentRunsResult(limit)).runs;
+}
+
+export async function fetchRecentRunsResult(
+  limit = 10
+): Promise<{ runs: RecentRunSummary[]; error: string | null }> {
   try {
     const response = await fetch(
       `${backendBaseUrl()}/runs?limit=${encodeURIComponent(String(limit))}`,
       { cache: "no-store" }
     );
     if (!response.ok) {
-      return [];
+      return { runs: [], error: `Recent runs unavailable (HTTP ${response.status}).` };
     }
     const body = (await response.json()) as RecentRunSummary[];
-    return Array.isArray(body) ? body : [];
+    return {
+      runs: Array.isArray(body) ? body : [],
+      error: Array.isArray(body) ? null : "Recent runs response was not a list.",
+    };
   } catch {
-    return [];
+    return { runs: [], error: "Recent runs unavailable." };
   }
 }
 
@@ -113,6 +122,12 @@ export interface FetchRunListParams {
 export async function fetchRunList(
   params: FetchRunListParams = {}
 ): Promise<RunSummary[]> {
+  return (await fetchRunListResult(params)).runs;
+}
+
+export async function fetchRunListResult(
+  params: FetchRunListParams = {}
+): Promise<{ runs: RunSummary[]; error: string | null }> {
   const qs = new URLSearchParams();
   if (typeof params.limit === "number") qs.set("limit", String(params.limit));
   if (params.status) qs.set("status", params.status);
@@ -123,16 +138,16 @@ export async function fetchRunList(
     const response = await fetch(`${backendBaseUrl()}/runs?${qs.toString()}`, {
       cache: "no-store"
     });
-    if (!response.ok) return [];
+    if (!response.ok) return { runs: [], error: `Run library unavailable (HTTP ${response.status}).` };
     const body = (await response.json()) as RawBackendRun[];
-    if (!Array.isArray(body)) return [];
+    if (!Array.isArray(body)) return { runs: [], error: "Run library response was not a list." };
     const out: RunSummary[] = [];
     for (const raw of body) {
       const row = toRunSummary(raw);
       if (row) out.push(row);
     }
-    return out;
+    return { runs: out, error: null };
   } catch {
-    return [];
+    return { runs: [], error: "Run library unavailable." };
   }
 }

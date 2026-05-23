@@ -20,6 +20,8 @@ interface RlmHeaderProps {
   warnings?: RunWarning[];
   /** ISO-8601 timestamp of the last heartbeat, or null if none received yet. */
   lastHeartbeatAt?: string | null;
+  /** Client-side clock tick owned by the parent; avoids Date.now() during render. */
+  heartbeatNowMs?: number | null;
   /** Error message to display when status is "failed". */
   error?: string | null;
   /** Callback to trigger a rerun; present for failed and completed runs. */
@@ -53,6 +55,7 @@ export function RlmHeader({
   costUsd,
   warnings = [],
   lastHeartbeatAt = null,
+  heartbeatNowMs = null,
   error = null,
   onRerun,
   rerunBusy = false,
@@ -67,9 +70,10 @@ export function RlmHeader({
   const noSignalSecs = useMemo(() => {
     if (status !== "running") return null;
     if (lastHeartbeatAt === null) return null;
-    const elapsed = Date.now() - new Date(lastHeartbeatAt).getTime();
+    if (heartbeatNowMs === null) return null;
+    const elapsed = heartbeatNowMs - new Date(lastHeartbeatAt).getTime();
     return elapsed > HEARTBEAT_STALE_MS ? Math.floor(elapsed / 1000) : null;
-  }, [status, lastHeartbeatAt]);
+  }, [status, lastHeartbeatAt, heartbeatNowMs]);
 
   const handleRerun = onRerun
     ? async () => {

@@ -8,6 +8,7 @@ import styles from "./library-table.module.css";
 
 export interface LibraryTableProps {
   initialRuns: RunSummary[];
+  initialError?: string | null;
   initialParams: { status?: string; q?: string; order_by?: string };
 }
 
@@ -32,11 +33,18 @@ const RELATIVE_THRESHOLDS: { ms: number; unit: Intl.RelativeTimeFormatUnit; div:
   { ms: 31_536_000_000, unit: "month", div: 2_592_000_000 }
 ];
 
-function formatRelative(iso: string | undefined): string {
+function formatAbsoluteUtc(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+function formatRelative(iso: string | undefined, nowMs: number | null): string {
   if (!iso) return "—";
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "—";
-  const diff = Date.now() - then;
+  if (nowMs === null) return formatAbsoluteUtc(iso);
+  const diff = nowMs - then;
   if (diff < 5_000) return "just now";
   // date-fns-style: relative when recent, otherwise a brief locale stamp.
   for (const t of RELATIVE_THRESHOLDS) {
@@ -45,11 +53,11 @@ function formatRelative(iso: string | undefined): string {
       try {
         return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(value, t.unit);
       } catch {
-        return new Date(iso).toLocaleString();
+        return formatAbsoluteUtc(iso);
       }
     }
   }
-  return new Date(iso).toLocaleString();
+  return formatAbsoluteUtc(iso);
 }
 
 function formatNumber(n: number | undefined, fractionDigits = 3): string {
@@ -64,7 +72,7 @@ function formatDelta(n: number | undefined): string {
   return `${sign}${n.toFixed(3)}`;
 }
 
-export function LibraryTable({ initialRuns, initialParams }: LibraryTableProps) {
+export function LibraryTable({ initialRuns, initialError = null, initialParams }: LibraryTableProps) {
   const [filters, setFilters] = useState<LibraryFiltersValue>({
     status: initialParams.status,
     q: initialParams.q,
@@ -72,7 +80,8 @@ export function LibraryTable({ initialRuns, initialParams }: LibraryTableProps) 
   });
   const [runs, setRuns] = useState<RunSummary[]>(initialRuns);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
+  const [nowMs, setNowMs] = useState<number | null>(null);
 
   // Track the latest in-flight request so out-of-order responses can't
   // overwrite fresher state. Without this, a slow request for "all"
@@ -111,7 +120,8 @@ export function LibraryTable({ initialRuns, initialParams }: LibraryTableProps) 
       .then(async (res) => {
         if (seq !== requestSeqRef.current) return;
         if (!res.ok) {
-          setError("Could not load runs.");
+          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+          setError(payload?.error ?? "Could not load runs.");
           setRuns([]);
           return;
         }
@@ -127,6 +137,16 @@ export function LibraryTable({ initialRuns, initialParams }: LibraryTableProps) 
         if (seq === requestSeqRef.current) setLoading(false);
       });
   }, [queryKey, filters.status, filters.q, filters.order_by]);
+
+  useEffect(() => {
+    const update = () => setNowMs(Date.now());
+    const initialTick = window.setTimeout(update, 0);
+    const interval = window.setInterval(update, 60_000);
+    return () => {
+      window.clearTimeout(initialTick);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const handleFiltersChange = useCallback((next: LibraryFiltersValue) => {
     setFilters(next);
@@ -190,9 +210,9 @@ export function LibraryTable({ initialRuns, initialParams }: LibraryTableProps) 
                       <td className={`${styles.tdLeft} ${styles.tdMuted}`}>
                         <time
                           dateTime={run.updatedAt ?? ""}
-                          title={run.updatedAt ? new Date(run.updatedAt).toLocaleString() : ""}
+                          title={run.updatedAt ? formatAbsoluteUtc(run.updatedAt) : ""}
                         >
-                          {formatRelative(run.updatedAt)}
+                          {formatRelative(run.updatedAt, nowMs)}
                         </time>
                       </td>
                       <td className={`${styles.tdRight} ${styles.tdMono}`}>
