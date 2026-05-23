@@ -119,6 +119,15 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
   `services/events/live_runs.py` (subprocess spawn + SSE bridge).
 - **Frontend** — `app/lab/page.tsx` → `components/lab/rlm/` (lab UI),
   `app/api/demo/*` (backend proxy routes).
+- **Leaderboard** — `backend/routes/leaderboard.py` (`GET /leaderboard`,
+  filesystem-aggregated; no SQLite projection at this scale) and
+  `frontend/src/app/leaderboard/` (page + sortable table). Read-only; not
+  gated by the demo secret.
+- **Rubric climb panel** — `frontend/src/components/lab/rlm/rubric-strip.tsx`
+  is band 2 of the lab; carries the count-up tween + line-chart sparkline +
+  per-area chip row with fail→pass flip highlights + candidate attribution.
+  All new state (`previousAreas`, `attributableCandidate`) is derived in the
+  `useRlmRun` reducer from existing SSE events — no new event types added.
 
 ## Docs
 
