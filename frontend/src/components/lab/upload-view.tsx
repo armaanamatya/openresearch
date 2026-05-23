@@ -2,7 +2,8 @@
 
 import { useRef } from "react";
 
-import type { DemoModelChoice } from "@/lib/demo/demo-run-types";
+import type { DemoModelChoice, DemoRunMode } from "@/lib/demo/demo-run-types";
+import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { ICONS } from "./icons";
 
@@ -14,10 +15,12 @@ export function UploadView({
   error,
   model,
   models,
+  runMode,
   onArxivChange,
   onArxivSubmit,
   onFileSelected,
   onModelChange,
+  onRunModeChange,
   over,
   setOver
 }: {
@@ -26,10 +29,12 @@ export function UploadView({
   error: string | null;
   model: DemoModelChoice;
   models: ModelChoice[];
+  runMode: DemoRunMode;
   onArxivChange: (value: string) => void;
   onArxivSubmit: () => void;
   onFileSelected: (file: File) => void;
   onModelChange: (value: DemoModelChoice) => void;
+  onRunModeChange: (value: DemoRunMode) => void;
   over: boolean;
   setOver: (value: boolean) => void;
 }) {
@@ -136,6 +141,23 @@ export function UploadView({
                   {model.charAt(0).toUpperCase() + model.slice(1)}
                 </option>
               )}
+        </select>
+      </div>
+      <div className="upload-config-row">
+        <label className="upload-config-label" htmlFor="mode-select">Mode</label>
+        <select
+          id="mode-select"
+          className="upload-config-select"
+          value={runMode}
+          disabled={busy}
+          onChange={(event) => onRunModeChange(event.target.value as DemoRunMode)}
+          title={RUN_MODE_OPTIONS.find((o) => o.value === runMode)?.description}
+        >
+          {RUN_MODE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value} title={o.description}>
+              {o.label}
+            </option>
+          ))}
         </select>
       </div>
       {error ? <p className="upload-error">{error}</p> : null}

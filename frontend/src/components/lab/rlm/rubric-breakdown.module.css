@@ -1,0 +1,168 @@
+/* RubricBreakdown — cluster grid + leaf score list for rdr/rlm runs.
+ * Rendered below the RubricStrip band when runMode is "rlm" or "rdr".
+ * Uses the same token vocabulary as the rest of the lab shell.
+ */
+
+.panel {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* ── Cluster grid ───────────────────────────────────────────── */
+
+.sectionLabel {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin: 0 0 4px;
+}
+
+.clusterGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.clusterPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  border: 1px solid transparent;
+  cursor: default;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clusterPill[data-status="pending"] {
+  background: var(--chip);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.clusterPill[data-status="success"] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.clusterPill[data-status="failed"] {
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 30%, transparent);
+}
+
+/* ── Repair banner ──────────────────────────────────────────── */
+
+.repairBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.repairBannerLabel {
+  font-weight: 600;
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+
+/* ── Leaf score list ────────────────────────────────────────── */
+
+.leafList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.leafRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.leafId {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--muted);
+  min-width: 100px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.leafBarTrack {
+  flex: 1;
+  height: 5px;
+  background: var(--chip);
+  border-radius: var(--r-xs);
+  overflow: hidden;
+  min-width: 60px;
+}
+
+.leafBarFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-xs);
+  transition: width 300ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leafBarFill {
+    transition: none;
+  }
+}
+
+.leafScore {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--ink);
+  min-width: 32px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.leafJustification {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  cursor: pointer;
+}
+
+.leafJustification[data-expanded="true"] {
+  white-space: normal;
+  cursor: pointer;
+}
+
+.overallScore {
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.overallScoreLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}

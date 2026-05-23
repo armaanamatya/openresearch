@@ -103,3 +103,69 @@ export interface TelemetryRecordPublic {
   success?: boolean;
   error_message?: string | null;
 }
+
+// ── RDR / Hybrid artifact types ─────────────────────────────────────────────
+// Shapes match the backend _read_rdr_clusters / _read_rdr_repair_iterations /
+// _read_rdr_leaf_scores functions in backend/app.py exactly.
+
+export interface DemoRepairHistoryEntry {
+  pass: number;
+  failed: boolean;
+  file_count: number;
+}
+
+export interface DemoClusterStatus {
+  index: number;
+  cluster_id: string;
+  title: string;
+  leaf_ids: string[];
+  /** null when only repair checkpoints exist for this cluster (partial run) */
+  failed: boolean | null;
+  file_count: number;
+  repair_history: DemoRepairHistoryEntry[];
+}
+
+export interface DemoClustersResponse {
+  project_id: string;
+  clusters: DemoClusterStatus[];
+}
+
+export interface DemoRepairPass {
+  pass: number;
+  cluster_count: number;
+  failed_count: number;
+}
+
+export interface DemoRepairIterationsResponse {
+  project_id: string;
+  passes: DemoRepairPass[];
+}
+
+export interface DemoLeafScore {
+  id: string;
+  score: number;
+  justification: string;
+}
+
+export interface DemoLeafScoresResponse {
+  project_id: string;
+  overall_score: number;
+  leaf_scores: DemoLeafScore[];
+}
+
+export const RUN_MODE_OPTIONS: ReadonlyArray<{
+  value: DemoRunMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "rlm",
+    label: "RLM (Hybrid)",
+    description: "RDR rubric-decompose + RLM adaptive repair. Recommended."
+  },
+  {
+    value: "rdr",
+    label: "RDR (Rubric-driven)",
+    description: "Deterministic rubric controller. No LLM repair. Predictable cost."
+  }
+] as const;
