@@ -96,9 +96,15 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 ## Docs
 
 - `docs/design/rlm-pivot-brief.md` — the canonical architecture reference and design rationale.
+- `docs/design/project-state-audit-2026-05-22.md` — read-only whole-repo audit captured 2026-05-22.
+- `docs/superpowers/plans/2026-05-22-infrastructure-improvement-plan.md` —
+  sandbox + cost-safety improvement catalog (7 candidates, phased) with a
+  detailed Phase 1 TDD plan for a `max_pod_seconds` pod-time budget cap.
 - `learn.md` — post-mortems: bugs shipped + the guardrail for each.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
-  and deployment.
+  and deployment. README.md also documents the two-surfaces LLM auth model
+  and the empty-`ANTHROPIC_API_KEY` + Claude Code OAuth pattern preferred for
+  local dev.
 
 ## Maintaining this doc
 

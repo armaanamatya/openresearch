@@ -10,7 +10,7 @@ def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_pat
     code_dir.mkdir()
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None):
         assert env_id == "reprolab/test:env-check"
         assert commands == ["python train.py"]
         assert project_id  # run_experiment threads ctx.project_id through
@@ -50,7 +50,7 @@ def test_run_experiment_persists_result_to_disk(make_context, tmp_path, monkeypa
     code_dir.mkdir()
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None):
         return {"metrics": {}, "success": False, "logs": "boom: traceback here"}
 
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
@@ -272,7 +272,7 @@ def test_sandbox_mode_is_threaded_from_ctx_to_backend(make_context, tmp_path, mo
 
     real_backend_for = primitives_mod._backend_for_sandbox_mode
 
-    def spy_backend_for(mode):
+    def spy_backend_for(mode, *, run_budget=None):
         captured["mode"] = mode
         # Return a minimal fake backend so we don't need Docker.
         class _FakeBackend:
@@ -315,4 +315,64 @@ def test_sandbox_mode_is_threaded_from_ctx_to_backend(make_context, tmp_path, mo
     assert captured.get("mode") == "runpod", (
         f"ctx.sandbox_mode was not forwarded to _backend_for_sandbox_mode; "
         f"got mode={captured.get('mode')!r}"
+    )
+
+
+def test_run_budget_is_threaded_from_ctx_to_backend(make_context, tmp_path, monkeypatch):
+    """Regression guard: ctx.run_budget must reach _backend_for_sandbox_mode.
+
+    Mirrors test_sandbox_mode_is_threaded_from_ctx_to_backend but captures the
+    run_budget kwarg. Without this, accidentally dropping run_budget=ctx.run_budget
+    from the _execute_in_sandbox(...) call inside run_experiment would silently
+    disarm the max_pod_seconds protection in production with no test failure.
+    """
+    import backend.agents.rlm.primitives as primitives_mod
+    from backend.agents.resilience.budget import RunBudget
+
+    captured: dict = {}
+
+    def spy_backend_for(mode, *, run_budget=None):
+        captured["run_budget"] = run_budget
+
+        class _FakeBackend:
+            pass
+
+        return _FakeBackend()
+
+    monkeypatch.setattr(primitives_mod, "_backend_for_sandbox_mode", spy_backend_for)
+
+    from datetime import datetime, timezone
+    from backend.services.runtime.interface import ExecResult, Sandbox
+
+    def _make_result(cmd_str: str) -> ExecResult:
+        now = datetime.now(timezone.utc)
+        return ExecResult(
+            command=cmd_str, exit_code=0, stdout="", stderr="",
+            started_at=now, finished_at=now, duration_seconds=0.01,
+        )
+
+    class _FakeService:
+        def __init__(self, backend):
+            pass
+        async def create_sandbox(self, cmd):
+            return Sandbox(sandbox_id="fake", name="fake", image="fake", config=cmd.config)
+        async def execute(self, cmd):
+            return _make_result(cmd.command)
+        async def destroy(self, cmd):
+            return None
+
+    monkeypatch.setattr(primitives_mod, "RuntimeAppService", _FakeService)
+
+    ctx = make_context(tmp_path)
+    budget = RunBudget(max_pod_seconds=600.0)
+    ctx.run_budget = budget
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["echo hi"]))
+
+    primitives_mod.run_experiment(str(code_dir), "img:tag", ctx=ctx)
+
+    assert captured.get("run_budget") is budget, (
+        f"ctx.run_budget did not reach _backend_for_sandbox_mode; "
+        f"got run_budget={captured.get('run_budget')!r}"
     )

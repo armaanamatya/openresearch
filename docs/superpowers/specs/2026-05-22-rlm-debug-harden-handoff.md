@@ -231,6 +231,19 @@ proves only the *subscription* works; the *API key* needs its own credits.
 (qwen3-coder-featherless) as the root. Sub-agents will resolve via OAuth and
 incur zero Anthropic API spend.
 
+**Fixed 2026-05-23 — macOS Keychain OAuth detection.** Modern Claude Code on
+macOS stores OAuth in the Keychain (`security find-generic-password -s
+"Claude Code-credentials"`), not in `~/.claude/.credentials.json`. Until the
+fix, `factory.py:has_provider_credentials` only checked the file path and
+returned False on every macOS dev machine with Claude Code logged in — the
+sub-agent runtime resolved as `unresolved` and `implement_baseline` died
+with a credential error even with the "safest local-dev setup" above.
+`_has_claude_subscription_oauth()` now probes both backends (file +
+Keychain). With this fix in place the "safest" setup actually works on
+macOS; until then the only way around it was to set a real
+`ANTHROPIC_API_KEY` with credits (which then hit the no-credit-fallback
+pitfall if the account was at $0).
+
 **RunPod sandbox gotcha:** `REPROLAB_FORCE_SANDBOX=docker` in `.env`
 **silently overrides** any `--sandbox runpod` flag. Comment that line out
 before launching a GPU run. Also set

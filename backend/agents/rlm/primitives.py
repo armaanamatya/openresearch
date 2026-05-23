@@ -459,14 +459,20 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     return str(code_dir)
 
 
-def _backend_for_sandbox_mode(sandbox_mode: object):
+def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None):
     """Return a RuntimeBackend instance for the given sandbox mode.
 
-    Only ``SandboxMode.docker`` (and ``None`` / the default) are supported in
-    the RLM path — RLM experiments run inside Docker containers.  Any other
-    mode falls back to ``LocalDockerBackend`` with a WARNING rather than
-    crashing, so existing docker runs are behaviour-identical and an unsupported
-    mode still produces a useful (if not precisely targeted) result.
+    ``SandboxMode.docker`` (and ``None`` / the default) map to
+    ``LocalDockerBackend``.  ``SandboxMode.runpod`` is now fully wired: this
+    function calls ``ensure_runpod_available()`` (fast fail on missing creds)
+    and constructs a real ``RunpodBackend``, forwarding ``run_budget`` so the
+    ``max_pod_seconds`` cap is enforced at each ``exec()`` call.
+
+    Any other unsupported mode (local, auto, brev, simulate) falls back to
+    ``LocalDockerBackend`` with a WARNING rather than crashing, so the run still
+    produces a result while making the misconfiguration visible.
+
+    ``run_budget=None`` is safe for all modes — no cap is enforced.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -485,12 +491,19 @@ def _backend_for_sandbox_mode(sandbox_mode: object):
     if mode is SandboxMode.docker:
         return LocalDockerBackend()
 
-    # All other modes (runpod, brev, local, auto, simulate) are not yet wired
+    if mode is SandboxMode.runpod:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.runpod_backend import RunpodBackend
+
+        _runtime.ensure_runpod_available()
+        return RunpodBackend(run_budget=run_budget)
+
+    # All other modes (local, auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "RLM experiments are docker-centric; plumb the backend here when needed.",
+        "Set --sandbox docker or --sandbox runpod for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -521,6 +534,7 @@ async def _execute_in_sandbox(
     project_id: str,
     run_id: str,
     sandbox_mode: object = None,
+    run_budget: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -535,7 +549,9 @@ async def _execute_in_sandbox(
 
     I7: `sandbox_mode` selects the runtime backend; ``None`` / ``docker`` map to
     ``LocalDockerBackend`` (behaviour-identical to the previous hardcoded path).
-    Any unsupported mode falls back to ``LocalDockerBackend`` with a WARNING.
+    ``runpod`` constructs a real ``RunpodBackend`` with the given ``run_budget``
+    (so ``max_pod_seconds`` is enforced).  Any unsupported mode falls back to
+    ``LocalDockerBackend`` with a WARNING.
     """
     import asyncio
     import json as _json
@@ -551,7 +567,7 @@ async def _execute_in_sandbox(
     artifact_root = code_dir / "outputs" / run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode))
+    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -719,6 +735,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     code_path, env_id, commands,
                     project_id=ctx.project_id, run_id=run_id,
                     sandbox_mode=ctx.sandbox_mode,
+                    run_budget=ctx.run_budget,
                 ),
             ).result(timeout=timeout)
         except concurrent.futures.TimeoutError:

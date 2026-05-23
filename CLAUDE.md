@@ -65,6 +65,8 @@ The RLM path has **two distinct LLM auth surfaces** and they are NOT interchange
 
 **The 2026-05-22 pitfall (see `docs/superpowers/specs/2026-05-22-rlm-debug-harden-handoff.md` §auth):** if you set `ANTHROPIC_API_KEY` to a key whose Anthropic *API account* has no credits, the SDK tries it first, hits 400 *"credit balance too low"*, and does **not** fall back to OAuth — every reproduction dies at the first Sonnet sub-call with `cost_usd=0.0`. Working `claude --print "ping"` proves only the *subscription* works; the *API key* needs its own credits. **Safest local dev**: leave `ANTHROPIC_API_KEY=` (empty) in `.env`, `claude login` once, and use OpenAI/Featherless for the root. Comment block in `.env` lines 14–18 is the canonical reference.
 
+**Fixed 2026-05-23 — macOS Keychain OAuth detection.** Modern Claude Code on macOS stores OAuth credentials in the Keychain (`security find-generic-password -s "Claude Code-credentials"`), not in `~/.claude/.credentials.json`. Until 2026-05-23, `factory.py:has_provider_credentials` only checked the file path, so it returned False on every macOS dev machine with Claude Code logged in — the sub-agent runtime resolved as `unresolved` and `implement_baseline` died with a credential error. Both `validate_provider_credentials` and `has_provider_credentials` now route through `_has_claude_subscription_oauth()`, which probes the Keychain on `darwin` and the file on other platforms. **Cheapest local-dev cost model is now: OpenAI for the root model (~$1/run via `--model gpt-5`), OAuth subscription for Sonnet sub-agents ($0), RunPod COMMUNITY for the GPU sandbox (~$0.34/run). No Anthropic API balance needed.**
+
 ### Sandbox config gotcha
 `REPROLAB_FORCE_SANDBOX` in `.env` (when set) **overrides per-run `--sandbox` flags** — useful for forcing all local runs to Docker, but it silently makes `--sandbox runpod` a no-op. `REPROLAB_RUNPOD_CLOUD_TYPE` choose `COMMUNITY` (≈ $0.34/hr on RTX 4090) vs `SECURE` (≈ $0.69/hr); the `.env` shipped with the repo defaults to `COMMUNITY` since 2026-05-22 (was `SECURE` before).
 
@@ -142,6 +144,12 @@ When `REPROLAB_DEMO_SECRET` is set, run-start endpoints require a matching `X-De
 
 ## Maintaining this doc and `system_overview.md`
 `system_overview.md` documents the "why" and "how it fits together"; this file documents the day-to-day. When you add a new primitive, a new SSE event type, a new sandbox, or a new fail-soft/fail-closed mode, update both. Don't document "what's where" — the code is named by function.
+
+## In-flight design docs and plans
+Read whichever is relevant before non-trivial changes:
+- `docs/design/rlm-pivot-brief.md` — canonical architecture reference for the RLM orchestrator.
+- `docs/design/project-state-audit-2026-05-22.md` — read-only whole-repo audit captured 2026-05-22.
+- `docs/superpowers/plans/2026-05-22-infrastructure-improvement-plan.md` — infra improvement catalog (7 candidates, phased) + detailed Phase 1 TDD plan for a `max_pod_seconds` pod-time budget cap that closes the runaway-RunPod-pod cost gap. Sandbox + resilience layer only.
 
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.

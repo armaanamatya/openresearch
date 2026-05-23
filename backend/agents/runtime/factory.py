@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -13,6 +15,48 @@ from backend.agents.runtime.base import (
     ProviderName,
 )
 from backend.config import get_settings
+
+
+def _has_claude_subscription_oauth() -> bool:
+    """Detect a working Claude Code subscription that ``claude-agent-sdk`` can use.
+
+    ``claude-agent-sdk`` spawns the ``claude`` CLI as a subprocess and inherits
+    its OAuth session — so the predicate is "is there a valid stored session
+    on this machine that the CLI can read?"  There are two storage backends:
+
+    - **File-based** (Linux, older macOS, CI containers): ``claude login`` writes
+      ``~/.claude/.credentials.json``. Existence of that file is sufficient proof.
+    - **macOS Keychain** (modern Claude Code on macOS): the credentials are
+      stored as a ``genp`` keychain item with service name
+      ``"Claude Code-credentials"``. We probe via ``security
+      find-generic-password -s "Claude Code-credentials"`` — exit code 0 means
+      the entry exists.
+
+    Before 2026-05-23 the file-only check returned False on every modern macOS
+    install with Claude Code logged in via Keychain, so the SDK runtime
+    resolved as ``unresolved`` and every ``implement_baseline`` sub-call died
+    with a credential error. This helper closes that gap.
+
+    Returns True iff the ``claude`` binary is on ``PATH`` AND a stored session
+    is detectable. Times out at 5 s on the Keychain probe to prevent a hung
+    Keychain Access daemon from blocking pipeline startup.
+    """
+    if shutil.which("claude") is None:
+        return False
+    if os.path.isfile(os.path.expanduser("~/.claude/.credentials.json")):
+        return True
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+    return False
 
 
 def selected_provider(provider: ProviderName | str | None = None) -> ProviderName:
@@ -44,12 +88,9 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             or getattr(settings, "anthropic_api_key", "")
         )
         # claude-agent-sdk spawns the `claude` CLI as a subprocess and inherits
-        # its OAuth session. The CLI binary on PATH alone is NOT proof of a valid
-        # session — we also require the credentials file that `claude login`
-        # writes (~/.claude/.credentials.json on Linux/macOS).
-        _claude_bin = shutil.which("claude")
-        _creds_file = os.path.expanduser("~/.claude/.credentials.json")
-        has_claude_cli = _claude_bin is not None and os.path.isfile(_creds_file)
+        # its OAuth session. ``_has_claude_subscription_oauth`` handles both
+        # storage backends (file on Linux/older macOS, Keychain on modern macOS).
+        has_claude_cli = _has_claude_subscription_oauth()
         if not (has_api_key or has_claude_cli):
             raise ProviderConfigurationError(
                 provider=resolved,
@@ -95,12 +136,9 @@ def has_provider_credentials(provider: ProviderName | str | None = None) -> bool
         if os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "anthropic_api_key", ""):
             return True
         # claude-agent-sdk inherits a subscription login from the `claude` CLI
-        # subprocess. The binary on PATH alone is NOT proof of a valid session —
-        # `claude login` writes an OAuth credentials file at
-        # ~/.claude/.credentials.json (Linux/macOS). Both must be present.
-        _claude_bin = shutil.which("claude")
-        _creds_file = os.path.expanduser("~/.claude/.credentials.json")
-        return _claude_bin is not None and os.path.isfile(_creds_file)
+        # subprocess. ``_has_claude_subscription_oauth`` handles both storage
+        # backends (file on Linux/older macOS, Keychain on modern macOS).
+        return _has_claude_subscription_oauth()
     if resolved == "openai":
         return bool(
             os.getenv("OPENAI_API_KEY")
