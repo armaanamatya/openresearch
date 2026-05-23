@@ -97,12 +97,9 @@ class ArxivFetcher(IntakeFetcher):
                         return
                 body = bytes(body)
 
-            content_type = ""
-            # urllib responses expose headers via info() or headers attribute.
-            try:
-                content_type = response.info().get("Content-Type", "")  # type: ignore[union-attr]
-            except Exception:
-                pass
+                # Read headers inside the `with` block — response.info() is
+                # only valid while the connection is open (review M5 / T28).
+                content_type = response.info().get("Content-Type", "") or ""  # type: ignore[union-attr]
 
             is_html = (
                 "html" in content_type.lower()
