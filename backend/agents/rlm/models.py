@@ -15,8 +15,11 @@ touching source code.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, replace
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +273,48 @@ def _inject_api_key(env_var: str | None, kwargs: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Model-name aliases
+# ---------------------------------------------------------------------------
+#
+# The RLM registry keys (`claude`, `claude-oauth`, `gpt-5`, ...) are an internal
+# vocabulary. End-users and the lab UI work in TWO other vocabularies:
+#   (a) Anthropic SDK model names: `claude-sonnet-4-6`, `claude-opus-4-7`, ...
+#   (b) Lab UI dropdown values: `sonnet`, `opus`
+#
+# Map all three vocabularies to a single registry key here so callers can pass
+# whichever name they have at hand. The DEFAULT mapping prefers `claude-oauth`
+# for Sonnet-class names — most local dev runs have OAuth available (no API key
+# needed) and the OAuth client uses Sonnet by default. Users who explicitly want
+# the API-key path can set REPROLAB_RLM_ROOT_MODEL=claude to override.
+
+_MODEL_ALIASES: dict[str, str] = {
+    # Lab UI dropdown values
+    "sonnet": "claude-oauth",
+    "opus": "claude-oauth",      # OAuth supports Opus too; user can pin via env
+    # Anthropic SDK names — Sonnet family
+    "claude-sonnet-4-6": "claude-oauth",
+    "claude-sonnet": "claude-oauth",
+    "claude-sonnet-4-5": "claude-oauth",
+    "claude-sonnet-4": "claude-oauth",
+    # Anthropic SDK names — Opus family
+    "claude-opus-4-7": "claude-oauth",
+    "claude-opus": "claude-oauth",
+    "claude-opus-4-1": "claude-oauth",
+    # Anthropic SDK names — Haiku family
+    "claude-haiku-4-5-20251001": "claude-oauth",
+    "claude-haiku": "claude-oauth",
+    # OpenAI common aliases
+    "gpt5": "gpt-5",
+    "gpt-4o": "gpt-5",
+    "gpt-4o-mini": "gpt-5",
+    # Qwen common aliases
+    "qwen": "qwen3-coder",
+    "qwen3": "qwen3-coder",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": "qwen3-coder-featherless",
+}
+
+
+# ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
 
@@ -309,9 +354,22 @@ def resolve_root_model(name: str | None) -> RootModel:
 
     entry = ROOT_MODELS.get(name)
     if entry is None:
+        # Try the alias map — handles lab UI dropdown values, Anthropic SDK
+        # model names, and common nicknames.
+        aliased = _MODEL_ALIASES.get(name)
+        if aliased is not None:
+            logger.info(
+                "resolve_root_model: %r resolved via alias → %r",
+                name, aliased,
+            )
+            name = aliased
+            entry = ROOT_MODELS.get(name)
+    if entry is None:
         valid = ", ".join(sorted(ROOT_MODELS))
+        aliases_hint = ", ".join(sorted(_MODEL_ALIASES))
         raise ValueError(
-            f"Unknown root model {name!r}. Valid keys: {valid}. "
+            f"Unknown root model {name!r}. Valid registry keys: {valid}. "
+            f"Aliases also accepted: {aliases_hint}. "
             f"Set {_ENV_ROOT_MODEL} or pass a valid --model argument."
         )
 
