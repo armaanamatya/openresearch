@@ -180,6 +180,15 @@ class Settings(BaseSettings):
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
 
+    # --- Dynamic GPU selection (spec 2026-05-23) ---
+    dynamic_gpu_enabled: bool = Field(default=True, description="Wire paper hardware clues to RunPod SKU choice")
+    force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
+    max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
+    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
+    dynamic_gpu_headroom: float = Field(default=1.25, ge=1.0, description="Multiplier on LLM VRAM estimate before tier-up")
+    dynamic_gpu_fallback_vram_gb: int = Field(default=24, ge=1, description="Substitute VRAM when LLM cannot estimate")
+    dynamic_gpu_max_escalations: int = Field(default=2, ge=0, description="Max OOM-driven ladder advances per run")
+
     # Apify ArXiv MCP server (https://github.com/apify/actor-arxiv-mcp-server).
     # When apify_api_token is set, the Claude agent runtime registers the
     # SSE endpoint as an MCP server named ``apify-arxiv`` and exposes its

@@ -16,6 +16,7 @@ class RunBudget:
     max_pod_seconds: float | None = None
     max_invocations_per_agent: dict[str, int] = field(default_factory=dict)
     rlm_calls_remaining: int = 120
+    max_run_gpu_usd: float | None = None
 
     def check(
         self,
@@ -69,6 +70,30 @@ class RunBudget:
                 provider=None,
                 agent_id=agent_id,
                 elapsed_seconds=elapsed,
+            )
+
+    def check_run_gpu_usd(
+        self,
+        *,
+        cumulative_pod_usd: float,
+        agent_id: str,
+    ) -> None:
+        """Raise BudgetExhausted when cumulative pod spend >= max_run_gpu_usd.
+
+        `cumulative_pod_usd` is the total RunPod cost incurred by this run so
+        far — caller is responsible for the running tally (typically
+        wall_clock_seconds * sku_usd_per_hr / 3600 summed across pod
+        lifetimes). Cap is honored only when set and > 0; None or 0 disables
+        the check.
+        """
+        if self.max_run_gpu_usd is None or self.max_run_gpu_usd <= 0:
+            return
+        if cumulative_pod_usd >= self.max_run_gpu_usd:
+            raise BudgetExhausted(
+                f"Run pod-USD budget exhausted before invoking {agent_id}: "
+                f"${cumulative_pod_usd:.4f} >= ${self.max_run_gpu_usd:.4f}",
+                provider=None,
+                agent_id=agent_id,
             )
 
 
