@@ -109,6 +109,20 @@ export interface RlmRunState {
     target: number | null;
     series: Array<{ iteration: number; score: number }>; // sparkline / timeline
     areas: RubricArea[]; // latest breakdown
+    // --- Phase-4-forward-compat (spec 2026-05-23-rubric-climb-leaderboard §4.2)
+    /** Snapshot of `areas` BEFORE the most recent rubric_score event. Empty
+     * before the second rubric_score lands. Used by RubricStrip to highlight
+     * areas whose status rank just increased (fail -> partial -> pass). */
+    previousAreas: RubricArea[];
+    /** The most-recent candidate the root was working on. Set by
+     * candidate_proposed; outcome updated by candidate_outcome on id-match.
+     * Sticky: a long primitive-only stretch keeps the prior candidate live
+     * until a new candidate_proposed overwrites it. */
+    attributableCandidate: {
+      id: string;
+      title: string;
+      outcome: TreeNode["outcome"] | null;
+    } | null;
   };
 
   variables: Record<
@@ -157,6 +171,8 @@ export const INITIAL_RLM_STATE: RlmRunState = {
     target: null,
     series: [],
     areas: [],
+    previousAreas: [],
+    attributableCandidate: null,
   },
   variables: {},
   iterations: [],
@@ -404,7 +420,11 @@ function foldRubricScore(
       current: ev.score,
       target: ev.target,
       series: [...state.rubric.series, { iteration: ev.iteration, score: ev.score }],
+      // §4.2: snapshot the prior areas array BEFORE overwriting so the strip
+      // can detect status flips (fail->partial->pass) at render time.
+      previousAreas: state.rubric.areas.map((a) => ({ ...a })),
       areas: ev.areas.map((a) => ({ ...a })),
+      attributableCandidate: state.rubric.attributableCandidate,
     },
   };
 }
@@ -484,7 +504,18 @@ function foldCandidateProposed(
   const _pendingOutcomes = { ...state._pendingOutcomes };
   delete _pendingOutcomes[ev.candidate.id];
 
-  return { ...state, tree, _pendingOutcomes };
+  // §4.2: update the live attributableCandidate pointer. If a buffered
+  // outcome was drained above, its outcome rides through on the pointer.
+  const rubric = {
+    ...state.rubric,
+    attributableCandidate: {
+      id: ev.candidate.id,
+      title: ev.candidate.title,
+      outcome: pending?.outcome ?? null,
+    },
+  };
+
+  return { ...state, tree, _pendingOutcomes, rubric };
 }
 
 function foldCandidateOutcome(
@@ -518,7 +549,20 @@ function foldCandidateOutcome(
     tree = applyDeclinedGroup(tree, node.round, node.parentId, ev.iteration);
   }
 
-  return { ...state, tree };
+  // §4.2: if this outcome matches the live attributable candidate, update its
+  // outcome on the pointer. Otherwise leave the pointer unchanged.
+  const rubric =
+    state.rubric.attributableCandidate?.id === ev.candidate_id
+      ? {
+          ...state.rubric,
+          attributableCandidate: {
+            ...state.rubric.attributableCandidate,
+            outcome: ev.outcome,
+          },
+        }
+      : state.rubric;
+
+  return { ...state, tree, rubric };
 }
 
 function foldSubRlmSpawned(

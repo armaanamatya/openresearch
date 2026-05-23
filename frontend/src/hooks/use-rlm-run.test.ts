@@ -236,3 +236,152 @@ describe("fold — the tree", () => {
     expect(b1!.parentId).not.toBe("baseline");
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase-4-forward-compat extensions
+// Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.2
+// ──────────────────────────────────────────────────────────────────────────────
+
+import type { RubricScoreEvent } from "../lib/events/rlm-events";
+
+function _rubricEvent(
+  iteration: number,
+  score: number,
+  areas: Array<{ area: string; status: "pass" | "partial" | "fail"; score: number; weight: number }>,
+): RubricScoreEvent {
+  return {
+    event: "rubric_score",
+    timestamp: new Date(2026, 4, 23, 4, 10 + iteration).toISOString(),
+    iteration,
+    score,
+    target: 0.8,
+    areas,
+  };
+}
+
+describe("rubric.previousAreas (spec §4.2)", () => {
+  it("is empty on initial state", () => {
+    expect(INITIAL_RLM_STATE.rubric.previousAreas).toEqual([]);
+  });
+
+  it("captures the prior areas snapshot when a new rubric_score arrives", () => {
+    const e1 = _rubricEvent(1, 0.30, [
+      { area: "Setup", status: "fail", score: 0.1, weight: 1 },
+      { area: "Train", status: "fail", score: 0.05, weight: 1 },
+    ]);
+    const e2 = _rubricEvent(3, 0.55, [
+      { area: "Setup", status: "pass", score: 0.85, weight: 1 },
+      { area: "Train", status: "partial", score: 0.45, weight: 1 },
+    ]);
+
+    let s = fold(INITIAL_RLM_STATE, e1);
+    // After e1, previousAreas is still empty (no prior snapshot).
+    expect(s.rubric.previousAreas).toEqual([]);
+    expect(s.rubric.areas.length).toBe(2);
+
+    s = fold(s, e2);
+    // After e2, previousAreas is the e1 areas snapshot.
+    expect(s.rubric.previousAreas.map((a) => a.area)).toEqual(["Setup", "Train"]);
+    expect(s.rubric.previousAreas[0].status).toBe("fail");
+    expect(s.rubric.areas[0].status).toBe("pass");
+  });
+});
+
+describe("rubric.attributableCandidate (spec §4.2)", () => {
+  it("starts as null", () => {
+    expect(INITIAL_RLM_STATE.rubric.attributableCandidate).toBeNull();
+  });
+
+  it("is set when candidate_proposed lands", () => {
+    const ev = {
+      event: "candidate_proposed" as const,
+      timestamp: "2026-05-23T04:10:00.000Z",
+      iteration: 5,
+      round: 1,
+      candidate: {
+        id: "c1",
+        title: "Bigger batch size",
+        category: "training",
+        description: "...",
+        reasoning: "...",
+      },
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.rubric.attributableCandidate).toEqual({
+      id: "c1",
+      title: "Bigger batch size",
+      outcome: null,
+    });
+  });
+
+  it("updates outcome when matching candidate_outcome lands", () => {
+    let s = fold(INITIAL_RLM_STATE, {
+      event: "candidate_proposed",
+      timestamp: "2026-05-23T04:10:00.000Z",
+      iteration: 5,
+      round: 1,
+      candidate: { id: "c1", title: "Bigger batch", category: "training", description: "", reasoning: "" },
+    });
+    s = fold(s, {
+      event: "candidate_outcome",
+      timestamp: "2026-05-23T04:11:00.000Z",
+      iteration: 6,
+      candidate_id: "c1",
+      outcome: "promoted",
+      rubric_delta: 0.12,
+    });
+    expect(s.rubric.attributableCandidate).toEqual({
+      id: "c1",
+      title: "Bigger batch",
+      outcome: "promoted",
+    });
+  });
+
+  it("overwrites the pointer when a newer candidate is proposed", () => {
+    let s = fold(INITIAL_RLM_STATE, {
+      event: "candidate_proposed",
+      timestamp: "2026-05-23T04:10:00.000Z",
+      iteration: 5,
+      round: 1,
+      candidate: { id: "c1", title: "First", category: "x", description: "", reasoning: "" },
+    });
+    s = fold(s, {
+      event: "candidate_proposed",
+      timestamp: "2026-05-23T04:11:00.000Z",
+      iteration: 6,
+      round: 1,
+      candidate: { id: "c2", title: "Second", category: "x", description: "", reasoning: "" },
+    });
+    expect(s.rubric.attributableCandidate?.id).toBe("c2");
+    expect(s.rubric.attributableCandidate?.title).toBe("Second");
+  });
+
+  it("reflects buffered outcome when candidate_outcome arrives before candidate_proposed", () => {
+    // §4.2 + §5.3 out-of-order path: outcome arrives first.
+    let s = fold(INITIAL_RLM_STATE, {
+      event: "candidate_outcome",
+      timestamp: "2026-05-23T04:10:00.000Z",
+      iteration: 5,
+      candidate_id: "c1",
+      outcome: "promoted",
+      rubric_delta: 0.15,
+    });
+    // Before the proposal arrives, attributableCandidate is null (the buffered
+    // outcome lives only in _pendingOutcomes).
+    expect(s.rubric.attributableCandidate).toBeNull();
+
+    s = fold(s, {
+      event: "candidate_proposed",
+      timestamp: "2026-05-23T04:11:00.000Z",
+      iteration: 6,
+      round: 1,
+      candidate: { id: "c1", title: "Bigger batch", category: "x", description: "", reasoning: "" },
+    });
+    // Once the proposal lands, the pointer is set with the buffered outcome.
+    expect(s.rubric.attributableCandidate).toEqual({
+      id: "c1",
+      title: "Bigger batch",
+      outcome: "promoted",
+    });
+  });
+});
