@@ -24,11 +24,6 @@ export function LibraryShell({
       <div className="layout">
         <LabSidebar
           active="library"
-          onBrandClick={() => {
-            // Brand click returns to the lab — matches the LabShell
-            // behavior, where it doubles as a "fresh session" affordance.
-            if (typeof window !== "undefined") window.location.href = "/lab";
-          }}
           recents={recents}
         />
         <main className="content">
