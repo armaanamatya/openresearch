@@ -337,3 +337,53 @@ def test_run_context_deadline_is_armed_from_wall_clock(tmp_path, monkeypatch):
     remaining = ctx.remaining_s()
     assert remaining is not None, "remaining_s() returned None — deadline not armed"
     assert 0 < remaining <= 300, f"remaining_s() = {remaining}, expected in (0, 300]"
+
+
+# ---------------------------------------------------------------------------
+# T21 — stub run is honestly observable in final_report.json + demo_status.json
+# ---------------------------------------------------------------------------
+
+def test_stub_run_is_honestly_observable_in_artifacts(monkeypatch, tmp_path):
+    """Symptom: a stub run is structurally indistinguishable from a real reproduction.
+
+    Only a logger.info line signaled degradation (review I8 / T21); final_report.json
+    and demo_status.json carried no marker. Verify: a stub run yields
+    primitive_provider='stub', degraded=True, and verdict != 'reproduced' on disk.
+    """
+    import asyncio
+    import json
+    import backend.agents.rlm.run as run_mod
+
+    monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+
+    class _FakeRLM:
+        def __init__(self, **kwargs): ...
+        def completion(self, *args, **kwargs):
+            raw = json.dumps({
+                "verdict": "reproduced",
+                "baseline_metrics": {"x": 1.0},
+                "rubric": {"overall_score": 0.5, "meets_target": False},
+            })
+            return type("R", (), {"response": raw, "usage_summary": None, "metadata": {}})()
+
+    monkeypatch.setattr(run_mod, "RLM", _FakeRLM)
+
+    asyncio.run(run_mod.run_pipeline_rlm(
+        project_id="t21_stub",
+        runs_root=tmp_path,
+        workspace_claim_map={"entries": [{"title": "T", "excerpt": "x" * 600}]},
+    ))
+
+    report = json.loads((tmp_path / "t21_stub" / "final_report.json").read_text(encoding="utf-8"))
+    assert report["primitive_provider"] == "stub", (
+        f"expected primitive_provider='stub', got {report.get('primitive_provider')!r}"
+    )
+    assert report["degraded"] is True, "expected degraded=True in final_report.json"
+    assert report["verdict"] != "reproduced", (
+        f"stub run must not claim 'reproduced', got {report['verdict']!r}"
+    )
+
+    status = json.loads((tmp_path / "t21_stub" / "demo_status.json").read_text(encoding="utf-8"))
+    assert status["primitiveProvider"] == "stub", (
+        f"expected primitiveProvider='stub' in demo_status.json, got {status.get('primitiveProvider')!r}"
+    )

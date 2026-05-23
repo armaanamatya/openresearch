@@ -63,6 +63,8 @@ class RLMFinalReport(BaseModel):
         ),
     )
     iterations: int = 0
+    primitive_provider: str = "real"  # "real" | "stub" (T21 / review I8)
+    degraded: bool = False  # True for stub runs and other degraded states (T21)
 
 
 # ---------------------------------------------------------------------------
