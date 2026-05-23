@@ -168,6 +168,8 @@ A read-only `/leaderboard` page ranks completed runs across models and papers. I
 ## Sandboxes
 `REPROLAB_DEFAULT_SANDBOX` selects the execution backend: `local`, `docker` (network/memory/CPU controlled), or `runpod` (remote GPU pods, requires `REPROLAB_RUNPOD_API_KEY` and `REPROLAB_RUNPOD_SSH_KEY_PATH`). `start.sh` runs `scripts/runpod_check.sh` as a preflight when sandbox is `runpod`; bypass with `START_SKIP_PREFLIGHT=1`. `START_FULL_SMOKE=1` boots a real pod for end-to-end verification — **this costs money** (cents-scale on RTX 4090).
 
+**RunPod default image is `cuda-runtime` (~4 GB).** Paper reproduction code calls pre-built CUDA libraries (PyTorch, etc.) and never invokes NVCC or compiles CUDA kernels, so the `devel` image (~18 GB) is unnecessary bloat — provisioning takes 5–10 extra minutes and costs $0.50–1.50 more per run. The default is now `runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04`. If a paper actually compiles CUDA code (rare), override with `REPROLAB_RUNPOD_IMAGE=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`.
+
 ## Demo gate
 When `REPROLAB_DEMO_SECRET` is set, run-start endpoints require a matching `X-Demo-Secret` header (constant-time comparison via `hmac.compare_digest`). Empty/unset secret disables the gate — that's local dev behavior, not a bug.
 

@@ -140,7 +140,7 @@ step "1. Environment"
 
 # Apply config.py defaults so the user can leave them unset in .env.
 : "${REPROLAB_RUNPOD_API_BASE_URL:=https://rest.runpod.io/v1}"
-: "${REPROLAB_RUNPOD_IMAGE:=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04}"
+: "${REPROLAB_RUNPOD_IMAGE:=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04}"
 : "${REPROLAB_RUNPOD_GPU_TYPE:=NVIDIA GeForce RTX 4090}"
 : "${REPROLAB_RUNPOD_GPU_COUNT:=1}"
 : "${REPROLAB_RUNPOD_CLOUD_TYPE:=SECURE}"

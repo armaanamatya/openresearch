@@ -59,3 +59,7 @@ def test_empty_cost_caps_treated_as_no_cap(monkeypatch):
     assert s.max_gpu_usd_per_hour == 0.0
     # Spec says 0 = no cap; implementation uses 0.0 as the no-cap sentinel.
     assert s.max_run_gpu_usd == 0.0
+
+
+def test_default_runpod_image_is_runtime_variant():
+    assert "runtime" in Settings().runpod_image and "devel" not in Settings().runpod_image
