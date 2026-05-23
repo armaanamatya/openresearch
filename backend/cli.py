@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -27,6 +28,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from backend.agents.execution import DEFAULT_SANDBOX_MODE
 from backend.config import get_settings
@@ -115,10 +118,21 @@ def _build_workspace_claim_map(
         # 1. parsed_full_text.txt — the parser's clean, complete output.
         if runs_root is not None:
             blob = Path(runs_root) / project_id / "parsed_full_text.txt"
-            try:
-                blob_text = blob.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            if not blob.exists():
+                logger.warning(
+                    "RLM mode: parsed_full_text.txt missing — parser likely failed; "
+                    "falling back to workspace variable (lossy)"
+                )
                 blob_text = ""
+            else:
+                try:
+                    blob_text = blob.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    blob_text = ""
+                if not blob_text.strip():
+                    logger.warning(
+                        "RLM mode: parsed_full_text.txt is empty — parser likely failed"
+                    )
             if blob_text.strip():
                 return _one_entry(blob_text)
         # 2. The workspace `paper_text` variable.
