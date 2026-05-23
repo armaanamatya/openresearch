@@ -920,6 +920,14 @@ async def run_rdr(
 
     cost_dict: dict[str, Any] = {}
     if ctx.cost_ledger is not None:
+        # Lane G: append() buffers writes; flush at run end so the on-disk
+        # cost_ledger.jsonl reflects every entry recorded during the run.
+        # RDR does not go through the RLM binding wrapper that auto-flushes
+        # at primitive boundaries, so an explicit flush is required here.
+        try:
+            ctx.cost_ledger.flush()
+        except Exception:  # noqa: BLE001 — flush failure must not abort the report
+            logger.exception("cost ledger flush failed at RDR run completion")
         try:
             cost_dict = {"llm_usd": ctx.cost_ledger.total_usd(), "primitives": ctx.cost_ledger.total_usd()}
         except Exception:  # noqa: BLE001

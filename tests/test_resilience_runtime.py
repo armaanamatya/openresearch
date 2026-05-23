@@ -110,6 +110,8 @@ def test_cost_ledger_roundtrip_and_budget_guard(tmp_path: Path) -> None:
             usage={"input_tokens": 1_000_000, "output_tokens": 0},
         )
     )
+    # Lane G batches writes; force a flush before reading back from disk.
+    ledger.flush()
 
     loaded = RunCostLedger.load_jsonl(path, project_id="prj")
 

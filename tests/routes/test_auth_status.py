@@ -90,6 +90,9 @@ def test_all_providers_unavailable(tmp_path, monkeypatch):
     with (
         patch("backend.agents.runtime.factory._has_claude_subscription_oauth", return_value=False),
         patch("backend.agents.runtime.factory._has_azure_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_anthropic_api_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_featherless_credentials", return_value=False),
     ):
         response = client.get("/auth-status")
 
@@ -189,6 +192,9 @@ def test_azure_openai_available(tmp_path, monkeypatch):
     with (
         patch("backend.agents.runtime.factory._has_claude_subscription_oauth", return_value=False),
         patch("backend.agents.runtime.factory._has_azure_openai_credentials", return_value=True),
+        patch("backend.agents.runtime.factory._has_anthropic_api_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_featherless_credentials", return_value=False),
     ):
         response = client.get("/auth-status")
 
@@ -211,6 +217,9 @@ def test_featherless_available(tmp_path, monkeypatch):
     with (
         patch("backend.agents.runtime.factory._has_claude_subscription_oauth", return_value=False),
         patch("backend.agents.runtime.factory._has_azure_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_anthropic_api_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_featherless_credentials", return_value=True),
     ):
         response = client.get("/auth-status")
 
