@@ -34,13 +34,13 @@ Measured as:
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Default `--mode` post-Phase-1 | **`rlm`.** Flip to `rdr` only after Phase 2 honesty re-score proves rdr is at least as honest as rlm. |
+| 1 | Default `--mode` post-Phase-1 | **`rlm` (now meaning the hybrid: RDR phase 1 + RLM phase 2, as landed by PR #80 on 2026-05-23).** `--mode rlm-pure` is the escape hatch to the pre-hybrid pure-RLM path; `--mode rdr` runs the rdr controller standalone. Phase 2 honesty re-score still gates *empirical* validation of hybrid vs the others. |
 | 2 | PR #74 (wow-factor poll) fate | **Shrink to ≤2 files (`docs/wow-factor-poll.html` + the Discord post text) and merge.** VP review is imminent; the poll is useful, the demo-track PNGs and other 26 files are session noise. |
 | 3 | CLI naming for per-role models | **Keep `--model <id>` as shorthand for `planner` role; add `--models planner=…,executor=…,verifier=…,grader=…` for full per-role control.** Both flags coexist; `--models` overrides if both are passed. |
 | 4 | Leaderboard re-run default budget | **Orchestrator-estimated, user-accepted, safety-ceiling-enforced.** At run start the orchestrator (rlm root / rdr controller) proposes `{usd, wall_clock_s, pod_seconds}` from the paper + rubric; user accepts or overrides via the UI; accepted value is the hard cap. Safety ceiling: `$20 / 2h / 7200 pod-seconds` — the maximum the orchestrator can request. Leaderboard re-runs inherit the original run's accepted budget. |
 | 5 | Doc cleanup strategy | **`git rm` outright, no archive directory.** History retains everything. Archives accumulate decay (the audit just flagged that). |
 | 6 | Leaderboard route name | **`/leaderboard`.** |
-| 7 | rdr-vs-RLM disposition | **Both kept indefinitely.** Two modes, two harnesses, leaderboard is the comparison surface. `--mode rlm` is not deprecated. |
+| 7 | Mode disposition | **Three modes kept indefinitely as peers.** `rlm` (hybrid, default), `rlm-pure` (pure-RLM escape), `rdr` (pure-rdr peer). Leaderboard is the comparison surface; none of the three is deprecated. Updated 2026-05-23 to reflect PR #80's hybrid landing. |
 
 ## 4. Phasing
 
