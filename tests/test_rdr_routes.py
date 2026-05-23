@@ -298,7 +298,10 @@ def test_start_run_request_accepts_rdr_mode() -> None:
 
 
 def test_start_run_request_paper_id_none_by_default() -> None:
-    req = StartRunRequest(mode="offline")
+    # The mode literal narrowed from {offline,sdk,rlm,rdr} to {rlm,rdr} when
+    # the offline/sdk paths were removed; the test's intent — that paper_id
+    # defaults to None when omitted — holds for the surviving rlm value.
+    req = StartRunRequest(mode="rlm")
     assert req.paper_id is None
 
 
