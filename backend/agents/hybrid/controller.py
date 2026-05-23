@@ -193,6 +193,26 @@ async def run_pipeline_hybrid(
         phase1_result.repair_iterations,
     )
 
+    # Skip Phase 2 when Phase 1 produced no usable code — there is nothing to
+    # repair when every cluster failed. Saves budget on a hopeless adaptive pass.
+    if (
+        phase1_result.clusters_total > 0
+        and phase1_result.clusters_failed == phase1_result.clusters_total
+    ):
+        logger.warning(
+            "hybrid/controller[%s]: Phase 1 produced no working clusters "
+            "(%d/%d failed) — skipping Phase 2 (no code to repair)",
+            project_id, phase1_result.clusters_failed, phase1_result.clusters_total,
+        )
+        return RLMRunResult(
+            project_id=phase1_result.project_id,
+            status="failed",
+            iterations=phase1_result.clusters_total,
+            rubric_score=rubric_score,
+            cost_usd=phase1_result.cost_usd,
+            final_report_path=final_report_path,
+        )
+
     # --- Decide whether Phase 2 is needed ---
     weak_clusters: list[dict[str, Any]] = []
     if final_report_path:
@@ -219,19 +239,42 @@ async def run_pipeline_hybrid(
         project_id, len(weak_clusters),
     )
 
-    # Seed the claim map with Phase 1 artifacts.
-    repair_claim_map: dict[str, Any] = dict(workspace_claim_map)
-    repair_claim_map["_hybrid_repair_only"] = True
-    repair_claim_map["_phase1_weak_clusters"] = weak_clusters
+    # Decrement Phase 2's budget by what Phase 1 already spent so total
+    # cost honors the user's max_usd ceiling. If Phase 1 already consumed
+    # the budget, skip Phase 2 entirely.
+    remaining_budget = run_budget
+    if run_budget is not None and getattr(run_budget, "max_usd", None) is not None:
+        phase1_cost = float(phase1_result.cost_usd or 0.0)
+        remaining_usd = max(0.0, float(run_budget.max_usd) - phase1_cost)
+        if remaining_usd <= 0.0:
+            logger.warning(
+                "hybrid/controller[%s]: Phase 1 consumed full budget "
+                "($%.4f >= $%.4f) — skipping Phase 2",
+                project_id, phase1_cost, float(run_budget.max_usd),
+            )
+            return RLMRunResult(
+                project_id=phase1_result.project_id,
+                status=phase1_result.status,
+                iterations=phase1_result.clusters_total,
+                rubric_score=rubric_score,
+                cost_usd=phase1_cost,
+                final_report_path=final_report_path,
+            )
+        from backend.agents.resilience.budget import RunBudget
+        remaining_budget = RunBudget(
+            max_usd=remaining_usd,
+            max_wall_clock_seconds=getattr(run_budget, "max_wall_clock_seconds", None),
+        )
 
+    # Seed the claim map with Phase 1 artifacts.
     phase2_result = await _rlm(
         project_id,           # same project dir — Phase 2 continues where Phase 1 left off
         runs_root,
-        repair_claim_map,
+        workspace_claim_map,
         model=model,
         provider=provider,
         runtime=runtime,
-        run_budget=run_budget,
+        run_budget=remaining_budget,
         sandbox_mode=sandbox_mode if sandbox_mode is not None else DEFAULT_SANDBOX_MODE,
         seed=seed,
         execution_profile=execution_profile,
@@ -239,6 +282,8 @@ async def run_pipeline_hybrid(
         run_group_id=run_group_id,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
+        hybrid_repair_only=True,
+        phase1_weak_clusters=weak_clusters,
     )
 
     logger.info(

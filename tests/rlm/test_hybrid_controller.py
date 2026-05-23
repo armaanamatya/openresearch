@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import dataclasses
+
 from backend.agents.hybrid.controller import (
     _extract_weak_clusters,
     run_pipeline_hybrid,
@@ -162,7 +164,7 @@ class TestRunPipelineHybrid:
         self, tmp_path: Path, claim_map: dict
     ) -> None:
         """When weak clusters exist, run_pipeline_rlm must be called with
-        _hybrid_repair_only=True in the workspace_claim_map."""
+        hybrid_repair_only=True and phase1_weak_clusters as explicit kwargs."""
         project_id = "hybrid_needs_repair"
         report_path = tmp_path / project_id / "final_report.json"
         _write_report(report_path, [
@@ -175,10 +177,10 @@ class TestRunPipelineHybrid:
         )
         rlm_result = _make_rlm_result(project_id)
 
-        received_claim_maps: list[dict] = []
+        received_kwargs: list[dict] = []
 
         async def _capture_rlm(pid, root, wcm, **kw):  # noqa: ANN001
-            received_claim_maps.append(dict(wcm))
+            received_kwargs.append(kw)
             return rlm_result
 
         mock_rdr = AsyncMock(return_value=rdr_result)
@@ -191,14 +193,14 @@ class TestRunPipelineHybrid:
         )
 
         mock_rdr.assert_awaited_once()
-        assert len(received_claim_maps) == 1
+        assert len(received_kwargs) == 1
 
-        # Phase 2 must receive the repair flag.
-        sent_map = received_claim_maps[0]
-        assert sent_map.get("_hybrid_repair_only") is True
+        # Phase 2 must receive the repair flag as an explicit kwarg.
+        kw = received_kwargs[0]
+        assert kw.get("hybrid_repair_only") is True
 
-        # Phase 2 must know which clusters are weak.
-        weak = sent_map.get("_phase1_weak_clusters", [])
+        # Phase 2 must know which clusters are weak via explicit kwarg.
+        weak = kw.get("phase1_weak_clusters", [])
         assert len(weak) == 1
         assert weak[0]["id"] == "l1"
 
@@ -296,3 +298,190 @@ class TestRunPipelineHybrid:
         )
 
         assert captured_kwargs[0].get("max_repair_iterations") == 0
+
+    # ------------------------------------------------------------------
+    # Test: R1 — uniform Phase 1 failure skips Phase 2
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_uniform_phase1_failure_skips_phase2(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """When every cluster fails in Phase 1, Phase 2 must NOT be called."""
+        project_id = "hybrid_all_fail"
+        clusters_total = 27
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.0,
+            final_report_path="/tmp/fake_report.json",
+            clusters_total=clusters_total,
+            clusters_failed=clusters_total,
+            status="failed",
+        )
+
+        mock_rdr = AsyncMock(return_value=rdr_result)
+        mock_rlm = MagicMock(return_value=_make_rlm_result(project_id))
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=mock_rdr,
+            _rlm_runner=mock_rlm,
+        )
+
+        mock_rlm.assert_not_called()
+        assert result.status == "failed"
+        assert result.iterations == clusters_total
+
+    # ------------------------------------------------------------------
+    # Test: R3 — budget is decremented across phases
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_budget_remaining_after_phase1(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """Phase 2 must receive a budget reduced by Phase 1's cost."""
+        from backend.agents.resilience.budget import RunBudget
+
+        project_id = "hybrid_budget_remaining"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [{"id": "l1", "score": 0.1}])  # weak cluster → Phase 2 runs
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.1,
+            final_report_path=str(report_path),
+            clusters_failed=0,
+        )
+        # Override cost_usd to a known value.
+        rdr_result = dataclasses.replace(rdr_result, cost_usd=0.40)
+
+        captured_budgets: list = []
+
+        async def _capture_rlm(pid, root, wcm, **kw):  # noqa: ANN001
+            captured_budgets.append(kw.get("run_budget"))
+            return _make_rlm_result(project_id)
+
+        budget = RunBudget(max_usd=1.00, max_wall_clock_seconds=600)
+
+        await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            run_budget=budget,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=_capture_rlm,
+        )
+
+        assert len(captured_budgets) == 1
+        rb = captured_budgets[0]
+        assert rb is not None
+        assert rb.max_usd == pytest.approx(0.60)
+        assert rb.max_wall_clock_seconds == 600
+
+    # ------------------------------------------------------------------
+    # Test: R3 — Phase 1 exhausts budget → Phase 2 skipped
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_phase1_exhausts_budget_skips_phase2(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """When Phase 1 cost_usd >= max_usd, Phase 2 must be skipped."""
+        from backend.agents.resilience.budget import RunBudget
+
+        project_id = "hybrid_budget_exhausted"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [{"id": "l1", "score": 0.1}])  # weak cluster
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.1,
+            final_report_path=str(report_path),
+            clusters_failed=0,
+        )
+        rdr_result = dataclasses.replace(rdr_result, cost_usd=0.60)
+
+        mock_rlm = AsyncMock(return_value=_make_rlm_result(project_id))
+        budget = RunBudget(max_usd=0.50, max_wall_clock_seconds=None)
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            run_budget=budget,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=mock_rlm,
+        )
+
+        mock_rlm.assert_not_awaited()
+        assert result.cost_usd == pytest.approx(0.60)
+
+    # ------------------------------------------------------------------
+    # Test: E1 — explicit kwargs passed; claim_map not mutated
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_explicit_kwargs_passed_to_rlm(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """Phase 2 must receive hybrid_repair_only and phase1_weak_clusters as
+        explicit kwargs; the original workspace_claim_map must not be mutated."""
+        project_id = "hybrid_explicit_kwargs"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [{"id": "l1", "score": 0.1}])
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.1,
+            final_report_path=str(report_path),
+            clusters_failed=0,
+        )
+
+        received_args: list[tuple] = []
+        received_kwargs: list[dict] = []
+        received_wcms: list[dict] = []
+
+        async def _capture_rlm(pid, root, wcm, **kw):  # noqa: ANN001
+            received_wcms.append(dict(wcm))
+            received_kwargs.append(kw)
+            return _make_rlm_result(project_id)
+
+        original_claim_map = dict(claim_map)  # snapshot before call
+
+        await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=_capture_rlm,
+        )
+
+        assert len(received_kwargs) == 1
+        kw = received_kwargs[0]
+        assert kw.get("hybrid_repair_only") is True
+        assert isinstance(kw.get("phase1_weak_clusters"), list)
+        assert len(kw["phase1_weak_clusters"]) == 1
+
+        # The workspace_claim_map passed to Phase 2 must not contain the
+        # control-flow keys (proves we no longer mutate it).
+        sent_wcm = received_wcms[0]
+        assert "_hybrid_repair_only" not in sent_wcm
+        assert "_phase1_weak_clusters" not in sent_wcm
+
+        # The original claim_map object itself must also be untouched.
+        assert "_hybrid_repair_only" not in claim_map
+        assert "_phase1_weak_clusters" not in claim_map
+
+
+# ---------------------------------------------------------------------------
+# Module-level: run_pipeline_rlm accepts hybrid kwargs (E1 signature check)
+# ---------------------------------------------------------------------------
+
+
+def test_run_pipeline_rlm_accepts_hybrid_kwargs() -> None:
+    """run_pipeline_rlm signature must include the explicit hybrid kwargs."""
+    import inspect
+    from backend.agents.rlm.run import run_pipeline_rlm
+
+    sig = inspect.signature(run_pipeline_rlm)
+    assert "hybrid_repair_only" in sig.parameters
+    assert "phase1_weak_clusters" in sig.parameters

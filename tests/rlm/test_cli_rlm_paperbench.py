@@ -137,27 +137,34 @@ class TestWorkspaceClaimMapHasRubricSpec:
     """_cmd_reproduce_rlm_paperbench sets rubric_spec on the workspace claim map."""
 
     def test_workspace_claim_map_includes_rubric_spec(self, tmp_path, monkeypatch):
-        """The workspace claim map passed to run_pipeline_rlm must include rubric_spec
-        from the bundle so the rubric-gen LLM call is skipped."""
+        """The workspace claim map passed to the runner must include rubric_spec
+        from the bundle so run_pipeline_rlm skips the rubric-gen LLM call.
+
+        Patches run_pipeline_hybrid (the default --mode rlm path since the hybrid
+        controller was wired in) to capture the claim map without making any real
+        API calls.  The test validates that _cmd_reproduce_rlm_paperbench populates
+        rubric_spec on the claim map before handing off to the runner.
+        """
         from argparse import Namespace
 
         captured_wcm: list[dict] = []
 
-        async def _fake_run_pipeline_rlm(project_id, runs_root, workspace_claim_map, **kwargs):
+        async def _fake_run_pipeline_hybrid(project_id, runs_root, workspace_claim_map, **kwargs):
             captured_wcm.append(workspace_claim_map)
             # Return a minimal RLMRunResult-like object.
-            result = MagicMock()
-            result.project_id = project_id
-            result.status = "completed"
-            result.iterations = 1
-            result.rubric_score = 0.5
-            result.cost_usd = 0.0
-            result.final_report_path = str(tmp_path / project_id / "final_report.json")
-            return result
+            from backend.agents.rlm.run import RLMRunResult
+            return RLMRunResult(
+                project_id=project_id,
+                status="completed",
+                iterations=1,
+                rubric_score=0.5,
+                cost_usd=0.0,
+                final_report_path=str(tmp_path / project_id / "final_report.json"),
+            )
 
         monkeypatch.setattr(
-            "backend.agents.rlm.run.run_pipeline_rlm",
-            _fake_run_pipeline_rlm,
+            "backend.agents.hybrid.controller.run_pipeline_hybrid",
+            _fake_run_pipeline_hybrid,
         )
         # Patch ensure_sandbox_mode_available to no-op.
         monkeypatch.setattr(
@@ -194,7 +201,7 @@ class TestWorkspaceClaimMapHasRubricSpec:
 
         _cmd_reproduce_rlm_paperbench(args, tmp_path)
 
-        assert len(captured_wcm) == 1, "run_pipeline_rlm must have been called exactly once"
+        assert len(captured_wcm) == 1, "run_pipeline_hybrid must have been called exactly once"
         wcm = captured_wcm[0]
         assert "rubric_spec" in wcm, (
             "workspace_claim_map must include 'rubric_spec' from the bundle "

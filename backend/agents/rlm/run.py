@@ -527,6 +527,8 @@ async def run_pipeline_rlm(
     run_group_id: str | None = None,
     workspace_service: Any = None,
     workspace_id: str | None = None,
+    hybrid_repair_only: bool = False,
+    phase1_weak_clusters: list | None = None,
 ) -> RLMRunResult:
     """Run one paper reproduction in ``rlm`` mode.
 
@@ -617,8 +619,16 @@ async def run_pipeline_rlm(
     # The RDR Phase 1 already produced a code_dir; we skip full reproduction
     # and focus the root model on repairing the weak clusters identified by
     # Phase 1 scoring.
-    _hybrid_repair_only: bool = bool(workspace_claim_map.get("_hybrid_repair_only", False))
-    _phase1_weak_clusters: list[Any] = workspace_claim_map.get("_phase1_weak_clusters") or []
+    # Explicit kwargs are preferred; legacy claim_map keys remain for
+    # back-compat with any external caller still using the old contract.
+    _hybrid_repair_only: bool = bool(
+        hybrid_repair_only or workspace_claim_map.get("_hybrid_repair_only", False)
+    )
+    _phase1_weak_clusters: list[Any] = (
+        phase1_weak_clusters
+        if phase1_weak_clusters is not None
+        else (workspace_claim_map.get("_phase1_weak_clusters") or [])
+    )
 
     # 6. The offloaded corpus + 7. the system prompt.
     context_dict = _build_context(workspace_claim_map)
