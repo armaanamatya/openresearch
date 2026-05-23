@@ -968,6 +968,9 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     return out[:target]
 
 
+_VALID_OUTCOMES = {"running", "promoted", "marginal", "failed", "skipped", "declined"}
+
+
 def record_candidate_outcome(
     candidate_id: str,
     outcome: str,
@@ -985,19 +988,54 @@ def record_candidate_outcome(
         outcome = "promoted" if score > rubric_target else "failed"
         record_candidate_outcome(candidate_id=cid, outcome=outcome)
 
+    ``candidate_id`` MUST be one of the ``id`` values returned by the most
+    recent ``propose_improvements`` call (e.g. ``"path_1"``, ``"path_2"``).
+    Passing ``None``, empty string, or the literal ``"None"`` returns an error
+    dict — silently coercing those to ``str(None)`` corrupts the SSE stream
+    (the 2026-05-23 prj_6b9acbfd8afcd789 bug: every outcome event had
+    ``candidate_id="None"`` so the UI could not match outcomes to candidates).
+
     Valid outcomes: ``"running"``, ``"promoted"``, ``"marginal"``, ``"failed"``,
     ``"skipped"``, ``"declined"``.  ``parent_id`` is the node this candidate
     branches from (passed through to the ``candidate_outcome`` event's
     ``parent_id`` field so the UI can build the exploration tree).
 
-    Returns a plain ``{"success": True, ...}`` dict — no ``error`` key — so
-    ``wrap_primitive``'s fail-soft check does not misclassify it as a failure.
-    ``ctx`` is required by the primitive-wrapper protocol (design decision D4).
+    Returns a plain ``{"success": True, ...}`` dict on the happy path. On bad
+    input, returns ``{"success": False, "error": "<message>", ...}`` so
+    ``wrap_primitive`` skips the SSE event emission and the UI does not get
+    a poisoned candidate_outcome.
     """
+    # Defensive input validation — surface model errors as errors instead of
+    # propagating None / "None" / "" downstream where it silently corrupts SSE.
+    cid = candidate_id
+    cid_str = str(cid) if cid is not None else ""
+    if cid is None or cid_str.strip() in {"", "None", "null"}:
+        return {
+            "success": False,
+            "error": (
+                f"record_candidate_outcome requires a real candidate_id (got {cid!r}). "
+                f"Use the 'id' field from the most recent propose_improvements result "
+                f"(e.g. 'path_1', 'path_2')."
+            ),
+            "candidate_id": cid_str,
+            "outcome": str(outcome) if outcome is not None else "",
+            "parent_id": parent_id,
+        }
+    if str(outcome) not in _VALID_OUTCOMES:
+        return {
+            "success": False,
+            "error": (
+                f"record_candidate_outcome got outcome={outcome!r}; must be one of "
+                f"{sorted(_VALID_OUTCOMES)}."
+            ),
+            "candidate_id": cid_str,
+            "outcome": str(outcome) if outcome is not None else "",
+            "parent_id": parent_id,
+        }
     return {
         "success": True,
-        "candidate_id": candidate_id,
-        "outcome": outcome,
+        "candidate_id": cid_str,
+        "outcome": str(outcome),
         "parent_id": parent_id,
     }
 

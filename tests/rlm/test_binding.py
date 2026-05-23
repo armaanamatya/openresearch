@@ -267,3 +267,70 @@ def test_result_summary_no_hint_prefix_for_short_slice(make_context, tmp_path):
     assert not summary.startswith("[hint] "), (
         f"result_summary must not carry [hint] for a short slice, got: {summary!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-23: candidate_id validation — pins the fix for the
+# prj_6b9acbfd8afcd789 'candidate_id="None"' SSE-corruption bug.
+# ---------------------------------------------------------------------------
+
+
+def test_record_candidate_outcome_with_none_candidate_id_skips_emit(make_context, tmp_path):
+    """Passing None as candidate_id must NOT produce a candidate_outcome
+    event with candidate_id='None' (the str(None) corruption that broke the
+    UI's candidate→outcome matching)."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    result = tools["record_candidate_outcome"]["tool"](
+        candidate_id=None, outcome="declined"
+    )
+    # Primitive returns success=False with a clear error
+    assert result.get("success") is False
+    assert "candidate_id" in (result.get("error") or "")
+    # No candidate_outcome event was emitted (binding skipped it)
+    out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
+    assert out == [], f"unexpected candidate_outcome event with bad input: {out}"
+
+
+def test_record_candidate_outcome_with_literal_None_string_skips_emit(make_context, tmp_path):
+    """The 2026-05-23 wire bug: candidate_id was the string 'None'. Pin that
+    we now reject it too (defense in depth — the upstream str(None) ever
+    re-appearing must not silently propagate)."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    for bad in ["None", "null", "", "   "]:
+        result = tools["record_candidate_outcome"]["tool"](
+            candidate_id=bad, outcome="declined"
+        )
+        assert result.get("success") is False, f"expected failure for bad cid={bad!r}"
+    out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
+    assert out == [], f"unexpected candidate_outcome events: {out}"
+
+
+def test_record_candidate_outcome_with_invalid_outcome_skips_emit(make_context, tmp_path):
+    """outcome must be one of the known terminal labels. 'maybe' / 'idk' /
+    arbitrary strings get rejected so the UI doesn't render unknown states."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    for bad_outcome in ["maybe", "idk", "rejected", "", "PROMOTED"]:  # capital is rejected
+        result = tools["record_candidate_outcome"]["tool"](
+            candidate_id="path_1", outcome=bad_outcome
+        )
+        assert result.get("success") is False, f"expected failure for outcome={bad_outcome!r}"
+    out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
+    assert out == [], f"unexpected candidate_outcome events: {out}"
+
+
+def test_record_candidate_outcome_happy_path_still_emits(make_context, tmp_path):
+    """The good-input path is unchanged — emits a candidate_outcome with the
+    real candidate_id and outcome string."""
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    result = tools["record_candidate_outcome"]["tool"](
+        candidate_id="path_2", outcome="promoted", parent_id="baseline"
+    )
+    assert result.get("success") is True
+    out = [e for e in _read_events(ctx) if e.get("event") == "candidate_outcome"]
+    assert len(out) == 1
+    assert out[0]["candidate_id"] == "path_2"
+    assert out[0]["outcome"] == "promoted"

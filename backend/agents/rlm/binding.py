@@ -257,10 +257,21 @@ def _emit_supplemental(
             ))
 
     elif name == "record_candidate_outcome" and isinstance(result, dict):
+        # 2026-05-23: only emit when the primitive returned success — bad input
+        # (None, "None", invalid outcome) returns {"success": False, "error": ...}
+        # and must NOT produce a candidate_outcome event with corrupted fields.
+        # The 2026-05-23 bug: every outcome event had candidate_id="None" because
+        # str(None) was emitted unconditionally.
+        if not result.get("success"):
+            return
+        cid = result.get("candidate_id") or ""
+        outc = result.get("outcome") or ""
+        if not cid or not outc:
+            return  # defensive: even if success=True somehow, do not emit garbage
         emit_extra(build_candidate_outcome_event(
             iteration=ctx.current_iteration,
-            candidate_id=str(result.get("candidate_id", "")),
-            outcome=str(result.get("outcome", "")),
+            candidate_id=str(cid),
+            outcome=str(outc),
             rubric_delta=None,  # root supplies outcome; delta is not computed here
         ))
 

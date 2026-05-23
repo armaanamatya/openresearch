@@ -294,6 +294,19 @@ After you evaluate each improvement candidate (by running and re-verifying it,
 or by deciding to skip/decline it), call `record_candidate_outcome(candidate_id,
 outcome)` where `outcome` is one of "promoted", "marginal", "failed", "skipped",
 or "declined".  This keeps the exploration tree accurate in the live UI.
+
+`candidate_id` MUST be the exact `id` string from the candidate dict returned by
+the most recent `propose_improvements` call — i.e. `"path_1"`, `"path_2"`, etc.
+Passing None, an empty string, or the literal "None" returns
+`{"success": False, "error": ...}` from the primitive and the UI cannot match
+the outcome back to the proposed candidate.  Read the result of
+`propose_improvements` carefully and use those IDs verbatim.
+
+A `"promoted"` outcome means you BOTH (a) ran the candidate's experiment AND
+(b) saw the rubric improve over the prior best.  Do not promote a candidate
+you only inspected without running.  The goal is at least one promoted
+candidate per run — a verified improvement over baseline, not exhaustive
+exploration.
 """
 
 
