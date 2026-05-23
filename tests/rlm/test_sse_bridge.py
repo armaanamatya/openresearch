@@ -504,3 +504,31 @@ class TestSubcallCallbacks:
         assert len(emitted) == 1
         assert emitted[0]["event"] == "sub_rlm_complete"
         assert emitted[0]["duration_ms"] == 2000
+
+
+# ---------------------------------------------------------------------------
+# T10: M-REDACT egress — response must be redacted
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_iteration_redacts_corpus_in_response():
+    """Symptom: up to 4000 chars of paper corpus per iteration leak via response.
+
+    sanitize_iteration redacted stdout/stderr prefixes via _stream_metadata
+    but NOT the response — the root's natural-language response can quote
+    paper slices it read via REPL code (e.g. print(context['paper_text'][:N])),
+    and that response goes verbatim into every repl_iteration event
+    (review I2 / T10). Verify: a response containing a corpus sentinel
+    is redacted to [REDACTED] before egress.
+    """
+    sentinel = "x" * 200
+    result = _make_repl_result()
+    block = CodeBlock(code="", result=result)
+    iteration = _make_iteration(
+        response=f"I read this in the paper: {sentinel} and then ...",
+        code_blocks=[block],
+    )
+
+    clean = sanitize_iteration(iteration, index=1, sentinels=[sentinel])
+    assert sentinel not in clean["response"]
+    assert "[REDACTED]" in clean["response"]
