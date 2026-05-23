@@ -1,0 +1,194 @@
+/* NodeDetailPopup — floating detail card for a clicked exploration-tree node.
+ *
+ * Spec §7/§8 (NodeDetailPopup row), §9 (accessibility), §14 (corpus-safety).
+ * All colors/spacing/type from tokens.css.
+ * Flat surface, hairline border, monospace for code.
+ */
+
+/* ── Popup container ─────────────────────────────────────────────── */
+
+.popup {
+  position: absolute;
+  z-index: 100;
+  min-width: 280px;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  font-family: var(--font-sans);
+}
+
+/* ── Header: title + identity + close button ─────────────────────── */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.kindBadge {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-2);
+  font-family: var(--font-mono);
+}
+
+.roundBadge {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-2);
+}
+
+.closeBtn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.closeBtn:hover {
+  background: var(--chip);
+  color: var(--ink);
+}
+
+.closeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Candidate metadata ──────────────────────────────────────────── */
+
+.candidateMeta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent-soft);
+  border-radius: var(--r-xs);
+  border-left: 2px solid var(--accent);
+}
+
+.category {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--accent-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+
+.description {
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.rubricDelta {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+}
+
+/* ── No iteration placeholder ────────────────────────────────────── */
+
+.noDetail {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-style: italic;
+  margin: 0;
+}
+
+/* ── Iteration body ──────────────────────────────────────────────── */
+
+.iterationBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.response {
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ── Code block ──────────────────────────────────────────────────── */
+
+.codeBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.code {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--canvas-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.5;
+}
+
+/* ── stdout metadata (length + traceback; no raw stdout) ─────────── */
+
+.stdoutMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.stdoutLength {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.tracebackBadge {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  background: var(--err-soft);
+  color: var(--err);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-2);
+}

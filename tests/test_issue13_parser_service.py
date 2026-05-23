@@ -285,3 +285,34 @@ def test_retry_after_failure_with_working_parser_succeeds(
     # Retry.
     assert svc.start_parsing(StartParsing(project_id=pid)) is True
     assert svc.get_state(pid) is ParsedPaperState.PARSED
+
+
+# ---------------------------------------------------------------------------
+# T18 guard test — stale parsed_full_text.txt must be deleted on parse failure
+# ---------------------------------------------------------------------------
+
+def test_parsed_full_text_is_deleted_on_parse_failure(tmp_path):
+    """Symptom: a re-run into a dir with a stale blob feeds the wrong paper to the RLM.
+
+    The writer only WROTE on success; on failure it left whatever was there
+    from a prior run (review I6 / T18, regression of commit 1b69fe7).
+    Verify: write_parsed_full_text(project_dir, text=None) deletes any existing blob.
+    """
+    from backend.services.ingestion.parser.service import write_parsed_full_text
+
+    p = tmp_path / "parsed_full_text.txt"
+    p.write_text("STALE CONTENT FROM PRIOR PAPER")
+    write_parsed_full_text(tmp_path, text=None)
+    assert not p.exists(), "stale parsed_full_text.txt must be deleted on parse failure"
+
+
+def test_parsed_full_text_atomic_write_on_success(tmp_path):
+    """write_parsed_full_text writes text atomically and blob exists on success."""
+    from backend.services.ingestion.parser.service import write_parsed_full_text
+
+    write_parsed_full_text(tmp_path, text="clean corpus text")
+    p = tmp_path / "parsed_full_text.txt"
+    assert p.exists()
+    assert p.read_text(encoding="utf-8") == "clean corpus text"
+    # tmp file must not be left behind
+    assert not (tmp_path / "parsed_full_text.txt.tmp").exists()

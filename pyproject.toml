@@ -19,6 +19,8 @@ dependencies = [
     "openai-agents>=0.17,<0.18",
     "docker>=7,<8",
     "asyncssh>=2.14,<3",
+    "beautifulsoup4>=4.12,<5",
+    "pytesseract>=0.3,<0.4",
 ]
 
 [project.optional-dependencies]

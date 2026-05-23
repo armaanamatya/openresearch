@@ -14,7 +14,7 @@ describe("/api/demo backend proxy", () => {
           {
             projectId: "prj_upload",
             outputDir: "runs/prj_upload",
-            runMode: "sdk",
+            runMode: "rlm",
             status: "queued",
             payload: null,
             log: ""
@@ -74,7 +74,7 @@ describe("/api/demo backend proxy", () => {
 
     const response = await POST(
       new Request(
-        "http://localhost:3000/api/demo?mode=sdk&provider=openai&verificationProvider=anthropic&executionMode=max&sandbox=docker&gpuMode=prefer",
+        "http://localhost:3000/api/demo?mode=rlm&executionMode=max&sandbox=docker&gpuMode=prefer",
         { method: "POST" }
       )
     );
@@ -86,9 +86,7 @@ describe("/api/demo backend proxy", () => {
         method: "POST",
         headers: expect.objectContaining({ "content-type": "application/json" }),
         body: JSON.stringify({
-          mode: "sdk",
-          provider: "openai",
-          verificationProvider: "anthropic",
+          mode: "rlm",
           executionMode: "max",
           sandbox: "docker",
           gpuMode: "prefer",

@@ -110,3 +110,28 @@ def test_rasterization_failure_surfaces_as_parse_error(tmp_path: Path, monkeypat
         OcrPaperParser().parse(project_id="prj_raster_err", paper_path=pdf_path)
 
     assert exc_info.value.cause_kind == "ocr_failed"
+
+
+def test_ocr_parser_version_is_cached(monkeypatch):
+    """Symptom: tesseract version was fetched on every access to .version (review M6 / T29).
+
+    Verify: accessing .version twice calls _get_tesseract_version at most once.
+    """
+    import backend.services.ingestion.parser.ocr_parser as ocr_mod
+
+    call_count = []
+    real_fn = ocr_mod._get_tesseract_version
+
+    def counting_fn():
+        call_count.append(1)
+        return real_fn()
+
+    monkeypatch.setattr(ocr_mod, "_get_tesseract_version", counting_fn)
+
+    from backend.services.ingestion.parser.ocr_parser import OcrPaperParser
+    parser = OcrPaperParser()
+    _ = parser.version
+    _ = parser.version
+    assert len(call_count) <= 1, (
+        f"_get_tesseract_version was called {len(call_count)} times on two .version accesses"
+    )

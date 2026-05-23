@@ -22,6 +22,12 @@ import logging
 from typing import Any
 
 from backend.agents.rlm.context import RunContext
+from backend.agents.schemas import (
+    EnvironmentSpec,
+    ImprovementHypothesis,
+    ReproductionContract,
+    TrainingRecipe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,52 +39,47 @@ logger = logging.getLogger(__name__)
 def _understand_section(text_slice: str) -> dict:
     """Stub for `understand_section(text_slice: str) -> dict`.
 
-    Returns a minimal fixed partial-claim map (PaperClaimMap shape).
+    Returns a partial PaperClaimMap shape — only the keys the RLM root
+    can observe from this primitive (datasets, metrics, training_recipe,
+    hardware_clues, ambiguities).  Keys not in PaperClaimMap would drift
+    the root's REPL code away from what the real primitive returns (T20/I7).
     """
     return {
-        "claims": [
-            {
-                "id": "stub-claim-1",
-                "text": "Stub claim extracted from section.",
-                "metric": "accuracy",
-                "value": 0.0,
-                "section": "stub",
-            }
-        ],
-        "datasets": ["stub-dataset"],
-        "metrics": ["accuracy"],
-        "source_slice_len": len(text_slice),
+        "datasets": [{"name": "stub-dataset"}],
+        "metrics": [{"name": "accuracy"}],
+        "training_recipe": TrainingRecipe().model_dump(),
+        "hardware_clues": ["stub GPU clue"],
+        "ambiguities": [],
     }
 
 
 def _extract_hyperparameters(text_slice: str) -> dict:
     """Stub for `extract_hyperparameters(text_slice: str) -> dict`.
 
-    Returns a minimal fixed TrainingRecipe shape.
+    Returns a TrainingRecipe.model_dump() with placeholder values so keys
+    cannot drift from the real schema (T20 / review I7).
     """
-    return {
-        "learning_rate": 1e-4,
-        "batch_size": 32,
-        "epochs": 10,
-        "optimizer": "adam",
-        "framework": "pytorch",
-        "source_slice_len": len(text_slice),
-    }
+    return TrainingRecipe(
+        optimizer="adam",
+        learning_rate="1e-4",
+        batch_size="32",
+        epochs_or_steps="10",
+        scheduler="",
+    ).model_dump()
 
 
 def _detect_environment(method_spec: dict) -> dict:
     """Stub for `detect_environment(method_spec: dict) -> dict`.
 
-    Returns a minimal fixed EnvironmentSpec shape.
+    Returns an EnvironmentSpec.model_dump() with placeholder values so keys
+    cannot drift from the real schema (T20 / review I7).
     """
-    return {
-        "python_version": "3.10",
-        "cuda_version": "11.8",
-        "packages": ["torch==2.0.0", "numpy>=1.24"],
-        "base_image": "pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime",
-        "env_type": "docker",
-        "source_spec_keys": list(method_spec.keys()) if isinstance(method_spec, dict) else [],
-    }
+    return EnvironmentSpec(
+        dockerfile="FROM python:3.11-slim\n",
+        python_version="3.11",
+        framework="pytorch",
+        pip_packages={"numpy": "latest"},
+    ).model_dump()
 
 
 def _build_environment(env_spec: dict) -> dict:
@@ -97,18 +98,18 @@ def _build_environment(env_spec: dict) -> dict:
 def _plan_reproduction(method_spec: dict, env_spec: dict) -> dict:
     """Stub for `plan_reproduction(method_spec: dict, env_spec: dict) -> dict`.
 
-    Returns a minimal fixed ReproductionContract shape.
+    Returns a ReproductionContract.model_dump() with placeholder values so keys
+    cannot drift from the real schema (T20 / review I7).
     """
-    return {
-        "steps": [
-            {"id": "step-1", "action": "train", "description": "Stub training step."},
-            {"id": "step-2", "action": "evaluate", "description": "Stub evaluation step."},
-        ],
-        "entry_point": "train.py",
-        "eval_command": "python evaluate.py",
-        "expected_outputs": ["model.pt", "results.json"],
-        "spec_keys_used": list(method_spec.keys()) if isinstance(method_spec, dict) else [],
-    }
+    return ReproductionContract(
+        reproduction_definition="Train and evaluate the stub baseline.",
+        smoke_test_plan="python train.py --epochs 1",
+        full_run_plan="python train.py",
+        expected_outputs=["model.pt", "results.json"],
+        dataset_plan="Use stub dataset.",
+        evaluation_plan="python evaluate.py",
+        verification_checklist=["accuracy metric produced"],
+    ).model_dump()
 
 
 def _implement_baseline(plan: dict) -> str:
@@ -122,28 +123,33 @@ def _implement_baseline(plan: dict) -> str:
 def _run_experiment(code_path: str, env_id: str) -> dict:
     """Stub for `run_experiment(code_path: str, env_id: str) -> dict`.
 
-    Returns ``{success, metrics, logs}`` shape.
+    Returns ``{success, metrics, logs}`` — the documented real return shape
+    (T20 / review I7).
     """
     return {
         "success": True,
-        "metrics": {},
-        "logs": "stub",
+        "metrics": {"placeholder_metric": 1.0},
+        "logs": "stub run",
     }
 
 
 def _verify_against_rubric(results: dict, rubric: dict) -> dict:
     """Stub for `verify_against_rubric(results: dict, rubric: dict) -> dict`.
 
-    Returns a minimal fixed RubricVerification shape.
+    Returns the shape matching the real primitive's documented return:
+    overall_score, meets_target, target_score, rubric_source, leaf_count,
+    graded, degraded, weak_leaves, leaf_scores (T20 / review I7).
     """
     return {
         "overall_score": 0.5,
         "meets_target": False,
-        "areas": [
-            {"name": "accuracy", "score": 0.5, "notes": "stub score"},
-        ],
-        "verdict": "partial",
-        "details": "Stub rubric verification — no real evaluation performed.",
+        "target_score": 0.5,
+        "rubric_source": "paperbench_bundle",
+        "leaf_count": 1,
+        "graded": 1,
+        "degraded": False,
+        "weak_leaves": [],
+        "leaf_scores": [],
     }
 
 
@@ -154,21 +160,28 @@ def _propose_improvements(
 ) -> list[dict]:
     """Stub for `propose_improvements(current_results, rubric_scores, k=None) -> list[dict]`.
 
-    Returns a fixed list of improvement candidate dicts.
+    Returns a list of ImprovementHypothesis.model_dump() items so keys cannot
+    drift from the real schema (T20 / review I7).
     """
     candidates = [
-        {
-            "tag": "stub-improvement-1",
-            "description": "Tune learning rate schedule.",
-            "target_rubric_area": "accuracy",
-            "estimated_uplift": 0.05,
-        },
-        {
-            "tag": "stub-improvement-2",
-            "description": "Increase training epochs.",
-            "target_rubric_area": "accuracy",
-            "estimated_uplift": 0.03,
-        },
+        ImprovementHypothesis(
+            path_id="stub-path-1",
+            hypothesis="Tune the learning rate schedule.",
+            rationale="A lower lr schedule often improves convergence.",
+            expected_outcome="Higher accuracy metric.",
+            compute_estimate="~1x baseline",
+            expected_value_score=0.6,
+            category="hyperparameter",
+        ).model_dump(),
+        ImprovementHypothesis(
+            path_id="stub-path-2",
+            hypothesis="Increase training epochs.",
+            rationale="More training typically reduces underfitting.",
+            expected_outcome="Lower training loss.",
+            compute_estimate="~2x baseline",
+            expected_value_score=0.5,
+            category="hyperparameter",
+        ).model_dump(),
     ]
     if k is not None:
         candidates = candidates[:k]

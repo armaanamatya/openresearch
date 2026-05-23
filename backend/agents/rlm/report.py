@@ -48,7 +48,19 @@ class RLMFinalReport(BaseModel):
     )
     paper_claims: dict = Field(default_factory=dict)
     rubric: dict = Field(
-        default_factory=lambda: {"overall_score": 0.0, "meets_target": False, "areas": []},
+        # C2c (second pass, 2026-05-22): unscored runs honestly read as null on
+        # both overall_score and meets_target — never a fabricated 0.0 / False.
+        # The post-run leaf scorer overwrites these with real values via
+        # amend_final_report when scoring actually happens. A run that dies
+        # before reaching the scorer (e.g. credential failure at iter 0) keeps
+        # the nulls — which is the honest "not scored" signal.
+        default_factory=lambda: {
+            "overall_score": None,
+            "meets_target": None,
+            "target_score": None,
+            "degraded": None,
+            "areas": [],
+        },
     )
     improvements: list[dict] = Field(default_factory=list)
     primitive_trace: dict = Field(default_factory=dict)
@@ -63,6 +75,8 @@ class RLMFinalReport(BaseModel):
         ),
     )
     iterations: int = 0
+    primitive_provider: str = "real"  # "real" | "stub" (T21 / review I8)
+    degraded: bool = False  # True for stub runs and other degraded states (T21)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +89,15 @@ _HONEST_DEFAULTS: dict[str, Any] = {
     "reproduction_summary": "",
     "baseline_metrics": {},
     "paper_claims": {},
-    "rubric": {"overall_score": 0.0, "meets_target": False, "areas": []},
+    # C2c (second pass): unscored defaults are null, not 0.0 / False. See
+    # RLMFinalReport.rubric default_factory above for the rationale.
+    "rubric": {
+        "overall_score": None,
+        "meets_target": None,
+        "target_score": None,
+        "degraded": None,
+        "areas": [],
+    },
     "improvements": [],
     "primitive_trace": {},
     "cost": {"llm_usd": 0.0, "primitives": 0.0},
@@ -127,6 +149,39 @@ def _parse_response(raw: str) -> dict | None:
         pass
 
     return None
+
+
+def _reconcile_verdict_against_evidence(
+    verdict: str,
+    *,
+    baseline_metrics: dict,
+    rubric: dict,
+    primitive_trace: dict,
+) -> tuple[str, str | None]:
+    """Downgrade an over-claimed verdict; return (verdict, reason_or_None).
+
+    A run can only claim "reproduced" if all three honesty checks pass:
+      - run_experiment was actually called (primitive_trace records it)
+      - baseline_metrics is non-empty (real measured numbers exist)
+      - rubric.overall_score >= 0.5 (the score actually shows reproduction)
+
+    Any failure downgrades "reproduced" -> "partial" with a reason string.
+    "partial" and "failed" verdicts are passed through unchanged.
+    """
+    if verdict != "reproduced":
+        return verdict, None
+    score = float((rubric or {}).get("overall_score", 0.0) or 0.0)
+    ran_experiment = bool(primitive_trace.get("by_primitive", {}).get("run_experiment"))
+    reasons: list[str] = []
+    if not ran_experiment:
+        reasons.append("run_experiment never ran")
+    if not baseline_metrics:
+        reasons.append("no measured baseline metrics")
+    if score < 0.5:
+        reasons.append(f"rubric score {score:.3f} < 0.5")
+    if reasons:
+        return "partial", "; ".join(reasons)
+    return verdict, None
 
 
 def _reconcile_verdict(parsed: dict) -> str:
@@ -308,13 +363,35 @@ def build_final_report(
         if verdict == "reproduced":
             verdict = "partial"
 
+    # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
+    verdict, downgrade_reason = _reconcile_verdict_against_evidence(
+        verdict,
+        baseline_metrics=baseline_metrics,
+        rubric=parsed.get("rubric") or {},
+        primitive_trace=trace,
+    )
+    if downgrade_reason:
+        summary = (
+            summary
+            + f"\n\n[verdict guard] Downgraded to 'partial': {downgrade_reason}."
+        ).strip()
+        logger.warning(
+            "report: verdict downgraded to partial — %s", downgrade_reason,
+        )
+
     kwargs: dict[str, Any] = {
         "verdict": verdict,
         "paper": parsed.get("paper") or {},
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
-        "rubric": parsed.get("rubric") or {"overall_score": 0.0, "meets_target": False, "areas": []},
+        "rubric": parsed.get("rubric") or {
+            "overall_score": None,
+            "meets_target": None,
+            "target_score": None,
+            "degraded": None,
+            "areas": [],
+        },
         "improvements": list(parsed.get("improvements") or []),
         "primitive_trace": trace,
         "cost": _cost_dict(result, ctx),
@@ -411,13 +488,25 @@ def _render_markdown(report: RLMFinalReport) -> str:
         lines.append("")
 
     # --- Rubric ---
+    # C2c (second pass): a run that was never scored carries
+    # overall_score=None / meets_target=None — render as "not scored", never as
+    # a fabricated 0.000 / "below target". This is the markdown counterpart of
+    # the honest-null defaults in RLMFinalReport.rubric.
     rubric = report.rubric
-    overall = rubric.get("overall_score", 0.0)
-    meets_target = rubric.get("meets_target", False)
-    target_flag = "✔ meets target" if meets_target else "✘ below target"
+    overall = rubric.get("overall_score")
+    meets_target = rubric.get("meets_target")
     lines.append("## Rubric Score")
     lines.append("")
-    lines.append(f"**Overall score:** {overall:.3f}  ({target_flag})")
+    if overall is None:
+        lines.append("**Overall score:** not scored  (run did not reach the leaf scorer)")
+    else:
+        if meets_target is True:
+            target_flag = "✔ meets target"
+        elif meets_target is False:
+            target_flag = "✘ below target"
+        else:  # None — target unknown (rubric had no target_score)
+            target_flag = "no target set"
+        lines.append(f"**Overall score:** {overall:.3f}  ({target_flag})")
     # Provenance: after the post-run leaf scorer amends the report, surface the
     # rubric source + leaf coverage so a "generated" score is never mistaken for
     # a PaperBench-official one.
@@ -426,7 +515,7 @@ def _render_markdown(report: RLMFinalReport) -> str:
     if source or leaf_count:
         bits: list[str] = []
         if leaf_count:
-            bits.append(f"{rubric.get('graded', leaf_count)}/{leaf_count} rubric leaves graded")
+            bits.append(f"{rubric.get('graded', 0)}/{leaf_count} rubric leaves graded")
         if source == "generated":
             bits.append("self-generated rubric — not PaperBench-official")
         elif source == "paperbench_bundle":

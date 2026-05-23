@@ -35,9 +35,15 @@ _PARSER_NAME = "resolving"
 _PARSER_VERSION = "1.0"
 _USABLE = 0.35
 
-# A source carrying at least this many chars of real text makes slow OCR
-# unnecessary — OCR is the scanned-PDF fallback, not a short-document fallback.
-_MIN_USEFUL_CHARS = 200
+# Below this quality score, a source is not considered good enough to skip OCR.
+# Raw length alone is insufficient — 200-999-char figure-noise scores 0.0 yet
+# previously bypassed OCR (review I4 / T16).
+_MIN_USEFUL_SCORE = 0.3  # below this, OCR may rescue (T16, review I4)
+
+
+def _should_run_ocr(html_score: float, pdf_score: float) -> bool:
+    """OCR runs unless HTML or PDF produced *quality* text (T16, review I4)."""
+    return max(html_score, pdf_score) < _MIN_USEFUL_SCORE
 
 # Compiled once; reused inside score_text_quality for efficiency.
 _WORDISH_RE = re.compile(r"[A-Za-z][A-Za-z'\-]{2,}")
@@ -136,14 +142,10 @@ class ResolvingParser:
         candidates.append(("pdf", pdf_result, pdf_score, pdf_error))
 
         # 3. OCR — the scanned-PDF fallback. Skip it whenever HTML or PDF
-        # already gave a usable score OR a non-trivial amount of real text:
-        # a short paper is not a scanned one, and OCR is slow.
-        ocr_skipped = (
-            html_score >= _USABLE
-            or pdf_score >= _USABLE
-            or (html_result is not None and len(html_result.full_text.strip()) >= _MIN_USEFUL_CHARS)
-            or (pdf_result is not None and len(pdf_result.full_text.strip()) >= _MIN_USEFUL_CHARS)
-        )
+        # already produced quality text. Raw length is no longer used here;
+        # a 200-999-char noise blob scored 0.0 and bypassed OCR erroneously
+        # (review I4 / T16). _should_run_ocr gates on quality score instead.
+        ocr_skipped = not _should_run_ocr(html_score, pdf_score)
         ocr_result: ParseResult | None = None
         ocr_score = 0.0
         ocr_error: BaseException | None = None

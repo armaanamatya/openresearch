@@ -88,7 +88,7 @@ def test_every_primitive_binds_and_heuristic_ones_run(make_context, tmp_path):
 
     ctx = make_context(tmp_path)
     tools = build_custom_tools(ctx)
-    assert len(tools) == 9  # the nine brief-§7 primitives
+    assert len(tools) == 10  # the nine brief-§7 primitives + record_candidate_outcome (Task 13)
     for entry in tools.values():
         assert callable(entry["tool"])
 

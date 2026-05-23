@@ -82,7 +82,7 @@ def test_run_experiment_rebuilds_image_from_project_dockerfile(
                 "error": "", "attempts": 1}
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None):
+                        sandbox_mode=None, run_budget=None):
         seen["env_id"] = env_id
         return {"metrics": {}, "success": True, "logs": ""}
 
@@ -110,7 +110,7 @@ def test_run_experiment_falls_back_to_env_id_without_dockerfile(
     seen: dict = {}
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None):
+                        sandbox_mode=None, run_budget=None):
         seen["env_id"] = env_id
         return {"metrics": {}, "success": True, "logs": ""}
 

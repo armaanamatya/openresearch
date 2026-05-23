@@ -131,9 +131,9 @@ def test_runs_endpoint_rejects_missing_secret(monkeypatch):
                 return {"projectId": "x", "status": "queued"}
 
         client = TestClient(create_app(run_service=_FakeRunService()))
-        assert client.post("/runs", json={"mode": "sdk"}).status_code == 403
+        assert client.post("/runs", json={"mode": "rlm"}).status_code == 403
         assert client.post(
-            "/runs", json={"mode": "sdk"}, headers={"X-Demo-Secret": "topsecret"}
+            "/runs", json={"mode": "rlm"}, headers={"X-Demo-Secret": "topsecret"}
         ).status_code == 202
     finally:
         monkeypatch.undo()

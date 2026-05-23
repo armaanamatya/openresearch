@@ -161,7 +161,13 @@ class HtmlPaperParser:
         # (index into text_parts at which the heading boundary appears, title, depth)
         boundaries: list[tuple[int, str, int]] = []
 
-        def _walk(node: object) -> None:
+        # Iterative stack-based walk — prevents RecursionError on deeply-nested
+        # attacker-controlled HTML (T17, review I5). A recursive _walk with
+        # 5000+ nesting levels raises RecursionError which is not a ParseError
+        # and escapes the cascade's except-ParseError handler.
+        stack: list[object] = list(reversed(list(root.children)))  # type: ignore[union-attr]
+        while stack:
+            node = stack.pop()
             if isinstance(node, NavigableString):
                 t = " ".join(str(node).split())  # normalize whitespace
                 if t:
@@ -173,11 +179,9 @@ class HtmlPaperParser:
                     # Boundary: the next section starts at text_parts[len(text_parts)]
                     boundaries.append((len(text_parts), title, depth))
                 else:
-                    for child in node.children:
-                        _walk(child)
-
-        for child in root.children:  # type: ignore[union-attr]
-            _walk(child)
+                    # Push children in reverse so left-to-right document order is
+                    # preserved when popping from the stack.
+                    stack.extend(reversed(list(node.children)))
 
         full_text = " ".join(text_parts)
 

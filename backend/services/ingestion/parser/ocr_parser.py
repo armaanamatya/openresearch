@@ -6,6 +6,7 @@ One Section per page; no reference extraction.
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
 from pathlib import Path
@@ -38,8 +39,9 @@ class OcrPaperParser:
     def name(self) -> str:
         return _PARSER_NAME
 
-    @property
+    @functools.cached_property
     def version(self) -> str:
+        """Cached: _get_tesseract_version() was called on every .version access (review M6 / T29)."""
         return _get_tesseract_version()
 
     def parse(self, *, project_id: str, paper_path: Path) -> ParseResult:

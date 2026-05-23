@@ -38,7 +38,7 @@ button {
 }
 
 /* ---------------------------------------------------------------------------
- * Page shell — shared by /lab, /library, /demo. Hoisted here because Next.js
+ * Page shell — shared by /lab and /library. Hoisted here because Next.js
  * code-splits CSS per route; importing lab-shell.css from lab-shell.tsx would
  * mean /library doesn't load these rules on direct navigation.
  * ------------------------------------------------------------------------ */

@@ -110,7 +110,7 @@ def test_paperbench_run_dry_mode_persists_status_and_submission(
             str(runs_root),
             "paperbench",
             "run",
-            "--no-pipeline",
+
             "--paper-id",
             "mini",
             "--bundles-root",
@@ -143,7 +143,7 @@ def test_paperbench_status_reads_back_persisted_run(
             str(runs_root),
             "paperbench",
             "run",
-            "--no-pipeline",
+
             "--paper-id",
             "mini",
             "--bundles-root",

@@ -1,0 +1,189 @@
+/* TreeNode — exploration tree node card (spec §6, §8, §9).
+ *
+ * Flat surface, hairline border, dense layout.
+ * Outcome palette from tokens.css:
+ *   promoted  → --accent (#1d7a3c, forest green)
+ *   marginal  → --warn   (#d97706, amber)
+ *   failed    → --err    (#c81e1e, coral)
+ *   running   → --hermes (#7c5cff, purple, pulsing)
+ *   skipped   → --muted-2 (grey, dashed border)
+ *   declined  → --muted-2 (grey, dashed border)
+ *
+ * The running pulse is wrapped in prefers-reduced-motion: no-preference
+ * so motion-sensitive users get a static indicator.
+ */
+
+/* ── Base node ────────────────────────────────────────────────── */
+
+.node {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  text-align: left;
+  min-width: 120px;
+  max-width: 220px;
+  transition: box-shadow 150ms ease, border-color 150ms ease;
+  font-family: var(--font-sans);
+}
+
+.node:hover {
+  border-color: var(--line-2);
+  box-shadow: var(--shadow-2);
+}
+
+.node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Selected state ───────────────────────────────────────────── */
+
+.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* ── Title ────────────────────────────────────────────────────── */
+
+.title {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+/* ── Subtitle (candidate: category · delta) ───────────────────── */
+
+.subtitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.delta {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* ── Outcome badge ────────────────────────────────────────────── */
+
+.outcomeBadge {
+  display: inline-block;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-xs);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+/* ── Kind-specific styles ─────────────────────────────────────── */
+
+/* Paper root — slightly heavier border */
+.kind-paper {
+  border-color: var(--line-2);
+}
+
+/* Work (trunk) node */
+.kind-work {
+  background: var(--chip);
+}
+
+/* Baseline milestone */
+.kind-baseline {
+  border-color: var(--accent);
+  border-width: 1.5px;
+}
+
+/* Sub-RLM marker */
+.kind-subrlm {
+  border-color: var(--hermes);
+  border-style: dashed;
+}
+
+/* Declined group — dashed grey */
+.kind-declined-group {
+  border-style: dashed;
+  border-color: var(--muted-2);
+}
+.kind-declined-group .title {
+  color: var(--muted);
+}
+
+/* ── Outcome-specific styles ──────────────────────────────────── */
+
+/* promoted — forest green */
+.outcome-promoted .outcomeBadge {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.outcome-promoted {
+  border-color: var(--accent);
+}
+
+/* marginal — amber */
+.outcome-marginal .outcomeBadge {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+.outcome-marginal {
+  border-color: var(--warn);
+}
+
+/* failed — coral */
+.outcome-failed .outcomeBadge {
+  background: var(--err-soft);
+  color: var(--err);
+}
+.outcome-failed {
+  border-color: var(--err);
+}
+
+/* running — hermes purple, pulsing (motion gated) */
+.outcome-running .outcomeBadge {
+  background: var(--hermes-soft);
+  color: var(--hermes-ink);
+}
+.outcome-running {
+  border-color: var(--hermes);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes nodePulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.65; }
+  }
+
+  .outcome-running {
+    animation: nodePulse 2s ease-in-out infinite;
+  }
+}
+
+/* skipped — grey, dashed border */
+.outcome-skipped .outcomeBadge {
+  background: var(--chip);
+  color: var(--muted);
+}
+.outcome-skipped {
+  border-style: dashed;
+  border-color: var(--muted-2);
+}
+
+/* declined — grey, dashed border */
+.outcome-declined .outcomeBadge {
+  background: var(--chip);
+  color: var(--muted);
+}
+.outcome-declined {
+  border-style: dashed;
+  border-color: var(--muted-2);
+}

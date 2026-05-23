@@ -27,7 +27,7 @@ function makeRun(overrides: Partial<LiveDemoRunState> = {}): LiveDemoRunState {
   return {
     projectId: "prj_test",
     outputDir: "/tmp/runs/prj_test",
-    runMode: "sdk",
+    runMode: "rlm",
     status: "running",
     startedAt: "2026-05-09T00:00:00.000Z",
     updatedAt: "2026-05-09T00:00:30.000Z",
