@@ -206,6 +206,36 @@ class TestBuildLlmClient:
         client, _ = _build_llm_client("anthropic", self._anthropic_root_model())
         assert hasattr(client, "complete")
 
+    def test_claude_oauth_root_builds_claude_client_even_when_openai_key_set(
+        self, monkeypatch
+    ):
+        """When the root model is claude-oauth (rlm_backend="anthropic-oauth"),
+        the primitive LLM client must be ClaudeLlmClient — never OpenAILlmClient —
+        regardless of OPENAI_API_KEY being set.  A stale/invalid OPENAI_API_KEY
+        must NOT cause plan_reproduction and rubric_gen to fail with 401.
+        """
+        from backend.agents.rlm.models import RootModel
+
+        oauth_root = RootModel(
+            key="claude-oauth",
+            rlm_backend="anthropic-oauth",
+            backend_kwargs={"model_name": "claude-sonnet-4-6"},
+            sub_backend="anthropic-oauth",
+            sub_backend_kwargs={"model_name": "claude-haiku-4-5-20251001"},
+            api_key_env=None,
+        )
+        # Simulate an env that has a (stale/invalid) OPENAI_API_KEY alongside OAuth.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-invalid-key-for-testing")
+        client, model = _build_llm_client(None, oauth_root)
+        assert client.__class__.__name__ == "ClaudeLlmClient", (
+            f"Expected ClaudeLlmClient for claude-oauth root with OPENAI_API_KEY set, "
+            f"got {client.__class__.__name__}"
+        )
+        # The linter-expanded implementation labels the OAuth path as "claude-oauth".
+        assert model in ("claude", "claude-oauth"), (
+            f"Expected 'claude' or 'claude-oauth' model label for OAuth path, got {model!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _verdict_to_status + RLMRunResult
