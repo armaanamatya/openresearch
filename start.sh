@@ -92,7 +92,10 @@ if [[ "${runpod_preflight_needed}" == "1" ]]; then
             else
                 echo "[start.sh] Running Runpod preflight (free)..."
             fi
-            if ! "${PREFLIGHT}" "${preflight_args[@]}"; then
+            # macOS bash 3.2: ${arr[@]} on an empty array fires "unbound
+            # variable" under `set -u`. The `${arr[@]+...}` form expands to
+            # nothing when the array is empty/unset, sidestepping it.
+            if ! "${PREFLIGHT}" ${preflight_args[@]+"${preflight_args[@]}"}; then
                 echo "[start.sh] Runpod preflight FAILED — refusing to start the dashboard."
                 echo "[start.sh] Fix the issue, or rerun with START_SKIP_PREFLIGHT=1 to bypass."
                 exit 1
