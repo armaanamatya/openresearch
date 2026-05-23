@@ -741,6 +741,10 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         # auto-detection returns False and the cap would not fire. Pass it
         # explicitly so the in-loop optimization signal matches what the
         # post-run authoritative score will become.
+        # Two-layer degraded predicate: post-run path checks verdict+metrics via
+        # final_report.json (_is_degraded_run); in-loop path checks success+metrics
+        # via the live run_experiment result dict (verdict is a report-level concept
+        # not yet written at this point).  Both are correct at their respective layer.
         degraded = (not results.get("success")) or (not (results.get("metrics") or {}))
         scored = score_reproduction(
             rubric_tree=rubric,

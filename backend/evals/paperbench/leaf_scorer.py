@@ -114,7 +114,9 @@ def _is_degraded_run(run_dir: Path) -> bool:
         return False
     if not isinstance(report, dict):
         return False
-    return not (report.get("baseline_metrics") or {})
+    metrics = report.get("baseline_metrics") or {}
+    verdict = report.get("verdict", "")
+    return (not metrics) or verdict == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +392,9 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     else:
         meets_target = bool(score["overall_score"] >= target_score)
 
+    # T5: preserve the in-loop tree-rubric areas list so the markdown areas
+    # table is not silently dropped when we replace report["rubric"].
+    previous_rubric = report.get("rubric", {}) or {}
     report["rubric"] = {
         "overall_score": score["overall_score"],
         "rubric_source": score.get("rubric_source", "paperbench_bundle"),
@@ -400,6 +405,7 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         # C2b: surface the degraded flag so the UI / human reviewer can see
         # *why* a low score was reached. False/missing → run was honest.
         "degraded": bool(score.get("degraded", False)),
+        "areas": previous_rubric.get("areas", []),
     }
 
     # Reconcile the self-reported verdict against the authoritative leaf score.

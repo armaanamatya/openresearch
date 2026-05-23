@@ -495,3 +495,61 @@ def test_amend_final_report_leaves_non_rlm_markdown_untouched():
         md = (run_dir / "final_report.md").read_text(encoding="utf-8")
 
     assert md == stale_md  # untouched — the RLM-shape guard prevented a re-render
+
+
+def test_amend_final_report_preserves_in_loop_areas(tmp_path):
+    """Symptom: the markdown areas table renders empty after leaf-score amendment.
+
+    amend_final_report used to overwrite report["rubric"] wholesale, dropping the
+    in-loop tree-rubric `areas` list (review M2 / T5).  Verify: a seeded areas
+    list survives the amendment intact.
+    """
+    import json
+    from backend.evals.paperbench.leaf_scorer import amend_final_report
+
+    report = {
+        "verdict": "reproduced",
+        "baseline_metrics": {"x": 1.0},
+        "rubric": {
+            "areas": [{"name": "code", "score": 0.85, "notes": "good"}],
+        },
+    }
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    amend_final_report(
+        tmp_path,
+        {
+            "overall_score": 0.9,
+            "leaf_count": 1,
+            "graded": 1,
+            "rubric_source": "paperbench_bundle",
+            "leaf_scores": [{"id": "L1", "score": 0.9, "justification": "ok"}],
+            "degraded": False,
+            "target_score": 0.7,
+        },
+    )
+
+    out = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    assert out["rubric"]["meets_target"] is True
+    assert out["rubric"]["areas"] == [
+        {"name": "code", "score": 0.85, "notes": "good"}
+    ]
+
+
+def test_is_degraded_run_caps_failed_verdict_even_with_metrics(tmp_path):
+    """Symptom: a verdict='failed' run with metrics escapes the 0.35 honesty cap.
+
+    _is_degraded_run only checked baseline_metrics, so a run that measured
+    metrics but errored downstream (verdict='failed') was not detected as
+    degraded (T4 plan, review C2b).  Verify: such a run IS classified degraded.
+    """
+    import json
+    from backend.evals.paperbench.leaf_scorer import _is_degraded_run
+
+    report = {
+        "verdict": "failed",
+        "baseline_metrics": {"mean_reward": 1.0},  # non-empty metrics but verdict=failed
+    }
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    assert _is_degraded_run(tmp_path) is True
