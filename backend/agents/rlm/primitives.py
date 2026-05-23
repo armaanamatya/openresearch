@@ -401,6 +401,32 @@ def _build_image(dockerfile_path, context_dir, tag, **kw):
     return build_image(dockerfile_path, context_dir, tag, **kw)
 
 
+def _image_exists(tag: str) -> bool:
+    """Return True iff the Docker image `tag` already exists locally.
+
+    Uses the Docker SDK's images.get() — raises ImageNotFound when the image
+    is absent, any other exception (SDK unavailable, daemon unreachable) is
+    treated conservatively as "not found" so the caller falls through to the
+    normal build path.
+    """
+    try:
+        import docker  # type: ignore[import-untyped]
+        from docker.errors import ImageNotFound  # type: ignore[import-untyped]
+
+        client = docker.from_env()
+        try:
+            client.images.get(tag)
+            return True
+        except ImageNotFound:
+            return False
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except Exception:  # noqa: BLE001 — SDK missing / daemon down: fall through to build
+        return False
+
+
 _ENV_REPAIR_SYSTEM = (
     "You are a Docker environment repair assistant. Given a Dockerfile and the "
     "build error it produced, output a corrected Dockerfile and NOTHING else — "
@@ -460,6 +486,15 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # tag to the Dockerfile so distinct environments get distinct images.
         digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
         tag = f"reprolab/{ctx.project_id}:env-{digest}"
+
+        # Three-layer "don't redo work" guard: content-addressed tag → Docker
+        # layer cache → this existence check.  When the image is already
+        # present (same Dockerfile hash → same tag → same bits), skip the
+        # entire rebuild and return immediately.  Re-checked per call so a
+        # manual `docker rmi` between iterations forces a real rebuild (D5).
+        if _image_exists(tag):
+            return {"ok": True, "image_tag": tag, "attempts": 0, "skipped": True}
+
         deadline_abs = time.monotonic() + aggregate_cap_s
         with tempfile.TemporaryDirectory() as tmp:
             context_dir = Path(tmp)
