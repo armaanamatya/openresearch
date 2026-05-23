@@ -64,7 +64,7 @@ class RunBudget:
         elapsed = (current - pod_started_at).total_seconds()
         if elapsed >= self.max_pod_seconds:
             raise BudgetExhausted(
-                f"Pod-time budget exhausted before invoking {agent_id}: "
+                f"Run pod-time budget exhausted before invoking {agent_id}: "
                 f"{elapsed:.1f}s >= {self.max_pod_seconds:.1f}s",
                 provider=None,
                 agent_id=agent_id,

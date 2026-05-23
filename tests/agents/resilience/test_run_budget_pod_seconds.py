@@ -34,8 +34,20 @@ def test_check_pod_seconds_raises_when_pod_started_at_exceeds_cap():
             agent_id="experiment-runner",
             now=_frozen_now(),
         )
-    assert "61" in str(exc.value)
-    assert "60" in str(exc.value)
+    assert "61.0s" in str(exc.value)
+    assert ">= 60.0s" in str(exc.value)
+    assert exc.value.elapsed_seconds == pytest.approx(61.0)
+
+
+def test_check_pod_seconds_raises_at_exact_boundary():
+    budget = RunBudget(max_pod_seconds=60.0)
+    pod_started_at = _frozen_now() - timedelta(seconds=60)
+    with pytest.raises(BudgetExhausted):
+        budget.check_pod_seconds(
+            pod_started_at=pod_started_at,
+            agent_id="experiment-runner",
+            now=_frozen_now(),
+        )
 
 
 def test_check_pod_seconds_noop_when_under_cap():
