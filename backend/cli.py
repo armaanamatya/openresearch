@@ -520,9 +520,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     run_budget = None
-    _max_pod_seconds = args.max_pod_seconds
-    if _max_pod_seconds is None and os.environ.get("REPROLAB_MAX_POD_SECONDS"):
-        _max_pod_seconds = float(os.environ["REPROLAB_MAX_POD_SECONDS"])
+    _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
     if args.max_usd is not None or args.max_wall_clock is not None or args.max_invocations or _max_pod_seconds is not None:
         from backend.agents.resilience import RunBudget
 
@@ -744,8 +742,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Maximum cumulative CPU-seconds a RunPod pod may run before the next "
-            "exec() call is blocked (enforces RunBudget.max_pod_seconds). "
+            "Maximum elapsed seconds a RunPod pod may run AFTER SSH connect "
+            "(not from POST /pods — boot time is not budgeted) before the next "
+            "exec() raises BudgetExhausted and the pod is force-destroyed. "
+            "Persistent pods (REPROLAB_RUNPOD_POD_ID) are NOT auto-deleted; "
+            "an ERROR log is emitted and manual cleanup is required. "
             "Also read from REPROLAB_MAX_POD_SECONDS env var."
         ),
     )
@@ -842,6 +843,22 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _resolve_max_pod_seconds(cli_value: float | None) -> float | None:
+    """CLI flag wins; falls back to REPROLAB_MAX_POD_SECONDS env var.
+
+    Explicit None from the CLI (flag unset) triggers env fallback;
+    an explicit float value (including 0.0, the kill-switch) is honored
+    as-is. This is `is None`-checked rather than truthy-checked precisely
+    so that ``--max-pod-seconds 0`` does not silently fall through to env.
+    """
+    if cli_value is not None:
+        return cli_value
+    env_value = os.environ.get("REPROLAB_MAX_POD_SECONDS")
+    if env_value:
+        return float(env_value)
+    return None
 
 
 def _max_invocations_from_arg(raw: str | None) -> dict[str, int]:

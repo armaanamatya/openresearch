@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import os
+import stat
 import subprocess
-import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -287,6 +286,12 @@ class RunpodBackend(RuntimeBackend):
                     agent_id="experiment-runner",
                 )
             except BudgetExhausted:
+                # Track whether destroy actually deleted the pod. For persistent
+                # pods (REPROLAB_RUNPOD_POD_ID), the pod_id is intentionally not
+                # in _owned_pod_ids so destroy() returns without deleting —
+                # which means the pod keeps billing. The operator must see this
+                # explicitly, not buried as an INFO log inside destroy().
+                pod_was_owned = sandbox.sandbox_id in self._owned_pod_ids
                 try:
                     await self.destroy(sandbox)
                 except Exception as exc:
@@ -297,6 +302,15 @@ class RunpodBackend(RuntimeBackend):
                         exc,
                         exc_info=True,
                     )
+                else:
+                    if not pod_was_owned:
+                        _log.error(
+                            "RUNPOD_BUDGET_EXHAUSTED_PERSISTENT_POD_NOT_DELETED "
+                            "sandbox_id=%s — persistent pod (REPROLAB_RUNPOD_POD_ID) "
+                            "is unowned by this backend, destroy skipped; pod is STILL "
+                            "RUNNING and billing. Stop it manually via the RunPod dashboard.",
+                            sandbox.sandbox_id,
+                        )
                 raise
         started_at = datetime.now(timezone.utc)
         try:
@@ -527,22 +541,88 @@ class RunpodBackend(RuntimeBackend):
                 await sftp.put(str(local_path), remote_path)
 
     async def _sync_artifacts_to_host(self, sandbox: Sandbox) -> None:
+        """Incrementally sync remote artifacts/ to the local artifact root.
+
+        Walks the remote tree via SFTP and transfers only files whose
+        (size, mtime) differs from the local copy.  Symlinks are skipped
+        (same as the previous tar-based behaviour).  Hardlinks are NOT
+        checked: SFTP presents hardlinks as ordinary regular files with
+        nlink > 1, which is indistinguishable from regular files without
+        per-file nlink inspection, and the original tar-format islnk()
+        check was an archive-format concept that has no direct SFTP
+        analogue.  The path-escape guard below is the real safety
+        guarantee; hardlink-specific refusal has been intentionally
+        dropped (see B.4 design notes).
+        """
         connection = self._connections[sandbox.sandbox_id]
         conn = await self._ssh(sandbox.sandbox_id)
-        command = f"test -d {_shell_quote(connection.remote_artifacts_dir)} && tar -C {_shell_quote(connection.remote_artifacts_dir)} -cf - ."
-        result = await conn.run(command, check=False, encoding=None)
-        if result.returncode != 0 or not result.stdout:
-            return
-        if isinstance(result.stdout, bytes):
-            data = result.stdout
-        elif isinstance(result.stdout, bytearray):
-            data = bytes(result.stdout)
-        else:
-            raise SandboxRuntimeError(
-                RuntimeCauseKind.copy_failed,
-                "Runpod artifact archive was not returned as bytes.",
-            )
-        _extract_artifact_tar(data, sandbox.config.resolved_artifact_root())
+        local_root = sandbox.config.resolved_artifact_root().resolve()
+        local_root.mkdir(parents=True, exist_ok=True)
+        remote_root = connection.remote_artifacts_dir
+
+        async with conn.start_sftp_client() as sftp:
+            # Short-circuit: if the remote artifacts dir doesn't exist yet
+            # (pod never wrote anything) this is a silent no-op, matching
+            # the original `test -d ...` guard.
+            try:
+                await sftp.stat(remote_root)
+            except (FileNotFoundError, OSError):
+                return
+
+            # Walk the remote tree recursively.  We use a manual stack
+            # rather than glob('**') so the behaviour is explicit and
+            # testable regardless of asyncssh version.
+            stack: list[str] = [remote_root]
+            while stack:
+                current_dir = stack.pop()
+                entries = await sftp.readdir(current_dir)
+                for entry in entries:
+                    name = entry.filename
+                    if name in (".", ".."):
+                        continue
+                    entry_remote_path = _join_posix(current_dir, name)
+
+                    # Re-stat via lstat (never follows symlinks) so we get
+                    # the true type of the entry rather than the target.
+                    attrs = await sftp.lstat(entry_remote_path)
+
+                    # Refuse symlinks — skip silently (original tar behaviour).
+                    if stat.S_ISLNK(attrs.permissions):
+                        continue
+
+                    # Compute the safe local path.
+                    relative = _relative_posix(entry_remote_path, remote_root)
+                    local_path = (local_root / relative).resolve()
+                    # Safety: refuse paths that resolve outside local_root.
+                    if local_root != local_path and local_root not in local_path.parents:
+                        raise SandboxRuntimeError(
+                            RuntimeCauseKind.copy_failed,
+                            f"Runpod artifact sync refused unsafe relative path: {relative}",
+                        )
+
+                    if stat.S_ISDIR(attrs.permissions):
+                        local_path.mkdir(parents=True, exist_ok=True)
+                        stack.append(entry_remote_path)
+                        continue
+
+                    # The win: skip files that haven't changed.
+                    if _file_unchanged(local_path, attrs):
+                        continue
+
+                    # Transfer the file in chunks.
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    async with sftp.open(entry_remote_path, "rb") as src:
+                        with open(local_path, "wb") as dst:
+                            while True:
+                                chunk = await src.read(65536)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+
+                    # Preserve remote mtime so subsequent syncs can skip
+                    # this file when it hasn't changed on the remote side.
+                    if attrs.atime is not None and attrs.mtime is not None:
+                        os.utime(local_path, (attrs.atime, attrs.mtime))
 
     async def _sync_artifacts_to_host_quietly(self, sandbox: Sandbox) -> None:
         try:
@@ -809,20 +889,34 @@ def _replace_path_with_symlink(path: str, target: str) -> str:
     )
 
 
-def _extract_artifact_tar(data: bytes, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    root = destination.resolve()
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-        for member in archive.getmembers():
-            if member.issym() or member.islnk():
-                continue
-            target = (root / member.name).resolve()
-            if root != target and root not in target.parents:
-                raise SandboxRuntimeError(
-                    RuntimeCauseKind.copy_failed,
-                    f"Runpod artifact archive contains unsafe path: {member.name}",
-                )
-            archive.extract(member, root, filter="data")
+def _relative_posix(remote_path: str, remote_root: str) -> str:
+    """Return the POSIX-relative path of *remote_path* under *remote_root*.
+
+    Example: _relative_posix('/artifacts/a/b.txt', '/artifacts') -> 'a/b.txt'
+    """
+    root = remote_root.rstrip("/") + "/"
+    if remote_path.startswith(root):
+        return remote_path[len(root):]
+    # Identical — the root itself (shouldn't normally be passed, but be safe).
+    return ""
+
+
+def _file_unchanged(local_path: Path, remote_attrs: Any) -> bool:
+    """Return True when *local_path* exists and matches *remote_attrs* (size + mtime).
+
+    The comparison is intentionally cheap: matching both size and mtime is
+    sufficient for the artifact-sync use case where the remote is always the
+    source of truth.
+    """
+    try:
+        st = local_path.stat()
+    except FileNotFoundError:
+        return False
+    remote_mtime = remote_attrs.mtime
+    remote_size = remote_attrs.size
+    if remote_mtime is None or remote_size is None:
+        return False
+    return st.st_size == remote_size and st.st_mtime >= remote_mtime
 
 
 def _ssh_port(port_mappings: dict[Any, Any]) -> int | None:
