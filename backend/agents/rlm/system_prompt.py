@@ -277,18 +277,30 @@ _TRIAGE_INSTRUCTION = """\
   TRIAGE — COST AND TIME ARE FINITE
 ═══════════════════════════════════════════════════════════════
 
-`propose_improvements` returns a list of improvement candidates.  Not every
-candidate is worth attempting.  Before running an improvement, triage it:
+`propose_improvements` returns a list of improvement candidates.  Triage them
+before running, BUT — your success target is **at least one promoted candidate
+per run**, not "every candidate declined for cost reasons".  A run that ends
+with zero promoted candidates and a low rubric score has failed its core goal.
 
-  - Check which rubric nodes are currently below target.
-  - Check whether the candidate's `expected_delta` is likely to lift those
-    specific weak nodes.
-  - Decline candidates that address already-passing areas or that have
-    implausibly high `expected_delta` for low-cost reasons.
-  - Prefer candidates that target the largest absolute rubric gap first.
+Triage in this order:
 
-A candidate declined early saves Docker build time, experiment wall-clock, and
-LLM cost.  The goal is a verified reproduction, not exhaustive exploration.
+  1. Pick the candidate that targets the largest absolute rubric gap AND has
+     the smallest, most self-contained implementation surface (a single
+     function, a single config flag, a single replacement metric).
+  2. If all candidates look "too big" for the remaining iterations, **do not
+     decline them all**.  Instead, IMPLEMENT A SCOPED-DOWN SUBSET of the
+     most-promising one — e.g. for a candidate "Replace synthetic benchmarks
+     with RULER suite", just wire up ONE RULER task and verify the rubric
+     moves.  Promoting a scoped subset is a real win; declining everything is
+     not.
+  3. Only after at least one candidate has reached "promoted" or "failed"
+     (an HONEST attempt that ran the experiment), you may decline the rest
+     if they address already-passing areas or have implausibly high
+     `expected_delta`.
+
+A candidate declined WITHOUT running its experiment is observer-bias, not
+triage.  Run the smallest viable version, see the rubric delta, and report
+the truth (promoted, marginal, or failed) — that is the value of this run.
 
 After you evaluate each improvement candidate (by running and re-verifying it,
 or by deciding to skip/decline it), call `record_candidate_outcome(candidate_id,
