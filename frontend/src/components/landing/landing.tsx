@@ -154,10 +154,10 @@ function ComprehensionSection(): React.JSX.Element {
               equation that supports it.
             </p>
             <div className={styles["spec-substeps"]}>
-              <a href="#"><span className={styles.num}>§ 1.1</span><span>Parsing</span></a>
-              <a href="#"><span className={styles.num}>§ 1.2</span><span>Claim extraction</span></a>
-              <a href="#"><span className={styles.num}>§ 1.3</span><span>Citation graph</span></a>
-              <a href="#"><span className={styles.num}>§ 1.4</span><span>Rubric induction</span></a>
+              <span><span className={styles.num}>§ 1.1</span><span>Parsing</span></span>
+              <span><span className={styles.num}>§ 1.2</span><span>Claim extraction</span></span>
+              <span><span className={styles.num}>§ 1.3</span><span>Citation graph</span></span>
+              <span><span className={styles.num}>§ 1.4</span><span>Rubric induction</span></span>
             </div>
           </div>
         </div>
@@ -201,10 +201,10 @@ function EnvironmentSection(): React.JSX.Element {
               single training step runs.
             </p>
             <div className={styles["spec-substeps"]}>
-              <a href="#"><span className={styles.num}>§ 2.1</span><span>Toolchain</span></a>
-              <a href="#"><span className={styles.num}>§ 2.2</span><span>Lockfile</span></a>
-              <a href="#"><span className={styles.num}>§ 2.3</span><span>Dataset hashes</span></a>
-              <a href="#"><span className={styles.num}>§ 2.4</span><span>GPU provisioning</span></a>
+              <span><span className={styles.num}>§ 2.1</span><span>Toolchain</span></span>
+              <span><span className={styles.num}>§ 2.2</span><span>Lockfile</span></span>
+              <span><span className={styles.num}>§ 2.3</span><span>Dataset hashes</span></span>
+              <span><span className={styles.num}>§ 2.4</span><span>GPU provisioning</span></span>
             </div>
           </div>
         </div>
@@ -248,10 +248,10 @@ function ImplementationSection(): React.JSX.Element {
               rubric — every edit attributed, every diff reviewable.
             </p>
             <div className={styles["spec-substeps"]}>
-              <a href="#"><span className={styles.num}>§ 3.1</span><span>Baseline</span></a>
-              <a href="#"><span className={styles.num}>§ 3.2</span><span>Improvement exploration</span></a>
-              <a href="#"><span className={styles.num}>§ 3.3</span><span>Diff review</span></a>
-              <a href="#"><span className={styles.num}>§ 3.4</span><span>Attribution</span></a>
+              <span><span className={styles.num}>§ 3.1</span><span>Baseline</span></span>
+              <span><span className={styles.num}>§ 3.2</span><span>Improvement exploration</span></span>
+              <span><span className={styles.num}>§ 3.3</span><span>Diff review</span></span>
+              <span><span className={styles.num}>§ 3.4</span><span>Attribution</span></span>
             </div>
           </div>
         </div>
@@ -295,10 +295,10 @@ function ExperimentsSection(): React.JSX.Element {
               so a failed run is debuggable, not opaque.
             </p>
             <div className={styles["spec-substeps"]}>
-              <a href="#"><span className={styles.num}>§ 4.1</span><span>Run scheduler</span></a>
-              <a href="#"><span className={styles.num}>§ 4.2</span><span>Seed sweeps</span></a>
-              <a href="#"><span className={styles.num}>§ 4.3</span><span>Live metrics</span></a>
-              <a href="#"><span className={styles.num}>§ 4.4</span><span>Run registry</span></a>
+              <span><span className={styles.num}>§ 4.1</span><span>Run scheduler</span></span>
+              <span><span className={styles.num}>§ 4.2</span><span>Seed sweeps</span></span>
+              <span><span className={styles.num}>§ 4.3</span><span>Live metrics</span></span>
+              <span><span className={styles.num}>§ 4.4</span><span>Run registry</span></span>
             </div>
           </div>
         </div>
@@ -342,10 +342,10 @@ function VerificationSection(): React.JSX.Element {
               and confidence interval surfaced for every cell.
             </p>
             <div className={styles["spec-substeps"]}>
-              <a href="#"><span className={styles.num}>§ 5.1</span><span>Rubric scoring</span></a>
-              <a href="#"><span className={styles.num}>§ 5.2</span><span>Confidence intervals</span></a>
-              <a href="#"><span className={styles.num}>§ 5.3</span><span>Report artifact</span></a>
-              <a href="#"><span className={styles.num}>§ 5.4</span><span>Audit trail</span></a>
+              <span><span className={styles.num}>§ 5.1</span><span>Rubric scoring</span></span>
+              <span><span className={styles.num}>§ 5.2</span><span>Confidence intervals</span></span>
+              <span><span className={styles.num}>§ 5.3</span><span>Report artifact</span></span>
+              <span><span className={styles.num}>§ 5.4</span><span>Audit trail</span></span>
             </div>
           </div>
         </div>

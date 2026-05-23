@@ -278,7 +278,7 @@
   gap: 6px 28px;
   max-width: 520px;
 }
-.spec-substeps a, .spec-substeps span {
+.spec-substeps > a, .spec-substeps > span {
   display: flex; gap: 12px; padding: 8px 0;
   font-size: 14px; color: var(--landing-ink-2);
   border-top: 1px solid var(--landing-rule-2);
