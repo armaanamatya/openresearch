@@ -18,7 +18,7 @@ def test_reproduce_defaults_accept_generated_namespace_without_cli_fields() -> N
 
     assert args.source_kind == "auto"
     assert args.agent == "default"
-    assert args.mode == "sdk"
+    assert args.mode == "rlm"
     assert args.model is None
     assert args.provider is None
     assert args.verification_provider is None

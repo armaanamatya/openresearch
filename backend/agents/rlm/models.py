@@ -187,6 +187,16 @@ def _build_registry() -> dict[str, RootModel]:
             prompt_addendum="",
             paper_validated=False,
         ),
+        "claude-oauth": RootModel(
+            key="claude-oauth",
+            rlm_backend="anthropic-oauth",
+            backend_kwargs={"model_name": "claude-sonnet-4-6"},
+            sub_backend="anthropic-oauth",
+            sub_backend_kwargs={"model_name": "claude-haiku-4-5-20251001"},
+            prompt_addendum="",
+            paper_validated=False,
+            api_key_env=None,  # OAuth — no env-var key required
+        ),
         "qwen3-coder-featherless": RootModel(
             key="qwen3-coder-featherless",
             rlm_backend="openai",
@@ -203,6 +213,8 @@ def _build_registry() -> dict[str, RootModel]:
 ROOT_MODELS: dict[str, RootModel] = _build_registry()
 
 # Valid ClientBackend literals from rlm/core/types.py — used for contract validation.
+# Also includes "anthropic-oauth" which is our custom patched backend (not an rlm
+# core type, but valid in our extended registry).
 _VALID_RLM_BACKENDS = frozenset(
     {
         "openai",
@@ -212,6 +224,7 @@ _VALID_RLM_BACKENDS = frozenset(
         "vllm",
         "litellm",
         "anthropic",
+        "anthropic-oauth",
         "azure_openai",
         "gemini",
     }
@@ -279,7 +292,20 @@ def resolve_root_model(name: str | None) -> RootModel:
         name = os.environ.get(_ENV_ROOT_MODEL, "").strip() or None
 
     if not name:
-        name = "gpt-5" if os.environ.get("OPENAI_API_KEY") else "qwen3-coder"
+        if os.environ.get("OPENAI_API_KEY"):
+            name = "gpt-5"
+        elif os.environ.get("FEATHERLESS_API_KEY"):
+            name = "qwen3-coder-featherless"
+        else:
+            # Try Claude OAuth fallback before the OpenRouter-keyed default
+            try:
+                from backend.agents.runtime.factory import has_provider_credentials
+                if has_provider_credentials("anthropic"):
+                    name = "claude-oauth"
+                else:
+                    name = "qwen3-coder"
+            except Exception:  # noqa: BLE001 — defensive: factory import failure
+                name = "qwen3-coder"
 
     entry = ROOT_MODELS.get(name)
     if entry is None:
@@ -287,6 +313,24 @@ def resolve_root_model(name: str | None) -> RootModel:
         raise ValueError(
             f"Unknown root model {name!r}. Valid keys: {valid}. "
             f"Set {_ENV_ROOT_MODEL} or pass a valid --model argument."
+        )
+
+    # OAuth backends do not use an env-var key — verify SDK can resolve
+    # credentials (API key OR Claude OAuth login) instead.
+    if entry.rlm_backend == "anthropic-oauth" or entry.sub_backend == "anthropic-oauth":
+        from backend.agents.runtime.factory import has_provider_credentials
+        if not has_provider_credentials("anthropic"):
+            raise ValueError(
+                f"Root model {name!r} requires Claude credentials (ANTHROPIC_API_KEY "
+                f"or `claude` CLI OAuth login) but neither was found. "
+                f"Run `claude login` or set ANTHROPIC_API_KEY, or choose a different "
+                f"model via {_ENV_ROOT_MODEL} / --model."
+            )
+        # Don't fall through to the env-var loop below for this branch.
+        return replace(
+            entry,
+            backend_kwargs=dict(entry.backend_kwargs),
+            sub_backend_kwargs=dict(entry.sub_backend_kwargs),
         )
 
     # Resolve env var names for root and sub-call backends.  An explicit

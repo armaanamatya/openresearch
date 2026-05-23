@@ -64,6 +64,11 @@ from backend.agents.rlm.sse_bridge import (
 from backend.agents.rlm.stub_primitives import build_stub_custom_tools
 from backend.agents.rlm.system_prompt import build_system_prompt
 
+# Register the anthropic-oauth backend with rlm.clients.get_client — must run
+# before RLM(backend="anthropic-oauth", ...) is constructed below.
+from backend.agents.rlm._oauth_backend_patch import apply_oauth_backend_patch
+apply_oauth_backend_patch()
+
 logger = logging.getLogger(__name__)
 
 # --- Tuning constants ------------------------------------------------------

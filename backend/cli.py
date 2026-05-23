@@ -455,7 +455,7 @@ _REPRODUCE_DEFAULTS = {
     "runs_root": str(get_settings().runs_root) if get_settings().runs_root else "runs",
     "source_kind": "auto",
     "agent": "default",
-    "mode": "sdk",
+    "mode": "rlm",
     "model": None,
     "provider": None,
     "verification_provider": None,
@@ -914,8 +914,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     reproduce.add_argument("--agent", default="default", help="Agent name for the workspace.")
     reproduce.add_argument(
-        "--mode", choices=("offline", "sdk", "rlm", "rdr"), default="sdk",
-        help="Pipeline mode: 'sdk' uses LLM (default), 'offline' is deterministic, 'rlm' uses the RLM orchestrator, 'rdr' uses the rubric-driven harness on a PaperBench bundle.",
+        "--mode", choices=("offline", "sdk", "rlm", "rdr"), default="rlm",
+        help="Pipeline mode: 'rlm' (default) uses the RLM orchestrator (Recursive Language Models, arXiv 2512.24601), 'sdk' uses the legacy 14-stage SDK pipeline, 'offline' is deterministic, 'rdr' uses the rubric-driven harness on a PaperBench bundle.",
     )
     reproduce.add_argument("--model", default=None, help="Model override for SDK mode.")
     reproduce.add_argument(
