@@ -349,6 +349,16 @@ candidate per run — a verified improvement over baseline, not exhaustive
 exploration.
 """
 
+# ---------------------------------------------------------------------------
+# Optional hints — triage guidance + decision-advisor tool hint.
+# These ~58 lines are rarely-needed advisor text that can be omitted from
+# the stable cached prefix to reduce per-run token spend by ~10%.
+# They are still injected by default (include_hints=True) until telemetry
+# demonstrates safety of disabling them across paper types.
+# ---------------------------------------------------------------------------
+
+_OPTIONAL_HINTS_SECTION = _TRIAGE_INSTRUCTION + _DECISION_ADVISOR_SECTION
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -359,6 +369,7 @@ def build_system_prompt(
     *,
     context_metadata: dict,
     root_model: RootModel,
+    include_hints: bool = True,
 ) -> str:
     """Compose the root system prompt for one RLM reproduction run.
 
@@ -374,6 +385,11 @@ def build_system_prompt(
             without seeing any actual corpus content.
         root_model: The resolved ``RootModel`` from the registry.  Used to
             append ``root_model.prompt_addendum`` verbatim at the end.
+        include_hints: When ``True`` (default), inject ``_OPTIONAL_HINTS_SECTION``
+            (triage instruction + decision-advisor).  Set to ``False`` to omit
+            these ~58 rarely-needed lines from the stable cached prefix and
+            reduce per-run input-token spend.  Defaults to ``True`` for safety
+            until telemetry confirms it's safe to disable across paper types.
 
     Returns:
         The custom system prompt as an ``rlm`` ``.format()`` template: every
@@ -388,11 +404,12 @@ def build_system_prompt(
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
         _DECOMPOSITION_EXAMPLE,
-        _TRIAGE_INSTRUCTION,
         _HEARTBEAT_SECTION,
-        _DECISION_ADVISOR_SECTION,
         _GPU_SELECTION_SECTION,
     ]
+
+    if include_hints:
+        parts.append(_OPTIONAL_HINTS_SECTION)
 
     if root_model.prompt_addendum:
         parts.append(

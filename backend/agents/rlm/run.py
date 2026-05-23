@@ -65,8 +65,14 @@ from backend.agents.rlm.system_prompt import build_system_prompt
 
 # Register the anthropic-oauth backend with rlm.clients.get_client — must run
 # before RLM(backend="anthropic-oauth", ...) is constructed below.
-from backend.agents.rlm._oauth_backend_patch import apply_oauth_backend_patch
+# Also install the prompt-caching wrapper for the anthropic API-key path so that
+# the stable system prompt is cached across iterations (~50% input-token saving).
+from backend.agents.rlm._oauth_backend_patch import (
+    apply_oauth_backend_patch,
+    apply_anthropic_caching_patch,
+)
 apply_oauth_backend_patch()
+apply_anthropic_caching_patch()
 
 logger = logging.getLogger(__name__)
 
