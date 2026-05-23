@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -15,6 +16,36 @@ from backend.agents.runtime.base import (
     ProviderName,
 )
 from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def _scan_wsl_windows_credentials() -> str | None:
+    """On WSL, find a Windows-side ``~/.claude/.credentials.json`` by scanning
+    ``/mnt/c/Users/<*>/.claude/.credentials.json``.
+
+    Returns the matching path or None if no candidate exists. Bounded to
+    common user directory shapes — does not recurse beyond depth 1 under
+    ``/mnt/c/Users/``.
+    """
+    from backend.agents.execution import _is_wsl  # local import — avoids circular at module level
+
+    if not _is_wsl():
+        return None
+    users_root = "/mnt/c/Users"
+    if not os.path.isdir(users_root):
+        return None
+    try:
+        for entry in os.listdir(users_root):
+            # Skip Windows-system pseudo-users.
+            if entry.lower() in {"public", "default", "default user", "all users", "defaultaccount"}:
+                continue
+            candidate = os.path.join(users_root, entry, ".claude", ".credentials.json")
+            if os.path.isfile(candidate):
+                return candidate
+    except OSError:
+        return None
+    return None
 
 
 def _has_claude_subscription_oauth() -> bool:
@@ -37,14 +68,24 @@ def _has_claude_subscription_oauth() -> bool:
     resolved as ``unresolved`` and every ``implement_baseline`` sub-call died
     with a credential error. This helper closes that gap.
 
+    On WSL, users frequently run ``claude login`` from Windows, placing
+    credentials at ``C:\\Users\\<x>\\.claude\\.credentials.json``. The WSL
+    home directory (``~``) is a different filesystem, so the SDK cannot read
+    those credentials directly. When WSL-side credentials are absent, this
+    function scans the Windows-mounted user profiles and emits an actionable
+    warning with the symlink command the user should run.
+
     Returns True iff the ``claude`` binary is on ``PATH`` AND a stored session
-    is detectable. Times out at 5 s on the Keychain probe to prevent a hung
-    Keychain Access daemon from blocking pipeline startup.
+    is detectable by the SDK (i.e. under ``~``). Times out at 5 s on the
+    Keychain probe to prevent a hung Keychain Access daemon from blocking
+    pipeline startup.
     """
     if shutil.which("claude") is None:
         return False
+    # 1. POSIX user home — the canonical location the SDK reads from.
     if os.path.isfile(os.path.expanduser("~/.claude/.credentials.json")):
         return True
+    # 2. macOS Keychain (modern Claude Code on macOS).
     if sys.platform == "darwin":
         try:
             result = subprocess.run(
@@ -56,6 +97,19 @@ def _has_claude_subscription_oauth() -> bool:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
+    # 3. WSL diagnostic — surface a helpful warning if creds exist on the Windows side
+    #    but are not reachable by the SDK (which reads from $HOME, not /mnt/c).
+    wsl_creds = _scan_wsl_windows_credentials()
+    if wsl_creds is not None:
+        logger.warning(
+            "_has_claude_subscription_oauth: Claude OAuth credentials found at %s "
+            "(Windows side) but the claude-agent-sdk reads from $HOME=%s, not /mnt/c. "
+            "Either symlink them — `ln -s %s ~/.claude/.credentials.json` — or run "
+            "`claude login` from inside WSL.",
+            wsl_creds,
+            os.path.expanduser("~"),
+            wsl_creds,
+        )
     return False
 
 
@@ -208,6 +262,8 @@ def make_runtime(
 
 
 __all__ = [
+    "_has_claude_subscription_oauth",
+    "_scan_wsl_windows_credentials",
     "configure_openai_agents_sdk_credentials",
     "has_provider_credentials",
     "make_runtime",
