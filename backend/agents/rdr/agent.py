@@ -98,6 +98,85 @@ def _cleanup_repo_root_escape(before: set[str], cluster_id: str) -> None:
             logger.warning("rdr/agent: cleanup of %r failed: %s", str(path), exc)
 
 
+# ---------------------------------------------------------------------------
+# SDK call thread-isolation (Workaround B from
+# docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md)
+# ---------------------------------------------------------------------------
+#
+# The Claude Agent SDK has a known deadlock: its triple-nested async generators
+# race with asyncio.shutdown_asyncgens(), and its transport.close() does an
+# unbounded `await self._process.wait()` after SIGKILL which hangs in
+# futex_wait_queue on WSL2 when SIGCHLD is delayed.
+#
+# We mitigate by running each SDK call in a worker thread with its OWN event
+# loop. Any aclose race or futex hang stays trapped in the worker — the main
+# controller loop continues to make progress and is bounded by
+# future.result(timeout=...).
+
+# Slack added on top of timeout_s for thread teardown / subprocess kill.
+_THREAD_TEARDOWN_SLACK_S = 30.0
+
+
+def _run_sdk_in_thread(
+    prompt: str,
+    code_dir: Path,
+    model: str | None,
+    provider: str | None,
+    runtime,
+    max_turns: int | None,
+    timeout_s: float,
+) -> str:
+    """Run `collect_agent_text(...)` in an isolated worker thread.
+
+    The worker thread starts its own asyncio event loop via `asyncio.run(...)`,
+    so the SDK's nested-generator aclose race and any `transport.close()`
+    futex hang are contained inside that thread and do not deadlock the
+    main controller loop.
+
+    Runtime is loop-safe — passed through: both ClaudeAgentRuntime and
+    OpenAiAgentRuntime are stateless plain objects (no cached httpx client,
+    no stored event-loop references). The SDK's async generators that are
+    actually loop-bound are created fresh inside asyncio.run() in the worker
+    thread, so they are bound to the worker's own loop, not the caller's.
+
+    Returns the agent's collected text, or raises `TimeoutError`
+    (for parity with `asyncio.wait_for`) if the worker exceeds
+    `timeout_s + _THREAD_TEARDOWN_SLACK_S`.
+    """
+    import concurrent.futures
+
+    # Import inside the function to avoid module-load-time circular issues.
+    from backend.agents.runtime.invoke import collect_agent_text
+
+    def _worker() -> str:
+        return asyncio.run(asyncio.wait_for(
+            collect_agent_text(
+                "baseline-implementation",
+                prompt,
+                project_dir=code_dir,
+                model=model,
+                provider=provider,
+                runtime=runtime,
+                max_turns=max_turns,
+            ),
+            timeout=timeout_s,
+        ))
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="rdr-sdk-worker"
+    ) as ex:
+        future = ex.submit(_worker)
+        try:
+            return future.result(timeout=timeout_s + _THREAD_TEARDOWN_SLACK_S)
+        except concurrent.futures.TimeoutError as exc:
+            # Re-raise as asyncio.TimeoutError so the outer fail-soft path
+            # in `reproduce()` treats it the same as the prior `asyncio.wait_for` path.
+            raise TimeoutError(
+                f"rdr SDK worker thread exceeded {timeout_s + _THREAD_TEARDOWN_SLACK_S:.0f}s "
+                f"(SDK aclose deadlock workaround)"
+            ) from exc
+
+
 def _render_prompt(agent_context: AgentContext, code_dir: Path) -> str:
     """Build the full reproduction prompt from an AgentContext.
 
@@ -279,8 +358,6 @@ async def _reproduce_inner(
     ctx: "RunContext",
 ) -> Artifacts:
     """Inner (non-fail-soft) implementation; callers must wrap in try/except."""
-    from backend.agents.runtime.invoke import collect_agent_text
-
     cluster_id = agent_context.cluster.id
 
     # 1. Ensure the shared code directory exists.
@@ -325,17 +402,18 @@ async def _reproduce_inner(
     #    _cleanup_repo_root_escape remains as the after-the-fact safety net.
     root_before = _snapshot_repo_root_entries()
     try:
-        agent_text = await asyncio.wait_for(
-            collect_agent_text(
-                "baseline-implementation",
-                prompt,
-                project_dir=code_dir,
-                model=model,
-                provider=provider,
-                runtime=runtime,
-                max_turns=max_turns,
-            ),
-            timeout=timeout_s,
+        # Workaround B: thread-isolate the SDK call so its aclose race / WSL2
+        # SIGCHLD hang cannot deadlock our controller. See
+        # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+        agent_text = await asyncio.to_thread(
+            _run_sdk_in_thread,
+            prompt,
+            code_dir,
+            model,
+            provider,
+            runtime,
+            max_turns,
+            timeout_s,
         )
     finally:
         _cleanup_repo_root_escape(root_before, cluster_id)
