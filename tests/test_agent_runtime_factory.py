@@ -137,14 +137,40 @@ def test_has_provider_credentials_anthropic_via_settings(monkeypatch) -> None:
 
 
 def test_has_provider_credentials_anthropic_via_claude_cli(monkeypatch) -> None:
+    """Symptom: CLI presence alone returned True even when the OAuth session was absent.
+
+    has_provider_credentials must check that the credentials file written by
+    `claude login` exists, not just that the binary is on PATH (handoff P2-I11 / T23).
+    Verify: with both the binary and the credentials file present, returns True.
+    """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
     )
     monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
-    # Subscription login via the CLI counts as credentials.
+    # Also mock the credentials file check — `claude login` writes this file.
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: True)
+    # Subscription login via the CLI counts as credentials when creds file exists.
     assert has_provider_credentials("anthropic") is True
+
+
+def test_has_provider_credentials_anthropic_rejects_logged_out_cli(monkeypatch) -> None:
+    """Symptom: presence of `claude` CLI on PATH passes the credential check even when logged out.
+
+    has_provider_credentials returned True on CLI presence alone (handoff P2-I11 / T23).
+    Verify: with no ANTHROPIC_API_KEY and a CLI binary present but no credentials
+    file (i.e. logged-out session), returns False.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    # Credentials file absent — not logged in.
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    assert has_provider_credentials("anthropic") is False
 
 
 def test_has_provider_credentials_anthropic_returns_false_when_unset(monkeypatch) -> None:
