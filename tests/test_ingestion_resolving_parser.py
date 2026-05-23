@@ -354,3 +354,47 @@ def test_resolving_raises_when_all_parsers_raise_with_html_sibling(tmp_path: Pat
     with pytest.raises(ParseError) as exc_info:
         parser.parse(project_id="prj_x", paper_path=tmp_path / "raw_paper.pdf")
     assert exc_info.value.cause_kind == "all_strategies_failed"
+
+
+# ---------------------------------------------------------------------------
+# T16 guard test — OCR-skip must gate on quality not raw length (review I4)
+# ---------------------------------------------------------------------------
+
+def test_ocr_runs_on_short_low_quality_html(tmp_path: Path):
+    """Symptom: 200-char figure-noise HTML wins over OCR; cascade ships garbage.
+
+    The OCR-skip gate used raw length (>=200 chars => skip), so a 250-char
+    HTML soup scoring 0.0 from score_text_quality still skipped OCR (review I4 / T16).
+    Verify: OCR is invoked when HTML quality score < _MIN_USEFUL_SCORE, regardless of length.
+    """
+    # 250-char string of noise tokens (scores 0.0 from score_text_quality — below 1000 chars)
+    noise_250 = "<BOS> IO S1 0.0 0.2 0.4 <MID> " * 9  # ~270 chars, figure noise
+    assert len(noise_250.strip()) >= 200, "test setup: HTML text must be >= 200 chars"
+    assert score_text_quality(noise_250) == 0.0, "test setup: noise_250 must score 0.0"
+
+    noisy_html_result = _make_result(noise_250)
+    ocr_result = _make_result(_CLEAN_PROSE)
+
+    _make_pdf(tmp_path)
+    _make_html(tmp_path)
+
+    ocr_stub = _StubParser("ocr-tesseract", result=ocr_result)
+    ocr_called = []
+
+    _orig_parse = ocr_stub.parse
+
+    def _spy_parse(**kwargs):
+        ocr_called.append(True)
+        return _orig_parse(**kwargs)
+
+    ocr_stub.parse = _spy_parse  # type: ignore[method-assign]
+
+    parser = ResolvingParser(
+        html_parser=_StubParser("arxiv-html", result=noisy_html_result),
+        pdf_parser=_StubParser("pymupdf", raises=True),
+        ocr_parser=ocr_stub,
+    )
+    result = parser.parse(project_id="prj_x", paper_path=tmp_path / "raw_paper.pdf")
+
+    assert ocr_called, "OCR must be invoked when HTML quality score < _MIN_USEFUL_SCORE"
+    assert result is ocr_result, "OCR result must be selected when HTML is garbage"
