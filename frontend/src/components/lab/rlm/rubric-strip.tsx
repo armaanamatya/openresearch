@@ -1,65 +1,83 @@
 "use client";
 
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
+import { useCountUp } from "./use-count-up";
+import { Sparkline } from "./sparkline";
 import styles from "./rubric-strip.module.css";
 
 interface RubricStripProps {
   rubric: RlmRunState["rubric"];
 }
 
+const STATUS_RANK: Record<"pass" | "partial" | "fail", number> = {
+  fail: 0,
+  partial: 1,
+  pass: 2,
+};
+
+function justFlipped(
+  area: { area: string; status: "pass" | "partial" | "fail" },
+  previous: Array<{ area: string; status: "pass" | "partial" | "fail" }>,
+): boolean {
+  const prior = previous.find((p) => p.area === area.area);
+  if (!prior) return false;
+  return STATUS_RANK[area.status] > STATUS_RANK[prior.status];
+}
+
+function statusGlyph(status: "pass" | "partial" | "fail"): string {
+  return status === "pass" ? "✓" : status === "partial" ? "◐" : "✗";
+}
+
 /**
- * RubricStrip — the second band of the RLM lab UI (spec §7.1).
+ * RubricStrip — band 2 of the RLM lab UI.
  *
- * Renders: current score (large), a baseline→fill→target progress bar,
- * a climb sparkline (one bar per rubric_score event), and a climb annotation.
+ * Renders: animated current score (count-up tween), baseline→fill→target
+ * progress bar, line-chart sparkline, per-area status chip row with
+ * fail→pass flip highlights, and a climb annotation that names the
+ * attributable candidate on jumps of ≥ +0.05.
  *
- * Honesty rule (spec §14): when rubric.current is null, renders a placeholder
- * instead of a fabricated number. No .toFixed() is ever called on null.
+ * Honesty rule: when rubric.current is null, the placeholder "—" is rendered
+ * instead of a fabricated number.
  *
- * Bar geometry: the track represents [0, 1]. The fill width = current score (0–1).
- * Baseline and target are rendered as absolute markers on the track via left: %.
+ * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.1, §4.3.
  */
 export function RubricStrip({ rubric }: RubricStripProps) {
-  const { current, baseline, target, series } = rubric;
+  const { current, baseline, target, series, areas, previousAreas, attributableCandidate } = rubric;
 
   const isScored = current !== null;
+  const tweenedCurrent = useCountUp(isScored ? current! : 0, 400);
 
-  // Safe formatters — never called with null.
   const fmtScore = (n: number) => n.toFixed(2);
+  const fillPct = isScored ? `${Math.min(1, Math.max(0, tweenedCurrent)) * 100}%` : "0%";
 
-  // Fill width as a percentage of the 0–1 track.
-  const fillPct = isScored ? `${Math.min(1, Math.max(0, current!)) * 100}%` : "0%";
-
-  // Sparkline: bar heights proportional to absolute score on a 0–1 scale.
-  // This keeps the chart honest — no inflation from a low local max.
-  const maxBarHeight = 28; // px — constrained by the strip height
-
-  // Climb annotation components — computed only when both baseline and current are known.
   const hasClimb = isScored && baseline !== null;
   const delta = hasClimb ? current! - baseline! : null;
 
+  // Attribution tail: only when the last step's delta meets the threshold AND
+  // a candidate is live. Spec §4.1.
+  const ATTRIBUTION_THRESHOLD = 0.05;
+  let attributionLabel: string | null = null;
+  if (series.length >= 2 && attributableCandidate) {
+    const stepDelta = series[series.length - 1].score - series[series.length - 2].score;
+    if (stepDelta >= ATTRIBUTION_THRESHOLD) {
+      attributionLabel = `from candidate ${attributableCandidate.title}`;
+    }
+  }
+
   return (
     <div className={styles.strip} role="region" aria-label="Rubric score">
-      {/* Current score — large prominent number */}
+      {/* Current score — large prominent number, count-up animated. */}
       <div className={styles.scoreBlock}>
         <span className={isScored ? styles.scoreValue : styles.scorePlaceholder}>
-          {isScored ? fmtScore(current!) : "—"}
+          {isScored ? fmtScore(tweenedCurrent) : "—"}
         </span>
         <span className={styles.scoreLabel}>rubric score</span>
       </div>
 
-      {/* Progress bar: baseline marker → fill → target marker.
-          Bar labels are placed in title attributes only (not rendered text)
-          to avoid duplicate text matches in tests. The target label is rendered
-          in the climb annotation block below. */}
+      {/* Progress bar: baseline marker → fill → target marker. */}
       <div className={styles.barBlock}>
         <div className={styles.barTrack} aria-hidden="true">
-          {/* Fill from left edge to current score */}
-          <div
-            className={styles.barFill}
-            style={{ width: fillPct }}
-          />
-          {/* Baseline marker */}
+          <div className={styles.barFill} style={{ width: fillPct }} />
           {baseline !== null && (
             <div
               className={styles.baselineMarker}
@@ -67,7 +85,6 @@ export function RubricStrip({ rubric }: RubricStripProps) {
               title={`baseline ${fmtScore(baseline)}`}
             />
           )}
-          {/* Target marker */}
           {target !== null && (
             <div
               className={styles.targetMarker}
@@ -78,27 +95,48 @@ export function RubricStrip({ rubric }: RubricStripProps) {
         </div>
       </div>
 
-      {/* Climb sparkline */}
+      {/* Line-chart sparkline (one polyline across the series). */}
       {series.length > 0 && (
         <div className={styles.sparkBlock} aria-hidden="true">
-          {series.map((point, index) => {
-            const barH = Math.round(Math.max(2, point.score * maxBarHeight));
-            return (
-              <span
-                key={`${point.iteration}-${index}`}
-                data-spark-bar
-                className={styles.sparkBar}
-                style={{ height: `${barH}px` }}
-                title={`iter ${point.iteration}: ${fmtScore(point.score)}`}
-              />
-            );
-          })}
+          <Sparkline series={series} width={120} height={28} />
         </div>
       )}
 
-      {/* Climb annotation — only rendered when a climb exists.
-          The target label "target N.NN" is the single rendered occurrence of the target value.
-          The baseline value "N.NN" appears here as the single rendered text occurrence. */}
+      {/* Per-area status chip row with fail→pass flip highlights. */}
+      {areas.length > 0 && (
+        <ul className={styles.areaChipRow} aria-live="polite" aria-label="Rubric areas">
+          {areas.map((a) => {
+            const flipped = justFlipped(a, previousAreas);
+            const statusClass =
+              a.status === "pass"
+                ? styles.chipPass
+                : a.status === "partial"
+                ? styles.chipPartial
+                : styles.chipFail;
+            const cls = [styles.areaChip, statusClass, flipped ? styles.justFlipped : ""]
+              .filter(Boolean)
+              .join(" ");
+            return (
+              <li
+                key={a.area}
+                className={cls}
+                data-area-chip
+                data-area={a.area}
+                data-just-flipped={flipped ? "true" : "false"}
+                title={`${a.area}: ${a.status} (${a.score.toFixed(2)})`}
+              >
+                <span className={styles.chipGlyph} aria-hidden="true">
+                  {statusGlyph(a.status)}
+                </span>
+                <span className={styles.chipName}>{a.area}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* Climb annotation — only when a climb exists; the candidate attribution
+          tail rides on the same row when the last step met the threshold. */}
       {hasClimb && (
         <div className={styles.climbBlock}>
           <span className={styles.climbAnnotation}>
@@ -108,6 +146,9 @@ export function RubricStrip({ rubric }: RubricStripProps) {
             <span className={styles.deltaAnnotation}>
               {`${delta >= 0 ? "+" : ""}${fmtScore(delta)} vs target ${fmtScore(target)}`}
             </span>
+          )}
+          {attributionLabel && (
+            <span className={styles.attributionAnnotation}>{attributionLabel}</span>
           )}
         </div>
       )}

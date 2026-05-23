@@ -152,3 +152,85 @@
   color: var(--accent-ink);
   white-space: nowrap;
 }
+
+/* Attribution tail — italic muted, sits inline with the climb annotation. */
+.attributionAnnotation {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* ── Per-area chip row ──────────────────────────────────────── */
+
+.areaChipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  flex: 1 1 100%;
+}
+
+.areaChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  line-height: 1.4;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 200ms ease-out;
+}
+
+.chipPass {
+  color: var(--accent);
+}
+
+.chipPartial {
+  color: var(--warn, #8a6d00);
+}
+
+.chipFail {
+  color: var(--muted);
+}
+
+.chipGlyph {
+  display: inline-block;
+  text-align: center;
+  width: 10px;
+}
+
+.chipName {
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Flip tint — a 1.2 s background fade for areas that just transitioned
+   to a higher status (e.g. fail → pass). The accent-soft fallback keeps
+   the keyframe visible even when the design token is unset. */
+@keyframes flipTint {
+  0% {
+    background-color: var(--accent-soft, rgba(29, 122, 60, 0.20));
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.justFlipped {
+  animation: flipTint 1200ms ease-out 1 forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .justFlipped {
+    animation: none;
+  }
+}

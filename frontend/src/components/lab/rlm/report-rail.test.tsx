@@ -11,14 +11,14 @@ describe("ReportRail", () => {
     render(<ReportRail status="completed" elapsedMs={4320000}
       report={{ finalReportPath: "x", costUsd: 18.4,
         counts: { iterations: 13, primitiveCalls: 21, proposed: 7, promoted: 2 } }}
-      rubric={{ current: 0.53, baseline: 0.22, target: 0.4, series: [], areas }} />);
+      rubric={{ current: 0.53, baseline: 0.22, target: 0.4, series: [], areas, previousAreas: [], attributableCandidate: null }} />);
     expect(screen.getByText(/0\.53/)).toBeInTheDocument();
     expect(screen.getByText("13")).toBeInTheDocument();
     expect(screen.getByText("7")).toBeInTheDocument();
   });
   it("renders one breakdown row per rubric area with its status", () => {
     render(<ReportRail status="running" elapsedMs={0} report={null}
-      rubric={{ current: 0.3, baseline: 0.22, target: 0.4, series: [], areas }} />);
+      rubric={{ current: 0.3, baseline: 0.22, target: 0.4, series: [], areas, previousAreas: [], attributableCandidate: null }} />);
     expect(screen.getByText("Architecture matches paper")).toBeInTheDocument();
     expect(screen.getByText("Attention-mask leak-free")).toBeInTheDocument();
     // With report=null, count stat tiles must render "—" placeholders, not fabricated numbers.
@@ -29,7 +29,7 @@ describe("ReportRail", () => {
     render(<ReportRail status="completed" elapsedMs={1000}
       report={{ finalReportPath: "x", costUsd: null,
         counts: { iterations: 4, primitiveCalls: 3, proposed: 0, promoted: 0 } }}
-      rubric={{ current: 0.35, baseline: 0.35, target: 0.4, series: [], areas: [] }} />);
+      rubric={{ current: 0.35, baseline: 0.35, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }} />);
     expect(screen.getByText(/degraded|no real metrics/i)).toBeInTheDocument();
   });
 });
