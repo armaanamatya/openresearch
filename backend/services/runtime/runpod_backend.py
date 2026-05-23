@@ -289,8 +289,14 @@ class RunpodBackend(RuntimeBackend):
             except BudgetExhausted:
                 try:
                     await self.destroy(sandbox)
-                except Exception:
-                    pass  # best-effort; surface BudgetExhausted regardless
+                except Exception as exc:
+                    _log.error(
+                        "RUNPOD_DESTROY_FAILED_AFTER_BUDGET_EXHAUSTION "
+                        "sandbox_id=%s — pod may still be billing, manual cleanup required. cause=%s",
+                        sandbox.sandbox_id,
+                        exc,
+                        exc_info=True,
+                    )
                 raise
         started_at = datetime.now(timezone.utc)
         try:

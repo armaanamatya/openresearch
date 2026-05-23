@@ -86,8 +86,10 @@ async def test_exec_forces_destroy_on_budget_exhaustion(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_exec_destroy_failure_does_not_swallow_budget_exhausted(tmp_path):
-    """If destroy() itself raises, the BudgetExhausted still propagates (best-effort destroy)."""
+async def test_exec_destroy_failure_does_not_swallow_budget_exhausted(tmp_path, caplog):
+    """If destroy() itself raises, the BudgetExhausted still propagates AND the leaked-pod error is logged."""
+    import logging
+
     budget = RunBudget(max_pod_seconds=60.0)
     backend = RunpodBackend(api_key="dummy", run_budget=budget)
     backend._owned_pod_ids = {"test-pod"}
@@ -99,8 +101,16 @@ async def test_exec_destroy_failure_does_not_swallow_budget_exhausted(tmp_path):
 
     with patch("backend.agents.resilience.budget.datetime") as mock_dt:
         mock_dt.now.return_value = _frozen_now()
-        with pytest.raises(BudgetExhausted):
-            await backend.exec(sandbox, "echo hello", timeout=30)
+        with caplog.at_level(logging.ERROR, logger="backend.services.runtime.runpod_backend"):
+            with pytest.raises(BudgetExhausted):
+                await backend.exec(sandbox, "echo hello", timeout=30)
+
+    # The leaked-pod signal must reach operators — a billing pod with no log
+    # is the worst-case failure of this feature.
+    assert any(
+        "RUNPOD_DESTROY_FAILED_AFTER_BUDGET_EXHAUSTION" in r.message
+        for r in caplog.records
+    ), "destroy failure after budget exhaustion must emit an ERROR log"
 
 
 @pytest.mark.asyncio
