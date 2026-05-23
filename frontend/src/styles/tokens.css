@@ -1,56 +1,61 @@
-/* Design tokens for the Replix frontend.
+/* Design tokens for the ReproLab frontend.
  *
- * Single source of truth for color, typography, spacing, radii, shadows.
- * Imported once in app/layout.tsx and consumed everywhere via var(--*).
- * Tailwind utilities consume the same tokens via the theme extension
- * in tailwind.config.ts.
+ * 2026-05-23 launch repaint: dark theme, warm amber accent — matches
+ * the landing's --landing-* palette so the marketing and product
+ * surfaces share visual identity.
  *
- * Visual direction: "lab notebook, not SaaS dashboard"
- *   - Light theme; dense
- *   - Forest accent (#1d7a3c), not Stripe-green
- *   - JetBrains Mono for technical values
+ * Single source of truth for color, typography, spacing, radii,
+ * shadows. Imported once in app/layout.tsx and consumed everywhere
+ * via var(--*). Lab components inherit automatically; hardcoded
+ * #fff / rgba() spots get migrated to tokens in the next commit.
+ *
+ * Visual direction: "lab notebook on a dark page"
+ *   - oklch palette derived from the landing
+ *   - Warm amber accent (oklch 0.80 0.16 70 ≈ #E8A24A)
+ *   - Geist + Geist Mono (variables intentionally kept as
+ *     --font-inter / --font-jetbrains-mono so existing consumers
+ *     don't need to update — semantically Inter→Geist)
  *   - Tighter radii (8/10 over 14/16)
- *   - Hairline grid on the canvas (not dots)
  */
 
 :root {
-  /* === Inks / surfaces === */
-  --ink: #0e0e10;
-  --ink-2: #1f2024;
-  --muted: #6b6e74;
-  --muted-2: #9aa0a6;
-  --line: #e6e7ea;
-  --line-2: #cfd2d6;
-  --chip: #f1f1f3;
-  --bg: #ffffff;
-  --panel: #ffffff;
-  --canvas-bg: #fafafb;
-  --canvas-grid: #dcdce0;
+  /* === Inks / surfaces (amber-tinted dark grays) === */
+  --ink: oklch(0.96 0.005 90);
+  --ink-2: oklch(0.78 0.005 90);
+  --muted: oklch(0.56 0.005 90);
+  --muted-2: oklch(0.40 0.005 90);
+  --line: oklch(0.28 0.004 270);
+  --line-2: oklch(0.235 0.004 270);
+  --chip: oklch(0.22 0.004 270);
+  --bg: oklch(0.16 0.004 270);
+  --panel: oklch(0.185 0.004 270);
+  --canvas-bg: oklch(0.185 0.004 270);
+  --canvas-grid: oklch(0.235 0.004 270);
 
-  /* === Accent (forest, not Stripe-green) === */
-  --accent: #1d7a3c;
-  --accent-soft: #e2f1e8;
-  --accent-ink: #0b5024;
+  /* === Accent (warm amber, matches landing) === */
+  --accent: oklch(0.80 0.16 70);
+  --accent-soft: oklch(0.80 0.16 70 / 0.18);
+  --accent-ink: oklch(0.20 0.04 70);
 
-  /* === Info / secondary === */
-  --info-soft: #e5e9ff;
-  --info-ink: #2e3a8c;
+  /* === Info (kept as a secondary blue, re-derived for dark) === */
+  --info-soft: oklch(0.45 0.10 260 / 0.18);
+  --info-ink: oklch(0.78 0.10 260);
 
-  /* === Hermes (distinctive purple — kept) === */
-  --hermes: #7c5cff;
-  --hermes-soft: #ede8ff;
-  --hermes-ink: #3f2bb3;
+  /* === Hermes (kept distinctive purple, re-derived for dark) === */
+  --hermes: oklch(0.70 0.16 290);
+  --hermes-soft: oklch(0.70 0.16 290 / 0.16);
+  --hermes-ink: oklch(0.94 0.04 290);
 
-  /* === Warning === */
-  --warn: #d97706;
-  --warn-soft: #fff3e0;
-  --warn-ink: #92480a;
+  /* === Warning (warm amber-yellow) === */
+  --warn: oklch(0.75 0.14 60);
+  --warn-soft: oklch(0.75 0.14 60 / 0.16);
+  --warn-ink: oklch(0.96 0.04 60);
 
-  /* === Error === */
-  --err: #c81e1e;
-  --err-soft: #fde8e8;
+  /* === Error (coral, re-derived for dark) === */
+  --err: oklch(0.66 0.18 25);
+  --err-soft: oklch(0.66 0.18 25 / 0.16);
 
-  /* === Typography === */
+  /* === Typography (unchanged — drives Geist via layout.tsx) === */
   --font-sans: var(--font-inter), system-ui, sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, "SF Mono", Menlo, monospace;
   --fs-xs: 11px;
@@ -60,7 +65,7 @@
   --fs-lg: 18px;
   --fs-xl: 24px;
 
-  /* === Spacing === */
+  /* === Spacing (unchanged) === */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -68,14 +73,14 @@
   --sp-5: 24px;
   --sp-6: 32px;
 
-  /* === Radii (tighter than before) === */
+  /* === Radii (unchanged) === */
   --r-xs: 6px;
   --r-sm: 8px;
   --r-md: 10px;
   --r-lg: 14px;
 
-  /* === Shadows === */
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-2: 0 4px 12px -6px rgba(14, 14, 16, 0.18);
-  --shadow-3: 0 16px 36px -18px rgba(14, 14, 16, 0.5);
+  /* === Shadows (re-derived for dark surface) === */
+  --shadow-1: 0 1px 2px oklch(0 0 0 / 0.5);
+  --shadow-2: 0 4px 12px -6px oklch(0 0 0 / 0.5);
+  --shadow-3: 0 16px 36px -18px oklch(0 0 0 / 0.7);
 }

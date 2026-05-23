@@ -112,3 +112,6 @@ reprolab.db-wal
 # Recreate via the live test suite if needed.
 /runs_e2e_local/
 /runs_e2e_docker/
+
+# Landing screenshot scratch dir
+frontend/tmp-screens/

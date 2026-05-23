@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 import type { RecentRunSummary } from "@/lib/runs/server-list";
 import { ICONS, type IconKey } from "./icons";
@@ -22,11 +23,9 @@ const NAV: NavItem[] = [
 
 export function LabSidebar({
   active,
-  onBrandClick,
   recents
 }: {
   active: string;
-  onBrandClick: () => void;
   recents: RecentRunSummary[];
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -53,10 +52,10 @@ export function LabSidebar({
           <path d="M10 4l-4 4 4 4" />
         </svg>
       </button>
-      <button className="brand-row" type="button" onClick={onBrandClick}>
+      <Link href="/" className="brand-row" aria-label="ReproLab — back to landing">
         <span className="nav-icon">{ICONS.logo}</span>
         <span className="brand-text">ReproLab</span>
-      </button>
+      </Link>
       <div className="dotted" />
       {NAV.map((item) => (
         <a

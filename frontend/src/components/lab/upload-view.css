@@ -141,7 +141,7 @@
 }
 .begin-button:enabled {
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   cursor: pointer;
 }
 

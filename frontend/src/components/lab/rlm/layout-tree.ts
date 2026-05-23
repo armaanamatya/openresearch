@@ -30,7 +30,10 @@ export interface Edge {
 // ─── Layout constants ──────────────────────────────────────────────────────────
 
 export const COLUMN_WIDTH = 220;
-export const ROW_HEIGHT = 80;
+// 120px gives 30-40px breathing room below the tallest node cards
+// (multi-line title + subtitle + outcome pill ≈ 90-100px). The prior
+// 80px caused adjacent vertical rows to visually touch.
+export const ROW_HEIGHT = 120;
 
 // ─── layoutTree ───────────────────────────────────────────────────────────────
 

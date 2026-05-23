@@ -90,15 +90,8 @@ export function LabShell({
     setRunMode,
     startFixtureRun,
     startUploadedRun,
-    startArxivRun,
-    resetToUpload: resetRun
+    startArxivRun
   } = useRun(initialRun);
-
-  const resetToUpload = () => {
-    setArxiv("");
-    setOver(false);
-    resetRun();
-  };
 
   const palette = useCommandPalette();
   const shortcuts = useShortcutOverlay();
@@ -149,7 +142,7 @@ export function LabShell({
     <div className="reproLab">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
-          <LabSidebar active="lab" onBrandClick={resetToUpload} recents={initialRecents} />
+          <LabSidebar active="lab" recents={initialRecents} />
           {main}
         </div>
         <CommandPalette
