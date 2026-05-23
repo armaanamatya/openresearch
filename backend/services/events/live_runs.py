@@ -1642,11 +1642,36 @@ try:
                 f"run_mode={{config['run_mode']!r}} is not supported. "
                 "Use 'rlm', 'rlm-pure', or 'rdr'."
             )
-    finalize_benchmark()
+    # 2026-05-23: write "completed" BEFORE finalize_benchmark so a downstream
+    # hang (claude-agent-sdk atexit subprocess.wait on WSL2 — Defect 2 in
+    # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md) cannot
+    # leave the UI stuck on "running" with a fully-written final_report.json
+    # already on disk. The prj_6b9acbfd8afcd789 bug: pipeline returned cleanly,
+    # rubric 0.244, but demo_status stayed "running" because finalize_benchmark
+    # or atexit cleanup wedged afterward.
     write_status("completed", completed_at=now())
+    try:
+        finalize_benchmark()
+    except Exception:
+        import traceback as _tb_ok
+        _tb_ok.print_exc()
 except Exception as exc:
     write_status("failed", error=f"{{type(exc).__name__}}: {{exc}}", completed_at=now())
-    raise
+    import traceback as _tb_err
+    _tb_err.print_exc()
+finally:
+    # Bypass atexit hooks — claude-agent-sdk's subprocess.wait() can hang in
+    # futex_wait_queue on WSL2 after SIGKILL. status is already on disk via the
+    # branches above, so os._exit is safe and prevents indefinite "running" UI.
+    import os as _os_exit, sys as _sys_exit, json as _json_exit
+    _sys_exit.stdout.flush()
+    _sys_exit.stderr.flush()
+    _final_status = "failed"
+    try:
+        _final_status = _json_exit.loads(status_path.read_text()).get("status", "failed")
+    except Exception:
+        pass
+    _os_exit._exit(0 if _final_status == "completed" else 1)
 """
 
 
