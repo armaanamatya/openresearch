@@ -68,7 +68,7 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
         <div className="pdf-copy">
           <div className="pdf-title">{pdf?.title ?? sourceTitle(run)}</div>
           <div className="pdf-meta">
-            {pdf?.fileName ?? "paper.pdf"} · {formatBytes(pdf?.sizeBytes)}
+            {pdf?.fileName ?? "—"} · {formatBytes(pdf?.sizeBytes)}
             {pdf?.pageCount ? ` · ${pdf.pageCount} pages` : ""}
           </div>
           <div className="pdf-hash mono">sha256:{shortHash(pdf?.sha256)}</div>
