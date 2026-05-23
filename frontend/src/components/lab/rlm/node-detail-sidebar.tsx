@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { memo, useState, type CSSProperties } from "react";
 import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView, GpuPlan } from "../../../hooks/use-rlm-run";
 import type { ChatMessage } from "../../../hooks/use-steering-chat";
 import { SteeringChat } from "./steering-chat";
@@ -307,7 +307,7 @@ function SidebarBody({
 
 // ── Main sidebar component ────────────────────────────────────────────────────
 
-export function NodeDetailSidebar({
+export const NodeDetailSidebar = memo(function NodeDetailSidebar({
   node,
   iteration,
   primitiveCalls,
@@ -448,4 +448,4 @@ export function NodeDetailSidebar({
       />
     </aside>
   );
-}
+});

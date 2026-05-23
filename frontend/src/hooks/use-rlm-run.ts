@@ -8,7 +8,7 @@
  * build `RlmRunState.tree` — a flat node list, each node carrying `parentId`.
  */
 
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useCallback } from "react";
 import type {
   RlmDashboardEvent,
   ReplIterationEvent,
@@ -913,4 +913,90 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
  */
 export function useRlmRun(events: RlmDashboardEvent[]): RlmRunState {
   return useMemo(() => events.reduce(fold, INITIAL_RLM_STATE), [events]);
+}
+
+// ─── rAF-batched hook ─────────────────────────────────────────────────────────
+
+export interface UseRlmRunBatchedResult {
+  state: RlmRunState;
+  addEvent: (ev: RlmDashboardEvent) => void;
+  reset: () => void;
+}
+
+/**
+ * useRlmRunBatched — push-based variant of useRlmRun that batches state
+ * updates into a single requestAnimationFrame flush.
+ *
+ * Motivation: during heavy primitive calls the SSE stream emits 50–200 events
+ * in rapid succession. Each `addEvent` call queues the event into
+ * `pendingEventsRef`; the FIRST call in a batch schedules a rAF. When the
+ * frame fires, all queued events are folded in one pass and a single setState
+ * is issued — keeping the tree-layout and force-simulation from running 200
+ * times per second.
+ *
+ * Guarantees:
+ *  - Event ordering preserved (FIFO queue, folded left-to-right).
+ *  - No events dropped (flush drains the entire pending buffer atomically).
+ *  - A second batch before the first frame fires is merged into the same frame.
+ *  - Cleanup: the pending rAF handle is cancelled on unmount.
+ *
+ * @param initialEvents Optional array of events to fold synchronously as the
+ *   initial state (lazy initializer). This ensures test renders that pass a
+ *   full fixture array see the folded state on the first render, matching the
+ *   behavior of the pure useRlmRun(events) hook.
+ */
+export function useRlmRunBatched(initialEvents?: RlmDashboardEvent[]): UseRlmRunBatchedResult {
+  const [state, setState] = useState<RlmRunState>(() =>
+    initialEvents && initialEvents.length > 0
+      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      : INITIAL_RLM_STATE
+  );
+
+  // Stable ref: events waiting to be folded into state on the next frame.
+  const pendingEventsRef = useRef<RlmDashboardEvent[]>([]);
+  // The rAF handle, or null when no frame is pending.
+  const rafHandleRef = useRef<number | null>(null);
+  // The most-recently committed state — used as the fold starting point so
+  // we always append to (not replay) the already-committed state.
+  // Initialized to match the lazy initializer above.
+  const committedStateRef = useRef<RlmRunState>(
+    initialEvents && initialEvents.length > 0
+      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      : INITIAL_RLM_STATE
+  );
+
+  // Flush: drain pendingEventsRef, fold into committedState, commit.
+  const flush = useCallback(() => {
+    rafHandleRef.current = null;
+    const events = pendingEventsRef.current;
+    if (events.length === 0) return;
+    pendingEventsRef.current = [];
+    const nextState = events.reduce(fold, committedStateRef.current);
+    committedStateRef.current = nextState;
+    setState(nextState);
+  }, []);
+
+  const addEvent = useCallback((ev: RlmDashboardEvent) => {
+    pendingEventsRef.current.push(ev);
+    // Schedule a rAF only on the first event in a batch; subsequent events
+    // in the same JavaScript task reuse the existing scheduled frame.
+    if (rafHandleRef.current === null) {
+      rafHandleRef.current = requestAnimationFrame(flush);
+    }
+  }, [flush]);
+
+  // Reset: cancel any pending rAF, clear the event queue, and restore to the
+  // initial state. Called when the active run changes (e.g., a new run starts
+  // and the event array is cleared to []).
+  const reset = useCallback(() => {
+    if (rafHandleRef.current !== null) {
+      cancelAnimationFrame(rafHandleRef.current);
+      rafHandleRef.current = null;
+    }
+    pendingEventsRef.current = [];
+    committedStateRef.current = INITIAL_RLM_STATE;
+    setState(INITIAL_RLM_STATE);
+  }, []);
+
+  return { state, addEvent, reset };
 }

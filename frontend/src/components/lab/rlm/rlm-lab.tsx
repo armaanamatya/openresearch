@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
-import { useRlmRun } from "../../../hooks/use-rlm-run";
+import { useRlmRunBatched } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
@@ -50,8 +50,41 @@ interface RlmLabProps {
  * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
  */
 export function RlmLab({ events, runMeta, runMode, isActive = false, runError = null }: RlmLabProps) {
-  const state = useRlmRun(events);
+  // Pass the events array to useRlmRunBatched so its lazy state initializer
+  // folds them synchronously on the FIRST render. This preserves the behaviour
+  // of the original useRlmRun(events) for tests and fixture-replay paths that
+  // render with a full event array already in hand. Subsequent changes to the
+  // `events` prop do NOT re-run the initializer (React lazy init runs once).
+  const { state, addEvent, reset } = useRlmRunBatched(events);
   const { rerun, busy: rerunBusy } = useRerun(runMeta.projectId);
+
+  // Feed new events into the batched hook. We track how many events have been
+  // fed so far via a ref; on each render where `events` has grown, we push
+  // only the new tail into addEvent (preserving order, no replays). When
+  // `events` shrinks (new run started, array reset to []), we reset the hook.
+  // fedCountRef starts at events.length since the initial array is already
+  // folded synchronously by the hook's lazy initializer.
+  const fedCountRef = useRef(events.length);
+  useEffect(() => {
+    const start = fedCountRef.current;
+    const end = events.length;
+    if (end < start) {
+      // Array shrank — new run. Reset state and replay from the beginning.
+      reset();
+      fedCountRef.current = 0;
+      for (let i = 0; i < end; i++) {
+        addEvent(events[i]);
+      }
+      fedCountRef.current = end;
+    } else {
+      // Array grew — push only the new tail.
+      for (let i = start; i < end; i++) {
+        addEvent(events[i]);
+      }
+      fedCountRef.current = end;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events]);
 
   const { sizes, dragHandle, collapsedByViewport } = useResizablePanels();
 
@@ -149,6 +182,53 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
   const { messages: chatMessages, send: sendChat, sending: chatSending } =
     useSteeringChat(runMeta.projectId, events);
 
+  // ── Stable callbacks for memoized children ─────────────────────────────
+  // useCallback ensures function identity is stable across clock-tick renders
+  // so React.memo on ConstellationCanvas / NodeDetailSidebar skips them.
+  const handleToggleReplRail = useCallback(
+    () => setReplRailCollapsed((c) => !c),
+    []
+  );
+  const handleSidebarCollapsedChange = useCallback(
+    (c: boolean) => setSidebarCollapsed(c),
+    []
+  );
+
+  // Memoized style objects — new object identity every render breaks React.memo.
+  const sidebarStyle = useMemo(
+    () => (sidebarCollapsed ? undefined : { width: sizes.detailSidebar }),
+    [sidebarCollapsed, sizes.detailSidebar]
+  );
+  const replRailStyle = useMemo(
+    () => (replRailCollapsed ? undefined : { width: sizes.replRail }),
+    [replRailCollapsed, sizes.replRail]
+  );
+  const reportRailStyle = useMemo(
+    () => ({ width: sizes.reportRail }),
+    [sizes.reportRail]
+  );
+
+  // Memoized inFlightPrimitive derivation — avoids re-running the O(n²) scan on
+  // every clock-tick render when primitiveCalls hasn't changed.
+  const inFlightPrimitive = useMemo(() => {
+    const calls = state.primitiveCalls;
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const c = calls[i];
+      if (c.status !== "start") continue;
+      let terminated = false;
+      for (let j = i + 1; j < calls.length; j++) {
+        if (calls[j].primitive === c.primitive && calls[j].status !== "start") {
+          terminated = true;
+          break;
+        }
+      }
+      if (!terminated) {
+        return { name: c.primitive, startedAt: c.timestamp };
+      }
+    }
+    return null;
+  }, [state.primitiveCalls]);
+
   return (
     <div className={styles.shell} data-testid="rlm-lab">
       {/* Band 1 */}
@@ -165,30 +245,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
         error={runError}
         onRerun={rerun}
         rerunBusy={rerunBusy}
-        inFlightPrimitive={(() => {
-          // Find the most recent primitive_call with status="start" that has
-          // no matching ok/error landing AFTER it. Walk backwards through the
-          // chronologically-ordered primitiveCalls array. When we find a
-          // "start", check whether any subsequent (later-indexed) entry for
-          // the same primitive name terminated it.
-          const calls = state.primitiveCalls;
-          for (let i = calls.length - 1; i >= 0; i--) {
-            const c = calls[i];
-            if (c.status !== "start") continue;
-            // Look forward from i+1 to end for a terminator of the same primitive.
-            let terminated = false;
-            for (let j = i + 1; j < calls.length; j++) {
-              if (calls[j].primitive === c.primitive && calls[j].status !== "start") {
-                terminated = true;
-                break;
-              }
-            }
-            if (!terminated) {
-              return { name: c.primitive, startedAt: c.timestamp };
-            }
-          }
-          return null;
-        })()}
+        inFlightPrimitive={inFlightPrimitive}
       />
 
       {/* Band 1.5 — always-visible live activity narration.
@@ -223,8 +280,8 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
               variables={state.variables}
               primitives={primitiveNames}
               collapsed={replRailCollapsed}
-              onToggle={() => setReplRailCollapsed((c) => !c)}
-              style={{ width: replRailCollapsed ? undefined : sizes.replRail }}
+              onToggle={handleToggleReplRail}
+              style={replRailStyle}
             />
             <ResizeHandle
               {...dragHandle("replRail", "right")}
@@ -252,7 +309,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
               elapsedMs={elapsedMs}
               report={state.report}
               rubric={state.rubric}
-              style={{ width: sizes.reportRail }}
+              style={reportRailStyle}
             />
           </>
         )}
@@ -276,8 +333,8 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           candidatesPromoted={candidatesPromoted}
           gpuPlan={state.gpuPlan}
           collapsed={sidebarCollapsed}
-          onCollapsedChange={setSidebarCollapsed}
-          style={{ width: sidebarCollapsed ? undefined : sizes.detailSidebar }}
+          onCollapsedChange={handleSidebarCollapsedChange}
+          style={sidebarStyle}
         />
       </div>
 
