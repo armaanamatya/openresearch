@@ -141,7 +141,12 @@ After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into t
 | 19:27 | iteration_heartbeat + sub_rlm_spawned/complete bursts | root recursively querying paper slices |
 | 19:29 | **F10 verified live** | Playwright snapshot at `playwright/lab-snapshot-002.md` shows `status "Sub-RLM prompt preview: candidate -> dict of downstream answers..."` — the new LiveActivityStrip is rendering in the lab page exactly as designed; user now sees real-time activity narration |
 | 19:29 | F7 verified live | same snapshot's console log: 3 leaf-scores 404s then stops (609ms, 5725ms, 10670ms) — counter hits STOP_AFTER_NO_ARTIFACT_CYCLES=3 and polling halts; no further 404 spam for the page lifetime |
-| | | (40 events in, sub-RLM bursting; build_environment + implement_baseline still ahead) |
+| 19:32 | implement_baseline start | sub-agent began writing baseline |
+| 19:32-19:54 | sub-agent wrote train.py + Dockerfile (9.5MB code dir) | real baseline code on disk before the error |
+| 19:54 | implement_baseline ERROR | 22-min wall-clock — over the typical 5-15 min range. `result_summary=Exception` (binding.py:165 strips the message to avoid leaking LLM output, but root REPL gets the full traceback and recovered) |
+| 19:54 | repl_iteration #3 | root self-recovered immediately, deciding next move |
+| 14:34 PT | F11 found via user screenshot | "nodes unclickable" — usePan moved-flag never reset; fixed in commit `2e21223` |
+| | | (still running — likely retry path or move to verify/propose) |
 
 ## Open after both runs
 
