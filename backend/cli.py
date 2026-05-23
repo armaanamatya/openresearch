@@ -696,7 +696,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         return 2
 
     try:
-        from backend.agents.pipeline import run_pipeline_rlm
+        from backend.agents.rlm.run import run_pipeline_rlm
         rlm_result = asyncio.run(run_pipeline_rlm(
             project_id,
             runs_root,
@@ -901,7 +901,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_id=workspace_id,
             )
         elif args.mode == "rlm":
-            from backend.agents.pipeline import run_pipeline_rlm
+            from backend.agents.rlm.run import run_pipeline_rlm
 
             rlm_result = asyncio.run(run_pipeline_rlm(
                 project_id, runs_root, workspace_claim_map,
