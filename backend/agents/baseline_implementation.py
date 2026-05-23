@@ -415,6 +415,52 @@ def run_offline(
     return result
 
 
+def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
+    """Return a sandbox-aware guidance string for the implement_baseline agent.
+
+    The constraint is COMPUTE-bound, not sandbox-bound. We bias toward
+    smoke-test mode only when the compute substrate is likely CPU-only.
+
+    Decision table:
+    - sandbox=runpod (any gpu_mode)        → GPU available     → no guidance
+    - gpu_mode=max (require GPU)            → user demands GPU  → no guidance
+    - sandbox in {docker, local}, gpu_mode in {off, None}  → CPU-only       → constraint
+    - sandbox in {docker, local}, gpu_mode in {auto, prefer} → CPU-likely     → constraint (most dev hosts lack a usable GPU)
+    - any other / unknown                   → conservative      → no guidance
+
+    Returning '' means no guidance is injected — the baseline agent runs
+    unconstrained. Returning a guidance string means smoke-test mode.
+
+    Auth-agnostic by construction (no provider branching).
+    """
+    mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
+    gpu_str = str(gpu_mode).lower() if gpu_mode else ""
+
+    # GPU-bearing sandbox — no constraint.
+    if "runpod" in mode_str:
+        return ""
+    # User explicitly demanded GPU — no constraint (sandbox must provide one).
+    if "max" in gpu_str:
+        return ""
+    # Local containers WITHOUT a confirmed GPU — apply the constraint.
+    if any(t in mode_str for t in ("docker", "local")):
+        return (
+            "\n\nIMPORTANT — COMPUTE CONSTRAINT:\n"
+            "The experiment will run in a local container that may have NO "
+            "GPU available. To ensure the experiment completes reliably "
+            "across hosts:\n"
+            "  - Default to smoke-test / mock mode that completes in < 5 min on CPU\n"
+            "  - Train on tiny subsets (1-10 samples per class), not full datasets\n"
+            "  - Use cached embeddings / mock model calls / pre-computed features where possible\n"
+            "  - For evaluation papers: implement the pipeline with HARDCODED mock model outputs that produce realistic-looking metrics; do NOT call real APIs from inside the sandbox (no network, no GPU)\n"
+            "  - Always include `--smoke-test` (or equivalent fast-path flag) in commands.json; never write bare `python train.py`\n"
+            "  - metrics.json MUST be produced under 5 minutes from container start; if your design can't hit that, scale down further\n"
+            "  - A full-mode training script can be present in the code but should be opt-in via a flag, not the default invocation\n"
+        )
+    # Unknown / explicit-GPU / runpod → no guidance.
+    return ""
+
+
 async def run_with_sdk(
     project_id: str,
     runs_root: Path,
@@ -428,6 +474,7 @@ async def run_with_sdk(
     runtime: AgentRuntime | None = None,
     repair_context: dict[str, Any] | None = None,
     sandbox_mode: object = None,
+    gpu_mode: object = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -449,40 +496,7 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
-    # 2026-05-23 (final): sandbox-aware guidance. When the sandbox is local
-    # docker (CPU-only, no GPU), instruct the agent to write a CPU-feasible
-    # baseline — small dataset, ≤5-min runtime, smoke-test or mock mode by
-    # default. B2 of the paper sweep wrote a real VLM training loop that
-    # hung forever on CPU; this nudge prevents that recurrence at the
-    # source (the agent picks the right strategy) rather than via a cap.
-    _sandbox_str = str(sandbox_mode).lower() if sandbox_mode else ""
-    _cpu_sandbox = _sandbox_str in {"docker", "local", "none", "sandboxmode.docker", "sandboxmode.local"}
-    sandbox_guidance = ""
-    if _cpu_sandbox:
-        sandbox_guidance = (
-            "\n\nIMPORTANT — SANDBOX CONSTRAINT:\n"
-            "The experiment will run in a CPU-ONLY docker container (no GPU "
-            "available). Your baseline MUST be feasible on CPU within 5 "
-            "minutes wall-clock:\n"
-            "  - Train on tiny subsets of data (1-10 samples per class, not "
-            "    full datasets)\n"
-            "  - Use mock model calls / cached embeddings / pre-computed "
-            "    features where possible (skip real LLM/VLM API calls)\n"
-            "  - For evaluation papers: implement the evaluation pipeline "
-            "    with HARDCODED mock model outputs that produce realistic-"
-            "    looking metrics; do NOT call real APIs from inside the "
-            "    sandbox (no network, no GPU)\n"
-            "  - If the paper requires training a model from scratch, write "
-            "    a 1-epoch smoke test on a tiny shard with toy hyperparams; "
-            "    the metrics.json must still be produced even if scores are "
-            "    illustrative\n"
-            "  - Always include `--smoke-test` or equivalent flag in your "
-            "    commands.json so the experiment finishes fast; never write "
-            "    `python train.py` without a smoke/quick mode\n"
-            "  - metrics.json MUST be produced in under 5 minutes from "
-            "    container start; if your design can't hit that, scale down "
-            "    further until it does\n"
-        )
+    sandbox_guidance = _compute_constraint_guidance(sandbox_mode, gpu_mode)
 
     if repair_context:
         prompt = (

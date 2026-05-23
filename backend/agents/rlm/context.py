@@ -44,6 +44,12 @@ class RunContext:
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py
     sandbox_mode: Any = None  # SandboxMode — threaded from --sandbox CLI flag (I7)
+    gpu_mode: Any = None     # GpuMode — threaded from ExecutionProfile.gpu_mode so
+                             # _compute_constraint_guidance (in baseline_implementation.py)
+                             # can decide CPU-vs-GPU baseline strategy dynamically rather
+                             # than assuming docker = CPU-only. (2026-05-23 user mandate:
+                             # "sandbox shouldn't be cpu only it should be dynamic since
+                             # we can use runpod etc.")
     run_budget: Any = None   # RunBudget — threaded from --max-pod-seconds / --max-usd etc.
     current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive

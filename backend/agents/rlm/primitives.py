@@ -466,7 +466,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             ctx.project_id, ctx.runs_root, pcm, env, contract, artifact_index,
             runtime=ctx.runtime, model=ctx.agent_model,
             repair_context=repair_context,
-            sandbox_mode=ctx.sandbox_mode)
+            sandbox_mode=ctx.sandbox_mode,
+            gpu_mode=getattr(ctx, "gpu_mode", None))
 
     timeout = _timeout_for(ctx, 3600)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.

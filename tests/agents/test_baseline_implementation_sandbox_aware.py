@@ -1,12 +1,17 @@
-"""Pin the sandbox-aware implement_baseline prompt — and verify the prompt is
-identical under both API-key and OAuth auth surfaces (parity).
+"""Pin the compute-constraint guidance in implement_baseline — and verify the
+prompt is identical under both API-key and OAuth auth surfaces (parity).
 
 The 2026-05-23 mandate: 'support API only mode as well as OAuth, elegantly
-dynamically support both modes'. The sandbox-aware prompt addition is a pure
-text change at the prompt-build layer — provider-independent by construction.
-These tests pin (a) the CPU guidance fires when sandbox is CPU-only, and
-(b) the prompt text is identical for `claude` (API) and `claude-oauth`
-(subscription) — proving zero auth-surface fork in the new code path.
+dynamically support both modes'. The compute-constraint prompt addition is a
+pure text change at the prompt-build layer — provider-independent by
+construction.
+
+ComputeConstraintGuidance: guidance fires based on BOTH sandbox_mode AND
+gpu_mode — not a static sandbox-name heuristic — so docker+gpu_mode=max
+correctly skips the constraint, and runpod always skips it.
+
+AuthSurfaceParity: the prompt text is identical for `claude` (API) and
+`claude-oauth` (subscription) — proving zero auth-surface fork.
 """
 
 from __future__ import annotations
@@ -59,46 +64,53 @@ def _minimal_inputs(tmp_path: Path):
     return runs_root, pcm, env, contract
 
 
-class TestCpuSandboxGuidance:
-    """sandbox_mode='docker' or 'local' → CPU guidance fires."""
+class TestDynamicComputeGuidance:
+    """_compute_constraint_guidance uses BOTH sandbox_mode AND gpu_mode.
 
-    @pytest.mark.parametrize("sandbox", ["docker", "local", "Docker", "SandboxMode.docker"])
-    def test_cpu_sandbox_modes_inject_smoke_test_guidance(self, sandbox, tmp_path, monkeypatch):
+    Decision table pinned here:
+    - docker + gpu_mode=None   → constraint (CPU-likely)
+    - docker + gpu_mode='off'  → constraint
+    - docker + gpu_mode='auto' → constraint (most dev hosts lack GPU)
+    - docker + gpu_mode='prefer' → constraint
+    - docker + gpu_mode='max'  → NO constraint (user demands GPU)
+    - local + gpu_mode=None    → constraint
+    - runpod + gpu_mode=None   → NO constraint (runpod has GPU)
+    - runpod + gpu_mode='auto' → NO constraint
+    - sandbox=None, gpu_mode=None → NO constraint (conservative)
+    - sandbox=unknown, gpu_mode=None → NO constraint (conservative)
+    """
+
+    @pytest.mark.parametrize("sandbox,gpu_mode,expect_guidance", [
+        ("docker",        None,      True),
+        ("docker",        "off",     True),
+        ("docker",        "auto",    True),
+        ("docker",        "prefer",  True),
+        ("docker",        "max",     False),
+        ("local",         None,      True),
+        ("runpod",        None,      False),
+        ("runpod",        "auto",    False),
+        (None,            None,      False),
+        ("unknown_value", None,      False),
+    ])
+    def test_compute_guidance_parametrized(
+        self, sandbox, gpu_mode, expect_guidance, tmp_path, monkeypatch
+    ):
         captured = _capture_prompt(monkeypatch)
         runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
         asyncio.run(run_with_sdk(
             "prj_test", runs_root, pcm, env, contract,
             sandbox_mode=sandbox,
+            gpu_mode=gpu_mode,
         ))
         assert len(captured) == 1
         prompt = captured[0]["prompt"]
-        assert "SANDBOX CONSTRAINT" in prompt
-        assert "CPU-ONLY" in prompt
-        assert "--smoke-test" in prompt
-        assert "5 minutes" in prompt
-
-    def test_runpod_sandbox_does_NOT_inject_cpu_guidance(self, tmp_path, monkeypatch):
-        """sandbox_mode='runpod' has GPU available — no CPU guidance."""
-        captured = _capture_prompt(monkeypatch)
-        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
-        asyncio.run(run_with_sdk(
-            "prj_test", runs_root, pcm, env, contract,
-            sandbox_mode="runpod",
-        ))
-        prompt = captured[0]["prompt"]
-        assert "SANDBOX CONSTRAINT" not in prompt
-        assert "--smoke-test" not in prompt
-
-    def test_no_sandbox_specified_no_guidance(self, tmp_path, monkeypatch):
-        """sandbox_mode=None → no guidance (conservative; only fire when we KNOW it's CPU)."""
-        captured = _capture_prompt(monkeypatch)
-        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
-        asyncio.run(run_with_sdk(
-            "prj_test", runs_root, pcm, env, contract,
-            sandbox_mode=None,
-        ))
-        prompt = captured[0]["prompt"]
-        assert "SANDBOX CONSTRAINT" not in prompt
+        if expect_guidance:
+            assert "COMPUTE CONSTRAINT" in prompt
+            assert "--smoke-test" in prompt
+            assert "5 min" in prompt
+        else:
+            assert "COMPUTE CONSTRAINT" not in prompt
+            assert "--smoke-test" not in prompt
 
 
 class TestAuthSurfaceParity:
@@ -138,5 +150,44 @@ class TestAuthSurfaceParity:
         prompt = self._render_prompt_with_provider(
             tmp_path, monkeypatch, provider="openai", model="gpt-5"
         )
-        assert "SANDBOX CONSTRAINT" in prompt
+        assert "COMPUTE CONSTRAINT" in prompt
         assert "--smoke-test" in prompt
+
+
+class TestGpuModePlumbedThroughRunContext:
+    """Pin the 2026-05-23 evening fix: RunContext.gpu_mode is threaded from
+    ExecutionProfile so _compute_constraint_guidance gets the right signal.
+    Without this, ctx.gpu_mode is always None and the dynamic decision
+    collapses to "sandbox_mode alone" — same bug as before the helper."""
+
+    def test_runcontext_has_gpu_mode_field(self):
+        """RunContext dataclass MUST expose a gpu_mode attribute (default None
+        for back-compat). Removing this field reverts dynamic detection to
+        "sandbox name alone" — same bug as before."""
+        from backend.agents.rlm.context import RunContext
+        import dataclasses
+        names = {f.name for f in dataclasses.fields(RunContext)}
+        assert "gpu_mode" in names, (
+            "RunContext.gpu_mode field is required for sandbox-aware baseline "
+            "guidance. Without it, ctx.gpu_mode is always None and runpod runs "
+            "incorrectly trigger CPU smoke-test guidance."
+        )
+
+    def test_gpu_mode_default_is_None_for_backward_compat(self):
+        """Existing call sites that don't pass gpu_mode must still work."""
+        from backend.agents.rlm.context import RunContext
+        from pathlib import Path
+        ctx = RunContext(
+            project_id="prj_test",
+            project_dir=Path("/tmp/test"),
+            runs_root=Path("/tmp"),
+            dashboard=None,
+            cost_ledger=None,
+            llm_client=None,
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+        )
+        assert ctx.gpu_mode is None, (
+            "gpu_mode must default to None for back-compat with call sites "
+            "that don't pass it (e.g. existing tests + scripts)."
+        )

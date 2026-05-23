@@ -624,6 +624,17 @@ async def run_pipeline_rlm(
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
+        # 2026-05-23: thread execution_profile.gpu_mode through so the
+        # baseline-implementation agent's _compute_constraint_guidance can
+        # decide CPU-vs-GPU baseline strategy dynamically. Without this,
+        # ctx.gpu_mode is always None and the helper falls back to its
+        # most-conservative branch regardless of what the user actually
+        # configured (--gpu-mode max on runpod should NOT trigger smoke-test).
+        gpu_mode=(
+            execution_profile.gpu_mode
+            if execution_profile is not None and hasattr(execution_profile, "gpu_mode")
+            else None
+        ),
         run_budget=run_budget,
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
