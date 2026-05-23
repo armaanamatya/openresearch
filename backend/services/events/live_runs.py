@@ -448,6 +448,7 @@ class FileLiveRunService:
     async def stream_events(self, project_id: str) -> AsyncIterator[str]:
         last_log_len = 0
         last_status_json = ""
+        last_dash_byte_offset = 0
         last_dash_count = 0
         counter = 0
         state = await self.get_run(project_id)
@@ -455,8 +456,11 @@ class FileLiveRunService:
             yield sse_event("agent_failed", {"projectId": project_id, "error": "Run not found"})
             return
 
-        yield sse_event("run_state", state.model_dump(mode="json"), event_id=str(counter))
+        # D1: serialize once; reuse the JSON string for both change-detection
+        # and the SSE payload (via json.loads).  Eliminates the redundant
+        # model_dump(mode="json") call that previously shadowed model_dump_json().
         last_status_json = state.model_dump_json()
+        yield sse_event("run_state", json.loads(last_status_json), event_id=str(counter))
         if state.log:
             last_log_len = len(state.log)
             yield sse_event(
@@ -464,8 +468,11 @@ class FileLiveRunService:
                 {"projectId": project_id, "text": state.log[-12000:], "log": state.log},
             )
 
-        # Flush any dashboard events already written before streaming started
-        initial_dash = await asyncio.to_thread(self._read_dashboard_events, project_id, 0)
+        # Flush any dashboard events already written before streaming started.
+        # D2: use byte-offset cursor; _read_dashboard_events returns (events, new_offset).
+        initial_dash, last_dash_byte_offset = await asyncio.to_thread(
+            self._read_dashboard_events, project_id, byte_offset=0
+        )
         for dash_event in initial_dash:
             yield sse_event("dashboard_event", dash_event, event_id=f"dash-{last_dash_count}")
             last_dash_count += 1
@@ -484,10 +491,11 @@ class FileLiveRunService:
             if state is None:
                 yield sse_event("agent_failed", {"projectId": project_id, "error": "Run not found"})
                 return
+            # D1: one serialization per tick — compare strings, reuse for payload.
             state_json = state.model_dump_json()
             if state_json != last_status_json:
                 last_status_json = state_json
-                yield sse_event("run_state", state.model_dump(mode="json"), event_id=str(counter))
+                yield sse_event("run_state", json.loads(state_json), event_id=str(counter))
             if len(state.log) > last_log_len:
                 delta = state.log[last_log_len:]
                 last_log_len = len(state.log)
@@ -496,8 +504,10 @@ class FileLiveRunService:
                     {"projectId": project_id, "text": delta, "log": state.log},
                     event_id=f"log-{counter}",
                 )
-            # Stream new dashboard events
-            new_dash = await asyncio.to_thread(self._read_dashboard_events, project_id, last_dash_count)
+            # D2: seek forward from last byte offset — no full-file re-read.
+            new_dash, last_dash_byte_offset = await asyncio.to_thread(
+                self._read_dashboard_events, project_id, byte_offset=last_dash_byte_offset
+            )
             for dash_event in new_dash:
                 yield sse_event("dashboard_event", dash_event, event_id=f"dash-{last_dash_count}")
                 last_dash_count += 1
@@ -946,14 +956,38 @@ class FileLiveRunService:
             pass
         return records
 
-    def _read_dashboard_events(self, project_id: str, offset: int = 0) -> list[dict[str, Any]]:
+    def _read_dashboard_events(
+        self,
+        project_id: str,
+        byte_offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Read new dashboard events starting from *byte_offset*.
+
+        Returns a ``(events, new_byte_offset)`` tuple.  The caller should
+        persist *new_byte_offset* and pass it on the next call so only newly
+        appended bytes are read — avoiding a full-file re-read on every poll
+        tick (D2 efficiency fix).
+
+        Resume-safety (D3): passing ``byte_offset=0`` always reads from the
+        beginning of the file, so an SSE client that reconnects from the start
+        sees the full event history.
+
+        For ``byte_offset > 0`` the implementation seeks directly to that
+        position and reads only the new tail, so ``Path.read_text`` is never
+        called on a partially-consumed file.
+        """
         path = self.runs_root / project_id / "dashboard_events.jsonl"
         if not path.exists():
-            return []
+            return [], 0
         events: list[dict[str, Any]] = []
+        new_offset = byte_offset
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines[offset:]:
+            with path.open("rb") as fh:
+                if byte_offset > 0:
+                    fh.seek(byte_offset)
+                raw = fh.read()
+                new_offset = byte_offset + len(raw)
+            for line in raw.decode("utf-8", errors="replace").splitlines():
                 line = line.strip()
                 if not line:
                     continue
@@ -963,14 +997,14 @@ class FileLiveRunService:
                     continue
         except OSError:
             pass
-        return events
+        return events, new_offset
 
     def _read_pipeline_state(self, project_id: str) -> dict[str, Any] | None:
         return _read_json(self.runs_root / project_id / "pipeline_state.json")
 
     def _build_payload(self, project_id: str, status: dict[str, Any]) -> dict[str, Any]:
         pipeline_state = self._read_pipeline_state(project_id)
-        dashboard_events = self._read_dashboard_events(project_id)
+        dashboard_events, _ = self._read_dashboard_events(project_id, byte_offset=0)
         log = str(status.get("log") or "")
         stage = _infer_stage(self.runs_root / project_id, pipeline_state, dashboard_events)
         meta = {
