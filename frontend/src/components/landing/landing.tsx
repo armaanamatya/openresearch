@@ -2,6 +2,8 @@ import Link from "next/link";
 import styles from "./landing.module.css";
 import "./landing.global.css";
 import { HeroTree } from "./figures/HeroTree";
+import { ComprehensionMock } from "./figures/ComprehensionMock";
+import { EnvironmentMock } from "./figures/EnvironmentMock";
 import { NavScrollMount } from "./client-bits";
 
 const GITHUB_URL = "https://github.com/armaanamatya/openresearch";
@@ -12,7 +14,9 @@ export function LandingPage(): React.JSX.Element {
       <NavScrollMount targetId="nav" scrolledClass={styles.scrolled} />
       <Nav />
       <Hero />
-      {/* Tasks 4-7 add sections + footer below */}
+      <ComprehensionSection />
+      <EnvironmentSection />
+      {/* Tasks 5-7 add §3.0-6.0 + closing + footer */}
     </div>
   );
 }
@@ -114,6 +118,100 @@ function Hero(): React.JSX.Element {
         </figure>
       </div>
     </header>
+  );
+}
+
+function ComprehensionSection(): React.JSX.Element {
+  return (
+    <section className={styles.spec} id="pipeline">
+      <div className={styles.wrap}>
+        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>1.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Comprehension</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>stage 01 / 05</span>
+            </div>
+            <h2 className={styles.head}>Read the paper like an author would.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              The agent ingests the PDF and source repo, extracts every quantitative claim,
+              and builds a citation graph linking each claim to the table, figure, or
+              equation that supports it.
+            </p>
+            <div className={styles["spec-substeps"]}>
+              <a href="#"><span className={styles.num}>§ 1.1</span><span>Parsing</span></a>
+              <a href="#"><span className={styles.num}>§ 1.2</span><span>Claim extraction</span></a>
+              <a href="#"><span className={styles.num}>§ 1.3</span><span>Citation graph</span></a>
+              <a href="#"><span className={styles.num}>§ 1.4</span><span>Rubric induction</span></a>
+            </div>
+          </div>
+        </div>
+
+        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
+          <span className={styles["fig-label"]}>FIG&nbsp;§ 1.2&nbsp;&nbsp;—&nbsp;&nbsp;Claim extraction · rubric induction</span>
+          <div className={`${styles.frame} ${styles["frame-bleed-r"]}`}>
+            <div className={styles["mock-chrome"]}>
+              <span className={styles.crumbs}>comprehension&nbsp;/&nbsp;<b>arxiv:2410.04265</b></span>
+              <span className={styles.right}>47 claims · 23 figures · 9 tables</span>
+            </div>
+            <ComprehensionMock />
+          </div>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+function EnvironmentSection(): React.JSX.Element {
+  return (
+    <section className={styles.spec}>
+      <div className={styles.wrap}>
+        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>2.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Environment</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>stage 02 / 05</span>
+            </div>
+            <h2 className={styles.head}>Stand up exactly the machine the paper ran on.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              Pinned CUDA, pinned wheels, pinned data hashes. A reproducible container is
+              built, verified against the paper&apos;s dependencies, and locked before a
+              single training step runs.
+            </p>
+            <div className={styles["spec-substeps"]}>
+              <a href="#"><span className={styles.num}>§ 2.1</span><span>Toolchain</span></a>
+              <a href="#"><span className={styles.num}>§ 2.2</span><span>Lockfile</span></a>
+              <a href="#"><span className={styles.num}>§ 2.3</span><span>Dataset hashes</span></a>
+              <a href="#"><span className={styles.num}>§ 2.4</span><span>GPU provisioning</span></a>
+            </div>
+          </div>
+        </div>
+
+        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
+          <span className={styles["fig-label"]}>FIG&nbsp;§ 2.2&nbsp;&nbsp;—&nbsp;&nbsp;Lockfile · GPU provisioning</span>
+          <div className={styles.frame}>
+            <div className={styles["mock-chrome"]}>
+              <span className={styles.crumbs}>env&nbsp;/&nbsp;<b>rlm-7e3a / container</b></span>
+              <span className={styles.right}>image · sha256:9a4f…02e1</span>
+            </div>
+            <EnvironmentMock />
+          </div>
+        </figure>
+      </div>
+    </section>
   );
 }
 

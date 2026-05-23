@@ -1,0 +1,56 @@
+/* frontend/src/components/landing/landing.global.css
+ *
+ * Route-scoped global override. Imported only by landing.tsx, which
+ * renders only on `/`. Next.js code-splits non-module CSS per route,
+ * so /lab and /library never receive these rules.
+ *
+ * Owns: html+body dark surface, faint paper-grain overlay, top radial
+ * gradient, ::selection accent. All component CSS lives in
+ * landing.module.css with the same --landing-* token names. */
+
+:root {
+  --landing-bg:           oklch(0.16 0.004 270);
+  --landing-bg-2:         oklch(0.185 0.004 270);
+  --landing-bg-elev:      oklch(0.205 0.004 270);
+  --landing-ink:          oklch(0.96 0.005 90);
+  --landing-ink-2:        oklch(0.78 0.005 90);
+  --landing-ink-3:        oklch(0.56 0.005 90);
+  --landing-ink-4:        oklch(0.40 0.005 90);
+  --landing-rule:         oklch(0.28 0.004 270);
+  --landing-rule-2:       oklch(0.235 0.004 270);
+  --landing-accent:       oklch(0.80 0.16 70);
+  --landing-accent-ink:   oklch(0.20 0.04 70);
+  --landing-maxw:         1240px;
+  --landing-gutter:       clamp(20px, 4vw, 56px);
+  --landing-section-pad:  clamp(72px, 10vw, 160px);
+  --landing-serif:        var(--font-serif), "Iowan Old Style", Georgia, serif;
+}
+
+html, body {
+  background: var(--landing-bg);
+  color: var(--landing-ink);
+}
+
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: .035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.35 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0; height: 60vh;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(120% 80% at 50% -10%, oklch(0.22 0.01 70 / .55), transparent 60%);
+}
+
+::selection {
+  background: var(--landing-accent);
+  color: var(--landing-accent-ink);
+}
