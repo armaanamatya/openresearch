@@ -515,3 +515,18 @@ class TestEvidenceBasedVerdictReconciliation:
         assert "< 0.5" not in report.reproduction_summary
         # Never-ran branch must NOT fire — run_experiment is on the ledger:
         assert "run_experiment never ran" not in report.reproduction_summary
+
+
+def test_render_markdown_graded_defaults_to_zero_not_leaf_count():
+    """Symptom: a rubric dict with no `graded` key falsely claims full N/N coverage.
+
+    _render_markdown used `rubric.get('graded', leaf_count)` as a default — a
+    missing `graded` field rendered "N/N rubric leaves graded" (review M1 / T27).
+    Verify: default is 0, not leaf_count.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(rubric={"leaf_count": 5, "overall_score": 0.5})
+    md = _render_markdown(report)
+    assert "0/5 rubric leaves graded" in md, (
+        "missing `graded` field should default to 0, not the leaf_count"
+    )

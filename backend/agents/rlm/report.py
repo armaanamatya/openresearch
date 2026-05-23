@@ -477,7 +477,7 @@ def _render_markdown(report: RLMFinalReport) -> str:
     if source or leaf_count:
         bits: list[str] = []
         if leaf_count:
-            bits.append(f"{rubric.get('graded', leaf_count)}/{leaf_count} rubric leaves graded")
+            bits.append(f"{rubric.get('graded', 0)}/{leaf_count} rubric leaves graded")
         if source == "generated":
             bits.append("self-generated rubric — not PaperBench-official")
         elif source == "paperbench_bundle":
