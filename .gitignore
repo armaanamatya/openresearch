@@ -7,6 +7,7 @@ build/
 .eggs/
 
 # Virtual environments
+.venv
 .venv/
 venv/
 
@@ -37,7 +38,9 @@ htmlcov/
 .superpowers/
 
 # Frontend
+frontend/node_modules
 frontend/node_modules/
+frontend/.next
 frontend/.next/
 
 # OS
@@ -54,8 +57,10 @@ Thumbs.db
 # Local run outputs (anchored to repo root — must not match nested
 # source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/)
 /runs/
+runs
 # Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
 /logs/
+logs
 
 # Windows artifacts
 %APPDATA%/
@@ -99,9 +104,11 @@ reprolab.db-wal
 /reprolab.db.corrupt-*
 
 # Playwright MCP screenshot artifacts
+.playwright-mcp
 .playwright-mcp/
 
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
+.deepeval
 .deepeval/
 
 # Landing-page exploration artifact (figma/AI export). Canonical mockups
@@ -114,4 +121,5 @@ reprolab.db-wal
 /runs_e2e_docker/
 
 # Landing screenshot scratch dir
+frontend/tmp-screens
 frontend/tmp-screens/
