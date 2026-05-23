@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionMode(str, Enum):
@@ -175,6 +182,44 @@ class ExecutionProfile:
         )
 
 
+@lru_cache(maxsize=1)
+def _is_wsl() -> bool:
+    """Detect WSL — checks /proc/version for the Microsoft signature.
+
+    Returns True on WSL1/WSL2; False on native Linux, macOS, Windows.
+    Cached because this never changes within a process.
+    """
+    try:
+        with open("/proc/version", "r", encoding="utf-8") as f:
+            content = f.read().lower()
+        return "microsoft" in content or "wsl" in content
+    except (OSError, FileNotFoundError):
+        return False
+
+
+@lru_cache(maxsize=1)
+def _docker_reachable() -> bool:
+    """Best-effort: is the `docker` binary on PATH AND does `docker info` succeed?
+
+    Used only as a tiebreaker for sandbox=auto. Failure means we shouldn't
+    silently pick docker. False positive (docker reachable but the daemon
+    rejects later) is acceptable — the explicit docker preflight will catch it.
+    """
+    if not shutil.which("docker"):
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def resolve_sandbox_mode(
     requested: SandboxMode | str,
     *,
@@ -182,14 +227,35 @@ def resolve_sandbox_mode(
 ) -> SandboxMode:
     """Resolve auto sandbox policy from the high-level pipeline mode.
 
-    Auto is intentionally RunPod-first for user-triggered runs. Local host
-    execution and local Docker are never selected implicitly; callers must
-    request them explicitly.
+    Resolution order for "auto":
+      1. REPROLAB_FORCE_SANDBOX env override wins (applied upstream at the HTTP
+         layer, but also checked here for CLI / direct callers).
+      2. On WSL where docker is NOT verifiably reachable → "local"
+         (avoids Docker Desktop dependency for local dev).
+      3. Otherwise → DEFAULT_SANDBOX_MODE.
+
+    Explicit non-auto values are returned as-is; the docker preflight is the
+    right gate when the user has consciously chosen docker.
     """
+    # Allow a direct env override for callers that bypass the HTTP layer
+    # (e.g. the CLI).  REPROLAB_FORCE_SANDBOX is the canonical knob.
+    force = os.environ.get("REPROLAB_FORCE_SANDBOX", "").strip()
+    if force:
+        return SandboxMode(force)
 
     mode = SandboxMode(requested)
     if mode is not SandboxMode.auto:
         return mode
+
+    # WSL safety: docker might not be wired up via Docker Desktop; prefer
+    # local unless we can verify the daemon is reachable.
+    if _is_wsl() and not _docker_reachable():
+        logger.info(
+            "resolve_sandbox_mode: WSL detected without reachable docker — "
+            "preferring 'local' (set REPROLAB_DEFAULT_SANDBOX=docker to override)"
+        )
+        return SandboxMode.local
+
     return DEFAULT_SANDBOX_MODE
 
 
@@ -227,6 +293,8 @@ __all__ = [
     "DEFAULT_SANDBOX_MODE",
     "GpuMode",
     "SandboxMode",
+    "_docker_reachable",
+    "_is_wsl",
     "ensure_sandbox_mode_available",
     "resolve_sandbox_mode",
 ]
