@@ -20,13 +20,15 @@ ReproLab is built on the **Recursive Language Model** paradigm (arXiv 2512.24601
 Zhang/Kraska/Khattab, MIT CSAIL). The `rlms` library (`pip install rlms`) is the
 engine; our code is the domain layer. The RLM root model never receives the paper
 text — it is offloaded as a REPL `context` variable and the model accesses it
-programmatically via slices and recursive sub-calls. Ten domain primitives
+programmatically via slices and recursive sub-calls. Twelve domain primitives
 (`understand_section`, `extract_hyperparameters`, `detect_environment`,
 `build_environment`, `plan_reproduction`, `implement_baseline`, `run_experiment`,
-`verify_against_rubric`, `propose_improvements`, `record_candidate_outcome`) are
-exposed as REPL callables in `backend/agents/rlm/primitives.py`. The root decides
-what to call and in what order by writing Python — there is no fixed stage order
-and no gate control-flow.
+`verify_against_rubric`, `propose_improvements`, `record_candidate_outcome`,
+`check_user_messages`, `respond_to_user`) are exposed as REPL callables in
+`backend/agents/rlm/primitives.py`. The root decides what to call and in what
+order by writing Python — there is no fixed stage order and no gate control-flow.
+The last two primitives are the **chat-steering surface** (see below) and are
+pure file I/O, so they work identically under API-key and OAuth auth.
 
 See `docs/design/rlm-pivot-brief.md` for the full design rationale, the
 RLM-fidelity invariants, and the primitive contract.
@@ -93,15 +95,50 @@ is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 3. UI opens an **SSE** stream (`/api/demo/events` → backend `/runs/<id>/events`).
 4. SSE event types: `repl_iteration`, `primitive_call`, `sub_rlm_spawned`,
    `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`,
-   `rubric_score`. All events route through `sse_bridge.sanitize_iteration` — the
-   single egress chokepoint that strips REPL locals and bounds stdout/stderr to
-   metadata prefixes. The paper corpus never reaches the stream.
+   `rubric_score`, `user_message`, `user_message_response`. All events route
+   through `sse_bridge.sanitize_iteration` — the single egress chokepoint that
+   strips REPL locals and bounds stdout/stderr to metadata prefixes. The paper
+   corpus never reaches the stream.
 5. On completion the computed `final_report.{json,md}` replaces the placeholder
    benchmark.
 
 **Which run is current is the URL** — `/lab?projectId=<id>` — so a refresh or
 a shared link reopens it. A `localStorage` pointer auto-resumes an in-flight run
 when the user lands on a bare `/lab`.
+
+## Chat steering surface (2026-05-23)
+
+A bidirectional channel between the user and the running RLM:
+
+- **User → root**: lab UI POSTs through `/api/demo/runs/<id>/messages` to backend
+  `/runs/<id>/messages` (`backend/routes/messages.py`); each message is appended
+  to `runs/<id>/user_messages.jsonl` and emits a `user_message` SSE event.
+- **Root → user**: the system prompt instructs the root to call
+  `check_user_messages()` at the start of each iteration. Unread `user`
+  messages are surfaced; the root may reply via `respond_to_user(message)` —
+  the reply is appended to the same JSONL and emits a `user_message_response`
+  SSE event. A per-run cursor (`runs/<id>/_user_message_cursor.json`) tracks
+  the read offset atomically.
+- **UI**: the new right-docked `NodeDetailSidebar`
+  (`frontend/src/components/lab/rlm/node-detail-sidebar.tsx`) hosts a
+  `SteeringChat` panel that derives the conversation from the existing SSE
+  stream filtered to the two new event types. Optimistic add + replace-on-echo.
+
+Both primitives are auth-surface-agnostic (file I/O only) so the chat works
+identically with `--model claude` (API key) and `--model claude-oauth`.
+
+## Collapsible right sidebar (2026-05-23)
+
+The lab's exploration tree carries a 360px right-docked detail sidebar that
+replaces the old floating popup. Selection state is lifted to `rlm-lab.tsx`
+so the canvas (highlight) and the sidebar (content) share one source of truth.
+Content is kind-specific: `paper` → paperMeta as definition list; `work` →
+filtered primitiveCalls (`understand_section`/`extract_hyperparameters` by
+default, `detect_environment`/`build_environment` when `node.phase ==
+"environment"`); `candidate` → category + description + rubricDelta + iteration
+response; `subrlm`/`baseline`/`declined-group` → fall back to a "now" block.
+Sidebar collapses to a 36px toggle rail. The `SteeringChat` (above) is docked
+at the bottom of the expanded sidebar.
 
 ## Rubric
 

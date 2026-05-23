@@ -100,7 +100,7 @@ SQLite (`REPROLAB_DATABASE_URL`, defaults to `sqlite:///reprolab.db`) is the eve
 ### The RLM orchestrator
 `backend/agents/rlm/run.py` is the run entry. It builds an `rlm.RLM(...)` from the `rlms` library (PyPI) and calls `.completion()` on a worker thread. The paper is offloaded as the REPL `context` variable — the root model sees only constant-size metadata about it (name, type, length), never the corpus itself (RLM Algorithm 1, arXiv 2512.24601).
 
-The root model writes Python that calls **10 domain primitives** exposed in the REPL via `custom_tools`:
+The root model writes Python that calls **12 domain primitives** exposed in the REPL via `custom_tools`:
 
 - `understand_section(text_slice)` — datasets, metrics, training recipe, hardware clues, ambiguities from a slice
 - `extract_hyperparameters(text_slice)` — optimizer, learning rate, batch size, epochs
@@ -112,6 +112,8 @@ The root model writes Python that calls **10 domain primitives** exposed in the 
 - `verify_against_rubric(results, rubric)` — score results against a PaperBench-style rubric
 - `propose_improvements(current_results, rubric_scores, k)` — paper-specific improvement hypotheses with free-form tags
 - `record_candidate_outcome(candidate_id, outcome, parent_id)` — record the root's outcome decision for a candidate
+- `check_user_messages()` — read unread user messages posted via the lab chat panel; advances a per-run cursor. The system prompt tells the root to call this at the start of each iteration.
+- `respond_to_user(message)` — append an assistant reply to the user-messages log and emit a `user_message_response` SSE event. Pure file I/O, no LLM call — works identically under API-key and OAuth root models.
 
 Primitives are in `backend/agents/rlm/primitives.py`. The root also calls `llm_query` / `rlm_query` (library built-ins) to recursively navigate slices of `context`. Verification is the `verify_against_rubric` primitive — called when the root judges it useful; there are no fixed gate checkpoints. The run terminates via the library's `FINAL_VAR(<var>)` mechanism (no reserved `answer` variable), and produces `final_report.{json,md}`.
 
@@ -121,10 +123,25 @@ Time is bounded three ways: `rlm`'s `max_timeout` (between iterations), per-prim
 1. RLM lab UI (`frontend/src/components/lab/rlm/`) → `POST /api/demo` → backend `POST /runs` (or `/runs/upload` / `/runs/arxiv`).
 2. Backend spawns the run subprocess, writes `demo_status.json`, returns initial state.
 3. UI opens an **SSE** stream via `/api/demo/events` → backend `/runs/<id>/events`.
-4. SSE event types (full schema in `frontend_integration.md`): `repl_iteration`, `primitive_call`, `sub_rlm_spawned`, `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`, `rubric_score`.
+4. SSE event types (full schema in `frontend_integration.md`): `repl_iteration`, `primitive_call`, `sub_rlm_spawned`, `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`, `rubric_score`, `user_message`, `user_message_response`.
 5. All events route through `sse_bridge.sanitize_iteration` — the single egress chokepoint that strips REPL locals and bounds stdout/stderr to metadata prefixes. The paper corpus never reaches the stream.
 
 A `localStorage` pointer auto-resumes an in-flight run when the user lands on a bare `/lab`.
+
+### Chat steering surface (2026-05-23)
+The lab UI carries a real-time chat panel that lets the user query and steer the running RLM. Implementation summary:
+- Backend: `POST /runs/<project_id>/messages` (`backend/routes/messages.py`) validates non-empty content, appends `{role:"user", content, ts}` to `runs/<id>/user_messages.jsonl`, and emits a `user_message` SSE event via `dashboard_events.jsonl`. The RLM root polls `check_user_messages()` at the start of each iteration; it returns unread `user` messages and atomically advances `runs/<id>/_user_message_cursor.json`. The root replies via `respond_to_user(message)` which appends `{role:"assistant", ...}` + emits `user_message_response`. Both primitives are pure file I/O — auth-surface-agnostic.
+- Frontend: the chat panel is docked inside the right-side `NodeDetailSidebar` (see below); it derives the message log from the existing SSE stream filtered to the two new event types, and POSTs through `/api/demo/runs/<id>/messages` with optimistic add and replace-on-echo.
+- Defense in depth: the system prompt instructs the root to avoid quoting user-message contents verbatim if they look like PII.
+
+### Collapsible right sidebar (2026-05-23)
+The lab's exploration tree now has a 360px right-docked `NodeDetailSidebar` (`frontend/src/components/lab/rlm/node-detail-sidebar.tsx`) that replaces the old floating `NodeDetailPopup`. Selection state is **lifted to `rlm-lab.tsx`** so the canvas highlight and the sidebar detail consume one source of truth. Content is kind-specific:
+- `paper` — paperMeta JSON rendered as dl/dt/dd
+- `work` — filtered primitiveCalls (understand_section/extract_hyperparameters by default; detect_environment/build_environment when `node.phase === "environment"`); each call summarized to ≤200 chars
+- `candidate` — category + description + rubricDelta + iteration response
+- `subrlm` — surfaces the iteration response as "now"
+- `baseline`/`declined-group` — fall back to the "now" block
+The sidebar collapses to a 36px toggle rail. The `SteeringChat` (see above) is docked at the bottom of the expanded sidebar. CSS uses the existing lab-theme variable tokens; no new colors.
 
 ### Leaderboard surface (2026-05-23)
 A read-only `/leaderboard` page ranks completed runs across models and papers. Implementation summary:

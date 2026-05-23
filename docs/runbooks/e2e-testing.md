@@ -31,6 +31,8 @@ These are the commits relevant to UI-driven runs (newest first). Each is a clean
 
 | SHA | Subject | Why it matters |
 |---|---|---|
+| _this commit_ | `feat(rlm+ui): chat steering + collapsible right sidebar with kind-specific node detail` | **F8.** Lab UI now has a right-docked `NodeDetailSidebar` (360px expanded / 36px collapsed) that shows kind-specific content per exploration-tree node + a `SteeringChat` panel at the bottom. New backend endpoint `POST /runs/<id>/messages` + two new RLM primitives (`check_user_messages`, `respond_to_user`) + two new SSE event types (`user_message`, `user_message_response`) wire the chat through. Both primitives are pure file I/O → works identically under API-key and OAuth root models. |
+| _this commit_ | `fix(frontend): RDR polling resilience — proxy timeouts + broaden hook early-exit` | **F7.** Lab UI was logging endless 502/404 errors when the backend hung mid-run; the proxy now adds a 4-second AbortController + normalizes any timeout / 5xx / network-error to 404, and the `useRdrArtifacts` hook counts any non-2xx toward its early-exit cycle counter. Console stays clean even when the backend is wedged. |
 | `65ee5a2` | `fix(rlm): resolve_root_model aliases (sonnet/opus/claude-sonnet-4-6 → registry keys)` | **F4.** Lab UI sends `model="sonnet"` → backend translates to `"claude-sonnet-4-6"` → RLM's `resolve_root_model` only knew registry keys (`claude`, `claude-oauth`, …). Now aliases bridge all three vocabularies. |
 | `9da8646` | `feat(paths): cross-platform input path normalization (Windows ↔ WSL ↔ macOS)` | **F3.** Pasting `C:\Users\Foo\paper.pdf` on a WSL backend now resolves to `/mnt/c/Users/Foo/paper.pdf`. arXiv IDs/URLs/DOIs pass through unchanged. |
 | `45e60df` | `fix(frontend): quiet useRdrArtifacts polling + null-render RubricBreakdown` | **F2.** The polling hook stops after 3 consecutive all-404 cycles (~15s) for non-RDR runs. RubricBreakdown null-renders when no data. Zero DOM noise for PDF/arXiv runs. |
@@ -225,7 +227,30 @@ If credentials are in `/mnt/c/Users/...` only, F6 (when landed) will log this wi
 ln -s /mnt/c/Users/<your-windows-username>/.claude/.credentials.json ~/.claude/.credentials.json
 ```
 
-### 4f. Orphan `claude` SDK subprocesses lingering
+### 4f. Backend hangs (SDK `aclose()` deadlock)
+
+Symptom: every backend endpoint times out (`curl -m 5 /health` returns status 000), uvicorn worker is in state `S do_wai` at 90%+ CPU. The runner.stderr.log of the active run shows:
+
+```
+RuntimeError: aclose(): asynchronous generator is already running
+```
+
+Root cause: the bundled `claude-agent-sdk` has a known nested-generator `aclose()` race that hangs the event loop. Workaround B (in `backend/agents/rlm/claude_oauth_client.py` + `backend/services/context/workspace/tools/rlm_query.py`) isolates each SDK call in a thread, but the symptom can still surface under WSL2's futex behavior.
+
+**Remedy** (safe, lossy):
+```bash
+# Kill the wedged backend and any orphan claude subprocesses (see 4g):
+pkill -9 -f "uvicorn backend.app:create_app"
+pkill -9 -f "claude_agent_sdk/_bundled/claude"
+# Restart:
+./start_backend.sh   # or: .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
+```
+
+The in-flight run subprocess is **resumable** from `runs/<id>/rlm_state/` if it was checkpointed; otherwise it stops with `status: "failed"`. **Frontend resilience (F7)** keeps the lab UI usable even while the backend is wedged — no 502 spam — so the user can navigate, read the existing log, and start a fresh run after the restart.
+
+Tracking: see `learn.md` 2026-05-22 (Workaround B), `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`. Long-term: upstream SDK fix.
+
+### 4g. Orphan `claude` SDK subprocesses lingering
 
 If you killed a backend mid-run, the SDK's bundled `claude` Node binary often becomes orphaned (PPID=1 after parent dies). Find + kill:
 ```bash
@@ -288,6 +313,47 @@ cd frontend && npm test
 ```
 
 ---
+
+## 6b. Chat-steering walkthrough (2026-05-23)
+
+The lab page's right-docked `NodeDetailSidebar` now carries a chat panel at the bottom. Use it to query or steer the running RLM mid-flight.
+
+**What the user does**:
+1. Open a run at `/lab?projectId=<id>`.
+2. Type into the "Send a message…" field at the bottom of the right sidebar; click **Send** (or press Enter).
+3. The user message appears in the chat log immediately (optimistic).
+4. The RLM root will see the message on its **next iteration** (it calls `check_user_messages()` at the start of each iteration per the system prompt) and may reply via `respond_to_user(...)`.
+5. The reply appears in the chat log when the SSE event arrives.
+
+**Manual round-trip test (no UI)**:
+```bash
+PROJECT=prj_xxx  # an active run with a running RLM
+
+# Post a user message:
+curl -s -i -X POST http://localhost:8000/runs/$PROJECT/messages \
+  -H 'content-type: application/json' \
+  -d '{"role":"user","content":"please prioritize the smoke test first"}'
+# → 202 {"ok": true}
+
+# Confirm the file was appended:
+tail -1 runs/$PROJECT/user_messages.jsonl
+# → {"role": "user", "content": "...", "ts": "2026-05-23T..."}
+
+# Confirm a user_message SSE event was added:
+tail -1 runs/$PROJECT/dashboard_events.jsonl | jq -c
+# → ...event: "user_message"...
+
+# When the root replies, you'll see:
+grep '"event":"user_message_response"' runs/$PROJECT/dashboard_events.jsonl | tail -1
+```
+
+**Auth-surface note**: both `check_user_messages` and `respond_to_user` are pure file I/O — they do **not** call any LLM. So chat steering works identically with `--model claude` (`ANTHROPIC_API_KEY`) and `--model claude-oauth` (Claude Code subscription). The only auth-dependent step is the root model's own completion when it processes the message — that uses whatever path you launched the run with.
+
+**Failure modes**:
+- POST 400 with empty/whitespace content — intended; validates required field.
+- POST 404 — project_id doesn't match an existing `runs/<id>` directory.
+- The root never sees the message — likely the run is sitting between iterations or has crashed; check `demo_status.json::status`.
+- The root sees it but doesn't reply — that's a system-prompt-following issue; the root may have judged a reply unnecessary. If you need an explicit reply, phrase your message as a direct question.
 
 ## 7. Known limitations / not-fixed-in-this-pass
 
