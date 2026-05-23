@@ -50,6 +50,20 @@ symptom → root cause → fix (commit SHA when shipped) → verification.
 - **Fix:** deferred. Real fix: `/models` queries `ROOT_MODELS` and includes per-model credential availability (so the UI can grey out models whose env var key is unset). Frontend type widens to `string` or a generated union.
 - **Why deferred:** mid-flight scope creep; not on the critical path for this run. Added to follow-up backlog in §"Open after this run."
 
+## F5 — `use-rdr-artifacts` polled 404s for the entire active run lifetime
+
+- **Severity:** UX (dev-console noise); not a run-breaker.
+- **Symptom:** During the active rlm run, the browser console accumulated ~7 "Failed to load resource: 404 (Not Found)" entries every 30-second screenshot cycle — i.e., the hook polled `/clusters`, `/leaf-scores`, `/repair-iterations` every 5s for the entire run, and all three 404'd because rlm mode without a PaperBench bundle never produces RDR artifacts.
+- **Why the existing F2 mitigation didn't fire:** the early-exit condition was `isActive==false`, so it stopped polling only AFTER the run ended. During the run the counter was constantly reset to 0.
+- **Cause:** logic inversion in `frontend/src/hooks/use-rdr-artifacts.ts` lines 108-116.
+- **Fix:** commit `4097a20` — added an `allReturned404` check that increments the counter (and triggers early-exit after 3 cycles) even on active runs. 200+empty and 5xx during active still keep polling.
+- **Test:** replaced the test codifying the bug with two new tests asserting the new contract. `frontend/src/hooks/use-rdr-artifacts.test.ts` — 14/14 passing.
+- **Verified:** pending — fix landed mid-run; verification deferred to next wakeup cycle (Next.js dev HMR may need a full bundle rebuild on some hooks).
+
+## F6 — `repl_iteration` landed at age=104s — runpod cold path within budget
+
+- **Not a defect, a milestone.** Per the advisor's runpod-cold-path budget (8 min from kickoff for first `repl_iteration` OR `primitive_call=build_environment`), we landed at 104s — well within budget. The aclose deadlock fix (commit `532e010`) is verified working: the SDK runs to completion despite the expected non-fatal aclose warnings.
+
 ## F4 — `start.sh` defaults `REPROLAB_DEFAULT_SANDBOX=runpod` but `.env` had `=docker`
 
 - **Severity:** behavioral inconsistency; cosmetic only, since the body-level sandbox field wins (after F2).
