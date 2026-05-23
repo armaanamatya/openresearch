@@ -258,6 +258,82 @@ def configure_openai_agents_sdk_credentials(
         os.environ["OPENAI_ADMIN_KEY"] = admin_key
 
 
+def aggregate_auth_status() -> dict:
+    """Aggregate provider credential availability for the /auth-status endpoint.
+
+    Returns a dict matching the D1 response shape so the UI can enable/disable
+    provider radio buttons without any LLM call or subprocess.
+    """
+    settings = get_settings()
+
+    # --- root-model provider probes ---
+    anthropic_api_key = bool(
+        os.getenv("ANTHROPIC_API_KEY")
+        or getattr(settings, "anthropic_api_key", "")
+    )
+    oauth_available = _has_claude_subscription_oauth()
+    openai_available = bool(
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("OPENAI_ADMIN_KEY")
+        or getattr(settings, "openai_api_key", "")
+        or getattr(settings, "openai_admin_key", "")
+    )
+    azure_available = _has_azure_openai_credentials()
+    featherless_available = bool(os.getenv("FEATHERLESS_API_KEY"))
+
+    # Determine defaults (first available wins, in priority order)
+    default_root = "anthropic_oauth" if oauth_available else (
+        "anthropic_api" if anthropic_api_key else (
+            "openai_api" if openai_available else (
+                "azure_openai" if azure_available else (
+                    "featherless" if featherless_available else "anthropic_oauth"
+                )
+            )
+        )
+    )
+
+    # Sub-agent auth: SDK uses ANTHROPIC_API_KEY or OAuth
+    subagent_api = anthropic_api_key
+    subagent_oauth = oauth_available
+    default_subagent = "anthropic_oauth" if subagent_oauth else (
+        "anthropic_api" if subagent_api else "anthropic_oauth"
+    )
+
+    return {
+        "providers": {
+            "anthropic_api": {
+                "available": anthropic_api_key,
+                "detail": "ANTHROPIC_API_KEY set" if anthropic_api_key else "ANTHROPIC_API_KEY missing",
+            },
+            "anthropic_oauth": {
+                "available": oauth_available,
+                "detail": "claude CLI subscription" if oauth_available else "claude login required",
+            },
+            "openai_api": {
+                "available": openai_available,
+                "detail": "OPENAI_API_KEY set" if openai_available else "OPENAI_API_KEY missing",
+            },
+            "azure_openai": {
+                "available": azure_available,
+                "detail": "Azure credentials set" if azure_available else "AZURE_OPENAI_API_KEY missing",
+            },
+            "featherless": {
+                "available": featherless_available,
+                "detail": "FEATHERLESS_API_KEY set" if featherless_available else "FEATHERLESS_API_KEY missing",
+            },
+        },
+        "subagent_auth": {
+            "anthropic_api": subagent_api,
+            "anthropic_oauth": subagent_oauth,
+        },
+        "defaults": {
+            "root_provider": default_root,
+            "root_model": "sonnet",
+            "subagent_auth": default_subagent,
+        },
+    }
+
+
 def make_runtime(
     provider: ProviderName | str | None = None,
     *,
@@ -291,6 +367,7 @@ __all__ = [
     "_has_azure_openai_credentials",
     "_has_claude_subscription_oauth",
     "_scan_wsl_windows_credentials",
+    "aggregate_auth_status",
     "configure_openai_agents_sdk_credentials",
     "has_provider_credentials",
     "make_runtime",

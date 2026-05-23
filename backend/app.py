@@ -287,6 +287,18 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "version": __version__}
 
+    @app.get("/auth-status")
+    async def auth_status() -> dict:
+        """Return which LLM providers have working credentials on this server.
+
+        Used by the upload-view provider picker to enable/disable radio buttons
+        without any user-visible credential input. Response shape: D1.
+        No demo gate — this is purely a capability probe, not a run-start.
+        """
+        import asyncio as _asyncio
+        from backend.agents.runtime.factory import aggregate_auth_status
+        return await _asyncio.to_thread(aggregate_auth_status)
+
     # ------------------------------------------------------------------ #
     # Live-run API + SSE event stream (origin/main)
     # ------------------------------------------------------------------ #

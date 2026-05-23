@@ -76,6 +76,38 @@ function toVerificationProvider(request: Request): DemoProvider | undefined {
   return value === "anthropic" || value === "openai" ? value : undefined;
 }
 
+function toRootProvider(request: Request): string | undefined {
+  return search(request).get("rootProvider") || undefined;
+}
+
+function toSubagentAuth(request: Request): string | undefined {
+  return search(request).get("subagentAuth") || undefined;
+}
+
+function toDynamicGpu(request: Request): boolean | undefined {
+  const v = search(request).get("dynamicGpu");
+  return v === "true" ? true : v === "false" ? false : undefined;
+}
+
+function toForceSingleGpu(request: Request): boolean | undefined {
+  const v = search(request).get("forceSingleGpu");
+  return v === "true" ? true : v === "false" ? false : undefined;
+}
+
+function toMaxGpuUsdPerHour(request: Request): number | undefined {
+  const v = search(request).get("maxGpuUsdPerHour");
+  if (v == null) return undefined;
+  const n = parseFloat(v);
+  return isNaN(n) ? undefined : n;
+}
+
+function toVramGb(request: Request): number | undefined {
+  const v = search(request).get("vramGb");
+  if (v == null) return undefined;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? undefined : n;
+}
+
 function backendQuery(request: Request): URLSearchParams {
   const params = new URLSearchParams();
   const mode = toRunMode(request);
@@ -180,6 +212,19 @@ export async function POST(request: Request) {
     if (runMode === "rdr" && paperId) {
       runBody.paper_id = paperId;
     }
+    // Provider picker fields (D5) — only set when present.
+    const rootProvider = toRootProvider(request);
+    const subagentAuth = toSubagentAuth(request);
+    const dynamicGpu = toDynamicGpu(request);
+    const forceSingleGpu = toForceSingleGpu(request);
+    const maxGpuUsdPerHour = toMaxGpuUsdPerHour(request);
+    const vramGb = toVramGb(request);
+    if (rootProvider != null) runBody.root_provider = rootProvider;
+    if (subagentAuth != null) runBody.subagent_auth = subagentAuth;
+    if (dynamicGpu != null) runBody.dynamic_gpu = dynamicGpu;
+    if (forceSingleGpu != null) runBody.force_single_gpu = forceSingleGpu;
+    if (maxGpuUsdPerHour != null) runBody.max_gpu_usd_per_hour = maxGpuUsdPerHour;
+    if (vramGb != null) runBody.vram_gb = vramGb;
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",
