@@ -24,7 +24,11 @@
 }
 
 .shell * { box-sizing: border-box; }
-.shell a { color: inherit; text-decoration: none; }
+/* `color: inherit` is already set globally in app/globals.css; repeating it
+   here at higher specificity (.shell a vs .btn-primary) hides the primary
+   button's dark text behind the inherited near-white shell color. Strip
+   color out; keep only text-decoration. */
+.shell a { text-decoration: none; }
 .shell button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
 
 /* ---------- LAYOUT ---------- */
@@ -610,12 +614,15 @@
 .foot-inner .links a:hover { color: var(--landing-ink-2); }
 .foot-inner .mono { letter-spacing: .08em; }
 
-/* ---------- SCROLL REVEAL ---------- */
-.reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease-out, transform .5s ease-out; }
-.reveal.in  { opacity: 1; transform: none; }
-@media (prefers-reduced-motion: reduce) {
-  .reveal { opacity: 1; transform: none; transition: none; }
-}
+/* ---------- SCROLL REVEAL ----------
+ * Removed for launch (2026-05-23). The JS-driven opacity:0 → 1 fade hid
+ * below-fold content from full-page captures, SEO crawlers that don't
+ * scroll, and any non-JS render path. Re-add later via @starting-style
+ * once Safari support lands and the bot-visibility tradeoff is solved.
+ *
+ * Class kept as a no-op so JSX referencing styles.reveal still resolves.
+ */
+.reveal { /* no-op marker class */ }
 
 /* placeholder-token style */
 .tok {
