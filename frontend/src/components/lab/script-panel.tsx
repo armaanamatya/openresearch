@@ -85,7 +85,8 @@ export function ScriptPanel({ run }: { run: LiveDemoRunState }) {
 
       <div className="code-root-row">
         <span className="code-root-label">Generated root</span>
-        <span className="mono code-root-path">{pdf?.codePath ?? `${run.outputDir}/code/paper.pdf`}</span>
+        {/* codePath is only meaningful after code generation completes */}
+        <span className="mono code-root-path">{pdf?.codePath ?? "—"}</span>
       </div>
 
       <a className="final-report-link" href={reportUrl} target="_blank" rel="noreferrer">
