@@ -17,6 +17,8 @@ import httpx
 
 _log = logging.getLogger(__name__)
 
+from backend.agents.resilience.budget import RunBudget
+from backend.agents.resilience.failures import BudgetExhausted
 from backend.services.runtime.interface import (
     ExecResult,
     RuntimeBackend,
@@ -73,6 +75,7 @@ class RunpodBackend(RuntimeBackend):
         delete_on_destroy: bool = True,
         bootstrap_command: str = "",
         pod_id: str = "",
+        run_budget: RunBudget | None = None,
     ) -> None:
         self.api_key = (
             api_key
@@ -113,6 +116,7 @@ class RunpodBackend(RuntimeBackend):
         # outside our process (e.g. a coworker's pod on the same account,
         # or a persistent pod attached via REPROLAB_RUNPOD_POD_ID).
         self._owned_pod_ids: set[str] = set()
+        self._run_budget = run_budget
 
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
         if not self.api_key:
@@ -276,6 +280,18 @@ class RunpodBackend(RuntimeBackend):
         )
 
     async def exec(self, sandbox: Sandbox, command: str, timeout: int) -> ExecResult:
+        if self._run_budget is not None:
+            try:
+                self._run_budget.check_pod_seconds(
+                    pod_started_at=sandbox.created_at,
+                    agent_id="experiment-runner",
+                )
+            except BudgetExhausted:
+                try:
+                    await self.destroy(sandbox)
+                except Exception:
+                    pass  # best-effort; surface BudgetExhausted regardless
+                raise
         started_at = datetime.now(timezone.utc)
         try:
             conn = await self._ssh(sandbox.sandbox_id)
