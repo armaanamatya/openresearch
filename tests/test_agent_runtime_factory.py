@@ -160,7 +160,7 @@ def test_has_provider_credentials_anthropic_rejects_logged_out_cli(monkeypatch) 
 
     has_provider_credentials returned True on CLI presence alone (handoff P2-I11 / T23).
     Verify: with no ANTHROPIC_API_KEY and a CLI binary present but no credentials
-    file (i.e. logged-out session), returns False.
+    file AND no macOS Keychain entry (i.e. logged-out session), returns False.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -170,6 +170,112 @@ def test_has_provider_credentials_anthropic_rejects_logged_out_cli(monkeypatch) 
     monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
     # Credentials file absent — not logged in.
     monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    # And no Keychain entry either (macOS path). Forcing a non-darwin platform
+    # short-circuits the Keychain branch entirely; this test is platform-agnostic.
+    monkeypatch.setattr("backend.agents.runtime.factory.sys.platform", "linux")
+    assert has_provider_credentials("anthropic") is False
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-23 macOS Keychain OAuth detection — modern `claude login` on macOS
+# stores credentials in the Keychain, not in ~/.claude/.credentials.json.
+# Before this fix, has_provider_credentials returned False on every macOS dev
+# machine with Claude Code logged in, so the sub-agent runtime resolved as
+# `unresolved` and every implement_baseline call died with a credential error.
+# These tests pin the Keychain probe contract.
+# ---------------------------------------------------------------------------
+
+def test_has_provider_credentials_anthropic_via_macos_keychain(monkeypatch) -> None:
+    """macOS path: claude CLI present + no creds file + Keychain entry exists → True.
+
+    `claude login` on modern macOS writes a `genp` keychain item with service
+    name "Claude Code-credentials". We probe via `security find-generic-password
+    -s "Claude Code-credentials"` — exit code 0 means the entry exists.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    # No credentials file on disk — modern macOS Keychain storage only.
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    monkeypatch.setattr("backend.agents.runtime.factory.sys.platform", "darwin")
+    # Fake `security` exit 0 — the keychain entry exists.
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.subprocess.run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+    )
+    assert has_provider_credentials("anthropic") is True
+
+
+def test_has_provider_credentials_anthropic_rejects_missing_keychain_entry(monkeypatch) -> None:
+    """macOS path: claude CLI present + no creds file + no Keychain entry → False.
+
+    `security find-generic-password` exits 44 when the requested item is not
+    found in the Keychain; any non-zero exit code must read as "no session".
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    monkeypatch.setattr("backend.agents.runtime.factory.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.subprocess.run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=44, stdout=b"", stderr=b"item not found"),
+    )
+    assert has_provider_credentials("anthropic") is False
+
+
+def test_has_provider_credentials_linux_skips_keychain_probe(monkeypatch) -> None:
+    """Linux path: the Keychain branch is darwin-only; never invoke `security` on Linux.
+
+    Guards against accidentally running the `security` subprocess on a Linux
+    container — the binary doesn't exist there and even a FileNotFoundError
+    would slow CI down. With no creds file and platform=linux, the helper
+    must short-circuit to False without touching subprocess.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    monkeypatch.setattr("backend.agents.runtime.factory.sys.platform", "linux")
+
+    # If anything reaches subprocess.run, this raises and the test fails.
+    def _boom(*_a, **_kw):
+        raise AssertionError("subprocess.run must not be called on non-darwin")
+    monkeypatch.setattr("backend.agents.runtime.factory.subprocess.run", _boom)
+
+    assert has_provider_credentials("anthropic") is False
+
+
+def test_has_provider_credentials_anthropic_keychain_probe_timeout(monkeypatch) -> None:
+    """A hung Keychain daemon must not block pipeline startup.
+
+    ``subprocess.TimeoutExpired`` raised by the security probe is caught and
+    treated as "no session" — never propagates.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.get_settings",
+        lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
+    )
+    monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda name: "/opt/bin/claude" if name == "claude" else None)
+    monkeypatch.setattr("backend.agents.runtime.factory.os.path.isfile", lambda _: False)
+    monkeypatch.setattr("backend.agents.runtime.factory.sys.platform", "darwin")
+
+    def _hang(*_a, **kw):
+        # subprocess.run raises TimeoutExpired when timeout= elapses.
+        raise subprocess_module.TimeoutExpired(cmd=["security"], timeout=kw.get("timeout", 5))
+    import subprocess as subprocess_module
+    monkeypatch.setattr("backend.agents.runtime.factory.subprocess.run", _hang)
+
     assert has_provider_credentials("anthropic") is False
 
 

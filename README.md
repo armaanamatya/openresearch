@@ -55,6 +55,8 @@ API keys — at minimum one of `ANTHROPIC_API_KEY` (Anthropic/Claude) or `OPENAI
 
 **Pitfall:** if you set `ANTHROPIC_API_KEY` to a key whose **Anthropic API account has no credits**, the SDK tries that key first, gets a 400 *"credit balance too low"*, and **does not fall back to OAuth** — so your reproductions die at the first sub-call with `cost_usd=0.0`. The Anthropic *API* balance and the Claude Code *subscription* are billed separately; running `claude --print "ping"` proves the subscription works, but the API key still needs its own credits if you choose to set it. The safest default is **empty `ANTHROPIC_API_KEY` + working OAuth + a credited root model (OpenAI or Featherless)**.
 
+**macOS users:** Claude Code stores OAuth in the Keychain on modern macOS, not in `~/.claude/.credentials.json`. The credential-detection helper (`factory.py:_has_claude_subscription_oauth`) probes both — Keychain on `darwin`, file elsewhere — as of 2026-05-23. If you previously hit *"no agent runtime could be resolved"* warnings on macOS with `claude login` working, that's fixed.
+
 ---
 
 ## Quick Start
