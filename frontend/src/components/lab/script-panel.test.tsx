@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
@@ -55,7 +55,6 @@ describe("ScriptPanel — item 1: pdf.fileName fallback", () => {
 // ------------------------------------------------------------------
 // Item 2 — pdf?.codePath ?? `${run.outputDir}/code/paper.pdf`  (script-panel.tsx:88)
 // ------------------------------------------------------------------
-// NOTE: items are listed in order; tests for subsequent items are appended below.
 
 describe("ScriptPanel — item 2: code root path fallback", () => {
   it("renders the real codePath when sourcePdf is present", () => {
