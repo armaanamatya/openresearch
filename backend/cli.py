@@ -516,6 +516,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
                 repair_target=repair_target,
                 resume=resume,
                 run_budget=run_budget,
+                cluster_concurrency=getattr(args, "cluster_concurrency", None),
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -688,6 +689,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
                 execution_profile=execution_profile,
                 attempt_id=getattr(args, "attempt_id", None),
                 run_group_id=getattr(args, "run_group_id", None),
+                cluster_concurrency=getattr(args, "cluster_concurrency", None),
             ))
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
@@ -895,6 +897,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 run_group_id=args.run_group_id,
                 workspace_service=workspace,
                 workspace_id=workspace_id,
+                cluster_concurrency=getattr(args, "cluster_concurrency", None),
             ))
         else:
             print(
@@ -1157,6 +1160,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.6,
         help="(rdr mode) cluster score threshold below which a cluster is queued for repair.",
+    )
+    reproduce.add_argument(
+        "--cluster-concurrency",
+        dest="cluster_concurrency",
+        type=int,
+        default=None,
+        help=(
+            "(rdr/rlm modes) maximum number of Code Development clusters to dispatch "
+            "concurrently. Code Execution and Result Analysis clusters always run "
+            "sequentially (they depend on Code Dev outputs). Default 8 — also "
+            "configurable via RDR_CLUSTER_CONCURRENCY env var. Pass 1 to force "
+            "fully sequential execution."
+        ),
     )
     reproduce.add_argument(
         "--resume",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,13 +98,20 @@ class RunCostLedger:
     project_id: str
     entries: list[CostLedgerEntry] = field(default_factory=list)
     path: Path | None = None
+    # Serialize concurrent appends — parallel RDR cluster execution can race.
+    # init=False so callers don't need to pass it; compare=False so equality
+    # ignores the lock identity.
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     def append(self, entry: CostLedgerEntry) -> None:
-        self.entries.append(entry)
-        if self.path is not None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry.to_json(), sort_keys=True) + "\n")
+        with self._lock:
+            self.entries.append(entry)
+            if self.path is not None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(entry.to_json(), sort_keys=True) + "\n")
 
     def total_usd(self) -> float:
         return round(sum(entry.estimated_usd or 0.0 for entry in self.entries), 8)
