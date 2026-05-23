@@ -154,4 +154,36 @@ describe("RubricStrip — candidate attribution (spec §4.1)", () => {
     );
     expect(queryByText(/from candidate/i)).toBeNull();
   });
+
+  it("threshold boundary: 0.04 delta omits attribution, 0.05 includes it", () => {
+    // Just below threshold — must NOT render.
+    const below = render(
+      <RubricStrip
+        rubric={{
+          ...CLIMB_RUBRIC,
+          series: [
+            { iteration: 5, score: 0.5 },
+            { iteration: 7, score: 0.54 }, // delta = +0.04
+          ],
+          attributableCandidate: { id: "c1", title: "Marginal step", outcome: "marginal" },
+        }}
+      />,
+    );
+    expect(below.queryByText(/from candidate/i)).toBeNull();
+
+    // At threshold — must render.
+    const at = render(
+      <RubricStrip
+        rubric={{
+          ...CLIMB_RUBRIC,
+          series: [
+            { iteration: 5, score: 0.5 },
+            { iteration: 7, score: 0.55 }, // delta = +0.05
+          ],
+          attributableCandidate: { id: "c1", title: "On-threshold", outcome: "promoted" },
+        }}
+      />,
+    );
+    expect(at.getByText(/from candidate On-threshold/i)).toBeTruthy();
+  });
 });

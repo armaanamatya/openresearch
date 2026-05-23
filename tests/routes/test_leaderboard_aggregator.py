@@ -168,6 +168,36 @@ def test_aggregate_order_by_cost(tmp_path: Path):
     assert [r.project_id for r in rows] == ["b", "a"]
 
 
+def test_leaderboard_row_schema_is_pinned(tmp_path: Path):
+    """A LeaderboardRow MUST carry exactly the 14 documented fields.
+
+    Future field additions / removals fail this test loudly — preventing
+    silent wire-shape drift between frontend and backend.
+    """
+    _write_run(
+        tmp_path, "prj_schema",
+        paper_id="p1", paper_title="P",
+        overall_score=0.5, cost_usd=1.0, iterations=4,
+        planner="gpt-5", executor="claude-sonnet-4-6",
+    )
+    rows = aggregate_leaderboard(tmp_path)
+    assert len(rows) == 1
+    dumped = rows[0].model_dump()
+    expected_keys = {
+        "project_id", "paper_id", "paper_title", "mode", "models",
+        "overall_score", "meets_target", "degraded",
+        "cost_usd", "iterations", "wall_clock_s",
+        "sandbox", "started_at", "completed_at", "verdict",
+    }
+    assert set(dumped.keys()) == expected_keys, (
+        f"LeaderboardRow shape drifted. "
+        f"missing={expected_keys - set(dumped.keys())}, "
+        f"unexpected={set(dumped.keys()) - expected_keys}"
+    )
+    # models nested object must carry exactly the 4 role keys.
+    assert set(dumped["models"].keys()) == {"planner", "executor", "verifier", "grader"}
+
+
 def test_aggregate_propagates_null_score_not_zero(tmp_path: Path):
     """A run that exited before scoring (rubric.overall_score is null) must
     surface as overall_score=None on the leaderboard row — not coerced to 0.0

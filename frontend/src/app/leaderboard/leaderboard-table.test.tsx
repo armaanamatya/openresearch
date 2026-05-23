@@ -78,4 +78,19 @@ describe("LeaderboardTable", () => {
     const dashes = container.querySelectorAll('[data-dash="true"]');
     expect(dashes.length).toBeGreaterThanOrEqual(3);
   });
+
+  it("treats empty-string model identifiers as missing (em-dash, not blank cell)", () => {
+    // Defensive: _build_llm_client can produce models.planner = "" for a
+    // misconfigured custom-endpoint root (see code-reviewer finding 2026-05-23).
+    // ?? leaks "" through; || correctly falls back to Dash. Pin it.
+    const { container } = render(
+      <LeaderboardTable rows={[row({
+        models: { planner: "", executor: "", verifier: null, grader: null },
+      })]} />,
+    );
+    const dashes = container.querySelectorAll('[data-dash="true"]');
+    // Two of the dashes are planner+executor; the row also has no cost_usd
+    // or wall_clock_s being null here, so >= 2 is the minimum we need.
+    expect(dashes.length).toBeGreaterThanOrEqual(2);
+  });
 });

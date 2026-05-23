@@ -165,8 +165,8 @@ export function LeaderboardTable({ rows }: LeaderboardTableProps) {
                   </a>
                 </td>
                 <td><span className={styles.modeBadge}>{r.mode}</span></td>
-                <td>{r.models.planner ?? <Dash />}</td>
-                <td>{r.models.executor ?? <Dash />}</td>
+                <td>{r.models.planner || <Dash />}</td>
+                <td>{r.models.executor || <Dash />}</td>
                 <td className={`${styles.numeric} ${scoreCls}`.trim()}>
                   {r.overall_score !== null ? r.overall_score.toFixed(2) : <Dash />}
                 </td>
