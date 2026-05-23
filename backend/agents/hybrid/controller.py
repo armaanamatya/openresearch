@@ -143,6 +143,41 @@ async def run_pipeline_hybrid(
 
     bundles_root: str | Path | None = workspace_claim_map.get("_bundles_root")
 
+    # --- Bundle-presence guard ---
+    # Phase 1 RDR requires a vendored PaperBench bundle at
+    # third_party/paperbench/<paper_id>. For PDF/arXiv uploads (project_id=prj_*),
+    # there is no bundle — RDR would raise FileNotFoundError and kill the run.
+    # When no bundle, dispatch directly to pure RLM (which handles arXiv/PDF
+    # via rubric_gen.py inside run_pipeline_rlm).
+    from pathlib import Path as _Path
+    if bundles_root is not None:
+        _bundle_dir = _Path(bundles_root) / paper_id
+    else:
+        # Default bundles location: repo_root/third_party/paperbench
+        _bundle_dir = _Path(__file__).resolve().parents[3] / "third_party" / "paperbench" / paper_id
+    if not _bundle_dir.is_dir():
+        logger.info(
+            "hybrid/controller[%s]: no PaperBench bundle at %s for paper_id=%r "
+            "— dispatching pure RLM (no Phase 1 RDR)",
+            project_id, _bundle_dir, paper_id,
+        )
+        return await _rlm(
+            project_id,
+            runs_root,
+            workspace_claim_map,
+            model=model,
+            provider=provider,
+            runtime=runtime,
+            run_budget=run_budget,
+            sandbox_mode=sandbox_mode if sandbox_mode is not None else DEFAULT_SANDBOX_MODE,
+            seed=seed,
+            execution_profile=execution_profile,
+            attempt_id=attempt_id,
+            run_group_id=run_group_id,
+            workspace_service=workspace_service,
+            workspace_id=workspace_id,
+        )
+
     logger.info(
         "hybrid/controller[%s]: Phase 1 (RDR, no repair) — paper_id=%r",
         project_id, paper_id,

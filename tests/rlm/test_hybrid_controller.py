@@ -472,6 +472,130 @@ class TestRunPipelineHybrid:
         assert "_phase1_weak_clusters" not in claim_map
 
 
+    # ------------------------------------------------------------------
+    # Test: no-bundle paper_id falls back to pure RLM (deployment unblock)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_no_bundle_falls_back_to_pure_rlm(self, tmp_path: Path) -> None:
+        """For PDF/arXiv uploads (project_id=prj_*) there is no PaperBench bundle.
+        The guard must skip Phase 1 RDR and dispatch directly to run_pipeline_rlm
+        with the original workspace_claim_map (no _hybrid_repair_only flag)."""
+        project_id = "prj_synthetic_arxiv"
+        claim_map = {
+            "project_id": project_id,
+            "paperbench": {},  # no paper_id → falls back to project_id, no bundle
+        }
+        rlm_result = _make_rlm_result(project_id)
+
+        received_args: list[tuple] = []
+        received_kwargs: list[dict] = []
+
+        async def _capture_rlm(pid, root, wcm, **kw):  # noqa: ANN001
+            received_args.append((pid, root, wcm))
+            received_kwargs.append(kw)
+            return rlm_result
+
+        mock_rdr = AsyncMock()  # must NOT be called
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            _rdr_runner=mock_rdr,
+            _rlm_runner=_capture_rlm,
+        )
+
+        # Phase 1 must have been completely skipped.
+        mock_rdr.assert_not_awaited()
+
+        # Pure RLM must have been called once.
+        assert len(received_args) == 1
+        pid_sent, _, wcm_sent = received_args[0]
+        assert pid_sent == project_id
+        # Must pass the original claim_map unchanged.
+        assert wcm_sent is claim_map
+
+        # Pure RLM call must NOT carry the hybrid-repair-only flag.
+        kw = received_kwargs[0]
+        assert kw.get("hybrid_repair_only") is not True
+        assert kw.get("phase1_weak_clusters") is None
+
+        # Return value must be what _rlm returned.
+        assert result is rlm_result
+
+    # ------------------------------------------------------------------
+    # Test: bundle present → Phase 1 still runs (regression guard)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_bundle_present_still_runs_hybrid(self, tmp_path: Path) -> None:
+        """When a real PaperBench bundle directory exists, the guard must NOT
+        short-circuit — Phase 1 RDR is called as normal."""
+        # Use a paper_id that has a real bundle in third_party/paperbench/.
+        paper_id = "sequential-neural-score-estimation"
+        project_id = "pb_test_seqnn"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.8},
+            {"id": "l2", "score": 0.9},
+        ])
+        claim_map = {
+            "project_id": project_id,
+            "paperbench": {"paper_id": paper_id},
+        }
+        rdr_result = _make_rdr_result(
+            project_id, rubric_score=0.85, final_report_path=str(report_path)
+        )
+
+        mock_rdr = AsyncMock(return_value=rdr_result)
+        mock_rlm = AsyncMock()  # Phase 2 should NOT run (all leaves pass)
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=mock_rdr,
+            _rlm_runner=mock_rlm,
+        )
+
+        # Phase 1 must have run because the bundle dir exists.
+        mock_rdr.assert_awaited_once()
+        # Phase 2 must NOT have run (all leaves above 0.6).
+        mock_rlm.assert_not_awaited()
+
+        assert result.rubric_score == pytest.approx(0.85)
+
+    # ------------------------------------------------------------------
+    # Test: explicit _bundles_root in claim_map is honored
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_explicit_bundles_root_in_claim_map_honored(
+        self, tmp_path: Path
+    ) -> None:
+        """When workspace_claim_map contains '_bundles_root' pointing to a path
+        that has no bundle dir for the paper_id, the guard falls back to pure RLM."""
+        project_id = "test"
+        claim_map = {
+            "project_id": project_id,
+            "_bundles_root": "/nonexistent/path",
+            "paperbench": {},
+        }
+        rlm_result = _make_rlm_result(project_id)
+
+        mock_rdr = AsyncMock()  # must NOT be called
+        mock_rlm = AsyncMock(return_value=rlm_result)
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            _rdr_runner=mock_rdr,
+            _rlm_runner=mock_rlm,
+        )
+
+        # The explicit bundles_root path doesn't have the bundle → pure RLM.
+        mock_rdr.assert_not_awaited()
+        mock_rlm.assert_awaited_once()
+        assert result is rlm_result
+
+
 # ---------------------------------------------------------------------------
 # Module-level: run_pipeline_rlm accepts hybrid kwargs (E1 signature check)
 # ---------------------------------------------------------------------------
