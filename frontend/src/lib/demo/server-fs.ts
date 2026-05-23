@@ -12,7 +12,36 @@ import type {
   DemoSandboxMode,
   LiveDemoRunState
 } from "./demo-run-types";
-import type { LiveDemoMeta, PipelineStateDocument } from "./pipeline-dashboard";
+
+// ---------------------------------------------------------------------------
+// Inline types previously exported from pipeline-dashboard.ts (now deleted).
+// ---------------------------------------------------------------------------
+
+/** Metadata about a running/completed demo run — used by server-side helpers. */
+export interface LiveDemoMeta {
+  projectId: string;
+  outputDir: string;
+  sourceKind: "workspace_fixture" | "uploaded_pdf";
+  runMode: DemoRunMode;
+  llmProvider?: DemoProvider;
+  verificationProvider?: DemoProvider;
+  executionMode?: DemoExecutionMode;
+  sandboxMode?: DemoSandboxMode;
+  gpuMode?: DemoGpuMode;
+  sourceLabel: string;
+  sourceNote?: string;
+}
+
+/**
+ * Typed representation of the on-disk `pipeline_state.json` file written by
+ * the 14-stage orchestrator.  The RLM backend does not write this file — kept
+ * so `readPipelineState` compiles; the function returns null at runtime.
+ */
+export interface PipelineStateDocument {
+  project_id: string;
+  stage: string;
+  [key: string]: unknown;
+}
 
 export interface DemoRunStatusFile {
   projectId: string;

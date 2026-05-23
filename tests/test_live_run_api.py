@@ -28,7 +28,7 @@ class FakeRunService:
         self.state = LiveRunState(
             projectId="prj_api",
             outputDir="runs/prj_api",
-            runMode="sdk",
+            runMode="rlm",
             llmProvider="anthropic",
             status="queued",
             payload=None,
@@ -95,7 +95,7 @@ def test_fastapi_can_start_and_fetch_runs_through_backend_api() -> None:
     response = client.post(
         "/runs",
         json={
-            "mode": "sdk",
+            "mode": "rlm",
             "provider": "anthropic",
             "executionMode": "efficient",
             "sandbox": "docker",
@@ -119,7 +119,7 @@ def test_fastapi_upload_route_starts_uploaded_pdf_run() -> None:
 
     response = client.post(
         "/runs/upload",
-        data={"mode": "sdk", "provider": "anthropic"},
+        data={"mode": "rlm", "provider": "anthropic"},
         files={"paper": ("paper.pdf", b"%PDF-demo", "application/pdf")},
     )
 
@@ -142,7 +142,7 @@ def test_fastapi_upload_route_normalizes_path_qualified_filenames() -> None:
         client = TestClient(create_app(run_service=service))
         response = client.post(
             "/runs/upload",
-            data={"mode": "sdk", "provider": "anthropic"},
+            data={"mode": "rlm", "provider": "anthropic"},
             files={"paper": (raw, b"%PDF-demo", "application/pdf")},
         )
         assert response.status_code == 202, f"{raw!r} -> {response.status_code}"
@@ -216,7 +216,7 @@ def test_python_script_contains_model_id_and_config_key() -> None:
 
     from backend.services.events.live_runs import StartRunRequest, _python_script
 
-    req = StartRunRequest(mode="sdk", model="opus")
+    req = StartRunRequest(mode="rlm", model="opus")
     script = _python_script(req, project_id="p", runs_root=Path("/tmp/r"), uploaded_paper=None)
     assert "claude-opus-4-7" in script
     assert 'model=config["model"]' in script
@@ -353,7 +353,7 @@ def test_runs_arxiv_fetches_and_starts_upload(monkeypatch) -> None:
 
     response = client.post(
         "/runs/arxiv",
-        json={"url": "https://arxiv.org/abs/2512.24601", "mode": "sdk", "provider": "anthropic"},
+        json={"url": "https://arxiv.org/abs/2512.24601", "mode": "rlm", "provider": "anthropic"},
     )
 
     assert response.status_code == 202, response.text
@@ -474,7 +474,7 @@ def test_file_live_run_service_enriches_run_from_pipeline_and_dashboard_events(
             {
                 "projectId": "prj_live",
                 "outputDir": str(project_dir),
-                "runMode": "sdk",
+                "runMode": "rlm",
                 "llmProvider": "anthropic",
                 "status": "running",
                 "sourceKind": "uploaded_pdf",

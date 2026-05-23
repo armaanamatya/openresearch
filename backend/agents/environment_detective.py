@@ -1,26 +1,22 @@
 """Environment Detective Agent — infers runtime environment and generates Dockerfiles.
 
 Provides:
-  - ``run_offline()`` — deterministic Dockerfile generation from claim map (no LLM)
-  - ``run_with_sdk()`` — full LLM-powered environment inference
+  - ``run_offline()`` — deterministic Dockerfile generation from claim map (no LLM, used by RLM path)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 from typing import Any
 
-from backend.agents.runtime.base import AgentRuntime, ProviderName
 from backend.agents.schemas import (
     Assumption,
     EnvironmentSpec,
     PaperClaimMap,
     RiskLevel,
 )
-from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
@@ -99,55 +95,6 @@ def run_offline(
     )
     logger.info("Environment spec written to %s", out_dir)
 
-    return spec
-
-
-async def run_with_sdk(
-    project_id: str,
-    runs_root: Path,
-    paper_claim_map: PaperClaimMap,
-    artifact_index: dict[str, Any] | None = None,
-    *,
-    model: str | None = None,
-    provider: ProviderName | str | None = None,
-    runtime: AgentRuntime | None = None,
-) -> EnvironmentSpec:
-    """Full LLM-powered environment detection via the configured agent runtime."""
-    from backend.agents.runtime.invoke import collect_agent_text
-
-    project_dir = Path(runs_root) / project_id
-    context = {
-        "paper_claim_map": paper_claim_map.model_dump(),
-        "artifact_index": artifact_index or {},
-    }
-
-    prompt = (
-        f"Build the Docker environment for project {project_id}.\n"
-        f"Context:\n```json\n{json.dumps(context, indent=2)}\n```\n"
-        f"Write Dockerfile and environment_spec.json to {project_dir}/"
-    )
-
-    full_text = await collect_agent_text(
-        "environment-detective",
-        prompt,
-        project_dir=project_dir,
-        model=model,
-        provider=provider,
-        runtime=runtime,
-    )
-
-    # Try to read the written spec
-    spec_path = project_dir / "environment_spec.json"
-    if spec_path.exists():
-        data = read_json(spec_path)
-        return EnvironmentSpec(**data)
-
-    # Parse from output
-    data = _extract_json(full_text)
-    spec = EnvironmentSpec(**data)
-    project_dir.mkdir(parents=True, exist_ok=True)
-    (project_dir / "Dockerfile").write_text(spec.dockerfile, encoding="utf-8")
-    spec_path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
     return spec
 
 
@@ -319,19 +266,3 @@ def _generate_dockerfile(python_version: str, pip_packages: dict[str, str]) -> s
     return "\n".join(lines) + "\n"
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """Extract JSON from text."""
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-    if fence_match:
-        return json.loads(fence_match.group(1))
-    brace_start = text.find("{")
-    if brace_start >= 0:
-        depth = 0
-        for i in range(brace_start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return json.loads(text[brace_start : i + 1])
-    raise ValueError(f"No JSON found: {text[:200]}")

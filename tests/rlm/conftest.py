@@ -9,6 +9,7 @@ import pytest
 from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.resilience.cost import RunCostLedger
 from backend.agents.rlm.context import RunContext
+from backend.agents.rlm.sse_bridge import make_emit
 
 
 class FakeLlmClient:
@@ -31,11 +32,13 @@ def make_context():
               project_id: str = "test_proj") -> RunContext:
         project_dir = tmp_path / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
+        dashboard = DashboardEmitter(project_id, tmp_path)
         return RunContext(
             project_id=project_id,
             project_dir=project_dir,
             runs_root=tmp_path,
-            dashboard=DashboardEmitter(project_id, tmp_path),
+            dashboard=dashboard,
+            emit=make_emit(dashboard),
             cost_ledger=RunCostLedger.load_jsonl(
                 project_dir / "cost_ledger.jsonl",
                 project_id=project_id,

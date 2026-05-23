@@ -12,6 +12,7 @@ Single command: `StartParsing(project_id)`.
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from pathlib import Path
 from typing import List
@@ -57,6 +58,23 @@ class StartParsing(Command):
 class ParserError(Exception):
     """Errors that should NOT be modeled as ParsingFailed events
     (e.g., the project doesn't exist or isn't in FETCHED state)."""
+
+
+def write_parsed_full_text(project_dir: Path, text: str | None) -> None:
+    """Write parsed_full_text.txt atomically, or delete it on parse failure.
+
+    On a failed parse a stale blob from a prior paper would silently feed the
+    RLM the wrong corpus (review I6 / T18). Idempotent.
+    """
+    path = project_dir / "parsed_full_text.txt"
+    if not text:
+        # Parse failed (or text empty): invalidate any stale blob.
+        if path.exists():
+            path.unlink()
+        return
+    tmp = path.with_suffix(".txt.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _aggregate_id(project_id: str, suffix: str) -> AggregateId:
@@ -135,6 +153,12 @@ class ParserAppService:
                 retryable=exc.retryable,
             )
             self._append(parsed, parsed_agg_id, [failure], cid)
+            # Invalidate any stale blob — a re-run into a dir that holds a
+            # prior paper's blob would silently feed the RLM the wrong corpus
+            # (review I6 / T18).
+            blob_dir = self._runs_root / project_id
+            blob_dir.mkdir(parents=True, exist_ok=True)
+            write_parsed_full_text(blob_dir, None)
             return False
 
         # Step 2b: augmentation pass (fail-soft by contract).
@@ -167,11 +191,11 @@ class ParserAppService:
         if events:
             self._append(parsed, parsed_agg_id, events, cid)
 
-        # Step 4: store full text as a blob, append ParsingCompleted.
+        # Step 4: store full text as a blob (atomic write), append ParsingCompleted.
         blob_dir = self._runs_root / project_id
         blob_dir.mkdir(parents=True, exist_ok=True)
+        write_parsed_full_text(blob_dir, result.full_text)
         blob_path = blob_dir / "parsed_full_text.txt"
-        blob_path.write_text(result.full_text, encoding="utf-8")
         full_text_sha = hashlib.sha256(result.full_text.encode()).hexdigest()
 
         completed = ParsingCompleted(

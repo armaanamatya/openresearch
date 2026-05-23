@@ -260,6 +260,10 @@ class ImprovementHypothesis(BaseModel):
     expected_outcome: str
     compute_estimate: str = ""
     risk: RiskLevelField = RiskLevel.medium
+    title: str = Field(
+        default="",
+        description="Short human-readable name for the candidate (model-generated). Emitted in candidate_proposed SSE events.",
+    )
     expected_value_score: float = Field(
         default=0.5,
         ge=0.0,

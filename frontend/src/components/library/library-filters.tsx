@@ -30,14 +30,17 @@ export function LibraryFilters({
   onChange: (next: LibraryFiltersValue) => void;
 }) {
   const [query, setQuery] = useState(value.q ?? "");
+  const [lastExternalQ, setLastExternalQ] = useState(value.q);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep the controlled input synced when the parent resets it (e.g.,
   // via URL navigation). Without this, an external change to value.q
-  // would be invisible inside this component.
-  useEffect(() => {
+  // would be invisible inside this component. Derived during render to
+  // avoid the setState-in-effect lint violation.
+  if (value.q !== lastExternalQ) {
+    setLastExternalQ(value.q);
     setQuery(value.q ?? "");
-  }, [value.q]);
+  }
 
   useEffect(() => {
     return () => {

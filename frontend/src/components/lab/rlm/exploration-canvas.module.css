@@ -1,0 +1,109 @@
+/* ExplorationCanvas — the live exploration-tree canvas (spec §8, §9).
+ *
+ * Layout:
+ *   .canvas — the scroll/pan viewport; dotted-grid background (v3 design).
+ *   .scene  — an intrinsically-sized inner surface large enough to overflow
+ *             the viewport so scroll-based panning has somewhere to travel.
+ *   .tree   — offset by SCENE_PADDING so the (0,0)-anchored layout sits inside
+ *             the scene padding; holds the absolutely-positioned node slots.
+ *
+ * Motion (fade-in, pulse) is gated on prefers-reduced-motion in CSS only —
+ * no JS matchMedia — so motion-sensitive users get a static tree.
+ */
+
+/* ── Viewport ─────────────────────────────────────────────────────────────── */
+
+.canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  overflow: auto;
+  cursor: grab;
+  background-color: var(--canvas-bg);
+  /* Dotted grid — two radial dots per 22px cell (v3 design). */
+  background-image: radial-gradient(
+    var(--canvas-grid) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+}
+
+.canvas:active {
+  cursor: grabbing;
+}
+
+/* ── Scene (intrinsically sized — gives pan travel room) ──────────────────── */
+
+.scene {
+  position: relative;
+}
+
+/* ── Tree offset wrapper ──────────────────────────────────────────────────── */
+
+.tree {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* ── Node slot — absolutely positioned at the laid-out {x,y} ──────────────── */
+
+.nodeSlot {
+  position: absolute;
+  /* Center the node card on its layout point so edges meet it cleanly. */
+  transform: translate(-50%, -50%);
+}
+
+/* ── Soft-cap "+N more" node ──────────────────────────────────────────────── */
+
+.softCapNode {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--chip);
+  border: 1px dashed var(--muted-2);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+.softCapNode:hover {
+  border-color: var(--muted);
+  color: var(--ink-2);
+}
+
+.softCapNode:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── New-node fade-in (spec §8 — 200ms; motion-gated) ─────────────────────── */
+
+.fadeIn {
+  /* Static fallback for prefers-reduced-motion: fully visible, no transform. */
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes nodeFadeIn {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .fadeIn {
+    animation: nodeFadeIn 200ms ease-out;
+  }
+}

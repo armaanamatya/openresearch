@@ -82,7 +82,7 @@ def test_execute_in_sandbox_reads_metrics_from_code_root(
     # bare success/logs dict (metrics reading happens AFTER the finally block
     # in the real implementation, so we replicate that by letting run_experiment
     # call the real code path against a fake sandbox coroutine).
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None):
         # Simulate the sandbox: commands ran, no logs, no metrics from container.
         # The real code then reads metrics.json from code_path on the host.
         import json as _json
@@ -134,7 +134,7 @@ def test_execute_in_sandbox_fails_soft_on_malformed_metrics_json(
         "{ this is not valid json !!!", encoding="utf-8"
     )
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None):
         import json as _json
         from pathlib import Path as _Path
         from backend.agents.rlm.primitives import METRICS_FILENAME as _MF
@@ -238,3 +238,43 @@ def test_verify_against_rubric_tree_non_degenerate(make_context, tmp_path, monke
     # The lowest-scoring leaf is evaluation (0.6)
     assert result["weak_leaves"][0]["id"] == "evaluation"
     assert result["weak_leaves"][0]["score"] == pytest.approx(0.6)
+
+
+# ---------------------------------------------------------------------------
+# C2b in-loop wiring — verify_against_rubric must cap a metric-less run
+#
+# The post-run leaf scorer can auto-detect degraded from final_report.json,
+# but in-loop the report has not been written yet — verify_against_rubric is
+# called from the orchestrator's improvement loop BEFORE finalize. The wiring
+# below makes it pass `degraded` explicitly so the in-loop overall_score is
+# capped to match what the post-run authoritative score will become.
+# ---------------------------------------------------------------------------
+
+
+def test_verify_against_rubric_caps_metricless_results_in_loop(
+    make_context, tmp_path, monkeypatch
+):
+    """C2b in-loop guard: a results dict with no metrics is capped at 0.35.
+
+    Symptom: 2e1ce37 refactored verify_against_rubric to delegate to
+    score_reproduction, which auto-detects degraded from final_report.json.
+    In the in-loop call (improvement loop) that file does not exist yet, so
+    auto-detection returns False and the lenient LLM score is not capped —
+    every improvement-loop signal is inflated.
+
+    verify_against_rubric must instead derive `degraded` from the `results`
+    dict it already has (which carries `success` and `metrics`) and pass it
+    explicitly to score_reproduction.
+    """
+    # Lenient grader — without the cap this would roll up to 0.74 (per the
+    # I2 non-degenerate test); with the cap it should clamp to <=0.35.
+    ctx = make_context(tmp_path, llm_responses=[_LEAF_BATCH_RESPONSE])
+
+    metricless = {"success": False, "metrics": {}}
+    result = verify_against_rubric(metricless, _TREE_RUBRIC, ctx=ctx)
+
+    assert "overall_score" in result, f"missing overall_score in {result}"
+    assert result["overall_score"] <= 0.35 + 1e-9, (
+        f"in-loop verify_against_rubric did not cap a metric-less run — "
+        f"overall_score={result['overall_score']}; the C2b wiring is missing"
+    )

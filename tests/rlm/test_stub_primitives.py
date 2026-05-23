@@ -91,9 +91,9 @@ class TestStubPrimitiveReturnShapes:
         """understand_section(text_slice: str) -> dict."""
         result = stub_tools["understand_section"]["tool"]("This is a section about accuracy.")
         assert isinstance(result, dict)
-        # Minimal shape: has claims list
-        assert "claims" in result
-        assert isinstance(result["claims"], list)
+        # Partial PaperClaimMap shape (T20/I7): datasets + metrics are the key fields
+        assert "datasets" in result
+        assert isinstance(result["datasets"], list)
 
     def test_extract_hyperparameters_returns_dict(self, stub_tools):
         """extract_hyperparameters(text_slice: str) -> dict."""
@@ -124,8 +124,9 @@ class TestStubPrimitiveReturnShapes:
             {"method": "sgd"}, {"python_version": "3.10"}
         )
         assert isinstance(result, dict)
-        assert "steps" in result
-        assert isinstance(result["steps"], list)
+        # ReproductionContract shape (T20/I7): expected_outputs is the key list field
+        assert "expected_outputs" in result
+        assert isinstance(result["expected_outputs"], list)
 
     def test_implement_baseline_returns_str(self, stub_tools):
         """implement_baseline(plan: dict) -> str (code-dir path)."""
@@ -151,7 +152,9 @@ class TestStubPrimitiveReturnShapes:
         assert isinstance(result, dict)
         assert "overall_score" in result
         assert "meets_target" in result
-        assert "verdict" in result
+        # T20/I7: real primitive returns rubric_source, leaf_count, degraded (not "verdict")
+        assert "rubric_source" in result
+        assert "leaf_count" in result
 
     def test_propose_improvements_returns_list(self, stub_tools):
         """propose_improvements(current_results, rubric_scores, k=None) -> list[dict]."""
@@ -188,6 +191,77 @@ class TestStubPrimitiveReturnShapes:
 # ---------------------------------------------------------------------------
 # Tests: determinism
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# T20: guard tests — stub keys must subset real schema fields (review I7)
+# ---------------------------------------------------------------------------
+
+
+def test_stub_keys_are_a_subset_of_real_schema(make_context, tmp_path):
+    """Symptom: a stub run trained the root's REPL code against keys the real chain never produces.
+
+    Stubs returned ad-hoc dicts not derived from the schemas (review I7 / T20).
+    Verify: every stub primitive's return-key set is a subset of (or equals)
+    the real schema's fields.
+    """
+    from backend.agents.schemas import (
+        EnvironmentSpec,
+        ImprovementHypothesis,
+        ReproductionContract,
+        TrainingRecipe,
+    )
+    from backend.agents.rlm.stub_primitives import build_stub_custom_tools
+
+    ctx = make_context(tmp_path)
+    stubs = build_stub_custom_tools(ctx)
+
+    # Map stub-name → expected schema fields it must subset.
+    # For dict-shaped returns (run_experiment, build_environment), enumerate
+    # the documented keys explicitly.
+    schema_fields_for = {
+        "detect_environment": set(EnvironmentSpec.model_fields),
+        "plan_reproduction": set(ReproductionContract.model_fields),
+        "extract_hyperparameters": set(TrainingRecipe.model_fields),
+        "understand_section": {"datasets", "metrics", "training_recipe",
+                               "hardware_clues", "ambiguities"},  # partial PaperClaimMap
+        "build_environment": {"ok", "image_tag", "error", "attempts"},
+        "run_experiment": {"success", "metrics", "logs"},
+    }
+
+    sample_args = {
+        "understand_section": ("Adam, lr 3e-4, batch 64, CartPole-v1.",),
+        "extract_hyperparameters": ("Adam optimizer, batch size 64.",),
+        "detect_environment": ({"core_contribution": "A PyTorch agent."},),
+        "build_environment": ({"dockerfile": "FROM python:3.11-slim\n"},),
+        "plan_reproduction": ({"core_contribution": "x"}, {"framework": "pytorch"}),
+        "run_experiment": ("/tmp/code", "reprolab/test:env-x"),
+    }
+
+    for name, expected_fields in schema_fields_for.items():
+        result = stubs[name]["tool"](*sample_args[name])
+        assert isinstance(result, dict), f"{name} stub must return a dict, got {type(result).__name__}"
+        drift = set(result.keys()) - expected_fields
+        assert not drift, f"stub {name} drift keys: {drift}"
+
+
+def test_propose_improvements_stub_items_match_ImprovementHypothesis(make_context, tmp_path):
+    """Symptom: stub propose_improvements returned items with zero overlap with the real schema.
+
+    Review I7 / T20 — each stub hypothesis must have ImprovementHypothesis's fields.
+    """
+    from backend.agents.schemas import ImprovementHypothesis
+    from backend.agents.rlm.stub_primitives import build_stub_custom_tools
+
+    ctx = make_context(tmp_path)
+    stubs = build_stub_custom_tools(ctx)
+
+    out = stubs["propose_improvements"]["tool"]({"success": True}, {})
+    assert isinstance(out, list)
+    assert out, "stub must return at least one hypothesis"
+    for item in out:
+        drift = set(item.keys()) - set(ImprovementHypothesis.model_fields)
+        assert not drift, f"propose_improvements stub drift keys: {drift}"
 
 
 class TestStubPrimitiveDeterminism:

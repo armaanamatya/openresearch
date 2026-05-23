@@ -1,0 +1,89 @@
+/* PrimitiveHistoryBar — collapsible primitive call history strip (spec §7 / §9).
+ * Flat surface, hairline top border, sentence case, monospace primitive names.
+ * Error rows: coral accent via --err.
+ */
+
+.bar {
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+/* ── Toggle button ──────────────────────────────────────────── */
+
+.toggle {
+  all: unset;
+  display: block;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
+  font-family: var(--font-sans);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+}
+
+.toggle:hover {
+  color: var(--ink-2);
+}
+
+/* ── Expanded list ──────────────────────────────────────────── */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--sp-2) 0;
+  border-top: 1px solid var(--line);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* ── Call row ───────────────────────────────────────────────── */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 3px var(--sp-4);
+  font-size: var(--fs-xs);
+}
+
+.row:not(:last-child) {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Error row: coral background + text */
+.rowError {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+/* ── Cell styles ────────────────────────────────────────────── */
+
+.primitive {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.rowError .primitive {
+  color: var(--err);
+}
+
+.status {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.rowError .status {
+  color: var(--err);
+}
+
+.iteration {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
