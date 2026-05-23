@@ -224,6 +224,28 @@
   line-height: 1.4;
 }
 
+/* Hint result — amber dot + italic text for large-slice rlm_query nudges */
+.primitiveHint {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--warn, #f59e0b);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.primitiveHintDot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn, #f59e0b);
+  position: relative;
+  top: -1px;
+}
+
 /* ── Candidate metadata ──────────────────────────────────────────── */
 
 .candidateMeta {

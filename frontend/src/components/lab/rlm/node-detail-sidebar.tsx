@@ -116,9 +116,19 @@ function PrimitiveList({
             {c.status}
           </span>
           {c.result_summary && (
-            <span className={styles.primitiveResult}>
-              {truncate(c.result_summary, 200)}
-            </span>
+            c.result_summary.startsWith("[hint] ") ? (
+              <span
+                className={styles.primitiveHint}
+                title="Harness hint: try rlm_query for this size"
+              >
+                <span className={styles.primitiveHintDot} aria-hidden="true" />
+                {truncate(c.result_summary.slice("[hint] ".length), 200)}
+              </span>
+            ) : (
+              <span className={styles.primitiveResult}>
+                {truncate(c.result_summary, 200)}
+              </span>
+            )
           )}
         </li>
       ))}

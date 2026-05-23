@@ -146,6 +146,9 @@ _PLAN_REPRODUCTION_SYSTEM = (
 )
 
 
+_HINT_THRESHOLD = 10_000  # chars
+
+
 def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     """Extract datasets/metrics/training-recipe/hardware/ambiguities from a slice.
 
@@ -164,13 +167,27 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
         _extract_hardware, _extract_ambiguities,
     )
     sections = {"_": text_slice}
-    return {
+    result = {
         "datasets": [d.model_dump() for d in _extract_datasets(sections)],
         "metrics": [m.model_dump() for m in _extract_metrics(sections)],
         "training_recipe": _extract_training_recipe(sections).model_dump(),
         "hardware_clues": _extract_hardware(sections),
         "ambiguities": [a.model_dump() for a in _extract_ambiguities(sections)],
     }
+    if len(text_slice) > _HINT_THRESHOLD:
+        result["_meta"] = {
+            "hint": (
+                "This slice is "
+                f"{len(text_slice):,} chars — for tighter extraction "
+                "consider `rlm_query(slice, specific_question)` "
+                "instead. A focused sub-RLM call typically returns a "
+                "more precise answer than this primitive's generic "
+                "schema."
+            ),
+            "slice_chars": len(text_slice),
+            "threshold": _HINT_THRESHOLD,
+        }
+    return result
 
 
 def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
@@ -185,7 +202,21 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     this heuristic body does not use it.
     """
     from backend.agents.paper_understanding import _extract_training_recipe
-    return _extract_training_recipe({"_": text_slice}).model_dump()
+    result = _extract_training_recipe({"_": text_slice}).model_dump()
+    if len(text_slice) > _HINT_THRESHOLD:
+        result["_meta"] = {
+            "hint": (
+                "This slice is "
+                f"{len(text_slice):,} chars — for tighter extraction "
+                "consider `rlm_query(slice, specific_question)` "
+                "instead. A focused sub-RLM call typically returns a "
+                "more precise answer than this primitive's generic "
+                "schema."
+            ),
+            "slice_chars": len(text_slice),
+            "threshold": _HINT_THRESHOLD,
+        }
+    return result
 
 
 def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:

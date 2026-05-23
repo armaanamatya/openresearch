@@ -221,3 +221,49 @@ def test_wrap_primitive_does_not_coerce_dict_to_str(make_context, tmp_path):
     assert completion[0].get("coerced") is False, (
         f"coerced must be False when dict passed where str expected, got: {completion[0]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _meta.hint → result_summary prefix tests (Option B in-band hint)
+# ---------------------------------------------------------------------------
+
+
+def test_result_summary_has_hint_prefix_when_meta_hint_present(make_context, tmp_path):
+    """result_summary starts with '[hint] ' when the primitive result has _meta.hint."""
+    from backend.agents.rlm.primitives import _HINT_THRESHOLD
+
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    # Pass a slice larger than the threshold so understand_section injects _meta.
+    large_slice = "z" * (_HINT_THRESHOLD + 1)
+    tools["understand_section"]["tool"](large_slice)
+    events = _read_events(ctx)
+    completion = [
+        e for e in events
+        if e.get("event") == "primitive_call" and e.get("status") in ("ok", "error")
+    ]
+    assert completion, "no completion event found"
+    summary = completion[0].get("result_summary", "")
+    assert summary.startswith("[hint] "), (
+        f"expected result_summary to start with '[hint] ' for a large slice, got: {summary!r}"
+    )
+
+
+def test_result_summary_no_hint_prefix_for_short_slice(make_context, tmp_path):
+    """result_summary must NOT start with '[hint] ' for a short slice."""
+    from backend.agents.rlm.primitives import _HINT_THRESHOLD
+
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)
+    short_slice = "z" * (_HINT_THRESHOLD - 1)
+    tools["understand_section"]["tool"](short_slice)
+    events = _read_events(ctx)
+    completion = [
+        e for e in events
+        if e.get("event") == "primitive_call" and e.get("status") in ("ok", "error")
+    ]
+    assert completion, "no completion event found"
+    summary = completion[0].get("result_summary", "")
+    assert not summary.startswith("[hint] "), (
+        f"result_summary must not carry [hint] for a short slice, got: {summary!r}"
+    )

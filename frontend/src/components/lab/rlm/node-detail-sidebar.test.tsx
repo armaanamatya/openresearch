@@ -333,4 +333,56 @@ describe("NodeDetailSidebar", () => {
     );
     expect(screen.getByText(/no rubric score yet/i)).toBeInTheDocument();
   });
+
+  // ── In-band hint rendering ────────────────────────────────────────────────
+  it("renders amber hint dot when result_summary starts with '[hint] '", () => {
+    const calls = [
+      {
+        primitive: "understand_section",
+        status: "ok" as const,
+        args_summary: {},
+        result_summary: "[hint] dict[_meta, ambiguities, datasets, hardwa…]",
+        iteration: 1,
+        rubric_delta: null,
+        timestamp: "2026-05-23T00:00:00Z",
+      },
+    ];
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "work", title: "Comprehension" }),
+          primitiveCalls: calls,
+        })}
+      />
+    );
+    // The amber dot span is aria-hidden; find the hint container by its title attribute.
+    const hintEl = screen.getByTitle("Harness hint: try rlm_query for this size");
+    expect(hintEl).toBeInTheDocument();
+    // The summary text (without the "[hint] " prefix) must appear.
+    expect(hintEl.textContent).toContain("dict[");
+  });
+
+  it("does NOT render hint treatment for normal result_summary", () => {
+    const calls = [
+      {
+        primitive: "understand_section",
+        status: "ok" as const,
+        args_summary: {},
+        result_summary: "dict[ambiguities, datasets, hardware_clues, metrics]",
+        iteration: 1,
+        rubric_delta: null,
+        timestamp: "2026-05-23T00:00:00Z",
+      },
+    ];
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "work", title: "Comprehension" }),
+          primitiveCalls: calls,
+        })}
+      />
+    );
+    expect(screen.queryByTitle("Harness hint: try rlm_query for this size")).not.toBeInTheDocument();
+    expect(screen.getByText(/dict\[ambiguities/)).toBeInTheDocument();
+  });
 });

@@ -102,9 +102,18 @@ def _summarize(args: tuple, kwargs: dict) -> dict:
 
 
 def _result_summary(result: Any) -> str:
-    """A short, value-free summary of a primitive's return value."""
+    """A short, value-free summary of a primitive's return value.
+
+    When the result carries a ``_meta.hint`` (injected by understand_section
+    and extract_hyperparameters for large slices), prepend ``[hint] `` so the
+    SSE stream carries the signal to the UI and the root model sees it in the
+    abbreviated event.  The rest of the summary is unchanged.
+    """
     if isinstance(result, dict):
-        return f"dict[{', '.join(sorted(map(str, result))[:6])}]"
+        base = f"dict[{', '.join(sorted(map(str, result))[:6])}]"
+        if isinstance(result.get("_meta"), dict) and result["_meta"].get("hint"):
+            return f"[hint] {base}"
+        return base
     if isinstance(result, (list, str)):
         return f"{type(result).__name__}[{len(result)}]"
     return type(result).__name__
