@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _HTML_BASE_URL = "https://arxiv.org/html"
 _HTML_TIMEOUT = 30.0
 _HTML_MIN_BYTES = 5000
+_HTML_MAX_BYTES = 50 * 1024 * 1024  # 50 MB — half the PDF cap; guard against DoS (T17, review I5)
 _USER_AGENT = "Mozilla/5.0 (compatible; openresearch-ingestion/0.1)"
 
 
@@ -79,7 +80,22 @@ class ArxivFetcher(IntakeFetcher):
                     logger.debug("arXiv HTML fetch returned HTTP %s for %s — skipping", status, html_url)
                     return
 
-                body = response.read()
+                # Chunked-read with a 50 MB cap — unbounded read() OOM-kills
+                # ingestion on malicious/buggy endpoints (T17, review I5).
+                body = bytearray()
+                while True:
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    body.extend(chunk)
+                    if len(body) > _HTML_MAX_BYTES:
+                        logger.warning(
+                            "arXiv HTML body for %s exceeded %d bytes — aborting (possible DoS)",
+                            arxiv_id,
+                            _HTML_MAX_BYTES,
+                        )
+                        return
+                body = bytes(body)
 
             content_type = ""
             # urllib responses expose headers via info() or headers attribute.

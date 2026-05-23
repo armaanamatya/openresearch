@@ -153,6 +153,37 @@ def test_html_sibling_written_when_arxiv_marker_present(tmp_path: Path):
     assert html_path.read_bytes() == marker_html
 
 
+# ---------------------------------------------------------------------------
+# T17 guard test — unbounded HTML fetch must be capped (review I5)
+# ---------------------------------------------------------------------------
+
+def test_arxiv_html_fetch_caps_at_50mb(tmp_path: Path):
+    """Symptom: a malicious arXiv-HTML body OOM-kills ingestion.
+
+    The HTML fetch used response.read() unbounded; PDF enforced a 100 MB cap
+    but HTML had none (review I5 / T17). Verify: a 60 MB simulated body causes
+    the fetch to abort gracefully (no raw_paper.html written, no OOM).
+    """
+    project_id = "prj_html_50mb_cap"
+
+    _60MB = 60 * 1024 * 1024
+    big_html_prefix = b"<!DOCTYPE html><html><body><article>"
+    big_html_body = big_html_prefix + b"x" * (_60MB - len(big_html_prefix))
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    html_resp = _FakeResponse(big_html_body, status=200, content_type="text/html")
+    fetcher, source = _setup_fetcher(tmp_path, pdf_resp, html_resp)
+
+    # fetch() is fail-soft — HTML errors are swallowed.
+    result = fetcher.fetch(source, project_id=project_id)
+
+    # The PDF result must still be valid.
+    assert result.raw_paper_path.endswith("raw_paper.pdf")
+    # HTML must NOT have been written — the cap aborted the read.
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert not html_path.exists(), "raw_paper.html must NOT be written when body exceeds 50 MB cap"
+
+
 def test_fetch_result_unchanged_when_html_fails(tmp_path: Path):
     """HTML fetch failure does not affect the returned FetchResult (PDF path still set)."""
     project_id = "prj_html_err"

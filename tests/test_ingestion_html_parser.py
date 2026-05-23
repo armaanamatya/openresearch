@@ -195,3 +195,29 @@ def test_html_section_char_offsets_are_correct(tmp_path: Path):
             f"Section '{section.title}': full_text[{section.char_offset}:...] = {expected_slice!r}, "
             f"but section.text = {section.text!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T17 guard test — deeply-nested HTML must not escape as RecursionError (review I5)
+# ---------------------------------------------------------------------------
+
+def test_html_parser_handles_deep_nesting_without_recursion_error(tmp_path: Path):
+    """Symptom: deeply-nested HTML escapes the cascade with a RecursionError.
+
+    _walk was a recursive walk on attacker-controlled HTML; a >=5000-deep
+    nesting raises RecursionError, which is not ParseError and escapes the
+    cascade (review I5 / T17). Verify: 5000-deep nested HTML either parses
+    successfully via the new iterative walk, OR raises ParseError (not RecursionError).
+    """
+    # Build a 5000-deep nested <div> tree with a text leaf.
+    html = b"<!DOCTYPE html><html><body><article>" + b"<div>" * 5000 + b"deep text" + b"</div>" * 5000 + b"</article></body></html>"
+    html_path = tmp_path / "raw_paper.html"
+    html_path.write_bytes(html)
+
+    try:
+        HtmlPaperParser().parse(project_id="prj_deep", paper_path=html_path)
+        # Iterative walk succeeded — acceptable.
+    except ParseError:
+        # Wrapped as ParseError — acceptable (cascade will handle it).
+        pass
+    # Any other exception (especially RecursionError) is a failure.
