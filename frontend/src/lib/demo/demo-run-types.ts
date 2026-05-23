@@ -1,4 +1,4 @@
-export type DemoRunMode = "offline" | "sdk" | "rlm" | "rdr";
+export type DemoRunMode = "rlm" | "rdr";
 
 export type DemoProvider = "anthropic" | "openai";
 

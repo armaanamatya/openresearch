@@ -885,21 +885,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     try:
         if args.mode == "offline":
-            from backend.agents.pipeline import run_pipeline_offline
-
-            state = run_pipeline_offline(
-                project_id, runs_root, workspace_claim_map,
-                user_hints=user_hints,
-                n_improvement_paths=args.n_paths,
-                execution_profile=execution_profile,
-                sandbox_mode=sandbox_mode,
-                seed=args.seed,
-                attempt_id=args.attempt_id,
-                run_group_id=args.run_group_id,
-                blacklist_terms=blacklist_terms,
-                workspace_service=workspace,
-                workspace_id=workspace_id,
+            print(
+                "Error: --mode offline is no longer supported (backend.agents.pipeline was "
+                "removed in the RLM-only refactor). Use --mode rlm instead.",
+                file=sys.stderr,
             )
+            store.close()
+            return 1
         elif args.mode == "rlm":
             from backend.agents.rlm.run import run_pipeline_rlm
 
@@ -917,25 +909,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 workspace_id=workspace_id,
             ))
         else:
-            from backend.agents.pipeline import run_pipeline_sdk
-
-            state = asyncio.run(run_pipeline_sdk(
-                project_id, runs_root, workspace_claim_map,
-                model=args.model,
-                provider=provider,
-                verification_provider=verification_provider,
-                user_hints=user_hints,
-                n_improvement_paths=args.n_paths,
-                execution_profile=execution_profile,
-                run_budget=run_budget,
-                sandbox_mode=sandbox_mode,
-                seed=args.seed,
-                attempt_id=args.attempt_id,
-                run_group_id=args.run_group_id,
-                blacklist_terms=blacklist_terms,
-                workspace_service=workspace,
-                workspace_id=workspace_id,
-            ))
+            print(
+                f"Error: --mode {args.mode!r} is no longer supported (backend.agents.pipeline "
+                "was removed in the RLM-only refactor). Use --mode rlm instead.",
+                file=sys.stderr,
+            )
+            store.close()
+            return 1
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Graceful interrupt: don't dump a stack trace. Flip
         # demo_status.json to status=stopped so the dashboard reflects

@@ -1230,7 +1230,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.agents.execution import ExecutionProfile, SandboxMode
-from backend.agents.pipeline import run_pipeline_offline, run_pipeline_sdk, run_pipeline_rlm
+from backend.agents.rlm.run import run_pipeline_rlm
 from backend.cli import cmd_reproduce, _REPRODUCE_DEFAULTS
 
 config = json.loads({json.dumps(json.dumps(common))})
@@ -1400,20 +1400,7 @@ try:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
         profile = ExecutionProfile.from_mode(config["execution_mode"], gpu_mode=config["gpu_mode"])
-        if config["run_mode"] == "sdk":
-            asyncio.run(run_pipeline_sdk(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                provider=config["provider"],
-                verification_provider=config["verification_provider"],
-                model=config["model"],
-                user_hints=["Keep this as a lightweight smoke test"],
-                n_improvement_paths=1,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
-            ))
-        elif config["run_mode"] == "rlm":
+        if config["run_mode"] == "rlm":
             # A4-7: build run_budget from threaded-through config fields so
             # an API-set budget is honored in the non-uploaded rlm path.
             _run_budget = None
@@ -1454,12 +1441,9 @@ try:
                 repair_target=config.get("repair_target") or 0.6,
             ))
         else:
-            run_pipeline_offline(
-                project_id,
-                runs_root,
-                DEMO_WORKSPACE,
-                execution_profile=profile,
-                sandbox_mode=SandboxMode(config["sandbox"]),
+            raise ValueError(
+                f"run_mode={{config['run_mode']!r}} is not supported. "
+                "Use 'rlm' or 'rdr'."
             )
     finalize_benchmark()
     write_status("completed", completed_at=now())
