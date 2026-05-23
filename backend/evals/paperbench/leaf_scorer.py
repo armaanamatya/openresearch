@@ -75,6 +75,49 @@ def roll_up(node: dict[str, Any], leaf_scores: dict[str, float]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Honesty backstop (C2b)
+#
+# A run that reached _finalize() without producing measured numeric metrics
+# (baseline_metrics={}) is "degraded": the experiment either never ran or ran
+# without writing metrics.json. A lenient LLM grader on metric-less evidence
+# can still hand out high leaf scores by reading the code; that score does not
+# describe a reproduction. Cap each leaf at DEGRADED_LEAF_CEILING so the
+# rolled-up overall_score is bounded by the same ceiling.
+#
+# The 0.35 number is inherited from the verify_against_rubric backstop that
+# lived in primitives.py before 2e1ce37 consolidated the in-loop and post-run
+# scoring paths through score_reproduction.
+# ---------------------------------------------------------------------------
+
+DEGRADED_LEAF_CEILING: float = 0.35
+
+
+def _is_degraded_run(run_dir: Path) -> bool:
+    """Decide whether the run produced no measured metrics.
+
+    A run is degraded when final_report.json exists with baseline_metrics
+    empty/missing — the RLMFinalReport contract for "no metrics were measured."
+    Missing or unreadable final_report.json is treated as NOT degraded (do not
+    cap on uncertainty) so this is safe to call in-loop, before the report has
+    been written.
+
+    Callers with a results dict in hand (verify_against_rubric) should NOT
+    rely on this auto-detection alone — pass `degraded` explicitly via
+    score_reproduction's kwarg so the in-loop signal is correct too.
+    """
+    report_path = run_dir / "final_report.json"
+    if not report_path.exists():
+        return False
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — unreadable → don't cap on uncertainty
+        return False
+    if not isinstance(report, dict):
+        return False
+    return not (report.get("baseline_metrics") or {})
+
+
+# ---------------------------------------------------------------------------
 # Evidence gathering
 # ---------------------------------------------------------------------------
 
@@ -87,14 +130,19 @@ def _gather_evidence(run_dir: Path) -> str:
     parts: list[str] = []
     total = 0
 
-    # final_report.json — reproduction_summary + metrics
+    # final_report.json — reproduction_summary + measured metrics + paper id
+    # C2a fix: read the RLMFinalReport schema's real keys.  The previous list
+    # ("metrics", "paper_title") was a guess at SDK-mode field names; RLM-mode
+    # reports carry "baseline_metrics" (dict) and "paper" (dict).  Reading the
+    # wrong keys meant every RLM run was graded against evidence with no
+    # metrics and no paper identity — the grader had nothing to ground on.
     report_path = run_dir / "final_report.json"
     if report_path.exists():
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
             snippet = {
                 k: report[k]
-                for k in ("reproduction_summary", "metrics", "verdict", "paper_title")
+                for k in ("reproduction_summary", "baseline_metrics", "verdict", "paper")
                 if k in report
             }
             text = f"=== final_report.json (key fields) ===\n{json.dumps(snippet, indent=2)}\n"
@@ -180,20 +228,33 @@ def score_reproduction(
     *,
     batch_size: int = 15,
     rubric_source: str = "paperbench_bundle",
+    degraded: bool | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
-    Returns a dict with overall_score, leaf_count, graded, rubric_source, leaf_scores.
+    Returns a dict with overall_score, leaf_count, graded, rubric_source,
+    leaf_scores, degraded, target_score.
+
     ``rubric_source`` is passed through to the result dict unchanged — callers set
     it to "generated" when the rubric was derived at run-time rather than from a
     vendored bundle.
+
+    ``degraded`` (C2b): when True, every leaf score is capped at
+    DEGRADED_LEAF_CEILING (0.35) before roll-up — the honesty backstop for runs
+    that produced no measured metrics. ``None`` (default) auto-detects via
+    :func:`_is_degraded_run` (reads ``final_report.json`` for an empty
+    ``baseline_metrics``). Callers with a results dict in hand should pass
+    ``degraded`` explicitly so the in-loop case (no final_report.json on disk
+    yet) is also capped.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
+    if degraded is None:
+        degraded = _is_degraded_run(run_dir)
 
     leaf_scores: dict[str, float] = {}
     leaf_score_records: list[dict[str, Any]] = []
-    graded = 0
+    graded_count = 0
 
     for batch_num, start in enumerate(range(0, len(leaves), batch_size), 1):
         batch = leaves[start : start + batch_size]
@@ -225,21 +286,38 @@ def score_reproduction(
         for rec in results:
             lid = rec["id"]
             score = rec["score"]
+            # C2b: clamp degraded leaves to the honesty ceiling before storing
+            # so the rolled-up overall_score, the returned leaf_score_records,
+            # and any "weak leaves" surface all reflect the cap consistently.
+            if degraded and score > DEGRADED_LEAF_CEILING:
+                score = DEGRADED_LEAF_CEILING
             leaf_scores[lid] = score
             leaf_score_records.append(
                 {"id": lid, "score": score, "justification": rec["justification"]}
             )
             if rec.get("_graded", True):
-                graded += 1
+                graded_count += 1
 
     overall_score = roll_up(rubric_tree, leaf_scores)
+
+    # C2c: surface target_score so amend_final_report can compute meets_target
+    # honestly. None when the rubric tree has no target — never fabricate.
+    raw_target = rubric_tree.get("target_score")
+    try:
+        target_score: float | None = (
+            None if raw_target is None else max(0.0, min(1.0, float(raw_target)))
+        )
+    except (TypeError, ValueError):
+        target_score = None
 
     return {
         "overall_score": overall_score,
         "leaf_count": len(leaves),
-        "graded": graded,
+        "graded": graded_count,
         "rubric_source": rubric_source,
         "leaf_scores": leaf_score_records,
+        "degraded": degraded,
+        "target_score": target_score,
     }
 
 
@@ -301,12 +379,27 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     else:
         report = {}
 
+    # C2c: compute meets_target from the real target_score score_reproduction
+    # now threads through. When the rubric tree has no target_score (e.g. a
+    # self-generated arXiv rubric without a configured target), both
+    # target_score and meets_target are written as null — never a fabricated
+    # False, which used to flip a legitimate high score to "✘ below target".
+    target_score = score.get("target_score")
+    if target_score is None:
+        meets_target: bool | None = None
+    else:
+        meets_target = bool(score["overall_score"] >= target_score)
+
     report["rubric"] = {
         "overall_score": score["overall_score"],
         "rubric_source": score.get("rubric_source", "paperbench_bundle"),
         "leaf_count": score["leaf_count"],
         "graded": score["graded"],
-        "meets_target": False,
+        "target_score": target_score,
+        "meets_target": meets_target,
+        # C2b: surface the degraded flag so the UI / human reviewer can see
+        # *why* a low score was reached. False/missing → run was honest.
+        "degraded": bool(score.get("degraded", False)),
     }
 
     # Reconcile the self-reported verdict against the authoritative leaf score.

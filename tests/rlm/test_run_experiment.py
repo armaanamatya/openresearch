@@ -137,6 +137,115 @@ def test_run_experiment_returns_real_metrics_from_artifact_dir(
     assert not ((not result["success"]) or (not result["metrics"]))
 
 
+def test_run_experiment_returns_empty_metrics_when_file_missing(
+        make_context, tmp_path, monkeypatch):
+    """Symptom: a paper's code that fails to write metrics.json should not crash run_experiment.
+
+    The post-loop reader must return metrics={} when $OUTPUT_DIR/metrics.json
+    does not exist on the host — fail-soft, not exception (handoff P0-I1 / review C1).
+    """
+    import json
+    from pathlib import Path
+
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
+
+    from datetime import datetime, timezone
+
+    from backend.services.runtime.interface import ExecResult, Sandbox
+
+    def _make_result(cmd_str: str) -> ExecResult:
+        now = datetime.now(timezone.utc)
+        return ExecResult(
+            command=cmd_str,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            started_at=now,
+            finished_at=now,
+            duration_seconds=0.1,
+        )
+
+    class _FakeService:
+        def __init__(self, backend):
+            self._backend = backend
+        async def create_sandbox(self, cmd):
+            return Sandbox(sandbox_id="fake", name="fake", image="fake", config=cmd.config)
+        async def execute(self, cmd):
+            # Deliberately do NOT write metrics.json.
+            return _make_result(cmd.command)
+        async def destroy(self, cmd):
+            return None
+
+    import backend.agents.rlm.primitives as primitives_mod
+    monkeypatch.setattr(primitives_mod, "RuntimeAppService", _FakeService)
+
+    result = primitives_mod.run_experiment(
+        str(code_dir), "reprolab/test:env-check", ctx=ctx)
+
+    assert result["success"] is True
+    assert result["metrics"] == {}  # fail-soft, not a crash
+
+
+def test_run_experiment_returns_empty_metrics_when_file_malformed(
+        make_context, tmp_path, monkeypatch):
+    """Symptom: a corrupted metrics.json should degrade fail-soft, not crash.
+
+    The post-loop reader must return metrics={} when $OUTPUT_DIR/metrics.json
+    contains invalid JSON on the host (handoff P0-I1 / review C1).
+    """
+    import json
+    from pathlib import Path
+
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
+
+    captured = {}
+
+    from datetime import datetime, timezone
+
+    from backend.services.runtime.interface import ExecResult, Sandbox
+
+    def _make_result(cmd_str: str) -> ExecResult:
+        now = datetime.now(timezone.utc)
+        return ExecResult(
+            command=cmd_str,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            started_at=now,
+            finished_at=now,
+            duration_seconds=0.1,
+        )
+
+    class _FakeService:
+        def __init__(self, backend):
+            self._backend = backend
+        async def create_sandbox(self, cmd):
+            captured["artifact_root"] = cmd.config.artifact_root
+            return Sandbox(sandbox_id="fake", name="fake", image="fake", config=cmd.config)
+        async def execute(self, cmd):
+            # Write invalid JSON to the contract path.
+            (Path(captured["artifact_root"]) / "metrics.json").write_text(
+                "not valid json {", encoding="utf-8")
+            return _make_result(cmd.command)
+        async def destroy(self, cmd):
+            return None
+
+    import backend.agents.rlm.primitives as primitives_mod
+    monkeypatch.setattr(primitives_mod, "RuntimeAppService", _FakeService)
+
+    result = primitives_mod.run_experiment(
+        str(code_dir), "reprolab/test:env-check", ctx=ctx)
+
+    assert result["success"] is True
+    assert result["metrics"] == {}  # fail-soft on JSONDecodeError
+
+
 def test_cap_logs_bounds_unbounded_experiment_output():
     # run_experiment's container stdout is unbounded; verify_against_rubric and
     # propose_improvements feed the result into an LLM prompt, so the logs must

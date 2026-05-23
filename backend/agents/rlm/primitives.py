@@ -27,12 +27,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Module-level alias so tests can monkeypatch RuntimeAppService without
-# requiring a live Docker daemon.  Imported lazily to avoid hard-wiring the
-# runtime at import time (keeps unit tests fast).
-try:
-    from backend.services.runtime.service import RuntimeAppService
-except Exception:  # noqa: BLE001 — import-time failure must not break the module
-    RuntimeAppService = None  # type: ignore[assignment,misc]
+# requiring a live Docker daemon.
+from backend.services.runtime.service import RuntimeAppService
 
 
 def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
@@ -738,11 +734,20 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
+        # C2b in-loop wiring: derive `degraded` from the `results` dict we
+        # already have. The leaf scorer's auto-detection reads
+        # final_report.json, but in-loop (called from the improvement loop
+        # before _finalize) that file has not been written yet, so
+        # auto-detection returns False and the cap would not fire. Pass it
+        # explicitly so the in-loop optimization signal matches what the
+        # post-run authoritative score will become.
+        degraded = (not results.get("success")) or (not (results.get("metrics") or {}))
         scored = score_reproduction(
             rubric_tree=rubric,
             run_dir=ctx.project_dir,
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
+            degraded=degraded,
         )
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
@@ -762,6 +767,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "leaf_count": scored.get("leaf_count", 0),
             "graded": scored.get("graded", 0),
             "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
+            "degraded": degraded,
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
                  "justification": e.get("justification", "")}

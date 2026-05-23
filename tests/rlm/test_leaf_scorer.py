@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from backend.evals.paperbench.leaf_scorer import (
+    DEGRADED_LEAF_CEILING,
+    _gather_evidence,
     amend_final_report,
     flatten_leaves,
     roll_up,
@@ -102,9 +104,14 @@ class MockLlmClient:
 def test_score_reproduction_overall():
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
-        # Provide a minimal final_report.json so evidence gathering has something
+        # Provide a minimal final_report.json so evidence gathering has something.
+        # baseline_metrics is populated (an "honest" run) so the C2b degraded cap
+        # does not fire — this test exercises the uncapped weighted-roll-up path.
         (run_dir / "final_report.json").write_text(
-            json.dumps({"reproduction_summary": "test run", "metrics": {}}),
+            json.dumps({
+                "reproduction_summary": "test run",
+                "baseline_metrics": {"accuracy": 0.5},
+            }),
             encoding="utf-8",
         )
 
@@ -115,6 +122,7 @@ def test_score_reproduction_overall():
     assert result["graded"] == 3
     assert result["rubric_source"] == "paperbench_bundle"
     assert len(result["leaf_scores"]) == 3
+    assert result["degraded"] is False  # C2b: honest run, cap did not fire
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +140,10 @@ def test_score_reproduction_generated_rubric_source():
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
         (run_dir / "final_report.json").write_text(
-            json.dumps({"reproduction_summary": "arxiv run", "metrics": {}}),
+            json.dumps({
+                "reproduction_summary": "arxiv run",
+                "baseline_metrics": {"some_metric": 1.0},
+            }),
             encoding="utf-8",
         )
 
@@ -193,6 +204,278 @@ def test_amend_final_report_rerenders_markdown():
     assert "self-generated rubric" in md
     assert "10/10 rubric leaves graded" in md
     assert "0.999" not in md  # the stale score is gone
+
+
+# ---------------------------------------------------------------------------
+# P0 honesty guards (C2a / C2b / C2c) — see docs/design/project-state-audit-2026-05-22.md §A1
+#
+# C2a: _gather_evidence reads "metrics"/"paper_title" — keys that do not exist
+#      in RLMFinalReport. Every RLM run was graded against evidence with no
+#      metrics and no paper identity. The real keys are "baseline_metrics"/"paper".
+#
+# C2b: score_reproduction has no degraded-run cap. A metric-less run (the
+#      RLMFinalReport.baseline_metrics={} case that survives a failed
+#      run_experiment) can still be stamped with an uncapped overall_score —
+#      the honest 0.35 ceiling that verify_against_rubric used to enforce was
+#      not relocated here.
+#
+# C2c: amend_final_report hardcodes meets_target=False. A legitimate high score
+#      still renders "below target"; the score block is fabricated, not computed.
+# ---------------------------------------------------------------------------
+
+
+def test_gather_evidence_reads_rlmfinalreport_keys(tmp_path):
+    """C2a guard: _gather_evidence reads baseline_metrics/paper (the real RLM keys).
+
+    Symptom: _gather_evidence hardcoded the snippet keys to ("reproduction_summary",
+    "metrics", "verdict", "paper_title") — none of "metrics"/"paper_title" exist
+    in RLMFinalReport, which writes "baseline_metrics" and "paper" (a dict).
+    Every RLM run was graded against evidence with no metrics and no paper id.
+    """
+    # Use the existing _rlm_report_dict() helper but populate baseline_metrics so
+    # we can assert their values surface in the evidence text.
+    report = _rlm_report_dict()
+    report["baseline_metrics"] = {"accuracy": 0.789, "f1": 0.812}
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evidence = _gather_evidence(tmp_path)
+
+    # baseline_metrics values must appear in the evidence the LLM grader sees
+    assert "0.789" in evidence, (
+        "baseline_metrics value missing from evidence — _gather_evidence is "
+        "probably still reading 'metrics' instead of 'baseline_metrics'"
+    )
+    assert "accuracy" in evidence
+    # paper identity must appear too — RLMFinalReport.paper is a dict (id/title)
+    assert "2510.25013" in evidence, (
+        "paper id missing from evidence — _gather_evidence is probably still "
+        "reading 'paper_title' instead of 'paper'"
+    )
+    assert "Test Paper" in evidence
+
+
+class _HighScoreLlmClient:
+    """LLM stub that grades every leaf in the TINY_TREE at 0.9.
+
+    Used to prove that even with a lenient grader, a metric-less run is capped
+    at the degraded-run ceiling — the honest backstop verify_against_rubric
+    used to enforce before consolidating onto score_reproduction.
+    """
+
+    def complete(self, *, system: str, user: str) -> str:
+        return json.dumps([
+            {"leaf_id": "leaf-a1", "score": 0.9, "justification": "looks good"},
+            {"leaf_id": "leaf-a2", "score": 0.9, "justification": "looks good"},
+            {"leaf_id": "leaf-b", "score": 0.9, "justification": "looks good"},
+        ])
+
+
+def test_score_reproduction_caps_degraded_run_at_0_35(tmp_path):
+    """C2b guard: a metric-less RLM run is capped at the 0.35 degraded ceiling.
+
+    Symptom: verify_against_rubric used to enforce `min(score, 0.35)` when the
+    run produced no measured metrics. That backstop was deleted in 2e1ce37 when
+    verify_against_rubric was refactored to delegate to score_reproduction, but
+    score_reproduction itself has no equivalent. A run that measured nothing
+    can now be stamped with an uncapped LLM-graded score.
+
+    Setup: an RLMFinalReport with baseline_metrics={} (the "run_experiment
+    failed / never ran" case), grader returns 0.9 for every leaf. Without the
+    cap, the rolled-up score would be 0.9. With the cap, the leaves should be
+    clamped to <=0.35 and the overall score with them.
+    """
+    report = _rlm_report_dict()
+    report["baseline_metrics"] = {}  # the metric-less degraded case
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = score_reproduction(TINY_TREE, tmp_path, _HighScoreLlmClient())
+
+    # The lenient LLM said 0.9; the honest ceiling is 0.35.
+    assert result["overall_score"] <= 0.35 + 1e-9, (
+        f"degraded run not capped — overall_score={result['overall_score']}; "
+        "the in-loop honesty backstop is missing from score_reproduction"
+    )
+    # Each individual leaf record must also reflect the cap so the UI's
+    # "weak leaves" surface and the rubric block do not show inflated leaf
+    # values that contradict the overall_score.
+    for rec in result["leaf_scores"]:
+        assert rec["score"] <= 0.35 + 1e-9, (
+            f"leaf {rec['id']} score {rec['score']} exceeded degraded cap"
+        )
+    # The result must mark itself degraded so amend_final_report and downstream
+    # consumers can surface why the score is capped.
+    assert result.get("degraded") is True, (
+        "score_reproduction should mark a metric-less run as degraded=True"
+    )
+
+
+def test_score_reproduction_does_not_cap_honest_run(tmp_path):
+    """A run with real baseline_metrics is NOT capped — only degraded runs are.
+
+    Paired-test invariant: the C2b cap must not fire on honest runs, otherwise
+    every reproduction would be artificially capped at 0.35 and the loop signal
+    would be just as broken as before, in the opposite direction.
+    """
+    report = _rlm_report_dict()
+    report["baseline_metrics"] = {"accuracy": 0.91, "loss": 0.07}
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = score_reproduction(TINY_TREE, tmp_path, _HighScoreLlmClient())
+
+    # Honest run: LLM said 0.9, no cap applies — TINY_TREE rolls 0.9 up to 0.9.
+    assert result["overall_score"] == pytest.approx(0.9), (
+        f"honest run was capped — overall_score={result['overall_score']}"
+    )
+    assert result.get("degraded") is False, (
+        "score_reproduction should mark a run with real metrics as degraded=False"
+    )
+
+
+def test_amend_final_report_computes_meets_target_honestly(tmp_path):
+    """C2c guard: meets_target reflects the real overall_score vs target_score.
+
+    Symptom: amend_final_report hardcoded "meets_target": False, so a legitimate
+    high score still rendered "✘ below target". The block was fabricated, not
+    computed. The reverse failure (a low score stamped meets_target=True) was
+    impossible only by coincidence of the hardcode direction.
+
+    Setup: a score dict carrying both overall_score (0.80) and target_score (0.60)
+    — what score_reproduction now returns. amend_final_report must compute
+    meets_target = (0.80 >= 0.60) = True.
+    """
+    report = _rlm_report_dict()
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    amend_final_report(tmp_path, {
+        "overall_score": 0.80,
+        "rubric_source": "paperbench_bundle",
+        "leaf_count": 12,
+        "graded": 12,
+        "target_score": 0.60,
+    })
+    after = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+
+    assert after["rubric"]["overall_score"] == 0.80
+    assert after["rubric"]["meets_target"] is True, (
+        f"meets_target hardcoded — got {after['rubric']['meets_target']} "
+        "for overall_score=0.80, target=0.60"
+    )
+    # The target itself must be persisted so downstream consumers can recompute.
+    assert after["rubric"]["target_score"] == 0.60
+
+
+def test_amend_final_report_meets_target_below(tmp_path):
+    """Paired-test: a below-target score writes meets_target=False (not True)."""
+    report = _rlm_report_dict()
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    amend_final_report(tmp_path, {
+        "overall_score": 0.20,
+        "rubric_source": "paperbench_bundle",
+        "leaf_count": 12,
+        "graded": 12,
+        "target_score": 0.60,
+    })
+    after = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+
+    assert after["rubric"]["meets_target"] is False
+    assert after["rubric"]["target_score"] == 0.60
+
+
+def test_amend_final_report_unknown_target_writes_none(tmp_path):
+    """No target_score in the score dict → meets_target is None, never a fabricated bool.
+
+    Symptom that motivated the fix: hardcoding False was as wrong as hardcoding
+    True would be. When we genuinely do not know the target (e.g. a rubric tree
+    without target_score), the honest representation is null.
+    """
+    report = _rlm_report_dict()
+    (tmp_path / "final_report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    amend_final_report(tmp_path, {
+        "overall_score": 0.42,
+        "rubric_source": "generated",
+        "leaf_count": 7,
+        "graded": 7,
+        "target_score": None,
+    })
+    after = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+
+    assert after["rubric"]["meets_target"] is None
+    assert after["rubric"]["target_score"] is None
+
+
+def test_round_trip_real_rlmfinalreport_through_scorer(tmp_path):
+    """The integration test the audit named: RLMFinalReport → score → amend.
+
+    The C2 honesty defects survived for so long precisely because
+    test_leaf_scorer.py never round-tripped a real RLMFinalReport-shaped
+    final_report.json through the scorer. This test fixes that gap.
+
+    Scenario: a degraded RLM run (run_experiment never wrote metrics) writes
+    an RLMFinalReport with baseline_metrics={}. The post-run leaf scorer reads
+    the report, the C2a key fix means it sees the (empty) metrics dict and
+    paper identity, the C2b degraded cap clamps the lenient LLM grade, and
+    the C2c meets_target computation reflects the capped score vs. the target.
+    All three defects would re-emerge if this test were ever skipped.
+    """
+    # Build a real RLMFinalReport in the (degraded) shape and write it via the
+    # actual production writer so the on-disk schema is exactly what RLM runs
+    # produce — not a hand-rolled approximation.
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+
+    report = RLMFinalReport(
+        paper={"id": "2510.25013", "title": "Test Paper"},
+        verdict="reproduced",  # over-claimed; reconcile_verdict_with_score will downgrade
+        reproduction_summary="ran the baseline (no metrics measured)",
+        baseline_metrics={},  # the degraded case
+        paper_claims={},
+        rubric={"overall_score": 0.0, "meets_target": False, "areas": []},
+        improvements=[],
+        primitive_trace={"calls": 1, "by_primitive": {"understand_section": 1}},
+        cost={"llm_usd": 0.01, "primitives": 0.0},
+        iterations=3,
+    )
+    write_final_report_rlm(report, tmp_path)
+
+    # Rubric tree carries target_score=0.60 (PaperBench bundles do).
+    rubric_with_target = {**TINY_TREE, "target_score": 0.60}
+
+    # Score with a lenient LLM (would have stamped 0.9 without the C2b cap).
+    scored = score_reproduction(rubric_with_target, tmp_path, _HighScoreLlmClient())
+
+    # C2b — degraded run capped at the ceiling.
+    assert scored["degraded"] is True
+    assert scored["overall_score"] <= DEGRADED_LEAF_CEILING + 1e-9
+    # C2c — target_score threaded through.
+    assert scored["target_score"] == 0.60
+
+    # Amend the report. This exercises the markdown re-render, the verdict
+    # reconciliation (verdict="reproduced" at score<=0.35 → "failed"), and the
+    # C2c meets_target computation.
+    amend_final_report(tmp_path, scored)
+
+    after = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    md = (tmp_path / "final_report.md").read_text(encoding="utf-8")
+
+    # C2b/c: rubric block reflects the capped overall_score and computed meets_target.
+    assert after["rubric"]["overall_score"] <= DEGRADED_LEAF_CEILING + 1e-9
+    assert after["rubric"]["target_score"] == 0.60
+    assert after["rubric"]["meets_target"] is False  # 0.35 < 0.60
+    assert after["rubric"]["degraded"] is True
+
+    # Pre-existing reconcile_verdict_with_score honesty work (2e1ce37): a score
+    # capped at 0.35 sits above the partial floor (0.15) but below the
+    # reproduced floor (0.60), so the over-claimed "reproduced" verdict is
+    # downgraded to "partial" — never to anything its score does not support.
+    assert after["verdict"] == "partial"
+
+    # Markdown's "Overall score" line reflects the capped leaf score.
+    assert "0.350" in md, (
+        "expected capped overall_score (0.350) in rubric block of markdown"
+    )
+    # And the markdown banner reflects the reconciled verdict.
+    assert "PARTIAL REPRODUCTION" in md
 
 
 def test_amend_final_report_leaves_non_rlm_markdown_untouched():
