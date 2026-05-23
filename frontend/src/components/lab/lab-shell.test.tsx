@@ -36,12 +36,12 @@ describe("LabShell", () => {
   });
 
   it("shows upload view when ?new=1 is present even if initialRun is provided", () => {
-    // Simulate ?new=1 in the URL.
-    vi.stubGlobal("window", {
-      ...window,
-      location: { ...window.location, search: "?new=1" },
-      localStorage: window.localStorage
-    });
+    // Simulate ?new=1 in the URL. window.location.search is a non-configurable
+    // getter in jsdom — use history.replaceState to change the URL so that
+    // (a) ?new=1 surfaces via window.location.search, and (b) the real
+    // window object stays intact (preserving addEventListener etc).
+    const originalHref = window.location.href;
+    window.history.replaceState({}, "", "/?new=1");
 
     render(
       <LabShell
@@ -63,6 +63,8 @@ describe("LabShell", () => {
     // the effect guard so the state is seeded from props. The active sidebar
     // item for upload view is "upload".
     expect(routerReplaceMock).toHaveBeenCalledWith("/lab", { scroll: false });
+
+    window.history.replaceState({}, "", originalHref);
   });
 
   it("renders RlmLab unconditionally when a run is active", () => {

@@ -115,3 +115,6 @@ reprolab.db-wal
 
 # Landing screenshot scratch dir
 frontend/tmp-screens/
+
+# Boot-smoke log written by scripts/readiness.sh (tier 5).
+.readiness-backend.log
