@@ -379,7 +379,26 @@ git commit -m "feat(budget): add max_pod_seconds field with check_pod_seconds me
 
 ---
 
-### Task 2: Record pod-start timestamp on `Sandbox`
+### Task 2: ~~Record pod-start timestamp on `Sandbox`~~ — **SKIPPED (2026-05-23 amendment)**
+
+**Status:** Skipped. Discovered during execution that `Sandbox.created_at`
+(`backend/services/runtime/interface.py:73`) already exists and is populated by
+Pydantic's `default_factory=lambda: datetime.now(timezone.utc)` at the moment of
+`Sandbox(...)` construction. In `RunpodBackend._finish_create()`
+(`runpod_backend.py:271`), that construction happens **after**
+`_wait_for_pod_ssh()` (SSH ready) and `_prepare_remote_workspace()` (workspace
+SFTP'd) — i.e. exactly the billing-start anchor the plan's "Architecture
+decisions" section already mandates. Adding a separate `pod_started_at` field
+would have been a duplicate-of-`created_at` with no semantic gain.
+
+Task 3 (below) is updated to read `sandbox.created_at` directly. The
+`check_pod_seconds(pod_started_at=..., ...)` signature added in Task 1 stays —
+the **parameter** name `pod_started_at` is fine; callers just pass
+`sandbox.created_at` as the value.
+
+---
+
+### Task 2 (original — for historical reference; do not execute)
 
 **Files:**
 - Modify: the `Sandbox` dataclass (search location below in Step 1)
