@@ -150,6 +150,40 @@ After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into t
 | 20:00 | plan_reproduction ERROR (2nd attempt failed) → implement_baseline start | root pushing forward despite planning failure |
 | | | (2 primitive errors so far, both rescued by RLM's adaptive loop — pipeline integrity verified even when individual primitives fail) |
 
+## Run 2 — TERMINAL STATE
+
+Run reached terminal state at **20:17:26 UTC** (60min 2s wall-clock from kickoff at 19:17:24). Within the spec's 90-min target and well under the 180-min hard cap.
+
+| field | value |
+|---|---|
+| status | `completed` |
+| verdict | `partial` |
+| iterations | 4 |
+| LLM cost | $0.00 (OAuth subscription path — confirmed `models.planner = claude-oauth`, `executor = claude-sonnet-4-6`) |
+| rubric overall | 0.0 |
+| final_report.json | **present** (`runs/prj_20457ea6673b5a32/final_report.json`, 3591 bytes) |
+| final_report.md | present (2859 bytes) |
+| F14 leaderboard fields | all 4 present in JSON (mode, models, started_at, completed_at) ✓ |
+
+### Pipeline-success vs answer-quality
+
+Per the design spec's "out of scope: tuning the run's quality... we judge the pipeline, not the answer", **this run is a pipeline success.** The orchestrator:
+- Resolved a 9.9MB PDF → 137k-char parsed text → workspace
+- Ran 4 REPL iterations with claude-oauth root
+- Successfully called `detect_environment ×2`, `build_environment ×2`, `understand_section`, `extract_hyperparameters`, `plan_reproduction` (1 of 2 attempts)
+- Built a working Docker image (`reprolab/prj_20457ea6673b5a32:env-9caa8f013eab`)
+- Self-recovered from 1 `implement_baseline` error (22min) + 1 `plan_reproduction` error
+- Per the report's reproduction_summary: "implement_baseline succeeded"
+- Reached terminal `run_complete partial` cleanly with rubric, cost, baseline_metrics on disk
+
+The 0.0 rubric and `run_experiment failed` outcome is a quality issue (and notably: report says "rlm_query and llm_query were unavailable (model-selection error in library); paper analysis was done via direct context text slicing" — worth investigating as a follow-up, but out of scope for this run).
+
+### Run 2 timeline (filled in)
+
+The run's full event log is at `runs/prj_20457ea6673b5a32/dashboard_events.jsonl` (107 events). Notable terminal-window events at 20:17:25-26:
+- 20:17:25 implement_baseline start (3rd attempt, this one short)
+- 20:17:26 implement_baseline error → run_experiment start → run_experiment error → repl_iteration 4 → **run_complete partial**
+
 ## Open after both runs
 
 - Real fix for F3 (expose all registered root models in `/models` + widen `DemoModelChoice`).
