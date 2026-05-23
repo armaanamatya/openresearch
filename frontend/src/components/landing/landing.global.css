@@ -54,3 +54,12 @@ body::after {
   background: var(--landing-accent);
   color: var(--landing-accent-ink);
 }
+
+/* Smooth scroll for nav anchor clicks (#pipeline, #benchmarks). Wrapped in
+   reduced-motion guard so users who disabled motion still get instant snap.
+   Route-scoped via landing.global.css import — lab/library keep instant. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}

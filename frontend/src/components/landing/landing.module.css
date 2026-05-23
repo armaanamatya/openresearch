@@ -114,7 +114,23 @@
   font-size: 14px;
   color: var(--landing-ink-2);
 }
+.nav-links a {
+  position: relative;
+  padding: 4px 0;
+  transition: color 200ms ease;
+}
 .nav-links a:hover { color: var(--landing-ink); }
+.nav-links a::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 1px;
+  background: var(--landing-accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 250ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.nav-links a:hover::after { transform: scaleX(1); }
 .nav-cta {
   font-size: 13px;
   padding: 8px 14px;
@@ -196,6 +212,19 @@
   color: var(--landing-ink-2);
 }
 .btn-ghost:hover { color: var(--landing-ink); }
+
+/* CTA arrow / trailing icon nudges right on hover */
+.btn-primary > span:nth-child(2),
+.btn-ghost > span:nth-child(2),
+.btn-ghost > span:nth-child(3) {
+  display: inline-block;
+  transition: transform 200ms ease;
+}
+.btn-primary:hover > span:nth-child(2),
+.btn-ghost:hover > span:nth-child(2),
+.btn-ghost:hover > span:nth-child(3) {
+  transform: translateX(3px);
+}
 
 /* product hero frame */
 .hero-figure {
@@ -286,10 +315,17 @@
   display: flex; gap: 12px; padding: 8px 0;
   font-size: 14px; color: var(--landing-ink-2);
   border-top: 1px solid var(--landing-rule-2);
-  transition: color .2s, padding-left .2s;
+  transition: color .2s ease, padding-left .2s ease;
+  cursor: default;
 }
-.spec-substeps a:hover { color: var(--landing-ink); padding-left: 4px; }
-.spec-substeps .num { font-family: var(--font-jetbrains-mono), ui-monospace, monospace; color: var(--landing-ink-4); font-size: 12px; min-width: 30px; }
+.spec-substeps > span:hover {
+  color: var(--landing-ink);
+  padding-left: 4px;
+}
+.spec-substeps > span:hover .num {
+  color: var(--landing-ink-3);
+}
+.spec-substeps .num { font-family: var(--font-jetbrains-mono), ui-monospace, monospace; color: var(--landing-ink-4); font-size: 12px; min-width: 30px; transition: color .2s ease; }
 
 .spec-visual {
   margin-top: clamp(48px, 7vw, 96px);
@@ -621,6 +657,7 @@
 }
 .foot-inner { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; font-size: 12px; color: var(--landing-ink-4); }
 .foot-inner .links { display: flex; gap: 22px; }
+.foot-inner .links a { transition: color 200ms ease; }
 .foot-inner .links a:hover { color: var(--landing-ink-2); }
 .foot-inner .mono { letter-spacing: .08em; }
 
@@ -648,3 +685,83 @@
 
 /* utility */
 .hr-thin { height: 1px; background: var(--landing-rule-2); border: 0; margin: 0; }
+
+/* ---------- HERO ENTRANCE (page-load, @starting-style) ----------
+ * Animates from translateY(16px) + opacity:0 to natural state at first paint.
+ * In browsers without @starting-style: element renders at final state, no
+ * animation. Staggered via transition-delay so eyebrow leads → headline →
+ * subhead column → CTAs → figure. */
+@media (prefers-reduced-motion: no-preference) {
+  .hero-eyebrow,
+  .hero-grid > h1,
+  .hero-grid > div,
+  .hero-actions,
+  .hero-figure {
+    transition: opacity 300ms ease-out, transform 300ms ease-out;
+  }
+  @starting-style {
+    .hero-eyebrow,
+    .hero-grid > h1,
+    .hero-grid > div,
+    .hero-actions,
+    .hero-figure {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+  }
+  .hero-eyebrow    { transition-delay: 0ms; }
+  .hero-grid > h1  { transition-delay: 80ms; }
+  .hero-grid > div { transition-delay: 160ms; }
+  .hero-actions    { transition-delay: 240ms; }
+  .hero-figure     { transition-delay: 320ms; }
+}
+
+/* ---------- SECTION SCROLL ENTRANCE (animation-timeline: view()) ----------
+ * Each .spec-header and .spec-visual fades up as it enters the viewport.
+ *
+ * The @supports gate is critical: in Safari/Firefox (no animation-timeline
+ * support as of 2026), the keyframes never bind to a timeline and never fire.
+ * Element stays at its rendered (visible) state. SSR-safe.
+ *
+ * `animation-range: entry 0% entry 50%` runs the animation from when the
+ * element enters the viewport to when it's 50% in. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .spec-header,
+    .spec-visual,
+    .bench .row,
+    .bench-numbers,
+    .cta-foot > .wrap {
+      animation: spec-fade-up 600ms ease-out both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 50%;
+    }
+  }
+}
+
+@keyframes spec-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- REDUCED-MOTION GLOBAL OVERRIDE ----------
+ * Belt-and-suspenders: every new animation in this file is already wrapped
+ * in @media (prefers-reduced-motion: no-preference). This is the global
+ * escape hatch for any animation we forgot to wrap. Targets descendants of
+ * .shell only — does not affect lab/library. */
+@media (prefers-reduced-motion: reduce) {
+  .shell *,
+  .shell *::before,
+  .shell *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+  }
+}

@@ -20,6 +20,28 @@ export function HeroTree(): React.JSX.Element {
           .node-bg-done { fill: oklch(0.205 0.004 270); stroke: oklch(0.40 0.005 90); }
           .pulse { animation: pulse 2.2s ease-out infinite; }
           @keyframes pulse { 0% { r: 4; opacity: 1; } 100% { r: 14; opacity: 0; } }
+
+          @media (prefers-reduced-motion: no-preference) {
+            .edge {
+              stroke-dasharray: 400;
+              stroke-dashoffset: 400;
+              animation: draw 900ms ease-out forwards;
+              animation-delay: 500ms;
+            }
+            .edge:nth-of-type(2)  { animation-delay: 580ms; }
+            .edge:nth-of-type(3)  { animation-delay: 660ms; }
+            .edge:nth-of-type(4)  { animation-delay: 740ms; }
+            .edge:nth-of-type(5)  { animation-delay: 820ms; }
+            .edge:nth-of-type(6)  { animation-delay: 900ms; }
+            .edge:nth-of-type(7)  { animation-delay: 980ms; }
+            .edge:nth-of-type(8)  { animation-delay: 1060ms; }
+            .edge:nth-of-type(9)  { animation-delay: 1140ms; }
+            .edge:nth-of-type(10) { animation-delay: 1220ms; }
+            @keyframes draw { to { stroke-dashoffset: 0; } }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .edge { stroke-dasharray: none; stroke-dashoffset: 0; animation: none; }
+          }
         `}</style>
       </defs>
 
