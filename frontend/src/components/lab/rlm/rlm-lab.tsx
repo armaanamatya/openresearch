@@ -64,11 +64,17 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
   // Real-time elapsed clock. If startedAt is provided, tick every second against
   // wall-clock now so the display updates while the run is in-flight. Fall back to
   // the event-timestamp span (static) when startedAt is absent.
+  //
+  // SSR-safety: `nowMs` starts as `null`, so the server-rendered markup and the
+  // client's first hydration pass both compute elapsed = 0 against the same
+  // startedAtMs — no hydration mismatch. The useEffect below populates nowMs on
+  // mount (client-only), starting the tick. This avoids the classic
+  // "Date.now() during render differs server vs client" hydration error.
   const startedAtMs = useMemo(
     () => (runMeta.startedAt ? new Date(runMeta.startedAt).getTime() : null),
     [runMeta.startedAt]
   );
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState<number | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (startedAtMs === null) return;
@@ -79,8 +85,12 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
     };
   }, [startedAtMs]);
   const elapsedMs = useMemo(() => {
-    if (startedAtMs !== null) return Math.max(0, nowMs - startedAtMs);
-    // Fallback: derive from first/last event timestamps.
+    if (startedAtMs !== null) {
+      // SSR + first client render: nowMs === null → render 0; matches server.
+      // After mount the interval populates nowMs and the display ticks.
+      return nowMs === null ? 0 : Math.max(0, nowMs - startedAtMs);
+    }
+    // Fallback: derive from first/last event timestamps (static, SSR-safe).
     if (events.length < 2) return 0;
     const first = new Date(events[0].timestamp).getTime();
     const last = new Date(events[events.length - 1].timestamp).getTime();
