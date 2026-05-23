@@ -65,6 +65,12 @@ export interface DemoBenchmarkSummary {
   baselineRubricAreas?: DemoRubricArea[];
 }
 
+/** Shape of the enriched payload attached to a run by the backend's _build_payload. */
+export interface LiveDemoRunPayload {
+  events?: unknown[];
+  [key: string]: unknown;
+}
+
 export interface LiveDemoRunState {
   projectId: string;
   outputDir: string;
@@ -86,7 +92,7 @@ export interface LiveDemoRunState {
   completedAt?: string;
   error?: string;
   pid?: number;
-  payload: null;
+  payload: LiveDemoRunPayload | null;
   log: string;
   telemetry?: TelemetryRecordPublic[];
 }

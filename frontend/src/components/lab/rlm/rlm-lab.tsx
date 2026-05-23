@@ -6,6 +6,7 @@ import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
 import { useRlmRun } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
+import { useRerun } from "../../../hooks/use-rerun";
 import { RlmHeader } from "./rlm-header";
 import { RubricStrip } from "./rubric-strip";
 import { ReplStateRail } from "./repl-state-rail";
@@ -30,6 +31,8 @@ interface RlmLabProps {
   runMode?: DemoRunMode;
   /** Whether the run is still active (used to gate polling). */
   isActive?: boolean;
+  /** Error string from the run state — surfaced in the failed-run banner. */
+  runError?: string | null;
 }
 
 /**
@@ -45,8 +48,9 @@ interface RlmLabProps {
  *
  * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
  */
-export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabProps) {
+export function RlmLab({ events, runMeta, runMode, isActive = false, runError = null }: RlmLabProps) {
   const state = useRlmRun(events);
+  const { rerun, busy: rerunBusy } = useRerun(runMeta.projectId);
 
   const { sizes, dragHandle, collapsedByViewport } = useResizablePanels();
 
@@ -149,6 +153,9 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
         status={state.status}
         iterationCount={state.iterationCount}
         costUsd={state.report?.costUsd ?? null}
+        error={runError}
+        onRerun={rerun}
+        rerunBusy={rerunBusy}
       />
 
       {/* Band 2 */}

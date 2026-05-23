@@ -482,6 +482,62 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/runs/{project_id}/rerun", status_code=202)
+    async def rerun(
+        project_id: str,
+        x_demo_secret: str | None = Header(default=None),
+    ):
+        """Start a fresh run using the same paper source as an existing run.
+
+        Reads ``runs/<project_id>/demo_status.json`` to discover the original
+        PDF path (``sourcePdf.runPath``).  The PDF bytes are passed directly to
+        ``start_uploaded_run`` — which stages them under a *new* project_id and
+        spawns a fresh orchestrator — so the old run's state is never mutated.
+
+        Returns the new run's LiveRunState (same shape as ``/runs/upload``).
+        404 if the project does not exist; 422 if the source PDF is gone.
+        """
+        _enforce_demo_gate(x_demo_secret, settings.demo_secret)
+        _read_status = getattr(service, "_read_status", None)
+        if not callable(_read_status):
+            raise HTTPException(status_code=500, detail="Service does not support rerun.")
+        status = await asyncio.to_thread(_read_status, project_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        src_pdf = (status.get("sourcePdf") or {}) if isinstance(status, dict) else {}
+        run_path = src_pdf.get("runPath") if isinstance(src_pdf, dict) else None
+        file_name = (src_pdf.get("fileName") or "paper.pdf") if isinstance(src_pdf, dict) else "paper.pdf"
+
+        if not run_path:
+            raise HTTPException(
+                status_code=422,
+                detail="Source PDF location not recorded in this run's status — cannot rerun."
+            )
+
+        pdf_path = Path(run_path)
+        if not pdf_path.exists():
+            raise HTTPException(
+                status_code=422,
+                detail=f"Source PDF is no longer on disk ({run_path!r}) — cannot rerun."
+            )
+
+        content = await asyncio.to_thread(pdf_path.read_bytes)
+        run_request = StartRunRequest(
+            mode=status.get("runMode", "rlm"),
+            provider=status.get("llmProvider", "anthropic"),
+            verificationProvider=status.get("verificationProvider"),
+            executionMode=status.get("executionMode", "efficient"),
+            sandbox=status.get("sandboxMode", settings.default_sandbox),
+            gpuMode=status.get("gpuMode", "auto"),
+            model=status.get("model", "sonnet"),
+        )
+        return await service.start_uploaded_run(
+            run_request,
+            file_name=str(file_name),
+            content=content,
+        )
+
     @app.delete("/runs/{project_id}")
     async def stop_run(project_id: str):
         state = await service.stop_run(project_id)

@@ -46,6 +46,7 @@ function WorkflowView({
       runMeta={{ projectId: run.projectId, paperTitle, paperMeta, startedAt: run.startedAt }}
       runMode={run.runMode}
       isActive={isActive}
+      runError={run.error ?? null}
     />
   );
 }

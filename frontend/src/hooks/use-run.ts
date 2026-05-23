@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import type { DemoModelChoice, DemoRunMode, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
+import { isRlmEvent } from "@/lib/events/rlm-events";
 import { issueText } from "@/components/lab/shared-helpers";
 import { readUserPrefs } from "@/lib/user-prefs";
 
@@ -181,6 +182,8 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         setRun(restored);
         setRunUrl(restored.projectId);
         writeLastRun(restored.projectId);
+        // dashboardEvents are seeded in the useEffect([run?.projectId, run?.status])
+        // block below — no action needed here for terminal runs.
       } catch {
         // Network error — next visit retries.
       }
@@ -191,7 +194,18 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
   useEffect(() => {
     if (run?.projectId !== dashboardProjectIdRef.current) {
       dashboardProjectIdRef.current = run?.projectId ?? null;
-      setDashboardEvents([]);
+      // For terminal runs the events are seeded from payload.events in the
+      // auto-resume effect (or will be seeded below from the current run).
+      // Clearing here would wipe them — so only clear for live runs.
+      const isTerminal = run?.status === "failed" || run?.status === "completed" || run?.status === "stopped";
+      if (!isTerminal) {
+        setDashboardEvents([]);
+      } else {
+        // Navigation to a terminal run: seed from payload.events if present.
+        const rawEvents = Array.isArray(run?.payload?.events) ? run.payload.events : [];
+        const rlmEvents = rawEvents.filter(isRlmEvent) as DashboardLiveEvent[];
+        setDashboardEvents(rlmEvents);
+      }
     }
 
     eventSourceRef.current?.close();
