@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenResearch — Wow-Factor Poll</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --panel-2: #1b2129;
+    --border: #262d36;
+    --text: #e8edf2;
+    --muted: #8a95a3;
+    --accent: #6ee7b7;
+    --accent-2: #93c5fd;
+    --warn: #fbbf24;
+    --danger: #fb7185;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin-bottom: 28px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .tab {
+    background: transparent; color: var(--muted); border: 0; padding: 10px 14px;
+    cursor: pointer; font: inherit; border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .section { display: none; }
+  .section.active { display: block; }
+  .group { margin-bottom: 28px; }
+  .group h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+    display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
+  }
+  .card .title { font-weight: 600; }
+  .card .desc { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .pill-row { display: flex; gap: 6px; }
+  .pill {
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+    border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+    user-select: none; white-space: nowrap;
+  }
+  .pill:hover { color: var(--text); }
+  .pill.sel-1 { background: #064e3b; border-color: var(--accent); color: var(--accent); }
+  .pill.sel-2 { background: #1e3a5f; border-color: var(--accent-2); color: var(--accent-2); }
+  .pill.sel-3 { background: #3f2d05; border-color: var(--warn); color: var(--warn); }
+  input[type="text"], textarea {
+    width: 100%; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    font: inherit;
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    background: var(--accent); color: #06231a; border: 0;
+    padding: 10px 16px; border-radius: 8px; font: inherit; font-weight: 600;
+    cursor: pointer;
+  }
+  .btn.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn:hover { filter: brightness(1.08); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .legend b { color: var(--text); font-weight: 600; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot.s1 { background: var(--accent); }
+  .dot.s2 { background: var(--accent-2); }
+  .dot.s3 { background: var(--warn); }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 16px; border-radius: 8px; opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  .toast.show { opacity: 1; }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .tally-row {
+    display: grid; grid-template-columns: 28px 1fr 80px; gap: 12px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border); align-items: center;
+  }
+  .tally-row:last-child { border-bottom: 0; }
+  .bar {
+    height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 4px;
+  }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .rank { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .score { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; }
+  summary { cursor: pointer; color: var(--muted); }
+  .voter-chip { display: inline-block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; margin: 2px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>OpenResearch — what should we build next?</h1>
+  <div class="sub">Picking the highest-leverage adds before the Microsoft VP review. Vote below, then send your code back in Slack.</div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="vote">Vote</button>
+    <button class="tab" data-tab="tally">Tally results</button>
+    <button class="tab" data-tab="about">How this works</button>
+  </div>
+
+  <!-- VOTE -->
+  <section class="section active" id="vote">
+    <div class="legend">
+      <span><span class="dot s1"></span><b>Must-have</b> (3 pts)</span>
+      <span><span class="dot s2"></span><b>Nice-to-have</b> (2 pts)</span>
+      <span><span class="dot s3"></span><b>Curious</b> (1 pt)</span>
+      <span style="margin-left:auto">Pick as many as you like — leave the rest blank.</span>
+    </div>
+
+    <div class="group" id="group-ctx">
+      <h2>Context-engineering harness</h2>
+    </div>
+
+    <div class="group" id="group-wow">
+      <h2>Demo / wow-factor</h2>
+    </div>
+
+    <div class="group" id="group-platform">
+      <h2>Platform &amp; ecosystem</h2>
+    </div>
+
+    <div class="group">
+      <h2>Your details</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="voter" type="text" placeholder="Your name (so we can credit ideas)" style="max-width:340px" />
+      </div>
+      <textarea id="notes" placeholder="Anything missing from this list? Free-form ideas welcome."></textarea>
+    </div>
+
+    <div class="row">
+      <button class="btn" id="submitBtn">Generate my vote code</button>
+      <button class="btn secondary" id="copyBtn" disabled>Copy code</button>
+      <button class="btn ghost" id="resetBtn">Reset</button>
+    </div>
+
+    <div id="resultBox" style="margin-top:16px; display:none">
+      <div class="sub" style="margin-bottom:6px">Paste this back to the thread:</div>
+      <pre id="result"></pre>
+    </div>
+  </section>
+
+  <!-- TALLY -->
+  <section class="section" id="tally">
+    <div class="sub">Paste one or more vote codes (one per line, or separated by blank lines). Points: must-have=3, nice-to-have=2, curious=1.</div>
+    <textarea id="tallyInput" placeholder="OR-VOTE-v1::eyJ2Ijoi..."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="tallyBtn">Tally</button>
+      <button class="btn ghost" id="clearTallyBtn">Clear</button>
+    </div>
+    <div id="tallyOut" style="margin-top:18px"></div>
+  </section>
+
+  <!-- ABOUT -->
+  <section class="section" id="about">
+    <p>This is a zero-backend poll — nothing leaves your browser. Each voter generates a short base64 "vote code" and pastes it in Slack/email. The organizer pastes all the codes into the <b>Tally</b> tab to see the aggregated ranking.</p>
+    <p>Scoring: <b>Must-have = 3</b>, <b>Nice-to-have = 2</b>, <b>Curious = 1</b>. Ties broken by must-have count, then nice-to-have count.</p>
+    <p>To send to coworkers: host this file anywhere (GitHub Pages, Vercel, an internal share) or just email the <code>.html</code> file. It works offline.</p>
+  </section>
+</div>
+
+<div class="toast" id="toast">Copied</div>
+
+<script>
+const OPTIONS = {
+  ctx: [
+    { id: "budget", title: "Token-budget allocator with provenance", desc: "Per-primitive context budgets + logs of which snippets earned their slot." },
+    { id: "lenses", title: "Lens-specific compaction", desc: "Claims/methods/hyperparam/ablation summaries of parsed paper text — agents pull the lens they need." },
+    { id: "cache", title: "Prompt-caching audit", desc: "Cache-hit metric per primitive + stable-prefix enforcer. Real $ savings." },
+    { id: "memory", title: "Cross-run memory store", desc: "Embedding store of prior reproductions — 'we've seen this dataset loader before.'" },
+    { id: "trace", title: "Trajectory inspector UI", desc: "/lab/trace/<run_id> — exactly what each agent saw, returned, and influenced." },
+    { id: "counterfactual", title: "Counterfactual replay", desc: "Edit one context element, replay forward, measure delta on rubric score." },
+    { id: "redact", title: "Named redaction component + test suite", desc: "Promote corpus-leak redaction to a first-class harness piece with proofs." },
+  ],
+  wow: [
+    { id: "live-rubric", title: "Live rubric score climbing", desc: "Watch the self-improvement loop push the score up in real-time during demo." },
+    { id: "arena", title: "Multi-model arena mode", desc: "GPT-5 vs Qwen3-Coder vs Kimi K2.5 vs Claude on the same paper, side by side." },
+    { id: "leaderboard", title: "Public PaperBench leaderboard", desc: "/bench page: papers × models × score × $ × wall-clock." },
+    { id: "ci", title: "Reproduction confidence intervals", desc: "3 seeds × 2 models, report variance. Honest-science angle." },
+    { id: "failure-tax", title: "Failure-mode taxonomy dashboard", desc: "Cluster Gate 1/2/3 failures into named categories across all historical runs." },
+    { id: "diff", title: "Diff-against-paper visualizer", desc: "Side-by-side numeric claims vs our results with gap analysis." },
+    { id: "adversarial", title: "Synthetic-paper stress test", desc: "Generate adversarial papers to check if the verifier catches fraud." },
+  ],
+  platform: [
+    { id: "azure", title: "Azure-native deploy path", desc: "AKS + Container Apps + Azure ML compute sandbox. Closes the MS meeting." },
+    { id: "provenance", title: "Cryptographically auditable reproduction", desc: "Surface the Hermes audit chain as a signed-provenance panel." },
+    { id: "gh-bot", title: "GitHub-native @reprolab trigger", desc: "Comment on an arXiv-linked issue → draft reproduction PR." },
+    { id: "vscode", title: "VS Code extension", desc: "Right-click an arXiv link → reproduce. MS-native surface." },
+    { id: "cost", title: "Cost / compute governance panel", desc: "$/run, GPU-hours, cache hit rate, $/rubric-point, --max-usd audit." },
+  ],
+};
+
+const STATE_KEY = "or-poll-state-v1";
+let state = loadState();
+
+function loadState() {
+  try {
+    return JSON.parse(localStorage.getItem(STATE_KEY)) || { picks: {}, voter: "", notes: "" };
+  } catch { return { picks: {}, voter: "", notes: "" }; }
+}
+function saveState() {
+  localStorage.setItem(STATE_KEY, JSON.stringify(state));
+}
+
+function render() {
+  for (const group of ["ctx", "wow", "platform"]) {
+    const el = document.getElementById("group-" + group);
+    // remove all but the h2
+    [...el.querySelectorAll(".card")].forEach(n => n.remove());
+    for (const opt of OPTIONS[group]) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <div>
+          <div class="title">${escapeHtml(opt.title)}</div>
+          <div class="desc">${escapeHtml(opt.desc)}</div>
+        </div>
+        <div class="pill-row" data-id="${opt.id}">
+          <span class="pill p1" data-v="1">Must</span>
+          <span class="pill p2" data-v="2">Nice</span>
+          <span class="pill p3" data-v="3">Curious</span>
+        </div>
+      `;
+      el.appendChild(card);
+    }
+  }
+  // re-apply selections
+  document.querySelectorAll(".pill-row").forEach(row => {
+    const id = row.dataset.id;
+    const v = state.picks[id];
+    row.querySelectorAll(".pill").forEach(p => {
+      p.classList.remove("sel-1","sel-2","sel-3");
+      if (Number(p.dataset.v) === v) p.classList.add("sel-" + v);
+    });
+  });
+  document.getElementById("voter").value = state.voter || "";
+  document.getElementById("notes").value = state.notes || "";
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+
+document.addEventListener("click", (e) => {
+  const pill = e.target.closest(".pill");
+  if (pill && pill.parentElement.classList.contains("pill-row")) {
+    const row = pill.parentElement;
+    const id = row.dataset.id;
+    const v = Number(pill.dataset.v);
+    if (state.picks[id] === v) delete state.picks[id];
+    else state.picks[id] = v;
+    saveState();
+    render();
+  }
+});
+
+document.querySelectorAll(".tab").forEach(t => {
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".section").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    document.getElementById(t.dataset.tab).classList.add("active");
+  });
+});
+
+document.getElementById("voter").addEventListener("input", e => { state.voter = e.target.value; saveState(); });
+document.getElementById("notes").addEventListener("input", e => { state.notes = e.target.value; saveState(); });
+
+document.getElementById("submitBtn").addEventListener("click", () => {
+  const payload = {
+    v: state.voter || "anon",
+    n: state.notes || "",
+    p: state.picks,
+    t: Date.now(),
+  };
+  const code = "OR-VOTE-v1::" + btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  document.getElementById("result").textContent = code;
+  document.getElementById("resultBox").style.display = "block";
+  document.getElementById("copyBtn").disabled = false;
+});
+
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  const text = document.getElementById("result").textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied — paste it in the thread");
+  } catch {
+    toast("Couldn't copy automatically — select and copy manually");
+  }
+});
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  if (!confirm("Clear your selections?")) return;
+  state = { picks: {}, voter: "", notes: "" };
+  saveState();
+  render();
+  document.getElementById("resultBox").style.display = "none";
+});
+
+function decodeCode(line) {
+  const m = line.trim().match(/^OR-VOTE-v1::(.+)$/);
+  if (!m) return null;
+  try {
+    return JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+  } catch { return null; }
+}
+
+document.getElementById("tallyBtn").addEventListener("click", () => {
+  const lines = document.getElementById("tallyInput").value.split(/\s+/).filter(Boolean);
+  const votes = lines.map(decodeCode).filter(Boolean);
+  const out = document.getElementById("tallyOut");
+  if (!votes.length) {
+    out.innerHTML = `<div class="sub">No valid vote codes detected.</div>`;
+    return;
+  }
+  const allOpts = [...OPTIONS.ctx, ...OPTIONS.wow, ...OPTIONS.platform];
+  const tally = {};
+  for (const opt of allOpts) tally[opt.id] = { opt, total: 0, c1: 0, c2: 0, c3: 0, voters: [] };
+  for (const vote of votes) {
+    for (const [id, v] of Object.entries(vote.p || {})) {
+      if (!tally[id]) continue;
+      const weight = v === 1 ? 3 : v === 2 ? 2 : v === 3 ? 1 : 0;
+      tally[id].total += weight;
+      if (v === 1) tally[id].c1++;
+      if (v === 2) tally[id].c2++;
+      if (v === 3) tally[id].c3++;
+      tally[id].voters.push({ name: vote.v, level: v });
+    }
+  }
+  const ranked = Object.values(tally).sort((a,b) =>
+    b.total - a.total || b.c1 - a.c1 || b.c2 - a.c2 || a.opt.title.localeCompare(b.opt.title)
+  );
+  const maxTotal = Math.max(1, ...ranked.map(r => r.total));
+
+  let html = `<div class="sub">${votes.length} vote${votes.length===1?"":"s"} tallied. Showing all options ranked by score.</div>`;
+  html += `<div style="background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:18px">`;
+  ranked.forEach((r, i) => {
+    html += `
+      <div class="tally-row">
+        <div class="rank">${i+1}.</div>
+        <div>
+          <div><b>${escapeHtml(r.opt.title)}</b></div>
+          <div class="desc" style="color:var(--muted); font-size:12.5px">${escapeHtml(r.opt.desc)}</div>
+          <div class="bar"><span style="width:${(r.total/maxTotal)*100}%"></span></div>
+          <div style="margin-top:6px; font-size:12px; color:var(--muted)">
+            ${r.c1} must · ${r.c2} nice · ${r.c3} curious
+          </div>
+        </div>
+        <div class="score"><b style="color:var(--text); font-size:18px">${r.total}</b><div style="font-size:11px">pts</div></div>
+      </div>`;
+  });
+  html += `</div>`;
+
+  const notes = votes.filter(v => v.n && v.n.trim());
+  if (notes.length) {
+    html += `<details open><summary>Free-form notes (${notes.length})</summary>`;
+    notes.forEach(v => {
+      html += `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border)">
+        <div class="voter-chip">${escapeHtml(v.v || "anon")}</div>
+        <div style="margin-top:6px; white-space:pre-wrap">${escapeHtml(v.n)}</div>
+      </div>`;
+    });
+    html += `</details>`;
+  }
+
+  const voters = [...new Set(votes.map(v => v.v || "anon"))];
+  html += `<details><summary>Voters (${voters.length})</summary><div style="margin-top:8px">${
+    voters.map(v => `<span class="voter-chip">${escapeHtml(v)}</span>`).join("")
+  }</div></details>`;
+
+  out.innerHTML = html;
+});
+
+document.getElementById("clearTallyBtn").addEventListener("click", () => {
+  document.getElementById("tallyInput").value = "";
+  document.getElementById("tallyOut").innerHTML = "";
+});
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 1600);
+}
+
+render();
+</script>
+</body>
+</html>
