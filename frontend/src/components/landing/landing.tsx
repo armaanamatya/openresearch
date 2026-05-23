@@ -4,6 +4,8 @@ import "./landing.global.css";
 import { HeroTree } from "./figures/HeroTree";
 import { ComprehensionMock } from "./figures/ComprehensionMock";
 import { EnvironmentMock } from "./figures/EnvironmentMock";
+import { ImplementationMock } from "./figures/ImplementationMock";
+import { ExperimentsMock } from "./figures/ExperimentsMock";
 import { NavScrollMount } from "./client-bits";
 
 const GITHUB_URL = "https://github.com/armaanamatya/openresearch";
@@ -16,7 +18,9 @@ export function LandingPage(): React.JSX.Element {
       <Hero />
       <ComprehensionSection />
       <EnvironmentSection />
-      {/* Tasks 5-7 add §3.0-6.0 + closing + footer */}
+      <ImplementationSection />
+      <ExperimentsSection />
+      {/* Tasks 6-7 add §5.0 + §6.0 + closing + footer */}
     </div>
   );
 }
@@ -208,6 +212,100 @@ function EnvironmentSection(): React.JSX.Element {
               <span className={styles.right}>image · sha256:9a4f…02e1</span>
             </div>
             <EnvironmentMock />
+          </div>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+function ImplementationSection(): React.JSX.Element {
+  return (
+    <section className={styles.spec}>
+      <div className={styles.wrap}>
+        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>3.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Implementation</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>stage 03 / 05</span>
+            </div>
+            <h2 className={styles.head}>Write the method, then improve it.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              A baseline implementation is generated from the paper&apos;s pseudocode and
+              figures. The RLM then explores bounded variations against the induced
+              rubric — every edit attributed, every diff reviewable.
+            </p>
+            <div className={styles["spec-substeps"]}>
+              <a href="#"><span className={styles.num}>§ 3.1</span><span>Baseline</span></a>
+              <a href="#"><span className={styles.num}>§ 3.2</span><span>Improvement exploration</span></a>
+              <a href="#"><span className={styles.num}>§ 3.3</span><span>Diff review</span></a>
+              <a href="#"><span className={styles.num}>§ 3.4</span><span>Attribution</span></a>
+            </div>
+          </div>
+        </div>
+
+        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
+          <span className={styles["fig-label"]}>FIG&nbsp;§ 3.2&nbsp;&nbsp;—&nbsp;&nbsp;Baseline vs. improvement · diff view</span>
+          <div className={`${styles.frame} ${styles["frame-bleed-l"]}`}>
+            <div className={styles["mock-chrome"]}>
+              <span className={styles.crumbs}>implementation&nbsp;/&nbsp;<b>recurse.py</b></span>
+              <span className={styles.right}>branch 3.2a · +18 / −6</span>
+            </div>
+            <ImplementationMock />
+          </div>
+        </figure>
+      </div>
+    </section>
+  );
+}
+
+function ExperimentsSection(): React.JSX.Element {
+  return (
+    <section className={styles.spec}>
+      <div className={styles.wrap}>
+        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+          <div className={styles["spec-num"]}>
+            <span className={styles.glyph}>§</span>
+            <span className={styles.n}>4.0</span>
+          </div>
+          <div className={styles["spec-title"]}>
+            <div className={styles.name}>
+              <span className={styles.word}>Experiments</span>
+              <span className={styles.rule} aria-hidden />
+              <span className={styles.stage}>stage 04 / 05</span>
+            </div>
+            <h2 className={styles.head}>Run the table the paper claims.</h2>
+          </div>
+          <div>
+            <p className={styles["spec-blurb"]}>
+              Every row, every column, every seed. Experiments are scheduled across the
+              rubric, results stream into the lab UI, and intermediate state is logged
+              so a failed run is debuggable, not opaque.
+            </p>
+            <div className={styles["spec-substeps"]}>
+              <a href="#"><span className={styles.num}>§ 4.1</span><span>Run scheduler</span></a>
+              <a href="#"><span className={styles.num}>§ 4.2</span><span>Seed sweeps</span></a>
+              <a href="#"><span className={styles.num}>§ 4.3</span><span>Live metrics</span></a>
+              <a href="#"><span className={styles.num}>§ 4.4</span><span>Run registry</span></a>
+            </div>
+          </div>
+        </div>
+
+        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
+          <span className={styles["fig-label"]}>FIG&nbsp;§ 4.3&nbsp;&nbsp;—&nbsp;&nbsp;Live metrics · run registry</span>
+          <div className={styles.frame}>
+            <div className={styles["mock-chrome"]}>
+              <span className={styles.crumbs}>experiments&nbsp;/&nbsp;<b>GSM8K · pass@1</b></span>
+              <span className={styles.right}>5 seeds · 32 runs · 4h 12m</span>
+            </div>
+            <ExperimentsMock />
           </div>
         </figure>
       </div>
