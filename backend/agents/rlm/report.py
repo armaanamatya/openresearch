@@ -78,6 +78,34 @@ class RLMFinalReport(BaseModel):
     primitive_provider: str = "real"  # "real" | "stub" (T21 / review I8)
     degraded: bool = False  # True for stub runs and other degraded states (T21)
 
+    # --- Phase-4-forward-compat fields (spec 2026-05-23-rubric-climb-leaderboard §4.5)
+    # Forward-compatible with the cleanup-spec Phase-4 per-role model picker.
+    # Unknown roles stay None until the picker lands.
+    mode: Literal["rlm", "rdr"] = Field(
+        default="rlm",
+        description="Reproduction mode (rlm root-loop or rdr controller).",
+    )
+    models: dict[str, str | None] = Field(
+        default_factory=lambda: {
+            "planner": None,
+            "executor": None,
+            "verifier": None,
+            "grader": None,
+        },
+        description=(
+            "Per-role model identifiers — forward-compatible with the "
+            "future per-role picker."
+        ),
+    )
+    started_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC timestamp when the run started.",
+    )
+    completed_at: str | None = Field(
+        default=None,
+        description="ISO-8601 UTC timestamp when the report was written.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
