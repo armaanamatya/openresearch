@@ -48,7 +48,19 @@ class RLMFinalReport(BaseModel):
     )
     paper_claims: dict = Field(default_factory=dict)
     rubric: dict = Field(
-        default_factory=lambda: {"overall_score": 0.0, "meets_target": False, "areas": []},
+        # C2c (second pass, 2026-05-22): unscored runs honestly read as null on
+        # both overall_score and meets_target — never a fabricated 0.0 / False.
+        # The post-run leaf scorer overwrites these with real values via
+        # amend_final_report when scoring actually happens. A run that dies
+        # before reaching the scorer (e.g. credential failure at iter 0) keeps
+        # the nulls — which is the honest "not scored" signal.
+        default_factory=lambda: {
+            "overall_score": None,
+            "meets_target": None,
+            "target_score": None,
+            "degraded": None,
+            "areas": [],
+        },
     )
     improvements: list[dict] = Field(default_factory=list)
     primitive_trace: dict = Field(default_factory=dict)
@@ -77,7 +89,15 @@ _HONEST_DEFAULTS: dict[str, Any] = {
     "reproduction_summary": "",
     "baseline_metrics": {},
     "paper_claims": {},
-    "rubric": {"overall_score": 0.0, "meets_target": False, "areas": []},
+    # C2c (second pass): unscored defaults are null, not 0.0 / False. See
+    # RLMFinalReport.rubric default_factory above for the rationale.
+    "rubric": {
+        "overall_score": None,
+        "meets_target": None,
+        "target_score": None,
+        "degraded": None,
+        "areas": [],
+    },
     "improvements": [],
     "primitive_trace": {},
     "cost": {"llm_usd": 0.0, "primitives": 0.0},
@@ -365,7 +385,13 @@ def build_final_report(
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
-        "rubric": parsed.get("rubric") or {"overall_score": 0.0, "meets_target": False, "areas": []},
+        "rubric": parsed.get("rubric") or {
+            "overall_score": None,
+            "meets_target": None,
+            "target_score": None,
+            "degraded": None,
+            "areas": [],
+        },
         "improvements": list(parsed.get("improvements") or []),
         "primitive_trace": trace,
         "cost": _cost_dict(result, ctx),
@@ -462,13 +488,25 @@ def _render_markdown(report: RLMFinalReport) -> str:
         lines.append("")
 
     # --- Rubric ---
+    # C2c (second pass): a run that was never scored carries
+    # overall_score=None / meets_target=None — render as "not scored", never as
+    # a fabricated 0.000 / "below target". This is the markdown counterpart of
+    # the honest-null defaults in RLMFinalReport.rubric.
     rubric = report.rubric
-    overall = rubric.get("overall_score", 0.0)
-    meets_target = rubric.get("meets_target", False)
-    target_flag = "✔ meets target" if meets_target else "✘ below target"
+    overall = rubric.get("overall_score")
+    meets_target = rubric.get("meets_target")
     lines.append("## Rubric Score")
     lines.append("")
-    lines.append(f"**Overall score:** {overall:.3f}  ({target_flag})")
+    if overall is None:
+        lines.append("**Overall score:** not scored  (run did not reach the leaf scorer)")
+    else:
+        if meets_target is True:
+            target_flag = "✔ meets target"
+        elif meets_target is False:
+            target_flag = "✘ below target"
+        else:  # None — target unknown (rubric had no target_score)
+            target_flag = "no target set"
+        lines.append(f"**Overall score:** {overall:.3f}  ({target_flag})")
     # Provenance: after the post-run leaf scorer amends the report, surface the
     # rubric source + leaf coverage so a "generated" score is never mistaken for
     # a PaperBench-official one.

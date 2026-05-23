@@ -530,3 +530,141 @@ def test_render_markdown_graded_defaults_to_zero_not_leaf_count():
     assert "0/5 rubric leaves graded" in md, (
         "missing `graded` field should default to 0, not the leaf_count"
     )
+
+
+# ---------------------------------------------------------------------------
+# C2c second pass — unscored default rubric must read as null, not fabricated
+#
+# Symptom uncovered 2026-05-22: two RunPod reproductions died at the first
+# Anthropic call (no API credit). Their final_report.json carried
+# rubric.meets_target=false despite never being scored — a fabricated boolean
+# the audit's original C2c finding had not traced. The C2c amend-write fix
+# only touched the post-scoring path; the pre-scoring default (in
+# RLMFinalReport.rubric default_factory + _HONEST_DEFAULTS["rubric"]) still
+# hardcoded {"overall_score": 0.0, "meets_target": False}, which persisted
+# verbatim to disk when the run failed before reaching the scorer.
+#
+# These tests pin the unscored honesty contract: a brand-new RLMFinalReport
+# rubric reads as null on every field that requires scoring, and the markdown
+# renderer surfaces "not scored" instead of "below target" / 0.000.
+# ---------------------------------------------------------------------------
+
+
+def test_rlm_final_report_default_rubric_is_unscored_null():
+    """A fresh RLMFinalReport carries null score / target / degraded / meets_target.
+
+    Persisted via write_final_report_rlm on a no-score path (run died before
+    amend_final_report), this is what readers actually see on disk. None is
+    honest; 0.0 + False is a fabricated claim of "scored zero, below target."
+    """
+    report = RLMFinalReport()
+    assert report.rubric["overall_score"] is None
+    assert report.rubric["meets_target"] is None
+    assert report.rubric["target_score"] is None
+    assert report.rubric["degraded"] is None
+    assert report.rubric["areas"] == []
+
+
+def test_render_markdown_unscored_run_says_not_scored(tmp_path):
+    """An unscored run renders "not scored", never "0.000 (✘ below target)".
+
+    The 2026-05-22 RunPod failures wrote a rubric block of
+    {"overall_score": 0.0, "meets_target": False, ...} to disk. The markdown
+    renderer turned that into "**Overall score:** 0.000  (✘ below target)" —
+    a precise-looking number for a score that does not exist. With the C2c
+    second-pass fix, an unscored rubric (None on overall_score) must instead
+    render "not scored".
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(verdict="failed", iterations=0)
+    md = _render_markdown(report)
+
+    assert "not scored" in md, (
+        "unscored run must render 'not scored', not a fabricated overall_score "
+        "+ below-target verdict"
+    )
+    # Isolate the rubric section ("## Rubric Score" → next "## "); the assertion
+    # must not be confused by the cost table's $0.000000 entries.
+    rubric_start = md.index("## Rubric Score")
+    rubric_end_search = md.find("\n## ", rubric_start + 1)
+    rubric_section = md[rubric_start:rubric_end_search] if rubric_end_search != -1 else md[rubric_start:]
+    assert "0.000" not in rubric_section, (
+        "unscored run must not render a 0.000 overall_score — that's a "
+        f"claim of 'scored zero' for a run that was never graded.\n"
+        f"Rubric section was:\n{rubric_section}"
+    )
+    assert "below target" not in rubric_section, (
+        "unscored run must not claim 'below target' — the target was never "
+        "compared against, because there was no score"
+    )
+
+
+def test_render_markdown_scored_run_with_no_target_says_no_target_set():
+    """A genuinely-scored run whose rubric has no target_score must render
+    "no target set", not "✘ below target".
+
+    This was the original audit C2c — amend_final_report wrote
+    meets_target=False when target was missing, flipping a legitimate high
+    score to "below target". The fix wrote None instead; the renderer must
+    render that None honestly.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, _render_markdown
+    report = RLMFinalReport(
+        rubric={
+            "overall_score": 0.80,
+            "meets_target": None,  # target_score was None → meets_target None
+            "target_score": None,
+            "leaf_count": 12,
+            "graded": 12,
+        },
+    )
+    md = _render_markdown(report)
+
+    assert "0.800" in md
+    assert "no target set" in md, (
+        "scored run with no target should render 'no target set', not "
+        "'below target' which would be a fabricated comparison"
+    )
+    assert "below target" not in md
+    assert "meets target" not in md  # the ✔ variant
+
+
+def test_amend_final_report_overwrites_unscored_defaults_with_real_scores(tmp_path):
+    """The honest-null defaults must not block legitimate scoring.
+
+    Round-trip: write_final_report_rlm(report-with-null-rubric) → on-disk file
+    with null fields → amend_final_report(score-dict-with-real-values) →
+    on-disk file now has real numeric overall_score / meets_target / etc.
+    Without this guarantee, the C2c second-pass fix would have created a
+    new bug where successful scoring couldn't overwrite the defaults.
+    """
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+    from backend.evals.paperbench.leaf_scorer import amend_final_report
+
+    # An unscored report — what the failing-early path writes.
+    report = RLMFinalReport(
+        paper={"id": "test", "title": "Test"},
+        verdict="failed",
+        iterations=0,
+    )
+    write_final_report_rlm(report, tmp_path)
+
+    pre = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    assert pre["rubric"]["overall_score"] is None
+    assert pre["rubric"]["meets_target"] is None
+
+    # The scorer ran later (in some other invocation) and now amends the report.
+    amend_final_report(tmp_path, {
+        "overall_score": 0.72,
+        "rubric_source": "paperbench_bundle",
+        "leaf_count": 10,
+        "graded": 10,
+        "target_score": 0.60,
+        "degraded": False,
+    })
+
+    post = json.loads((tmp_path / "final_report.json").read_text(encoding="utf-8"))
+    assert post["rubric"]["overall_score"] == 0.72
+    assert post["rubric"]["meets_target"] is True  # 0.72 >= 0.60
+    assert post["rubric"]["target_score"] == 0.60
+    assert post["rubric"]["degraded"] is False
