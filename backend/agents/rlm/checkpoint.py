@@ -23,6 +23,7 @@ Design spec §10.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -165,6 +166,7 @@ class IterationCheckpointer:
         with self._snapshot_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
             fh.flush()
+            os.fsync(fh.fileno())  # T30 / review M7 — avoid torn lines on crash.
 
 
 __all__ = [

@@ -202,6 +202,43 @@ re-run).
 `score_run.py` themselves; `backend.cli` is **not** dotenv-aware — wrap it in
 `dotenv run` (or export the env).
 
+### Auth — learned the hard way 2026-05-22 (read before re-running)
+
+The RLM path has **two distinct LLM auth surfaces**, billed separately, and
+they are NOT interchangeable:
+
+1. **Root model** — the `rlm` library directly opens HTTP clients
+   (`rlm/clients/{openai,anthropic}.py`) and reads `OPENAI_API_KEY` /
+   `ANTHROPIC_API_KEY` / `FEATHERLESS_API_KEY` from `os.environ`. **No OAuth
+   path exists for the root.** Pick one model + provide that key with real
+   billing credits. `resolve_root_model()` in `backend/agents/rlm/models.py`
+   raises if the matching key is unset.
+2. **Sub-agents** — `claude-agent-sdk` (used by `implement_baseline` and other
+   Sonnet calls) accepts either `ANTHROPIC_API_KEY` **or** OAuth from the
+   local `claude` CLI subscription. Subscription path is per-message-free.
+
+**The pitfall that ate a $5 Anthropic top-up:** if you set
+`ANTHROPIC_API_KEY` to a key whose Anthropic *API account* has no credits,
+`claude-agent-sdk` tries the key first, gets a 400 *"Your credit balance is
+too low"*, and **does not fall back to OAuth** — every reproduction dies at
+the first Sonnet sub-call with `cost_usd=0.0`, `verdict=failed`,
+`iterations=0–13` (root may run a few rubric-only iterations off the OpenAI
+root before the first Sonnet call). `claude --print "ping"` returning `pong`
+proves only the *subscription* works; the *API key* needs its own credits.
+
+**Safest local-dev setup** — leave `ANTHROPIC_API_KEY=` (empty) in `.env`,
+`claude login` once, use **OpenAI** (gpt-5) or **Featherless**
+(qwen3-coder-featherless) as the root. Sub-agents will resolve via OAuth and
+incur zero Anthropic API spend.
+
+**RunPod sandbox gotcha:** `REPROLAB_FORCE_SANDBOX=docker` in `.env`
+**silently overrides** any `--sandbox runpod` flag. Comment that line out
+before launching a GPU run. Also set
+`REPROLAB_RUNPOD_CLOUD_TYPE=COMMUNITY` to halve the GPU cost (~$0.34/hr vs
+$0.69/hr on RTX 4090) — the .env shipped pre-2026-05-22 defaulted to
+`SECURE`. RunPod balance must be > $0; `runpodctl user` shows it; minimum
+top-up is $10.
+
 ## 6. Read before non-trivial work
 
 `progress.md` · `learn.md` (post-mortems — read before touching a covered path)

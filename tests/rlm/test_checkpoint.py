@@ -333,3 +333,32 @@ class TestIterationCheckpointerValidation:
             snapshot_dir=new_dir,
         )
         assert new_dir.exists()
+
+
+def test_checkpointer_fsyncs_after_jsonl_append(monkeypatch, tmp_path):
+    """Symptom: a crash between event-store and JSONL append leaves a torn line.
+
+    The JSONL append used flush() without os.fsync (review M7 / T30). Verify
+    os.fsync is called after each iteration's JSONL write.
+    """
+    import os
+    import backend.agents.rlm.checkpoint as cp_mod
+
+    fsync_calls = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(cp_mod.os, "fsync", spy_fsync)
+
+    db = tmp_path / "test.db"
+    store = SqliteEventStore(f"sqlite:///{db}")
+    try:
+        cp = IterationCheckpointer(project_id="p", event_store=store, snapshot_dir=tmp_path)
+        cp.record(_make_clean(1))
+    finally:
+        store.close()
+
+    assert len(fsync_calls) >= 1, "os.fsync was not called after JSONL append"

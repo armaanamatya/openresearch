@@ -63,6 +63,20 @@ python -m backend.cli eval <project_id> --paper-metrics '{...}' # score complete
 
 Useful flags: `--mode {offline,sdk,rlm}`, `--provider {anthropic,openai}`, `--verification-provider`, `--sandbox {auto,local,docker,runpod}`, `--execution-mode {efficient,max}`, `--n-paths N`, `--max-usd`, `--max-wall-clock`, `--model`, `--seed`. `--mode offline` is the right choice for fast deterministic testing without LLM cost. `--mode rlm` is the production-hardened RLM path (Phase 5): per-primitive deadlines, `max_usd` cost cap, corpus-leak redaction at every egress, atomic run-status writes. Set `REPROLAB_RLM_ROOT_MODEL` to `gpt-5`, `qwen3-coder`, `kimi-k2.5`, or `claude` (defaults to GPT-5 when `OPENAI_API_KEY` is set).
 
+### RLM auth — two surfaces, billed separately
+The RLM path has **two distinct LLM auth surfaces** and they are NOT interchangeable:
+
+1. **Root model** (the `rlm` library, `_completion_turn` in `rlm/core/rlm.py`) talks raw HTTP. It reads `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `FEATHERLESS_API_KEY` directly from `os.environ`. **There is no OAuth path for the root model.** Pick one model + provide that key with real billing credits:
+   - `--model claude` → `ANTHROPIC_API_KEY` (Anthropic API credits)
+   - default / `--model gpt-5` → `OPENAI_API_KEY` (OpenAI credits)
+   - `--model qwen3-coder-featherless` → `FEATHERLESS_API_KEY` (cheapest)
+2. **Sub-agents** (`implement_baseline` and other Sonnet calls, via `claude-agent-sdk`) accept either `ANTHROPIC_API_KEY` *or* OAuth via the local `claude` CLI subscription. The Claude Code subscription path is per-message-free; the API-key path is per-token-billed against your Anthropic API balance.
+
+**The 2026-05-22 pitfall (see `docs/superpowers/specs/2026-05-22-rlm-debug-harden-handoff.md` §auth):** if you set `ANTHROPIC_API_KEY` to a key whose Anthropic *API account* has no credits, the SDK tries it first, hits 400 *"credit balance too low"*, and does **not** fall back to OAuth — every reproduction dies at the first Sonnet sub-call with `cost_usd=0.0`. Working `claude --print "ping"` proves only the *subscription* works; the *API key* needs its own credits. **Safest local dev**: leave `ANTHROPIC_API_KEY=` (empty) in `.env`, `claude login` once, and use OpenAI/Featherless for the root. Comment block in `.env` lines 14–18 is the canonical reference.
+
+### Sandbox config gotcha
+`REPROLAB_FORCE_SANDBOX` in `.env` (when set) **overrides per-run `--sandbox` flags** — useful for forcing all local runs to Docker, but it silently makes `--sandbox runpod` a no-op. `REPROLAB_RUNPOD_CLOUD_TYPE` choose `COMMUNITY` (≈ $0.34/hr on RTX 4090) vs `SECURE` (≈ $0.69/hr); the `.env` shipped with the repo defaults to `COMMUNITY` since 2026-05-22 (was `SECURE` before).
+
 ### Docker
 
 ```bash
