@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -297,20 +297,19 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
             "run_pipeline_rlm: backend.agents.rlm.binding not present — "
             "using stub primitives (#59 not yet merged)"
         )
-        return build_stub_custom_tools(ctx), "stub (#59 binding.py absent)"
-    except Exception as exc:  # noqa: BLE001 — #59 mid-build: degrade loudly, don't crash
+        return build_stub_custom_tools(ctx), "stub (binding.py absent)"
+    except Exception as exc:  # noqa: BLE001 — binding mid-build: degrade loudly, don't crash
         logger.warning(
-            "run_pipeline_rlm: #59's build_custom_tools is present but raised "
-            "(%s: %s) — its primitive layer is incomplete; falling back to stub "
-            "primitives until #59 lands.",
+            "run_pipeline_rlm: build_custom_tools raised (%s: %s) — "
+            "primitive layer incomplete; falling back to stub.",
             type(exc).__name__,
             exc,
         )
         return (
             build_stub_custom_tools(ctx),
-            f"stub (#59 binding incomplete: {type(exc).__name__})",
+            f"stub (binding failed: {type(exc).__name__})",
         )
-    return tools, "real (#59 binding)"
+    return tools, "real (binding)"
 
 
 def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
@@ -318,6 +317,12 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
 
     ``workspace_claim_map`` shape (see ``pipeline._write_workspace_claim_map``):
     ``{"project_id": str, "entries": [{"source_id", "title", "excerpt"}, ...]}``.
+
+    For PaperBench bundle runs the map also carries a ``"paperbench"`` sub-dict
+    with ``{"paper_id": ..., "metadata": {"id": ..., "title": ...}, ...}``.
+    When present, ``paper_metadata.id`` and ``paper_metadata.title`` are sourced
+    from the bundle's real metadata rather than the first entry's generic title
+    (e.g. ``"PaperBench paper markdown"``).
 
     The full corpus — supplementary text, repo files, prior-work refs — is
     populated by later phases (#62).  For now ``paper_text`` / ``paper_metadata``
@@ -331,10 +336,19 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
         excerpt = entry.get("excerpt", "")
         sections.append(f"## {title}\n\n{excerpt}" if title else excerpt)
 
+    # PaperBench bundle runs carry real paper identity in the "paperbench" block.
+    # Use it when available so the root model sees the actual paper id + title
+    # rather than the generic entry title produced by bundle_to_workspace_claim_map.
+    pb = workspace_claim_map.get("paperbench") or {}
+    pb_meta = pb.get("metadata") or {}
+    paper_id = pb_meta.get("id") or pb.get("paper_id") or ""
+    paper_title = pb_meta.get("title") or (entries[0].get("title", "") if entries else "")
+
     return {
         "paper_text": "\n\n".join(sections),
         "paper_metadata": {
-            "title": entries[0].get("title", "") if entries else "",
+            "id": paper_id,
+            "title": paper_title,
             "sections": [e.get("title", "") for e in entries],
             "source_ids": [e.get("source_id", "") for e in entries],
         },
@@ -380,7 +394,13 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
-def _write_demo_status(project_dir: Path, status: str, *, error: str | None = None) -> None:
+def _write_demo_status(
+    project_dir: Path,
+    status: str,
+    *,
+    error: str | None = None,
+    primitive_provider: str = "real",  # T21 / review I8
+) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
     The HTTP layer's ``GET /runs/{id}`` reads this snapshot via
@@ -414,6 +434,7 @@ def _write_demo_status(project_dir: Path, status: str, *, error: str | None = No
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
+    payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -580,6 +601,8 @@ async def run_pipeline_rlm(
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
+        deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
     )
 
     # 5. Primitives — real #59 binding or the stub provider.
@@ -703,6 +726,7 @@ async def run_pipeline_rlm(
             project_dir=project_dir,
             emit=emit,
             corpus_sentinels=corpus_sentinels,
+            tools_label=tools_label,  # T21 / review I8
         )
     finally:
         try:
@@ -720,6 +744,7 @@ def _finalize(
     project_dir: Path,
     emit: Any,
     corpus_sentinels: list[str] | None = None,
+    tools_label: str = "real",  # T21 / review I8
 ) -> RLMRunResult:
     """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
     if result_obj is not None:
@@ -735,6 +760,15 @@ def _finalize(
     # A crashed or budget-exhausted run is never a clean completion — force "failed".
     if run_failed:
         report.verdict = "failed"
+
+    # T21 / review I8: stub-run honesty — mark degraded, cap verdict.
+    if "stub" in tools_label.lower():
+        report.primitive_provider = "stub"
+        report.degraded = True
+        # A stub run cannot honestly claim "reproduced" — the primitives are
+        # deterministic placeholders, not real ML training or evaluation.
+        if report.verdict == "reproduced":
+            report.verdict = "partial"
 
     # M-REDACT (A1-C1): scrub corpus content from the report summary before writing
     # to disk or streaming — the root model may copy context["paper_text"] slices
@@ -769,7 +803,11 @@ def _finalize(
     # demo_status.json terminal write: a produced report means the run-process
     # completed; a crash means it failed. The reproduction verdict (incl.
     # "partial") is a separate axis recorded in final_report.json.
-    _write_demo_status(project_dir, "failed" if run_failed else "completed")
+    _write_demo_status(
+        project_dir,
+        "failed" if run_failed else "completed",
+        primitive_provider=report.primitive_provider,  # T21 / review I8
+    )
     return RLMRunResult(
         project_id=ctx.project_id,
         status=status,
