@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
 import styles from "./report-rail.module.css";
 
@@ -8,6 +9,7 @@ export interface ReportRailProps {
   elapsedMs: number;
   report: RlmRunState["report"];
   rubric: RlmRunState["rubric"];
+  style?: CSSProperties;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -77,6 +79,7 @@ export function ReportRail({
   elapsedMs,
   report,
   rubric,
+  style,
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
   const isDegraded =
@@ -93,7 +96,7 @@ export function ReportRail({
       : styles.verdictRunning;
 
   return (
-    <aside className={styles.rail} aria-label="Report rail">
+    <aside className={styles.rail} style={style} aria-label="Report rail">
       {/* ── Verdict pill ─────────────────────────────────────── */}
       <div className={`${styles.verdict} ${verdictClass}`}>
         {verdictLabel(status)}

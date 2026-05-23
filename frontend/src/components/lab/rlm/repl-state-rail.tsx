@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
 import styles from "./repl-state-rail.module.css";
 
@@ -8,6 +9,7 @@ interface ReplStateRailProps {
   primitives: string[];
   collapsed: boolean;
   onToggle: () => void;
+  style?: CSSProperties;
 }
 
 /** Returns true when a variable is "not set" — NoneType or never seen in a real iteration. */
@@ -31,6 +33,7 @@ export function ReplStateRail({
   primitives,
   collapsed,
   onToggle,
+  style,
 }: ReplStateRailProps) {
   const entries = Object.entries(variables);
   const totalCount = entries.length;
@@ -40,7 +43,7 @@ export function ReplStateRail({
 
   if (collapsed) {
     return (
-      <aside className={`${styles.rail} ${styles.railCollapsed}`} aria-label="REPL state rail">
+      <aside className={`${styles.rail} ${styles.railCollapsed}`} aria-label="REPL state rail" data-testid="repl-state-rail">
         <button
           className={styles.toggleBtn}
           aria-label={buttonLabel}
@@ -60,7 +63,7 @@ export function ReplStateRail({
   }
 
   return (
-    <aside className={styles.rail} aria-label="REPL state rail">
+    <aside className={styles.rail} style={style} aria-label="REPL state rail" data-testid="repl-state-rail">
       {/* Header row */}
       <div className={styles.header}>
         <span className={styles.heading}>REPL state</span>

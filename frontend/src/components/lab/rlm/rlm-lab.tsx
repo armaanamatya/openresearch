@@ -5,6 +5,7 @@ import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
 import { useRlmRun } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
+import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { RlmHeader } from "./rlm-header";
 import { RubricStrip } from "./rubric-strip";
 import { ReplStateRail } from "./repl-state-rail";
@@ -13,6 +14,7 @@ import { ReportRail } from "./report-rail";
 import { PrimitiveHistoryBar } from "./primitive-history-bar";
 import { RubricBreakdown } from "./rubric-breakdown";
 import { NodeDetailSidebar } from "./node-detail-sidebar";
+import { ResizeHandle } from "./resize-handle";
 import styles from "./rlm-lab.module.css";
 
 interface RlmLabProps {
@@ -46,9 +48,14 @@ interface RlmLabProps {
 export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabProps) {
   const state = useRlmRun(events);
 
+  const { sizes, dragHandle, collapsedByViewport } = useResizablePanels();
+
   // ReplStateRail collapse state is owned here (the rail itself is a pure
   // presenter — it receives collapsed/onToggle props).
   const [replRailCollapsed, setReplRailCollapsed] = useState(false);
+
+  // NodeDetailSidebar internal collapsed state, lifted so the handle can be hidden.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // ── Lifted selection state ──────────────────────────────────────────────
   // The canvas notifies us via onSelectNode; we forward the id to both the
@@ -154,12 +161,22 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
 
       {/* Band 3: workspace */}
       <div className={styles.workspace}>
-        <ReplStateRail
-          variables={state.variables}
-          primitives={primitiveNames}
-          collapsed={replRailCollapsed}
-          onToggle={() => setReplRailCollapsed((c) => !c)}
-        />
+        {!collapsedByViewport.replRail && (
+          <>
+            <ReplStateRail
+              variables={state.variables}
+              primitives={primitiveNames}
+              collapsed={replRailCollapsed}
+              onToggle={() => setReplRailCollapsed((c) => !c)}
+              style={{ width: replRailCollapsed ? undefined : sizes.replRail }}
+            />
+            <ResizeHandle
+              {...dragHandle("replRail", "right")}
+              aria-valuenow={sizes.replRail}
+              disabled={replRailCollapsed}
+            />
+          </>
+        )}
         <div className={styles.canvas}>
           <ExplorationCanvas
             tree={state.tree}
@@ -168,11 +185,25 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
             onSelectNode={setSelectedNodeId}
           />
         </div>
-        <ReportRail
-          status={state.status}
-          elapsedMs={elapsedMs}
-          report={state.report}
-          rubric={state.rubric}
+        {!collapsedByViewport.reportRail && (
+          <>
+            <ResizeHandle
+              {...dragHandle("reportRail", "left")}
+              aria-valuenow={sizes.reportRail}
+            />
+            <ReportRail
+              status={state.status}
+              elapsedMs={elapsedMs}
+              report={state.report}
+              rubric={state.rubric}
+              style={{ width: sizes.reportRail }}
+            />
+          </>
+        )}
+        <ResizeHandle
+          {...dragHandle("detailSidebar", "left")}
+          aria-valuenow={sizes.detailSidebar}
+          disabled={sidebarCollapsed}
         />
         <NodeDetailSidebar
           node={selectedNode}
@@ -187,6 +218,9 @@ export function RlmLab({ events, runMeta, runMode, isActive = false }: RlmLabPro
           iterationCount={state.iterationCount}
           candidatesProposed={candidatesProposed}
           candidatesPromoted={candidatesPromoted}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
+          style={{ width: sidebarCollapsed ? undefined : sizes.detailSidebar }}
         />
       </div>
 

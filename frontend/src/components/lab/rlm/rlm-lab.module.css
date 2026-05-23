@@ -24,6 +24,8 @@
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
+  position: relative;
+  --handle-width: 4px;
 }
 
 .canvas {

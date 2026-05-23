@@ -6,8 +6,7 @@
 .rail {
   display: flex;
   flex-direction: column;
-  width: 190px;
-  min-width: 190px;
+  /* Width is driven by style prop from parent (useResizablePanels). */
   background: var(--panel);
   border-right: 1px solid var(--line);
   overflow-y: auto;

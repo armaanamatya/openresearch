@@ -16,9 +16,9 @@
   padding: var(--sp-3);
   background: var(--panel);
   border-left: 1px solid var(--line);
-  width: 240px;
-  min-width: 200px;
+  /* Width is driven by style prop from parent (useResizablePanels). */
   overflow-y: auto;
+  flex-shrink: 0;
 }
 
 /* ── Verdict pill ──────────────────────────────────────────────── */

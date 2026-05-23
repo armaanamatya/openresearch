@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView } from "../../../hooks/use-rlm-run";
 import type { ChatMessage } from "../../../hooks/use-steering-chat";
 import { SteeringChat } from "./steering-chat";
@@ -19,6 +19,10 @@ export interface NodeDetailSidebarProps {
   iterationCount: number;
   candidatesProposed: number;
   candidatesPromoted: number;
+  /** Lift collapsed state to parent (optional — falls back to internal state). */
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  style?: CSSProperties;
 }
 
 const COMPREHENSION_PRIMITIVES = new Set([
@@ -310,8 +314,16 @@ export function NodeDetailSidebar({
   iterationCount,
   candidatesProposed,
   candidatesPromoted,
+  collapsed: collapsedProp,
+  onCollapsedChange,
+  style,
 }: NodeDetailSidebarProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedInternal, setCollapsedInternal] = useState(false);
+  const collapsed = collapsedProp ?? collapsedInternal;
+  function setCollapsed(next: boolean) {
+    setCollapsedInternal(next);
+    onCollapsedChange?.(next);
+  }
 
   if (collapsed) {
     return (
@@ -319,6 +331,7 @@ export function NodeDetailSidebar({
         className={styles.sidebarCollapsed}
         data-testid="node-detail-sidebar"
         aria-label="Node detail sidebar (collapsed)"
+        style={undefined}
       >
         <button
           type="button"
@@ -336,6 +349,7 @@ export function NodeDetailSidebar({
   return (
     <aside
       className={styles.sidebar}
+      style={style}
       data-testid="node-detail-sidebar"
       aria-label="Node detail sidebar"
     >
