@@ -107,6 +107,20 @@ Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod crea
 - **Tests:** existing 2/2 header tests pass; the change is additive (new prop defaults to null = old behavior).
 - **Verified:** pending — will snapshot prj_20457ea6673b5a32's `implement_baseline` phase to confirm the chip renders the new text.
 
+## F10 — Lab canvas appeared dead between events; built a LiveActivityStrip
+
+- **Severity:** UX (highest priority); user's verbatim words: "user has no clue what is going on atp, just 7 mins doing nothing, we should have a view so the user can understand what the agent is doing at all times, it needs to be active at all times".
+- **Symptom:** the lab UI updates main panels only when a `primitive_call` / `repl_iteration` event lands. Between events (root model thinking, sub-RLM in flight, runpod pod ramping) the entire canvas appeared frozen — the only visible motion was a tiny `6m 30s elapsed` counter in a sidebar metric cell. Screenshot proof attached in the conversation log (`Screenshot 2026-05-23 at 2.23.55 PM.png`).
+- **Cause:** no component subscribed to "what's the agent doing RIGHT NOW" — the existing chips and panels are all event-derived and event-discrete.
+- **Fix:** commit `8e16a56` adds `frontend/src/components/lab/rlm/live-activity-strip.tsx` — an always-visible narration band slotted between RlmHeader and RubricStrip. Derivation ladder, most → least specific:
+  1. In-flight primitive  → `▶ Running <primitive> · Xs` (info; warn when >60s)
+  2. In-flight sub-RLM    → `↳ Sub-RLM depth N querying paper · Xs`
+  3. Between iterations   → `… Iteration X complete — root thinking · Xs`
+  4. Pre-first-iteration  → `… Starting up — root model reading paper · Xs`
+  Terminal states (completed/partial/failed) get their own banner. Pulsing dot makes the live state unmistakable. Tooltip explains why long gaps are normal (so the user never thinks the run is wedged when it isn't).
+- **Tests:** 16/16 existing tests pass (rlm-header.test.tsx + use-rdr-artifacts.test.ts). TypeScript clean.
+- **Verified:** pending next Playwright snapshot on prj_20457ea6673b5a32.
+
 ## Run 2 — prj_20457ea6673b5a32 (fresh restart 19:17 UTC)
 
 After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into the code-writing phase, the user requested a full restart to bake in the new UI/backend fixes from a clean state. Old run subprocess killed, headless tail + chromium killed, MCP playwright closed, runpod pods enumerated (0 active), docker reprolab containers stopped. Fresh kickoff via curl POST `/api/demo/arxiv` with same body: `{url, mode:rlm, sandbox:runpod, model:sonnet}`. Returned `projectId=prj_20457ea6673b5a32, sandboxMode=runpod` — F2 fix verified working end-to-end on the fresh run too.
