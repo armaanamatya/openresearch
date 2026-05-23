@@ -159,7 +159,7 @@ class Settings(BaseSettings):
         ),
     )
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
-    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04"
     runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
     runpod_gpu_count: int = 1
     runpod_cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
