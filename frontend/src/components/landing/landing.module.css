@@ -580,7 +580,17 @@
   line-height: 1;
 }
 .bench-cell .v.placeholder { color: var(--landing-ink-3); }
-.bench-cell .v sup { font-size: 0.45em; color: var(--landing-ink-3); margin-left: 4px; vertical-align: super; font-family: var(--font-jetbrains-mono), ui-monospace, monospace; }
+/* Placeholder tokens (.tok) inside the big .v need scaling — at clamp(34-56px)
+   the literal "{{REPRODUCTION_SCORE}}" overflows its 1/4-width cell. Force
+   one-line, scale so the longest token ("{{REPRODUCTION_SCORE}}", ~22 chars)
+   fits in a ~250px cell-content-width at the smallest .v clamp value. */
+.bench-cell .v { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bench-cell .v .tok {
+  font-size: 14px;
+  padding: 3px 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
 .bench-cell .sub { font-size: 12px; color: var(--landing-ink-3); margin-top: 10px; max-width: 32ch; line-height: 1.45; }
 .bench-cell .pl-note {
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace; font-size: 9.5px; letter-spacing: .12em;

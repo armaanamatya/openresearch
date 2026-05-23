@@ -393,16 +393,16 @@ function BenchmarkSection(): React.JSX.Element {
 
         <div className={`${styles["bench-numbers"]} ${styles.reveal}`}>
           <div className={styles["bench-cell"]}>
-            <span className={styles["pl-note"]}>placeholder</span>
             <div className={styles.lbl}>PaperBench v0 · score</div>
             <div className={`${styles.v} ${styles.placeholder}`}>
               <span className={styles.tok}>{"{{REPRODUCTION_SCORE}}"}</span>
-              <sup>↗ target {"{{TARGET_SCORE}}"}</sup>
+            </div>
+            <div className={styles.sub} style={{ marginTop: 6, fontFamily: "var(--font-jetbrains-mono), monospace", fontSize: 10.5, letterSpacing: ".06em", color: "var(--landing-ink-4)", textTransform: "uppercase" }}>
+              ↗ target <span className={styles.tok} style={{ fontSize: "0.95em" }}>{"{{TARGET_SCORE}}"}</span>
             </div>
             <div className={styles.sub}>Median per-cell rubric match across the suite.</div>
           </div>
           <div className={styles["bench-cell"]}>
-            <span className={styles["pl-note"]}>placeholder</span>
             <div className={styles.lbl}>Papers reproduced</div>
             <div className={`${styles.v} ${styles.placeholder}`}>
               <span className={styles.tok}>{"{{N_PAPERS}}"}</span>
@@ -410,15 +410,13 @@ function BenchmarkSection(): React.JSX.Element {
             <div className={styles.sub}>End-to-end. Comprehension through sealed scorecard.</div>
           </div>
           <div className={styles["bench-cell"]}>
-            <span className={styles["pl-note"]}>placeholder</span>
             <div className={styles.lbl}>Median drift</div>
-            <div className={`${styles.v} ${styles.placeholder}`}>
-              ± <span className={styles.tok}>{"{{MEDIAN_DRIFT}}"}</span>
+            <div className={`${styles.v} ${styles.placeholder}`} style={{ whiteSpace: "nowrap" }}>
+              <span style={{ marginRight: 4 }}>±</span><span className={styles.tok}>{"{{MEDIAN_DRIFT}}"}</span>
             </div>
             <div className={styles.sub}>Absolute deviation between observed and paper-reported metrics.</div>
           </div>
           <div className={styles["bench-cell"]}>
-            <span className={styles["pl-note"]}>placeholder</span>
             <div className={styles.lbl}>Wall-clock per paper</div>
             <div className={`${styles.v} ${styles.placeholder}`}>
               <span className={styles.tok}>{"{{HOURS_PER_PAPER}}"}</span>
