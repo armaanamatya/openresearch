@@ -440,6 +440,28 @@ _NO_STUB_BLOCK = (
     "actual model + data.\n"
 )
 
+_POD_SETUP_BLOCK = (
+    "\n\nRUNPOD SANDBOX — pod env setup (when sandbox=runpod):\n"
+    "On RunPod the pod boots from a GENERIC pytorch image (typically "
+    "runpod/pytorch:*-py3.10-cuda*-ubuntu22.04). Your Dockerfile is NOT used "
+    "to build the pod — it's documentation only. The pod's installed "
+    "packages are limited to what's pre-baked in that image.\n"
+    "Your commands.json MUST install dependencies at runtime, robustly:\n"
+    "  1. FIRST entry: `python -m pip install --upgrade --no-cache-dir pip wheel setuptools`\n"
+    "  2. SECOND entry: `python -m pip install --no-cache-dir -r requirements.txt 2>&1 | tail -200`\n"
+    "     (NOTE: `python -m pip`, NOT `pip` — ensures same Python interpreter as the script.\n"
+    "      NEVER use `pip install -q` — silent failures cause ModuleNotFoundError downstream.)\n"
+    "  3. THIRD entry: `python train.py`\n"
+    "Either three separate entries OR one chained `&&` command — either form works,\n"
+    "but DO NOT silence stderr. If pip install fails, the run MUST fail visibly\n"
+    "with the pip error, not produce a ModuleNotFoundError in train.py.\n"
+    "Special-case packages that need CUDA dev headers (bitsandbytes, flash-attn,\n"
+    "deepspeed, apex): prefer a PRE-BUILT WHEEL from pypi if available (e.g.\n"
+    "`bitsandbytes==0.43.0` ships precompiled), otherwise pin to a runtime-only\n"
+    "alternative (e.g. use `peft` + LoRA instead of full-precision optimizer states).\n"
+)
+
+
 _RUNTIME_DETECTION_BLOCK = (
     "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
     "Your code MUST detect available compute at runtime and adapt accordingly. "
@@ -492,8 +514,11 @@ def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
     # NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
-    # before the runtime-detection nuance. Runtime detection then layers on top.
+    # before the runtime-detection nuance. RUNPOD POD SETUP comes only when the
+    # sandbox is runpod — keeps the prompt focused for local-docker reproductions.
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+    if "runpod" in mode_str:
+        guidance += _POD_SETUP_BLOCK
 
     # Policy overlay: explicit gpu_mode=off → force CPU-only entrypoint.
     if gpu_str in {"off", "none"}:

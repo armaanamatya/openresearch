@@ -159,7 +159,14 @@ class Settings(BaseSettings):
         ),
     )
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
-    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04"
+    # Reverted from -runtime- back to -devel-: runtime variant lacks CUDA dev
+    # headers, which breaks bitsandbytes / flash-attn / deepspeed at pip-install
+    # time (no precompiled wheel → tries to JIT, fails). SDAR run hit this:
+    # bitsandbytes silently failed under chained `pip install -q ... && python`,
+    # train.py then ModuleNotFoundError'd on transformers. The 14GB cold-start
+    # savings aren't worth the breakage. Override via REPROLAB_RUNPOD_IMAGE
+    # if you have a paper that genuinely doesn't need dev headers.
+    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
     runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
     runpod_gpu_count: int = 1
     runpod_cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
