@@ -498,3 +498,92 @@ describe("foldPrimitiveCall — constellation nodes", () => {
     expect(primNodes).toHaveLength(0);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Lane γ — perModelMetrics (per-model multi-model UI, 2026-05-23)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const T_EXP = "2026-05-23T12:00:00.000Z";
+
+describe("foldExperimentCompleted — perModelMetrics", () => {
+  it("starts as null in INITIAL_RLM_STATE", () => {
+    expect(INITIAL_RLM_STATE.perModelMetrics).toBeNull();
+  });
+
+  it("sets perModelMetrics from a successful experiment_completed with per_model", () => {
+    const ev: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: true,
+      metrics: { wall_time_seconds: 697 },
+      per_model: {
+        qwen3_1_7b: { alfworld_success_rate: 0.34, searchqa_accuracy: 0.42 },
+        qwen2_5_3b: { alfworld_success_rate: 0.51, searchqa_accuracy: 0.55 },
+      },
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.perModelMetrics).not.toBeNull();
+    expect(Object.keys(s.perModelMetrics!).sort()).toEqual(["qwen2_5_3b", "qwen3_1_7b"]);
+    expect(s.perModelMetrics!["qwen3_1_7b"].alfworld_success_rate).toBeCloseTo(0.34);
+    expect(s.perModelMetrics!["qwen2_5_3b"].searchqa_accuracy).toBeCloseTo(0.55);
+  });
+
+  it("does NOT update perModelMetrics on a failed experiment", () => {
+    // First set some per-model metrics.
+    const successEv: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: true,
+      metrics: {},
+      per_model: { model_a: { acc: 0.8 }, model_b: { acc: 0.7 } },
+    };
+    let s = fold(INITIAL_RLM_STATE, successEv);
+    expect(s.perModelMetrics).not.toBeNull();
+
+    // Now a failed experiment — must NOT overwrite.
+    const failEv: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: false,
+      metrics: { error: "oom" },
+      per_model: { model_a: { acc: 0.0 }, model_b: { acc: 0.0 } },
+    };
+    s = fold(s, failEv);
+    // Still the successful data.
+    expect(s.perModelMetrics!["model_a"].acc).toBeCloseTo(0.8);
+  });
+
+  it("leaves perModelMetrics null when per_model is absent (single-model paper)", () => {
+    const ev: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: true,
+      metrics: { bleu: 28.4 },
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.perModelMetrics).toBeNull();
+  });
+
+  it("leaves perModelMetrics null when per_model is an empty dict", () => {
+    const ev: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: true,
+      metrics: {},
+      per_model: {},
+    };
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.perModelMetrics).toBeNull();
+  });
+
+  it("is pure — repeated fold of same event produces same result", () => {
+    const ev: RlmDashboardEvent = {
+      event: "experiment_completed",
+      timestamp: T_EXP,
+      success: true,
+      metrics: {},
+      per_model: { a: { x: 1 }, b: { x: 2 } },
+    };
+    expect(fold(INITIAL_RLM_STATE, ev)).toEqual(fold(INITIAL_RLM_STATE, ev));
+  });
+});

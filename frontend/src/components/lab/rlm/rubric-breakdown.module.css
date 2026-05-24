@@ -166,3 +166,69 @@
   font-size: var(--fs-xs);
   color: var(--muted);
 }
+
+/* ── Per-model mini-bars (Lane γ, 2026-05-23) ─────────────────────── */
+
+.leafRowWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.perModelMiniBarGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line-2);
+  margin-left: 4px;
+}
+
+.perModelMiniBarRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.perModelMiniBarLabel {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  min-width: 80px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.perModelMiniBarTrack {
+  flex: 1;
+  height: 4px;
+  background: var(--chip);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.perModelMiniBarFill {
+  height: 100%;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 2px;
+  transition: width 300ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .perModelMiniBarFill {
+    transition: none;
+  }
+}
+
+.perModelMiniBarVal {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  min-width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
