@@ -10,19 +10,31 @@ Archiving fires only when ``final_report.json`` exists.  A failed prior
 attempt that did not produce ``final_report.json`` is partially archived (any
 listed artifacts that do exist are moved) without crashing.
 
+**Warm retry (Lane A)**: when ``final_report.json`` is absent BUT ``code/``
+already holds an agent-written artifact (e.g. ``code/commands.json`` or
+``code/train.py``), this is a kill-and-relaunch of a still-in-progress run.
+The function logs a "warm retry detected" message and returns ``None`` — the
+prior ``code/`` is left in place so the cached ``implement_baseline`` result
+can short-circuit the ~5-min sub-agent call on the next iteration.  The agent
+still operates in fix-existing-code mode via ``repair_context`` if the cache
+hit is invalidated.
+
 Paper-level artifacts that are stable across attempts — ``paperMeta.json``,
 ``raw_paper.pdf``, ``raw_paper.html`` (or ``paper_html.html``),
 ``parsed_full_text.txt``, ``generated_rubric.json`` — are intentionally left
 in place so the paper is not re-ingested on the next run.
 
 Design contract: task #42 / ``docs/runbooks/2026-05-23-sdar-baseline-handoff.md``.
+Lane A warm-retry: 2026-05-24 spec.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +100,11 @@ _PAPER_ARTIFACTS: frozenset[str] = frozenset({
 # Archiving fires only when this file exists — signals a completed prior run.
 _TRIGGER_FILE = "final_report.json"
 
+# Files inside ``code/`` whose presence indicates a prior attempt's
+# code-generation phase ran.  Used to detect the "warm retry" case (no
+# final_report.json, but code/ already holds an agent-written artifact).
+_WARM_RETRY_MARKERS: tuple[str, ...] = ("commands.json", "train.py")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -106,6 +123,74 @@ def _fs_safe_ts() -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S-%f")
     suffix = uuid4().hex[:6]
     return f"{ts}-{suffix}"
+
+
+def _is_warm_retry(project_dir: Path) -> bool:
+    """Detect a kill-and-relaunch of a still-in-progress run.
+
+    Returns True when:
+      * ``final_report.json`` is absent (no completed prior run), AND
+      * ``code/`` exists and contains at least one agent-written marker
+        (``commands.json`` or ``train.py``).
+
+    The agent's first ``implement_baseline`` call will then see the existing
+    code on disk and either reuse it (cache hit, Lane A) or operate in
+    fix-existing-code mode via ``repair_context``.
+    """
+    if (project_dir / _TRIGGER_FILE).exists():
+        return False
+    code_dir = project_dir / _CODE_DIR
+    if not code_dir.is_dir():
+        return False
+    return any((code_dir / m).exists() for m in _WARM_RETRY_MARKERS)
+
+
+def _chown_root_owned_code(code_dir: Path) -> None:
+    """Reclaim ownership of root-owned files inside ``code_dir`` before the move.
+
+    Docker containers that run as root inside (the default) write artifacts to
+    the bind-mounted host directory as root.  The host process (running as the
+    user) then cannot ``shutil.move`` those files into ``attempts/`` — every
+    archive attempt aborts with PermissionError until the operator manually
+    chowns the directory.
+
+    The elegant fix: run ``docker run --rm -v <code_dir>:/work alpine
+    chown -R <uid>:<gid> /work`` BEFORE the move.  Fail-soft: if Docker is
+    unavailable or the chown fails, log a warning and let the subsequent move
+    fail with the original PermissionError — so the cause is visible in logs
+    instead of silently working some of the time.
+
+    Skipped on Windows (no ``os.getuid``) and when the directory is missing.
+    """
+    if not hasattr(os, "getuid"):  # Windows — nothing to chown
+        return
+    if not code_dir.exists() or not code_dir.is_dir():
+        return
+    try:
+        uid = os.getuid()  # type: ignore[attr-defined]
+        gid = os.getgid()  # type: ignore[attr-defined]
+        # 30 s cap: a hung docker daemon must NOT block archive forever.
+        subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "-v", f"{code_dir}:/work",
+                "alpine", "chown", "-R", f"{uid}:{gid}", "/work",
+            ],
+            check=True,
+            timeout=30,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError) as exc:
+        logger.warning(
+            "attempt_isolation: docker chown -R failed for %s (%s) — "
+            "the subsequent shutil.move may hit PermissionError on "
+            "root-owned files; manually `docker run --rm -v %s:/work alpine "
+            "chown -R %s:%s /work` if so",
+            code_dir, exc, code_dir,
+            getattr(os, "getuid", lambda: "?")(),
+            getattr(os, "getgid", lambda: "?")(),
+        )
 
 
 def _reset_demo_status(project_dir: Path, project_id: str) -> None:
@@ -141,8 +226,15 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
     """Archive prior-attempt artifacts if a completed run is present.
 
     Returns ``None`` when archiving was not needed (first-ever run, the run
-    dir does not exist, or the per-project lock is already held by another
-    process).  Returns ``{"attempt_dir": str, "moved": list[str]}`` on success.
+    dir does not exist, the per-project lock is already held by another
+    process, or a warm-retry was detected).  Returns
+    ``{"attempt_dir": str, "moved": list[str]}`` on success.
+
+    **Warm retry (Lane A)**: when ``final_report.json`` is absent BUT
+    ``code/commands.json`` or ``code/train.py`` exists (kill-and-relaunch of
+    a still-in-progress run), the function logs a warm-retry notice and
+    returns ``None`` — the prior ``code/`` is preserved so the
+    ``implement_baseline`` cache can short-circuit the ~5-min sub-agent call.
 
     Idempotent: a missing file in the archive list is silently skipped —
     a failed prior run that did not produce every listed file is handled
@@ -157,6 +249,19 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
     project_dir = runs_root / project_id
 
     if not project_dir.is_dir():
+        return None
+
+    # Warm-retry detection (Lane A): kill-and-relaunch of a still-in-progress
+    # run.  No final_report.json, but code/ already holds an agent-written
+    # artifact — leave everything in place so the implement_baseline cache can
+    # short-circuit the ~5-min sub-agent call on the next iteration.
+    if _is_warm_retry(project_dir):
+        msg = (
+            f"attempt_isolation: warm retry detected for {project_id} "
+            f"(prior code/ present, no final_report.json) — skipping archive"
+        )
+        logger.info(msg)
+        print(msg, file=sys.stderr)
         return None
 
     # Guard: only archive when a completed run is present.
@@ -212,8 +317,13 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
             moved.append(_REPL_PICKLE)
 
         # 4. code/ directory — rebuild from scratch on the new attempt.
+        # Reclaim ownership FIRST: docker containers run as root inside and
+        # bind-mounted writes land as root on the host; without the chown the
+        # subsequent shutil.move trips PermissionError on every root-owned file.
+        # (Fail-soft — see _chown_root_owned_code for the failure narrative.)
         code_src = project_dir / _CODE_DIR
         if code_src.exists() and code_src.is_dir():
+            _chown_root_owned_code(code_src)
             shutil.move(str(code_src), str(attempt_dir / _CODE_DIR))
             moved.append(_CODE_DIR + "/")
 

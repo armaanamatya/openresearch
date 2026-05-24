@@ -288,3 +288,161 @@ class TestPaperArtifactsNeverMoved:
             assert (run_dir / name).exists(), (
                 f"{name} must survive multiple archive passes"
             )
+
+
+# ---------------------------------------------------------------------------
+# Lane A — warm retry vs. clean retry  (2026-05-24)
+# ---------------------------------------------------------------------------
+
+
+class TestWarmRetry:
+    """Kill-and-relaunch: prior code/ exists but final_report.json is absent.
+
+    The function must NOT archive — leaving the code in place lets
+    implement_baseline's cache short-circuit the ~5-min Sonnet sub-agent on
+    the next iteration.
+    """
+
+    def test_warm_retry_preserves_code_when_commands_json_present(self, tmp_path):
+        """commands.json on disk → warm retry → NO archive."""
+        run_dir = _make_run_dir(tmp_path, "proj_warm_a")
+        # Seed only the code/ — NOT final_report.json (kill mid-run).
+        code_dir = run_dir / "code"
+        code_dir.mkdir()
+        (code_dir / "commands.json").write_text('["python train.py"]')
+        (code_dir / "train.py").write_text("# train")
+        # Some run-derived files are present (a failed run wrote them).
+        (run_dir / "experiment_runs.jsonl").write_text('{"success": false}\n')
+
+        result = maybe_archive_prior_attempt("proj_warm_a", tmp_path)
+
+        assert result is None, "Warm retry must NOT trigger archive"
+        # code/ stays in place.
+        assert (run_dir / "code" / "commands.json").exists()
+        assert (run_dir / "code" / "train.py").exists()
+        # attempts/ dir must NOT have been created.
+        assert not (run_dir / "attempts").exists()
+
+    def test_warm_retry_preserves_code_with_only_train_py(self, tmp_path):
+        """train.py alone (no commands.json yet) is also a warm-retry marker."""
+        run_dir = _make_run_dir(tmp_path, "proj_warm_b")
+        code_dir = run_dir / "code"
+        code_dir.mkdir()
+        (code_dir / "train.py").write_text("# half-written baseline")
+
+        result = maybe_archive_prior_attempt("proj_warm_b", tmp_path)
+
+        assert result is None
+        assert (run_dir / "code" / "train.py").exists()
+        assert not (run_dir / "attempts").exists()
+
+    def test_empty_code_dir_is_not_warm_retry(self, tmp_path):
+        """code/ exists but is empty (no marker files) → fall through to no-op,
+        the same as a first-ever run."""
+        run_dir = _make_run_dir(tmp_path, "proj_empty_code")
+        (run_dir / "code").mkdir()
+
+        result = maybe_archive_prior_attempt("proj_empty_code", tmp_path)
+        assert result is None
+        # Empty code/ stays empty — nothing to preserve.
+        assert (run_dir / "code").is_dir()
+
+    def test_clean_retry_still_archives_when_final_report_present(self, tmp_path):
+        """final_report.json present → archive even if code/ also exists.
+
+        This pins the invariant: warm-retry detection MUST NOT swallow a
+        completed run's archive — only the kill-mid-run case skips.
+        """
+        run_dir = _make_run_dir(tmp_path, "proj_clean_a")
+        _seed_artifacts(run_dir)  # writes final_report.json AND code/train.py
+        _seed_paper_artifacts(run_dir)
+
+        result = maybe_archive_prior_attempt("proj_clean_a", tmp_path)
+
+        assert result is not None, "Clean retry must archive"
+        attempt_dir = Path(result["attempt_dir"])
+        # code/ moved into the attempt dir.
+        assert (attempt_dir / "code" / "train.py").exists()
+        assert not (run_dir / "code" / "train.py").exists()
+
+
+class TestChownBeforeMove:
+    """Lane A change 3: docker chown -R is invoked BEFORE shutil.move on the
+    code/ directory.  Fail-soft on missing docker / non-POSIX hosts."""
+
+    def test_chown_invoked_before_move(self, tmp_path, monkeypatch):
+        """The chown subprocess MUST run before the shutil.move on code/."""
+        run_dir = _make_run_dir(tmp_path, "proj_chown_a")
+        _seed_artifacts(run_dir)
+
+        calls: list[tuple] = []
+
+        from backend.services.runs import attempt_isolation as ai
+        real_move = ai.shutil.move
+
+        def _track_chown(code_dir):
+            calls.append(("chown", str(code_dir)))
+
+        def _track_move(src, dst):
+            calls.append(("move", str(src), str(dst)))
+            return real_move(src, dst)
+
+        monkeypatch.setattr(ai, "_chown_root_owned_code", _track_chown)
+        monkeypatch.setattr(ai.shutil, "move", _track_move)
+
+        maybe_archive_prior_attempt("proj_chown_a", tmp_path)
+
+        # Find chown index and the move of code/ index.
+        chown_idx = next(
+            (i for i, c in enumerate(calls) if c[0] == "chown"), None
+        )
+        move_code_idx = next(
+            (i for i, c in enumerate(calls)
+             if c[0] == "move" and c[1].endswith("/code")),
+            None,
+        )
+        assert chown_idx is not None, "chown must be invoked when code/ exists"
+        assert move_code_idx is not None, "code/ must be moved"
+        assert chown_idx < move_code_idx, (
+            "chown must run BEFORE shutil.move on code/"
+        )
+
+    def test_chown_failure_is_fail_soft(self, tmp_path, monkeypatch):
+        """A failing docker chown must NOT crash the archive."""
+        run_dir = _make_run_dir(tmp_path, "proj_chown_fail")
+        _seed_artifacts(run_dir)
+
+        from backend.services.runs import attempt_isolation as ai
+
+        def _raises(code_dir):
+            # Simulate what _chown_root_owned_code does on failure: log and
+            # return without raising.  (The real function already swallows
+            # docker errors; this test pins the contract.)
+            return None
+
+        monkeypatch.setattr(ai, "_chown_root_owned_code", _raises)
+        # Should not raise.
+        result = maybe_archive_prior_attempt("proj_chown_fail", tmp_path)
+        assert result is not None
+
+    def test_chown_helper_is_fail_soft_when_docker_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """_chown_root_owned_code swallows FileNotFoundError when `docker` is
+        absent from PATH."""
+        from backend.services.runs.attempt_isolation import (
+            _chown_root_owned_code,
+        )
+
+        code_dir = tmp_path / "code"
+        code_dir.mkdir()
+        (code_dir / "train.py").write_text("# x")
+
+        import subprocess as _sp
+
+        def _raise_fnf(*a, **kw):
+            raise FileNotFoundError("docker not on PATH")
+
+        monkeypatch.setattr(_sp, "run", _raise_fnf)
+        # Must not raise.
+        _chown_root_owned_code(code_dir)

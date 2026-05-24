@@ -60,9 +60,11 @@ def test_make_key_canonical_for_dict_key_order() -> None:
 
 
 def test_non_cacheable_primitive_returns_none_on_get(tmp_path: Path) -> None:
-    # implement_baseline is NOT in CACHEABLE_PRIMITIVES — must not be cached
-    pc.put(tmp_path, "implement_baseline", payload={"x": 1}, result={"y": 2})
-    assert pc.maybe_get(tmp_path, "implement_baseline", payload={"x": 1}) is None
+    # run_experiment is NOT in CACHEABLE_PRIMITIVES — must not be cached.
+    # (implement_baseline was added in Lane A — pick a primitive that is
+    # genuinely never cached: run_experiment depends on real-world state.)
+    pc.put(tmp_path, "run_experiment", payload={"x": 1}, result={"y": 2})
+    assert pc.maybe_get(tmp_path, "run_experiment", payload={"x": 1}) is None
 
 
 def test_cacheable_primitives_listed() -> None:
@@ -72,6 +74,9 @@ def test_cacheable_primitives_listed() -> None:
         "detect_environment",
         "plan_reproduction",
         "verify_against_rubric",
+        # Lane A — warm-retry cache.  implement_baseline became cacheable so
+        # kill-and-relaunch can reuse the prior attempt's code.
+        "implement_baseline",
     }
     assert pc.CACHEABLE_PRIMITIVES == expected
 

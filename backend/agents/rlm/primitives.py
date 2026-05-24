@@ -665,9 +665,16 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     Hardening (A2-C2): `pool.submit(...).result()` previously blocked the
     worker thread indefinitely; now bounded by `_timeout_for(ctx, 3600)`.
     On timeout returns a fail-soft error dict (never raises).
+
+    Lane A — warm-retry cache: cached on `{plan, repair_context, arxiv_id,
+    sandbox_mode, gpu_mode}` (NOT `remaining_s` — that changes every call).
+    On cache hit we ALSO verify `code/commands.json` is still on disk and
+    treat a missing manifest as a miss → recompute from scratch.  This handles
+    the race where `attempt_isolation` archived the code AFTER the cache wrote.
     """
     import asyncio
     import json
+    from pathlib import Path
 
     from backend.agents.schemas import PaperClaimMap, EnvironmentSpec, ReproductionContract
 
@@ -683,6 +690,46 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # the code-writing agent into fix-existing-code mode — the root passes it
     # to retry after run_experiment fails.
     repair_context = plan.get("repair_context")
+
+    # ------------------------------------------------------------------
+    # Cache lookup BEFORE we spawn the expensive sub-agent.
+    # Payload deliberately excludes ``remaining_s`` (every call differs)
+    # but includes ``repair_context`` (different failure → different fix).
+    # Sandbox/gpu enums are coerced to their .value strings so the key is
+    # canonical across run instances.
+    # ------------------------------------------------------------------
+    from backend.agents.rlm import primitive_cache as _cache
+    _sandbox_key = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode) if ctx.sandbox_mode is not None else None)
+    _gpu_key = getattr(getattr(ctx, "gpu_mode", None), "value", str(getattr(ctx, "gpu_mode", None)) if getattr(ctx, "gpu_mode", None) is not None else None)
+    _payload = {
+        "plan": plan,
+        "repair_context": repair_context,
+        "arxiv_id": getattr(ctx, "arxiv_id", None),
+        "sandbox_mode": _sandbox_key,
+        "gpu_mode": _gpu_key,
+    }
+    _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
+    if _cached is not None:
+        # Recover the original return shape (str | dict).
+        _value: Any = _cached.get("value") if _cached.get("_kind") == "path" else _cached
+        if isinstance(_value, str):
+            # Verify the on-disk commands.json still exists — if attempt_isolation
+            # archived the code between the cache write and now, treat as miss.
+            _verify_dir = Path(_value)
+            if (_verify_dir / "commands.json").exists():
+                logger.info(
+                    "implement_baseline: cache HIT (warm retry) for %s — "
+                    "skipping ~5 min Sonnet sub-agent call",
+                    ctx.project_id,
+                )
+                return _value
+            logger.info(
+                "implement_baseline: cache HIT but code/ missing on disk "
+                "(probably archived) — recomputing from scratch",
+            )
+        elif isinstance(_value, dict):
+            # Cached error dict (e.g. timeout) — return as-is.
+            return _value
 
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
@@ -713,12 +760,16 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
         try:
             result = pool.submit(asyncio.run, _run()).result(timeout=timeout)
         except concurrent.futures.TimeoutError:
-            return {
+            _err = {
                 "success": False,
                 "error": (
                     f"implement_baseline: timed out after {timeout:.0f} s"
                 ),
             }
+            # Cache the timeout dict so an identical-input retry returns
+            # the same fail-soft error without spending another 4 h.
+            _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
+            return _err
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -730,7 +781,15 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     code_dir.mkdir(parents=True, exist_ok=True)
     commands = list(getattr(result, "commands_to_run", []) or [])
     (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
-    return str(code_dir)
+    _code_path = str(code_dir)
+    # Cache value wraps the str path so the dict-only cache contract is preserved.
+    _cache.put(
+        ctx.project_dir,
+        "implement_baseline",
+        payload=_payload,
+        result={"_kind": "path", "value": _code_path},
+    )
+    return _code_path
 
 
 def _backend_for_sandbox_mode(

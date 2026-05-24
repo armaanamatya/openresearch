@@ -29,10 +29,16 @@ Design contract:
     invalidate the cache without a manual purge.
   * Opt-out per run via ``REPROLAB_PRIMITIVE_CACHE=disabled``.
 
+Cached with extra care (Lane A — warm retry):
+
+  * ``implement_baseline`` — cached on ``{plan, repair_context, arxiv_id,
+    sandbox_mode, gpu_mode}`` (NOT ``remaining_s`` — that changes every
+    call).  The primitive ALSO verifies the on-disk ``code/commands.json``
+    exists on hit and recomputes if attempt_isolation archived the code
+    between cache write and re-read.
+
 Not cacheable (intentional exclusions):
 
-  * ``implement_baseline`` — non-deterministic; uses ``repair_context``
-    which depends on prior-iteration results.
   * ``run_experiment`` — depends on real-world state (datasets fetched,
     GPU availability, sandbox).
   * ``build_environment`` — Docker layer-cached already; double-caching
@@ -63,6 +69,12 @@ CACHEABLE_PRIMITIVES: Final[frozenset[str]] = frozenset({
     "detect_environment",
     "plan_reproduction",
     "verify_against_rubric",
+    # Lane A — warm-retry cache. ``implement_baseline`` is expensive (~5 min,
+    # ~$0.50 Sonnet) and on a kill-and-relaunch the prior code/ usually already
+    # holds the answer. The cache key intentionally excludes ``remaining_s``
+    # (changes every call); the primitive ALSO verifies code/commands.json
+    # exists on hit and treats the miss as recompute-from-scratch.
+    "implement_baseline",
 })
 
 _CACHE_FILENAME: Final[str] = "primitive_cache.jsonl"
