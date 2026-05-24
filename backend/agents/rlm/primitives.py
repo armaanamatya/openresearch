@@ -814,9 +814,27 @@ async def _execute_in_sandbox(
         },
     )
     sandbox = await service.create_sandbox(CreateSandbox(config=config))
+
+    # Auto-install requirements.txt on RunPod BEFORE commands.json runs. The
+    # agent's prompt has repeatedly forgotten to wire `python -m pip install -r
+    # requirements.txt` into commands.json on runpod (Dockerfile is doc-only;
+    # pod boots from the generic pytorch image without the paper's deps). Make
+    # this a backend invariant so every paper's requirements.txt is honored
+    # whether the agent remembers or not. Local docker is unaffected because
+    # the Dockerfile IS used to build the image — deps are already baked in.
+    requirements_path = code_dir / "requirements.txt"
+    bootstrap_commands: list[str] = []
+    if str(sandbox_mode).lower() == "runpod" and requirements_path.exists():
+        bootstrap_commands.append(
+            "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
+        )
+        bootstrap_commands.append(
+            "python -m pip install --no-cache-dir -r requirements.txt"
+        )
+
     results = []
     try:
-        for command in commands:
+        for command in (*bootstrap_commands, *commands):
             results.append(await service.execute(
                 ExecuteCommand(sandbox=sandbox, command=command,
                                timeout=_EXEC_TIMEOUT_SECONDS)))
