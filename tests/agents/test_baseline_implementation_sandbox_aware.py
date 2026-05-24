@@ -65,36 +65,36 @@ def _minimal_inputs(tmp_path: Path):
 
 
 class TestDynamicComputeGuidance:
-    """_compute_constraint_guidance uses BOTH sandbox_mode AND gpu_mode.
+    """Runtime detection block is ALWAYS-ON; policy overlay is gpu_mode-driven.
 
-    Decision table pinned here:
-    - docker + gpu_mode=None   → constraint (CPU-likely)
-    - docker + gpu_mode='off'  → constraint
-    - docker + gpu_mode='auto' → constraint (most dev hosts lack GPU)
-    - docker + gpu_mode='prefer' → constraint
-    - docker + gpu_mode='max'  → NO constraint (user demands GPU)
-    - local + gpu_mode=None    → constraint
-    - runpod + gpu_mode=None   → NO constraint (runpod has GPU)
-    - runpod + gpu_mode='auto' → NO constraint
-    - sandbox=None, gpu_mode=None → NO constraint (conservative)
-    - sandbox=unknown, gpu_mode=None → NO constraint (conservative)
+    Per the 2026-05-23 night refactor: the agent writes ONE script that
+    detects torch.cuda.is_available() at runtime and adapts. Hard-coding
+    either mode at build time is wrong — same artifact runs on CPU docker
+    AND GPU runpod.
+
+    Always-on (every call): RUNTIME COMPUTE DETECTION block.
+    Policy overlays:
+    - gpu_mode='off' → adds CPU-only overlay (entrypoint targets CPU path)
+    - gpu_mode='max' → adds GPU overlay (entrypoint targets GPU path)
+    - gpu_mode in {auto, prefer, None}: no overlay (runtime detection wins)
     """
 
-    @pytest.mark.parametrize("sandbox,gpu_mode,expect_guidance", [
-        ("docker",        None,      True),
-        ("docker",        "off",     True),
-        ("docker",        "auto",    True),
-        ("docker",        "prefer",  True),
-        ("docker",        "max",     False),
-        ("local",         None,      True),
-        ("runpod",        None,      False),
-        ("runpod",        "auto",    False),
-        (None,            None,      False),
-        ("unknown_value", None,      False),
+    @pytest.mark.parametrize("sandbox,gpu_mode", [
+        ("docker",        None),
+        ("docker",        "auto"),
+        ("docker",        "prefer"),
+        ("local",         None),
+        ("runpod",        None),
+        ("runpod",        "auto"),
+        (None,            None),
+        ("unknown_value", None),
     ])
-    def test_compute_guidance_parametrized(
-        self, sandbox, gpu_mode, expect_guidance, tmp_path, monkeypatch
+    def test_runtime_detection_block_is_always_present(
+        self, sandbox, gpu_mode, tmp_path, monkeypatch
     ):
+        """The runtime-detection block fires for EVERY sandbox+gpu_mode combo
+        (except the policy-overlay cases tested separately). This is the
+        invariant 'we should always support gpu or cpu dynamically'."""
         captured = _capture_prompt(monkeypatch)
         runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
         asyncio.run(run_with_sdk(
@@ -102,15 +102,60 @@ class TestDynamicComputeGuidance:
             sandbox_mode=sandbox,
             gpu_mode=gpu_mode,
         ))
-        assert len(captured) == 1
         prompt = captured[0]["prompt"]
-        if expect_guidance:
-            assert "COMPUTE CONSTRAINT" in prompt
-            assert "--smoke-test" in prompt
-            assert "5 min" in prompt
-        else:
-            assert "COMPUTE CONSTRAINT" not in prompt
-            assert "--smoke-test" not in prompt
+        assert "RUNTIME COMPUTE DETECTION" in prompt
+        assert "torch.cuda.is_available" in prompt
+        assert "HAS_GPU" in prompt
+        # Adaptive guidance must mention BOTH scale-down (CPU) and scale-up (GPU)
+        assert "Scale-down on CPU" in prompt
+        assert "Scale-up on GPU" in prompt
+
+    def test_gpu_mode_off_adds_cpu_only_policy_overlay(self, tmp_path, monkeypatch):
+        """--gpu-mode=off → user explicitly forbids GPU; overlay says 'commands.json
+        targets CPU path'. The runtime detection block is STILL present (the GPU
+        branch in the code is dead-but-present for portability)."""
+        captured = _capture_prompt(monkeypatch)
+        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
+        asyncio.run(run_with_sdk(
+            "prj_test", runs_root, pcm, env, contract,
+            sandbox_mode="docker",
+            gpu_mode="off",
+        ))
+        prompt = captured[0]["prompt"]
+        assert "RUNTIME COMPUTE DETECTION" in prompt  # always-on
+        assert "POLICY OVERLAY — --gpu-mode=off" in prompt
+        assert "CPU/smoke path" in prompt
+        assert "POLICY OVERLAY — --gpu-mode=max" not in prompt
+
+    def test_gpu_mode_max_adds_gpu_target_policy_overlay(self, tmp_path, monkeypatch):
+        """--gpu-mode=max → user explicitly demands GPU; overlay says 'commands.json
+        targets GPU path'. CPU branch stays in code as safety net."""
+        captured = _capture_prompt(monkeypatch)
+        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
+        asyncio.run(run_with_sdk(
+            "prj_test", runs_root, pcm, env, contract,
+            sandbox_mode="docker",
+            gpu_mode="max",
+        ))
+        prompt = captured[0]["prompt"]
+        assert "RUNTIME COMPUTE DETECTION" in prompt  # always-on
+        assert "POLICY OVERLAY — --gpu-mode=max" in prompt
+        assert "full-scale (GPU) path" in prompt
+        assert "POLICY OVERLAY — --gpu-mode=off" not in prompt
+
+    def test_default_no_policy_overlay(self, tmp_path, monkeypatch):
+        """gpu_mode=auto / None / prefer → no policy overlay; runtime detection
+        decides at execution time. This is the most common case."""
+        captured = _capture_prompt(monkeypatch)
+        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
+        asyncio.run(run_with_sdk(
+            "prj_test", runs_root, pcm, env, contract,
+            sandbox_mode="docker",
+            gpu_mode="auto",
+        ))
+        prompt = captured[0]["prompt"]
+        assert "RUNTIME COMPUTE DETECTION" in prompt
+        assert "POLICY OVERLAY" not in prompt
 
 
 class TestAuthSurfaceParity:
@@ -146,12 +191,12 @@ class TestAuthSurfaceParity:
 
     def test_openai_provider_also_identical_prompt(self, tmp_path, monkeypatch):
         # If a future deployment uses OpenAI for the baseline agent, the
-        # prompt MUST still carry the sandbox guidance.
+        # prompt MUST still carry the runtime-detection guidance.
         prompt = self._render_prompt_with_provider(
             tmp_path, monkeypatch, provider="openai", model="gpt-5"
         )
-        assert "COMPUTE CONSTRAINT" in prompt
-        assert "--smoke-test" in prompt
+        assert "RUNTIME COMPUTE DETECTION" in prompt
+        assert "torch.cuda.is_available" in prompt
 
 
 class TestGpuModePlumbedThroughRunContext:

@@ -415,50 +415,107 @@ def run_offline(
     return result
 
 
+_NO_STUB_BLOCK = (
+    "\n\nNO STUB / NO SURROGATE — hard rule:\n"
+    "Your `train.py` MUST be a fully-fledged reproduction. NEVER substitute:\n"
+    "  - the paper's model with a `TinyLM`, hand-rolled mini-transformer, or random-init MLP\n"
+    "  - the paper's dataset with synthetic / mock / Gaussian / 'ALFWorld-like' data\n"
+    "  - the paper's training loop with a no-op that emits zero-everything metrics\n"
+    "Even a smoke run loads the REAL pretrained weights named in the paper "
+    "(via `transformers.AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-3B-Instruct')` "
+    "or the equivalent for other frameworks) and the REAL dataset (HuggingFace Datasets, "
+    "the paper's GitHub release, etc.). If the paper's full dataset is too large, use the "
+    "paper's *own* released eval split or a public subset — NOT a synthesised stand-in.\n"
+    "Scale-down is allowed ONLY along these axes, in this order:\n"
+    "  1. shorter training (e.g. 5 steps instead of 150)\n"
+    "  2. smaller batch / sequence length\n"
+    "  3. fewer eval examples (but real ones, not synthetic)\n"
+    "  4. smaller model variant FROM THE SAME FAMILY if the paper offers one "
+    "(e.g. Qwen2.5-0.5B if Qwen2.5-3B won't fit — never a random tiny transformer)\n"
+    "If even (1)–(4) cannot make the run fit, FAIL the experiment with a clear "
+    "`metrics.json = {\"error\": \"compute_infeasible\", \"required_vram_gb\": N}` so the rubric "
+    "scorer records honest zero on result-match instead of getting fake numbers from a surrogate.\n"
+    "An adapted-down real reproduction scores higher than a complete synthetic surrogate — "
+    "the rubric's leaf scorer reads your code AND inspects whether you loaded the paper's "
+    "actual model + data.\n"
+)
+
+_RUNTIME_DETECTION_BLOCK = (
+    "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
+    "Your code MUST detect available compute at runtime and adapt accordingly. "
+    "Do NOT hard-code an assumption about GPU availability. The same `train.py` "
+    "should work whether the sandbox is CPU-only docker or a GPU-bearing runpod:\n"
+    "  - At startup: `import torch; HAS_GPU = torch.cuda.is_available()` "
+    "(or the framework equivalent — `jax.devices('gpu')`, `tf.config.list_physical_devices('GPU')`, etc.)\n"
+    "  - `device = 'cuda' if HAS_GPU else 'cpu'` and pass through to every model/tensor\n"
+    "  - Scale-down on CPU: reduce STEPS and BATCH (per the NO STUB rules above) — "
+    "do NOT downgrade model or data identity\n"
+    "  - Scale-up on GPU: full batch + epoch count + real datasets — match the paper\n"
+    "  - `commands.json` should run ONE entrypoint that branches internally on `HAS_GPU`. "
+    "Do NOT write two separate scripts; write one adaptive script.\n"
+    "  - For evaluation papers without training: load the real evaluation model and "
+    "the real benchmark data. If a remote API is unreachable, FAIL with an explicit "
+    "`metrics.json={\"error\":\"api_unreachable\"}` rather than substituting mock outputs.\n"
+)
+
+
 def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
-    """Return a sandbox-aware guidance string for the implement_baseline agent.
+    """Return capability-aware guidance for the implement_baseline agent.
 
-    The constraint is COMPUTE-bound, not sandbox-bound. We bias toward
-    smoke-test mode only when the compute substrate is likely CPU-only.
+    Goal: the baseline agent writes ONE script that works on CPU OR GPU,
+    detecting at runtime via torch.cuda.is_available() (or framework equiv)
+    and adapting scale. Hard-coding either mode at build time is wrong —
+    the same artifact must run on the local CPU sandbox AND on RunPod GPU.
 
-    Decision table:
-    - sandbox=runpod (any gpu_mode)        → GPU available     → no guidance
-    - gpu_mode=max (require GPU)            → user demands GPU  → no guidance
-    - sandbox in {docker, local}, gpu_mode in {off, None}  → CPU-only       → constraint
-    - sandbox in {docker, local}, gpu_mode in {auto, prefer} → CPU-likely     → constraint (most dev hosts lack a usable GPU)
-    - any other / unknown                   → conservative      → no guidance
+    Policy overlay on top of the always-on runtime detection:
+    - gpu_mode=off → user demands CPU-only; emphasize smoke-test mode is
+      the only valid path; GPU branch is dead code (still write it for
+      portability, but commands.json must trigger CPU path).
+    - gpu_mode=max → user demands GPU; the CPU branch is a safety net
+      (still write it so the artifact is portable to a CPU sandbox for
+      smoke validation), but commands.json should target the GPU path.
+    - gpu_mode in {auto, prefer, None} → no override; the runtime detection
+      decides at execution time.
 
-    Returning '' means no guidance is injected — the baseline agent runs
-    unconstrained. Returning a guidance string means smoke-test mode.
+    Sandbox signals are advisory:
+    - sandbox=runpod → GPU very likely available; agent should still write
+      the detection-branch (some runpod pods are CPU-only).
+    - sandbox=docker/local → GPU uncertain; the detection-branch is THE
+      protection against assuming wrong.
+
+    Returns the always-on detection block PLUS any policy overlay. The
+    agent gets ONE coherent guidance section covering both modes.
 
     Auth-agnostic by construction (no provider branching).
     """
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
-    # GPU-bearing sandbox — no constraint.
-    if "runpod" in mode_str:
-        return ""
-    # User explicitly demanded GPU — no constraint (sandbox must provide one).
-    if "max" in gpu_str:
-        return ""
-    # Local containers WITHOUT a confirmed GPU — apply the constraint.
-    if any(t in mode_str for t in ("docker", "local")):
-        return (
-            "\n\nIMPORTANT — COMPUTE CONSTRAINT:\n"
-            "The experiment will run in a local container that may have NO "
-            "GPU available. To ensure the experiment completes reliably "
-            "across hosts:\n"
-            "  - Default to smoke-test / mock mode that completes in < 5 min on CPU\n"
-            "  - Train on tiny subsets (1-10 samples per class), not full datasets\n"
-            "  - Use cached embeddings / mock model calls / pre-computed features where possible\n"
-            "  - For evaluation papers: implement the pipeline with HARDCODED mock model outputs that produce realistic-looking metrics; do NOT call real APIs from inside the sandbox (no network, no GPU)\n"
-            "  - Always include `--smoke-test` (or equivalent fast-path flag) in commands.json; never write bare `python train.py`\n"
-            "  - metrics.json MUST be produced under 5 minutes from container start; if your design can't hit that, scale down further\n"
-            "  - A full-mode training script can be present in the code but should be opt-in via a flag, not the default invocation\n"
+    # NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
+    # before the runtime-detection nuance. Runtime detection then layers on top.
+    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+
+    # Policy overlay: explicit gpu_mode=off → force CPU-only entrypoint.
+    if gpu_str in {"off", "none"}:
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=off:\n"
+            "  User explicitly disabled GPU. Even if torch.cuda.is_available() "
+            "returns True at runtime, your commands.json MUST trigger only the "
+            "CPU/smoke path. The GPU branch in your code is dead code for this "
+            "run but still required for portability.\n"
         )
-    # Unknown / explicit-GPU / runpod → no guidance.
-    return ""
+    # Policy overlay: explicit gpu_mode=max → entrypoint targets GPU path.
+    elif gpu_str == "max":
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=max:\n"
+            "  User explicitly demands GPU. Sandbox MUST provide one. Your "
+            "commands.json should trigger the full-scale (GPU) path. The "
+            "CPU branch remains in the code as a safety net for portability + "
+            "smoke validation, but is not the primary entrypoint here.\n"
+        )
+    # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
+
+    return guidance
 
 
 async def run_with_sdk(
