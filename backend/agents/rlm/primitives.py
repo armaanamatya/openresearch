@@ -989,12 +989,18 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     escalations = 0
     result: dict = {}
 
-    # Escalation loop (spec 2026-05-23 §OOM): on CUDA OOM, pop the next SKU from
-    # GpuPlan.ladder_remaining, persist the updated plan atomically, emit
-    # gpu_escalated, and retry. Capped by max_escalations. Non-OOM failures and
-    # success exit immediately. I12: explicit shutdown(wait=False) per iteration.
+    # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
+    # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
+    # persist the updated plan atomically, emit gpu_escalated, and retry.
+    # Capped by max_escalations. Non-OOM/non-capacity failures and success exit
+    # immediately. I12: explicit shutdown(wait=False) per iteration.
     while True:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+        # capacity_error_msg is set when the inner exception path detects a
+        # RUNPOD_CAPACITY_EXHAUSTED signal from runpod_backend._request_json.
+        # This bypasses the post-result OOM check below and goes straight to
+        # the ladder-advance branch.
+        capacity_error_msg: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -1019,6 +1025,25 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                         else "run_experiment: timed out (run-budget deadline reached)"
                     ),
                 }
+            except Exception as exc:  # noqa: BLE001
+                # RunPod capacity-exhaustion bubbles up as a SandboxRuntimeError
+                # tagged with the RUNPOD_CAPACITY_EXHAUSTED sentinel from
+                # runpod_backend._request_json. Treat it like an OOM — advance
+                # the ladder, retry. Any other unexpected exception still
+                # produces a fail-soft error dict (consistent with the rest of
+                # this function never raising).
+                exc_msg = str(exc)
+                if "RUNPOD_CAPACITY_EXHAUSTED" in exc_msg:
+                    capacity_error_msg = exc_msg
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"runpod capacity exhausted on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                    }
+                else:
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
+                    }
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -1027,9 +1052,12 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         # means legacy mode — no ladder to advance), or cap reached.
         if result.get("success") or gpu_plan is None or escalations >= max_escalations:
             break
+        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity exhaustion.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        if not _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        is_capacity = capacity_error_msg is not None
+        if not is_oom and not is_capacity:
             break
         if not gpu_plan.ladder_remaining:
             result = {
@@ -1074,7 +1102,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "from_sku": gpu_plan.short_name,
             "to_sku": new_plan.short_name,
             "escalation_index": escalations + 1,
-            "reason": "cuda_oom",
+            "reason": "runpod_capacity" if is_capacity else "cuda_oom",
         })
         gpu_plan = new_plan
         escalations += 1
