@@ -586,6 +586,231 @@ class GpuPlan(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Scope, paper hints, and invariants
+#
+# Three layers compose into the effective run-scope:
+#   1. Paper default (from PAPER_HINTS[paper_id].default_scope) — rubric expects
+#   2. Operator override (from --scope-spec CLI flag) — narrows or expands
+#   3. Empty defaults — when neither is set
+# Operator absences fall back to paper defaults via ScopeSpec.merge_with_paper_default.
+#
+# Invariants are deterministic regex checks over the agent's code, run alongside
+# the LLM leaf scorer. must_not_match violations are hard gates (leaf score 0);
+# must_match presence is a soft signal fed to the LLM grader as evidence.
+# ---------------------------------------------------------------------------
+
+
+class DatasetSlice(BaseModel):
+    """One dataset/environment the scope targets, with optional eval slice.
+
+    For RL papers, ``name`` is the environment id (e.g. "ALFWorld"). For
+    supervised papers, ``name`` is the dataset id. ``episodes`` / ``split``
+    are advisory — the agent's prompt is told about them but the harness
+    does not enforce them.
+    """
+
+    name: str
+    episodes: int | None = None
+    split: str | None = None
+
+    def normalized_id(self) -> str:
+        """Stable id used in scope.ran, scope.gaps, and experiment_runs.jsonl."""
+        return self.name
+
+
+class ScopeSpec(BaseModel):
+    """Operator-stated reproduction scope.
+
+    Each field defaults to "no constraint" (empty list / dict / ""). The
+    effective scope for a run is built by ``merge_with_paper_default(paper_default)``
+    — operator-set fields win, operator absences fall back to paper defaults.
+
+    ``models`` and ``skip_models`` are post-merge reconciled: ``skip_models``
+    items are removed from ``models`` so the agent never sees a contradicting
+    pair (paper default lists Qwen-7B; operator skips it → effective models
+    list is the smaller two without 7B).
+    """
+
+    models: list[str] = Field(default_factory=list)
+    skip_models: list[str] = Field(default_factory=list)
+    datasets: list[DatasetSlice] = Field(default_factory=list)
+    seeds: list[int] = Field(default_factory=list)
+    eval_slice: dict[str, int] = Field(default_factory=dict)
+    budget_per_model: dict[str, float] = Field(default_factory=dict)
+    force_clean_cache: bool = False
+    free_text: str = ""
+
+    @field_validator("datasets", mode="before")
+    @classmethod
+    def _coerce_datasets(cls, v: object) -> object:
+        # Accept ["ALFWorld", "WebShop"] OR [{"name": "ALFWorld", "episodes": 32}].
+        # A bare string becomes DatasetSlice(name=<str>); a dict is constructed normally.
+        if not isinstance(v, list):
+            return v
+        out: list[object] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append({"name": item})
+            else:
+                out.append(item)
+        return out
+
+    @property
+    def is_multi_model(self) -> bool:
+        return len(self.models) > 1
+
+    @property
+    def is_multi_dataset(self) -> bool:
+        return len(self.datasets) > 1
+
+    def dataset_ids(self) -> list[str]:
+        return [d.normalized_id() for d in self.datasets]
+
+    def requested_evidence_ids(self) -> set[str]:
+        """Set of identifiers expected to appear in scope.ran when the run completes.
+
+        Rules:
+          - No models and no datasets → empty set (nothing scoped).
+          - Models only → set of model ids.
+          - Datasets only → set of dataset ids.
+          - Both → set of "model/dataset" cross-product ids.
+        """
+        if not self.models and not self.datasets:
+            return set()
+        if not self.models:
+            return set(self.dataset_ids())
+        if not self.datasets:
+            return set(self.models)
+        return {f"{m}/{d}" for m in self.models for d in self.dataset_ids()}
+
+    def merge_with_paper_default(
+        self, paper_default: "ScopeSpec | None"
+    ) -> "ScopeSpec":
+        """Operator-supplied (``self``) wins; falls back to paper_default per field.
+
+        Post-merge step: ``skip_models`` entries are removed from ``models`` so
+        the effective scope never carries a model the operator explicitly excluded.
+        ``free_text`` is concatenated (operator first, then paper default)
+        because both may carry useful prose.
+        """
+        if paper_default is None:
+            base = self.model_copy()
+        else:
+            base = ScopeSpec(
+                models=self.models or paper_default.models,
+                skip_models=list({*self.skip_models, *paper_default.skip_models}),
+                datasets=self.datasets or paper_default.datasets,
+                seeds=self.seeds or paper_default.seeds,
+                eval_slice=self.eval_slice or paper_default.eval_slice,
+                budget_per_model=(
+                    self.budget_per_model or paper_default.budget_per_model
+                ),
+                force_clean_cache=(
+                    self.force_clean_cache or paper_default.force_clean_cache
+                ),
+                free_text=(
+                    "\n".join(p for p in (self.free_text, paper_default.free_text) if p)
+                ),
+            )
+
+        if base.skip_models and base.models:
+            skipped = set(base.skip_models)
+            base = base.model_copy(
+                update={"models": [m for m in base.models if m not in skipped]}
+            )
+        return base
+
+
+import re as _re  # local import to avoid polluting the module top namespace
+
+
+class InvariantSpec(BaseModel):
+    """Deterministic regex check for one algorithmic invariant in the agent's code.
+
+    Two signal types:
+      - ``must_match``: at least one pattern must appear in at least one file
+        matching ``file_glob``. Soft signal — passed to the LLM grader as
+        evidence; not a hard gate.
+      - ``must_not_match``: NO pattern may appear in ANY matching file.
+        Hard gate — the rubric leaf score is forced to 0 when any pattern
+        appears.
+
+    Patterns are validated at construction: malformed regex raises ValueError
+    so a broken InvariantSpec cannot ship in PAPER_HINTS undetected.
+    """
+
+    name: str
+    rationale: str
+    file_glob: str = "**/*.py"
+    must_match: list[str] = Field(default_factory=list)
+    must_not_match: list[str] = Field(default_factory=list)
+
+    @field_validator("file_glob", mode="before")
+    @classmethod
+    def _default_glob(cls, v: object) -> object:
+        return v or "**/*.py"
+
+    @field_validator("must_match", "must_not_match")
+    @classmethod
+    def _validate_regex(cls, v: list[str]) -> list[str]:
+        for pat in v:
+            try:
+                _re.compile(pat)
+            except _re.error as exc:
+                raise ValueError(
+                    f"InvariantSpec: malformed regex pattern {pat!r}: {exc}"
+                ) from exc
+        return v
+
+
+class InvariantResult(BaseModel):
+    """Per-invariant check result returned by the assert_invariant primitive.
+
+    Layout chosen so the rubric scorer can both render evidence to the
+    operator and reason about why a leaf failed:
+      - ``passed``: True iff every ``must_match`` pattern matched AND no
+        ``must_not_match`` pattern matched.
+      - ``must_match_evidence``: per-pattern list of "<file>:<line>: <excerpt>"
+        strings — the matches that satisfied a must_match pattern. Empty
+        when no matches found for a pattern.
+      - ``must_not_match_violations``: per-pattern list of "<file>:<line>: <excerpt>"
+        strings — matches that VIOLATED a must_not_match pattern. Empty
+        when no violations.
+      - ``files_scanned``: count of files actually inspected.
+    """
+
+    name: str
+    passed: bool
+    must_match_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    must_not_match_violations: dict[str, list[str]] = Field(default_factory=dict)
+    files_scanned: int = 0
+
+
+class PaperHint(BaseModel):
+    """Built-in paper-specific extras applied via ``--paper-hint <id>``.
+
+    Three independent layers combine when a paper hint is applied to a run:
+      - ``guidance``: free-text appended to REPROLAB_BASELINE_EXTRA_GUIDANCE
+        (with a "[paper-hint <id>] " prefix) so it composes with operator-set
+        guidance via the existing env-var hook in baseline_implementation.py.
+      - ``default_scope``: a ScopeSpec providing rubric-default models / datasets
+        / seeds. Operator's --scope-spec overrides per-field via
+        ``ScopeSpec.merge_with_paper_default``.
+      - ``invariants``: a list of InvariantSpec the rubric scorer applies to
+        the agent's code; also callable by the agent as an advisory self-check
+        via the assert_invariant primitive (PR D).
+
+    ``primitive_share`` is an optional per-paper override for the wallclock
+    partitioning introduced in PR E; None means use the run-level default.
+    """
+
+    guidance: str = ""
+    default_scope: ScopeSpec | None = None
+    invariants: list[InvariantSpec] = Field(default_factory=list)
+    primitive_share: dict[str, float] | None = None
+
+
+# ---------------------------------------------------------------------------
 # Generic agent output envelope
 # ---------------------------------------------------------------------------
 

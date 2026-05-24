@@ -28,9 +28,13 @@ _WATCHDOG_THRESHOLD = 3          # occurrences required to trigger
 _WATCHDOG_WINDOW_SECONDS = 30    # rolling window in seconds
 _WATCHDOG_POLL_INTERVAL = 2.0    # seconds between stderr re-reads
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 RunMode = Literal["rlm", "rdr", "rlm-pure"]
 Provider = Literal["anthropic", "openai"]
@@ -381,6 +385,7 @@ class FileLiveRunService:
             request,
             project_id=project_id,
             uploaded_paper=uploaded_paper,
+            _archive=False,
         )
 
     async def start_uploaded_run(
@@ -531,6 +536,7 @@ class FileLiveRunService:
         *,
         project_id: str,
         uploaded_paper: dict[str, str] | None,
+        _archive: bool = True,
     ) -> LiveRunState:
         _s = get_settings()
         request = apply_sandbox_override(request, _s.force_sandbox)
@@ -538,6 +544,19 @@ class FileLiveRunService:
         existing = await self.get_run(project_id)
         if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
             return existing
+
+        if _archive:
+            from backend.services.runs.archive import archive_run_artifacts
+            archived = await asyncio.to_thread(
+                archive_run_artifacts, project_id, self.runs_root,
+            )
+            if archived:
+                logger.info(
+                    "live_runs: archived %d prior-attempt item(s) for %s to %s",
+                    len(archived["moved"]),
+                    project_id,
+                    archived["attempt_dir"],
+                )
 
         output_dir = self.runs_root / project_id
         output_dir.mkdir(parents=True, exist_ok=True)

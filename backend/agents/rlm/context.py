@@ -55,6 +55,8 @@ class RunContext:
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
     emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements
+    scope_spec: Any = None  # ScopeSpec — typed via Any to avoid a top-level import cycle;
+                            # set by run.py / rdr/run.py from REPROLAB_SCOPE_SPEC_JSON.
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

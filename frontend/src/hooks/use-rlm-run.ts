@@ -22,6 +22,7 @@ import type {
   RunWarningEvent,
   IterationHeartbeatEvent,
   GpuResolvedEvent,
+  ExperimentCompletedEvent,
 } from "../lib/events/rlm-events";
 
 // ─── Member types ─────────────────────────────────────────────────────────────
@@ -237,6 +238,15 @@ export interface RlmRunState {
    * NodeDetailSidebar GpuPlan badge (dynamic-gpu-selection 2026-05-23).
    */
   gpuPlan: GpuPlan | null;
+
+  /**
+   * Per-model metrics from the latest experiment_completed event, or null when
+   * no experiment has completed or the paper only tests a single model variant.
+   * Keyed by Python-identifier-safe model short name (e.g. "qwen2_5_3b").
+   * Values are flat metric dicts (metric name → number).
+   * Lane γ: per-model multi-model UI (2026-05-23).
+   */
+  perModelMetrics: Record<string, Record<string, number>> | null;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -264,6 +274,7 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   warnings: [],
   lastHeartbeatAt: null,
   gpuPlan: null,
+  perModelMetrics: null,
 };
 
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
@@ -672,7 +683,15 @@ function foldCandidateProposed(
     rubricDelta: pending?.rubricDelta ?? null,
   };
 
-  let tree = [...state.tree, node];
+  // Dedupe by node.id — the RLM root sometimes re-emits candidates with
+  // non-globally-unique IDs across iterations (e.g. "path_1", "path_2").
+  // Appending blindly produces React duplicate-key warnings AND duplicated
+  // tree edges. If the candidate already exists, replace it in-place with the
+  // latest payload (newest iteration wins).
+  const existingIdx = state.tree.findIndex((n) => n.id === node.id);
+  let tree: TreeNode[] = existingIdx === -1
+    ? [...state.tree, node]
+    : state.tree.map((n, i) => (i === existingIdx ? { ...n, ...node } : n));
 
   // If the buffered outcome was a declined, fold it into the round's group now.
   // Use the buffered outcome event's iteration so the declined-group iterationRange
@@ -796,6 +815,18 @@ function foldSubRlmComplete(
   return { ...state, subRlms };
 }
 
+function foldExperimentCompleted(
+  state: RlmRunState,
+  ev: ExperimentCompletedEvent
+): RlmRunState {
+  // Only update perModelMetrics when the experiment succeeded and per_model is
+  // present.  A failed experiment does not overwrite prior successful data.
+  if (!ev.success || !ev.per_model || Object.keys(ev.per_model).length === 0) {
+    return state;
+  }
+  return { ...state, perModelMetrics: ev.per_model };
+}
+
 function foldRunWarning(
   state: RlmRunState,
   ev: RunWarningEvent
@@ -895,6 +926,8 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
     case "user_message_response":
       // Consumed by other hooks; tree reducer is a no-op.
       return seeded;
+    case "experiment_completed":
+      return foldExperimentCompleted(seeded, event);
     case "gpu_resolved":
       return foldGpuResolved(seeded, event);
     default:

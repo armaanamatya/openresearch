@@ -180,6 +180,10 @@ REQUIRED REPORT SHAPE:
     rubric               dict   {"overall_score": <float 0-1>, "meets_target": <bool>,
                                   "areas": [{"name": ..., "score": ..., "notes": ...}]}
     improvements         list   each item: {"title": ..., "outcome": ..., "delta": ...}
+    scope                dict   {"requested": "<the scope you targeted, e.g. 'only the
+                                  smallest 2 of 3 model variants' or 'full paper'>",
+                                  "ran": ["<model/dataset/seed actually executed>", ...],
+                                  "gaps": ["<requested-but-not-executed item: reason>", ...]}
     primitive_trace      dict   {"calls": <int>, "by_primitive": {name: <int>, ...}}
     cost                 dict   {"llm_usd": <float>}
     iterations           int    number of root iterations completed

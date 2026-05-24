@@ -136,6 +136,26 @@ class RLMFinalReport(BaseModel):
         description="ISO-8601 UTC timestamp when the report was written.",
     )
 
+    # --- Scope section (spec 2026-05-23-sdar-baseline-handoff §Lane 4)
+    # Distinguishes "what the user / operator scoped the run to" from "what the
+    # rubric evaluates". A partial scope (e.g. only the smallest 2 of 3 model
+    # sizes) is not the same as a partial rubric pass; conflating them
+    # misrepresents the run.
+    scope: dict = Field(
+        default_factory=lambda: {
+            "requested": "",
+            "ran": [],
+            "gaps": [],
+        },
+        description=(
+            "User/operator-stated scope vs. what actually ran. "
+            "`requested` = the scope statement (e.g. operator guidance, "
+            "CLI hint, default 'full paper'). `ran` = list of items actually "
+            "executed (model names, dataset slices, seeds). `gaps` = list of "
+            "items requested but not executed, with a short reason each."
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -157,6 +177,7 @@ _HONEST_DEFAULTS: dict[str, Any] = {
         "areas": [],
     },
     "improvements": [],
+    "scope": {"requested": "", "ran": [], "gaps": []},
     "primitive_trace": {},
     "cost": {"llm_usd": 0.0, "primitives": 0.0},
     "iterations": 0,
@@ -240,6 +261,91 @@ def _reconcile_verdict_against_evidence(
     if reasons:
         return "partial", "; ".join(reasons)
     return verdict, None
+
+
+def _verify_scope_evidence(
+    scope: dict,
+    run_dir: Path,
+) -> tuple[dict, str | None]:
+    """Cross-check ``scope.ran`` against ``experiment_runs.jsonl`` model_id/eval_env tags.
+
+    The root model self-attests ``scope.ran``; this function moves any item
+    claimed in ``ran`` but lacking a successful ``run_experiment`` row with
+    matching tags into ``scope.gaps``. Returns ``(new_scope, downgrade_reason)``
+    where ``downgrade_reason`` is ``None`` on a clean cross-check.
+
+    Evidence model:
+      - Each successful experiment_runs.jsonl row carries ``model_id`` and
+        ``eval_env`` tags (PR A).
+      - For multi-model + multi-dataset scopes, the expected scope.ran ids
+        are composite ``"<model>/<env>"`` strings; the cross-check accepts
+        either composite or plain-model ids when only one dimension is
+        multi.
+      - When neither model_id nor eval_env tag is anywhere in the log
+        (legacy / single-config runs), the cross-check is a no-op so old
+        runs are not mis-flagged.
+    """
+    if not isinstance(scope, dict):
+        return scope, None
+    ran_claimed = set(scope.get("ran") or [])
+    if not ran_claimed:
+        return scope, None
+
+    exp_log = run_dir / "experiment_runs.jsonl"
+    if not exp_log.exists():
+        return scope, None
+
+    evidence_ids: set[str] = set()
+    has_any_tag = False
+    for line in exp_log.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        model_id = entry.get("model_id")
+        eval_env = entry.get("eval_env")
+        # has_any_tag is set from all rows (including failed) so legacy
+        # detection works correctly: any row with a non-default tag means
+        # this is a tagged run and enforcement applies.
+        if model_id and model_id != "default":
+            has_any_tag = True
+        if eval_env and eval_env != "default":
+            has_any_tag = True
+        # Only successful runs contribute to evidence_ids.
+        if not entry.get("success"):
+            continue
+        if model_id and model_id != "default":
+            evidence_ids.add(str(model_id))
+        if eval_env and eval_env != "default":
+            evidence_ids.add(str(eval_env))
+        if (
+            model_id and eval_env
+            and model_id != "default" and eval_env != "default"
+        ):
+            evidence_ids.add(f"{model_id}/{eval_env}")
+
+    # Legacy runs: every row tagged "default" → cross-check is a no-op.
+    if not has_any_tag:
+        return scope, None
+
+    unverified = sorted(ran_claimed - evidence_ids)
+    if not unverified:
+        return scope, None
+
+    new_scope = {
+        **scope,
+        "ran": sorted(ran_claimed - set(unverified)),
+        "gaps": list(scope.get("gaps") or []) + [
+            f"{item}: claimed in scope.ran but no successful run_experiment found with matching tag"
+            for item in unverified
+        ],
+    }
+    return new_scope, (
+        f"moved {len(unverified)} unverified item(s) from scope.ran to scope.gaps"
+    )
 
 
 def _reconcile_verdict(parsed: dict) -> str:
@@ -437,6 +543,23 @@ def build_final_report(
             "report: verdict downgraded to partial — %s", downgrade_reason,
         )
 
+    # PR B: cross-check scope.ran against experiment_runs.jsonl evidence.
+    # The root attests scope.ran itself; this enforces the claim against the
+    # primitive trace. Unverified items move to scope.gaps; if any unverified
+    # remain AND verdict is "reproduced", downgrade to "partial".
+    raw_scope = parsed.get("scope") or {"requested": "", "ran": [], "gaps": []}
+    verified_scope, scope_downgrade_reason = _verify_scope_evidence(
+        raw_scope, ctx.project_dir
+    )
+    if scope_downgrade_reason:
+        summary = (
+            summary
+            + f"\n\n[scope guard] {scope_downgrade_reason}."
+        ).strip()
+        logger.warning("report: scope-evidence cross-check — %s", scope_downgrade_reason)
+        if verdict == "reproduced":
+            verdict = "partial"
+
     kwargs: dict[str, Any] = {
         "verdict": verdict,
         "paper": parsed.get("paper") or {},
@@ -451,6 +574,7 @@ def build_final_report(
             "areas": [],
         },
         "improvements": list(parsed.get("improvements") or []),
+        "scope": verified_scope,
         "primitive_trace": trace,
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
@@ -601,6 +725,30 @@ def _render_markdown(report: RLMFinalReport) -> str:
     summary = report.reproduction_summary.strip()
     lines.append(summary if summary else "_No summary provided._")
     lines.append("")
+
+    # --- Scope ---
+    # Only render when the root populated at least one of requested/ran/gaps.
+    # Default-empty scope is suppressed to keep older reports clean.
+    scope = report.scope or {}
+    requested = str(scope.get("requested") or "").strip()
+    ran = list(scope.get("ran") or [])
+    gaps = list(scope.get("gaps") or [])
+    if requested or ran or gaps:
+        lines.append("## Scope")
+        lines.append("")
+        if requested:
+            lines.append(f"**Requested:** {requested}")
+            lines.append("")
+        if ran:
+            lines.append("**Ran:**")
+            for item in ran:
+                lines.append(f"- {item}")
+            lines.append("")
+        if gaps:
+            lines.append("**Gaps:**")
+            for item in gaps:
+                lines.append(f"- {item}")
+            lines.append("")
 
     # --- Baseline metrics vs. paper claims ---
     lines.append("## Baseline Metrics vs. Paper Claims")

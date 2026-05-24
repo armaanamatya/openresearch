@@ -511,7 +511,8 @@ class RunpodBackend(RuntimeBackend):
             await asyncio.sleep(10)
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            f"Runpod pod {pod_id} did not become SSH-ready before timeout. {last_error}",
+            f"RUNPOD_SSH_TIMEOUT: pod {pod_id} did not become SSH-ready "
+            f"after {self.boot_timeout_seconds}s. {last_error}",
             retryable=True,
         )
 
@@ -744,6 +745,39 @@ class RunpodBackend(RuntimeBackend):
             # transient network/server faults and remain retryable.
             status = exc.response.status_code
             retryable = status not in (401, 403)
+            # Capacity / quota errors come back as 500 with a specific body.
+            # Surface a distinguishable message so the dynamic-GPU escalation
+            # loop in run_experiment can advance to the next SKU on the ladder
+            # instead of failing the whole run (spec 2026-05-23 §SSE event
+            # types — gpu_escalated reason=runpod_capacity).
+            body_text = ""
+            try:
+                body_text = exc.response.text or ""
+            except Exception:  # noqa: BLE001 — body read must never crash this branch
+                body_text = ""
+            lower = body_text.lower()
+            capacity_marker = (
+                "no instances currently available" in lower
+                or "no available" in lower
+                or "out of capacity" in lower
+            )
+            balance_marker = "balance is too low" in lower or "add funds" in lower
+            if status == 500 and capacity_marker:
+                # Sentinel prefix so the run_experiment escalation loop can
+                # match this on the exception message alone — avoids a new
+                # exception type / RuntimeCauseKind churn for a single case.
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"RUNPOD_CAPACITY_EXHAUSTED: {exc}",
+                    retryable=True,
+                ) from exc
+            if status == 500 and balance_marker:
+                # Funding failures should NOT be retried — they need user action.
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"RUNPOD_BALANCE_TOO_LOW: {exc}",
+                    retryable=False,
+                ) from exc
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
                 f"Runpod API request failed (HTTP {status}): {exc}",

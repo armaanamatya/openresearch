@@ -814,9 +814,30 @@ async def _execute_in_sandbox(
         },
     )
     sandbox = await service.create_sandbox(CreateSandbox(config=config))
+
+    # Auto-install requirements.txt on RunPod BEFORE commands.json runs. The
+    # agent's prompt has repeatedly forgotten to wire `python -m pip install -r
+    # requirements.txt` into commands.json on runpod (Dockerfile is doc-only;
+    # pod boots from the generic pytorch image without the paper's deps). Make
+    # this a backend invariant so every paper's requirements.txt is honored
+    # whether the agent remembers or not. Local docker is unaffected because
+    # the Dockerfile IS used to build the image — deps are already baked in.
+    requirements_path = code_dir / "requirements.txt"
+    bootstrap_commands: list[str] = []
+    # sandbox_mode may be a SandboxMode enum (str(...) is "SandboxMode.runpod")
+    # OR a plain string "runpod". Use substring match to cover both forms.
+    _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
+    if "runpod" in _mode_str and requirements_path.exists():
+        bootstrap_commands.append(
+            "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
+        )
+        bootstrap_commands.append(
+            "python -m pip install --no-cache-dir -r requirements.txt"
+        )
+
     results = []
     try:
-        for command in commands:
+        for command in (*bootstrap_commands, *commands):
             results.append(await service.execute(
                 ExecuteCommand(sandbox=sandbox, command=command,
                                timeout=_EXEC_TIMEOUT_SECONDS)))
@@ -856,7 +877,13 @@ async def _execute_in_sandbox(
     }
 
 
-def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
+def _persist_experiment_result(
+    ctx: "RunContext",
+    result: dict,
+    *,
+    model_id: str = "default",
+    eval_env: str = "default",
+) -> dict:
     """Append a run_experiment result to ``experiment_runs.jsonl`` and return it.
 
     A run_experiment result otherwise lives only in the root model's REPL — a
@@ -876,6 +903,8 @@ def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
         )
     try:
         entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **result}
+        entry.setdefault("model_id", model_id)
+        entry.setdefault("eval_env", eval_env)
         path = ctx.project_dir / "experiment_runs.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
@@ -884,8 +913,113 @@ def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
     return result
 
 
-def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
+def _validate_scope_metrics(
+    scope_spec: object,
+    metrics: dict,
+) -> str | None:
+    """Validate metrics.json shape against the run's ScopeSpec.
+
+    Returns ``None`` when the shape is acceptable or when no scope is set.
+    Returns a non-empty hint string when the metrics dict violates a
+    multi-model / multi-dataset scope requirement; callers (run_experiment)
+    convert the hint into a fail-soft error dict so the agent's next
+    implement_baseline iteration gets it as repair_context.
+
+    Rules:
+      - No scope OR empty metrics → pass (None). An empty metrics dict means
+        the experiment itself failed at a different layer; not our concern.
+      - Multi-model scope → metrics MUST carry a top-level ``per_model`` dict
+        keyed by model id, with at least every model from
+        ``scope_spec.models`` present.
+      - Multi-dataset scope AND multi-model → each per_model entry MUST carry
+        a ``per_dataset`` dict keyed by dataset id with every dataset present.
+      - Multi-dataset but single-model → metrics MUST carry a top-level
+        ``per_dataset`` dict directly (no per_model nesting required).
+    """
+    if scope_spec is None:
+        return None
+    if not metrics:
+        return None
+
+    # ScopeSpec is duck-typed via Any in RunContext; access through getattr
+    # so this helper does not need a hard import of ScopeSpec.
+    is_multi_model = getattr(scope_spec, "is_multi_model", False)
+    is_multi_dataset = getattr(scope_spec, "is_multi_dataset", False)
+    models = list(getattr(scope_spec, "models", []) or [])
+    dataset_ids_fn = getattr(scope_spec, "dataset_ids", None)
+    datasets = dataset_ids_fn() if callable(dataset_ids_fn) else []
+
+    if is_multi_model:
+        per_model = metrics.get("per_model")
+        if not isinstance(per_model, dict) or not per_model:
+            return (
+                f"per_model_required: scope is multi-model {models}. Write "
+                f"metrics.json with a top-level per_model dict keyed by model "
+                f"id, e.g. {{'per_model': {{'qwen3-1.7b': {{...}}, "
+                f"'qwen2.5-3b': {{...}}}}}}."
+            )
+        missing = [m for m in models if m not in per_model]
+        if missing:
+            return (
+                f"per_model_incomplete: scope requires entries for {models}; "
+                f"missing {missing} in metrics.per_model."
+            )
+        if is_multi_dataset:
+            for model_id, model_metrics in per_model.items():
+                pd = (model_metrics or {}).get("per_dataset") if isinstance(model_metrics, dict) else None
+                if not isinstance(pd, dict) or not pd:
+                    return (
+                        f"per_dataset_required: scope is multi-dataset {datasets}. "
+                        f"Each per_model entry MUST carry a per_dataset dict; "
+                        f"model {model_id!r} has none."
+                    )
+                missing_ds = [d for d in datasets if d not in pd]
+                if missing_ds:
+                    return (
+                        f"per_dataset_incomplete: model {model_id!r} missing "
+                        f"datasets {missing_ds} in per_dataset."
+                    )
+    elif is_multi_dataset:
+        # Single-model + multi-dataset: per_dataset at top level (no per_model nesting).
+        pd = metrics.get("per_dataset")
+        if not isinstance(pd, dict) or not pd:
+            return (
+                f"per_dataset_required: scope is multi-dataset {datasets}. "
+                f"Write metrics.json with a top-level per_dataset dict keyed by "
+                f"dataset id."
+            )
+        missing_ds = [d for d in datasets if d not in pd]
+        if missing_ds:
+            return (
+                f"per_dataset_incomplete: missing datasets {missing_ds} in "
+                f"top-level per_dataset."
+            )
+
+    return None
+
+
+def run_experiment(
+    code_path: str,
+    env_id: str,
+    *,
+    model_id: str = "default",
+    eval_env: str = "default",
+    ctx: "RunContext",
+) -> dict:
     """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
+
+    Args:
+        code_path: Path to the code directory containing commands.json.
+        env_id: Docker image tag (or empty when a Dockerfile-rebuild path applies).
+        model_id: Optional tag identifying which model variant this run executes
+            (e.g. "qwen3-1.7b"). Defaults to "default". Persisted to
+            experiment_runs.jsonl so the scope cross-check (PR B) can verify
+            scope.ran against actual evidence. Use one of the model ids from
+            ctx.scope_spec.models when the scope is multi-model.
+        eval_env: Optional tag identifying which evaluation environment / dataset
+            this run targets (e.g. "ALFWorld"). Defaults to "default". Used the
+            same way as model_id; together they form composite "model/eval_env"
+            evidence ids for multi-model + multi-env papers.
 
     Commands are read from `code_path/commands.json` (written by
     `implement_baseline`). Before executing, the image is rebuilt from
@@ -914,7 +1048,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     if not commands:
         return _persist_experiment_result(ctx, {
             "success": False, "metrics": {},
-            "error": f"no commands.json at {manifest}"})
+            "error": f"no commands.json at {manifest}"}, model_id=model_id, eval_env=eval_env)
 
     # Bug B: the experiment must run against an image matching its own code.
     # detect_environment builds the env spec before any code exists, so it
@@ -934,7 +1068,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     f"run_experiment: environment rebuild from {dockerfile_path} "
                     f"failed: {build.get('error')}"
                 ),
-            })
+            }, model_id=model_id, eval_env=eval_env)
         env_id = build["image_tag"]
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
@@ -944,7 +1078,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "success": False,
             "metrics": {},
             "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
-        })
+        }, model_id=model_id, eval_env=eval_env)
 
     # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
     # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
@@ -989,12 +1123,14 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     escalations = 0
     result: dict = {}
 
-    # Escalation loop (spec 2026-05-23 §OOM): on CUDA OOM, pop the next SKU from
-    # GpuPlan.ladder_remaining, persist the updated plan atomically, emit
-    # gpu_escalated, and retry. Capped by max_escalations. Non-OOM failures and
-    # success exit immediately. I12: explicit shutdown(wait=False) per iteration.
+    # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
+    # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
+    # persist the updated plan atomically, emit gpu_escalated, and retry.
+    # Capped by max_escalations. Non-OOM/non-capacity failures and success exit
+    # immediately. I12: explicit shutdown(wait=False) per iteration.
     while True:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+        infra_error_kind: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -1019,6 +1155,30 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                         else "run_experiment: timed out (run-budget deadline reached)"
                     ),
                 }
+            except Exception as exc:  # noqa: BLE001
+                # RunPod infrastructure failures bubble up as SandboxRuntimeError
+                # tagged with a sentinel prefix from runpod_backend. Treat them
+                # like an OOM — advance the ladder, retry. Any other unexpected
+                # exception still produces a fail-soft error dict (consistent
+                # with the rest of this function never raising).
+                exc_msg = str(exc)
+                if "RUNPOD_CAPACITY_EXHAUSTED" in exc_msg:
+                    infra_error_kind = "runpod_capacity"
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"runpod capacity exhausted on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                    }
+                elif "RUNPOD_SSH_TIMEOUT" in exc_msg:
+                    infra_error_kind = "runpod_ssh_timeout"
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"runpod SSH timeout on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                    }
+                else:
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
+                    }
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -1027,9 +1187,12 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         # means legacy mode — no ladder to advance), or cap reached.
         if result.get("success") or gpu_plan is None or escalations >= max_escalations:
             break
+        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        if not _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        is_infra = infra_error_kind is not None
+        if not is_oom and not is_infra:
             break
         if not gpu_plan.ladder_remaining:
             result = {
@@ -1074,12 +1237,25 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "from_sku": gpu_plan.short_name,
             "to_sku": new_plan.short_name,
             "escalation_index": escalations + 1,
-            "reason": "cuda_oom",
+            "reason": infra_error_kind if is_infra else "cuda_oom",
         })
         gpu_plan = new_plan
         escalations += 1
 
-    return _persist_experiment_result(ctx, result)
+    # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
+    # require metrics.json to carry the expected per_model / per_dataset
+    # structure. A successful run with the wrong shape is a fail-soft error
+    # so the agent's next implement_baseline gets it as repair_context.
+    if result.get("success") and result.get("metrics"):
+        hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
+        if hint is not None:
+            result = {
+                **result,
+                "success": False,
+                "error": hint,
+                "scope_shape_violation": True,
+            }
+    return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:

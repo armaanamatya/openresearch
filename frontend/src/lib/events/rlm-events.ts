@@ -173,6 +173,26 @@ export interface IterationHeartbeatEvent {
   note: string;
 }
 
+/**
+ * Emitted by run_experiment (via _persist_experiment_result) when an experiment
+ * completes (success or failure).  Carries the metrics.json payload including
+ * the optional `per_model` dict for papers that test multiple model variants.
+ */
+export interface ExperimentCompletedEvent {
+  event: "experiment_completed";
+  timestamp: string;
+  success: boolean;
+  /** The full metrics.json payload. May include a `per_model` sub-dict. */
+  metrics: Record<string, unknown>;
+  /**
+   * Per-model metrics dict — present when the paper tests >1 model variant.
+   * Keys are Python-identifier-safe model short names; values are flat metric dicts.
+   * Absent (undefined) when only one model variant was evaluated or the agent
+   * did not emit `per_model`.
+   */
+  per_model?: Record<string, Record<string, number>>;
+}
+
 export interface ClusterStartedEvent {
   event: "cluster_started";
   timestamp?: string;
@@ -222,6 +242,7 @@ export const RLM_EVENT_TYPES = [
   "user_message_response",
   "run_warning",
   "iteration_heartbeat",
+  "experiment_completed",
   "cluster_started",
   "cluster_artifact_emitted",
   "cluster_scored",
@@ -242,6 +263,7 @@ export type RlmDashboardEvent =
   | UserMessageResponseEvent
   | RunWarningEvent
   | IterationHeartbeatEvent
+  | ExperimentCompletedEvent
   | ClusterStartedEvent
   | ClusterArtifactEmittedEvent
   | ClusterScoredEvent

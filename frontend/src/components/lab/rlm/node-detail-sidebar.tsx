@@ -25,6 +25,12 @@ export interface NodeDetailSidebarProps {
    * rendered beneath the aggregate-counters strip.
    */
   gpuPlan?: GpuPlan | null;
+  /**
+   * Per-model metrics from the latest successful experiment_completed event,
+   * or null when absent (single-model paper or no experiment run yet).
+   * Lane γ: per-model multi-model UI (2026-05-23).
+   */
+  perModelMetrics?: Record<string, Record<string, number>> | null;
   /** Lift collapsed state to parent (optional — falls back to internal state). */
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
@@ -68,6 +74,64 @@ function kindLabel(kind: TreeNode["kind"]): string {
     case "declined-group": return "declined";
     default: return kind;
   }
+}
+
+// ── Per-model metrics grid ────────────────────────────────────────────────────
+
+/**
+ * PerModelGrid renders a CSS-grid table of per-model metrics.
+ * Columns = model short names (sorted); rows = union of metric names across models.
+ * Empty cells (model didn't report that metric) show "—".
+ * Shown only when perModelMetrics is non-null and has ≥2 models.
+ */
+function PerModelGrid({
+  perModelMetrics,
+}: {
+  perModelMetrics: Record<string, Record<string, number>>;
+}) {
+  const modelKeys = Object.keys(perModelMetrics).sort();
+  if (modelKeys.length < 2) return null;
+
+  // Union of all metric names across models, sorted alphabetically.
+  const metricNames = Array.from(
+    new Set(modelKeys.flatMap((m) => Object.keys(perModelMetrics[m])))
+  ).sort();
+
+  if (metricNames.length === 0) return null;
+
+  return (
+    <div className={styles.perModelGrid} data-testid="per-model-grid">
+      <span className={styles.perModelLabel}>per-model metrics</span>
+      <div
+        className={styles.perModelTable}
+        style={{ gridTemplateColumns: `auto repeat(${modelKeys.length}, 1fr)` }}
+      >
+        {/* Header row */}
+        <div className={styles.perModelHeaderCell} />
+        {modelKeys.map((m) => (
+          <div key={m} className={styles.perModelHeaderCell} title={m}>
+            {m}
+          </div>
+        ))}
+        {/* Data rows */}
+        {metricNames.map((metric) => (
+          <>
+            <div key={`${metric}-label`} className={styles.perModelMetricCell} title={metric}>
+              {metric}
+            </div>
+            {modelKeys.map((m) => {
+              const val = perModelMetrics[m][metric];
+              return (
+                <div key={`${metric}-${m}`} className={styles.perModelValueCell}>
+                  {val !== undefined ? val.toFixed(3) : "—"}
+                </div>
+              );
+            })}
+          </>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Kind-specific content panels ──────────────────────────────────────────────
@@ -175,12 +239,14 @@ function SidebarBody({
   primitiveCalls,
   paperMeta,
   subRlms,
+  perModelMetrics,
 }: {
   node: TreeNode;
   iteration: IterationView | null;
   primitiveCalls: PrimitiveCallView[];
   paperMeta: string;
   subRlms: SubRlmView[];
+  perModelMetrics?: Record<string, Record<string, number>> | null;
 }) {
   const { kind } = node;
 
@@ -292,6 +358,9 @@ function SidebarBody({
         ) : (
           <p className={styles.noDetail}>no rubric score yet</p>
         )}
+        {perModelMetrics && Object.keys(perModelMetrics).length >= 2 && (
+          <PerModelGrid perModelMetrics={perModelMetrics} />
+        )}
         {nowBlock}
       </div>
     );
@@ -321,6 +390,7 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
   candidatesProposed,
   candidatesPromoted,
   gpuPlan = null,
+  perModelMetrics = null,
   collapsed: collapsedProp,
   onCollapsedChange,
   style,
@@ -404,19 +474,27 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
         </div>
       </div>
 
-      {/* GPU plan badge — visible once resolve_gpu_requirements completes */}
-      {gpuPlan && (
-        <div className={styles.gpuPlanBadge} data-testid="gpu-plan-badge" data-source={gpuPlan.source}>
+      {/* GPU plan badge — visible once resolve_gpu_requirements completes.
+          Every field-access is guarded: the SSE payload can arrive
+          partially-formed (e.g. an older run's gpu_plan.json predates a
+          field, or the wire form is missing the field), and a single
+          undefined.toFixed() would crash the whole sidebar. */}
+      {gpuPlan && gpuPlan.short_name && (
+        <div className={styles.gpuPlanBadge} data-testid="gpu-plan-badge" data-source={gpuPlan.source ?? "unknown"}>
           <span className={styles.gpuPlanSku}>{gpuPlan.short_name}</span>
-          <span className={styles.gpuPlanVram}>{gpuPlan.vram_gb} GB</span>
-          {gpuPlan.gpu_count > 1 && (
+          {typeof gpuPlan.vram_gb === "number" && (
+            <span className={styles.gpuPlanVram}>{gpuPlan.vram_gb} GB</span>
+          )}
+          {typeof gpuPlan.gpu_count === "number" && gpuPlan.gpu_count > 1 && (
             <span className={styles.gpuPlanCount}>×{gpuPlan.gpu_count}</span>
           )}
-          <span className={styles.gpuPlanCost}>${gpuPlan.total_usd_per_hr.toFixed(2)}/hr</span>
+          {typeof gpuPlan.total_usd_per_hr === "number" && (
+            <span className={styles.gpuPlanCost}>${gpuPlan.total_usd_per_hr.toFixed(2)}/hr</span>
+          )}
           {gpuPlan.source === "fallback" && (
             <span
               className={styles.gpuPlanFallback}
-              title={gpuPlan.requirements.reasoning}
+              title={gpuPlan.requirements?.reasoning ?? "fallback to default SKU"}
             >
               fallback
             </span>
@@ -433,6 +511,7 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
             primitiveCalls={primitiveCalls}
             paperMeta={paperMeta}
             subRlms={subRlms}
+            perModelMetrics={perModelMetrics}
           />
         ) : (
           <p className={styles.noDetail}>click a node to see details</p>

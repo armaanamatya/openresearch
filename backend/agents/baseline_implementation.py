@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,15 @@ from backend.agents.schemas import (
 from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
+
+# Repo root — used by _load_paper_override to locate docs/papers/<id>.yaml
+_REPO_ROOT = Path(__file__).parent.parent.parent
+
+# Regex matching bare arXiv IDs in project_id strings (e.g. "2605.15155",
+# "arXiv_2605.15155", "pb_2605_15155_...").  Only the canonical NNNN.NNNNN
+# and NNNNN.NNNNN formats are recognised.  Uses a non-digit lookbehind so it
+# matches even when preceded by an underscore (e.g. "arXiv_2605.15155").
+_ARXIV_ID_RE = re.compile(r"(?<!\d)(\d{4,5}\.\d{4,5})(?!\d)")
 
 
 def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Path) -> None:
@@ -415,50 +425,360 @@ def run_offline(
     return result
 
 
-def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
-    """Return a sandbox-aware guidance string for the implement_baseline agent.
+_NO_STUB_BLOCK = (
+    "\n\nNO STUB / NO SURROGATE — hard rule:\n"
+    "Your `train.py` MUST be a fully-fledged reproduction. NEVER substitute:\n"
+    "  - the paper's model with a `TinyLM`, hand-rolled mini-transformer, or random-init MLP\n"
+    "  - the paper's dataset with synthetic / mock / Gaussian / 'ALFWorld-like' data\n"
+    "  - the paper's training loop with a no-op that emits zero-everything metrics\n"
+    "Even a smoke run loads the REAL pretrained weights named in the paper "
+    "(via `transformers.AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-3B-Instruct')` "
+    "or the equivalent for other frameworks) and the REAL dataset (HuggingFace Datasets, "
+    "the paper's GitHub release, etc.). If the paper's full dataset is too large, use the "
+    "paper's *own* released eval split or a public subset — NOT a synthesised stand-in.\n"
+    "Scale-down is allowed ONLY along these axes, in this order:\n"
+    "  1. shorter training (e.g. 5 steps instead of 150)\n"
+    "  2. smaller batch / sequence length\n"
+    "  3. fewer eval examples (but real ones, not synthetic)\n"
+    "  4. smaller model variant FROM THE SAME FAMILY if the paper offers one "
+    "(e.g. Qwen2.5-0.5B if Qwen2.5-3B won't fit — never a random tiny transformer)\n"
+    "If even (1)–(4) cannot make the run fit, FAIL the experiment with a clear "
+    "`metrics.json = {\"error\": \"compute_infeasible\", \"required_vram_gb\": N}` so the rubric "
+    "scorer records honest zero on result-match instead of getting fake numbers from a surrogate.\n"
+    "An adapted-down real reproduction scores higher than a complete synthetic surrogate — "
+    "the rubric's leaf scorer reads your code AND inspects whether you loaded the paper's "
+    "actual model + data.\n"
+)
 
-    The constraint is COMPUTE-bound, not sandbox-bound. We bias toward
-    smoke-test mode only when the compute substrate is likely CPU-only.
+_POD_SETUP_BLOCK = (
+    "\n\nRUNPOD SANDBOX — pod env setup (when sandbox=runpod):\n"
+    "On RunPod the pod boots from a GENERIC pytorch image (typically "
+    "runpod/pytorch:*-py3.10-cuda*-ubuntu22.04). Your Dockerfile is NOT used "
+    "to build the pod — it's documentation only.\n"
+    "\n"
+    "DEPENDENCY INSTALLATION IS HANDLED FOR YOU. The backend will automatically\n"
+    "run `python -m pip install --no-cache-dir -r requirements.txt` BEFORE your\n"
+    "commands.json entries fire. You do NOT need to repeat this in commands.json.\n"
+    "Just list requirements.txt with the deps you need (transformers, accelerate,\n"
+    "alfworld, etc., pinned versions).\n"
+    "\n"
+    "commands.json on runpod should contain ONLY the experiment commands —\n"
+    "typically a 1-2 entry list ending in `python train.py`. Example:\n"
+    "  [\"alfworld-download 2>&1 || true\", \"python train.py\"]\n"
+    "(The `|| true` on alfworld-download tolerates the case where the data\n"
+    "is already present from a prior attempt.)\n"
+    "\n"
+    "Special-case packages that need CUDA dev headers (bitsandbytes, flash-attn, "
+    "deepspeed, apex): the default RunPod image is cuda-devel, so dev headers "
+    "ARE available. Prefer pre-built wheels from pypi where they exist.\n"
+)
 
-    Decision table:
-    - sandbox=runpod (any gpu_mode)        → GPU available     → no guidance
-    - gpu_mode=max (require GPU)            → user demands GPU  → no guidance
-    - sandbox in {docker, local}, gpu_mode in {off, None}  → CPU-only       → constraint
-    - sandbox in {docker, local}, gpu_mode in {auto, prefer} → CPU-likely     → constraint (most dev hosts lack a usable GPU)
-    - any other / unknown                   → conservative      → no guidance
 
-    Returning '' means no guidance is injected — the baseline agent runs
-    unconstrained. Returning a guidance string means smoke-test mode.
+# Lane γ: per_model metrics block
+_PER_MODEL_METRICS_BLOCK = (
+    "\n\nPER-MODEL METRICS — when the paper tests multiple model variants:\n"
+    "If the paper specifies more than one model variant (e.g. Qwen2.5-0.5B and\n"
+    "Qwen2.5-3B, or BERT-base and BERT-large), your `metrics.json` MUST include\n"
+    "a `per_model` dict in addition to any flat top-level metrics. Shape:\n"
+    "  {\n"
+    "    \"per_model\": {\n"
+    "      \"<model_short_name>\": {\n"
+    "        \"<metric_name>\": <number>,\n"
+    "        ...one entry per metric measured for this model variant...\n"
+    "      },\n"
+    "      ...one entry per model variant actually run...\n"
+    "    },\n"
+    "    \"wall_time_seconds\": <number>,\n"
+    "    \"scope\": {\n"
+    "      \"models_run\": [\"<short_name>\", ...],\n"
+    "      \"models_skipped\": [\"<short_name>\", ...]\n"
+    "    }\n"
+    "  }\n"
+    "Model short names MUST be Python-identifier-safe (use underscores, not dots\n"
+    "or slashes — e.g. `qwen2_5_3b` not `Qwen/Qwen2.5-3B-Instruct`). You MAY\n"
+    "also include flat top-level metrics (e.g. averaged or best-of) for backward\n"
+    "compatibility — `per_model` does not replace them, only adds richer detail.\n"
+    "If only one model variant is evaluated, omit `per_model` entirely; the flat\n"
+    "format is sufficient. Never fabricate `per_model` entries for variants you\n"
+    "did not actually run — use `scope.models_skipped` instead.\n"
+)
+
+_RUNTIME_DETECTION_BLOCK = (
+    "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
+    "Your code MUST detect available compute at runtime and adapt accordingly. "
+    "Do NOT hard-code an assumption about GPU availability. The same `train.py` "
+    "should work whether the sandbox is CPU-only docker or a GPU-bearing runpod:\n"
+    "  - At startup: `import torch; HAS_GPU = torch.cuda.is_available()` "
+    "(or the framework equivalent — `jax.devices('gpu')`, `tf.config.list_physical_devices('GPU')`, etc.)\n"
+    "  - `device = 'cuda' if HAS_GPU else 'cpu'` and pass through to every model/tensor\n"
+    "  - Scale-down on CPU: reduce STEPS and BATCH (per the NO STUB rules above) — "
+    "do NOT downgrade model or data identity\n"
+    "  - Scale-up on GPU: full batch + epoch count + real datasets — match the paper\n"
+    "  - `commands.json` should run ONE entrypoint that branches internally on `HAS_GPU`. "
+    "Do NOT write two separate scripts; write one adaptive script.\n"
+    "  - For evaluation papers without training: load the real evaluation model and "
+    "the real benchmark data. If a remote API is unreachable, FAIL with an explicit "
+    "`metrics.json={\"error\":\"api_unreachable\"}` rather than substituting mock outputs.\n"
+)
+
+_DATASET_SETUP_BLOCK = (
+    "\n\nDATASET SETUP — required patterns by environment family:\n"
+    "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
+    "\n"
+    "ALFWorld:\n"
+    "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
+    "                                           #   does not exist until the package is installed\n"
+    "  alfworld-download                        # downloads ALFWorld env data\n"
+    "  assert os.path.exists('/workspace/data/alfworld'), 'ALFWorld data missing'\n"
+    "  Data dir: /workspace/data/alfworld (NOT ~/alfworld or ./data)\n"
+    "\n"
+    "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
+    "  from datasets import load_dataset\n"
+    "  ds = load_dataset('hotpot_qa', 'distractor', cache_dir='/workspace/data/hf')\n"
+    "  assert len(ds) > 0, 'HotpotQA load failed'\n"
+    "  Set HF_HOME=/workspace/data/hf and HF_DATASETS_CACHE=/workspace/data/hf/datasets\n"
+    "  so repeated runs reuse the cache without re-downloading.\n"
+    "\n"
+    "WebShop:\n"
+    "  python -m pip install webshop-text-env  # or the upstream package from\n"
+    "                                           #   https://github.com/princeton-nlp/WebShop\n"
+    "  import webshop_text_env; env = webshop_text_env.WebShopEnv()\n"
+    "  assert env is not None, 'WebShop env init failed'\n"
+    "  Data dir: /workspace/data/webshop\n"
+    "\n"
+    "General rules:\n"
+    "  - The pod filesystem is /workspace-rooted. Always default data dirs to\n"
+    "    /workspace/data/<env>, NEVER to ~ or relative paths.\n"
+    "  - Emit an explicit assert os.path.exists(...) after EVERY download step.\n"
+    "    A missing dataset dir that passes silently will produce zero/NaN metrics.\n"
+    "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
+    "    `pip install alfworld` must precede `alfworld-download`.\n"
+    "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
+    "    inherits them.\n"
+)
+
+
+def _rubric_checklist_block(project_dir: Path) -> str:
+    """Return a prompt block listing the top-20 rubric leaves by weight.
+
+    Reads ``runs/<project>/generated_rubric.json`` when present and walks
+    ``sub_tasks`` recursively to collect leaf nodes (nodes with no further
+    sub_tasks or with sub_tasks=[]).  Leaves are sorted by ``weight``
+    descending; the top 20 are formatted as a checklist.
+
+    Returns ``""`` when the rubric file does not exist — no crash, no append.
+    """
+    rubric_path = project_dir / "generated_rubric.json"
+    if not rubric_path.exists():
+        return ""
+
+    try:
+        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    def _collect_leaves(node: dict) -> list[dict]:
+        children = node.get("sub_tasks") or []
+        if not children:
+            return [node]
+        leaves: list[dict] = []
+        for child in children:
+            if isinstance(child, dict):
+                leaves.extend(_collect_leaves(child))
+        return leaves
+
+    # The rubric may be a dict with a top-level list or a bare list.
+    if isinstance(rubric, dict):
+        top_nodes = rubric.get("sub_tasks") or rubric.get("tasks") or [rubric]
+    elif isinstance(rubric, list):
+        top_nodes = rubric
+    else:
+        return ""
+
+    all_leaves: list[dict] = []
+    for node in top_nodes:
+        if isinstance(node, dict):
+            all_leaves.extend(_collect_leaves(node))
+
+    if not all_leaves:
+        return ""
+
+    all_leaves.sort(key=lambda n: float(n.get("weight", 0) or 0), reverse=True)
+    top = all_leaves[:20]
+
+    lines = ["\n\nRUBRIC CHECKLIST — leaves you'll be scored on (top 20 by weight):"]
+    for leaf in top:
+        weight = float(leaf.get("weight", 0) or 0)
+        req = str(leaf.get("requirements") or leaf.get("description") or "")
+        if len(req) > 250:
+            req = req[:247] + "..."
+        lines.append(f"  [w={weight:.2f}] {req}")
+
+    return "\n".join(lines)
+
+
+def _load_paper_override(arxiv_id: str | None) -> str:
+    """Return a prompt block loaded from ``docs/papers/<arxiv_id>.yaml``.
+
+    The yaml schema is open-ended; the loader formats it as a markdown-style
+    prompt block so the agent sees it in a readable format.
+
+    Returns ``""`` when arxiv_id is None, the file doesn't exist, or parsing
+    fails — no crash, no append.
+    """
+    if not arxiv_id:
+        return ""
+
+    yaml_path = _REPO_ROOT / "docs" / "papers" / f"{arxiv_id}.yaml"
+    if not yaml_path.exists():
+        return ""
+
+    try:
+        import yaml  # PyYAML — available in the repo venv
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    if not data:
+        return ""
+
+    # Format the yaml content as a readable markdown block.
+    try:
+        import yaml
+        formatted = yaml.dump(data, default_flow_style=False, allow_unicode=True)
+    except Exception:
+        formatted = str(data)
+
+    return (
+        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from docs/papers/{arxiv_id}.yaml):\n"
+        + formatted
+    )
+
+
+def _extract_arxiv_id(project_id: str) -> str | None:
+    """Extract a bare arXiv ID (e.g. '2605.15155') from a project_id string.
+
+    Handles project IDs like '2605.15155', 'arXiv_2605.15155_abc', and the
+    hyphenated form produced by arXiv fetcher normalisation.  Returns None
+    when no arXiv ID pattern is found.
+    """
+    m = _ARXIV_ID_RE.search(project_id)
+    return m.group(1) if m else None
+
+
+def _compute_constraint_guidance(
+    sandbox_mode: object,
+    gpu_mode: object,
+    project_dir: Path | None = None,
+    arxiv_id: str | None = None,
+) -> str:
+    """Return capability-aware guidance for the implement_baseline agent.
+
+    Goal: the baseline agent writes ONE script that works on CPU OR GPU,
+    detecting at runtime via torch.cuda.is_available() (or framework equiv)
+    and adapting scale. Hard-coding either mode at build time is wrong —
+    the same artifact must run on the local CPU sandbox AND on RunPod GPU.
+
+    Policy overlay on top of the always-on runtime detection:
+    - gpu_mode=off → user demands CPU-only; emphasize smoke-test mode is
+      the only valid path; GPU branch is dead code (still write it for
+      portability, but commands.json must trigger CPU path).
+    - gpu_mode=max → user demands GPU; the CPU branch is a safety net
+      (still write it so the artifact is portable to a CPU sandbox for
+      smoke validation), but commands.json should target the GPU path.
+    - gpu_mode in {auto, prefer, None} → no override; the runtime detection
+      decides at execution time.
+
+    Sandbox signals are advisory:
+    - sandbox=runpod → GPU very likely available; agent should still write
+      the detection-branch (some runpod pods are CPU-only).
+    - sandbox=docker/local → GPU uncertain; the detection-branch is THE
+      protection against assuming wrong.
+
+    Returns the always-on detection block PLUS any policy overlay. The
+    agent gets ONE coherent guidance section covering both modes.
 
     Auth-agnostic by construction (no provider branching).
+
+    Prompt assembly order:
+    1. _NO_STUB_BLOCK
+    2. _RUNTIME_DETECTION_BLOCK
+    3. _POD_SETUP_BLOCK (only when sandbox=runpod)
+    4. _DATASET_SETUP_BLOCK (always-on)
+    5. Rubric auto-checklist (when generated_rubric.json exists)
+    6. Per-paper override (when docs/papers/<arxiv_id>.yaml exists)
+    7. REPROLAB_BASELINE_EXTRA_GUIDANCE env-var block
+    8. gpu_mode policy overlays (off / max)
     """
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
-    # GPU-bearing sandbox — no constraint.
+    # 1. NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
+    # before the runtime-detection nuance.
+    # 2. RUNTIME COMPUTE DETECTION — always-on.
+    # 2.5. PER-MODEL METRICS — multi-scale-paper output shape (Lane γ), follows
+    # RUNTIME_DETECTION so the agent understands compute constraints first.
+    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _PER_MODEL_METRICS_BLOCK
+
+    # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:
-        return ""
-    # User explicitly demanded GPU — no constraint (sandbox must provide one).
-    if "max" in gpu_str:
-        return ""
-    # Local containers WITHOUT a confirmed GPU — apply the constraint.
-    if any(t in mode_str for t in ("docker", "local")):
-        return (
-            "\n\nIMPORTANT — COMPUTE CONSTRAINT:\n"
-            "The experiment will run in a local container that may have NO "
-            "GPU available. To ensure the experiment completes reliably "
-            "across hosts:\n"
-            "  - Default to smoke-test / mock mode that completes in < 5 min on CPU\n"
-            "  - Train on tiny subsets (1-10 samples per class), not full datasets\n"
-            "  - Use cached embeddings / mock model calls / pre-computed features where possible\n"
-            "  - For evaluation papers: implement the pipeline with HARDCODED mock model outputs that produce realistic-looking metrics; do NOT call real APIs from inside the sandbox (no network, no GPU)\n"
-            "  - Always include `--smoke-test` (or equivalent fast-path flag) in commands.json; never write bare `python train.py`\n"
-            "  - metrics.json MUST be produced under 5 minutes from container start; if your design can't hit that, scale down further\n"
-            "  - A full-mode training script can be present in the code but should be opt-in via a flag, not the default invocation\n"
+        guidance += _POD_SETUP_BLOCK
+
+    # 4. DATASET SETUP — always-on; tells the agent how to download real data.
+    guidance += _DATASET_SETUP_BLOCK
+
+    # 5. Rubric auto-checklist — when generated_rubric.json exists.
+    if project_dir is not None:
+        checklist = _rubric_checklist_block(project_dir)
+        if checklist:
+            guidance += checklist
+
+    # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
+    override = _load_paper_override(arxiv_id)
+    if override:
+        guidance += override
+
+    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+    # Generic paper-agnostic hook so an operator can scope a specific run
+    # without modifying source. Common uses:
+    #   - "reproduce only the smallest 2 model variants the paper tests"
+    #   - "use a 5% subset of the eval set for time-bounded iteration"
+    #   - "skip the multi-seed sweep; one seed=42 is sufficient"
+    # The guidance is appended verbatim, so the operator is responsible for
+    # phrasing it so it doesn't contradict the NO STUB block above.
+    import os as _os
+    extra = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+    if extra:
+        guidance += (
+            "\n\nOPERATOR GUIDANCE — per-run scope override:\n"
+            "  " + extra.replace("\n", "\n  ") + "\n"
+            "  This guidance does NOT override the NO STUB / NO SURROGATE rule. "
+            "If you cannot satisfy the operator's scope AND keep the reproduction "
+            "real (paper's actual model + data), fail honestly via "
+            "metrics.json={\"error\":\"scope_conflict\",\"detail\":\"...\"}.\n"
         )
-    # Unknown / explicit-GPU / runpod → no guidance.
-    return ""
+
+    # 8. Policy overlays — explicit gpu_mode=off forces CPU entrypoint;
+    #    gpu_mode=max forces GPU entrypoint.
+    if gpu_str in {"off", "none"}:
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=off:\n"
+            "  User explicitly disabled GPU. Even if torch.cuda.is_available() "
+            "returns True at runtime, your commands.json MUST trigger only the "
+            "CPU/smoke path. The GPU branch in your code is dead code for this "
+            "run but still required for portability.\n"
+        )
+    elif gpu_str == "max":
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=max:\n"
+            "  User explicitly demands GPU. Sandbox MUST provide one. Your "
+            "commands.json should trigger the full-scale (GPU) path. The "
+            "CPU branch remains in the code as a safety net for portability + "
+            "smoke validation, but is not the primary entrypoint here.\n"
+        )
+    # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
+
+    return guidance
 
 
 async def run_with_sdk(
@@ -496,7 +816,10 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
-    sandbox_guidance = _compute_constraint_guidance(sandbox_mode, gpu_mode)
+    arxiv_id = _extract_arxiv_id(project_id)
+    sandbox_guidance = _compute_constraint_guidance(
+        sandbox_mode, gpu_mode, project_dir=project_dir, arxiv_id=arxiv_id
+    )
 
     if repair_context:
         prompt = (

@@ -68,12 +68,14 @@ const DEFAULT_PROPS = {
   forceSingleGpu: false,
   maxGpuUsdPerHour: 0,
   vramGb: 0,
+  sandbox: "docker" as const,
   onRootProviderChange: NOP,
   onSubagentAuthChange: NOP,
   onDynamicGpuChange: NOP,
   onForceSingleGpuChange: NOP,
   onMaxGpuUsdPerHourChange: NOP,
   onVramGbChange: NOP,
+  onSandboxChange: NOP,
 };
 
 beforeEach(() => {

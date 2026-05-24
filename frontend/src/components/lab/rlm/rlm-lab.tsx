@@ -27,6 +27,11 @@ interface RlmLabProps {
     paperMeta: string;
     /** ISO timestamp from demo_status.json; drives the real-time elapsed clock. */
     startedAt?: string | null;
+    /** ISO timestamp when the run reached a terminal state. When present, the
+     *  elapsed clock FREEZES at (completedAt - startedAt) instead of ticking
+     *  against the wall clock — avoids the misleading "elapsed: 5h" badge on
+     *  a run that died 10 min in. */
+    completedAt?: string | null;
   };
   /** Run mode — when "rlm" or "rdr" the RubricBreakdown panel is shown. */
   runMode?: DemoRunMode;
@@ -119,10 +124,22 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
     () => (runMeta.startedAt ? new Date(runMeta.startedAt).getTime() : null),
     [runMeta.startedAt]
   );
+  // When the run finishes (terminal state), the backend stamps completedAt on
+  // demo_status.json. We freeze elapsed at that timestamp so the badge stops
+  // ticking on a dead/failed run — fixes the "elapsed: 5h" misleading display.
+  const completedAtMs = useMemo(
+    () => (runMeta.completedAt ? new Date(runMeta.completedAt).getTime() : null),
+    [runMeta.completedAt]
+  );
   const [nowMs, setNowMs] = useState<number | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (startedAtMs === null) return;
+    // If the run already has a completedAt, freeze immediately — no interval.
+    if (completedAtMs !== null) {
+      setNowMs(completedAtMs);
+      return;
+    }
     const update = () => setNowMs(Date.now());
     const initialTick = setTimeout(update, 0);
     tickRef.current = setInterval(update, 1000);
@@ -130,12 +147,14 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
       clearTimeout(initialTick);
       if (tickRef.current !== null) clearInterval(tickRef.current);
     };
-  }, [startedAtMs]);
+  }, [startedAtMs, completedAtMs]);
   const elapsedMs = useMemo(() => {
     if (startedAtMs !== null) {
-      // SSR + first client render: nowMs === null → render 0; matches server.
-      // After mount the interval populates nowMs and the display ticks.
-      return nowMs === null ? 0 : Math.max(0, nowMs - startedAtMs);
+      // Terminal run: freeze elapsed at (completedAt - startedAt). Otherwise
+      // (running): tick against the wall clock via nowMs.
+      const referenceMs = completedAtMs !== null ? completedAtMs : nowMs;
+      if (referenceMs === null) return 0;
+      return Math.max(0, referenceMs - startedAtMs);
     }
     // Fallback: derive from first/last event timestamps (static, SSR-safe).
     if (events.length < 2) return 0;
@@ -269,7 +288,11 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
 
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
       {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (
-        <RubricBreakdown projectId={runMeta.projectId} isActive={isActive} />
+        <RubricBreakdown
+          projectId={runMeta.projectId}
+          isActive={isActive}
+          perModelMetrics={state.perModelMetrics}
+        />
       )}
 
       {/* Band 3: workspace */}
@@ -332,6 +355,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           candidatesProposed={candidatesProposed}
           candidatesPromoted={candidatesPromoted}
           gpuPlan={state.gpuPlan}
+          perModelMetrics={state.perModelMetrics}
           collapsed={sidebarCollapsed}
           onCollapsedChange={handleSidebarCollapsedChange}
           style={sidebarStyle}

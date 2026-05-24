@@ -401,6 +401,8 @@ _REPRODUCE_DEFAULTS = {
     "run_group_id": None,
     "blacklist": None,
     "project_id": None,
+    "paper_hint": None,
+    "scope_spec": None,
 }
 
 
@@ -752,6 +754,44 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     if getattr(args, "vram_gb", None) is not None:
         _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
 
+    # Paper-hint + operator scope-spec composition. The two flags are independent —
+    # either, both, or neither may be set. Result is persisted via env vars so the
+    # spawned subprocess (cmd_reproduce → run_pipeline_hybrid/_rlm → RunContext)
+    # picks them up uniformly. This mirrors the dynamic-GPU env-var pattern above.
+    from backend.agents.prompts.paper_hints import lookup_paper_hint as _lookup_hint
+    _paper_hint_obj = _lookup_hint(getattr(args, "paper_hint", None))
+    _operator_scope = _load_scope_spec_arg(getattr(args, "scope_spec", None))
+    _effective_scope = _operator_scope.merge_with_paper_default(
+        _paper_hint_obj.default_scope if _paper_hint_obj is not None else None
+    )
+    _os.environ["REPROLAB_SCOPE_SPEC_JSON"] = _effective_scope.model_dump_json()
+
+    if _paper_hint_obj is not None and _paper_hint_obj.guidance:
+        _existing_guidance = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _hint_id = args.paper_hint
+        _hint_text = f"[paper-hint {_hint_id}] {_paper_hint_obj.guidance}"
+        _os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_hint_text}\n\n{_existing_guidance}" if _existing_guidance else _hint_text
+        )
+        print(
+            f"[paper-hint] Applied {_hint_id} ({len(_paper_hint_obj.guidance)} chars guidance, "
+            f"{len(_paper_hint_obj.invariants)} invariants, "
+            f"{'scope' if _paper_hint_obj.default_scope else 'no scope'}).",
+            file=sys.stderr,
+        )
+    elif getattr(args, "paper_hint", None):
+        print(
+            f"[paper-hint] No built-in hint for {args.paper_hint!r}; continuing without one.",
+            file=sys.stderr,
+        )
+    if getattr(args, "scope_spec", None):
+        print(
+            f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "
+            f"datasets={_effective_scope.dataset_ids() or '∅'}, "
+            f"seeds={_effective_scope.seeds or '∅'}.",
+            file=sys.stderr,
+        )
+
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
@@ -784,6 +824,21 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"[--fresh] Purged runs/{fresh_pid}/ and {purged} event-store rows.",
             file=sys.stderr,
         )
+    else:
+        # Archive prior-attempt artifacts (final_report.*, experiment_runs.jsonl,
+        # cost_ledger.jsonl, dashboard_events.jsonl, rlm_state/, etc.) under
+        # runs/<id>/attempts/<ts>/ so the new attempt does not commingle with
+        # an older one in the UI or the final report. The ingested paper is
+        # preserved so this does NOT trigger a re-fetch / re-parse.
+        from backend.services.runs.archive import archive_run_artifacts
+        presumed_pid = getattr(args, "project_id", None) or project_id_for(source)
+        archived = archive_run_artifacts(presumed_pid, runs_root)
+        if archived:
+            print(
+                f"[archive] Moved {len(archived['moved'])} prior-attempt artifact(s) "
+                f"to {archived['attempt_dir']}",
+                file=sys.stderr,
+            )
 
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
     project_id = intake.register_project(RegisterProject(source=source))
@@ -1261,6 +1316,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "In rdr mode, also used with --resume to target a specific prior run."
         ),
     )
+    reproduce.add_argument(
+        "--paper-hint",
+        dest="paper_hint",
+        default=None,
+        help=(
+            "Paper-specific hint id (typically an arXiv id, e.g. 2605.15155). "
+            "Looks up PaperHint from backend.agents.prompts.paper_hints.PAPER_HINTS. "
+            "Composes three independent layers: appends .guidance to "
+            "REPROLAB_BASELINE_EXTRA_GUIDANCE (with [paper-hint <id>] prefix); "
+            "merges .default_scope under any operator --scope-spec via "
+            "ScopeSpec.merge_with_paper_default; .invariants ride along to PR D's "
+            "rubric scorer. Unknown ids are silently ignored — the run continues."
+        ),
+    )
+    reproduce.add_argument(
+        "--scope-spec",
+        dest="scope_spec",
+        default=None,
+        help=(
+            "Operator-stated reproduction scope. Accepts EITHER an inline JSON "
+            "object (e.g. '{\"models\":[\"Qwen3-1.7B\"],\"seeds\":[42]}') OR a "
+            "path to a JSON file. Detection rule: a value starting with '{' is "
+            "treated as inline JSON; anything else is read as a filesystem path. "
+            "Merges under any --paper-hint default_scope via "
+            "ScopeSpec.merge_with_paper_default — operator fields win, absences "
+            "fall back to paper defaults."
+        ),
+    )
     reproduce.set_defaults(func=cmd_reproduce)
 
     from backend.cli_paperbench import add_paperbench_subparser
@@ -1319,6 +1402,25 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _load_scope_spec_arg(raw: str | None):
+    """Parse --scope-spec value (inline JSON or filesystem path) into a ScopeSpec.
+
+    Inline detection: a value starting with '{' is parsed as JSON directly;
+    anything else is treated as a path. Missing paths raise FileNotFoundError
+    so a typo never silently produces an empty scope.
+    """
+    from backend.agents.schemas import ScopeSpec
+    if not raw or not raw.strip():
+        return ScopeSpec()
+    text = raw.strip()
+    if text.startswith("{"):
+        return ScopeSpec.model_validate_json(text)
+    path = Path(text).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"--scope-spec: {path} does not exist")
+    return ScopeSpec.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def _resolve_max_pod_seconds(cli_value: float | None) -> float | None:

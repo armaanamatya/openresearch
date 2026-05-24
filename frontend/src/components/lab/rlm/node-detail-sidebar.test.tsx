@@ -487,4 +487,76 @@ describe("NodeDetailSidebar", () => {
     render(<NodeDetailSidebar {...baseProps()} />);
     expect(screen.queryByTestId("gpu-plan-badge")).not.toBeInTheDocument();
   });
+
+  // ── Per-model metrics grid (Lane γ, 2026-05-23) ───────────────────────────
+
+  it("renders per-model grid on baseline node when perModelMetrics has ≥2 models", () => {
+    const perModelMetrics = {
+      qwen3_1_7b: { alfworld_success_rate: 0.34, searchqa_accuracy: 0.42 },
+      qwen2_5_3b: { alfworld_success_rate: 0.51, searchqa_accuracy: 0.55 },
+    };
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "baseline", id: "baseline", title: "Baseline" }),
+          perModelMetrics,
+        })}
+      />
+    );
+    expect(screen.getByTestId("per-model-grid")).toBeInTheDocument();
+    // Model column headers
+    expect(screen.getByText("qwen2_5_3b")).toBeInTheDocument();
+    expect(screen.getByText("qwen3_1_7b")).toBeInTheDocument();
+    // Metric row label
+    expect(screen.getByText("alfworld_success_rate")).toBeInTheDocument();
+    // Value cells
+    expect(screen.getByText("0.510")).toBeInTheDocument();
+    expect(screen.getByText("0.340")).toBeInTheDocument();
+  });
+
+  it("does NOT render per-model grid when perModelMetrics is null", () => {
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "baseline", id: "baseline", title: "Baseline" }),
+          perModelMetrics: null,
+        })}
+      />
+    );
+    expect(screen.queryByTestId("per-model-grid")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render per-model grid when perModelMetrics has only 1 model", () => {
+    const perModelMetrics = {
+      qwen3_1_7b: { acc: 0.34 },
+    };
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "baseline", id: "baseline", title: "Baseline" }),
+          perModelMetrics,
+        })}
+      />
+    );
+    expect(screen.queryByTestId("per-model-grid")).not.toBeInTheDocument();
+  });
+
+  it("shows '—' for missing metrics in per-model grid", () => {
+    // model_b is missing "recall" which model_a has
+    const perModelMetrics = {
+      model_a: { precision: 0.9, recall: 0.8 },
+      model_b: { precision: 0.85 },
+    };
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "baseline", id: "baseline", title: "Baseline" }),
+          perModelMetrics,
+        })}
+      />
+    );
+    expect(screen.getByTestId("per-model-grid")).toBeInTheDocument();
+    // "—" for missing recall on model_b
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
 });
