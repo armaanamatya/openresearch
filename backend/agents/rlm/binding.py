@@ -145,6 +145,12 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         if ctx.emit is not None:
             ctx.emit(event)
 
+    # Primitives that should generate a worker report
+    _REPORT_PRIMITIVES = {
+        "implement_baseline", "build_environment", "run_experiment",
+        "verify_against_rubric", "propose_improvements",
+    }
+
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         kwargs.pop("ctx", None)  # the wrapper supplies ctx; never let a caller double it
         # Attempt one conservative coercion pass before calling the primitive.
@@ -155,6 +161,35 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         if coerced:
             logger.info("primitive %s: args auto-coerced", name)
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
+
+        # Open a worker report for key primitives
+        _wr_report = None
+        _wr_start = None
+        if name in _REPORT_PRIMITIVES:
+            try:
+                import time as _time
+                from backend.agents.worker_reports import (
+                    WORKER_TYPE_RLM_PRIMITIVE,
+                    build_extended_worker_report,
+                    build_worker_report_started_event,
+                    open_worker_report,
+                )
+                _wr_start = _time.monotonic()
+                _wr_report = build_extended_worker_report(
+                    run_id=getattr(ctx, "project_id", None),
+                    worker_type=WORKER_TYPE_RLM_PRIMITIVE,
+                    agent_id=name,
+                    project_dir=ctx.project_dir,
+                    model=ctx.model,
+                    provider=ctx.provider,
+                    status="running",
+                    assignment={"summary": f"RLM primitive: {name}"},
+                )
+                open_worker_report(ctx.project_dir, _wr_report)
+                _emit_extra(build_worker_report_started_event(_wr_report))
+            except Exception:  # noqa: BLE001
+                _wr_report = None
+
         try:
             try:
                 result = fn(*args, ctx=ctx, **kwargs)
@@ -215,6 +250,35 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 _emit_supplemental(name, result, ctx, _emit_extra)
             return result
         finally:
+            # Finalize the worker report if one was opened
+            if _wr_report is not None:
+                try:
+                    import time as _time
+                    from backend.agents.worker_reports import (
+                        build_worker_report_completed_event,
+                        build_worker_report_failed_event,
+                        finalize_worker_report,
+                    )
+                    elapsed = int((_time.monotonic() - _wr_start) * 1000) if _wr_start else None
+                    try:
+                        _wr_result = result  # noqa: F841
+                        is_failed = isinstance(_wr_result, dict) and (
+                            _wr_result.get("success") is False or bool(_wr_result.get("error"))
+                        )
+                    except NameError:
+                        is_failed = True
+                    final_status = "failed" if is_failed else "completed"
+                    finalize_worker_report(
+                        ctx.project_dir, _wr_report,
+                        status=final_status,
+                        duration_ms=elapsed,
+                    )
+                    if is_failed:
+                        _emit_extra(build_worker_report_failed_event(_wr_report))
+                    else:
+                        _emit_extra(build_worker_report_completed_event(_wr_report))
+                except Exception:  # noqa: BLE001
+                    pass
             # Flush any buffered cost-ledger entries at the end of every primitive
             # boundary so the file is always in a consistent state for inspection
             # after each primitive completes.  flush() is idempotent and lock-safe.

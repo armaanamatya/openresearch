@@ -76,7 +76,67 @@ export interface DemoWorkerCommand {
   command: string;
   exit_code?: number | null;
   source?: string;
+  cwd?: string;
+  started_at?: string;
+  finished_at?: string;
+  stdout_tail?: string;
+  stderr_tail?: string;
+  status?: string;
 }
+
+export interface DemoWorkerBlocker {
+  title: string;
+  description: string;
+  severity: "critical" | "high" | "medium" | "low";
+  source: string;
+  suggested_fix?: string;
+}
+
+export interface DemoWorkerError {
+  message: string;
+  stack_or_trace?: string | null;
+  source_file?: string | null;
+  recoverable?: boolean;
+}
+
+export interface DemoWorkerArtifact {
+  path: string;
+  type?: string;
+  description?: string;
+}
+
+export interface DemoWorkerTest {
+  command: string;
+  status: string;
+  passed_count?: number;
+  failed_count?: number;
+  skipped_count?: number;
+  exit_code?: number | null;
+  notes?: string;
+}
+
+export interface DemoWorkerAssignment {
+  summary: string;
+  detailed_prompt_or_task?: string;
+  expected_outputs?: string[];
+  constraints?: string[];
+}
+
+export interface DemoExecutionSummary {
+  concise_summary?: string;
+  implemented?: string[];
+  partially_implemented?: string[];
+  not_implemented?: string[];
+  changed_files?: string[];
+  created_files?: string[];
+  deleted_files?: string[];
+}
+
+export type DemoWorkerType =
+  | "rdr_cluster"
+  | "rlm_primitive"
+  | "sdk_agent"
+  | "hybrid_iteration";
 
 export interface DemoWorkerReport {
   report_id?: string;
@@ -93,6 +153,46 @@ export interface DemoWorkerReport {
   procedures_followed?: boolean | null;
   procedure_notes?: string;
   error?: string | null;
+  // Extended fields (2026-05-24)
+  run_id?: string;
+  worker_id?: string;
+  worker_type?: DemoWorkerType;
+  cluster_id?: string;
+  task_id?: string;
+  parent_task_id?: string;
+  duration_ms?: number;
+  assignment?: DemoWorkerAssignment;
+  execution_summary?: DemoExecutionSummary;
+  blockers?: DemoWorkerBlocker[];
+  errors?: DemoWorkerError[];
+  artifacts?: DemoWorkerArtifact[];
+  tests?: DemoWorkerTest[];
+  next_actions?: DemoNextAction[];
+}
+
+export interface DemoNextAction {
+  priority?: string;
+  action: string;
+  owner_or_component?: string;
+  rationale?: string;
+}
+
+export interface DemoReportsSummary {
+  total_workers?: number;
+  by_status?: Record<string, number>;
+  critical_blockers?: DemoWorkerBlocker[];
+  files_changed?: string[];
+  commands_run?: number;
+  failed_commands?: number;
+  tests_summary?: { passed: number; failed: number };
+  final_run_status?: string;
+  top_next_actions?: DemoNextAction[];
+  generated_at?: string;
+}
+
+export interface DemoReportsResponse {
+  workers: DemoWorkerReport[];
+  summary: DemoReportsSummary;
 }
 
 export interface LiveDemoRunState {

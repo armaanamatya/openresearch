@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import type { CSSProperties } from "react";
 import type { RlmRunState, PrimitiveCallView } from "../../../hooks/use-rlm-run";
-import type { DemoWorkerReport } from "../../../lib/demo/demo-run-types";
+import type { DemoWorkerReport, DemoReportsSummary } from "../../../lib/demo/demo-run-types";
 import styles from "./report-rail.module.css";
 
 export interface ReportRailProps {
@@ -12,6 +13,7 @@ export interface ReportRailProps {
   rubric: RlmRunState["rubric"];
   workerReports?: DemoWorkerReport[];
   primitiveCalls?: PrimitiveCallView[];
+  reportsSummary?: DemoReportsSummary;
   style?: CSSProperties;
 }
 
@@ -96,6 +98,7 @@ export function ReportRail({
   rubric,
   workerReports = [],
   primitiveCalls = [],
+  reportsSummary,
   style,
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
@@ -235,58 +238,55 @@ export function ReportRail({
           <span className={styles.breakdownHeading}>worker reports</span>
           <span className={styles.sectionCount}>{workerReports.length}</span>
         </div>
+
+        {/* Summary card when reportsSummary is available */}
+        {reportsSummary && reportsSummary.total_workers != null && reportsSummary.total_workers > 0 && (
+          <div className={styles.workerCard}>
+            <div className={styles.workerTitleRow}>
+              <span className={styles.workerName}>summary</span>
+              <span className={styles.workerStatus}>
+                {reportsSummary.final_run_status ?? "unknown"}
+              </span>
+            </div>
+            <dl className={styles.workerFacts}>
+              <div>
+                <dt>workers</dt>
+                <dd>
+                  {reportsSummary.total_workers} total
+                  {reportsSummary.by_status && Object.entries(reportsSummary.by_status)
+                    .filter(([, count]) => count > 0)
+                    .map(([st, count]) => ` / ${count} ${st}`)
+                    .join("")}
+                </dd>
+              </div>
+              {(reportsSummary.critical_blockers?.length ?? 0) > 0 && (
+                <div>
+                  <dt>blockers</dt>
+                  <dd className={styles.blockerText}>
+                    {reportsSummary.critical_blockers!.slice(0, 2).map((b) => b.title).join("; ")}
+                  </dd>
+                </div>
+              )}
+              <div>
+                <dt>commands</dt>
+                <dd>{reportsSummary.commands_run ?? 0} run, {reportsSummary.failed_commands ?? 0} failed</dd>
+              </div>
+            </dl>
+          </div>
+        )}
+
         {workerReports.length === 0 ? (
           <p className={styles.emptyNote}>
             Worker summaries appear after each agent finishes.
           </p>
         ) : (
           <ul className={styles.workerList}>
-            {workerReports.slice(-6).reverse().map((worker, index) => {
-              const commands = worker.commands ?? [];
-              return (
-                <li key={worker.report_id ?? `${worker.agent_id ?? "worker"}-${index}`} className={styles.workerCard}>
-                  <div className={styles.workerTitleRow}>
-                    <span className={styles.workerName}>{worker.agent_id ?? "worker"}</span>
-                    <span className={worker.status === "failed" ? styles.workerFailed : styles.workerStatus}>
-                      {worker.status ?? "reported"}
-                    </span>
-                  </div>
-                  <dl className={styles.workerFacts}>
-                    <div>
-                      <dt>implemented</dt>
-                      <dd>{compactList(worker.implemented)}</dd>
-                    </div>
-                    <div>
-                      <dt>undone</dt>
-                      <dd>{compactList(worker.left_undone)}</dd>
-                    </div>
-                    <div>
-                      <dt>commands</dt>
-                      <dd>
-                        {commands.length === 0
-                          ? "None"
-                          : commands.slice(0, 2).map((cmd) => (
-                              <span key={`${cmd.command}-${cmd.exit_code ?? "unknown"}`} className={styles.commandLine}>
-                                {cmd.command}
-                                <span className={styles.exitCode}>
-                                  {cmd.exit_code == null ? "exit ?" : `exit ${cmd.exit_code}`}
-                                </span>
-                              </span>
-                            ))}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>issues</dt>
-                      <dd>{compactList(worker.issues)}</dd>
-                    </div>
-                    <div>
-                      <dt>procedures</dt>
-                      <dd>{proceduresLabel(worker.procedures_followed)}</dd>
-                    </div>
-                  </dl>
-                </li>
-              );
-            })}
+            {workerReports.slice(-10).reverse().map((worker, index) => (
+              <WorkerReportCard
+                key={worker.report_id ?? `${worker.agent_id ?? "worker"}-${index}`}
+                worker={worker}
+              />
+            ))}
           </ul>
         )}
       </section>
@@ -373,5 +373,129 @@ function ExperimentRegistry({ primitiveCalls }: { primitiveCalls: PrimitiveCallV
         })}
       </ul>
     </section>
+  );
+}
+
+// ─── WorkerReportCard ──────────────────────────────────────────────────────
+
+function WorkerReportCard({ worker }: { worker: DemoWorkerReport }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const commands = worker.commands ?? [];
+  const blockers = worker.blockers ?? [];
+  const artifacts = worker.artifacts ?? [];
+  const hasBlockers = blockers.length > 0;
+
+  const statusClass =
+    worker.status === "failed" || worker.status === "blocked"
+      ? styles.workerFailed
+      : worker.status === "running"
+      ? styles.verdictRunning
+      : styles.workerStatus;
+
+  return (
+    <li className={styles.workerCard} data-testid="worker-report-card">
+      <div className={styles.workerTitleRow}>
+        <span className={styles.workerName}>
+          {worker.worker_type ? `[${worker.worker_type}] ` : ""}
+          {worker.agent_id ?? "worker"}
+        </span>
+        <span className={statusClass} data-testid="worker-status-badge">
+          {worker.status ?? "reported"}
+        </span>
+      </div>
+
+      {/* Assignment summary */}
+      {worker.assignment?.summary && (
+        <div className={styles.assignmentSummary}>
+          {worker.assignment.summary}
+        </div>
+      )}
+
+      {/* Duration */}
+      {worker.duration_ms != null && (
+        <div className={styles.durationBadge}>
+          {fmtElapsed(worker.duration_ms)}
+        </div>
+      )}
+
+      <dl className={styles.workerFacts}>
+        {/* Execution summary when available */}
+        {worker.execution_summary?.concise_summary && (
+          <div>
+            <dt>summary</dt>
+            <dd>{worker.execution_summary.concise_summary}</dd>
+          </div>
+        )}
+
+        <div>
+          <dt>implemented</dt>
+          <dd>{compactList(worker.implemented ?? worker.execution_summary?.implemented)}</dd>
+        </div>
+        <div>
+          <dt>undone</dt>
+          <dd>{compactList(worker.left_undone ?? worker.execution_summary?.not_implemented)}</dd>
+        </div>
+        <div>
+          <dt>commands</dt>
+          <dd>
+            {commands.length === 0
+              ? "None"
+              : commands.slice(0, 3).map((cmd, i) => (
+                  <span key={`${cmd.command}-${i}`} className={styles.commandLine}>
+                    {cmd.command.length > 60 ? cmd.command.slice(0, 57) + "..." : cmd.command}
+                    <span className={styles.exitCode} data-testid="command-exit-code">
+                      {cmd.exit_code == null ? "exit ?" : `exit ${cmd.exit_code}`}
+                    </span>
+                  </span>
+                ))}
+          </dd>
+        </div>
+
+        {/* Blockers */}
+        {hasBlockers && (
+          <div>
+            <dt>blockers</dt>
+            <dd>
+              {blockers.map((b, i) => (
+                <span key={`blocker-${i}`} className={styles.blockerText} data-testid="worker-blocker">
+                  <strong>[{b.severity}]</strong> {b.title}
+                  {b.source && <span className={styles.exitCode}> ({b.source})</span>}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
+
+        {/* Artifacts */}
+        {artifacts.length > 0 && (
+          <div>
+            <dt>artifacts</dt>
+            <dd>{artifacts.slice(0, 3).map((a) => a.path).join(", ")}</dd>
+          </div>
+        )}
+
+        <div>
+          <dt>issues</dt>
+          <dd>{compactList(worker.issues)}</dd>
+        </div>
+        <div>
+          <dt>procedures</dt>
+          <dd>{proceduresLabel(worker.procedures_followed)}</dd>
+        </div>
+      </dl>
+
+      {/* Raw JSON disclosure */}
+      <details
+        className={styles.rawJsonDetails}
+        data-testid="raw-json-disclosure"
+        open={showRaw}
+        onToggle={(e) => setShowRaw((e.target as HTMLDetailsElement).open)}
+      >
+        <summary className={styles.rawJsonSummary}>raw json</summary>
+        <pre className={styles.rawJsonPre}>
+          {JSON.stringify(worker, null, 2)}
+        </pre>
+      </details>
+    </li>
   );
 }

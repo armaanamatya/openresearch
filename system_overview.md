@@ -100,8 +100,9 @@ is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 3. UI opens an **SSE** stream (`/api/demo/events` → backend `/runs/<id>/events`).
 4. SSE event types: `repl_iteration`, `primitive_call`, `sub_rlm_spawned`,
    `sub_rlm_complete`, `run_complete`, `candidate_proposed`, `candidate_outcome`,
-   `rubric_score`, `user_message`, `user_message_response`, `run_warning`, and
-   `iteration_heartbeat`. RDR runs also emit `rdr_*` lifecycle events and the
+   `rubric_score`, `user_message`, `user_message_response`, `run_warning`,
+   `iteration_heartbeat`, `worker_report_started`, `worker_report_completed`,
+   and `worker_report_failed`. RDR runs also emit `rdr_*` lifecycle events and the
    spec-named cluster events `cluster_started`, `cluster_artifact_emitted`,
    `cluster_scored`, and `repair_dispatched`. All RLM iteration events route
    through `sse_bridge.sanitize_iteration` — the single egress chokepoint that

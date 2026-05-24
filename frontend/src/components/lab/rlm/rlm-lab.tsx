@@ -8,6 +8,7 @@ import { useRlmRunBatched } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
+import { useWorkerReports } from "../../../hooks/use-worker-reports";
 import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
 import { PipelinePhaseStrip } from "./pipeline-phase-strip";
@@ -235,6 +236,14 @@ export function RlmLab({
   const { messages: chatMessages, send: sendChat, sending: chatSending } =
     useSteeringChat(runMeta.projectId, events);
 
+  // ── Worker reports (live-refreshing via SSE events) ──────────────────
+  const { workers: liveWorkerReports, summary: liveReportsSummary } =
+    useWorkerReports(runMeta.projectId, events, isActive);
+  // Merge: prefer live-fetched reports over prop-passed ones
+  const effectiveWorkerReports = liveWorkerReports.length > 0
+    ? liveWorkerReports
+    : workerReports;
+
   // ── Stable callbacks for memoized children ─────────────────────────────
   // useCallback ensures function identity is stable across clock-tick renders
   // so React.memo on ConstellationCanvas / NodeDetailSidebar skips them.
@@ -361,8 +370,9 @@ export function RlmLab({
               elapsedMs={elapsedMs}
               report={state.report}
               rubric={state.rubric}
-              workerReports={workerReports}
+              workerReports={effectiveWorkerReports}
               primitiveCalls={state.primitiveCalls}
+              reportsSummary={liveReportsSummary}
               style={reportRailStyle}
             />
           </>

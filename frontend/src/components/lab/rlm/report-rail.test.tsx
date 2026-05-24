@@ -48,9 +48,62 @@ describe("ReportRail", () => {
         procedures_followed: true
       }]} />);
     expect(screen.getByText("worker reports")).toBeInTheDocument();
-    expect(screen.getByText("baseline-implementation")).toBeInTheDocument();
-    expect(screen.getByText("Added train.py")).toBeInTheDocument();
-    expect(screen.getByText("exit 0")).toBeInTheDocument();
-    expect(screen.getByText("followed")).toBeInTheDocument();
+    // agent_id appears in both the card title and the raw JSON disclosure
+    expect(screen.getAllByText(/baseline-implementation/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Added train\.py/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/exit 0/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/followed/).length).toBeGreaterThanOrEqual(1);
+  });
+  it("renders extended worker report with blockers, assignment, and raw JSON", () => {
+    render(<ReportRail status="failed" elapsedMs={5000}
+      report={null}
+      rubric={{ current: null, baseline: null, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }}
+      workerReports={[{
+        report_id: "wr-ext-1",
+        worker_id: "w-1",
+        worker_type: "rdr_cluster",
+        agent_id: "baseline-implementation",
+        status: "failed",
+        commands: [{ command: "python train.py", exit_code: 1 }],
+        blockers: [{
+          title: "SDK success-with-no-text",
+          description: "Claude Code returned exit status success but no text",
+          severity: "critical",
+          source: "claude_agent_sdk"
+        }],
+        assignment: { summary: "Reproduce SDAR training loop" },
+        duration_ms: 12000,
+        error: "Exception: Claude Code returned an error result: success"
+      }]} />);
+    expect(screen.getByTestId("worker-report-card")).toBeInTheDocument();
+    expect(screen.getByTestId("worker-status-badge")).toHaveTextContent("failed");
+    // Blocker text appears in both the card and the raw JSON — use getAllByText
+    expect(screen.getAllByText(/SDK success-with-no-text/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByTestId("worker-blocker")).toBeInTheDocument();
+    expect(screen.getByText("Reproduce SDAR training loop")).toBeInTheDocument();
+    expect(screen.getByTestId("command-exit-code")).toHaveTextContent("exit 1");
+    expect(screen.getByTestId("raw-json-disclosure")).toBeInTheDocument();
+  });
+  it("renders empty state when no worker reports", () => {
+    render(<ReportRail status="running" elapsedMs={0}
+      report={null}
+      rubric={{ current: null, baseline: null, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }}
+      workerReports={[]} />);
+    expect(screen.getByText(/Worker summaries appear/)).toBeInTheDocument();
+  });
+  it("renders summary card when reportsSummary is provided", () => {
+    render(<ReportRail status="completed" elapsedMs={1000}
+      report={null}
+      rubric={{ current: null, baseline: null, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }}
+      workerReports={[]}
+      reportsSummary={{
+        total_workers: 5,
+        by_status: { completed: 3, failed: 2 },
+        critical_blockers: [{ title: "SDK error", description: "", severity: "critical", source: "sdk" }],
+        commands_run: 10,
+        failed_commands: 3,
+      }} />);
+    expect(screen.getByText(/5 total/)).toBeInTheDocument();
+    expect(screen.getByText(/SDK error/)).toBeInTheDocument();
   });
 });
