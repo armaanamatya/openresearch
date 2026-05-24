@@ -67,3 +67,25 @@ scope_hints:
   - "Implement BN as a custom layer that tracks batch-mean / batch-var during training and population statistics during inference."
   - "Report metrics.json.per_model = {'baseline': {...}, 'bn': {...}} — the rubric checks this shape."
   - "Report validation accuracy AT fixed checkpoint steps (1000, 2000, ..., 50000) so the convergence-speed claim can be scored."
+
+paper_targets:
+  # The rubric grader scores 'Result match' by comparing your numbers to
+  # these. Aim to be within 1 percentage point of paper's reported figures.
+  mnist_baseline_final_acc: 0.965                  # paper Fig 1c — baseline @50K
+  mnist_bn_final_acc: 0.975                        # paper Fig 1c — bn @50K
+  bn_steps_to_baseline_final_acc_max: 25000        # paper §4.1 — BN reaches baseline's acc in roughly half the steps
+  # Required metrics.json top-level keys the rubric will look for:
+  required_metrics_keys:
+    - mnist_baseline_final_acc
+    - mnist_baseline_peak_acc
+    - mnist_bn_final_acc
+    - mnist_bn_peak_acc
+    - bn_beats_baseline        # boolean — paper's qualitative claim
+    - bn_steps_to_baseline_final_acc
+    - per_model                # {'baseline': {...}, 'bn': {...}}
+    - omitted                  # honest declarations for ImageNet variants
+  # Per-step training curves to emit:
+  required_curves:
+    - "training_curves.json with keys {baseline: {step: [...], val_acc: [...]}, bn: {step: [...], val_acc: [...]}}"
+    - "checkpoint at steps 1000, 2000, 5000, 10000, 20000, 30000, 40000, 50000"
+    - "fig_mnist_convergence.png — overlay baseline vs bn val_acc curves (Figure 1c reproduction)"

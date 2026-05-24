@@ -522,6 +522,26 @@ _RUNTIME_DETECTION_BLOCK = (
 )
 
 
+_ARTIFACT_COMPLETENESS_BLOCK = (
+    "\n\nARTIFACT COMPLETENESS — always emit these alongside metrics.json:\n"
+    "  $OUTPUT_DIR/\n"
+    "    metrics.json          (flat dict + nested per_model — already required)\n"
+    "    config_used.json      (every hyperparameter actually used: lr, batch, epochs,\n"
+    "                           seed, architecture, framework versions, device)\n"
+    "    README.md             (3-section: 'What was reproduced', 'What was omitted and\n"
+    "                           why', 'How to read metrics.json' — under 400 words)\n"
+    "    training_curves.json  (per-step / per-epoch arrays: {'baseline': {'step':[...],\n"
+    "                           'acc':[...]}, 'bn': {...}}). Lets the rubric grader verify\n"
+    "                           the convergence-speed-style claims, not just final numbers.\n"
+    "    fig_*.png             (matplotlib curves matching the paper's figure layout —\n"
+    "                           use matplotlib.use('Agg') so it works in headless docker)\n"
+    "Without these the 'Artifact completeness and provenance' rubric area scores 0,\n"
+    "and 'Evaluation protocol and metric correctness' loses partial credit because the\n"
+    "grader can't verify intermediate-step claims (e.g. 'BN reaches baseline's final\n"
+    "acc 60% faster').  All five are cheap — make them all unconditional.\n"
+)
+
+
 _EAGER_METRICS_BLOCK = (
     "\n\nEAGER METRICS EMISSION — always-on:\n"
     "Write `metrics.json` AS YOU GO, not just at the end.  Whenever a sub-experiment "
@@ -581,6 +601,114 @@ _DATASET_SETUP_BLOCK = (
     "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
     "    inherits them.\n"
 )
+
+
+# Area-specific repair guidance — keys match the canonical PaperBench area
+# names emitted by score_reproduction.  Used by _prior_rubric_feedback_block.
+_AREA_REPAIR_HINTS: dict[str, str] = {
+    "Data and preprocessing fidelity":
+        "use the FULL paper datasets (e.g. all 60K MNIST train samples — no subsampling); "
+        "match the paper's exact preprocessing (normalisation constants, augmentation, splits).",
+    "Experiment execution and reproducibility":
+        "run EVERY model variant and ablation the paper compares; cover all paper-defined steps/epochs; "
+        "do not silently skip experiments.  Declare anything genuinely infeasible in "
+        "metrics.json['omitted'] with a one-line reason.",
+    "Evaluation protocol and metric correctness":
+        "report metrics in the paper's exact format — e.g. validation accuracy at fixed checkpoint steps, "
+        "test error rate (%) not just loss, mean over the paper's seed count.  Use the metrics.json "
+        "key names the rubric checklist above expects.",
+    "Result match versus the paper's reported targets":
+        "run paper-faithful epoch / step counts so the numbers actually approach the paper's reported "
+        "values.  This area is scored from the actual numbers in metrics.json against the paper's targets.",
+    "Artifact completeness and provenance":
+        "emit figures (matplotlib .png), a README.md describing the run, config_used.json with every "
+        "hyperparameter, and per-epoch / per-step training curves so the run is independently verifiable.",
+    "Method and code fidelity to the paper":
+        "double-check algorithmic invariants in the paper's pseudocode: layer ordering, normalisation "
+        "placement, activation function, initialisation scheme, regularisation constants, momentum schedule.",
+}
+
+
+def _prior_rubric_feedback_block(project_dir: Path) -> str:
+    """Surface the latest rubric_score event as targeted repair guidance.
+
+    Read the most-recent ``rubric_score`` event from ``dashboard_events.jsonl``
+    (written by ``verify_against_rubric``) and produce a prompt section that:
+
+    * tells the agent its previous overall score and the target
+    * lists the lowest-scoring areas in priority order
+    * pairs each area with a concrete, area-specific repair hint
+
+    Returns ``""`` when no prior rubric event exists (first iteration of the
+    run) or when the prior score already meets the target.  This is the
+    closed-loop fix that turns the rubric-checklist+verify pair from open-loop
+    "trust the root model" into a deterministic prompt-side feedback signal.
+    """
+    events_file = project_dir / "dashboard_events.jsonl"
+    if not events_file.exists():
+        return ""
+
+    latest: dict | None = None
+    try:
+        with events_file.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("event") == "rubric_score":
+                    latest = d
+    except OSError:
+        return ""
+
+    if latest is None:
+        return ""
+
+    try:
+        score = float(latest.get("score") or 0.0)
+        target = float(latest.get("target") or 0.6)
+    except (TypeError, ValueError):
+        return ""
+
+    if score >= target:
+        return ""  # already passing — no repair guidance needed
+
+    areas = latest.get("areas") or []
+    if not areas:
+        return ""
+
+    # Sort by (status==fail first, lowest score first).  Limit to the worst 5
+    # so the prompt stays focused — addressing the top 5 weak areas typically
+    # closes most of the score gap.
+    def _sort_key(a: dict) -> tuple:
+        return (a.get("status") != "fail", float(a.get("score", 1.0)))
+
+    weak = sorted(areas, key=_sort_key)[:5]
+
+    lines = [
+        "",
+        "PRIOR RUBRIC RESULT — targeted repair guidance:",
+        f"  Last iteration scored {score:.3f} / target {target:.2f}.  The lowest-scoring",
+        "  areas are listed below.  Concentrate this iteration's changes on these.",
+        "",
+    ]
+    for a in weak:
+        name = str(a.get("area", "?"))[:64]
+        ascore = float(a.get("score", 0.0))
+        weight = float(a.get("weight", 0.0))
+        status = a.get("status", "?")
+        lines.append(f"    [{status:7s}] {name:<64} score={ascore:.2f}  weight={weight:.3f}")
+        hint = _AREA_REPAIR_HINTS.get(name)
+        if hint:
+            # Wrap hint across two lines so it stays readable in the prompt.
+            lines.append(f"               → {hint}")
+        lines.append("")
+
+    lines.append(
+        "  Weight × (1 − score) gives the residual capacity each area carries.  "
+        "Fixing a high-weight low-score area gives the biggest rubric jump.\n"
+    )
+    return "\n".join(lines)
 
 
 def _rubric_checklist_block(project_dir: Path) -> str:
@@ -878,6 +1006,19 @@ def _compute_constraint_guidance(
         checklist = _rubric_checklist_block(project_dir)
         if checklist:
             guidance += checklist
+
+    # 5.5. Prior-rubric feedback — when a previous iteration produced a
+    # rubric_score event, surface the lowest-scoring areas so this iteration
+    # concentrates its repair effort where it matters most.  Closes the
+    # verify → repair loop that was previously open-loop.
+    if project_dir is not None:
+        feedback = _prior_rubric_feedback_block(project_dir)
+        if feedback:
+            guidance += feedback
+
+    # 5.7. Artifact completeness — always-on. Low-weight rubric area but free
+    # to nail. Asks for README, figures, config_used.json, per-step curves.
+    guidance += _ARTIFACT_COMPLETENESS_BLOCK
 
     # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)

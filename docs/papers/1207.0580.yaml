@@ -61,4 +61,30 @@ scope_hints:
   - "Run at least 300 epochs on MNIST with the 10.0 learning rate. Convergence to <2% test error is the headline result."
   - "Implement max-norm constraint as a per-step weight projection: ||W_i||_2 <= c for each row."
   - "Implement the momentum schedule: start at 0.5, ramp to 0.99 over the first ~500 epochs."
-  - "Report results in metrics.json with the exact keys: mnist_dropout_test_error, mnist_baseline_test_error, cifar10_dropout_test_error, cifar10_baseline_test_error."
+  - "Report results in metrics.json with the exact keys listed under paper_targets below."
+
+paper_targets:
+  # The rubric grader scores 'Result match' by comparing your numbers to
+  # these. Aim to be within 0.5 percentage points of the dropout column —
+  # the baseline column is informational.
+  mnist_baseline_test_error: 1.60                  # paper Table 1 — vanilla NN no dropout
+  mnist_dropout_test_error: 1.30                   # paper Table 1 — dropout NN (headline)
+  cifar10_baseline_test_error: 18.5                # paper §6 baseline
+  cifar10_dropout_test_error: 15.6                 # paper §6 dropout
+  # Required keys the rubric will look for in metrics.json (top level):
+  required_metrics_keys:
+    - mnist_baseline_test_error
+    - mnist_dropout_test_error
+    - mnist_baseline_final_acc
+    - mnist_dropout_final_acc
+    - cifar10_baseline_test_error
+    - cifar10_dropout_test_error
+    - cifar10_baseline_final_acc
+    - cifar10_dropout_final_acc
+    - per_model      # {'baseline': {...}, 'dropout': {...}}
+    - omitted        # honest declarations for TIMIT/Reuters/ImageNet
+  # Per-step training curves to emit for fig and rubric grading:
+  required_curves:
+    - "training_curves.json with keys {baseline: {epoch: [...], test_error: [...]}, dropout: {epoch: [...], test_error: [...]}}"
+    - "fig_mnist_dropout.png — MNIST test error curve (baseline vs dropout)"
+    - "fig_cifar10_dropout.png — CIFAR-10 test error curve (baseline vs dropout)"

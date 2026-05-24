@@ -1,0 +1,106 @@
+# Adam — A Method for Stochastic Optimization (Kingma & Ba — arXiv 1412.6980)
+#
+# Five experiments in the paper:
+#   §6.1 — MNIST logistic regression: Adam vs SGD+Nesterov vs AdaGrad
+#   §6.1 — IMDB BoW logistic regression: Adam vs AdaGrad vs RMSProp vs SGD+Nesterov (+50% dropout)
+#   §6.2 — MNIST multilayer NN: 5 optimizers × 2 variants (no-dropout, 50% dropout)
+#   §6.3 — CIFAR-10 convnet: same 5 optimizers
+#   §6.4 — VAE bias-correction ablation: with/without bias-correction × short/long
+#
+# All five are CPU/GPU tractable on MNIST/CIFAR-sized data; the only honest
+# omit is if IMDB download is unreachable.
+
+algorithm_invariants:
+  adam:
+    learning_rate: 0.001
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 1.0e-8
+    bias_correction: true                          # paper §2 Algorithm 1
+    weight_decay: 0
+  adamax:
+    learning_rate: 0.002
+    beta1: 0.9
+    beta2: 0.999
+  shared:
+    alpha_t_decay: "alpha_t = alpha / sqrt(t)"     # paper §6.1 — used for all logistic regression optimizers
+
+hyperparameters:
+  mnist_logistic:
+    epochs: 45
+    batch_size: 128
+    optimizers: [Adam, "SGD+Nesterov", AdaGrad]
+  imdb_logistic:
+    epochs: 45
+    batch_size: 128
+    vocab_size: 10000
+    dropout_p: 0.5
+    optimizers: [Adam, AdaGrad, RMSProp, "SGD+Nesterov"]
+  mnist_mlp:
+    epochs: 45
+    hidden_dim: 1000
+    batch_size: 128
+    optimizers: [Adam, "SGD+Nesterov", AdaGrad, RMSProp, AdaDelta]
+    variants: ["no_dropout", "dropout_0.5"]
+  cifar10_cnn:
+    epochs: 45
+    batch_size: 128
+    optimizers: [Adam, "SGD+Nesterov", AdaGrad, RMSProp, AdaDelta]
+  vae:
+    epochs_short: 10
+    epochs_long: 100
+    optimizers: [Adam, "Adam_no_bias_corr"]
+
+datasets:
+  mnist:
+    setup: "torchvision.datasets.MNIST(root=DATA_DIR, download=True)"
+    train_size_full: 60000
+  imdb:
+    setup: "torchvision IMDB is not available; use huggingface datasets.load_dataset('imdb') with the 25K train split, BoW top-10000-word encoding"
+    note: "HF datasets URI changes have intermittently broken — pin datasets==2.18.0 and verify load before training"
+  cifar10:
+    setup: "torchvision.datasets.CIFAR10(root=DATA_DIR, download=True)"
+    train_size_full: 50000
+
+eval_metrics:
+  primary: "training NLL (negative log-likelihood) per epoch — the headline metric in all paper figures"
+  secondary: "final test accuracy (where applicable)"
+
+paper_targets:
+  # Approximate end-of-training NLLs from paper Figures 1-3. The rubric
+  # grader compares within ~10% relative.
+  mnist_logistic_adam_final_nll: 0.27               # paper Fig 1 left
+  mnist_logistic_sgd_final_nll: 0.30
+  mnist_logistic_adagrad_final_nll: 0.28
+  mnist_mlp_adam_final_loss: 0.18                   # paper Fig 2 left no-dropout
+  mnist_mlp_sgd_final_loss: 0.28
+  mnist_mlp_adagrad_final_loss: 0.22
+  cifar10_cnn_adam_final_loss: 0.50                 # paper Fig 3
+  # Required metrics.json top-level keys the rubric will look for:
+  required_metrics_keys:
+    - mnist_logistic_adam_final_nll
+    - mnist_logistic_sgd_final_nll
+    - mnist_logistic_adagrad_final_nll
+    - imdb_logistic_adam_final_nll
+    - mlp_drop_adam_final_loss
+    - mlp_nodrop_adam_final_loss
+    - cnn_drop_adam_final_loss
+    - cnn_nodrop_adam_final_loss
+    - vae_with_bias_corr_short_best_loss
+    - vae_without_bias_corr_short_best_loss
+    - per_model
+    - omitted
+  required_curves:
+    - "training_curves.json with per-optimizer per-epoch NLL arrays"
+    - "fig_mnist_logistic.png — paper Figure 1 left reproduction"
+    - "fig_imdb_logistic.png — paper Figure 1 right reproduction"
+    - "fig_mnist_mlp.png — paper Figure 2 reproduction"
+    - "fig_cifar10_cnn.png — paper Figure 3 reproduction"
+    - "fig_vae_bias_correction.png — paper Figure 4 reproduction"
+
+scope_hints:
+  - "Use full datasets — MNIST 60K, CIFAR-10 50K. IMDB 25K (or honestly cap at 5K with declared subset reason)."
+  - "Run each optimizer for the SAME number of epochs (45 per paper) so the comparison is fair."
+  - "Use alpha_t = alpha / sqrt(t) for all logistic regression optimizers — paper applies the SAME schedule to all, not just Adam."
+  - "For the VAE ablation, also test the Adam variant WITHOUT bias correction so the ablation has both arms."
+  - "Emit per-optimizer per-epoch training curves to training_curves.json — the rubric scores convergence-speed claims from these arrays."
