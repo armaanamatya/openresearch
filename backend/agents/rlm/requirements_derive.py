@@ -74,6 +74,31 @@ _PIP_INSTALL_BLOCK = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# Match a Docker heredoc-style ``RUN <<TAG ... TAG`` block.  The opening
+# tag may be quoted (``<<"EOF"`` or ``<<'EOF'``) — Docker treats quoted
+# tags as no-substitution but the closing delimiter is always the bare
+# unquoted identifier on its own line.  Group ``tag`` captures only the
+# bare identifier so it can be used as a back-reference for the closing
+# line.  Group ``trailing`` is whatever follows the opening tag (and any
+# closing quote) on the same line — if non-empty (after stripping
+# whitespace) it is almost always a redirection
+# (e.g. ``cat > /etc/foo.conf``) and the heredoc body should NOT be
+# parsed for pip installs.  Group ``body`` is the payload between the
+# opening and closing delimiter lines.
+_HEREDOC_BLOCK = re.compile(
+    r"RUN\s+<<[\"\']?(?P<tag>[A-Z][A-Z0-9_]*)[\"\']?(?P<trailing>[^\n]*)\n"
+    r"(?P<body>.*?)\n(?P=tag)\s*(?:\n|$)",
+    re.DOTALL,
+)
+
+# Match a ``pip install`` invocation anywhere inside a heredoc body line
+# (line continuations are collapsed before matching, so the body is a flat
+# sequence of logical lines separated by ``\n``).
+_HEREDOC_PIP_LINE = re.compile(
+    r"\bpip(?:3)?\s+install\s+(.*?)(?=\n|\Z)",
+    re.IGNORECASE,
+)
+
 
 def _unwrap_continuations(block: str) -> str:
     """Collapse ``\\\n`` line continuations into single spaces."""
@@ -107,39 +132,102 @@ def _is_package_spec(token: str) -> bool:
     return True
 
 
+def _harvest_packages_from_pip_args(block: str, packages: set[str]) -> None:
+    """Tokenize a ``pip install`` argument tail and add package specs to the set.
+
+    The block must already have continuations unwrapped and trailing chained
+    shell commands trimmed.  Strips pip flags + their values; treats every
+    remaining non-URL, non-VCS token as a package spec.
+    """
+    tokens = _tokenize(block)
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _PIP_FLAGS_WITH_VALUE:
+            i += 2  # skip the value too
+            continue
+        if tok in _PIP_FLAGS_NO_VALUE:
+            i += 1
+            continue
+        if tok.startswith("-"):
+            # Unknown flag form ``--foo=bar`` or ``--foo`` — drop it
+            # alongside any next arg if it doesn't carry ``=``.
+            if "=" in tok:
+                i += 1
+            else:
+                i += 1  # conservative — only skip the flag itself
+            continue
+        if _is_package_spec(tok):
+            packages.add(tok)
+        i += 1
+
+
+def _harvest_from_heredoc_body(body: str, packages: set[str]) -> None:
+    """Extract pip install package specs from a Docker heredoc body.
+
+    The body is first reflowed to collapse ``\\`` continuations into single
+    logical lines, then every ``pip install ...`` substring (possibly nested
+    inside ``if [...]; then ... fi``) is fed through the same tokenize +
+    filter pipeline used for single-line ``RUN pip install`` blocks.
+    """
+    reflowed = _unwrap_continuations(body)
+    for match in _HEREDOC_PIP_LINE.finditer(reflowed):
+        args = _drop_chained_commands(match.group(1))
+        _harvest_packages_from_pip_args(args, packages)
+
+
 def parse_pip_packages_from_dockerfile(dockerfile_text: str) -> list[str]:
     """Return a deduplicated, sorted list of pip package specs from a Dockerfile.
 
     Each spec preserves its version pin when present.  Index-URL flags and
     other pip options are stripped — the consumer ``requirements.txt`` is a
     plain dependency list, not a shell invocation.
+
+    Recognises two ``RUN`` shapes:
+
+      * Classic shell form: ``RUN pip install ...`` (with ``\\`` continuations
+        and ``&& other-cmd`` chains).
+      * Heredoc form: ``RUN <<EOF ... pip install ... EOF`` (tag may be
+        quoted as ``<<"EOF"`` / ``<<'EOF'``).  Heredocs with a redirection
+        target on the opening line (e.g. ``RUN <<EOF cat > /etc/foo``) are
+        skipped — their body is data, not shell.
     """
     packages: set[str] = set()
-    for match in _PIP_INSTALL_BLOCK.finditer(dockerfile_text):
+
+    # Heredoc-form RUN blocks are matched first so the slice of dockerfile
+    # text they cover can be excised before the single-line regex runs
+    # (otherwise the body lines themselves contain ``pip install`` strings
+    # that the line-oriented regex would happily mis-parse out of context).
+    excisions: list[tuple[int, int]] = []
+    for match in _HEREDOC_BLOCK.finditer(dockerfile_text):
+        excisions.append((match.start(), match.end()))
+        # Skip heredocs that redirect their body to a file / pipe — anything
+        # non-whitespace after the opening tag on the same line.
+        trailing = match.group("trailing").strip()
+        if trailing:
+            continue
+        _harvest_from_heredoc_body(match.group("body"), packages)
+
+    # Build a copy of the dockerfile with heredoc regions blanked out so the
+    # classic regex cannot re-scan the same lines.  Preserve newline count to
+    # keep line-anchored regex behaviour unchanged.
+    if excisions:
+        chunks: list[str] = []
+        cursor = 0
+        for start, end in excisions:
+            chunks.append(dockerfile_text[cursor:start])
+            chunks.append("\n" * dockerfile_text.count("\n", start, end))
+            cursor = end
+        chunks.append(dockerfile_text[cursor:])
+        scan_text = "".join(chunks)
+    else:
+        scan_text = dockerfile_text
+
+    for match in _PIP_INSTALL_BLOCK.finditer(scan_text):
         block = match.group(1)
         block = _unwrap_continuations(block)
         block = _drop_chained_commands(block)
-        tokens = _tokenize(block)
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if tok in _PIP_FLAGS_WITH_VALUE:
-                i += 2  # skip the value too
-                continue
-            if tok in _PIP_FLAGS_NO_VALUE:
-                i += 1
-                continue
-            if tok.startswith("-"):
-                # Unknown flag form ``--foo=bar`` or ``--foo`` — drop it
-                # alongside any next arg if it doesn't carry ``=``.
-                if "=" in tok:
-                    i += 1
-                else:
-                    i += 1  # conservative — only skip the flag itself
-                continue
-            if _is_package_spec(tok):
-                packages.add(tok)
-            i += 1
+        _harvest_packages_from_pip_args(block, packages)
     return sorted(packages)
 
 
