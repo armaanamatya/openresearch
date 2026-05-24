@@ -82,9 +82,17 @@ export function layoutConstellation(nodes: TreeNode[]): ConstellationResult {
   for (const n of nodes) byId.set(n.id, n);
 
   // ── Build edges from parentId relationships ──────────────────────────────
-  const edges: Edge[] = nodes
-    .filter((n) => n.parentId != null && byId.has(n.parentId))
-    .map((n) => ({ from: n.parentId!, to: n.id, outcome: n.outcome }));
+  // Dedupe by `from-to` key so duplicate tree nodes (which shouldn't exist
+  // after the foldCandidateProposed in-place update, but might if a fixture
+  // or backend bug slips through) don't produce duplicate React keys at the
+  // SVG layer. Later occurrence wins so the most recent outcome is preserved.
+  const edgeByKey = new Map<string, Edge>();
+  for (const n of nodes) {
+    if (n.parentId == null || !byId.has(n.parentId)) continue;
+    const key = `${n.parentId}-${n.id}`;
+    edgeByKey.set(key, { from: n.parentId, to: n.id, outcome: n.outcome });
+  }
+  const edges: Edge[] = Array.from(edgeByKey.values());
 
   // ── Initial positions — seeded deterministically ─────────────────────────
   // Place nodes in a rough grid by kind to give the force simulation a good

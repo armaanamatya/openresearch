@@ -672,7 +672,15 @@ function foldCandidateProposed(
     rubricDelta: pending?.rubricDelta ?? null,
   };
 
-  let tree = [...state.tree, node];
+  // Dedupe by node.id — the RLM root sometimes re-emits candidates with
+  // non-globally-unique IDs across iterations (e.g. "path_1", "path_2").
+  // Appending blindly produces React duplicate-key warnings AND duplicated
+  // tree edges. If the candidate already exists, replace it in-place with the
+  // latest payload (newest iteration wins).
+  const existingIdx = state.tree.findIndex((n) => n.id === node.id);
+  let tree: TreeNode[] = existingIdx === -1
+    ? [...state.tree, node]
+    : state.tree.map((n, i) => (i === existingIdx ? { ...n, ...node } : n));
 
   // If the buffered outcome was a declined, fold it into the round's group now.
   // Use the buffered outcome event's iteration so the declined-group iterationRange
