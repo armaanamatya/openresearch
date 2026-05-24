@@ -1,0 +1,72 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--chip);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  flex: 0 0 auto;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.info {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+.info .dot {
+  background: var(--accent);
+}
+
+.warn {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+}
+
+.warn .dot {
+  background: var(--warn);
+}
+
+.err {
+  background: var(--err-soft);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, var(--line));
+}
+
+.err .dot {
+  background: var(--err);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pulse .dot {
+    animation: runpodDotPulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes runpodDotPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

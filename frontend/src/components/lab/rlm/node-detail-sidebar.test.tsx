@@ -156,6 +156,32 @@ describe("NodeDetailSidebar", () => {
     expect(screen.getByText("detect_environment")).toBeInTheDocument();
   });
 
+  it("shows structured primitive error detail with recovery guidance", () => {
+    const calls = [
+      {
+        primitive: "plan_reproduction",
+        status: "error" as const,
+        args_summary: {},
+        result_summary: "ValidationError: datasets.0 expected dict [type=dict_type]",
+        iteration: 3,
+        rubric_delta: null,
+        timestamp: "2026-05-21T00:00:00Z",
+      },
+    ];
+    render(
+      <NodeDetailSidebar
+        {...baseProps({
+          node: makeNode({ kind: "baseline", title: "Baseline" }),
+          primitiveCalls: calls,
+        })}
+      />
+    );
+    expect(screen.getByText("ERROR · plan_reproduction")).toBeInTheDocument();
+    expect(screen.getByText("Reason")).toBeInTheDocument();
+    expect(screen.getByText(/Pydantic ValidationError/)).toBeInTheDocument();
+    expect(screen.getByText("Recovery")).toBeInTheDocument();
+  });
+
   // ── Kind: candidate ────────────────────────────────────────────────────────
   it("kind=candidate shows category, description, rubricDelta", () => {
     const node = makeNode({

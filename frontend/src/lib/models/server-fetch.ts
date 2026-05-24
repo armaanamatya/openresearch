@@ -5,6 +5,10 @@ export interface ModelChoice {
   id: string;
   label: string;
   provider: string;
+  modelName?: string;
+  paperValidated?: boolean;
+  available?: boolean;
+  missingCredentials?: string[];
 }
 
 /**

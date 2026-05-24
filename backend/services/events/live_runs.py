@@ -41,13 +41,8 @@ Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
-ModelChoice = Literal["sonnet", "opus"]
+ModelChoice = str
 RunStatus = Literal["queued", "running", "stopped", "completed", "failed"]
-
-_MODEL_IDS: dict[str, str] = {
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-7",
-}
 
 
 class StartRunRequest(BaseModel):
@@ -986,6 +981,27 @@ class FileLiveRunService:
             pass
         return records
 
+    def _read_worker_reports(self, project_id: str, max_records: int = 50) -> list[dict[str, Any]]:
+        path = self.runs_root / project_id / "worker_reports.jsonl"
+        if not path.exists():
+            return []
+        reports: list[dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines[-max_records:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(data, dict):
+                    reports.append(data)
+        except OSError:
+            pass
+        return reports
+
     def _read_dashboard_events(
         self,
         project_id: str,
@@ -1035,6 +1051,7 @@ class FileLiveRunService:
     def _build_payload(self, project_id: str, status: dict[str, Any]) -> dict[str, Any]:
         pipeline_state = self._read_pipeline_state(project_id)
         dashboard_events, _ = self._read_dashboard_events(project_id, byte_offset=0)
+        worker_reports = self._read_worker_reports(project_id)
         log = str(status.get("log") or "")
         stage = _infer_stage(self.runs_root / project_id, pipeline_state, dashboard_events)
         meta = {
@@ -1057,6 +1074,7 @@ class FileLiveRunService:
             "pipelineState": pipeline_state,
             "initialSnapshot": _snapshot_from_dashboard_events(dashboard_events),
             "events": dashboard_events,
+            "workerReports": worker_reports,
             "summary": {
                 "stage": stage,
                 "meanReward": _mean_reward(pipeline_state),
@@ -1436,18 +1454,20 @@ def _python_script(
     uploaded_paper: dict[str, str] | None,
 ) -> str:
     _settings = get_settings()
-    if request.provider == "openai":
+    if request.model == "sonnet":
         _model_id = (
-            _settings.openai_reasoning_model
-            if request.model == "opus"
-            else _settings.openai_default_model
-        )
-    else:
-        _model_id = (
-            _settings.anthropic_reasoning_model
-            if request.model == "opus"
+            _settings.openai_default_model
+            if request.provider == "openai"
             else _settings.anthropic_default_model
         )
+    elif request.model == "opus":
+        _model_id = (
+            _settings.openai_reasoning_model
+            if request.provider == "openai"
+            else _settings.anthropic_reasoning_model
+        )
+    else:
+        _model_id = request.model
     common = {
         "project_id": project_id,
         "run_mode": request.mode,

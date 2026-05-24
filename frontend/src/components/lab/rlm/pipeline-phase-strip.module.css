@@ -1,0 +1,83 @@
+.strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-4);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.step:not(:last-child)::after {
+  content: "";
+  width: 22px;
+  height: 1px;
+  background: var(--line-2);
+  margin-left: var(--sp-2);
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--muted-2);
+  background: var(--panel);
+  flex: 0 0 auto;
+}
+
+.done {
+  color: var(--ink-2);
+}
+
+.done .dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.current {
+  color: var(--accent-ink);
+}
+
+.current .dot {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.error {
+  color: var(--warn-ink);
+}
+
+.error .dot {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  box-shadow: 0 0 0 2px var(--warn-soft);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .current .dot,
+  .error .dot {
+    animation: phasePulse 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes phasePulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.82);
+    opacity: 0.65;
+  }
+}

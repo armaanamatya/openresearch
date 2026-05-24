@@ -57,7 +57,12 @@ export function ReplStateRail({
             <line x1="2" y1="12" x2="12" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
-        <span className={styles.collapsedCount}>{setCount}/{totalCount}</span>
+        <span
+          className={styles.collapsedCount}
+          title={`${setCount} of ${totalCount} tracked REPL variables are set.`}
+        >
+          {setCount}/{totalCount}
+        </span>
       </aside>
     );
   }
@@ -67,7 +72,12 @@ export function ReplStateRail({
       {/* Header row */}
       <div className={styles.header}>
         <span className={styles.heading}>REPL state</span>
-        <span className={styles.setCount}>{setCount}/{totalCount} set</span>
+        <span
+          className={styles.setCount}
+          title={`${setCount} of ${totalCount} tracked REPL variables are set. Variables arrive with repl_iteration events.`}
+        >
+          {setCount}/{totalCount} set
+        </span>
         <button
           className={styles.toggleBtn}
           aria-label={buttonLabel}
@@ -85,7 +95,9 @@ export function ReplStateRail({
       <section className={styles.section} aria-label="Variables">
         <p className={styles.sectionLabel}>variables</p>
         {entries.length === 0 ? (
-          <p className={styles.empty}>no variables yet</p>
+          <p className={styles.empty}>
+            no variables yet — they appear after the first REPL iteration
+          </p>
         ) : (
           <ul className={styles.varList}>
             {entries.map(([name, meta]) => {
@@ -109,7 +121,9 @@ export function ReplStateRail({
       <section className={styles.section} aria-label="Primitives">
         <p className={styles.sectionLabel}>primitives</p>
         {primitives.length === 0 ? (
-          <p className={styles.empty}>none</p>
+          <p className={styles.empty}>
+            waiting for primitive calls — paper understanding usually comes first
+          </p>
         ) : (
           <ul className={styles.primitiveList}>
             {primitives.map((name) => (

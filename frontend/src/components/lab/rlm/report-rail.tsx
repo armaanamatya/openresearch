@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react";
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
+import type { DemoWorkerReport } from "../../../lib/demo/demo-run-types";
 import styles from "./report-rail.module.css";
 
 export interface ReportRailProps {
@@ -9,6 +10,7 @@ export interface ReportRailProps {
   elapsedMs: number;
   report: RlmRunState["report"];
   rubric: RlmRunState["rubric"];
+  workerReports?: DemoWorkerReport[];
   style?: CSSProperties;
 }
 
@@ -55,6 +57,18 @@ function areaMarker(status: "pass" | "partial" | "fail"): string {
   }
 }
 
+function compactList(items: string[] | undefined, fallback = "None"): string {
+  const clean = (items ?? []).filter(Boolean);
+  if (clean.length === 0) return fallback;
+  return clean.slice(0, 2).join("; ");
+}
+
+function proceduresLabel(value: boolean | null | undefined): string {
+  if (value === true) return "followed";
+  if (value === false) return "not followed";
+  return "unconfirmed";
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 /**
@@ -79,6 +93,7 @@ export function ReportRail({
   elapsedMs,
   report,
   rubric,
+  workerReports = [],
   style,
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
@@ -98,13 +113,21 @@ export function ReportRail({
   return (
     <aside className={styles.rail} style={style} aria-label="Report rail">
       {/* ── Verdict pill ─────────────────────────────────────── */}
-      <div className={`${styles.verdict} ${verdictClass}`}>
+      <div
+        className={`${styles.verdict} ${verdictClass}`}
+        title={`Verdict ${verdictLabel(status)}. This follows the live run status and final report verdict.`}
+      >
         {verdictLabel(status)}
       </div>
 
       {/* ── Rubric score header + degraded note ──────────────── */}
       <div className={styles.scoreHeader}>
-        <span className={styles.scoreLabel}>rubric score</span>
+        <span
+          className={styles.scoreLabel}
+          title="Current rubric score. It is blank until verification or final report generation emits a score."
+        >
+          rubric score
+        </span>
         <span className={styles.scoreValue}>
           {rubric.current !== null ? rubric.current.toFixed(2) : "—"}
         </span>
@@ -118,7 +141,10 @@ export function ReportRail({
       {/* ── 6-tile stat grid ─────────────────────────────────── */}
       <div className={styles.grid}>
         {/* Iterations */}
-        <div className={styles.tile}>
+        <div
+          className={styles.tile}
+          title="Root REPL turns completed. Count is finalized when final_report.json is written."
+        >
           <span className={styles.tileValue}>
             {report !== null ? (
               <span>{report.counts.iterations}</span>
@@ -130,7 +156,10 @@ export function ReportRail({
         </div>
 
         {/* Primitive calls */}
-        <div className={styles.tile}>
+        <div
+          className={styles.tile}
+          title="Primitive tool calls observed in the run. Count is finalized in the report."
+        >
           <span className={styles.tileValue}>
             {report !== null ? (
               <span>{report.counts.primitiveCalls}</span>
@@ -142,7 +171,10 @@ export function ReportRail({
         </div>
 
         {/* Proposed */}
-        <div className={styles.tile}>
+        <div
+          className={styles.tile}
+          title="Improvement candidates proposed by the RLM loop. Usually appears after baseline verification."
+        >
           <span className={styles.tileValue}>
             {report !== null ? (
               <span>{report.counts.proposed}</span>
@@ -154,7 +186,10 @@ export function ReportRail({
         </div>
 
         {/* Promoted */}
-        <div className={styles.tile}>
+        <div
+          className={styles.tile}
+          title="Proposed candidates that improved or were accepted by the loop."
+        >
           <span className={styles.tileValue}>
             {report !== null ? (
               <span>{report.counts.promoted}</span>
@@ -167,7 +202,10 @@ export function ReportRail({
 
         {/* Cost — omitted entirely when costUsd is null (spec §14 / M4) */}
         {hasCost && (
-          <div className={styles.tile}>
+          <div
+            className={styles.tile}
+            title="LLM cost reported by the run. OAuth subscription paths may report $0.00."
+          >
             <span className={styles.tileValue}>
               <span>${report!.costUsd!.toFixed(2)}</span>
             </span>
@@ -176,13 +214,80 @@ export function ReportRail({
         )}
 
         {/* Elapsed */}
-        <div className={styles.tile}>
+        <div className={styles.tile} title="Wall-clock elapsed time since kickoff.">
           <span className={styles.tileValue}>
             <span>{fmtElapsed(elapsedMs)}</span>
           </span>
           <span className={styles.tileLabel}>elapsed</span>
         </div>
       </div>
+
+      {report === null && (
+        <p className={styles.emptyNote}>
+          Final report counts appear when final_report.json is ready; live activity and phase state continue above while the run is active.
+        </p>
+      )}
+
+      <section className={styles.workerReports} aria-label="Worker reports">
+        <div className={styles.sectionHeader}>
+          <span className={styles.breakdownHeading}>worker reports</span>
+          <span className={styles.sectionCount}>{workerReports.length}</span>
+        </div>
+        {workerReports.length === 0 ? (
+          <p className={styles.emptyNote}>
+            Worker summaries appear after each agent finishes.
+          </p>
+        ) : (
+          <ul className={styles.workerList}>
+            {workerReports.slice(-6).reverse().map((worker, index) => {
+              const commands = worker.commands ?? [];
+              return (
+                <li key={worker.report_id ?? `${worker.agent_id ?? "worker"}-${index}`} className={styles.workerCard}>
+                  <div className={styles.workerTitleRow}>
+                    <span className={styles.workerName}>{worker.agent_id ?? "worker"}</span>
+                    <span className={worker.status === "failed" ? styles.workerFailed : styles.workerStatus}>
+                      {worker.status ?? "reported"}
+                    </span>
+                  </div>
+                  <dl className={styles.workerFacts}>
+                    <div>
+                      <dt>implemented</dt>
+                      <dd>{compactList(worker.implemented)}</dd>
+                    </div>
+                    <div>
+                      <dt>undone</dt>
+                      <dd>{compactList(worker.left_undone)}</dd>
+                    </div>
+                    <div>
+                      <dt>commands</dt>
+                      <dd>
+                        {commands.length === 0
+                          ? "None"
+                          : commands.slice(0, 2).map((cmd) => (
+                              <span key={`${cmd.command}-${cmd.exit_code ?? "unknown"}`} className={styles.commandLine}>
+                                {cmd.command}
+                                <span className={styles.exitCode}>
+                                  {cmd.exit_code == null ? "exit ?" : `exit ${cmd.exit_code}`}
+                                </span>
+                              </span>
+                            ))}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>issues</dt>
+                      <dd>{compactList(worker.issues)}</dd>
+                    </div>
+                    <div>
+                      <dt>procedures</dt>
+                      <dd>{proceduresLabel(worker.procedures_followed)}</dd>
+                    </div>
+                  </dl>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       {/* ── Rubric breakdown ─────────────────────────────────── */}
       {rubric.areas.length > 0 && (

@@ -32,4 +32,25 @@ describe("ReportRail", () => {
       rubric={{ current: 0.35, baseline: 0.35, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }} />);
     expect(screen.getByText(/degraded|no real metrics/i)).toBeInTheDocument();
   });
+  it("renders worker report fields", () => {
+    render(<ReportRail status="completed" elapsedMs={1000}
+      report={{ finalReportPath: "x", costUsd: null,
+        counts: { iterations: 4, primitiveCalls: 3, proposed: 0, promoted: 0 } }}
+      rubric={{ current: 0.62, baseline: 0.35, target: 0.4, series: [], areas: [], previousAreas: [], attributableCandidate: null }}
+      workerReports={[{
+        report_id: "wr-1",
+        agent_id: "baseline-implementation",
+        status: "completed",
+        implemented: ["Added train.py"],
+        left_undone: [],
+        commands: [{ command: "python train.py", exit_code: 0 }],
+        issues: ["Dataset mirror was slow"],
+        procedures_followed: true
+      }]} />);
+    expect(screen.getByText("worker reports")).toBeInTheDocument();
+    expect(screen.getByText("baseline-implementation")).toBeInTheDocument();
+    expect(screen.getByText("Added train.py")).toBeInTheDocument();
+    expect(screen.getByText("exit 0")).toBeInTheDocument();
+    expect(screen.getByText("followed")).toBeInTheDocument();
+  });
 });

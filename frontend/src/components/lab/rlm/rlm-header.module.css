@@ -44,6 +44,8 @@
 .metaBlock {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--sp-2);
   flex-shrink: 0;
 }

@@ -155,7 +155,7 @@ Then run a paper with:
 python -m backend.cli reproduce path/to/paper.pdf --mode rlm --sandbox runpod
 ```
 
-The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/reprolab/<project>/baseline/work`, runs commands from `/work`, syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
+The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/reprolab/<project>/baseline/work`, runs commands from `/code` (symlinked to the upload dir), syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
 
 ## 5. Node.js and frontend dependencies
 

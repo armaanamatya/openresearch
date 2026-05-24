@@ -337,15 +337,68 @@ class RunpodBackend(RuntimeBackend):
                         )
                 raise
         started_at = datetime.now(timezone.utc)
+
+        # Mirror LocalDockerBackend.exec: tee stdout/stderr to
+        # <artifact_root>/exec.log line-by-line so a wedged remote process
+        # (NCCL deadlock, dataset download stuck, matplotlib OOM) leaves a
+        # readable host file even when the asyncio.wait_for timeout fires.
+        # Without this, a buffered SSH command that never returns gives zero
+        # visibility into what the pod was doing — exactly the 50-minute
+        # "stuck on L40S" symptom we keep hitting. Log-file open errors are
+        # best-effort (fall back to in-memory buffering only, no crash).
+        artifact_root = sandbox.config.resolved_artifact_root()
+        log_path: Path | None = None
+        try:
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            log_path = artifact_root / "exec.log"
+        except OSError:
+            log_path = None
+
         try:
             conn = await self._ssh(sandbox.sandbox_id)
             script = _remote_command(sandbox.config, command)
-            result = await asyncio.wait_for(
-                conn.run(f"/bin/bash -lc {_shell_quote(script)}", check=False),
-                timeout=timeout,
-            )
+            remote_cmd = f"/bin/bash -lc {_shell_quote(script)}"
+            # Streaming path requires the asyncssh create_process API. A test
+            # double exposing only conn.run (legacy/fake) falls back to the
+            # original buffered call — those doubles don't have hangs to
+            # diagnose so no streaming benefit is lost.
+            use_streaming = hasattr(conn, "create_process")
+            if use_streaming:
+                exit_code, stdout, stderr, timed_out = await _exec_streaming(
+                    conn,
+                    remote_cmd,
+                    log_path=log_path,
+                    command=command,
+                    timeout=timeout,
+                )
+                if timed_out:
+                    finished_at = datetime.now(timezone.utc)
+                    await self._sync_artifacts_to_host_quietly(sandbox)
+                    return ExecResult(
+                        command=command,
+                        exit_code=None,
+                        # Surface the captured-tail (NOT empty) so callers
+                        # and the agent can self-diagnose the wedged process.
+                        stdout=stdout,
+                        stderr=stderr or f"Command timed out after {timeout} seconds.",
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_seconds=(finished_at - started_at).total_seconds(),
+                        timed_out=True,
+                        cause_kind=RuntimeCauseKind.exec_timeout,
+                    )
+            else:
+                result = await asyncio.wait_for(
+                    conn.run(remote_cmd, check=False),
+                    timeout=timeout,
+                )
+                exit_code = int(getattr(result, "returncode", 1))
+                stdout = _coerce_text(getattr(result, "stdout", ""))
+                stderr = _coerce_text(getattr(result, "stderr", ""))
             await self._sync_artifacts_to_host(sandbox)
         except TimeoutError:
+            # Reachable only on the legacy fallback path (the streaming path
+            # converts TimeoutError into the timed_out=True return above).
             finished_at = datetime.now(timezone.utc)
             await self._sync_artifacts_to_host_quietly(sandbox)
             return ExecResult(
@@ -368,12 +421,11 @@ class RunpodBackend(RuntimeBackend):
             ) from exc
 
         finished_at = datetime.now(timezone.utc)
-        exit_code = int(getattr(result, "returncode", 1))
         return ExecResult(
             command=command,
             exit_code=exit_code,
-            stdout=_coerce_text(getattr(result, "stdout", "")),
-            stderr=_coerce_text(getattr(result, "stderr", "")),
+            stdout=stdout,
+            stderr=stderr,
             started_at=started_at,
             finished_at=finished_at,
             duration_seconds=(finished_at - started_at).total_seconds(),
@@ -927,6 +979,123 @@ class RunpodBackend(RuntimeBackend):
             RuntimeCauseKind.copy_failed,
             f"Path {path!r} is outside Runpod runtime mounts.",
         )
+
+
+async def _exec_streaming(
+    conn: Any,
+    remote_cmd: str,
+    *,
+    log_path: Path | None,
+    command: str,
+    timeout: int,
+) -> tuple[int, str, str, bool]:
+    """Run *remote_cmd* via SSH, teeing stdout/stderr to *log_path*.
+
+    Mirrors LocalDockerBackend.exec's streaming behaviour: each line read off
+    the remote process is appended to in-memory chunk lists AND flushed to
+    the host log file as it arrives. On timeout, the remote process is
+    terminated and the captured tail is read back from the log file so the
+    caller sees what the wedged pod was actually doing.
+
+    Returns ``(exit_code, stdout, stderr, timed_out)``. On ``timed_out=True``
+    the ``exit_code`` is ``-1`` (sentinel) and stdout carries the captured tail.
+
+    The log file is opened best-effort; an ``OSError`` during open or write
+    falls back to memory-only buffering rather than aborting the exec.
+    """
+    process = await conn.create_process(remote_cmd)
+
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+
+    fh = None
+    if log_path is not None:
+        try:
+            fh = log_path.open("ab")
+            fh.write(f"\n>>> {command}\n".encode("utf-8"))
+            fh.flush()
+        except OSError:
+            fh = None
+
+    async def _drain(stream: Any, chunks: list[str]) -> None:
+        # asyncssh's SSHReader yields str (decoded) by default; the local
+        # backend yields bytes. We accept both and normalise to str so the
+        # log file always carries UTF-8 text.
+        while True:
+            try:
+                line = await stream.readline()
+            except Exception:
+                # Channel closed mid-read (e.g. terminate() was called).
+                return
+            if not line:
+                return
+            text = line if isinstance(line, str) else line.decode("utf-8", errors="replace")
+            chunks.append(text)
+            if fh is not None:
+                try:
+                    fh.write(text.encode("utf-8"))
+                    fh.flush()
+                except OSError:
+                    # Disk full / fd revoked — keep streaming to memory.
+                    pass
+
+    stdout_task = asyncio.create_task(_drain(process.stdout, out_chunks))
+    stderr_task = asyncio.create_task(_drain(process.stderr, err_chunks))
+
+    timed_out = False
+    try:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            timed_out = True
+            # Best-effort terminate: send SIGTERM via asyncssh, then close
+            # the channel. The drain tasks will see EOF/closed-channel
+            # exceptions and exit; we still flush whatever they captured.
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            try:
+                process.close()
+            except Exception:
+                pass
+        # Whether timed out or clean, wait for the drain tasks to flush
+        # everything they've buffered. Bound this with a short grace period
+        # so a wedged readline doesn't extend the timeout indefinitely.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                timeout=5.0,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            stdout_task.cancel()
+            stderr_task.cancel()
+    finally:
+        if fh is not None:
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+    if timed_out:
+        # Read captured tail back from the log so the caller sees the
+        # incremental output even though the process never returned.
+        # Cap at 32k chars to bound memory like the local backend does.
+        captured = "".join(out_chunks)
+        if log_path is not None and log_path.exists():
+            try:
+                captured = log_path.read_text(encoding="utf-8", errors="replace")[-32000:]
+            except OSError:
+                pass
+        stderr_text = "".join(err_chunks) or f"Command timed out after {timeout} seconds."
+        return (-1, captured, stderr_text, True)
+
+    exit_code = process.exit_status
+    if exit_code is None:
+        # asyncssh returns None when the process was killed by signal; treat
+        # as a non-zero exit but not a timeout — we got a clean wait().
+        exit_code = 1
+    return (int(exit_code), "".join(out_chunks), "".join(err_chunks), False)
 
 
 def ensure_runpod_available() -> None:

@@ -110,6 +110,30 @@ def test_wrapped_primitive_records_failure(make_context, tmp_path):
     assert ledger[-1]["agent_id"] == "boom"  # ledger row appended on the error path too
 
 
+def test_wrapped_primitive_summarizes_validation_error_without_values(make_context, tmp_path):
+    from pydantic import BaseModel, ValidationError
+
+    class Payload(BaseModel):
+        count: int
+
+    ctx = make_context(tmp_path)
+
+    def validate(*, ctx):
+        Payload.model_validate({"count": "not-an-int"})
+
+    tools = build_custom_tools(ctx, registry={"validate": validate}, descriptions={"validate": "validates"})
+    with pytest.raises(ValidationError):
+        tools["validate"]["tool"]()
+
+    events = _read_events(ctx)
+    error_event = next(e for e in events if e.get("event") == "primitive_call" and e.get("status") == "error")
+    summary = error_event["result_summary"]
+    assert summary.startswith("ValidationError:")
+    assert "count" in summary
+    assert "int_parsing" in summary
+    assert "not-an-int" not in summary
+
+
 # ---------------------------------------------------------------------------
 # Phase 6 Task 13 — event emission tests
 # ---------------------------------------------------------------------------

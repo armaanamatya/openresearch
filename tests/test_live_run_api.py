@@ -113,6 +113,20 @@ def test_fastapi_can_start_and_fetch_runs_through_backend_api() -> None:
     assert fetched.json()["status"] == "queued"
 
 
+def test_runpod_status_route_explains_lazy_pod_creation() -> None:
+    service = FakeRunService()
+    service.state.sandboxMode = "runpod"
+    client = TestClient(create_app(run_service=service))
+
+    response = client.get("/runs/prj_api/runpod-status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "not_yet"
+    assert body["label"] == "runpod: not yet"
+    assert "run_experiment" in body["detail"]
+
+
 def test_fastapi_upload_route_starts_uploaded_pdf_run() -> None:
     service = FakeRunService()
     client = TestClient(create_app(run_service=service))
@@ -211,6 +225,13 @@ def test_start_run_request_accepts_opus() -> None:
     assert req.model == "opus"
 
 
+def test_start_run_request_accepts_registry_model_keys() -> None:
+    from backend.services.events.live_runs import StartRunRequest
+
+    req = StartRunRequest(model="gpt-5")
+    assert req.model == "gpt-5"
+
+
 def test_python_script_contains_model_id_and_config_key() -> None:
     from pathlib import Path
 
@@ -220,6 +241,40 @@ def test_python_script_contains_model_id_and_config_key() -> None:
     script = _python_script(req, project_id="p", runs_root=Path("/tmp/r"), uploaded_paper=None)
     assert "claude-opus-4-7" in script
     assert 'model=config["model"]' in script
+
+
+def test_python_script_preserves_registry_model_key() -> None:
+    from pathlib import Path
+
+    from backend.services.events.live_runs import StartRunRequest, _python_script
+
+    req = StartRunRequest(mode="rlm", model="gpt-5")
+    script = _python_script(req, project_id="p", runs_root=Path("/tmp/r"), uploaded_paper=None)
+
+    assert '\\"model\\": \\"gpt-5\\"' in script
+    assert '\\"model\\": \\"claude-sonnet-4-6\\"' not in script
+
+
+def test_models_endpoint_lists_rlm_registry() -> None:
+    service = FakeRunService()
+    client = TestClient(create_app(run_service=service))
+
+    response = client.get("/models")
+
+    assert response.status_code == 200
+    body = response.json()
+    ids = {entry["id"] for entry in body}
+    assert {
+        "gpt-5",
+        "qwen3-coder",
+        "kimi-k2.5",
+        "claude",
+        "claude-oauth",
+        "qwen3-coder-featherless",
+        "azure-gpt-4o",
+    }.issubset(ids)
+    assert all("available" in entry for entry in body)
+    assert all("missingCredentials" in entry for entry in body)
 
 
 # ---------------------------------------------------------------------------

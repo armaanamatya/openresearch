@@ -114,26 +114,29 @@ describe("useResizablePanels", () => {
     expect(stored.reportRail).toBe(320);
   });
 
-  it("restores sizes from localStorage on mount", () => {
+  it("restores sizes from localStorage on mount", async () => {
     localStorageMock.setItem(
       "reprolab:lab-workspace-sizes:v1",
       JSON.stringify({ replRail: 300, reportRail: 250, detailSidebar: 400 })
     );
     const { result } = renderHook(() => useResizablePanels());
-    // After mount effect runs:
-    act(() => {});
+    await act(async () => {
+      vi.runAllTicks();
+    });
     expect(result.current.sizes.replRail).toBe(300);
     expect(result.current.sizes.reportRail).toBe(250);
     expect(result.current.sizes.detailSidebar).toBe(400);
   });
 
-  it("clamps out-of-bounds localStorage values on restore", () => {
+  it("clamps out-of-bounds localStorage values on restore", async () => {
     localStorageMock.setItem(
       "reprolab:lab-workspace-sizes:v1",
       JSON.stringify({ replRail: 10, reportRail: 9000, detailSidebar: 360 })
     );
     const { result } = renderHook(() => useResizablePanels());
-    act(() => {});
+    await act(async () => {
+      vi.runAllTicks();
+    });
     expect(result.current.sizes.replRail).toBe(180);
     expect(result.current.sizes.reportRail).toBe(360);
   });

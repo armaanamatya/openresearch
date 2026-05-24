@@ -1,14 +1,16 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import type { DemoRunMode } from "../../../lib/demo/demo-run-types";
+import type { DemoRunMode, DemoSandboxMode, DemoWorkerReport } from "../../../lib/demo/demo-run-types";
 import type { RlmDashboardEvent } from "../../../lib/events/rlm-events";
+import type { PrimitiveCallView } from "../../../hooks/use-rlm-run";
 import { useRlmRunBatched } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
 import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
+import { PipelinePhaseStrip } from "./pipeline-phase-strip";
 import { RubricStrip } from "./rubric-strip";
 import { ReplStateRail } from "./repl-state-rail";
 import { ConstellationCanvas } from "./constellation-canvas";
@@ -17,6 +19,7 @@ import { PrimitiveHistoryBar } from "./primitive-history-bar";
 import { RubricBreakdown } from "./rubric-breakdown";
 import { NodeDetailSidebar } from "./node-detail-sidebar";
 import { ResizeHandle } from "./resize-handle";
+import { RunToasts } from "./run-toasts";
 import styles from "./rlm-lab.module.css";
 
 interface RlmLabProps {
@@ -39,6 +42,24 @@ interface RlmLabProps {
   isActive?: boolean;
   /** Error string from the run state — surfaced in the failed-run banner. */
   runError?: string | null;
+  sandboxMode?: DemoSandboxMode | null;
+  workerReports?: DemoWorkerReport[];
+}
+
+function findInFlightPrimitive(calls: PrimitiveCallView[]): { name: string; startedAt: string } | null {
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const c = calls[i];
+    if (c.status !== "start") continue;
+    let terminated = false;
+    for (let j = i + 1; j < calls.length; j++) {
+      if (calls[j].primitive === c.primitive && calls[j].status !== "start") {
+        terminated = true;
+        break;
+      }
+    }
+    if (!terminated) return { name: c.primitive, startedAt: c.timestamp };
+  }
+  return null;
 }
 
 /**
@@ -54,7 +75,15 @@ interface RlmLabProps {
  *
  * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
  */
-export function RlmLab({ events, runMeta, runMode, isActive = false, runError = null }: RlmLabProps) {
+export function RlmLab({
+  events,
+  runMeta,
+  runMode,
+  isActive = false,
+  runError = null,
+  sandboxMode = null,
+  workerReports = [],
+}: RlmLabProps) {
   // Pass the events array to useRlmRunBatched so its lazy state initializer
   // folds them synchronously on the FIRST render. This preserves the behaviour
   // of the original useRlmRun(events) for tests and fixture-replay paths that
@@ -109,6 +138,10 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
   const primitiveNames = useMemo(
     () => [...new Set(state.primitiveCalls.map((c) => c.primitive))],
     [state.primitiveCalls]
+  );
+  const inFlightPrimitive = useMemo(
+    () => findInFlightPrimitive(state.primitiveCalls),
+    [state.primitiveCalls],
   );
 
   // Real-time elapsed clock. If startedAt is provided, tick every second against
@@ -227,27 +260,6 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
     [sizes.reportRail]
   );
 
-  // Memoized inFlightPrimitive derivation — avoids re-running the O(n²) scan on
-  // every clock-tick render when primitiveCalls hasn't changed.
-  const inFlightPrimitive = useMemo(() => {
-    const calls = state.primitiveCalls;
-    for (let i = calls.length - 1; i >= 0; i--) {
-      const c = calls[i];
-      if (c.status !== "start") continue;
-      let terminated = false;
-      for (let j = i + 1; j < calls.length; j++) {
-        if (calls[j].primitive === c.primitive && calls[j].status !== "start") {
-          terminated = true;
-          break;
-        }
-      }
-      if (!terminated) {
-        return { name: c.primitive, startedAt: c.timestamp };
-      }
-    }
-    return null;
-  }, [state.primitiveCalls]);
-
   return (
     <div className={styles.shell} data-testid="rlm-lab">
       {/* Band 1 */}
@@ -265,6 +277,8 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
         onRerun={rerun}
         rerunBusy={rerunBusy}
         inFlightPrimitive={inFlightPrimitive}
+        sandboxMode={sandboxMode}
+        primitiveCalls={state.primitiveCalls}
       />
 
       {/* Band 1.5 — always-visible live activity narration.
@@ -281,6 +295,11 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
         lastHeartbeatAt={state.lastHeartbeatAt}
         nowMs={nowMs}
         startedAt={runMeta.startedAt}
+      />
+
+      <PipelinePhaseStrip
+        status={state.status}
+        primitiveCalls={state.primitiveCalls}
       />
 
       {/* Band 2 */}
@@ -332,6 +351,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
               elapsedMs={elapsedMs}
               report={state.report}
               rubric={state.rubric}
+              workerReports={workerReports}
               style={reportRailStyle}
             />
           </>
@@ -364,6 +384,12 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
 
       {/* Band 4 */}
       <PrimitiveHistoryBar calls={state.primitiveCalls} />
+      <RunToasts
+        status={state.status}
+        iterationCount={state.iterationCount}
+        primitiveCalls={state.primitiveCalls}
+        report={state.report}
+      />
     </div>
   );
 }

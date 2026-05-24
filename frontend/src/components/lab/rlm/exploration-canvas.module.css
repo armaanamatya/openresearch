@@ -33,6 +33,36 @@
   cursor: grabbing;
 }
 
+.emptyState {
+  position: sticky;
+  top: var(--sp-4);
+  left: var(--sp-4);
+  z-index: 2;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(420px, calc(100% - 32px));
+  margin: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+}
+
+.emptyTitle {
+  color: var(--ink);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.emptyText {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
 /* ── Scene (intrinsically sized — gives pan travel room) ──────────────────── */
 
 .scene {
