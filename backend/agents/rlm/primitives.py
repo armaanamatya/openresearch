@@ -892,6 +892,91 @@ def _persist_experiment_result(
     return result
 
 
+def _validate_scope_metrics(
+    scope_spec: object,
+    metrics: dict,
+) -> str | None:
+    """Validate metrics.json shape against the run's ScopeSpec.
+
+    Returns ``None`` when the shape is acceptable or when no scope is set.
+    Returns a non-empty hint string when the metrics dict violates a
+    multi-model / multi-dataset scope requirement; callers (run_experiment)
+    convert the hint into a fail-soft error dict so the agent's next
+    implement_baseline iteration gets it as repair_context.
+
+    Rules:
+      - No scope OR empty metrics → pass (None). An empty metrics dict means
+        the experiment itself failed at a different layer; not our concern.
+      - Multi-model scope → metrics MUST carry a top-level ``per_model`` dict
+        keyed by model id, with at least every model from
+        ``scope_spec.models`` present.
+      - Multi-dataset scope AND multi-model → each per_model entry MUST carry
+        a ``per_dataset`` dict keyed by dataset id with every dataset present.
+      - Multi-dataset but single-model → metrics MUST carry a top-level
+        ``per_dataset`` dict directly (no per_model nesting required).
+    """
+    if scope_spec is None:
+        return None
+    if not metrics:
+        return None
+
+    # ScopeSpec is duck-typed via Any in RunContext; access through getattr
+    # so this helper does not need a hard import of ScopeSpec.
+    is_multi_model = getattr(scope_spec, "is_multi_model", False)
+    is_multi_dataset = getattr(scope_spec, "is_multi_dataset", False)
+    models = list(getattr(scope_spec, "models", []) or [])
+    dataset_ids_fn = getattr(scope_spec, "dataset_ids", None)
+    datasets = dataset_ids_fn() if callable(dataset_ids_fn) else []
+
+    if is_multi_model:
+        per_model = metrics.get("per_model")
+        if not isinstance(per_model, dict) or not per_model:
+            return (
+                f"per_model_required: scope is multi-model {models}. Write "
+                f"metrics.json with a top-level per_model dict keyed by model "
+                f"id, e.g. {{'per_model': {{'qwen3-1.7b': {{...}}, "
+                f"'qwen2.5-3b': {{...}}}}}}."
+            )
+        missing = [m for m in models if m not in per_model]
+        if missing:
+            return (
+                f"per_model_incomplete: scope requires entries for {models}; "
+                f"missing {missing} in metrics.per_model."
+            )
+        if is_multi_dataset:
+            for model_id, model_metrics in per_model.items():
+                pd = (model_metrics or {}).get("per_dataset") if isinstance(model_metrics, dict) else None
+                if not isinstance(pd, dict) or not pd:
+                    return (
+                        f"per_dataset_required: scope is multi-dataset {datasets}. "
+                        f"Each per_model entry MUST carry a per_dataset dict; "
+                        f"model {model_id!r} has none."
+                    )
+                missing_ds = [d for d in datasets if d not in pd]
+                if missing_ds:
+                    return (
+                        f"per_dataset_incomplete: model {model_id!r} missing "
+                        f"datasets {missing_ds} in per_dataset."
+                    )
+    elif is_multi_dataset:
+        # Single-model + multi-dataset: per_dataset at top level (no per_model nesting).
+        pd = metrics.get("per_dataset")
+        if not isinstance(pd, dict) or not pd:
+            return (
+                f"per_dataset_required: scope is multi-dataset {datasets}. "
+                f"Write metrics.json with a top-level per_dataset dict keyed by "
+                f"dataset id."
+            )
+        missing_ds = [d for d in datasets if d not in pd]
+        if missing_ds:
+            return (
+                f"per_dataset_incomplete: missing datasets {missing_ds} in "
+                f"top-level per_dataset."
+            )
+
+    return None
+
+
 def run_experiment(
     code_path: str,
     env_id: str,
@@ -1136,6 +1221,19 @@ def run_experiment(
         gpu_plan = new_plan
         escalations += 1
 
+    # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
+    # require metrics.json to carry the expected per_model / per_dataset
+    # structure. A successful run with the wrong shape is a fail-soft error
+    # so the agent's next implement_baseline gets it as repair_context.
+    if result.get("success") and result.get("metrics"):
+        hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
+        if hint is not None:
+            result = {
+                **result,
+                "success": False,
+                "error": hint,
+                "scope_shape_violation": True,
+            }
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
