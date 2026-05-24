@@ -856,7 +856,13 @@ async def _execute_in_sandbox(
     }
 
 
-def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
+def _persist_experiment_result(
+    ctx: "RunContext",
+    result: dict,
+    *,
+    model_id: str = "default",
+    eval_env: str = "default",
+) -> dict:
     """Append a run_experiment result to ``experiment_runs.jsonl`` and return it.
 
     A run_experiment result otherwise lives only in the root model's REPL — a
@@ -876,6 +882,8 @@ def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
         )
     try:
         entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **result}
+        entry.setdefault("model_id", model_id)
+        entry.setdefault("eval_env", eval_env)
         path = ctx.project_dir / "experiment_runs.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
@@ -884,8 +892,28 @@ def _persist_experiment_result(ctx: "RunContext", result: dict) -> dict:
     return result
 
 
-def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
+def run_experiment(
+    code_path: str,
+    env_id: str,
+    *,
+    model_id: str = "default",
+    eval_env: str = "default",
+    ctx: "RunContext",
+) -> dict:
     """Execute the baseline in a container from prebuilt image `env_id`; return metrics.
+
+    Args:
+        code_path: Path to the code directory containing commands.json.
+        env_id: Docker image tag (or empty when a Dockerfile-rebuild path applies).
+        model_id: Optional tag identifying which model variant this run executes
+            (e.g. "qwen3-1.7b"). Defaults to "default". Persisted to
+            experiment_runs.jsonl so the scope cross-check (PR B) can verify
+            scope.ran against actual evidence. Use one of the model ids from
+            ctx.scope_spec.models when the scope is multi-model.
+        eval_env: Optional tag identifying which evaluation environment / dataset
+            this run targets (e.g. "ALFWorld"). Defaults to "default". Used the
+            same way as model_id; together they form composite "model/eval_env"
+            evidence ids for multi-model + multi-env papers.
 
     Commands are read from `code_path/commands.json` (written by
     `implement_baseline`). Before executing, the image is rebuilt from
@@ -914,7 +942,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     if not commands:
         return _persist_experiment_result(ctx, {
             "success": False, "metrics": {},
-            "error": f"no commands.json at {manifest}"})
+            "error": f"no commands.json at {manifest}"}, model_id=model_id, eval_env=eval_env)
 
     # Bug B: the experiment must run against an image matching its own code.
     # detect_environment builds the env spec before any code exists, so it
@@ -934,7 +962,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     f"run_experiment: environment rebuild from {dockerfile_path} "
                     f"failed: {build.get('error')}"
                 ),
-            })
+            }, model_id=model_id, eval_env=eval_env)
         env_id = build["image_tag"]
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
@@ -944,7 +972,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "success": False,
             "metrics": {},
             "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
-        })
+        }, model_id=model_id, eval_env=eval_env)
 
     # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
     # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
@@ -1108,7 +1136,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         gpu_plan = new_plan
         escalations += 1
 
-    return _persist_experiment_result(ctx, result)
+    return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:

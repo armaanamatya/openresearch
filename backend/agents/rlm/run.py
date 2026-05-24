@@ -621,6 +621,15 @@ async def run_pipeline_rlm(
     _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
     _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
 
+    # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
+    # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
+    _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
+    if _scope_json:
+        from backend.agents.schemas import ScopeSpec as _ScopeSpec
+        _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
+    else:
+        _scope_spec = None
+
     ctx = RunContext(
         project_id=project_id,
         project_dir=project_dir,
@@ -650,6 +659,7 @@ async def run_pipeline_rlm(
         run_budget=run_budget,
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
         vram_override=_vram_override,
+        scope_spec=_scope_spec,
     )
 
     # 5. Primitives — the real binding or the stub provider.
