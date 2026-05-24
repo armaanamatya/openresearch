@@ -948,6 +948,10 @@ def _persist_experiment_result(
         "per_model": result.get("metrics", {}).get("per_model"),  # None if absent — fine
         "error": result.get("error") or None,
         "logs_tail": _logs_tail or None,
+        # Rubric-contract violations are forwarded so the UI can show specific
+        # actionable gaps (missing keys, off-by-X% numbers, missing variants).
+        "contract_violations": result.get("contract_violations") or None,
+        "contract_summary": result.get("contract_summary") or None,
     })
     return result
 
@@ -1346,6 +1350,38 @@ def run_experiment(
                 "error": hint,
                 "scope_shape_violation": True,
             }
+
+    # Rubric-contract validation: post-run diff of metrics + artifacts against
+    # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
+    # Surfaces concrete, actionable violations the agent can fix on its next
+    # implement_baseline iteration.  Covers 4 of 6 rubric areas
+    # (Data fidelity, Experiment execution, Eval protocol, Result match,
+    # Artifact completeness) deterministically — no LLM call needed.
+    try:
+        from backend.agents.rlm import rubric_contract as _rc
+        _arxiv_id = getattr(ctx, "arxiv_id", None)
+        _paper_targets = _rc.load_paper_targets(_arxiv_id)
+        if _paper_targets:
+            _artifact_root = Path(code_path) / "outputs" / run_id
+            _contract_report = _rc.validate(
+                metrics=result.get("metrics") or {},
+                artifact_root=_artifact_root,
+                paper_targets=_paper_targets,
+            )
+            if _contract_report.violations:
+                # Attach violations to result so the root model can pass them
+                # back to implement_baseline as repair_context.  Do not flip
+                # success to False on its own — a successful experiment with
+                # contract violations is still useful; it just gets repaired
+                # next iteration.
+                result = {
+                    **result,
+                    "contract_violations": [v.to_dict() for v in _contract_report.violations],
+                    "contract_summary": _contract_report.summary,
+                }
+    except Exception:  # noqa: BLE001 — observability must never block the run
+        logger.exception("run_experiment: rubric_contract.validate raised — skipping")
+
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 

@@ -48,3 +48,50 @@ baselines:
   - RLSD
 
 code_release: https://github.com/ZJU-REAL/SDAR
+
+paper_targets:
+  # Approximate numbers from SDAR Table 1 and Figures 3-5. The rubric grader
+  # scores 'Result match' by comparing within ~10% relative on these.
+  # Targets are the average across the three Qwen sizes the paper sweeps.
+  alfworld_grpo_success_rate: 70.0          # Table 1 — GRPO ALFWorld success rate
+  alfworld_sdar_success_rate: 82.0          # Table 1 — SDAR ALFWorld success rate (headline lift)
+  searchqa_grpo_em: 38.0                    # Figure 4 — Search-QA exact-match
+  searchqa_sdar_em: 46.0                    # Figure 4 — SDAR Search-QA exact-match
+  webshop_grpo_score: 60.0                  # Figure 5 — WebShop score
+  webshop_sdar_score: 70.0                  # Figure 5 — SDAR WebShop score
+
+  required_metrics_keys:
+    - alfworld_success_rate_per_model        # {qwen3_1_7b: …, qwen2_5_3b: …, qwen2_5_7b: …}
+    - searchqa_em_per_model
+    - webshop_score_per_model
+    - per_model                              # canonical multi-scale shape
+    - baselines_vs_sdar                      # delta table per env
+    - omitted                                # honest-omits for skipped envs / model sizes
+
+  # Variants the paper compares; rubric grader checks each appears in
+  # per_model OR omitted (with reason).
+  variants_required:
+    - qwen3_1_7b                            # smallest, must run
+    - qwen2_5_3b                            # middle, should run
+    - qwen2_5_7b                            # largest, may be honestly omitted on tight budgets
+    - grpo                                  # paper baseline
+    - opsd                                  # paper baseline
+    - skill_sd                              # paper baseline
+    - grpo_opsd                             # paper baseline
+    - rlsd                                  # paper baseline
+    - sdar                                  # paper proposed method
+
+  required_artifacts:
+    - metrics.json
+    - config_used.json
+    - README.md
+    - training_curves.json
+    - "fig_alfworld_*.png"                  # at least one ALFWorld curve
+    - "fig_searchqa_*.png"
+    - "fig_webshop_*.png"
+
+scope_hints:
+  - "The headline claim is g_t = sigmoid(beta * Delta_t) with beta=10, lambda=0.1, stop-gradient on the gate. The leaf scorer reads code; these constants MUST appear literally."
+  - "Run AT LEAST qwen3_1_7b end-to-end; honest-omit qwen2_5_7b if budget is tight (declare in metrics.json['omitted'])."
+  - "Every paper baseline (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD) AND the proposed SDAR must appear as a key in per_model — declared omitted with a reason is acceptable, silently skipped is not."
+  - "Emit per-step training curves (per (model, env) pair) so the convergence-improvement claim can be graded."
