@@ -521,6 +521,31 @@ _RUNTIME_DETECTION_BLOCK = (
     "`metrics.json={\"error\":\"api_unreachable\"}` rather than substituting mock outputs.\n"
 )
 
+
+_EAGER_METRICS_BLOCK = (
+    "\n\nEAGER METRICS EMISSION — always-on:\n"
+    "Write `metrics.json` AS YOU GO, not just at the end.  Whenever a sub-experiment "
+    "completes (e.g. 'MNIST no-BN final test acc = 0.81'), update `metrics.json` "
+    "immediately with that value plus a partial-success marker.  A mid-script kill "
+    "(sandbox timeout, OOM, container crash) then still leaves measurable results "
+    "for the rubric — the failing path is partial coverage, not zero coverage.\n"
+    "Pattern:\n"
+    "  def write_metrics(d):\n"
+    "      import json, os, tempfile\n"
+    "      path = os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'metrics.json')\n"
+    "      tmp = path + '.tmp'\n"
+    "      with open(tmp, 'w') as f: json.dump(d, f, indent=2)\n"
+    "      os.replace(tmp, path)  # atomic — no half-written file on kill\n"
+    "  ...\n"
+    "  metrics = {}\n"
+    "  metrics['mnist_no_bn_final_acc'] = ...\n"
+    "  write_metrics(metrics)         # flush after no-BN finishes\n"
+    "  metrics['mnist_bn_final_acc'] = ...\n"
+    "  write_metrics(metrics)         # flush after BN finishes\n"
+    "  ...\n"
+    "Always write atomically (tempfile + os.replace) so a kill mid-write cannot corrupt the file.\n"
+)
+
 _DATASET_SETUP_BLOCK = (
     "\n\nDATASET SETUP — required patterns by environment family:\n"
     "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
@@ -836,7 +861,7 @@ def _compute_constraint_guidance(
     else:  # auto
         _inject_budget = _is_cost_bearing
 
-    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
     guidance += _PER_MODEL_METRICS_BLOCK
