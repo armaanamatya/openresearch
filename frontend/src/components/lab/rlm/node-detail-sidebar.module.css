@@ -499,3 +499,80 @@
   border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 30%, transparent);
   cursor: help;
 }
+
+/* ── Per-model metrics grid (Lane γ, 2026-05-23) ─────────────────── */
+
+.perModelGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--canvas-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  overflow-x: auto;
+}
+
+.perModelLabel {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--sp-1);
+}
+
+.perModelTable {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.perModelHeaderCell {
+  padding: 3px var(--sp-2);
+  background: var(--chip);
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.perModelHeaderCell:last-child {
+  border-right: none;
+}
+
+.perModelMetricCell {
+  padding: 2px var(--sp-2);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line-2);
+  border-right: 1px solid var(--line-2);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.perModelValueCell {
+  padding: 2px var(--sp-2);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line-2);
+  border-right: 1px solid var(--line-2);
+  color: var(--ink);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.perModelValueCell:last-child,
+.perModelMetricCell:last-child {
+  border-right: none;
+}

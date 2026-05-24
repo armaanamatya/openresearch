@@ -288,7 +288,11 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
 
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
       {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (
-        <RubricBreakdown projectId={runMeta.projectId} isActive={isActive} />
+        <RubricBreakdown
+          projectId={runMeta.projectId}
+          isActive={isActive}
+          perModelMetrics={state.perModelMetrics}
+        />
       )}
 
       {/* Band 3: workspace */}
@@ -351,6 +355,7 @@ export function RlmLab({ events, runMeta, runMode, isActive = false, runError = 
           candidatesProposed={candidatesProposed}
           candidatesPromoted={candidatesPromoted}
           gpuPlan={state.gpuPlan}
+          perModelMetrics={state.perModelMetrics}
           collapsed={sidebarCollapsed}
           onCollapsedChange={handleSidebarCollapsedChange}
           style={sidebarStyle}

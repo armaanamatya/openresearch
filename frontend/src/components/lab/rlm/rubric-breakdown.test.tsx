@@ -146,4 +146,80 @@ describe("RubricBreakdown", () => {
     expect(screen.getByText("Introduction")).toBeInTheDocument();
     expect(screen.getByText("leaf-a")).toBeInTheDocument();
   });
+
+  // ── Per-model mini-bars (Lane γ, 2026-05-23) ──────────────────────────────
+
+  it("renders per-model mini-bars when leaf id has model suffix matching per_model keys", () => {
+    const perModelMetrics = {
+      qwen3_1_7b: { alfworld: 0.34 },
+      qwen2_5_3b: { alfworld: 0.51 },
+    };
+    // Leaf id "alfworld_qwen3_1_7b" has suffix "qwen3_1_7b" — metric key "alfworld"
+    const leafWithSuffix: DemoLeafScore = {
+      id: "alfworld_qwen3_1_7b",
+      score: 0.34,
+      justification: "",
+    };
+    mockUseRdrArtifacts.mockReturnValue({
+      clusters: [],
+      leafScores: [leafWithSuffix],
+      repairPasses: [],
+      noRdrArtifacts: false,
+    });
+    render(
+      <RubricBreakdown
+        projectId="prj_per_model"
+        isActive={false}
+        perModelMetrics={perModelMetrics}
+      />
+    );
+    const miniBar = screen.getByTestId("per-model-mini-bar");
+    expect(miniBar).toBeInTheDocument();
+    // Both model values shown in the title attribute
+    expect(miniBar.title).toContain("qwen3_1_7b");
+    expect(miniBar.title).toContain("qwen2_5_3b");
+  });
+
+  it("does NOT render per-model mini-bars when leaf id has no model suffix", () => {
+    const perModelMetrics = {
+      model_a: { acc: 0.8 },
+      model_b: { acc: 0.7 },
+    };
+    const plainLeaf: DemoLeafScore = {
+      id: "overall_accuracy",  // no model suffix matching model_a / model_b
+      score: 0.75,
+      justification: "",
+    };
+    mockUseRdrArtifacts.mockReturnValue({
+      clusters: [],
+      leafScores: [plainLeaf],
+      repairPasses: [],
+      noRdrArtifacts: false,
+    });
+    render(
+      <RubricBreakdown
+        projectId="prj_no_suffix"
+        isActive={false}
+        perModelMetrics={perModelMetrics}
+      />
+    );
+    expect(screen.queryByTestId("per-model-mini-bar")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render per-model mini-bars when perModelMetrics is null", () => {
+    mockUseRdrArtifacts.mockReturnValue({
+      clusters: [],
+      leafScores: [LEAF],
+      repairPasses: [],
+      noRdrArtifacts: false,
+    });
+    render(
+      <RubricBreakdown
+        projectId="prj_null_per_model"
+        isActive={false}
+        perModelMetrics={null}
+      />
+    );
+    expect(screen.queryByTestId("per-model-mini-bar")).not.toBeInTheDocument();
+  });
 });

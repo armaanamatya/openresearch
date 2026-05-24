@@ -480,6 +480,35 @@ _POD_SETUP_BLOCK = (
 )
 
 
+# Lane γ: per_model metrics block
+_PER_MODEL_METRICS_BLOCK = (
+    "\n\nPER-MODEL METRICS — when the paper tests multiple model variants:\n"
+    "If the paper specifies more than one model variant (e.g. Qwen2.5-0.5B and\n"
+    "Qwen2.5-3B, or BERT-base and BERT-large), your `metrics.json` MUST include\n"
+    "a `per_model` dict in addition to any flat top-level metrics. Shape:\n"
+    "  {\n"
+    "    \"per_model\": {\n"
+    "      \"<model_short_name>\": {\n"
+    "        \"<metric_name>\": <number>,\n"
+    "        ...one entry per metric measured for this model variant...\n"
+    "      },\n"
+    "      ...one entry per model variant actually run...\n"
+    "    },\n"
+    "    \"wall_time_seconds\": <number>,\n"
+    "    \"scope\": {\n"
+    "      \"models_run\": [\"<short_name>\", ...],\n"
+    "      \"models_skipped\": [\"<short_name>\", ...]\n"
+    "    }\n"
+    "  }\n"
+    "Model short names MUST be Python-identifier-safe (use underscores, not dots\n"
+    "or slashes — e.g. `qwen2_5_3b` not `Qwen/Qwen2.5-3B-Instruct`). You MAY\n"
+    "also include flat top-level metrics (e.g. averaged or best-of) for backward\n"
+    "compatibility — `per_model` does not replace them, only adds richer detail.\n"
+    "If only one model variant is evaluated, omit `per_model` entirely; the flat\n"
+    "format is sufficient. Never fabricate `per_model` entries for variants you\n"
+    "did not actually run — use `scope.models_skipped` instead.\n"
+)
+
 _RUNTIME_DETECTION_BLOCK = (
     "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
     "Your code MUST detect available compute at runtime and adapt accordingly. "
@@ -534,7 +563,9 @@ def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
     # NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
     # before the runtime-detection nuance. RUNPOD POD SETUP comes only when the
     # sandbox is runpod — keeps the prompt focused for local-docker reproductions.
-    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+    # Lane γ: per_model metrics block follows RUNTIME_DETECTION so the agent
+    # understands compute constraints before reading the per-model output shape.
+    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _PER_MODEL_METRICS_BLOCK
     if "runpod" in mode_str:
         guidance += _POD_SETUP_BLOCK
 
