@@ -996,11 +996,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
     # immediately. I12: explicit shutdown(wait=False) per iteration.
     while True:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
-        # capacity_error_msg is set when the inner exception path detects a
-        # RUNPOD_CAPACITY_EXHAUSTED signal from runpod_backend._request_json.
-        # This bypasses the post-result OOM check below and goes straight to
-        # the ladder-advance branch.
-        capacity_error_msg: str | None = None
+        infra_error_kind: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
@@ -1026,18 +1022,23 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
                     ),
                 }
             except Exception as exc:  # noqa: BLE001
-                # RunPod capacity-exhaustion bubbles up as a SandboxRuntimeError
-                # tagged with the RUNPOD_CAPACITY_EXHAUSTED sentinel from
-                # runpod_backend._request_json. Treat it like an OOM — advance
-                # the ladder, retry. Any other unexpected exception still
-                # produces a fail-soft error dict (consistent with the rest of
-                # this function never raising).
+                # RunPod infrastructure failures bubble up as SandboxRuntimeError
+                # tagged with a sentinel prefix from runpod_backend. Treat them
+                # like an OOM — advance the ladder, retry. Any other unexpected
+                # exception still produces a fail-soft error dict (consistent
+                # with the rest of this function never raising).
                 exc_msg = str(exc)
                 if "RUNPOD_CAPACITY_EXHAUSTED" in exc_msg:
-                    capacity_error_msg = exc_msg
+                    infra_error_kind = "runpod_capacity"
                     result = {
                         "success": False, "metrics": {},
                         "error": f"runpod capacity exhausted on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                    }
+                elif "RUNPOD_SSH_TIMEOUT" in exc_msg:
+                    infra_error_kind = "runpod_ssh_timeout"
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"runpod SSH timeout on {gpu_plan.short_name if gpu_plan else 'unknown'}",
                     }
                 else:
                     result = {
@@ -1052,12 +1053,12 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         # means legacy mode — no ladder to advance), or cap reached.
         if result.get("success") or gpu_plan is None or escalations >= max_escalations:
             break
-        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity exhaustion.
+        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
         is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
-        is_capacity = capacity_error_msg is not None
-        if not is_oom and not is_capacity:
+        is_infra = infra_error_kind is not None
+        if not is_oom and not is_infra:
             break
         if not gpu_plan.ladder_remaining:
             result = {
@@ -1102,7 +1103,7 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "from_sku": gpu_plan.short_name,
             "to_sku": new_plan.short_name,
             "escalation_index": escalations + 1,
-            "reason": "runpod_capacity" if is_capacity else "cuda_oom",
+            "reason": infra_error_kind if is_infra else "cuda_oom",
         })
         gpu_plan = new_plan
         escalations += 1

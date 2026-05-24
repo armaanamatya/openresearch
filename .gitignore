@@ -55,12 +55,13 @@ Thumbs.db
 .claude/
 
 # Local run outputs (anchored to repo root — must not match nested
-# source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/)
+# source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/
+# or backend/services/runs/)
 /runs/
-runs
+/runs
 # Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
 /logs/
-logs
+/logs
 
 # Windows artifacts
 %APPDATA%/

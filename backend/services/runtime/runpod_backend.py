@@ -511,7 +511,8 @@ class RunpodBackend(RuntimeBackend):
             await asyncio.sleep(10)
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            f"Runpod pod {pod_id} did not become SSH-ready before timeout. {last_error}",
+            f"RUNPOD_SSH_TIMEOUT: pod {pod_id} did not become SSH-ready "
+            f"after {self.boot_timeout_seconds}s. {last_error}",
             retryable=True,
         )
 

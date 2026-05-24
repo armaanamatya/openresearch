@@ -784,6 +784,21 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"[--fresh] Purged runs/{fresh_pid}/ and {purged} event-store rows.",
             file=sys.stderr,
         )
+    else:
+        # Archive prior-attempt artifacts (final_report.*, experiment_runs.jsonl,
+        # cost_ledger.jsonl, dashboard_events.jsonl, rlm_state/, etc.) under
+        # runs/<id>/attempts/<ts>/ so the new attempt does not commingle with
+        # an older one in the UI or the final report. The ingested paper is
+        # preserved so this does NOT trigger a re-fetch / re-parse.
+        from backend.services.runs.archive import archive_run_artifacts
+        presumed_pid = getattr(args, "project_id", None) or project_id_for(source)
+        archived = archive_run_artifacts(presumed_pid, runs_root)
+        if archived:
+            print(
+                f"[archive] Moved {len(archived['moved'])} prior-attempt artifact(s) "
+                f"to {archived['attempt_dir']}",
+                file=sys.stderr,
+            )
 
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
     project_id = intake.register_project(RegisterProject(source=source))

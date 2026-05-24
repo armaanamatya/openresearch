@@ -136,6 +136,26 @@ class RLMFinalReport(BaseModel):
         description="ISO-8601 UTC timestamp when the report was written.",
     )
 
+    # --- Scope section (spec 2026-05-23-sdar-baseline-handoff §Lane 4)
+    # Distinguishes "what the user / operator scoped the run to" from "what the
+    # rubric evaluates". A partial scope (e.g. only the smallest 2 of 3 model
+    # sizes) is not the same as a partial rubric pass; conflating them
+    # misrepresents the run.
+    scope: dict = Field(
+        default_factory=lambda: {
+            "requested": "",
+            "ran": [],
+            "gaps": [],
+        },
+        description=(
+            "User/operator-stated scope vs. what actually ran. "
+            "`requested` = the scope statement (e.g. operator guidance, "
+            "CLI hint, default 'full paper'). `ran` = list of items actually "
+            "executed (model names, dataset slices, seeds). `gaps` = list of "
+            "items requested but not executed, with a short reason each."
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -157,6 +177,7 @@ _HONEST_DEFAULTS: dict[str, Any] = {
         "areas": [],
     },
     "improvements": [],
+    "scope": {"requested": "", "ran": [], "gaps": []},
     "primitive_trace": {},
     "cost": {"llm_usd": 0.0, "primitives": 0.0},
     "iterations": 0,
@@ -451,6 +472,7 @@ def build_final_report(
             "areas": [],
         },
         "improvements": list(parsed.get("improvements") or []),
+        "scope": parsed.get("scope") or {"requested": "", "ran": [], "gaps": []},
         "primitive_trace": trace,
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
@@ -601,6 +623,30 @@ def _render_markdown(report: RLMFinalReport) -> str:
     summary = report.reproduction_summary.strip()
     lines.append(summary if summary else "_No summary provided._")
     lines.append("")
+
+    # --- Scope ---
+    # Only render when the root populated at least one of requested/ran/gaps.
+    # Default-empty scope is suppressed to keep older reports clean.
+    scope = report.scope or {}
+    requested = str(scope.get("requested") or "").strip()
+    ran = list(scope.get("ran") or [])
+    gaps = list(scope.get("gaps") or [])
+    if requested or ran or gaps:
+        lines.append("## Scope")
+        lines.append("")
+        if requested:
+            lines.append(f"**Requested:** {requested}")
+            lines.append("")
+        if ran:
+            lines.append("**Ran:**")
+            for item in ran:
+                lines.append(f"- {item}")
+            lines.append("")
+        if gaps:
+            lines.append("**Gaps:**")
+            for item in gaps:
+                lines.append(f"- {item}")
+            lines.append("")
 
     # --- Baseline metrics vs. paper claims ---
     lines.append("## Baseline Metrics vs. Paper Claims")
