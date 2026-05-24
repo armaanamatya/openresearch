@@ -910,6 +910,14 @@ def _persist_experiment_result(
             fh.write(json.dumps(entry, default=str) + "\n")
     except Exception:  # noqa: BLE001 — observability must never break the run
         logger.exception("run_experiment: failed to persist experiment result")
+    # A1: emit experiment_completed so the Lane γ multi-model UI panel fires on
+    # real runs (foldExperimentCompleted in use-rlm-run.ts was dead code until
+    # this event was wired on the backend side).  Fail-soft via _emit_dashboard_event.
+    _emit_dashboard_event(ctx, event_type="experiment_completed", payload={
+        "success": result.get("success", False),
+        "metrics": result.get("metrics", {}),
+        "per_model": result.get("metrics", {}).get("per_model"),  # None if absent — fine
+    })
     return result
 
 
@@ -996,6 +1004,40 @@ def _validate_scope_metrics(
             )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# A2: GPU escalation count persistence helpers
+# ---------------------------------------------------------------------------
+# The escalations counter was previously local to a single run_experiment call.
+# The RLM repair loop may call run_experiment multiple times in one run; each
+# fresh invocation got fresh budget, silently exceeding the per-run cap.
+# These helpers persist/restore the counter in rlm_state/gpu_escalation_state.json
+# so the cap is honoured across the entire run.
+
+def _load_escalation_count(state_dir: "Path") -> int:
+    """Return the persisted escalations_used count, defaulting to 0."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(state_dir) / "gpu_escalation_state.json"
+    if not path.exists():
+        return 0
+    try:
+        return int(_json.loads(path.read_text(encoding="utf-8")).get("escalations_used", 0))
+    except Exception:  # noqa: BLE001 — missing / corrupt state is not fatal
+        return 0
+
+
+def _persist_escalation_count(state_dir: "Path", count: int) -> None:
+    """Atomically write escalations_used to rlm_state/gpu_escalation_state.json."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(state_dir) / "gpu_escalation_state.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_json.dumps({"escalations_used": count}), encoding="utf-8")
+    tmp.replace(path)
 
 
 def run_experiment(
@@ -1120,7 +1162,9 @@ def run_experiment(
 
     _settings = get_settings()
     max_escalations = _settings.dynamic_gpu_max_escalations
-    escalations = 0
+    # A2: load the cross-call persisted counter so the per-run cap is honoured
+    # even when the RLM repair loop calls run_experiment multiple times.
+    escalations = _load_escalation_count(ctx.project_dir / "rlm_state")
     result: dict = {}
 
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
@@ -1241,6 +1285,9 @@ def run_experiment(
         })
         gpu_plan = new_plan
         escalations += 1
+        # A2: persist the updated count so subsequent run_experiment calls in
+        # the same run start from the correct escalation budget offset.
+        _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
     # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
     # require metrics.json to carry the expected per_model / per_dataset
