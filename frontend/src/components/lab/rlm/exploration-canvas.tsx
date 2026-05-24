@@ -47,6 +47,7 @@ const SCENE_PADDING = 160;
  */
 export function ExplorationCanvas({
   tree,
+  iterations,
   selectedNodeId: externalSelectedNodeId = null,
   onSelectNode,
 }: ExplorationCanvasProps) {
@@ -130,6 +131,7 @@ export function ExplorationCanvas({
     () => layoutTree(visibleTree),
     [visibleTree]
   );
+  const showStarterCopy = positioned.length === 0 || (positioned.length === 1 && iterations.length === 0);
 
   // Scene size: enough to contain every node + padding so pan has travel room.
   const sceneSize = useMemo(() => {
@@ -284,7 +286,16 @@ export function ExplorationCanvas({
       ref={wrapRef}
       onPointerDown={onPointerDown}
       data-testid="exploration-canvas"
+      title="Drag to pan the exploration tree. Click any node to open its details in the right sidebar."
     >
+      {showStarterCopy && (
+        <div className={styles.emptyState}>
+          <span className={styles.emptyTitle}>Waiting for the first RLM step</span>
+          <span className={styles.emptyText}>
+            Paper, primitive, and candidate nodes appear as soon as the root emits its first REPL iteration.
+          </span>
+        </div>
+      )}
       <div
         className={styles.scene}
         style={{ width: sceneSize.width, height: sceneSize.height }}

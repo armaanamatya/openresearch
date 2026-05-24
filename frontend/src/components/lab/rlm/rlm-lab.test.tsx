@@ -13,6 +13,7 @@ describe("RlmLab", () => {
       paperTitle: "Attention is all you need", paperMeta: "Vaswani et al." }} />);
     expect(screen.getByText("Attention is all you need")).toBeInTheDocument();
     expect(screen.getAllByText(/0\.53/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("RLM pipeline phase")).toBeInTheDocument();
     expect(screen.getByText(/primitive call history/i)).toBeInTheDocument();
     expect(screen.getAllByRole("button").length).toBeGreaterThan(5);
   });

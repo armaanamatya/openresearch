@@ -123,6 +123,25 @@ export function UploadView({
 
   const subagentOptions: SubagentAuth[] = ["anthropic_api", "anthropic_oauth"];
 
+  // F3: widen the model picker when the persisted model isn't in the
+  // backend-supplied list (e.g. a registry alias resolved server-side, or
+  // a value typed via the OAI proxy). Prepend the active model so the
+  // <select> always has a matching <option> — otherwise the controlled
+  // input falls back to the first option and silently changes the user's
+  // choice on first render.
+  const currentModelInList = models.some((m) => m.id === model);
+  const modelOptions = currentModelInList || models.length === 0
+    ? models
+    : [
+        {
+          id: model,
+          label: model.charAt(0).toUpperCase() + model.slice(1),
+          provider: "custom",
+          available: true,
+        },
+        ...models,
+      ];
+
   return (
     <div className="upload-shell">
       <div
@@ -229,12 +248,19 @@ export function UploadView({
               When the list is empty (backend unreachable on the server
               render) we surface the active `model` so the control is
               always selectable. */}
-          {models.length > 0
-            ? models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))
+          {modelOptions.length > 0
+            ? modelOptions.map((m) => {
+                const unavailable = m.available === false;
+                const suffix = unavailable ? " (credentials missing)" : "";
+                const title = unavailable && m.missingCredentials?.length
+                  ? `Missing: ${m.missingCredentials.join(", ")}`
+                  : `${m.provider}${m.paperValidated ? " · paper-validated" : ""}`;
+                return (
+                  <option key={m.id} value={m.id} disabled={unavailable} title={title}>
+                    {m.label}{suffix}
+                  </option>
+                );
+              })
             : (
                 <option key={model} value={model}>
                   {model.charAt(0).toUpperCase() + model.slice(1)}

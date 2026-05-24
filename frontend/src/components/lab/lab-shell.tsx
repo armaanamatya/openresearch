@@ -61,6 +61,8 @@ function WorkflowView({
       runMode={run.runMode}
       isActive={isActive}
       runError={run.error ?? null}
+      sandboxMode={run.sandboxMode ?? null}
+      workerReports={run.payload?.workerReports ?? []}
     />
   );
 }
@@ -87,6 +89,20 @@ function RlmFixtureContent({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function resolveInitialModel(preferred: string, models: ModelChoice[]): string {
+  if (models.length === 0) return preferred;
+  const selected = models.find((candidate) => candidate.id === preferred);
+  if (selected && selected.available !== false) return preferred;
+  const legacyClaudeTarget = preferred === "sonnet" || preferred === "opus"
+    ? models.find((candidate) => candidate.id === "claude-oauth" && candidate.available !== false)
+    : undefined;
+  return (
+    legacyClaudeTarget ??
+    models.find((candidate) => candidate.available !== false) ??
+    models[0]
+  ).id;
+}
+
 export function LabShell({
   initialRun = null,
   initialRecents = [],
@@ -97,7 +113,14 @@ export function LabShell({
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
   const [over, setOver] = useState(false);
-  const [model, setModel] = useState<DemoModelChoice>(() => readUserPrefs().model ?? "sonnet");
+  // Model state. resolveInitialModel reconciles the saved pref against the
+  // backend-supplied availability list — if the persisted model is missing
+  // credentials or absent from the registry, fall back to the first
+  // available model (or, for legacy sonnet/opus, claude-oauth). Keeps the
+  // select from rendering a stale unselectable option.
+  const [model, setModel] = useState<DemoModelChoice>(() =>
+    resolveInitialModel(readUserPrefs().model ?? "sonnet", initialModels)
+  );
 
   // Provider selection state (D3 — persisted to localStorage).
   // If the persisted choice is unavailable per initialAuthStatus, fall back

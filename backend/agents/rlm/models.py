@@ -261,6 +261,45 @@ _BACKEND_ENV_KEY: dict[str, str] = {
     "azure_openai": "AZURE_OPENAI_API_KEY",
 }
 
+_MODEL_LABELS: dict[str, str] = {
+    "gpt-5": "GPT-5",
+    "qwen3-coder": "Qwen3-Coder",
+    "kimi-k2.5": "Kimi K2.5",
+    "claude": "Claude API",
+    "claude-oauth": "Claude OAuth",
+    "qwen3-coder-featherless": "Qwen3-Coder (Featherless)",
+    "azure-gpt-4o": "Azure GPT-4o",
+}
+
+
+def _credential_value(env_var: str | None) -> str:
+    """Read a credential from the real environment or Settings-backed .env.
+
+    ``pydantic-settings`` reads ``.env`` without mutating ``os.environ``. The
+    RLM registry historically read only ``os.environ``, so API keys present in
+    ``.env`` could appear missing to both model resolution and the `/models`
+    availability list. Keep the direct env lookup first, then fall back to the
+    fields Settings already exposes for common providers.
+    """
+    if not env_var:
+        return ""
+    direct = os.environ.get(env_var, "")
+    if direct:
+        return direct
+    try:
+        from backend.config import get_settings
+
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 - settings import must not break registry reads
+        return ""
+    attr = {
+        "ANTHROPIC_API_KEY": "anthropic_api_key",
+        "OPENAI_API_KEY": "openai_api_key",
+        "OPENAI_ADMIN_KEY": "openai_admin_key",
+        "AZURE_OPENAI_API_KEY": "azure_openai_api_key",
+    }.get(env_var)
+    return str(getattr(settings, attr, "") or "") if attr else ""
+
 
 def _env_var_for(backend: str, api_key_env: str | None) -> str | None:
     """The env var holding the API key for *backend*.
@@ -281,7 +320,7 @@ def _inject_api_key(env_var: str | None, kwargs: dict) -> dict:
     """
     out = dict(kwargs)
     if env_var:
-        api_key = os.environ.get(env_var)
+        api_key = _credential_value(env_var)
         if api_key:
             out["api_key"] = api_key
     return out
@@ -317,6 +356,55 @@ def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
     if deployment:
         out["azure_deployment"] = deployment
     return out
+
+
+def _model_missing_credentials(entry: RootModel) -> list[str]:
+    """Return safe, value-free credential labels missing for *entry*."""
+    if entry.rlm_backend == "anthropic-oauth" or entry.sub_backend == "anthropic-oauth":
+        try:
+            from backend.agents.runtime.factory import has_provider_credentials
+
+            if has_provider_credentials("anthropic"):
+                return []
+        except Exception:  # noqa: BLE001 - listing models must stay fail-soft
+            pass
+        return ["ANTHROPIC_API_KEY or Claude OAuth login"]
+
+    required: list[str] = []
+    for backend, env_var in (
+        (entry.rlm_backend, _env_var_for(entry.rlm_backend, entry.api_key_env)),
+        (entry.sub_backend, _env_var_for(entry.sub_backend, entry.api_key_env)),
+    ):
+        if env_var:
+            required.append(env_var)
+        if backend == "azure_openai":
+            required.append("AZURE_OPENAI_ENDPOINT")
+
+    missing: list[str] = []
+    for env_var in dict.fromkeys(required):
+        value = os.environ.get(env_var, "") if env_var == "AZURE_OPENAI_ENDPOINT" else _credential_value(env_var)
+        if not value:
+            missing.append(env_var)
+    return missing
+
+
+def list_root_model_choices() -> list[dict[str, object]]:
+    """Public, secret-free model descriptors for the lab dropdown."""
+    choices: list[dict[str, object]] = []
+    for key, entry in ROOT_MODELS.items():
+        missing = _model_missing_credentials(entry)
+        choices.append(
+            {
+                "id": key,
+                "label": _MODEL_LABELS.get(key, key),
+                "provider": entry.rlm_backend.replace("_", "-"),
+                "modelName": str(entry.backend_kwargs.get("model_name") or ""),
+                "paperValidated": entry.paper_validated,
+                "available": not missing,
+                "missingCredentials": missing,
+            }
+        )
+    return choices
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +543,7 @@ def resolve_root_model(name: str | None) -> RootModel:
         (entry.rlm_backend, "root", root_env),
         (entry.sub_backend, "sub-call", sub_env),
     ):
-        if _env and not os.environ.get(_env):
+        if _env and not _credential_value(_env):
             raise ValueError(
                 f"Root model {name!r} requires the {_backend!r} backend "
                 f"({_role}) but {_env} is not set. "

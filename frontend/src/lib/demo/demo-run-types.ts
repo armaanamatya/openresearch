@@ -8,7 +8,7 @@ export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
-export type DemoModelChoice = "sonnet" | "opus";
+export type DemoModelChoice = string;
 
 export type DemoRunStatus =
   | "queued"
@@ -68,7 +68,31 @@ export interface DemoBenchmarkSummary {
 /** Shape of the enriched payload attached to a run by the backend's _build_payload. */
 export interface LiveDemoRunPayload {
   events?: unknown[];
+  workerReports?: DemoWorkerReport[];
   [key: string]: unknown;
+}
+
+export interface DemoWorkerCommand {
+  command: string;
+  exit_code?: number | null;
+  source?: string;
+}
+
+export interface DemoWorkerReport {
+  report_id?: string;
+  agent_id?: string;
+  model?: string | null;
+  provider?: string | null;
+  status?: string;
+  started_at?: string;
+  finished_at?: string;
+  implemented?: string[];
+  left_undone?: string[];
+  commands?: DemoWorkerCommand[];
+  issues?: string[];
+  procedures_followed?: boolean | null;
+  procedure_notes?: string;
+  error?: string | null;
 }
 
 export interface LiveDemoRunState {
@@ -183,6 +207,35 @@ export interface AuthStatus {
     root_model: string;
     subagent_auth: SubagentAuth;
   };
+}
+
+// ── Runpod status chip (U1) ────────────────────────────────────────────────
+
+export type DemoRunpodStatusKind =
+  | "not_runpod"
+  | "not_yet"
+  | "provisioning"
+  | "ready"
+  | "executing"
+  | "stopping"
+  | "destroyed"
+  | "error";
+
+export interface DemoRunpodStatusResponse {
+  project_id: string;
+  sandbox_mode?: DemoSandboxMode | null;
+  status: DemoRunpodStatusKind;
+  label: string;
+  detail: string;
+  source: "events" | "runpod_api";
+  pod?: {
+    id?: string | null;
+    name?: string | null;
+    desiredStatus?: string | null;
+    currentStatus?: string | null;
+  } | null;
+  updated_at?: string | null;
+  api_error?: string;
 }
 
 export const RUN_MODE_OPTIONS: ReadonlyArray<{

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { LabShell } from "./lab-shell";
@@ -80,5 +80,33 @@ describe("LabShell", () => {
     );
     // RlmLab exposes a stable test id.
     expect(screen.getByTestId("rlm-lab")).toBeInTheDocument();
+  });
+
+  it("selects the first available model when saved preference is unavailable", async () => {
+    window.localStorage.setItem("reprolab:user-prefs", JSON.stringify({ model: "gpt-5" }));
+
+    render(
+      <LabShell
+        initialModels={[
+          {
+            id: "gpt-5",
+            label: "GPT-5",
+            provider: "openai",
+            available: false,
+            missingCredentials: ["OPENAI_API_KEY"]
+          },
+          {
+            id: "claude-oauth",
+            label: "Claude OAuth",
+            provider: "anthropic-oauth",
+            available: true,
+            missingCredentials: []
+          }
+        ]}
+      />
+    );
+
+    const select = screen.getByLabelText("Model") as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("claude-oauth"));
   });
 });

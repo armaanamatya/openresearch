@@ -22,4 +22,8 @@ describe("RlmHeader", () => {
     render(<RlmHeader {...props} costUsd={null} />);
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
   });
+  it("shows runpod visibility before the pod is created", () => {
+    render(<RlmHeader {...props} sandboxMode="runpod" primitiveCalls={[]} />);
+    expect(screen.getByText("runpod: not yet")).toBeInTheDocument();
+  });
 });

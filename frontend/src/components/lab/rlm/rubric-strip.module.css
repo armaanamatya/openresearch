@@ -50,6 +50,13 @@
   text-transform: lowercase;
 }
 
+.emptyHint {
+  flex: 1 1 220px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
 /* ── Progress bar ───────────────────────────────────────────── */
 
 .barBlock {

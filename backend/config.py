@@ -123,20 +123,18 @@ class Settings(BaseSettings):
     environment_build_validation_enabled: bool = True
     environment_build_max_attempts: int = 3
 
-    # Default sandbox mode for the dashboard's "start a run" form.
-    # CLI defaults remain controlled separately by argparse flags.
-    # RunPod is disabled — Docker is the supported execution sandbox — so this
-    # defaults to "docker" rather than "runpod".
-    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "docker"
+    # Default sandbox mode for dashboard requests that omit a sandbox. CLI
+    # defaults remain controlled separately by argparse flags. Local launchers
+    # set this to runpod for GPU-backed dev runs; deployments can set it to
+    # docker or local in env.
+    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
 
-    # Every run is forced onto this sandbox mode regardless of what the client
-    # requested — this is the single point that *guarantees* docker-only
-    # execution: the UI and the request model still carry legacy "runpod"
-    # defaults, and apply_sandbox_override rewrites them here. Defaults to
-    # "docker" because RunPod is disabled; a Docker-less deployment (e.g.
-    # Railway) sets REPROLAB_FORCE_SANDBOX=local to override. Empty disables
-    # the override entirely.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = "docker"
+    # Optional hard override for every run's sandbox mode, regardless of what
+    # the client requested. Empty means "honor the request/default_sandbox".
+    # Deployments that must forbid RunPod should set REPROLAB_FORCE_SANDBOX to
+    # "docker" or "local" explicitly; the code default must stay empty so a
+    # missing/commented .env line does not silently rewrite sandbox=runpod.
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=

@@ -65,7 +65,12 @@ export function RubricStrip({ rubric }: RubricStripProps) {
   }
 
   return (
-    <div className={styles.strip} role="region" aria-label="Rubric score">
+    <div
+      className={styles.strip}
+      role="region"
+      aria-label="Rubric score"
+      title="Rubric score updates when verify_against_rubric or report generation emits scored areas."
+    >
       {/* Current score — large prominent number, count-up animated. */}
       <div className={styles.scoreBlock}>
         <span className={isScored ? styles.scoreValue : styles.scorePlaceholder}>
@@ -73,6 +78,12 @@ export function RubricStrip({ rubric }: RubricStripProps) {
         </span>
         <span className={styles.scoreLabel}>rubric score</span>
       </div>
+
+      {!isScored && (
+        <div className={styles.emptyHint}>
+          Rubric scores appear after baseline implementation, experiment execution, and verification.
+        </div>
+      )}
 
       {/* Progress bar: baseline marker → fill → target marker. */}
       <div className={styles.barBlock}>

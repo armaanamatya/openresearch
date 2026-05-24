@@ -4,7 +4,7 @@ const KEY = "reprolab:user-prefs";
 const PROVIDER_KEY = "reprolab.lab.providerSelection";
 
 export interface UserPrefs {
-  model?: "sonnet" | "opus";
+  model?: string;
   sandbox?: "auto" | "local" | "docker" | "runpod";
   executionMode?: "efficient" | "max";
   splitRatio?: number;

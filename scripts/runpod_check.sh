@@ -63,7 +63,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         # Strip surrounding single or double quotes.
         if [[ "$value" =~ ^\"(.*)\"$ ]]; then value="${BASH_REMATCH[1]}"; fi
         if [[ "$value" =~ ^\'(.*)\'$ ]]; then value="${BASH_REMATCH[1]}"; fi
-        export "${key}=${value}"
+        if [[ -z "${!key+x}" ]]; then
+            export "${key}=${value}"
+        fi
     fi
 done < "${ENV_FILE}"
 

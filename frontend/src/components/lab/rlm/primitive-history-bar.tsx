@@ -31,12 +31,19 @@ export function PrimitiveHistoryBar({ calls }: PrimitiveHistoryBarProps) {
         className={styles.toggle}
         onClick={() => setCollapsed((c) => !c)}
         aria-expanded={!collapsed}
+        title="Primitive calls are the tool invocations made by the root REPL. Long gaps are normal while a primitive is in flight."
       >
         {collapsed ? "▸" : "▾"} primitive call history —{" "}
-        {calls.length} calls
+        {calls.length > 0 ? `${calls.length} calls` : "waiting for first primitive"}
       </button>
 
-      {!collapsed && (
+      {!collapsed && calls.length === 0 && (
+        <p className={styles.empty}>
+          Primitive calls appear after the root starts reading the paper and selecting tools.
+        </p>
+      )}
+
+      {!collapsed && calls.length > 0 && (
         <ol className={styles.list} aria-label="Primitive call history">
           {reversedCalls.map((call, idx) => (
             <li

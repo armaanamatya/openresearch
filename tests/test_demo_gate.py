@@ -39,6 +39,16 @@ def test_original_request_not_mutated():
     assert request.sandbox == "runpod"
 
 
+def test_force_sandbox_default_is_empty():
+    """A missing/commented env var must not silently force Docker."""
+    from backend.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.force_sandbox == ""
+    assert settings.default_sandbox == "runpod"
+
+
 # --------------------------------------------------------------------------- #
 # apply_provider_override unit tests
 # --------------------------------------------------------------------------- #
