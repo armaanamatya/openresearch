@@ -666,6 +666,57 @@ def _extract_arxiv_id(project_id: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _derive_arxiv_id_from_disk(project_dir: Path) -> str | None:
+    """Recover the arXiv ID from on-disk artifacts written during ingest.
+
+    Belt-and-suspenders fallback for callers of ``run_with_sdk`` that do not
+    thread ``RunContext.arxiv_id`` through.  Resolution order:
+
+    1. ``artifact_index.json`` → ``paper.arxiv_id`` (most authoritative)
+    2. ``demo_status.json``    → ``sourceUrl`` (``arxiv.org/abs/<id>`` URL)
+    3. ``demo_status.json``    → ``sourceLabel`` (e.g. ``arxiv_2605.15155.pdf``)
+    4. ``None`` — no ID recoverable; caller proceeds without an override.
+
+    Note: ``run_pipeline_rlm`` already reads these files and sets
+    ``RunContext.arxiv_id``, which is passed as the ``arxiv_id`` kwarg.  This
+    function is only reached when that path is absent (e.g. direct callers
+    outside the RLM orchestrator, unit-test harnesses).
+    """
+    if project_dir is None:
+        return None
+
+    # 1. artifact_index.json → paper.arxiv_id
+    ai_path = project_dir / "artifact_index.json"
+    if ai_path.exists():
+        try:
+            data = json.loads(ai_path.read_text(encoding="utf-8", errors="replace"))
+            aid = (data.get("paper") or {}).get("arxiv_id")
+            if aid and _ARXIV_ID_RE.search(str(aid)):
+                return str(aid).strip()
+        except Exception:  # noqa: BLE001 — corrupt JSON, skip silently
+            pass
+
+    # 2 & 3. demo_status.json → sourceUrl or sourceLabel
+    ds_path = project_dir / "demo_status.json"
+    if ds_path.exists():
+        try:
+            data = json.loads(ds_path.read_text(encoding="utf-8", errors="replace"))
+            # 2. sourceUrl: "https://arxiv.org/abs/2605.15155"
+            url = data.get("sourceUrl", "") or ""
+            m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4,5}\.\d{4,5})", url)
+            if m:
+                return m.group(1)
+            # 3. sourceLabel: "arxiv_2604.01733.pdf" or similar
+            label = data.get("sourceLabel", "") or ""
+            m = _ARXIV_ID_RE.search(label)
+            if m:
+                return m.group(1)
+        except Exception:  # noqa: BLE001 — corrupt JSON, skip silently
+            pass
+
+    return None
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
@@ -795,12 +846,19 @@ async def run_with_sdk(
     repair_context: dict[str, Any] | None = None,
     sandbox_mode: object = None,
     gpu_mode: object = None,
+    arxiv_id: str | None = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
     When ``repair_context`` is set, switches the agent to fix-existing-code mode:
     the prompt instructs it to diagnose the failure and correct the code in place
     rather than rewriting from scratch.
+
+    ``arxiv_id`` — when set (threaded from ``RunContext.arxiv_id`` by the RLM
+    primitives layer), takes precedence over ``_extract_arxiv_id(project_id)``
+    for the ``docs/papers/<id>.yaml`` override lookup.  This is the P0 fix:
+    arXiv-sourced runs receive hashed project IDs (``prj_<digest>``) that the
+    regex cannot parse, so the override was dead code on every real arXiv run.
     """
     from backend.agents.runtime.invoke import collect_agent_text
 
@@ -816,9 +874,17 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
-    arxiv_id = _extract_arxiv_id(project_id)
+    # P0: prefer the explicit arxiv_id (threaded from RunContext.arxiv_id, which
+    # was resolved from artifact_index.json / demo_status.json by run_pipeline_rlm)
+    # over the fallback regex.  The regex is kept as a fallback for legacy
+    # non-hashed project IDs that happen to embed an arXiv ID shaped string.
+    # When neither the explicit kwarg nor the regex succeeds (hashed project_id
+    # with no ctx.arxiv_id threaded through), also try reading from on-disk
+    # artifacts so direct callers of run_with_sdk without a RunContext still get
+    # the override (belt-and-suspenders; the primary path is ctx.arxiv_id → kwarg).
+    _resolved_arxiv_id = arxiv_id or _extract_arxiv_id(project_id) or _derive_arxiv_id_from_disk(project_dir)
     sandbox_guidance = _compute_constraint_guidance(
-        sandbox_mode, gpu_mode, project_dir=project_dir, arxiv_id=arxiv_id
+        sandbox_mode, gpu_mode, project_dir=project_dir, arxiv_id=_resolved_arxiv_id
     )
 
     if repair_context:

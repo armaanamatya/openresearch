@@ -339,6 +339,59 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     return tools, "real (binding)"
 
 
+def _extract_arxiv_id_from_project_dir(project_dir: Path) -> str | None:
+    """Derive the bare arXiv ID (e.g. ``"2605.15155"``) from on-disk artifacts.
+
+    arXiv-sourced runs receive a hashed project_id (``prj_<sha256[:16]>``)
+    that encodes no ID-shaped string, so the ``_extract_arxiv_id`` regex in
+    ``baseline_implementation.py`` always returns ``None`` for them.  This
+    helper reads the on-disk files produced during ingest to recover the
+    real ID so ``docs/papers/<id>.yaml`` overrides can fire.
+
+    Resolution order (most-authoritative first):
+    1. ``artifact_index.json`` → ``paper.arxiv_id``
+    2. ``demo_status.json``    → ``sourceUrl`` (``arxiv.org/abs/<id>`` URL)
+    3. ``demo_status.json``    → ``sourceLabel`` (``arxiv_2605.15155.pdf`` pattern)
+    4. ``None`` — no arXiv ID recoverable; caller falls back to regex.
+
+    The regex used here is the same ``DDDD.DDDDD?`` pattern as
+    ``baseline_implementation._ARXIV_ID_RE``.
+    """
+    import re as _re
+    _ARXIV_RE = _re.compile(r"(\d{4,5}\.\d{4,5})")
+
+    # 1. artifact_index.json → paper.arxiv_id (most authoritative)
+    ai_path = project_dir / "artifact_index.json"
+    if ai_path.exists():
+        try:
+            data = json.loads(ai_path.read_text(encoding="utf-8", errors="replace"))
+            aid = (data.get("paper") or {}).get("arxiv_id")
+            if aid and _ARXIV_RE.search(str(aid)):
+                return str(aid).strip()
+        except Exception:  # noqa: BLE001 — corrupt JSON, skip
+            pass
+
+    # 2 & 3. demo_status.json → sourceUrl or sourceLabel
+    ds_path = project_dir / "demo_status.json"
+    if ds_path.exists():
+        try:
+            data = json.loads(ds_path.read_text(encoding="utf-8", errors="replace"))
+            # 2. sourceUrl: "https://arxiv.org/abs/2605.15155"
+            url = data.get("sourceUrl", "") or ""
+            m = _re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4,5}\.\d{4,5})", url)
+            if m:
+                return m.group(1)
+            # 3. sourceLabel: "arxiv_2604.01733.pdf" or similar
+            label = data.get("sourceLabel", "") or ""
+            m = _ARXIV_RE.search(label)
+            if m:
+                return m.group(1)
+        except Exception:  # noqa: BLE001 — corrupt JSON, skip
+            pass
+
+    return None
+
+
 def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
     """Assemble the offloaded RLM ``context`` dict from the workspace claim map.
 
@@ -642,6 +695,18 @@ async def run_pipeline_rlm(
     else:
         _scope_spec = None
 
+    # Recover the arXiv ID from on-disk artifacts so docs/papers/<id>.yaml
+    # overrides fire even when project_id is a hashed `prj_<digest>` string.
+    # Falls back to the regex over project_id for legacy non-hashed IDs.
+    # See _extract_arxiv_id_from_project_dir for resolution order.
+    from backend.agents.baseline_implementation import _extract_arxiv_id as _regex_extract
+    _arxiv_id: str | None = (
+        _extract_arxiv_id_from_project_dir(project_dir)
+        or _regex_extract(project_id)
+    )
+    if _arxiv_id:
+        logger.info("run_pipeline_rlm[%s]: arxiv_id=%s", project_id, _arxiv_id)
+
     ctx = RunContext(
         project_id=project_id,
         project_dir=project_dir,
@@ -672,6 +737,8 @@ async def run_pipeline_rlm(
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
         vram_override=_vram_override,
         scope_spec=_scope_spec,
+        arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
+                             # docs/papers/<id>.yaml even on hashed project IDs.
     )
 
     # 5. Primitives — the real binding or the stub provider.

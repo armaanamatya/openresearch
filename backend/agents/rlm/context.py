@@ -57,6 +57,11 @@ class RunContext:
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements
     scope_spec: Any = None  # ScopeSpec — typed via Any to avoid a top-level import cycle;
                             # set by run.py / rdr/run.py from REPROLAB_SCOPE_SPEC_JSON.
+    arxiv_id: str | None = None  # Bare arXiv ID (e.g. "2605.15155") when known; set by
+                                 # run_pipeline_rlm from artifact_index.json / demo_status.json
+                                 # so implement_baseline can route docs/papers/<id>.yaml even
+                                 # when project_id is a hashed `prj_<digest>` string that the
+                                 # _extract_arxiv_id regex cannot parse.
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.
