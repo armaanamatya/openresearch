@@ -717,11 +717,54 @@ def _derive_arxiv_id_from_disk(project_dir: Path) -> str | None:
     return None
 
 
+_BUDGET_AWARENESS_BLOCK_TEMPLATE = """
+EXECUTION-BUDGET AWARENESS — pick training scale that fits
+
+You have approximately {budget_s} seconds of wall-clock time left for the
+sandbox container to run train.py + finish writing metrics.json. When the
+budget is exhausted the container is killed and any in-flight epochs are
+lost — metrics.json never gets written, the rubric scores 0, and your work
+ends up looking like a stub.
+
+Rules:
+  - Sum the wall-clock time of every experiment you plan to run inside the
+    container (data download + training + figure render) and target AT MOST
+    half of the budget above. The other half is reserved for the sub-agent
+    bootstrap, image build, container startup, and metrics emission.
+  - When CPU is the runtime (torch.cuda.is_available() == False) and the
+    budget is under ~1000 s, pick the smoke profile: every experiment uses a
+    tight max_steps (e.g. 40-80 steps per optimizer), 1-3 epochs, and a
+    minibatch that fits comfortably in 4 GiB RAM. The point is real numbers
+    on a smaller scale — not paper-faithful epochs.
+  - When CPU and the budget exceeds ~2000 s, scale closer to the paper's
+    full epochs but cap individual datasets that would dominate (e.g. cap
+    IMDB to 5000 reviews; cap CIFAR-10 to 10 K samples).
+  - Always emit a partial metrics.json eagerly — write what you have after
+    each experiment finishes so a mid-script kill still leaves measurable
+    output for the rubric.
+
+If the paper has multiple experiments and you cannot run them all within
+the budget, run a subset and record the omitted experiments in
+metrics.json["omitted"] with a one-line reason each. Honest partial
+coverage beats a timed-out empty metrics.json.
+"""
+
+
+def _budget_awareness_block(remaining_s: float | None) -> str:
+    """Return the budget-awareness prompt block, or an empty string when no budget is known."""
+    if remaining_s is None or remaining_s <= 0:
+        return ""
+    # Round to nearest 10 s — the LLM does not need finer precision.
+    rounded = int(remaining_s // 10) * 10
+    return "\n" + _BUDGET_AWARENESS_BLOCK_TEMPLATE.format(budget_s=rounded) + "\n"
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
     project_dir: Path | None = None,
     arxiv_id: str | None = None,
+    remaining_s: float | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -767,9 +810,18 @@ def _compute_constraint_guidance(
     # 1. NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
     # before the runtime-detection nuance.
     # 2. RUNTIME COMPUTE DETECTION — always-on.
+    # 2.25. EXECUTION-BUDGET AWARENESS — only when remaining_s is provided
+    # (i.e. the calling primitive knows the run-budget deadline). Without this,
+    # the agent has previously picked epoch counts that overran the budget
+    # without any wall-clock signal.
     # 2.5. PER-MODEL METRICS — multi-scale-paper output shape (Lane γ), follows
     # RUNTIME_DETECTION so the agent understands compute constraints first.
-    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _PER_MODEL_METRICS_BLOCK
+    guidance = (
+        _NO_STUB_BLOCK
+        + _RUNTIME_DETECTION_BLOCK
+        + _budget_awareness_block(remaining_s)
+        + _PER_MODEL_METRICS_BLOCK
+    )
 
     # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:
@@ -847,6 +899,7 @@ async def run_with_sdk(
     sandbox_mode: object = None,
     gpu_mode: object = None,
     arxiv_id: str | None = None,
+    remaining_s: float | None = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -884,7 +937,8 @@ async def run_with_sdk(
     # the override (belt-and-suspenders; the primary path is ctx.arxiv_id → kwarg).
     _resolved_arxiv_id = arxiv_id or _extract_arxiv_id(project_id) or _derive_arxiv_id_from_disk(project_dir)
     sandbox_guidance = _compute_constraint_guidance(
-        sandbox_mode, gpu_mode, project_dir=project_dir, arxiv_id=_resolved_arxiv_id
+        sandbox_mode, gpu_mode, project_dir=project_dir,
+        arxiv_id=_resolved_arxiv_id, remaining_s=remaining_s,
     )
 
     if repair_context:

@@ -644,7 +644,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             runtime=ctx.runtime, model=ctx.agent_model,
             repair_context=repair_context,
             sandbox_mode=ctx.sandbox_mode,
-            gpu_mode=getattr(ctx, "gpu_mode", None))
+            gpu_mode=getattr(ctx, "gpu_mode", None),
+            arxiv_id=getattr(ctx, "arxiv_id", None),
+            # Budget awareness: hand the agent the same remaining_s the
+            # run_experiment primitive uses, so its train.py can scale to fit.
+            remaining_s=ctx.remaining_s(),
+        )
 
     timeout = _timeout_for(ctx, 3600)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
