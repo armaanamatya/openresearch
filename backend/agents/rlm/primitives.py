@@ -125,7 +125,15 @@ METRICS_FILENAME = "metrics.json"
 # resource bounds (network/memory/cpu) already come from SandboxConfig
 # defaults; this is the time bound. Phase 3 (#60) should source it from
 # settings / ctx rather than this module constant.
-_EXEC_TIMEOUT_SECONDS = 3600
+_EXEC_TIMEOUT_SECONDS = 14400  # 4 hr — generous per-command cap so long-running
+                                # train.py runs (multi-experiment papers on CPU,
+                                # or large epoch counts on a single GPU) aren't
+                                # cut off by the per-command guard.  The outer
+                                # ctx.remaining_s() wall-clock still binds the
+                                # whole run; this is just the inner ceiling.
+                                # Override via REPROLAB_RUN_EXPERIMENT_TIMEOUT_S
+                                # in run_experiment if a single run truly needs
+                                # a tighter bound.
 
 # CUDA OOM detection: markers observed in PyTorch / cuBLAS logs (spec 2026-05-23 §OOM).
 # Pattern set is intentionally tight to avoid false positives on unrelated CUDA errors.
@@ -651,7 +659,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             remaining_s=ctx.remaining_s(),
         )
 
-    timeout = _timeout_for(ctx, 3600)
+    # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
+    # The outer ctx.remaining_s() wall-clock still binds the whole run.
+    timeout = _timeout_for(ctx, 14400)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
