@@ -913,10 +913,20 @@ def _persist_experiment_result(
     # A1: emit experiment_completed so the Lane γ multi-model UI panel fires on
     # real runs (foldExperimentCompleted in use-rlm-run.ts was dead code until
     # this event was wired on the backend side).  Fail-soft via _emit_dashboard_event.
+    #
+    # 2026-05-24: include ``error`` and a 1.5 KB logs tail on the event so the
+    # UI and a human debugger can see *why* a failure happened without having
+    # to ssh into the run dir. Previously the SSE event carried only
+    # success/metrics/per_model — failures looked identical regardless of
+    # whether the agent forgot to write train.py, the container timed out, or
+    # the eval lacked an API key.
+    _logs_tail = (result.get("logs") or "")[-1500:]
     _emit_dashboard_event(ctx, event_type="experiment_completed", payload={
         "success": result.get("success", False),
         "metrics": result.get("metrics", {}),
         "per_model": result.get("metrics", {}).get("per_model"),  # None if absent — fine
+        "error": result.get("error") or None,
+        "logs_tail": _logs_tail or None,
     })
     return result
 
@@ -1190,9 +1200,22 @@ def run_experiment(
                     ),
                 ).result(timeout=timeout)
             except concurrent.futures.TimeoutError:
+                # _execute_in_sandbox was cancelled before it could return its
+                # _combine_command_output(results) — recover whatever the
+                # LocalDocker backend streamed to disk for this run_id so the
+                # agent (and a human debugger) still sees what failed.
+                recovered_logs = ""
+                try:
+                    artifact_root = Path(code_path) / "outputs" / run_id
+                    log_path = artifact_root / "exec.log"
+                    if log_path.exists():
+                        recovered_logs = log_path.read_text(encoding="utf-8", errors="replace")[-32000:]
+                except OSError:
+                    pass
                 result = {
                     "success": False,
                     "metrics": {},
+                    "logs": recovered_logs,
                     "error": (
                         f"run_experiment: timed out after {timeout:.0f} s"
                         if timeout is not None

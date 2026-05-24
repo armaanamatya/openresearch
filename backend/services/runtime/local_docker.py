@@ -214,37 +214,154 @@ class LocalDockerBackend(RuntimeBackend):
         )
 
     async def exec(self, sandbox: Sandbox, command: str, timeout: int) -> ExecResult:
+        """Run `command` in the container, streaming output to a host log file.
+
+        Mirroring stdout/stderr to ``<artifact_root>/exec.log`` as each chunk
+        arrives means that even if this coroutine is cancelled (outer timeout,
+        wall-clock deadline) the host file retains everything captured so far.
+        Without this, a timed-out experiment leaves zero log evidence on disk —
+        the very situation the calling primitive's docstring warns about.
+
+        On TimeoutError we read the partial log back into ``stdout`` so the
+        caller's ExecResult still carries the meaningful tail.
+
+        The streaming path requires the low-level ``client.api`` surface
+        (real ``docker.from_env()`` client). Test doubles that only expose
+        ``containers.exec_run`` are detected by the absence of ``api`` and
+        fall back to the original blocking call — they don't need streaming
+        because they don't time out.
+        """
         started_at = datetime.now(timezone.utc)
         container = await self._get_container(sandbox)
+
+        artifact_root = sandbox.config.resolved_artifact_root()
+        log_path: Path | None = None
         try:
-            raw = await asyncio.wait_for(
-                asyncio.to_thread(
-                    container.exec_run,
-                    ["/bin/sh", "-lc", command],
-                    stdout=True,
-                    stderr=True,
-                    demux=True,
-                    workdir=sandbox.config.workdir,
-                ),
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            log_path = artifact_root / "exec.log"
+        except OSError:  # noqa: BLE001 — log-file is best-effort
+            log_path = None
+
+        api = getattr(self.client, "api", None)
+        use_streaming = api is not None and hasattr(api, "exec_create")
+
+        if not use_streaming:
+            # Legacy / fake-client path: original buffer-everything exec_run.
+            # No timeout-recovery file capture — fake clients don't time out.
+            try:
+                raw = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        container.exec_run,
+                        ["/bin/sh", "-lc", command],
+                        stdout=True,
+                        stderr=True,
+                        demux=True,
+                        workdir=sandbox.config.workdir,
+                    ),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                finished_at = datetime.now(timezone.utc)
+                return ExecResult(
+                    command=command,
+                    exit_code=None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=(finished_at - started_at).total_seconds(),
+                    timed_out=True,
+                    cause_kind=RuntimeCauseKind.exec_timeout,
+                    stderr=f"Command timed out after {timeout} seconds.",
+                )
+            except Exception as exc:  # pragma: no cover
+                raise _map_docker_error(exc, RuntimeCauseKind.command_failed) from exc
+
+            finished_at = datetime.now(timezone.utc)
+            exit_code, stdout, stderr = _decode_exec_result(raw)
+            return ExecResult(
+                command=command,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_seconds=(finished_at - started_at).total_seconds(),
+                cause_kind=None if exit_code == 0 else RuntimeCauseKind.command_failed,
+            )
+
+        def _stream_to_file() -> tuple[int | None, str, str]:
+            """Run the exec, tee chunks to log_path, return (exit, stdout, stderr)."""
+            exec_meta = api.exec_create(
+                container.id,
+                ["/bin/sh", "-lc", command],
+                stdout=True,
+                stderr=True,
+                workdir=sandbox.config.workdir,
+            )
+            exec_id = exec_meta["Id"]
+            out_chunks: list[bytes] = []
+            err_chunks: list[bytes] = []
+            stream = api.exec_start(exec_id, stream=True, demux=True)
+            fh = None
+            try:
+                if log_path is not None:
+                    fh = log_path.open("ab")
+                    fh.write(f"\n>>> {command}\n".encode("utf-8"))
+                for chunk in stream:
+                    if isinstance(chunk, tuple):
+                        out_b, err_b = chunk
+                    else:
+                        out_b, err_b = chunk, None
+                    if out_b:
+                        out_chunks.append(out_b)
+                        if fh is not None:
+                            fh.write(out_b)
+                            fh.flush()
+                    if err_b:
+                        err_chunks.append(err_b)
+                        if fh is not None:
+                            fh.write(err_b)
+                            fh.flush()
+            finally:
+                if fh is not None:
+                    fh.close()
+            info = api.exec_inspect(exec_id)
+            return (
+                info.get("ExitCode"),
+                _decode_bytes(b"".join(out_chunks)),
+                _decode_bytes(b"".join(err_chunks)),
+            )
+
+        try:
+            exit_code, stdout, stderr = await asyncio.wait_for(
+                asyncio.to_thread(_stream_to_file),
                 timeout=timeout,
             )
         except TimeoutError:
             finished_at = datetime.now(timezone.utc)
+            # The worker thread keeps writing until the container dies; read
+            # what's been flushed so far. If the log is empty we still surface
+            # the timeout reason.
+            captured = ""
+            if log_path is not None and log_path.exists():
+                try:
+                    captured = log_path.read_text(encoding="utf-8", errors="replace")[-32000:]
+                except OSError:
+                    captured = ""
             return ExecResult(
                 command=command,
                 exit_code=None,
+                stdout=captured,
+                stderr=f"Command timed out after {timeout} seconds.",
                 started_at=started_at,
                 finished_at=finished_at,
                 duration_seconds=(finished_at - started_at).total_seconds(),
                 timed_out=True,
                 cause_kind=RuntimeCauseKind.exec_timeout,
-                stderr=f"Command timed out after {timeout} seconds.",
             )
         except Exception as exc:  # pragma: no cover - docker-specific branches
             raise _map_docker_error(exc, RuntimeCauseKind.command_failed) from exc
 
         finished_at = datetime.now(timezone.utc)
-        exit_code, stdout, stderr = _decode_exec_result(raw)
         return ExecResult(
             command=command,
             exit_code=exit_code,
