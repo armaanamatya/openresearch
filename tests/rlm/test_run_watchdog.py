@@ -61,7 +61,7 @@ def test_from_env_overrides(monkeypatch) -> None:
 def test_from_env_ignores_junk(monkeypatch) -> None:
     monkeypatch.setenv("REPROLAB_WATCHDOG_WARN_SECONDS", "not-a-number")
     c = rw.WatchdogConfig.from_env()
-    assert c.warn_after_seconds == 300.0  # default preserved
+    assert c.warn_after_seconds == 600.0  # default preserved (10 min)
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +110,15 @@ def test_all_signals_fresh_ok(tmp_path: Path) -> None:
         p = artifact_root / fname
         p.write_text("x")
         os.utime(p, (now, now - 10))  # 10 s old
+    # SSE event filter now requires a MEANINGFUL event (not heartbeat).
+    import json
+    from datetime import datetime, timezone
     sse = project_dir / "dashboard_events.jsonl"
-    sse.write_text("x")
+    sse.write_text(json.dumps({
+        "event": "primitive_call",
+        "primitive": "understand_section",  # NOT 'heartbeat' — meaningful
+        "ts": datetime.fromtimestamp(now - 5, tz=timezone.utc).isoformat(),
+    }) + "\n")
     os.utime(sse, (now, now - 5))
 
     report = rw.collect_staleness(
@@ -135,9 +142,15 @@ def test_any_one_signal_fresh_keeps_ok(tmp_path: Path) -> None:
         p = artifact_root / fname
         p.write_text("x")
         os.utime(p, (now, now - 3600))
-    # One fresh signal
+    # One fresh signal — and it MUST be a meaningful (non-heartbeat) event.
+    import json
+    from datetime import datetime, timezone
     sse = project_dir / "dashboard_events.jsonl"
-    sse.write_text("x")
+    sse.write_text(json.dumps({
+        "event": "primitive_call",
+        "primitive": "implement_baseline",
+        "ts": datetime.fromtimestamp(now - 5, tz=timezone.utc).isoformat(),
+    }) + "\n")
     os.utime(sse, (now, now - 5))
 
     report = rw.collect_staleness(
