@@ -101,21 +101,35 @@ def _api_key_from_env() -> str | None:
 
 
 def _parse_age_seconds(created_at: str | None) -> int | None:
-    """Parse RunPod's ISO timestamp into an age in seconds.
+    """Parse RunPod's createdAt timestamp into an age in seconds.
 
-    Returns None on any parse failure (RunPod has changed timestamp shapes
-    historically — fail-soft instead of raising).
+    RunPod returns at least two shapes historically:
+      * ISO 8601:                 "2026-05-24T19:59:35.841Z"
+      * Go time.String()-like:    "2026-05-24 19:59:35.841 +0000 UTC"
+
+    Returns None on any parse failure (fail-soft — the sweeper should never
+    raise just because the timestamp shape drifted).
     """
     if not created_at:
         return None
     from datetime import datetime, timezone
+    raw = created_at.strip()
+    # Strip the trailing " UTC" suffix (Go-style); the offset before it
+    # (e.g. " +0000") is the authoritative tz marker.
+    if raw.endswith(" UTC"):
+        raw = raw[: -len(" UTC")].strip()
+    # Convert Go's " +0000" / " -0500" offsets to ISO's "+00:00" form.
+    # Pattern is exactly " ±HHMM" at the tail.
+    import re as _re
+    raw = _re.sub(r"\s+([+-])(\d{2})(\d{2})$", r"\1\2:\3", raw)
+    # Some payloads use "Z" instead of an explicit offset.
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    # If still no offset at the tail, assume UTC (RunPod's documented default).
+    if not _re.search(r"[+\-]\d{2}:\d{2}$", raw):
+        raw = raw + "+00:00"
     try:
-        normalized = created_at.rstrip("Z")
-        if "+" not in normalized and "-" not in normalized[10:]:
-            normalized += "+00:00"
-        elif normalized.endswith("UTC"):
-            normalized = normalized[:-3].strip() + "+00:00"
-        dt = datetime.fromisoformat(normalized)
+        dt = datetime.fromisoformat(raw)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int((datetime.now(timezone.utc) - dt).total_seconds())

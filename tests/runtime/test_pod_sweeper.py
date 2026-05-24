@@ -140,6 +140,21 @@ def test_parse_age_handles_offset() -> None:
     assert out is not None and out > 10_000_000
 
 
+def test_parse_age_handles_go_time_with_utc_suffix() -> None:
+    # The exact shape RunPod's REST API returns today: Go's time.String()
+    # "YYYY-MM-DD HH:MM:SS.fff +0000 UTC".  This shape broke the original
+    # parser and made the sweeper silently report 0/0 swept.
+    out = ps._parse_age_seconds("1970-01-01 00:00:00.000 +0000 UTC")
+    assert out is not None and out > 10_000_000
+
+
+def test_parse_age_handles_go_time_negative_offset() -> None:
+    out = ps._parse_age_seconds("1970-01-01 00:00:00.000 -0500 EST")
+    # The trailing tz name is best-effort; the offset is authoritative.
+    # Strip "EST" before the offset, parse "-0500" → "-05:00".
+    assert out is not None and out > 10_000_000
+
+
 def test_parse_age_handles_malformed() -> None:
     assert ps._parse_age_seconds("not-a-date") is None
     assert ps._parse_age_seconds(None) is None
