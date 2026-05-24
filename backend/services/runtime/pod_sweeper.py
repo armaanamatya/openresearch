@@ -114,13 +114,12 @@ def _parse_age_seconds(created_at: str | None) -> int | None:
         return None
     from datetime import datetime, timezone
     raw = created_at.strip()
-    # Strip the trailing " UTC" suffix (Go-style); the offset before it
-    # (e.g. " +0000") is the authoritative tz marker.
-    if raw.endswith(" UTC"):
-        raw = raw[: -len(" UTC")].strip()
-    # Convert Go's " +0000" / " -0500" offsets to ISO's "+00:00" form.
-    # Pattern is exactly " ±HHMM" at the tail.
     import re as _re
+    # Strip any trailing 3-or-4-letter timezone abbreviation that Go's
+    # time.String() appends after the offset (UTC, EST, PDT, etc.).  The
+    # numeric offset that precedes it is authoritative.
+    raw = _re.sub(r"\s+[A-Z]{2,5}$", "", raw)
+    # Convert Go's " +0000" / " -0500" offsets to ISO's "+00:00" form.
     raw = _re.sub(r"\s+([+-])(\d{2})(\d{2})$", r"\1\2:\3", raw)
     # Some payloads use "Z" instead of an explicit offset.
     if raw.endswith("Z"):
