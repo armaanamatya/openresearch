@@ -542,6 +542,42 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
 )
 
 
+_RUBRIC_GUARD_BLOCK = (
+    "\n\nSELF-VALIDATING RUBRIC GUARD — always-on:\n"
+    "At the END of train.py (after writing metrics.json) call:\n"
+    "  from rubric_guard import assert_metrics_schema\n"
+    "  assert_metrics_schema(\n"
+    "      metrics,\n"
+    "      required_keys=[<dotted keys the paper rubric inspects>],\n"
+    "      required_artifacts=[<filenames or globs the rubric grader reads>],\n"
+    "      artifact_dir=os.environ.get('OUTPUT_DIR', '/artifacts'),\n"
+    "  )\n"
+    "The guard raises `RubricGuardFailure` (an AssertionError subclass) with a\n"
+    "structured JSON detail if any required key is missing from `metrics` OR any\n"
+    "required artifact does not exist under `artifact_dir`. That exception text\n"
+    "becomes the next iteration's `repair_context` — the more precise the error,\n"
+    "the faster you can repair the gap.\n"
+    "\n"
+    "Required keys / artifacts come from the paper rubric. Derive them from\n"
+    "context['paper_targets'] / docs/papers/<arxiv_id>.yaml when present, else\n"
+    "pick the minimal set the rubric's leaf descriptions explicitly name. Common\n"
+    "always-on artifacts: README.md, training_curves.json, config_used.json,\n"
+    "fig_*.png. Common always-on keys: every leaf metric the paper headlines\n"
+    "(e.g. 'mnist_baseline_final_acc', 'per_model').\n"
+    "\n"
+    "ALSO: emit `rubric_guard.py` as a TOP-LEVEL FILE under code/ alongside\n"
+    "train.py. Paste the module's source verbatim from\n"
+    "`backend/agents/rlm/rubric_guard.py` — it has zero non-stdlib deps so the\n"
+    "copy-and-paste route always works under any sandbox. Do NOT add a project\n"
+    "import path hack; one file at code/rubric_guard.py is enough for\n"
+    "`from rubric_guard import assert_metrics_schema` to resolve.\n"
+    "\n"
+    "The guard is unconditional — even when the run is a smoke-test, schema\n"
+    "completeness must hold; a smoke-test that writes 1 sample is fine, a\n"
+    "smoke-test that writes 0 keys is not.\n"
+)
+
+
 _EAGER_METRICS_BLOCK = (
     "\n\nEAGER METRICS EMISSION — always-on:\n"
     "Write `metrics.json` AS YOU GO, not just at the end.  Whenever a sub-experiment "
@@ -1019,6 +1055,13 @@ def _compute_constraint_guidance(
     # 5.7. Artifact completeness — always-on. Low-weight rubric area but free
     # to nail. Asks for README, figures, config_used.json, per-step curves.
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
+
+    # 5.8. Self-validating rubric guard — always-on. The agent's own train.py
+    # imports `rubric_guard.assert_metrics_schema` and calls it at the end of
+    # training. A missing key / missing artifact raises RubricGuardFailure
+    # whose text becomes the next iteration's repair_context — a loud, precise
+    # failure signal before the grader runs.
+    guidance += _RUBRIC_GUARD_BLOCK
 
     # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)

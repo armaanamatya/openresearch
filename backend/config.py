@@ -185,6 +185,28 @@ class Settings(BaseSettings):
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
 
+    # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
+    # When the root model calls FINAL_VAR but the latest rubric overall_score
+    # is below target_score AND the run has not yet attempted at least this
+    # many iterations, the orchestrator refuses the FINAL_VAR, emits a
+    # `run_warning` SSE event, and forces the loop to continue so the root
+    # has a real chance to call propose_improvements + implement_baseline
+    # again with repair_context. Wall-clock takes precedence: when the
+    # remaining budget is below the floor (≤60s), the policy is bypassed
+    # and a partial report is shipped honestly.
+    #   0 — disables the policy (any FINAL_VAR is accepted).
+    #   2 (default) — at least two rubric-aware attempts before bailing out.
+    min_rubric_iterations: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description=(
+            "Force the root model to attempt at least this many iterations "
+            "before FINAL_VAR is accepted when the rubric score is below "
+            "target_score. 0 disables. Bypassed when wall-clock <= 60s."
+        ),
+    )
+
     # --- Dynamic GPU selection (spec 2026-05-23) ---
     dynamic_gpu_enabled: bool = Field(default=True, description="Wire paper hardware clues to RunPod SKU choice")
     force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")

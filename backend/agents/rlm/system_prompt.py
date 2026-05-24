@@ -196,6 +196,22 @@ FALLBACK:
   If the REPL state is lost before you can serialise, use:
     FINAL("FAILED: <reason>")
   This is the fallback only — prefer `FINAL_VAR` always.
+
+FORCED-ITERATION POLICY:
+  When the latest `verify_against_rubric` returned `overall_score < target_score`
+  AND the iteration floor has not yet been reached, `FINAL_VAR` is REFUSED.
+  The REPL prints a "Variable '<name>' not found — RLM forced-iteration policy
+  is blocking FINAL_VAR" message naming the rubric numbers and a concrete next
+  step. When you see this message, DO NOT retry `FINAL_VAR` with a different
+  variable name — the variable is fine; the policy is blocking. Instead:
+    1. Call `propose_improvements(current_results, rubric_scores, k=...)`
+       to generate candidate fixes for the weak areas.
+    2. Call `implement_baseline(plan)` with `plan["repair_context"]` set to
+       the latest verify_against_rubric result (especially `weak_leaves`).
+    3. Call `run_experiment(code_path, env_id)` again.
+    4. Re-score with `verify_against_rubric` — only THEN try `FINAL_VAR` again.
+  The policy bypasses when wall-clock <= 60s remain (better to ship partial
+  than time out), so a near-timeout `FINAL_VAR` always works.
 """
 
 _DECOMPOSITION_EXAMPLE = """\

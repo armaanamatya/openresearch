@@ -62,6 +62,15 @@ class RunContext:
                                  # so implement_baseline can route docs/papers/<id>.yaml even
                                  # when project_id is a hashed `prj_<digest>` string that the
                                  # _extract_arxiv_id regex cannot parse.
+    # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
+    # The most recent verify_against_rubric result the root has observed.
+    # Set by binding._emit_supplemental on every successful rubric event so
+    # the FINAL_VAR interceptor can read score-vs-target without re-scoring.
+    # `None` means no rubric verification has happened yet — the policy
+    # accepts FINAL_VAR honestly in that case (the run is rubric-less).
+    latest_rubric_score: float | None = None
+    latest_rubric_target: float | None = None
+    latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

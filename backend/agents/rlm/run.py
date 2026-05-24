@@ -55,6 +55,7 @@ from backend.agents.rlm.report import (
 from backend.agents.rlm.sse_bridge import (
     ReproLabRLMLogger,
     build_run_complete_event,
+    build_run_warning_event,
     make_emit,
     make_on_subcall_complete,
     make_on_subcall_start,
@@ -71,8 +72,16 @@ from backend.agents.rlm._oauth_backend_patch import (
     apply_oauth_backend_patch,
     apply_anthropic_caching_patch,
 )
+from backend.agents.rlm.forced_iteration import (
+    ForcedIterationPolicy,
+    apply_forced_iteration_patch,
+    forced_iteration_policy,
+)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
+# Lane H — install the FINAL_VAR interceptor once. Per-run policies are
+# pushed via the forced_iteration_policy context manager around rlm.completion.
+apply_forced_iteration_patch()
 
 logger = logging.getLogger(__name__)
 
@@ -888,10 +897,42 @@ async def run_pipeline_rlm(
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
     )
+
+    # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
+    # while the latest rubric score is below target AND the iteration floor
+    # has not been hit. The interceptor was installed at module load via
+    # apply_forced_iteration_patch(); here we push a per-run policy onto the
+    # thread-local stack so the patched _final_var consults this run's state.
+    settings = get_settings()
+    min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
+
+    def _emit_forced_iteration_warning(message: str) -> None:
+        try:
+            emit(build_run_warning_event(
+                level="warn",
+                code="forced_iteration",
+                message=message,
+            ))
+        except Exception:  # noqa: BLE001 — emit must never block the policy
+            logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
+
+    iteration_policy = ForcedIterationPolicy(
+        min_iterations=min_iterations,
+        rubric_snapshot=lambda: (
+            ctx.latest_rubric_score,
+            ctx.latest_rubric_target,
+            ctx.latest_rubric_iteration,
+        ),
+        current_iteration=lambda: rlm_logger.iteration_count,
+        remaining_s=lambda: ctx.remaining_s(),
+        on_refusal=_emit_forced_iteration_warning,
+    )
+
     result_obj: Any = None
     run_failed = False
     try:
-        result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
+        with forced_iteration_policy(iteration_policy):
+            result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
     except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
         run_failed = True
         logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)

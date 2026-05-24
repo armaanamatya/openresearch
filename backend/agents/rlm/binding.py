@@ -363,6 +363,18 @@ def _emit_supplemental(
         target = result.get("target_score")
         areas = result.get("areas", [])
         if score is not None and isinstance(areas, list):
+            # Lane H — stash the latest score so the FINAL_VAR interceptor can
+            # decide whether to force another iteration before accepting the
+            # root's bail-out. Set BEFORE emit so a downstream emit failure
+            # cannot leave the policy reading stale state.
+            try:
+                ctx.latest_rubric_score = float(score)
+                ctx.latest_rubric_target = float(target) if target is not None else 0.0
+                ctx.latest_rubric_iteration = ctx.current_iteration
+            except (TypeError, ValueError):
+                # Malformed score — leave policy state untouched; the
+                # interceptor treats None-score as "no rubric, accept".
+                pass
             emit_extra(build_rubric_score_event(
                 iteration=ctx.current_iteration,
                 score=float(score),
