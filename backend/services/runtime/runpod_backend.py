@@ -778,6 +778,21 @@ class RunpodBackend(RuntimeBackend):
                     f"RUNPOD_BALANCE_TOO_LOW: {exc}",
                     retryable=False,
                 ) from exc
+            if status == 500:
+                # Lane 3: an unlabelled 500 from RunPod is most often a
+                # transient infra issue (rest.runpod.io has had short windows
+                # of generic 500s) OR a capacity issue without the marker
+                # substring.  Either way, treat as transient + escalation-
+                # worthy so the run_experiment escalation loop can advance
+                # the ladder instead of dead-ending the whole run.  The cap
+                # in primitives.py (dynamic_gpu_max_escalations, default 2)
+                # bounds the SKU walk so a request-shape bug doesn't burn
+                # the entire ladder.
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"RUNPOD_TRANSIENT_500: {exc}",
+                    retryable=True,
+                ) from exc
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
                 f"Runpod API request failed (HTTP {status}): {exc}",

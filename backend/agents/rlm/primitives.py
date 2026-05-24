@@ -1320,6 +1320,16 @@ def run_experiment(
                         "success": False, "metrics": {},
                         "error": f"runpod SSH timeout on {gpu_plan.short_name if gpu_plan else 'unknown'}",
                     }
+                elif "RUNPOD_TRANSIENT_500" in exc_msg:
+                    # Lane 3: unlabelled 500s from RunPod are typically transient
+                    # — advance the ladder so the run doesn't dead-end. Bounded
+                    # by dynamic_gpu_max_escalations so a request-shape bug
+                    # cannot burn the whole catalog.
+                    infra_error_kind = "runpod_transient_500"
+                    result = {
+                        "success": False, "metrics": {},
+                        "error": f"runpod transient 500 on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                    }
                 else:
                     result = {
                         "success": False, "metrics": {},
