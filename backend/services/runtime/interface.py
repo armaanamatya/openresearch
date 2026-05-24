@@ -31,9 +31,10 @@ class RuntimeCauseKind(str, Enum):
 class SandboxConfig(BaseModel):
     """Configuration for one sandbox.
 
-    `project_root` is mounted at `/work`. `artifact_root` is mounted at
-    `/artifacts` and should be the only writable artifact surface for normal
-    experiment runs.
+    `project_root` is mounted at `/code` (the container working dir). `artifact_root`
+    is mounted at `/artifacts` and should be the only writable artifact surface for
+    normal experiment runs. Codegen agents emit `/code`-prefixed paths by convention;
+    changing `workdir` away from `/code` will break generated commands.json files.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -45,7 +46,7 @@ class SandboxConfig(BaseModel):
     artifact_root: Path | None = None
     dockerfile_path: Path | None = None
     build_context: Path | None = None
-    workdir: str = "/work"
+    workdir: str = "/code"
     artifacts_dir: str = "/artifacts"
     readonly_project: bool = False
     network_disabled: bool = True
