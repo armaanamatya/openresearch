@@ -26,8 +26,8 @@ MUST follow this contract. It is identical across the docker, local, and
 runpod sandboxes — write scripts to the contract and they work on all three.
 
 ## Mounts (inside the running container)
-- Your project directory is mounted READ-ONLY at the container working dir.
-  You may READ your code freely, but ANY write under it — `mkdir`, `tee`,
+- Your project directory is mounted READ-ONLY at `/code` (the container working
+  dir). You may READ your code freely, but ANY write under it — `mkdir`, `tee`,
   shell `>`, `cp` into the tree, `git clone .`, file output from a script —
   WILL FAIL with a "Read-only file system" error.
 - A separate writable volume is mounted for outputs. Its path inside the
