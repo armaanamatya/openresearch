@@ -816,12 +816,30 @@ def _compute_constraint_guidance(
     # without any wall-clock signal.
     # 2.5. PER-MODEL METRICS — multi-scale-paper output shape (Lane γ), follows
     # RUNTIME_DETECTION so the agent understands compute constraints first.
-    guidance = (
-        _NO_STUB_BLOCK
-        + _RUNTIME_DETECTION_BLOCK
-        + _budget_awareness_block(remaining_s)
-        + _PER_MODEL_METRICS_BLOCK
-    )
+    # Budget block: governed by REPROLAB_BUDGET_AWARENESS_MODE.
+    #   - "auto" (default): include only on cost-bearing sandboxes (runpod /
+    #     brev) where every minute of overrun maps to real $.  Local docker /
+    #     local-process sandboxes pay only with wall-clock; the user can
+    #     extend --max-wall-clock if they want paper-faithful epochs.
+    #   - "always": include regardless of sandbox.  Useful when the user
+    #     wants the agent to scale down even on free local compute.
+    #   - "never": skip regardless.  Useful when the user has a big budget
+    #     and wants the agent to follow the paper's full epoch counts.
+    _COST_BEARING_SANDBOXES = ("runpod", "brev")
+    _is_cost_bearing = any(s in mode_str for s in _COST_BEARING_SANDBOXES)
+    from backend.config import get_settings as _get_settings
+    _budget_mode = (_get_settings().budget_awareness_mode or "auto").lower()
+    if _budget_mode == "never":
+        _inject_budget = False
+    elif _budget_mode == "always":
+        _inject_budget = True
+    else:  # auto
+        _inject_budget = _is_cost_bearing
+
+    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+    if _inject_budget:
+        guidance += _budget_awareness_block(remaining_s)
+    guidance += _PER_MODEL_METRICS_BLOCK
 
     # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:

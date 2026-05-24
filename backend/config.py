@@ -196,6 +196,17 @@ class Settings(BaseSettings):
     dynamic_gpu_fallback_vram_gb: int = Field(default=24, ge=1, description="Substitute VRAM when LLM cannot estimate")
     dynamic_gpu_max_escalations: int = Field(default=2, ge=0, description="Max OOM-driven ladder advances per run")
 
+    # Budget-awareness prompt for implement_baseline. Tells the baseline-writing
+    # agent to scale train.py to fit remaining_s wall-clock.
+    #   "auto"   — inject only on cost-bearing sandboxes (runpod / brev)
+    #   "always" — inject regardless of sandbox
+    #   "never"  — skip regardless (paper-faithful epoch counts)
+    budget_awareness_mode: str = Field(
+        default="auto",
+        pattern=r"^(auto|always|never)$",
+        description="When to inject the EXECUTION-BUDGET AWARENESS block into the baseline agent prompt",
+    )
+
     # Apify ArXiv MCP server (https://github.com/apify/actor-arxiv-mcp-server).
     # When apify_api_token is set, the Claude agent runtime registers the
     # SSE endpoint as an MCP server named ``apify-arxiv`` and exposes its
