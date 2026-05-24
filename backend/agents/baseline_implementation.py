@@ -515,6 +515,26 @@ def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
         )
     # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
 
+    # Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+    # Generic paper-agnostic hook so an operator can scope a specific run
+    # without modifying source. Common uses:
+    #   - "reproduce only the smallest 2 model variants the paper tests"
+    #   - "use a 5% subset of the eval set for time-bounded iteration"
+    #   - "skip the multi-seed sweep; one seed=42 is sufficient"
+    # The guidance is appended verbatim, so the operator is responsible for
+    # phrasing it so it doesn't contradict the NO STUB block above.
+    import os as _os
+    extra = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+    if extra:
+        guidance += (
+            "\n\nOPERATOR GUIDANCE — per-run scope override:\n"
+            "  " + extra.replace("\n", "\n  ") + "\n"
+            "  This guidance does NOT override the NO STUB / NO SURROGATE rule. "
+            "If you cannot satisfy the operator's scope AND keep the reproduction "
+            "real (paper's actual model + data), fail honestly via "
+            "metrics.json={\"error\":\"scope_conflict\",\"detail\":\"...\"}.\n"
+        )
+
     return guidance
 
 
