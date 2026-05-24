@@ -1,0 +1,64 @@
+# Dropout — Improving neural networks by preventing co-adaptation of feature detectors
+# (Hinton, Srivastava, Krizhevsky, Sutskever, Salakhutdinov — arXiv 1207.0580)
+#
+# Paper is short (12 pages) and explicit about hyperparameters. The reproduction
+# should match the MNIST table exactly; CIFAR-10 should also be tractable.
+# TIMIT and Reuters legitimately require external licensed corpora — the agent
+# should declare them omitted with a one-line reason in metrics.json["omitted"].
+
+algorithm_invariants:
+  dropout_rate_hidden: 0.5                 # paper §4 — "50% dropout" everywhere
+  dropout_rate_input: 0.2                  # paper §4 MNIST — 20% dropout on input layer
+  max_norm_constraint: 4.0                 # paper §4 — "max-norm regularization, c=4"
+  momentum: "0.5 -> 0.99"                  # paper §4 — momentum schedule across epochs
+  weight_decay: 0                          # paper §4 — relies on dropout + max-norm, not L2
+  bias_init: 0                             # paper §3 — biases initialised to 0
+  weight_init: "N(0, 0.01)"                # paper §3 — Gaussian weight init
+  activation: "logistic / sigmoid"         # paper §4 — sigmoid hidden units (NOT relu)
+
+hyperparameters:
+  mnist:
+    arch: "784-800-800-10"                 # paper §4 MNIST best config
+    epochs: 3000                            # paper §4 — long training
+    learning_rate: 10.0                    # paper §4 — yes, ten; large LR works with dropout + max-norm
+    batch_size: 100
+    target_test_error: 1.30                # paper Table 1 — best result 1.30% test error
+  cifar10:
+    arch: "convnet (3 conv + 1 fc)"        # paper §6 references LeCun et al. conv architecture
+    epochs: 500
+    target_test_error: 15.6                # paper §6 — claimed result with dropout
+  imagenet:                                # OMITTABLE — needs full ImageNet (~150 GB)
+    arch: "AlexNet"
+    epochs: 90
+    note: "If ImageNet is unavailable, declare in metrics.json['omitted'] with reason."
+
+datasets:
+  mnist:
+    setup: "torchvision.datasets.MNIST(root=DATA_DIR, download=True)"
+    train_size_full: 60000                  # paper uses full training set, NOT a subset
+    test_size: 10000
+  cifar10:
+    setup: "torchvision.datasets.CIFAR10(root=DATA_DIR, download=True)"
+    train_size_full: 50000
+    test_size: 10000
+  timit:
+    note: "OMIT honestly — requires Kaldi and licensed TIMIT corpus."
+  reuters_rcv1:
+    note: "OMIT honestly — requires licensed RCV1 corpus from NIST."
+
+eval_metrics:
+  primary: "test_error_rate (%)"
+  reporting: "Report best AND final test error per dataset. Track per-epoch test error."
+
+baselines:
+  - "Standard NN (no dropout)"             # paper Table 1 baseline column
+  - "Dropout NN"                           # paper Table 1 dropout column
+
+# Operator-facing hints. The implement_baseline agent reads these via
+# _load_paper_override and surfaces them in the code-writing prompt.
+scope_hints:
+  - "Use the FULL MNIST training set (60000 samples). Sub-sampling materially hurts the rubric."
+  - "Run at least 300 epochs on MNIST with the 10.0 learning rate. Convergence to <2% test error is the headline result."
+  - "Implement max-norm constraint as a per-step weight projection: ||W_i||_2 <= c for each row."
+  - "Implement the momentum schedule: start at 0.5, ramp to 0.99 over the first ~500 epochs."
+  - "Report results in metrics.json with the exact keys: mnist_dropout_test_error, mnist_baseline_test_error, cifar10_dropout_test_error, cifar10_baseline_test_error."

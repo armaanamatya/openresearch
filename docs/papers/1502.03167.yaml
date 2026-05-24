@@ -1,0 +1,69 @@
+# Batch Normalization — Accelerating Deep Network Training by Reducing Internal
+# Covariate Shift (Ioffe & Szegedy — arXiv 1502.03167)
+#
+# The MNIST section (§4.1) is small enough to fully reproduce. The Inception/
+# ImageNet section (§4.2) reports the famous "5x and 30x faster training"
+# variants — those need ImageNet (~150 GB) so they should be declared
+# omitted unless the operator has an ImageNet snapshot mounted.
+
+algorithm_invariants:
+  bn_per_channel_for_conv: true            # paper §3.2 — BN is applied per-channel for conv
+  bn_per_feature_for_fc: true              # paper §3 — BN is applied per-feature for fc
+  affine_gamma_beta: true                   # paper §3 — learnable scale + shift after normalisation
+  bn_before_activation: true                # paper §3.4 — BN is applied to the pre-activation Wu+b
+  running_mean_var_for_inference: true      # paper §3.3 — population statistics, not batch
+  epsilon: 1.0e-5                          # paper §3 — numerical stability constant
+  momentum_running_stats: 0.1              # PyTorch default; paper does not pin exact value
+
+hyperparameters:
+  mnist:
+    arch: "3-hidden-layer MLP, 100 units each, sigmoid activations"  # paper §4.1
+    full_steps: 50000                       # paper trains until convergence on MNIST
+    batch_size: 60                          # paper §4.1
+    learning_rate: 0.01                     # paper §4.1 — same LR for all variants
+    target_test_acc: 0.97                  # paper Figure 1c reaches ~97%
+  imagenet:                                # OMITTABLE — needs ImageNet
+    arch: "Inception (paper's BN-Inception variant)"
+    baseline_steps: "matches Inception's reported 31M iterations"
+    note: "If ImageNet is unavailable, declare omitted with reason."
+
+variants_to_run:
+  - id: "baseline"
+    description: "Inception/MLP WITHOUT batch normalisation."
+    required: true
+  - id: "bn"
+    description: "Same network WITH batch normalisation."
+    required: true
+  - id: "bn_x5_imagenet"
+    description: "BN-Inception with 5x learning rate (paper §4.2)."
+    required_on: "imagenet only"
+  - id: "bn_x30_imagenet"
+    description: "BN-Inception with 30x learning rate (paper §4.2)."
+    required_on: "imagenet only"
+  - id: "bn_sigmoid_imagenet"
+    description: "BN-Inception with sigmoid activations (paper §4.2)."
+    required_on: "imagenet only"
+
+datasets:
+  mnist:
+    setup: "torchvision.datasets.MNIST(root=DATA_DIR, download=True)"
+    train_size_full: 60000
+    test_size: 10000
+  imagenet:
+    note: "OMIT honestly — requires manual download (~150 GB)."
+
+eval_metrics:
+  primary: "test_accuracy"
+  reporting: "Track validation accuracy at fixed step intervals (e.g. every 1000 steps) so the convergence curves can be compared against Figure 1a-c of the paper."
+  required_keys:
+    - mnist_baseline_final_acc
+    - mnist_bn_final_acc
+    - bn_beats_baseline                     # boolean — paper's headline qualitative claim
+    - bn_steps_to_baseline_final_acc        # how fast BN reaches baseline's final acc
+
+scope_hints:
+  - "Use the FULL 60000-sample MNIST training set. Sub-sampling defeats the convergence-speed claim."
+  - "Run the FULL 50000 training steps for both baseline and bn — paper Figure 1a-c covers this."
+  - "Implement BN as a custom layer that tracks batch-mean / batch-var during training and population statistics during inference."
+  - "Report metrics.json.per_model = {'baseline': {...}, 'bn': {...}} — the rubric checks this shape."
+  - "Report validation accuracy AT fixed checkpoint steps (1000, 2000, ..., 50000) so the convergence-speed claim can be scored."
