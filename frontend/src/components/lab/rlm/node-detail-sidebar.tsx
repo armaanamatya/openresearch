@@ -4,6 +4,7 @@ import { memo, useState, type CSSProperties } from "react";
 import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView, GpuPlan } from "../../../hooks/use-rlm-run";
 import type { ChatMessage } from "../../../hooks/use-steering-chat";
 import { SteeringChat } from "./steering-chat";
+import { describePrimitiveError, latestPrimitiveError } from "./primitive-error";
 import styles from "./node-detail-sidebar.module.css";
 
 export interface NodeDetailSidebarProps {
@@ -204,9 +205,35 @@ function PrimitiveList({
               </span>
             )
           )}
+          {c.status === "error" && <PrimitiveErrorBlock call={c} compact />}
         </li>
       ))}
     </ul>
+  );
+}
+
+function PrimitiveErrorBlock({
+  call,
+  compact = false,
+}: {
+  call: PrimitiveCallView;
+  compact?: boolean;
+}) {
+  const detail = describePrimitiveError(call);
+  return (
+    <div className={compact ? styles.errorBlockCompact : styles.errorBlock}>
+      <span className={styles.errorEyebrow}>{detail.title}</span>
+      <dl className={styles.errorList}>
+        <div className={styles.errorRow}>
+          <dt>Reason</dt>
+          <dd>{truncate(detail.reason, compact ? 180 : 280)}</dd>
+        </div>
+        <div className={styles.errorRow}>
+          <dt>Recovery</dt>
+          <dd>{detail.recovery}</dd>
+        </div>
+      </dl>
+    </div>
   );
 }
 
@@ -397,6 +424,7 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
 }: NodeDetailSidebarProps) {
   const [collapsedInternal, setCollapsedInternal] = useState(false);
   const collapsed = collapsedProp ?? collapsedInternal;
+  const latestError = latestPrimitiveError(primitiveCalls);
   function setCollapsed(next: boolean) {
     setCollapsedInternal(next);
     onCollapsedChange?.(next);
@@ -504,6 +532,7 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
 
       {/* Kind-specific content */}
       <div className={styles.content}>
+        {latestError && <PrimitiveErrorBlock call={latestError} />}
         {node ? (
           <SidebarBody
             node={node}

@@ -62,8 +62,8 @@ function toGpuMode(request: Request): DemoGpuMode | undefined {
 }
 
 function toModelChoice(request: Request): DemoModelChoice | undefined {
-  const value = search(request).get("model");
-  return value === "sonnet" || value === "opus" ? value : undefined;
+  const value = search(request).get("model")?.trim();
+  return value ? value : undefined;
 }
 
 function toProvider(request: Request): DemoProvider | undefined {

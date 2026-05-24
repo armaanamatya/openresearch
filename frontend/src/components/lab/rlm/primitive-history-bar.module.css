@@ -38,6 +38,13 @@
   overflow-y: auto;
 }
 
+.empty {
+  margin: 0;
+  padding: 0 var(--sp-4) var(--sp-2);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 /* ── Call row ───────────────────────────────────────────────── */
 
 .row {

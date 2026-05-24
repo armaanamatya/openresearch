@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { PrimitiveCallView, SubRlmView } from "../../../hooks/use-rlm-run";
+import { describePrimitiveError } from "./primitive-error";
 
 /**
  * Always-visible narration of what the agent is doing RIGHT NOW.
@@ -46,7 +47,32 @@ interface Narration {
   detail: string;
   /** Tone — "info" (normal), "muted" (idle/queued), "warn" (slow), "err" (failed). */
   tone: "info" | "muted" | "warn" | "err";
+  /** "Next likely" hint — shown as a thin second line when present. Inferred
+   *  from the static primitive dependency graph (NEXT_LIKELY). Omitted when
+   *  the next step isn't predictable (e.g. between sub-RLMs, or when no
+   *  primitive has landed yet). */
+  nextLikely?: string | null;
+  supporting?: string | null;
 }
+
+/**
+ * Static "what usually comes after X" map for the LiveActivityStrip's
+ * next-likely hint. Derived from the canonical pipeline phases in
+ * CLAUDE.md (Ingest → Understand → Plan → Implement → Run → Verify).
+ * Misses → hint omitted; never raises.
+ */
+const NEXT_LIKELY: Record<string, string> = {
+  understand_section: "extract_hyperparameters or detect_environment",
+  extract_hyperparameters: "detect_environment",
+  detect_environment: "build_environment",
+  build_environment: "plan_reproduction",
+  plan_reproduction: "implement_baseline",
+  implement_baseline: "run_experiment",
+  run_experiment: "verify_against_rubric",
+  verify_against_rubric: "propose_improvements or final_report",
+  propose_improvements: "record_candidate_outcome",
+  record_candidate_outcome: "next iteration or final_report",
+};
 
 function diffSecs(thenIso: string | null, nowMs: number | null): number | null {
   if (!thenIso || nowMs === null) return null;
@@ -111,6 +137,7 @@ function narrate(props: LiveActivityStripProps): Narration {
           `build_environment 1-5 min, run_experiment up to 30 min) regularly produce minutes of silence ` +
           `between events — this is expected.`,
         tone: slow ? "warn" : "info",
+        nextLikely: NEXT_LIKELY[c.primitive] ?? null,
       };
     }
   }
@@ -145,18 +172,19 @@ function narrate(props: LiveActivityStripProps): Narration {
       .reverse()
       .find((c) => c.status === "ok" || c.status === "error");
     if (lastTerminated && lastTerminated.status === "error") {
-      const errDetail = lastTerminated.result_summary?.trim() || "Exception";
+      const errDetail = describePrimitiveError(lastTerminated);
       return {
         icon: "↻",
         label: `Recovering from ${lastTerminated.primitive} error — root deciding retry path`,
         secs,
         detail:
-          `Last error: ${errDetail}\n\n` +
+          `Last error: ${errDetail.reason}\n\n` +
           `The root REPL got the full traceback and is constructing the ` +
           `next REPL turn (typically a retry, an alternative approach, or ` +
           `a fallback primitive). No action needed — the rlm adaptive loop ` +
           `is designed for this.`,
         tone: "warn",
+        supporting: `Reason: ${errDetail.reason} Recovery: retry, fallback, or repair on the next REPL turn.`,
       };
     }
     return {
@@ -203,65 +231,100 @@ export function LiveActivityStrip(props: LiveActivityStripProps) {
   const colors = toneColors(narration.tone);
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      title={narration.detail}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "12px",
-        padding: "8px 14px",
-        margin: "0 0 8px 0",
-        borderRadius: "8px",
-        background: colors.bg,
-        color: colors.ink,
-        fontSize: "0.85rem",
-        fontWeight: 500,
-        lineHeight: 1.4,
-        border: `1px solid ${colors.dot}`,
-        minHeight: "36px",
-      }}
-    >
-      <span
-        aria-hidden="true"
+    <>
+      <div
+        role="status"
+        aria-live="polite"
+        title={narration.detail}
         style={{
-          width: "10px",
-          height: "10px",
-          borderRadius: "50%",
-          background: colors.dot,
-          flex: "0 0 auto",
-          // Pulse the dot whenever an activity is in flight to make
-          // "this is alive" unmistakable even when seconds tick slowly.
-          animation:
-            props.status === "running" ? "rlmLivePulse 1.6s ease-in-out infinite" : "none",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          padding: "8px 14px",
+          margin: "0 0 8px 0",
+          borderRadius: "8px",
+          background: colors.bg,
+          color: colors.ink,
+          fontSize: "0.85rem",
+          fontWeight: 500,
+          lineHeight: 1.4,
+          border: `1px solid ${colors.dot}`,
+          minHeight: "36px",
         }}
-      />
-      <span style={{ flex: "0 0 auto", fontSize: "1rem" }}>{narration.icon}</span>
-      <span style={{ flex: 1, minWidth: 0 }}>{narration.label}</span>
-      {narration.secs !== null && (
+      >
         <span
+          aria-hidden="true"
+          data-live-pulse
           style={{
+            width: "10px",
+            height: "10px",
+            borderRadius: "50%",
+            background: colors.dot,
             flex: "0 0 auto",
-            fontVariantNumeric: "tabular-nums",
-            fontSize: "0.78rem",
-            opacity: 0.85,
+            // Pulse the dot whenever an activity is in flight to make
+            // "this is alive" unmistakable even when seconds tick slowly.
+            animation:
+              props.status === "running" ? "rlmLivePulse 1.6s ease-in-out infinite" : "none",
           }}
-        >
-          {narration.secs}s
+        />
+        <span style={{ flex: "0 0 auto", fontSize: "1rem" }}>{narration.icon}</span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block" }}>{narration.label}</span>
+          {narration.nextLikely && (
+            <span
+              style={{
+                display: "block",
+                fontSize: "0.74rem",
+                fontWeight: 500,
+                opacity: 0.78,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              next likely: {narration.nextLikely}
+            </span>
+          )}
+          {narration.supporting && (
+            <span
+              style={{
+                display: "block",
+                fontSize: "0.74rem",
+                fontWeight: 500,
+                opacity: 0.86,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {narration.supporting}
+            </span>
+          )}
         </span>
-      )}
+        {narration.secs !== null && (
+          <span
+            style={{
+              flex: "0 0 auto",
+              fontVariantNumeric: "tabular-nums",
+              fontSize: "0.78rem",
+              opacity: 0.85,
+            }}
+          >
+            {narration.secs}s
+          </span>
+        )}
+      </div>
       <style>{`
         @keyframes rlmLivePulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.45; transform: scale(0.85); }
         }
         @media (prefers-reduced-motion: reduce) {
-          @keyframes rlmLivePulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
+          [data-live-pulse] {
+            animation: none !important;
           }
         }
       `}</style>
-    </div>
+    </>
   );
 }

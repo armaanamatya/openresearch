@@ -141,6 +141,130 @@
   text-overflow: ellipsis;
 }
 
+.emptyNote {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+/* ── Worker reports ───────────────────────────────────────────── */
+
+.workerReports {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.sectionCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-1);
+}
+
+.workerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.workerCard {
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--chip);
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.workerTitleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.workerName {
+  min-width: 0;
+  color: var(--ink);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workerStatus,
+.workerFailed {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-1);
+}
+
+.workerStatus {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.workerFailed {
+  color: var(--err);
+  background: var(--err-soft);
+}
+
+.workerFacts {
+  margin: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.workerFacts div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--sp-1);
+  align-items: start;
+}
+
+.workerFacts dt {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  text-transform: lowercase;
+}
+
+.workerFacts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.commandLine {
+  display: block;
+  font-family: var(--font-mono);
+}
+
+.exitCode {
+  margin-left: var(--sp-1);
+  color: var(--muted);
+}
+
 /* ── Rubric breakdown ─────────────────────────────────────────── */
 
 .breakdown {

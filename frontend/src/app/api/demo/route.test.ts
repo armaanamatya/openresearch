@@ -101,6 +101,23 @@ describe("/api/demo backend proxy", () => {
     );
   });
 
+  it("forwards arbitrary backend model ids", async () => {
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost:3000/api/demo?mode=rlm&model=qwen3-coder", {
+        method: "POST"
+      })
+    );
+
+    expect(response.status).toBe(202);
+    const [, init] = vi.mocked(fetch).mock.calls.at(-1) ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      mode: "rlm",
+      model: "qwen3-coder"
+    });
+  });
+
   // The earlier "rejects multipart requests without a pdf file before
   // proxying" test was deleted with Task C.4.1 (frontend-polish-pass).
   // The validation moved to the backend: the proxy now streams the body

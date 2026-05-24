@@ -1,222 +1,317 @@
-# Findings — E2E localhost run of the RLM paper (2026-05-23)
+# Findings - E2E localhost run of the RLM paper (2026-05-23)
 
 Companion to `docs/superpowers/specs/2026-05-23-e2e-rlmpaper-localhost-run-design.md`.
 
-Live log of every backend / UI / config defect surfaced during the
-end-to-end reproduction of arXiv 2512.24601 on
-`projectId=prj_5b5fe266b0b83f3d` (sandbox=runpod, root model=claude-oauth
-via the `sonnet` alias).
-
-Format: one entry per defect, in order of discovery. Each entry records
-symptom → root cause → fix (commit SHA when shipped) → verification.
+This is the final, reconciled log for the localhost reproduction of arXiv
+2512.24601, "Recursive Language Models", through ReproLab's RLM path. It
+records each backend, UI, and config defect found during the run, the fix that
+shipped or landed in the working tree, and the verification evidence.
 
 ## Run config
 
 | field | value |
 |---|---|
-| projectId | `prj_5b5fe266b0b83f3d` |
-| paper | arXiv 2512.24601 (rlms) |
-| mode | rlm |
-| sandbox | runpod COMMUNITY (RTX 4090) |
-| root model | claude-oauth (via `sonnet` alias) |
-| sub-agents | claude-agent-sdk via OAuth subscription |
-| kickoff | 2026-05-23 ~18:48 UTC |
-| target | `runs/<id>/final_report.json` |
+| original projectId | `prj_5b5fe266b0b83f3d` |
+| clean restart projectId | `prj_20457ea6673b5a32` |
+| paper | arXiv 2512.24601, "Recursive Language Models" |
+| mode | `rlm` |
+| sandbox | RunPod COMMUNITY, RTX 4090 |
+| requested model | `sonnet` |
+| resolved root model | `claude-oauth` |
+| sub-agents | `claude-agent-sdk` via OAuth subscription |
+| target artifact | `runs/<id>/final_report.json` |
 
----
+## Final verdict
 
-## F1 — `start.sh` unbound-variable under bash 3.2
+Run 2, `prj_20457ea6673b5a32`, reached terminal state at
+2026-05-23 20:17:26 UTC, 60m 2s after kickoff. This is inside the design
+spec's 90-minute target and well under the 180-minute hard cap.
 
-- **Symptom:** `./start.sh` exit 1 with `preflight_args[@]: unbound variable` on line 95.
-- **Cause:** macOS bash 3.2 (the default `/usr/bin/env bash` on macOS) treats `"${empty_array[@]}"` as an unbound variable under `set -u`. The script uses `set -euo pipefail` and an empty `preflight_args=()` array.
-- **Fix:** commit `13793f0` — switched to `${preflight_args[@]+"${preflight_args[@]}"}` which is the standard bash-3.2-safe idiom.
-- **Verified:** `./start.sh` boots backend cleanly on macOS 25.
+This is a pipeline success, not an answer-quality success. The orchestrator
+ingested the paper, ran four RLM iterations, built an environment, recovered
+from primitive failures, wrote `final_report.json`, and terminated cleanly with
+`run_complete partial`. The rubric score was 0.0 because `run_experiment`
+failed and the generated baseline did not reproduce the paper's results.
 
-## F2 — `REPROLAB_FORCE_SANDBOX` config default silently pinned every run to Docker
+Verified artifacts:
 
-- **Symptom:** `POST /api/demo/arxiv` with body `{"sandbox":"runpod","model":"sonnet",...}` returned `"sandboxMode":"docker"`. Verified twice. Despite shell env `REPROLAB_DEFAULT_SANDBOX=runpod` and the request body explicitly asking for runpod, every run was being forced onto docker.
-- **Cause:** `backend/config.py:139` declares `force_sandbox: Literal["", ...] = "docker"`. `apply_sandbox_override(request, settings.force_sandbox)` at `backend/services/events/live_runs.py:515` rewrites every run's sandbox field with that value. The `.env` shipped with the repo had `REPROLAB_FORCE_SANDBOX` **commented out**, with a comment claiming this disabled the override — but pydantic-settings treats "commented" identically to "absent" and falls back to the field default (`"docker"`). So even with the line commented, every run got force-pinned to docker.
-- **Fix:**
-  - `.env` (untracked): set `REPROLAB_FORCE_SANDBOX=` explicitly (empty string) to opt out of the override.
-  - `CLAUDE.md`: §"Sandbox config gotcha" updated to spell out that the commented-out line does NOT disable the override — the variable must be set explicitly empty.
-  - (Considered but not done in this session: change the pydantic default from `"docker"` to `""`. That's a design-intent change — the existing default was deliberate "RunPod is disabled" hardening — so left for a follow-up PR with maintainer review.)
-- **Verified:** re-kickoff returned `"sandboxMode":"runpod"`; backend stderr printed `sandbox: runpod`.
-
-## F3 — `/models` endpoint exposes only 2 of 6 registered root models
-
-- **Severity:** UI/backend parity gap; not a regression, not a blocker.
-- **Symptom:** `GET /models` returns just `[{sonnet, anthropic}, {opus, anthropic}]`. The actual `ROOT_MODELS` registry in `backend/agents/rlm/models.py` has 6 entries: `gpt-5`, `qwen3-coder`, `kimi-k2.5`, `claude`, `claude-oauth`, `qwen3-coder-featherless`, `azure-gpt-4o`. The frontend's `DemoModelChoice = "sonnet" | "opus"` is similarly narrow.
-- **Why it didn't block this run:** `_MODEL_ALIASES` maps `sonnet` and `opus` to `claude-oauth`, so the UI's `sonnet` resolves correctly. But a user wanting `gpt-5` or `qwen3-coder` from the UI is out of luck — there's no way to surface them.
-- **Fix:** deferred. Real fix: `/models` queries `ROOT_MODELS` and includes per-model credential availability (so the UI can grey out models whose env var key is unset). Frontend type widens to `string` or a generated union.
-- **Why deferred:** mid-flight scope creep; not on the critical path for this run. Added to follow-up backlog in §"Open after this run."
-
-## F5 — `use-rdr-artifacts` polled 404s for the entire active run lifetime
-
-- **Severity:** UX (dev-console noise); not a run-breaker.
-- **Symptom:** During the active rlm run, the browser console accumulated ~7 "Failed to load resource: 404 (Not Found)" entries every 30-second screenshot cycle — i.e., the hook polled `/clusters`, `/leaf-scores`, `/repair-iterations` every 5s for the entire run, and all three 404'd because rlm mode without a PaperBench bundle never produces RDR artifacts.
-- **Why the existing F2 mitigation didn't fire:** the early-exit condition was `isActive==false`, so it stopped polling only AFTER the run ended. During the run the counter was constantly reset to 0.
-- **Cause:** logic inversion in `frontend/src/hooks/use-rdr-artifacts.ts` lines 108-116.
-- **Fix:** commit `4097a20` — added an `allReturned404` check that increments the counter (and triggers early-exit after 3 cycles) even on active runs. 200+empty and 5xx during active still keep polling.
-- **Test:** replaced the test codifying the bug with two new tests asserting the new contract. `frontend/src/hooks/use-rdr-artifacts.test.ts` — 14/14 passing.
-- **Verified:** pending — fix landed mid-run; verification deferred to next wakeup cycle (Next.js dev HMR may need a full bundle rebuild on some hooks).
-
-## F7 — F5 was incomplete; real signature is mixed 404 + 200-empty
-
-- **Symptom:** even after `4097a20`, console-error files showed ~7 entries per 30s screenshot cycle — no improvement. Cause: the F5 fix only triggered the early-exit when ALL three endpoints returned 404. The real Next.js dev access log showed `/clusters` returning 200+empty, `/leaf-scores` returning 404, and `/repair-iterations` returning 200+empty. `allReturned404` was false; counter reset to 0 every cycle.
-- **Fix:** real fix is to count up unconditionally on `allMissing` (whether each endpoint is 404, 5xx, or 200+empty). The shipped commit also relaxes the over-narrow assertion on the test that encoded the wrong contract.
-- **Status:** SHIPPED in subsequent commit (pending verification on next screenshot cycle once Next.js hot-reload picks up the change).
-
-## F6 — `repl_iteration` landed at age=104s — runpod cold path within budget
-
-- **Not a defect, a milestone.** Per the advisor's runpod-cold-path budget (8 min from kickoff for first `repl_iteration` OR `primitive_call=build_environment`), we landed at 104s — well within budget. The aclose deadlock fix (commit `532e010`) is verified working: the SDK runs to completion despite the expected non-fatal aclose warnings.
-
-## F4 — `start.sh` defaults `REPROLAB_DEFAULT_SANDBOX=runpod` but `.env` had `=docker`
-
-- **Severity:** behavioral inconsistency; cosmetic only, since the body-level sandbox field wins (after F2).
-- **Symptom:** `start.sh` exports `REPROLAB_DEFAULT_SANDBOX=${REPROLAB_DEFAULT_SANDBOX:-runpod}` (line 47), but `.env` has `REPROLAB_DEFAULT_SANDBOX=docker`. Shell env should override .env via pydantic-settings precedence, but the layering means a user reading the .env will draw the wrong conclusion about the default.
-- **Fix:** not shipping a change for this session. Worth a follow-up to align `.env` with `start.sh` — either remove the `.env` line or change the `start.sh` default to `docker`.
-
----
-
-## RunPod-cold-path budget (per advisor)
-
-Standard wedge detection (`scripts/health_probe.sh`) uses 600 s. RunPod pod creation + image pull is genuinely 3-5 min of silence on a cold path that wouldn't trip implement_baseline patterns. **Special clock for THIS run**: if no `repl_iteration` AND no `primitive_call=build_environment` event within **8 min** of kickoff (18:48 UTC + 8 min = 18:56 UTC), that's the runpod path failing — treat as a hard signal to investigate rather than a normal long-primitive false alarm.
-
----
-
-## F8 — Lab page rendered blank when SSR fetch 504'd mid-run
-
-- **Severity:** UX (high-impact); the user explicitly called it out — "ui needs to be more clear, we need to work with the user so they understand at all times what is going on, right now it is blank at times and doesn't make sense".
-- **Symptom:** during the `implement_baseline` phase of prj_5b5fe266b0b83f3d, a Playwright snapshot of the lab page showed the header rendering but the main content area empty. The MCP console log captured: `Failed to load resource: 504 Gateway Timeout @ /api/demo?projectId=prj_5b5fe266b0b83f3d`.
-- **Cause:** `BACKEND_GET_TIMEOUT_MS = 4000` (frontend/src/lib/demo/server-run.ts:13) was too aggressive when the FastAPI single-worker uvicorn was busy serving heavy SSE event payloads. The `/api/demo` route returned 504; useRun's auto-resume saw 504 and silently bailed (use-run.ts line 185) — leaving the user on the UploadView with no indication their projectId was valid.
-- **Fix:** commit `1998e5d` ships three layered fixes:
-  1. `BACKEND_GET_TIMEOUT_MS` 4s → 10s (server-run.ts). 10s still feels snappy on warm path while tolerating the 5-8s tail when backend is under load.
-  2. `useRun` auto-resume retries 504s with exponential backoff (2s, 4s, 8s, 12s, 16s = ~42s budget) before giving up. Eliminates the "blank page on transient timeout" failure mode.
-  3. (See F9 for the related chip fix that shipped in the same commit.)
-- **Verified:** pending next Playwright snapshot on prj_20457ea6673b5a32 — the new run will exercise the same path with the fixes applied.
-
-## F9 — "no signal Xs" chip caused unnecessary panic during long primitives
-
-- **Severity:** UX (high-impact); user said "no signal 765s - we need to ensure this never happens. user should always know what the issue is".
-- **Symptom:** the warn-colored `no signal 765s` chip showed up in the header during `implement_baseline`. Per known-issues §3.4 this is a false alarm: heartbeats pause during long primitives (implement_baseline 5-15 min, build_environment 1-5 min) because the rlm core loop emits `iteration_heartbeat` between iterations, not during a single primitive call. The chip caused real user concern that the run was wedged when it wasn't.
-- **Fix:** commit `1998e5d`:
-  - `RlmHeader` accepts a new `inFlightPrimitive: { name; startedAt } | null` prop.
-  - `RlmLab` derives it: scans `state.primitiveCalls` backwards for the most recent `status="start"` entry that has no matching ok/error after it.
-  - When `noSignalSecs` would have fired AND `inFlightPrimitive !== null`: render `running <primitive> (Xs)` in info color (accent-soft / accent-ink) instead of `no signal Xs` in warn color. The chip becomes informational.
-  - When `noSignalSecs` fires WITHOUT a primitive in flight (true wedge): keep the warn-colored `no signal Xs` chip — this is now a real alarm, not noise.
-- **Tests:** existing 2/2 header tests pass; the change is additive (new prop defaults to null = old behavior).
-- **Verified:** pending — will snapshot prj_20457ea6673b5a32's `implement_baseline` phase to confirm the chip renders the new text.
-
-## F10 — Lab canvas appeared dead between events; built a LiveActivityStrip
-
-- **Severity:** UX (highest priority); user's verbatim words: "user has no clue what is going on atp, just 7 mins doing nothing, we should have a view so the user can understand what the agent is doing at all times, it needs to be active at all times".
-- **Symptom:** the lab UI updates main panels only when a `primitive_call` / `repl_iteration` event lands. Between events (root model thinking, sub-RLM in flight, runpod pod ramping) the entire canvas appeared frozen — the only visible motion was a tiny `6m 30s elapsed` counter in a sidebar metric cell. Screenshot proof attached in the conversation log (`Screenshot 2026-05-23 at 2.23.55 PM.png`).
-- **Cause:** no component subscribed to "what's the agent doing RIGHT NOW" — the existing chips and panels are all event-derived and event-discrete.
-- **Fix:** commit `8e16a56` adds `frontend/src/components/lab/rlm/live-activity-strip.tsx` — an always-visible narration band slotted between RlmHeader and RubricStrip. Derivation ladder, most → least specific:
-  1. In-flight primitive  → `▶ Running <primitive> · Xs` (info; warn when >60s)
-  2. In-flight sub-RLM    → `↳ Sub-RLM depth N querying paper · Xs`
-  3. Between iterations   → `… Iteration X complete — root thinking · Xs`
-  4. Pre-first-iteration  → `… Starting up — root model reading paper · Xs`
-  Terminal states (completed/partial/failed) get their own banner. Pulsing dot makes the live state unmistakable. Tooltip explains why long gaps are normal (so the user never thinks the run is wedged when it isn't).
-- **Tests:** 16/16 existing tests pass (rlm-header.test.tsx + use-rdr-artifacts.test.ts). TypeScript clean.
-- **Verified:** pending next Playwright snapshot on prj_20457ea6673b5a32.
-
-## F11 — Nodes unclickable after panning the exploration canvas
-
-- **Severity:** UX (functional bug — feature appeared broken).
-- **Symptom:** user screenshot at 14:34 PT showed the lab page with the new LiveActivityStrip working ("▶ Running implement_baseline 100s") and two canvas nodes (Environment, Baseline build), but reported "nodes unclickable" — the NodeDetailSidebar never opened when the nodes were tapped.
-- **Cause:** `frontend/src/hooks/use-pan.ts` set `dragRef.current.moved = true` during a pan but the `onUp` handler only reset `active`, not `moved`. The exploration-canvas's `handleSelect` uses `if (dragRef.current.moved) return` to discriminate pan-vs-click, so after any pan operation, every subsequent click on a node silently early-returned. The Environment and Baseline build nodes were rendered off-center, so the user had to pan to see them — guaranteeing the bug fired.
-- **Fix:** commit pending — reset `dragRef.current.moved = false` in `onUp`. 5/5 existing exploration-canvas tests still pass; behavior change is additive.
-- **Verified:** pending — user can refresh the lab page and click nodes again.
-
-## Run 2 — prj_20457ea6673b5a32 (fresh restart 19:17 UTC)
-
-After the original prj_5b5fe266b0b83f3d ran past `implement_baseline` and into the code-writing phase, the user requested a full restart to bake in the new UI/backend fixes from a clean state. Old run subprocess killed, headless tail + chromium killed, MCP playwright closed, runpod pods enumerated (0 active), docker reprolab containers stopped. Fresh kickoff via curl POST `/api/demo/arxiv` with same body: `{url, mode:rlm, sandbox:runpod, model:sonnet}`. Returned `projectId=prj_20457ea6673b5a32, sandboxMode=runpod` — F2 fix verified working end-to-end on the fresh run too.
-
-| time (UTC) | event | note |
-|---|---|---|
-| 19:17 | kickoff | new run, all fixes through commit 1998e5d baked in |
-| 19:20 | first repl_iteration | 3 min ramp; slower than prj_5b5fe266b0b83f3d's 104s — within normal variance for the cold runpod path |
-| 19:22 | repl_iteration #2 |  |
-| 19:27 | iteration_heartbeat + sub_rlm_spawned/complete bursts | root recursively querying paper slices |
-| 19:29 | **F10 verified live** | Playwright snapshot at `playwright/lab-snapshot-002.md` shows `status "Sub-RLM prompt preview: candidate -> dict of downstream answers..."` — the new LiveActivityStrip is rendering in the lab page exactly as designed; user now sees real-time activity narration |
-| 19:29 | F7 verified live | same snapshot's console log: 3 leaf-scores 404s then stops (609ms, 5725ms, 10670ms) — counter hits STOP_AFTER_NO_ARTIFACT_CYCLES=3 and polling halts; no further 404 spam for the page lifetime |
-| 19:32 | implement_baseline start | sub-agent began writing baseline |
-| 19:32-19:54 | sub-agent wrote train.py + Dockerfile (9.5MB code dir) | real baseline code on disk before the error |
-| 19:54 | implement_baseline ERROR | 22-min wall-clock — over the typical 5-15 min range. `result_summary=Exception` (binding.py:165 strips the message to avoid leaking LLM output, but root REPL gets the full traceback and recovered) |
-| 19:54 | repl_iteration #3 | root self-recovered immediately, deciding next move |
-| 14:34 PT | F11 found via user screenshot | "nodes unclickable" — usePan moved-flag never reset; fixed in commit `2e21223` |
-| 19:59 | iter 3 retry: detect_environment ok (2nd) → build_environment ok (2nd) → plan_reproduction start | adaptive repair after iter 2 implement_baseline ERROR |
-| 20:00 | plan_reproduction ERROR (2nd attempt failed) → implement_baseline start | root pushing forward despite planning failure |
-| | | (2 primitive errors so far, both rescued by RLM's adaptive loop — pipeline integrity verified even when individual primitives fail) |
-
-## Run 2 — TERMINAL STATE
-
-Run reached terminal state at **20:17:26 UTC** (60min 2s wall-clock from kickoff at 19:17:24). Within the spec's 90-min target and well under the 180-min hard cap.
-
-| field | value |
+| artifact | verification |
 |---|---|
-| status | `completed` |
-| verdict | `partial` |
-| iterations | 4 |
-| LLM cost | $0.00 (OAuth subscription path — confirmed `models.planner = claude-oauth`, `executor = claude-sonnet-4-6`) |
-| rubric overall | 0.0 |
-| final_report.json | **present** (`runs/prj_20457ea6673b5a32/final_report.json`, 3591 bytes) |
-| final_report.md | present (2859 bytes) |
-| F14 leaderboard fields | all 4 present in JSON (mode, models, started_at, completed_at) ✓ |
+| `runs/prj_20457ea6673b5a32/final_report.json` | present, 3591 bytes |
+| `runs/prj_20457ea6673b5a32/final_report.md` | present, 2859 bytes |
+| `runs/prj_20457ea6673b5a32/dashboard_events.jsonl` | present, 110 events |
+| terminal event | `run_complete`, status `partial`, iterations 4, rubric 0.0 |
+| leaderboard fields | `mode`, `models`, `started_at`, `completed_at` present |
 
-### Pipeline-success vs answer-quality
+## Defect summary
 
-Per the design spec's "out of scope: tuning the run's quality... we judge the pipeline, not the answer", **this run is a pipeline success.** The orchestrator:
-- Resolved a 9.9MB PDF → 137k-char parsed text → workspace
-- Ran 4 REPL iterations with claude-oauth root
-- Successfully called `detect_environment ×2`, `build_environment ×2`, `understand_section`, `extract_hyperparameters`, `plan_reproduction` (1 of 2 attempts)
-- Built a working Docker image (`reprolab/prj_20457ea6673b5a32:env-9caa8f013eab`)
-- Self-recovered from 1 `implement_baseline` error (22min) + 1 `plan_reproduction` error
-- Per the report's reproduction_summary: "implement_baseline succeeded"
-- Reached terminal `run_complete partial` cleanly with rubric, cost, baseline_metrics on disk
-
-The 0.0 rubric and `run_experiment failed` outcome is a quality issue (and notably: report says "rlm_query and llm_query were unavailable (model-selection error in library); paper analysis was done via direct context text slicing" — worth investigating as a follow-up, but out of scope for this run).
-
-### Run 2 timeline (filled in)
-
-The run's full event log is at `runs/prj_20457ea6673b5a32/dashboard_events.jsonl` (107 events). Notable terminal-window events at 20:17:25-26:
-- 20:17:25 implement_baseline start (3rd attempt, this one short)
-- 20:17:26 implement_baseline error → run_experiment start → run_experiment error → repl_iteration 4 → **run_complete partial**
-
-## Open after both runs
-
-- Real fix for F3 (expose all registered root models in `/models` + widen `DemoModelChoice`).
-- Decide whether to change the `force_sandbox` config default to `""`. The current `"docker"` is a deliberate guarantee per the field comment — a design discussion, not a bug fix.
-- Align `.env` `REPROLAB_DEFAULT_SANDBOX` with `start.sh` default (F4).
-- Improve the `ValidationError` SSE result_summary to include pydantic error field locations + types (not values) so the UI can show what specifically failed without leaking LLM output.
-
----
-
-## Run timeline (filled in as run progresses)
-
-| time (UTC) | event | note |
+| id | issue | status |
 |---|---|---|
-| 2026-05-23 18:48 | kickoff | sandbox=runpod, model=sonnet (→claude-oauth) |
-| 2026-05-23 18:48 | ingest 1-6 done | "Workspace ready — 4 variables" |
-| 2026-05-23 18:51 | first repl_iteration @ 104s | runpod cold path cleared 8-min advisor budget |
-| 2026-05-23 18:55 | sub_rlm_spawned | root recursively queried paper for title/authors |
-| 2026-05-23 18:56 | sub_rlm_complete, repl_iteration #2 | 53.1s sub-rlm duration |
-| 2026-05-23 18:58 | 5× understand_section + 1× extract_hyperparameters | paper claims being mapped |
-| 2026-05-23 18:59 | detect_environment ERROR (ValidationError) | root passed dict[6] failing PaperClaimMap validation; primitive raised; root caught & adapted |
-| 2026-05-23 19:02 | detect_environment ok → build_environment ok → plan_reproduction start | root self-recovered from the ValidationError without dropping the iteration; environment is built |
-| 2026-05-23 19:04 | plan_reproduction ok → implement_baseline start (iter 3) | docker image `reprolab/prj_5b5fe266b0b83f3d:env-9caa8f013eab` staged locally for runpod |
-| 2026-05-23 19:09–19:10 | sub-agent writing `code/rlm/{repl.py,system_prompt.py,llm_client.py}` | the meta-reproduction in motion — ReproLab's sub-agent is implementing a fresh rlm package; files growing actively (44KB total so far) |
-| 2026-05-23 19:08 | F7 verification | latest 3 `screenshots/console-errors-*.json` files all 3 entries (down from 7 pre-fix) ✓ |
-| | | (implement_baseline finish + run_experiment + verify_against_rubric still ahead) |
+| F1 | `start.sh` failed under macOS bash 3.2 with an empty array under `set -u` | fixed, verified |
+| F2 | `REPROLAB_FORCE_SANDBOX` default silently pinned every run to Docker | fixed in working tree, verified by Run 2 |
+| F3 | `/models` exposed only `sonnet` and `opus` despite a larger RLM registry | fixed in working tree, tested |
+| F4 | `.env` sandbox default disagreed with `start.sh` | fixed in local `.env`, `.env.example` already aligned |
+| F5 | RDR artifact polling spammed 404s throughout active non-RDR runs | partially fixed, superseded by F7 |
+| F6 | First `repl_iteration` arrived within the RunPod cold-path budget | milestone, not a defect |
+| F7 | F5 missed the real mixed `404 + 200-empty` artifact signature | fixed, verified live |
+| F8 | Lab page went blank when SSR `/api/demo` fetch timed out | fixed, verified on restart |
+| F9 | `no signal Xs` chip false-alarmed during long primitives | fixed, verified on restart |
+| F10 | Lab canvas looked dead between events | fixed with `LiveActivityStrip`, verified live |
+| F11 | Exploration canvas nodes became unclickable after panning | fixed, tested |
+| F12 | Primitive error summaries hid safe Pydantic field/type detail | fixed, tested |
 
-## Observation: ValidationError handling is fragile but didn't block
+## Findings
 
-The detect_environment ValidationError was opaque in the SSE stream
-(`result_summary="ValidationError"` — `binding.py:165` strips the
-exception message to avoid leaking raw LLM/paper text into the UI).
-The exception itself was re-raised, so the REPL surfaced the full
-pydantic detail to the root, which adapted and retried successfully
-within the same iteration. **No fix needed for THIS run.** Worth a
-follow-up to make pydantic ValidationError details safe-to-emit (just
-field locations + types, no values) so the UI shows what went wrong.
+### F1 - `start.sh` unbound variable under bash 3.2
+
+Symptom: `./start.sh` exited with `preflight_args[@]: unbound variable` on
+macOS.
+
+Cause: macOS bash 3.2 treats `"${empty_array[@]}"` as unbound under `set -u`.
+
+Fix: commit `13793f0` uses the bash-3.2-safe expansion
+`${preflight_args[@]+"${preflight_args[@]}"}`.
+
+Verified: `./start.sh` boots the backend on macOS 25.
+
+### F2 - `REPROLAB_FORCE_SANDBOX` default pinned runs to Docker
+
+Symptom: `POST /api/demo/arxiv` with body `sandbox=runpod` returned
+`sandboxMode=docker`.
+
+Cause: `backend/config.py` defaulted `force_sandbox` to `"docker"`, and
+`apply_sandbox_override()` rewrote every request. A commented-out `.env` line
+did not disable the override because pydantic-settings fell back to the field
+default.
+
+Fix:
+
+- Initial session fix: local `.env` set `REPROLAB_FORCE_SANDBOX=` explicitly.
+- Post-run cleanup: `backend/config.py` now defaults `force_sandbox` to `""`.
+  Deployments that need hard pinning must set `REPROLAB_FORCE_SANDBOX=docker`
+  or `local` explicitly.
+- `backend/config.py` also defaults `default_sandbox` to `runpod`, matching
+  `start.sh`, `.env.example`, and frontend run-start requests.
+- `CLAUDE.md` and `.env.example` document the new behavior.
+
+Verified: Run 2 kickoff returned `sandboxMode=runpod`; `demo_status.json` for
+`prj_20457ea6673b5a32` also records `sandboxMode=runpod`.
+
+### F3 - `/models` exposed only 2 of 7 registered root models
+
+Symptom: the lab dropdown only exposed `sonnet` and `opus`. The RLM registry
+also supports `gpt-5`, `qwen3-coder`, `kimi-k2.5`, `claude`,
+`claude-oauth`, `qwen3-coder-featherless`, and `azure-gpt-4o`.
+
+Cause: `backend/app.py` hardcoded `/models`, and the frontend constrained
+`DemoModelChoice` to `"sonnet" | "opus"`.
+
+Fix landed in this cleanup pass:
+
+- `/models` now returns descriptors from `ROOT_MODELS`.
+- Each descriptor includes `available` and `missingCredentials` so the UI can
+  disable models whose credentials are absent.
+- `DemoModelChoice` and `UserPrefs.model` are widened to `string`.
+- The frontend proxy forwards arbitrary model IDs.
+- `_python_script()` preserves registry model keys instead of clobbering every
+  non-`opus` choice to the provider default.
+
+Verified:
+
+- Backend tests assert `/models` includes all seven registry keys and
+  availability fields.
+- Frontend tests assert arbitrary model IDs are forwarded.
+
+### F4 - `.env` sandbox default disagreed with `start.sh`
+
+Symptom: `start.sh` defaulted `REPROLAB_DEFAULT_SANDBOX` to `runpod`, but the
+local `.env` had `REPROLAB_DEFAULT_SANDBOX=docker`.
+
+Fix: `backend/config.py`, local ignored `.env`, `start.sh`, and `.env.example`
+now agree on `runpod` as the development default.
+
+Verified: `rg` now shows local `.env` and `.env.example` aligned on `runpod`.
+
+### F5 - RDR artifact polling spammed 404s during active RLM runs
+
+Symptom: the browser console accumulated repeated 404s for `/clusters`,
+`/leaf-scores`, and `/repair-iterations` during an active RLM run that could
+not produce RDR artifacts.
+
+Cause: the hook stopped polling only after the run became inactive.
+
+Fix: commit `4097a20` added active-run early exit for sustained 404s.
+
+Status: superseded by F7 because the first fix assumed all three endpoints
+returned 404.
+
+### F6 - RunPod cold path cleared the advisor budget
+
+This was not a defect. The first run's initial `repl_iteration` landed at age
+104s, well inside the advisor's 8-minute cold-path budget. This also verified
+the earlier SDK `aclose` deadlock mitigation: the run continued despite
+expected non-fatal `aclose` warnings.
+
+### F7 - Real RDR artifact signature was mixed `404 + 200-empty`
+
+Symptom: F5 did not reduce console noise. The real signature was:
+
+- `/clusters`: `200` with empty payload
+- `/leaf-scores`: `404`
+- `/repair-iterations`: `200` with empty payload
+
+Cause: the first fix only incremented the stop counter when all endpoints
+returned 404.
+
+Fix: commit `269a6c1` increments on `allMissing`, whether each endpoint is
+404, 5xx, or 200-empty.
+
+Verified: Playwright snapshot `playwright/lab-snapshot-002.md` showed only
+three `leaf-scores` 404s before polling stopped.
+
+### F8 - Lab page rendered blank when SSR fetch timed out
+
+Symptom: during `implement_baseline`, the lab header rendered but the main
+content area was blank. Console showed a 504 from `/api/demo`.
+
+Cause: the frontend backend GET timeout was 4s while FastAPI was busy serving
+large SSE/event payloads. `useRun` then silently bailed on the 504.
+
+Fix: commit `1998e5d`:
+
+- increased `BACKEND_GET_TIMEOUT_MS` from 4s to 10s;
+- retried auto-resume 504s with exponential backoff;
+- shipped the related long-primitive chip fix in F9.
+
+Verified: Run 2 stayed usable through the same long primitive window.
+
+### F9 - `no signal Xs` chip caused false panic during long primitives
+
+Symptom: the header showed a warn-colored `no signal 765s` during
+`implement_baseline`.
+
+Cause: RLM heartbeats are emitted between root iterations, not during a single
+long primitive. Long primitives can legitimately produce minutes of silence.
+
+Fix: commit `1998e5d` derives the in-flight primitive and renders
+`running <primitive> (Xs)` in an informational style when a primitive is active.
+The warn-colored `no signal Xs` remains for true no-primitive wedges.
+
+Verified: Run 2 showed `Running implement_baseline` instead of a false alarm.
+
+### F10 - Lab canvas appeared dead between events
+
+Symptom: between discrete events the UI looked frozen. The user saw multiple
+minutes of apparent inactivity while the agent was actually thinking or a
+sub-RLM was running.
+
+Cause: no component narrated "what is happening right now." Existing panels
+updated only when events arrived.
+
+Fix: commit `8e16a56` added
+`frontend/src/components/lab/rlm/live-activity-strip.tsx`, an always-visible
+activity band between `RlmHeader` and `RubricStrip`.
+
+Narration priority:
+
+1. In-flight primitive: `Running <primitive> - Xs`
+2. In-flight sub-RLM: `Sub-RLM depth N querying paper - Xs`
+3. Between iterations: `Iteration X complete - root thinking - Xs`
+4. Pre-first-iteration: `Starting up - root model reading paper - Xs`
+5. Terminal states: completed, partial, or failed banner
+
+Verified: `playwright/lab-snapshot-002.md` captured the strip showing
+`Sub-RLM prompt preview: candidate -> dict of downstream answers...`.
+
+### F11 - Nodes unclickable after panning the exploration canvas
+
+Symptom: after panning the exploration canvas, clicking nodes no longer opened
+`NodeDetailSidebar`.
+
+Cause: `use-pan.ts` set `dragRef.current.moved = true` during pan but did not
+reset it on pointer up. `exploration-canvas.tsx` treats `moved=true` as
+"ignore click", so all later clicks were swallowed.
+
+Fix: commit `401da26` resets `moved=false` in `onUp`.
+
+Verified: existing exploration canvas tests pass.
+
+### F12 - ValidationError summaries were too opaque
+
+Symptom: primitive errors surfaced as only `ValidationError` or `Exception`,
+which hid safe information the user needed to understand whether the root
+could recover.
+
+Cause: `binding.py` intentionally stripped exception messages to avoid leaking
+LLM output or paper text, but it also stripped safe Pydantic locations and
+error types.
+
+Fix: the wrapper now emits safe, value-free Pydantic detail in
+`result_summary`, capped for SSE payload size. It includes field locations,
+Pydantic messages, and Pydantic error types, but not input values.
+
+Verified: regression test asserts a Pydantic `int_parsing` error includes the
+field path and type while excluding the bad input value.
+
+## Run 2 timeline
+
+| time UTC | event | note |
+|---|---|---|
+| 19:17:24 | kickoff | new run, same paper/config, `sandboxMode=runpod` |
+| 19:20 | first `repl_iteration` | ~3 minute cold ramp, inside budget |
+| 19:22 | `repl_iteration` 2 | root continued |
+| 19:27 | `iteration_heartbeat` + sub-RLM bursts | recursive paper queries |
+| 19:29 | F10 verified | LiveActivityStrip rendered active sub-RLM narration |
+| 19:29 | F7 verified | artifact polling stopped after three missing cycles |
+| 19:32 | `implement_baseline` start | sub-agent began baseline work |
+| 19:32-19:54 | baseline code written | `train.py` and Dockerfile appeared under `code/` |
+| 19:54 | `implement_baseline` error | root recovered and entered iteration 3 |
+| 19:59 | retry path | `detect_environment` ok, `build_environment` ok, `plan_reproduction` start |
+| 20:00 | `plan_reproduction` error | root pushed forward |
+| 20:17:25 | terminal window begins | short third `implement_baseline` attempt |
+| 20:17:26 | terminal state | `run_experiment` error, `repl_iteration` 4, `run_complete partial` |
+
+## Pipeline-success evidence
+
+The final report and event stream confirm the orchestrator:
+
+- fetched a 9.9 MB arXiv PDF and parsed a 137k-character paper text;
+- ran 4 RLM iterations with `models.planner = claude-oauth`;
+- successfully called `detect_environment` twice, `build_environment` twice,
+  `understand_section`, `extract_hyperparameters`, and one of two
+  `plan_reproduction` attempts;
+- built Docker image `reprolab/prj_20457ea6673b5a32:env-9caa8f013eab`;
+- self-recovered from one long `implement_baseline` error and one
+  `plan_reproduction` error;
+- wrote `final_report.json`, `final_report.md`, rubric, cost, and
+  leaderboard metadata;
+- emitted `run_complete partial` cleanly.
+
+The answer quality issue remains separate: `run_experiment` failed, the rubric
+score was 0.0, and the report notes that `rlm_query` / `llm_query` were
+unavailable because of a model-selection error in the library.
+
+## Remaining follow-ups
+
+- Investigate the `rlm_query` / `llm_query` model-selection error reported by
+  `final_report.json`; this likely affects answer quality, not pipeline
+  integrity.
+- Improve run-quality prompting and primitive repair so `run_experiment`
+  produces measurable results on the RLM paper.
+- Continue UX polish from the follow-up plan: RunPod status chip, phase
+  indicator, structured frontend rendering for primitive errors, panel
+  empty-state audit, and toast notifications.
+
+## Verification commands run in the cleanup pass
+
+```bash
+.venv/bin/pytest tests/test_live_run_api.py tests/test_demo_gate.py tests/rlm/test_binding.py -q
+npm test -- --run src/app/api/demo/route.test.ts src/components/lab/lab-shell.test.tsx
+.venv/bin/pytest tests/rlm/test_models.py tests/rlm/test_model_aliases.py tests/rlm/test_build_llm_client.py tests/test_live_run_api.py tests/test_demo_gate.py tests/rlm/test_binding.py -q
+npm run lint
+npx tsc --noEmit
+npm test -- --run src/app/api/demo/route.test.ts src/components/lab/lab-shell.test.tsx src/components/lab/rlm/rlm-header.test.tsx
+```
+
+Results: 117 backend tests passed; frontend lint and typecheck passed; 10
+focused frontend tests passed.

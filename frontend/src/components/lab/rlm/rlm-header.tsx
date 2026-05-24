@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { RunWarning } from "../../../hooks/use-rlm-run";
+import type { DemoSandboxMode } from "../../../lib/demo/demo-run-types";
+import type { PrimitiveCallView, RunWarning } from "../../../hooks/use-rlm-run";
+import { RunpodStatusChip } from "./runpod-status-chip";
 import styles from "./rlm-header.module.css";
 
 export type RlmRunStatus = "queued" | "running" | "completed" | "partial" | "failed";
@@ -35,6 +37,8 @@ interface RlmHeaderProps {
    *  (e.g. implement_baseline at 5-15 min) and the old chip caused
    *  unnecessary panic. */
   inFlightPrimitive?: { name: string; startedAt: string } | null;
+  sandboxMode?: DemoSandboxMode | null;
+  primitiveCalls?: PrimitiveCallView[];
 }
 
 function statusTone(status: RlmRunStatus): { bg: string; fg: string; dot: string; pulse: boolean } {
@@ -67,6 +71,8 @@ export function RlmHeader({
   onRerun,
   rerunBusy = false,
   inFlightPrimitive = null,
+  sandboxMode = null,
+  primitiveCalls = [],
 }: RlmHeaderProps) {
   const tone = statusTone(status);
   const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
@@ -82,6 +88,12 @@ export function RlmHeader({
     const elapsed = heartbeatNowMs - new Date(lastHeartbeatAt).getTime();
     return elapsed > HEARTBEAT_STALE_MS ? Math.floor(elapsed / 1000) : null;
   }, [status, lastHeartbeatAt, heartbeatNowMs]);
+
+  const inFlightPrimitiveSecs = useMemo(() => {
+    if (inFlightPrimitive === null || heartbeatNowMs === null) return null;
+    const elapsed = heartbeatNowMs - new Date(inFlightPrimitive.startedAt).getTime();
+    return Math.max(0, Math.floor(elapsed / 1000));
+  }, [inFlightPrimitive, heartbeatNowMs]);
 
   const handleRerun = onRerun
     ? async () => {
@@ -106,11 +118,17 @@ export function RlmHeader({
         </div>
 
         <div className={styles.metaBlock}>
-          <span className={styles.projectChip}>{projectId}</span>
+          <span
+            className={styles.projectChip}
+            title={`Project ${projectId}. Run artifacts are written under runs/${projectId}.`}
+          >
+            {projectId}
+          </span>
 
           <span
             className={styles.statusPill}
             style={{ background: tone.bg, color: tone.fg }}
+            title={`Run status: ${status}. Running means the backend process is still producing dashboard events.`}
           >
             <span
               className={`${styles.statusDot}${tone.pulse ? ` ${styles.pulse}` : ""}`}
@@ -119,35 +137,35 @@ export function RlmHeader({
             {status}
           </span>
 
+          <RunpodStatusChip
+            projectId={projectId}
+            sandboxMode={sandboxMode}
+            status={status}
+            primitiveCalls={primitiveCalls}
+            nowMs={heartbeatNowMs}
+          />
+
           {noSignalSecs !== null && (
             inFlightPrimitive !== null ? (
               // Informational: a primitive is still in flight. The heartbeat
               // gap is expected (implement_baseline at 5-15 min, build_environment
               // at 1-5 min). Surface what's actually running so the user knows
               // the agent is working, not wedged.
-              (() => {
-                const primSecs = Math.floor(
-                  (heartbeatNowMs ?? Date.now()) - new Date(inFlightPrimitive.startedAt).getTime(),
-                ) / 1000;
-                const primSecsRounded = Math.max(0, Math.floor(primSecs));
-                return (
-                  <span
-                    title={`Primitive ${inFlightPrimitive.name} has been running for ${primSecsRounded}s. Heartbeats pause during long primitives — this is normal.`}
-                    style={{
-                      background: "var(--accent-soft)",
-                      color: "var(--accent-ink)",
-                      borderRadius: "4px",
-                      padding: "2px 8px",
-                      fontSize: "0.72rem",
-                      fontWeight: 600,
-                      display: "inline-block",
-                      verticalAlign: "middle",
-                    }}
-                  >
-                    running {inFlightPrimitive.name} ({primSecsRounded}s)
-                  </span>
-                );
-              })()
+              <span
+                title={`Primitive ${inFlightPrimitive.name} has been running for ${inFlightPrimitiveSecs ?? 0}s. Heartbeats pause during long primitives — this is normal.`}
+                style={{
+                  background: "var(--accent-soft)",
+                  color: "var(--accent-ink)",
+                  borderRadius: "4px",
+                  padding: "2px 8px",
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                  display: "inline-block",
+                  verticalAlign: "middle",
+                }}
+              >
+                running {inFlightPrimitive.name} ({inFlightPrimitiveSecs ?? 0}s)
+              </span>
             ) : (
               <span
                 title={`No primitive in flight and no heartbeat for ${noSignalSecs}s — the run may be wedged. Check runner.stderr.log for errors.`}
@@ -191,13 +209,21 @@ export function RlmHeader({
             </span>
           )}
 
-          <span className={styles.iterBlock}>
+          <span
+            className={styles.iterBlock}
+            title={`Iteration ${iterationCount} — the root model has emitted ${iterationCount} REPL turn${iterationCount === 1 ? "" : "s"} so far.`}
+          >
             <span className={styles.iterLabel}>iteration</span>
             <span className={styles.iterValue}>{iterationCount}</span>
           </span>
 
           {costUsd !== null && (
-            <span className={styles.cost}>${costUsd.toFixed(2)}</span>
+            <span
+              className={styles.cost}
+              title="LLM cost reported by the run. OAuth subscription paths may report $0.00."
+            >
+              ${costUsd.toFixed(2)}
+            </span>
           )}
 
           {showRerun && (

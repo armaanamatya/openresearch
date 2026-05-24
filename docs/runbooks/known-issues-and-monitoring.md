@@ -13,14 +13,14 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | 1 | SDK `aclose()` deadlock kills RLM root (Defect 1) | blocker | **resolved 2026-05-23** | `backend/services/context/workspace/tools/rlm_query.py::ClaudeLlmClient.complete` — always thread-isolates now |
 | 2 | SDK `transport.close()` futex hang on WSL2 (Defect 2) | blocker on WSL | mitigated | Same fix as #1 contains it. See `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`. |
 | 3 | SSR↔client hydration mismatch in resize handles | dev-mode warning | **resolved 2026-05-23** | `frontend/src/hooks/use-resizable-panels.ts` — `useState` seeds with `defaultSizes`, storage hydrated in post-mount `useEffect` |
-| 4 | UI "no signal Xs" chip false-alarms during long primitives | UX | **open** (task #23) | `frontend/src/components/lab/rlm/rlm-header.tsx` |
+| 4 | UI "no signal Xs" chip false-alarms during long primitives | UX | resolved 2026-05-23 | `RlmHeader` now shows the in-flight primitive instead |
 | 5 | Sub-RLM root strategy queries the same paper slice repeatedly | run quality | **open** | `rlms` PyPI library — root prompt or `primitives.py` cache |
-| 6 | `REPROLAB_DEFAULT_SANDBOX=docker` silently overrides `--sandbox` | gotcha | documented in CLAUDE.md | `.env` |
-| 7 | `REPROLAB_FORCE_SANDBOX` silently overrides per-run flag | gotcha | documented in CLAUDE.md | `.env` |
+| 6 | `REPROLAB_DEFAULT_SANDBOX=docker` disagreed with `start.sh` | gotcha | resolved 2026-05-23 | config, `.env`, and `.env.example` now match `start.sh` (`runpod`) |
+| 7 | Missing `REPROLAB_FORCE_SANDBOX` silently forced Docker | gotcha | resolved 2026-05-23 | `backend/config.py` default is now empty; explicit env still overrides |
 | 8 | Anthropic API-key with no credit balance dies at first Sonnet sub-call | blocker on stale keys | documented in CLAUDE.md | `.env` — leave empty if subscription is the source |
 | 9 | macOS Keychain OAuth not detected by `factory.has_provider_credentials` | blocker | resolved 2026-05-23 | `backend/agents/.../factory.py::_has_claude_subscription_oauth` |
 | 10 | `demo_status.json::updatedAt` lags far behind real progress | confusion | **open** (architectural) | Backend writes status snapshots far less often than the SSE event stream |
-| 11 | `/api/demo/runs/<id>/leaf-scores` 404 spam in console for non-RDR runs | dev-mode noise | mitigated (F2) | `frontend/src/hooks/use-rdr-artifacts.ts` early-exit; stops after ~15s |
+| 11 | `/api/demo/runs/<id>/leaf-scores` 404 spam in console for non-RDR runs | dev-mode noise | resolved 2026-05-23 | `frontend/src/hooks/use-rdr-artifacts.ts` stops after mixed missing cycles |
 | 12 | Orphan `claude-agent-sdk` subprocesses persist after killed runs | quota leak | **open** (operational) | `pkill -9 -f "claude_agent_sdk/_bundled/claude"` between iterations |
 | 13 | Orphan Playwright MCP Chrome locks `SingletonLock` indefinitely | dev workflow | **open** (operational) | Kill the Chrome process by PID, remove `~/Library/Caches/ms-playwright/mcp-chrome-*/SingletonLock` |
 | 14 | `final_report.json` missing required keys → readiness tier 6 fails | bug shape | resolved 2026-05-23 | `backend/agents/rlm/report.py` — writes `mode`, `models`, `started_at`, `completed_at` |
@@ -44,9 +44,14 @@ The lab UI surfaces several state indicators. Each has a specific source and kno
 - **Red `failed`** — subprocess exited non-zero, OR a fatal exception was caught. Check `runs/<id>/runner.stderr.log` for the traceback.
 - **Gray `completed`** — `final_report.json` was written, subprocess exited 0.
 
-### 1b. "no signal Xs" chip — **frequently misleading, see §3.4**
+### 1b. "no signal Xs" chip
 
-Shows up next to the status pill when `Date.now() - lastHeartbeatTs > 60_000`. The heartbeat is fired by the RLM root at the *start of each iteration*. Long-running primitives (especially `implement_baseline`, which spawns a Sonnet sub-agent with tools) execute *between* heartbeats and may legitimately consume 5-15 minutes with no event traffic. The chip will scream "no signal 600s" while the agent is happily writing code.
+Shows up next to the status pill only when there is no heartbeat and no known
+primitive in flight. If a long primitive is active, the header should show
+`running <primitive> (Xs)` instead. Long-running primitives (especially
+`implement_baseline`, which spawns a Sonnet sub-agent with tools) execute
+between heartbeats and may legitimately consume 5-15 minutes with no event
+traffic.
 
 **Confirm if it's a real wedge:**
 ```bash
@@ -55,7 +60,8 @@ find runs/$PROJECT/code -mmin -2 -type f                  # any file touched in 
 pgrep -fa "claude_agent_sdk/_bundled" | head -5           # are SDK workers alive?
 ps -p <pid> -o pid,etime,pcpu                             # is the worker consuming CPU/wall?
 ```
-A worker with `etime` increasing, `pcpu > 0`, AND files being touched in `runs/<id>/code/` is *working*, not stuck. See §3.4 for the planned fix.
+A worker with `etime` increasing, `pcpu > 0`, AND files being touched in
+`runs/<id>/code/` is working, not stuck.
 
 ### 1c. Iteration counter
 
@@ -182,7 +188,7 @@ Stack points to `src/components/lab/rlm/resize-handle.tsx` rendered by `RlmLab`.
 
 **Cost implication:** the cheapest local-dev cost model is now: OpenAI for the root (~$1/run via `--model gpt-5`), OAuth subscription for Sonnet sub-agents ($0), RunPod COMMUNITY for the GPU sandbox (~$0.34/run). Zero Anthropic API balance required. See CLAUDE.md §"Fixed 2026-05-23".
 
-### 3.4 Wedge indicator false alarms — **OPEN** (task #23)
+### 3.4 Wedge indicator false alarms — resolved 2026-05-23
 
 **Symptom:** `rlm-header.tsx` shows an orange `no signal Xs` chip while a legitimate long primitive (especially `implement_baseline`) is in flight. The screenshot tail's `wedge-log.tsv` will record steadily climbing values like `234s → 268s → 300s → 331s` even though the agent is actively writing code under `runs/<id>/code/`.
 
@@ -201,7 +207,10 @@ PY
 ```
 Cross-check with `find runs/$PROJECT/code -mmin -2 -type f` — if files were touched in the last 2 min, the agent is alive.
 
-**Planned fix:** track the in-flight primitive (last `primitive_call` event whose pairing `primitive_call_complete` hasn't fired) and either suppress the chip or replace it with `"<primitive_name> — Xm"`. Long primitives have known typical wall-clocks (see §1.d table); a primitive within 2× its budget shouldn't trigger the alarm. Out-of-budget should still trigger.
+**Fix:** `RlmLab` derives the in-flight primitive from start/ok/error
+`primitive_call` events and passes it to `RlmHeader`. The header renders
+`running <primitive> (Xs)` while a primitive is active and keeps `no signal Xs`
+for true no-primitive wedges.
 
 ### 3.5 Sub-RLM root strategy queries the same slice repeatedly — **OPEN**
 
