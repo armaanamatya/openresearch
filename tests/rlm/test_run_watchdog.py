@@ -37,11 +37,11 @@ from backend.agents.rlm import run_watchdog as rw
 
 def test_default_config_thresholds() -> None:
     c = rw.WatchdogConfig()
-    # Policy: warn + kill default to the same threshold so stale -> kill
-    # immediately (no warn-then-kill courtesy window).  Operator can split
-    # them via env var for the legacy warn-then-kill behaviour.
-    assert c.warn_after_seconds == 300.0
-    assert c.kill_after_seconds == 300.0
+    # Policy: warn==kill==600s (10 min).  Long enough that legitimate
+    # cuda-devel pip install (7-10 min) doesn't get falsely killed; short
+    # enough that a genuinely wedged run can't burn 30+ min of pod time.
+    assert c.warn_after_seconds == 600.0
+    assert c.kill_after_seconds == 600.0
     assert c.poll_interval_seconds == 30.0
     assert c.heartbeat_filename == ".heartbeat"
     assert c.exec_log_filename == "exec.log"

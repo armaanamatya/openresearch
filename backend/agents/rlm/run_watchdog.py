@@ -91,8 +91,13 @@ class WatchdogConfig:
     breadcrumb.
     """
 
-    warn_after_seconds: float = 300.0
-    kill_after_seconds: float = 300.0  # collapsed: stale -> kill, no waiting
+    # 10 min default: long enough to clear legitimate bootstrap (cuda-devel
+    # pip install can take 7-10 min on a cold pod) but short enough that a
+    # genuinely wedged run doesn't burn $ for 30+ min.  warn==kill collapses
+    # the policy to "stale -> kill" (no warn-then-kill courtesy window) per
+    # operator direction 2026-05-24.
+    warn_after_seconds: float = 600.0
+    kill_after_seconds: float = 600.0
     poll_interval_seconds: float = 30.0
     heartbeat_filename: str = ".heartbeat"
     exec_log_filename: str = "exec.log"
@@ -110,11 +115,9 @@ class WatchdogConfig:
                 logger.warning("watchdog: ignoring non-numeric %s=%r", name, raw)
                 return default
 
-        # Both warn + kill default to 300 s (5 min).  Operator can split
-        # them via env var if they want the old warn-then-kill behaviour.
         return cls(
-            warn_after_seconds=_f(_WARN_ENV_VAR, 300.0),
-            kill_after_seconds=_f(_KILL_ENV_VAR, 300.0),
+            warn_after_seconds=_f(_WARN_ENV_VAR, 600.0),
+            kill_after_seconds=_f(_KILL_ENV_VAR, 600.0),
             poll_interval_seconds=_f(_POLL_ENV_VAR, 30.0),
         )
 
@@ -166,6 +169,60 @@ def _file_age_seconds(path: Path, now: float) -> Optional[float]:
     return max(0.0, now - st.st_mtime)
 
 
+def _latest_meaningful_sse_event_age(
+    sse_log_path: Path, now: float, max_lookback_lines: int = 200,
+) -> Optional[float]:
+    """Return age of the most recent NON-heartbeat dashboard event, or None.
+
+    The dashboard_events.jsonl stream is written to constantly by ``heartbeat()``
+    primitive calls and ``iteration_heartbeat`` events — both fire every 30 s
+    regardless of whether real work is happening.  Counting them as activity
+    makes the watchdog blind to silent hangs where the agent keeps heartbeating
+    but produces zero forward progress (Adam v8 sat 25 min in implement_baseline
+    while iteration_heartbeat kept the SSE log mtime fresh).
+
+    Filtering them out — looking for the latest primitive_call other than
+    ``heartbeat``, OR any terminal/state event — makes the SSE signal a true
+    measure of forward progress.
+
+    Fail-soft: file missing or unparseable lines return None.
+    """
+    if not sse_log_path.exists():
+        return None
+    try:
+        with sse_log_path.open(encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+    # Walk backwards to find the most recent non-heartbeat event.
+    import json as _json
+    for line in reversed(lines[-max_lookback_lines:]):
+        try:
+            d = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        ev_type = d.get("event") or d.get("type") or ""
+        primitive = d.get("primitive") or ""
+        # Skip pure liveness signals — they don't indicate forward progress.
+        if ev_type == "iteration_heartbeat":
+            continue
+        if ev_type == "primitive_call" and primitive == "heartbeat":
+            continue
+        # Found a real event.  Parse its timestamp.
+        ts_str = d.get("ts") or d.get("timestamp") or ""
+        if not ts_str:
+            continue
+        try:
+            from datetime import datetime as _dt
+            dt = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+            return max(0.0, now - dt.timestamp())
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
 def collect_staleness(
     *,
     artifact_root: Path,
@@ -177,6 +234,10 @@ def collect_staleness(
 
     Pure function — no side effects, fail-soft on every I/O.  Caller decides
     what to do with the verdict.
+
+    The SSE-event signal filters out pure-liveness events (iteration_heartbeat,
+    primitive_call:heartbeat) so the watchdog can't be deceived by an agent
+    that emits heartbeats while making zero forward progress.
     """
     if now is None:
         now = time.time()
@@ -187,7 +248,7 @@ def collect_staleness(
 
     exec_age = _file_age_seconds(exec_log_path, now)
     hb_age = _file_age_seconds(heartbeat_path, now)
-    sse_age = _file_age_seconds(sse_log_path, now)
+    sse_age = _latest_meaningful_sse_event_age(sse_log_path, now)
 
     # Min-staleness across signals that have been observed at least once.
     # Signals without a file yet are excluded (bootstrap-grace).
