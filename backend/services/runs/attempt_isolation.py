@@ -45,8 +45,16 @@ _ARCHIVE_FILES: tuple[str, ...] = (
     "_user_message_cursor.json",
 )
 
-# Sub-path inside rlm_state/ that is also moved.
+# Sub-paths inside rlm_state/ that are moved per-attempt.
+# gpu_escalation_state.json is intentionally included (A2): the escalation
+# counter must reset to 0 on a new attempt so the cap is not exhausted before
+# the fresh run even starts.  gpu_plan.json is in _PAPER_ARTIFACTS (stable
+# across attempts) and must NOT appear here.
 _RLM_STATE_ITER = "iterations.jsonl"
+_RLM_STATE_PER_ATTEMPT: tuple[str, ...] = (
+    "iterations.jsonl",
+    "gpu_escalation_state.json",
+)
 
 # Pickle snapshot at the top level.
 _REPL_PICKLE = "repl_state.pickle"
@@ -142,12 +150,13 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
             shutil.move(str(src), str(attempt_dir / name))
             moved.append(name)
 
-    # 2. iterations.jsonl from rlm_state/.
-    iter_src = project_dir / "rlm_state" / _RLM_STATE_ITER
-    if iter_src.exists() and iter_src.is_file():
-        (attempt_dir / "rlm_state").mkdir(parents=True, exist_ok=True)
-        shutil.move(str(iter_src), str(attempt_dir / "rlm_state" / _RLM_STATE_ITER))
-        moved.append(f"rlm_state/{_RLM_STATE_ITER}")
+    # 2. Per-attempt rlm_state/ files (iterations.jsonl + gpu_escalation_state.json, etc.).
+    for _rlm_name in _RLM_STATE_PER_ATTEMPT:
+        _rlm_src = project_dir / "rlm_state" / _rlm_name
+        if _rlm_src.exists() and _rlm_src.is_file():
+            (attempt_dir / "rlm_state").mkdir(parents=True, exist_ok=True)
+            shutil.move(str(_rlm_src), str(attempt_dir / "rlm_state" / _rlm_name))
+            moved.append(f"rlm_state/{_rlm_name}")
 
     # 3. repl_state.pickle.
     pickle_src = project_dir / _REPL_PICKLE
