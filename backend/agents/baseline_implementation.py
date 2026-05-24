@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,15 @@ from backend.agents.schemas import (
 from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
+
+# Repo root — used by _load_paper_override to locate docs/papers/<id>.yaml
+_REPO_ROOT = Path(__file__).parent.parent.parent
+
+# Regex matching bare arXiv IDs in project_id strings (e.g. "2605.15155",
+# "arXiv_2605.15155", "pb_2605_15155_...").  Only the canonical NNNN.NNNNN
+# and NNNNN.NNNNN formats are recognised.  Uses a non-digit lookbehind so it
+# matches even when preceded by an underscore (e.g. "arXiv_2605.15155").
+_ARXIV_ID_RE = re.compile(r"(?<!\d)(\d{4,5}\.\d{4,5})(?!\d)")
 
 
 def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Path) -> None:
@@ -498,8 +508,157 @@ _RUNTIME_DETECTION_BLOCK = (
     "`metrics.json={\"error\":\"api_unreachable\"}` rather than substituting mock outputs.\n"
 )
 
+_DATASET_SETUP_BLOCK = (
+    "\n\nDATASET SETUP — required patterns by environment family:\n"
+    "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
+    "\n"
+    "ALFWorld:\n"
+    "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
+    "                                           #   does not exist until the package is installed\n"
+    "  alfworld-download                        # downloads ALFWorld env data\n"
+    "  assert os.path.exists('/workspace/data/alfworld'), 'ALFWorld data missing'\n"
+    "  Data dir: /workspace/data/alfworld (NOT ~/alfworld or ./data)\n"
+    "\n"
+    "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
+    "  from datasets import load_dataset\n"
+    "  ds = load_dataset('hotpot_qa', 'distractor', cache_dir='/workspace/data/hf')\n"
+    "  assert len(ds) > 0, 'HotpotQA load failed'\n"
+    "  Set HF_HOME=/workspace/data/hf and HF_DATASETS_CACHE=/workspace/data/hf/datasets\n"
+    "  so repeated runs reuse the cache without re-downloading.\n"
+    "\n"
+    "WebShop:\n"
+    "  python -m pip install webshop-text-env  # or the upstream package from\n"
+    "                                           #   https://github.com/princeton-nlp/WebShop\n"
+    "  import webshop_text_env; env = webshop_text_env.WebShopEnv()\n"
+    "  assert env is not None, 'WebShop env init failed'\n"
+    "  Data dir: /workspace/data/webshop\n"
+    "\n"
+    "General rules:\n"
+    "  - The pod filesystem is /workspace-rooted. Always default data dirs to\n"
+    "    /workspace/data/<env>, NEVER to ~ or relative paths.\n"
+    "  - Emit an explicit assert os.path.exists(...) after EVERY download step.\n"
+    "    A missing dataset dir that passes silently will produce zero/NaN metrics.\n"
+    "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
+    "    `pip install alfworld` must precede `alfworld-download`.\n"
+    "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
+    "    inherits them.\n"
+)
 
-def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
+
+def _rubric_checklist_block(project_dir: Path) -> str:
+    """Return a prompt block listing the top-20 rubric leaves by weight.
+
+    Reads ``runs/<project>/generated_rubric.json`` when present and walks
+    ``sub_tasks`` recursively to collect leaf nodes (nodes with no further
+    sub_tasks or with sub_tasks=[]).  Leaves are sorted by ``weight``
+    descending; the top 20 are formatted as a checklist.
+
+    Returns ``""`` when the rubric file does not exist — no crash, no append.
+    """
+    rubric_path = project_dir / "generated_rubric.json"
+    if not rubric_path.exists():
+        return ""
+
+    try:
+        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    def _collect_leaves(node: dict) -> list[dict]:
+        children = node.get("sub_tasks") or []
+        if not children:
+            return [node]
+        leaves: list[dict] = []
+        for child in children:
+            if isinstance(child, dict):
+                leaves.extend(_collect_leaves(child))
+        return leaves
+
+    # The rubric may be a dict with a top-level list or a bare list.
+    if isinstance(rubric, dict):
+        top_nodes = rubric.get("sub_tasks") or rubric.get("tasks") or [rubric]
+    elif isinstance(rubric, list):
+        top_nodes = rubric
+    else:
+        return ""
+
+    all_leaves: list[dict] = []
+    for node in top_nodes:
+        if isinstance(node, dict):
+            all_leaves.extend(_collect_leaves(node))
+
+    if not all_leaves:
+        return ""
+
+    all_leaves.sort(key=lambda n: float(n.get("weight", 0) or 0), reverse=True)
+    top = all_leaves[:20]
+
+    lines = ["\n\nRUBRIC CHECKLIST — leaves you'll be scored on (top 20 by weight):"]
+    for leaf in top:
+        weight = float(leaf.get("weight", 0) or 0)
+        req = str(leaf.get("requirements") or leaf.get("description") or "")
+        if len(req) > 250:
+            req = req[:247] + "..."
+        lines.append(f"  [w={weight:.2f}] {req}")
+
+    return "\n".join(lines)
+
+
+def _load_paper_override(arxiv_id: str | None) -> str:
+    """Return a prompt block loaded from ``docs/papers/<arxiv_id>.yaml``.
+
+    The yaml schema is open-ended; the loader formats it as a markdown-style
+    prompt block so the agent sees it in a readable format.
+
+    Returns ``""`` when arxiv_id is None, the file doesn't exist, or parsing
+    fails — no crash, no append.
+    """
+    if not arxiv_id:
+        return ""
+
+    yaml_path = _REPO_ROOT / "docs" / "papers" / f"{arxiv_id}.yaml"
+    if not yaml_path.exists():
+        return ""
+
+    try:
+        import yaml  # PyYAML — available in the repo venv
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    if not data:
+        return ""
+
+    # Format the yaml content as a readable markdown block.
+    try:
+        import yaml
+        formatted = yaml.dump(data, default_flow_style=False, allow_unicode=True)
+    except Exception:
+        formatted = str(data)
+
+    return (
+        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from docs/papers/{arxiv_id}.yaml):\n"
+        + formatted
+    )
+
+
+def _extract_arxiv_id(project_id: str) -> str | None:
+    """Extract a bare arXiv ID (e.g. '2605.15155') from a project_id string.
+
+    Handles project IDs like '2605.15155', 'arXiv_2605.15155_abc', and the
+    hyphenated form produced by arXiv fetcher normalisation.  Returns None
+    when no arXiv ID pattern is found.
+    """
+    m = _ARXIV_ID_RE.search(project_id)
+    return m.group(1) if m else None
+
+
+def _compute_constraint_guidance(
+    sandbox_mode: object,
+    gpu_mode: object,
+    project_dir: Path | None = None,
+    arxiv_id: str | None = None,
+) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
     Goal: the baseline agent writes ONE script that works on CPU OR GPU,
@@ -527,38 +686,44 @@ def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
     agent gets ONE coherent guidance section covering both modes.
 
     Auth-agnostic by construction (no provider branching).
+
+    Prompt assembly order:
+    1. _NO_STUB_BLOCK
+    2. _RUNTIME_DETECTION_BLOCK
+    3. _POD_SETUP_BLOCK (only when sandbox=runpod)
+    4. _DATASET_SETUP_BLOCK (always-on)
+    5. Rubric auto-checklist (when generated_rubric.json exists)
+    6. Per-paper override (when docs/papers/<arxiv_id>.yaml exists)
+    7. REPROLAB_BASELINE_EXTRA_GUIDANCE env-var block
+    8. gpu_mode policy overlays (off / max)
     """
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
-    # NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
-    # before the runtime-detection nuance. RUNPOD POD SETUP comes only when the
-    # sandbox is runpod — keeps the prompt focused for local-docker reproductions.
+    # 1. NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
+    # before the runtime-detection nuance.
+    # 2. RUNTIME COMPUTE DETECTION — always-on.
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK
+
+    # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:
         guidance += _POD_SETUP_BLOCK
 
-    # Policy overlay: explicit gpu_mode=off → force CPU-only entrypoint.
-    if gpu_str in {"off", "none"}:
-        guidance += (
-            "\nPOLICY OVERLAY — --gpu-mode=off:\n"
-            "  User explicitly disabled GPU. Even if torch.cuda.is_available() "
-            "returns True at runtime, your commands.json MUST trigger only the "
-            "CPU/smoke path. The GPU branch in your code is dead code for this "
-            "run but still required for portability.\n"
-        )
-    # Policy overlay: explicit gpu_mode=max → entrypoint targets GPU path.
-    elif gpu_str == "max":
-        guidance += (
-            "\nPOLICY OVERLAY — --gpu-mode=max:\n"
-            "  User explicitly demands GPU. Sandbox MUST provide one. Your "
-            "commands.json should trigger the full-scale (GPU) path. The "
-            "CPU branch remains in the code as a safety net for portability + "
-            "smoke validation, but is not the primary entrypoint here.\n"
-        )
-    # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
+    # 4. DATASET SETUP — always-on; tells the agent how to download real data.
+    guidance += _DATASET_SETUP_BLOCK
 
-    # Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+    # 5. Rubric auto-checklist — when generated_rubric.json exists.
+    if project_dir is not None:
+        checklist = _rubric_checklist_block(project_dir)
+        if checklist:
+            guidance += checklist
+
+    # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
+    override = _load_paper_override(arxiv_id)
+    if override:
+        guidance += override
+
+    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
@@ -577,6 +742,26 @@ def _compute_constraint_guidance(sandbox_mode: object, gpu_mode: object) -> str:
             "real (paper's actual model + data), fail honestly via "
             "metrics.json={\"error\":\"scope_conflict\",\"detail\":\"...\"}.\n"
         )
+
+    # 8. Policy overlays — explicit gpu_mode=off forces CPU entrypoint;
+    #    gpu_mode=max forces GPU entrypoint.
+    if gpu_str in {"off", "none"}:
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=off:\n"
+            "  User explicitly disabled GPU. Even if torch.cuda.is_available() "
+            "returns True at runtime, your commands.json MUST trigger only the "
+            "CPU/smoke path. The GPU branch in your code is dead code for this "
+            "run but still required for portability.\n"
+        )
+    elif gpu_str == "max":
+        guidance += (
+            "\nPOLICY OVERLAY — --gpu-mode=max:\n"
+            "  User explicitly demands GPU. Sandbox MUST provide one. Your "
+            "commands.json should trigger the full-scale (GPU) path. The "
+            "CPU branch remains in the code as a safety net for portability + "
+            "smoke validation, but is not the primary entrypoint here.\n"
+        )
+    # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
 
     return guidance
 
@@ -616,7 +801,10 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
-    sandbox_guidance = _compute_constraint_guidance(sandbox_mode, gpu_mode)
+    arxiv_id = _extract_arxiv_id(project_id)
+    sandbox_guidance = _compute_constraint_guidance(
+        sandbox_mode, gpu_mode, project_dir=project_dir, arxiv_id=arxiv_id
+    )
 
     if repair_context:
         prompt = (
