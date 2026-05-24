@@ -265,11 +265,25 @@ async def test_cancelled_exits_cleanly(tmp_path: Path) -> None:
 
 def test_heartbeat_daemon_command_is_backgrounded() -> None:
     cmd = rw.heartbeat_daemon_command("/artifacts")
-    assert cmd.endswith(" &")  # background syntax
+    # The command MUST end with `exit 0` so SSH sees a clean immediate exit
+    # rather than waiting on the daemon. Previous version used plain
+    # `nohup ... &` which blocked because SSH waits for ALL inherited FDs
+    # to close — the daemon kept stdout/stderr alive forever.
+    assert "exit 0" in cmd
+    assert "&" in cmd  # daemon still backgrounded
     assert "/artifacts/.heartbeat" in cmd
     assert "while true" in cmd
     assert "sleep 30" in cmd
-    assert "nohup" in cmd  # survives parent shell
+
+
+def test_heartbeat_daemon_command_full_fd_detachment() -> None:
+    """All three SSH-inherited FDs must be closed/redirected, else the
+    SSH exec channel hangs waiting for them to close."""
+    cmd = rw.heartbeat_daemon_command("/artifacts")
+    assert "< /dev/null" in cmd or "</dev/null" in cmd  # stdin closed
+    assert "> /dev/null" in cmd or ">/dev/null" in cmd  # stdout redirected
+    assert "2>&1" in cmd                                 # stderr redirected
+    assert "setsid" in cmd                               # new session
 
 
 def test_heartbeat_daemon_command_alt_path() -> None:

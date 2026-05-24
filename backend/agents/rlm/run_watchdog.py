@@ -235,16 +235,34 @@ def heartbeat_daemon_command(artifact_dir_in_container: str = "/artifacts") -> s
     """Return the shell command that should be prepended to bootstrap_commands.
 
     Backgrounds a tiny daemon inside the sandbox that writes a unix timestamp
-    to ``<artifact_dir>/.heartbeat`` every 30 s.  Uses ``nohup ... &`` +
-    redirection to ``/dev/null`` so the daemon survives the parent shell
-    exiting and doesn't appear in stdout/stderr.
+    to ``<artifact_dir>/.heartbeat`` every 30 s.
 
-    The daemon naturally dies when the pod is destroyed.
+    **Detachment contract** (this is the subtle part — the previous version
+    used plain ``nohup ... &`` which blocked over SSH because the daemon
+    inherited SSH's stdout/stderr file descriptors; the SSH channel kept
+    the parent exec alive forever, hanging the entire for-loop of bootstrap
+    commands):
+
+      * ``( ... )`` — wrap in a subshell so the outer parent has nothing to
+        wait on once the subshell forks.
+      * ``setsid -f`` — fork into a NEW session detached from the controlling
+        terminal.  Without this, SSH treats the daemon as a child process
+        and waits for it.
+      * ``< /dev/null > /dev/null 2>&1`` — close stdin AND redirect stdout
+        + stderr.  SSH only closes the exec channel when ALL inherited FDs
+        are closed by every descendant.  Plain ``> /dev/null`` only closes
+        stdout/stderr; without ``< /dev/null`` the daemon still owns SSH's
+        stdin and the channel stays open forever.
+      * ``&`` — the final backgrounding.  After the subshell forks the
+        detached daemon and exits, SSH sees an immediate clean exit.
+
+    The daemon naturally dies when the pod is destroyed (no parent to
+    cling to, no controlling terminal, no shared file descriptors).
     """
     return (
-        f"nohup bash -c "
+        f"( setsid -f bash -c "
         f"'while true; do date +%s > {artifact_dir_in_container}/.heartbeat; sleep 30; done' "
-        f">/dev/null 2>&1 &"
+        f"< /dev/null > /dev/null 2>&1 & ) ; exit 0"
     )
 
 
