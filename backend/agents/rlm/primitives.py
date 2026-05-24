@@ -194,7 +194,16 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     `ctx` is required by the primitive-wrapper protocol (design decision D4 —
     `build_custom_tools` closes `ctx` over every primitive uniformly); this
     heuristic body does not use it.
+
+    Cached via ``primitive_cache``: identical text_slice → cached result
+    (skips the heuristic re-parse on retry).
     """
+    from backend.agents.rlm import primitive_cache as _cache
+    _payload = {"text_slice": text_slice}
+    _cached = _cache.maybe_get(ctx.project_dir, "understand_section", payload=_payload)
+    if _cached is not None:
+        return _cached
+
     from backend.agents.paper_understanding import (
         _extract_datasets, _extract_metrics, _extract_training_recipe,
         _extract_hardware, _extract_ambiguities,
@@ -220,6 +229,7 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
             "slice_chars": len(text_slice),
             "threshold": _HINT_THRESHOLD,
         }
+    _cache.put(ctx.project_dir, "understand_section", payload=_payload, result=result)
     return result
 
 
@@ -233,7 +243,15 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
 
     `ctx` is required by the primitive-wrapper protocol (design decision D4);
     this heuristic body does not use it.
+
+    Cached via ``primitive_cache``.
     """
+    from backend.agents.rlm import primitive_cache as _cache
+    _payload = {"text_slice": text_slice}
+    _cached = _cache.maybe_get(ctx.project_dir, "extract_hyperparameters", payload=_payload)
+    if _cached is not None:
+        return _cached
+
     from backend.agents.paper_understanding import _extract_training_recipe
     result = _extract_training_recipe({"_": text_slice}).model_dump()
     if len(text_slice) > _HINT_THRESHOLD:
@@ -249,6 +267,7 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
             "slice_chars": len(text_slice),
             "threshold": _HINT_THRESHOLD,
         }
+    _cache.put(ctx.project_dir, "extract_hyperparameters", payload=_payload, result=result)
     return result
 
 
@@ -277,6 +296,16 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
             ),
         }
 
+    from backend.agents.rlm import primitive_cache as _cache
+    _payload = {
+        "method_spec": method_spec,
+        # gpu_mode affects the Dockerfile wheel selection, so it's part of the key.
+        "gpu_mode": getattr(ctx, "gpu_mode", None),
+    }
+    _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
+    if _cached is not None:
+        return _cached
+
     from backend.agents.environment_detective import run_offline
     from backend.agents.schemas import PaperClaimMap
 
@@ -289,7 +318,9 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"),
         gpu_mode=getattr(ctx, "gpu_mode", None),
     )
-    return spec.model_dump()
+    result = spec.model_dump()
+    _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)
+    return result
 
 
 def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) -> None:
@@ -595,13 +626,21 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         + json.dumps(fields)
         + ". String-valued keys hold prose; list-valued keys hold arrays of strings."
     )
+    from backend.agents.rlm import primitive_cache as _cache
+    _payload = {"method_spec": method_spec, "env_spec": env_spec}
+    _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
+    if _cached is not None:
+        return _cached
+
     try:
         raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
         data = _extract_json(raw)
         if not any(k in data for k in ReproductionContract.model_fields):
             raise ValueError(
                 f"LLM response has no ReproductionContract fields: {list(data)}")
-        return ReproductionContract(**data).model_dump()
+        result = ReproductionContract(**data).model_dump()
+        _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
+        return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
         return {"success": False, "error": f"plan_reproduction: {type(exc).__name__}: {exc}"}
 
@@ -1443,6 +1482,41 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "error": "verify_against_rubric: rubric must be a non-empty dict",
         }
 
+    # Cache key: rubric + metrics + a content hash of the code dir + the
+    # paper's metrics.json bytes if present. The leaf scorer reads code +
+    # metrics from disk, so the cache MUST invalidate when either changes.
+    from backend.agents.rlm import primitive_cache as _cache
+    import hashlib as _hashlib
+    _evidence_hash_bits: list[str] = []
+    try:
+        _code_dir = ctx.project_dir / "code"
+        if _code_dir.exists():
+            for p in sorted(_code_dir.rglob("*")):
+                if p.is_file() and "__pycache__" not in p.parts:
+                    try:
+                        _evidence_hash_bits.append(_hashlib.sha256(p.read_bytes()).hexdigest()[:16])
+                    except OSError:
+                        pass
+        _metrics_file = ctx.project_dir / "code" / "metrics.json"
+        if _metrics_file.exists():
+            _evidence_hash_bits.append(_hashlib.sha256(_metrics_file.read_bytes()).hexdigest()[:16])
+    except Exception:  # noqa: BLE001
+        _evidence_hash_bits = []
+    _payload = {
+        "rubric_hash": _hashlib.sha256(
+            __import__("json").dumps(rubric, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16],
+        "results_hash": _hashlib.sha256(
+            __import__("json").dumps(results, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16],
+        "evidence_hash": _hashlib.sha256(
+            "".join(_evidence_hash_bits).encode("utf-8")
+        ).hexdigest()[:16],
+    }
+    _cached = _cache.maybe_get(ctx.project_dir, "verify_against_rubric", payload=_payload)
+    if _cached is not None:
+        return _cached
+
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
@@ -1495,7 +1569,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
 
-        return {
+        result = {
             "overall_score": overall_score,
             "meets_target": meets_target,
             "target_score": target,
@@ -1511,6 +1585,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             ],
             "leaf_scores": leaf_scores,
         }
+        _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)
+        return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
         return {
             "success": False,
