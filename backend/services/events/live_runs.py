@@ -982,6 +982,17 @@ class FileLiveRunService:
         return records
 
     def _read_worker_reports(self, project_id: str, max_records: int = 50) -> list[dict[str, Any]]:
+        # Prefer the new per-worker JSON dir if available
+        from backend.agents.worker_reports import read_worker_reports
+        run_dir = self.runs_root / project_id
+        if run_dir.is_dir():
+            try:
+                reports = read_worker_reports(run_dir)
+                return reports[-max_records:]
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Fallback: legacy flat JSONL
         path = self.runs_root / project_id / "worker_reports.jsonl"
         if not path.exists():
             return []

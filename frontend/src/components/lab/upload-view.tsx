@@ -347,40 +347,52 @@ export function UploadView({
       </fieldset>
 
       {/* ── Sub-agent auth radio group ───────────────────────────── */}
-      <fieldset className="upload-provider-fieldset" disabled={busy}>
-        <legend className="upload-config-label">Sub-agent auth</legend>
-        <div className="upload-provider-options">
-          {subagentOptions.map((s) => {
-            const available = authStatus ? authStatus.subagent_auth[s] : true;
-            const hint = available
-              ? SUBAGENT_LABELS[s]
-              : (s === "anthropic_api" ? "Set ANTHROPIC_API_KEY and reload" : "Run `claude login` and reload");
-            return (
-              <label
-                key={s}
-                className={`upload-provider-option${subagentAuth === s ? " selected" : ""}${!available ? " disabled" : ""}`}
-                title={hint}
-                aria-disabled={!available ? "true" : undefined}
-              >
-                <input
-                  type="radio"
-                  name="subagent_auth"
-                  value={s}
-                  checked={subagentAuth === s}
-                  disabled={!available}
-                  onChange={() => onSubagentAuthChange(s)}
-                />
-                <span className="upload-provider-name">{SUBAGENT_LABELS[s]}</span>
-                {authStatus ? (
-                  <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
-                    {available ? "✓" : "✗"}
-                  </span>
-                ) : null}
-              </label>
-            );
-          })}
-        </div>
-      </fieldset>
+      {(() => {
+        const noneAvailable = authStatus
+          ? !authStatus.subagent_auth.anthropic_api && !authStatus.subagent_auth.anthropic_oauth
+          : false;
+        return (
+          <fieldset className="upload-provider-fieldset" disabled={busy}>
+            <legend className="upload-config-label">Sub-agent auth</legend>
+            {noneAvailable && (
+              <p className="upload-subagent-warn">
+                No sub-agent auth available — set <code>ANTHROPIC_API_KEY</code> to enable Sonnet implementation calls.
+              </p>
+            )}
+            <div className="upload-provider-options">
+              {subagentOptions.map((s) => {
+                const available = authStatus ? authStatus.subagent_auth[s] : true;
+                const hint = available
+                  ? SUBAGENT_LABELS[s]
+                  : (s === "anthropic_api" ? "Set ANTHROPIC_API_KEY and reload" : "Run `claude login` and reload");
+                return (
+                  <label
+                    key={s}
+                    className={`upload-provider-option${subagentAuth === s && !noneAvailable ? " selected" : ""}${!available ? " disabled" : ""}`}
+                    title={hint}
+                    aria-disabled={!available ? "true" : undefined}
+                  >
+                    <input
+                      type="radio"
+                      name="subagent_auth"
+                      value={s}
+                      checked={subagentAuth === s}
+                      disabled={!available}
+                      onChange={() => onSubagentAuthChange(s)}
+                    />
+                    <span className="upload-provider-name">{SUBAGENT_LABELS[s]}</span>
+                    {authStatus ? (
+                      <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
+                        {available ? "✓" : "✗"}
+                      </span>
+                    ) : null}
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+        );
+      })()}
 
       {/* ── Advanced options (collapsible) ──────────────────────── */}
       <details

@@ -21,7 +21,9 @@ import asyncio
 import json
 import logging
 import shutil
+import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -343,10 +345,49 @@ async def reproduce(agent_context: AgentContext, *, ctx: "RunContext") -> Artifa
 
     Fail-soft: any exception is caught and returned as ``Artifacts(failed=True)``.
     """
+    from backend.agents.worker_reports import (
+        WORKER_TYPE_RDR_CLUSTER,
+        build_extended_worker_report,
+        build_worker_report_completed_event,
+        build_worker_report_failed_event,
+        build_worker_report_started_event,
+        finalize_worker_report,
+        open_worker_report,
+    )
+
     cluster_id = agent_context.cluster.id
+    cluster = agent_context.cluster
+    start_ts = datetime.now(timezone.utc).isoformat()
+    start_mono = time.monotonic()
+
+    # Build the "running" report BEFORE invoking the agent
+    report = build_extended_worker_report(
+        run_id=getattr(ctx, "project_id", None),
+        worker_type=WORKER_TYPE_RDR_CLUSTER,
+        agent_id="baseline-implementation",
+        project_dir=ctx.project_dir,
+        model=ctx.agent_model or ctx.model or None,
+        provider=ctx.provider or None,
+        status="running",
+        started_at=start_ts,
+        cluster_id=cluster_id,
+        assignment={
+            "summary": f"Reproduce cluster: {cluster.title}",
+            "detailed_prompt_or_task": f"Cluster {cluster_id} with {len(cluster.leaves)} leaves",
+            "expected_outputs": ["commands.json", "metrics.json"],
+            "constraints": [],
+        },
+    )
+
+    # Persist the running report and emit SSE event
+    try:
+        open_worker_report(ctx.project_dir, report)
+        _emit_report_event(ctx, build_worker_report_started_event(report))
+    except Exception:  # noqa: BLE001
+        logger.debug("rdr/agent: could not open worker report for %s", cluster_id)
 
     try:
-        return await _reproduce_inner(agent_context, ctx=ctx)
+        result = await _reproduce_inner(agent_context, ctx=ctx)
     except Exception as exc:  # noqa: BLE001
         error_msg = f"{type(exc).__name__}: {exc}"
         logger.error(
@@ -355,6 +396,17 @@ async def reproduce(agent_context: AgentContext, *, ctx: "RunContext") -> Artifa
             error_msg,
             traceback.format_exc(),
         )
+        elapsed_ms = int((time.monotonic() - start_mono) * 1000)
+        try:
+            finalize_worker_report(
+                ctx.project_dir, report,
+                status="failed",
+                duration_ms=elapsed_ms,
+                error=error_msg,
+            )
+            _emit_report_event(ctx, build_worker_report_failed_event(report))
+        except Exception:  # noqa: BLE001
+            pass
         return Artifacts(
             cluster_id=cluster_id,
             files={},
@@ -363,6 +415,40 @@ async def reproduce(agent_context: AgentContext, *, ctx: "RunContext") -> Artifa
             failed=True,
             error=error_msg,
         )
+
+    # Finalize the report on success
+    elapsed_ms = int((time.monotonic() - start_mono) * 1000)
+    final_status = "failed" if result.failed else "completed"
+    try:
+        finalize_worker_report(
+            ctx.project_dir, report,
+            status=final_status,
+            duration_ms=elapsed_ms,
+            error=result.error if result.failed else None,
+            execution_summary={
+                "concise_summary": f"Cluster {cluster_id}: {len(result.files)} files, {len(result.commands)} commands",
+                "changed_files": list(result.files.keys())[:20],
+                "created_files": list(result.files.keys())[:20],
+            },
+            artifacts=[
+                {"path": p, "type": "code", "description": ""}
+                for p in list(result.files.keys())[:10]
+            ],
+        )
+        _emit_report_event(ctx, build_worker_report_completed_event(report))
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+def _emit_report_event(ctx: "RunContext", event: dict) -> None:
+    """Emit a report event through the dashboard emitter if available."""
+    emitter = getattr(ctx, "dashboard", None) or getattr(ctx, "emitter", None)
+    if emitter is not None:
+        try:
+            emitter._emit(event)  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _reproduce_inner(

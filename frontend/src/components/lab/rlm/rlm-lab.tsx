@@ -8,6 +8,7 @@ import { useRlmRunBatched } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
+import { useWorkerReports } from "../../../hooks/use-worker-reports";
 import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
 import { PipelinePhaseStrip } from "./pipeline-phase-strip";
@@ -17,6 +18,7 @@ import { ConstellationCanvas } from "./constellation-canvas";
 import { ReportRail } from "./report-rail";
 import { PrimitiveHistoryBar } from "./primitive-history-bar";
 import { RubricBreakdown } from "./rubric-breakdown";
+import { ScorecardPanel } from "./scorecard-panel";
 import { NodeDetailSidebar } from "./node-detail-sidebar";
 import { ResizeHandle } from "./resize-handle";
 import { RunToasts } from "./run-toasts";
@@ -234,6 +236,14 @@ export function RlmLab({
   const { messages: chatMessages, send: sendChat, sending: chatSending } =
     useSteeringChat(runMeta.projectId, events);
 
+  // ── Worker reports (live-refreshing via SSE events) ──────────────────
+  const { workers: liveWorkerReports, summary: liveReportsSummary } =
+    useWorkerReports(runMeta.projectId, events, isActive);
+  // Merge: prefer live-fetched reports over prop-passed ones
+  const effectiveWorkerReports = liveWorkerReports.length > 0
+    ? liveWorkerReports
+    : workerReports;
+
   // ── Stable callbacks for memoized children ─────────────────────────────
   // useCallback ensures function identity is stable across clock-tick renders
   // so React.memo on ConstellationCanvas / NodeDetailSidebar skips them.
@@ -305,6 +315,15 @@ export function RlmLab({
       {/* Band 2 */}
       <RubricStrip rubric={state.rubric} />
 
+      {/* Band 2.5 — Scorecard table (FIG § 5.1). Shows when rubric areas land. */}
+      {state.rubric.areas.length > 0 && (
+        <ScorecardPanel
+          rubric={state.rubric}
+          projectId={runMeta.projectId}
+          paperTitle={runMeta.paperTitle}
+        />
+      )}
+
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
       {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (
         <RubricBreakdown
@@ -351,7 +370,9 @@ export function RlmLab({
               elapsedMs={elapsedMs}
               report={state.report}
               rubric={state.rubric}
-              workerReports={workerReports}
+              workerReports={effectiveWorkerReports}
+              primitiveCalls={state.primitiveCalls}
+              reportsSummary={liveReportsSummary}
               style={reportRailStyle}
             />
           </>

@@ -118,23 +118,14 @@
 /* .barLabels, .baselineLabel, .targetLabel removed — labels live in
    the climb annotation block to keep the DOM unambiguous for tests. */
 
-/* ── Sparkline ──────────────────────────────────────────────── */
+/* ── Trajectory chart ───────────────────────────────────────── */
 
 .sparkBlock {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 28px;
+  align-items: flex-start;
   flex-shrink: 0;
-}
-
-.sparkBar {
-  display: inline-block;
-  width: 4px;
-  background: var(--accent);
-  border-radius: 2px 2px 0 0;
-  opacity: 0.7;
-  flex-shrink: 0;
+  /* Give the chart room to breathe; overflow: visible on the SVG handles labels */
+  padding-right: 60px;
 }
 
 /* ── Climb annotation ───────────────────────────────────────── */

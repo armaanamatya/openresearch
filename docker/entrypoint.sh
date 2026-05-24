@@ -16,6 +16,17 @@ if [[ -f /app/.env ]]; then
     set +a
 fi
 
+# --- SSH key injection (Railway / env-only deployments) ---------------------
+# Railway can't mount files, so inject the private key as a base64 env var.
+# Set REPROLAB_RUNPOD_SSH_KEY_B64 in Railway Variables and this block writes
+# it to disk and points REPROLAB_RUNPOD_SSH_KEY_PATH at it automatically.
+if [[ -n "${REPROLAB_RUNPOD_SSH_KEY_B64:-}" ]]; then
+    mkdir -p /root/.ssh
+    echo "$REPROLAB_RUNPOD_SSH_KEY_B64" | base64 -d > /root/.ssh/runpod_id_rsa
+    chmod 600 /root/.ssh/runpod_id_rsa
+    export REPROLAB_RUNPOD_SSH_KEY_PATH=/root/.ssh/runpod_id_rsa
+fi
+
 # --- Backend: FastAPI via uvicorn -------------------------------------------
 # Uses the venv copied from the python-deps stage. No --reload in prod.
 /opt/venv/bin/python -m uvicorn backend.app:create_app \

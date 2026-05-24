@@ -229,6 +229,40 @@ export interface RepairDispatchedEvent {
   failed_leaves: string[];
 }
 
+// Worker report lifecycle events (2026-05-24)
+export interface WorkerReportStartedEvent {
+  event: "worker_report_started";
+  timestamp?: string;
+  worker_id?: string;
+  worker_type?: string;
+  agent_id?: string;
+  cluster_id?: string;
+  task_id?: string;
+}
+
+export interface WorkerReportCompletedEvent {
+  event: "worker_report_completed";
+  timestamp?: string;
+  worker_id?: string;
+  worker_type?: string;
+  agent_id?: string;
+  status?: string;
+  cluster_id?: string;
+  duration_ms?: number;
+  blockers_count?: number;
+  error?: string | null;
+}
+
+export interface WorkerReportFailedEvent {
+  event: "worker_report_failed";
+  timestamp?: string;
+  worker_id?: string;
+  worker_type?: string;
+  agent_id?: string;
+  error?: string | null;
+  blockers?: unknown[];
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -248,6 +282,9 @@ export const RLM_EVENT_TYPES = [
   "cluster_scored",
   "repair_dispatched",
   "gpu_resolved",
+  "worker_report_started",
+  "worker_report_completed",
+  "worker_report_failed",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -268,7 +305,10 @@ export type RlmDashboardEvent =
   | ClusterArtifactEmittedEvent
   | ClusterScoredEvent
   | RepairDispatchedEvent
-  | GpuResolvedEvent;
+  | GpuResolvedEvent
+  | WorkerReportStartedEvent
+  | WorkerReportCompletedEvent
+  | WorkerReportFailedEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

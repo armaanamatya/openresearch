@@ -973,6 +973,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from backend.routes.messages import router as messages_router
     app.include_router(messages_router)
 
+    # Worker reports route — GET /runs/{project_id}/reports.
+    from backend.routes.reports import router as reports_router
+    app.include_router(reports_router)
+
     return app
 
 

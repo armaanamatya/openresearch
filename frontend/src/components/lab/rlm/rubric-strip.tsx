@@ -2,8 +2,176 @@
 
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
 import { useCountUp } from "./use-count-up";
-import { Sparkline } from "./sparkline";
 import styles from "./rubric-strip.module.css";
+
+const CHART_W = 280;
+const CHART_H = 96;
+const PAD_L = 28; // left padding for y-axis labels
+const PAD_R = 48; // right padding for line labels
+const PAD_T = 8;
+const PAD_B = 16; // bottom padding for x-axis
+
+function TrajectoryChart({
+  series,
+  baseline,
+  target,
+}: {
+  series: Array<{ iteration: number; score: number }>;
+  baseline: number | null;
+  target: number | null;
+}) {
+  const innerW = CHART_W - PAD_L - PAD_R;
+  const innerH = CHART_H - PAD_T - PAD_B;
+
+  const clamp = (v: number) => Math.max(0, Math.min(1, v));
+  const xFor = (i: number) =>
+    series.length > 1 ? PAD_L + (i / (series.length - 1)) * innerW : PAD_L + innerW / 2;
+  const yFor = (score: number) => PAD_T + (1 - clamp(score)) * innerH;
+
+  const points = series
+    .map((p, i) => `${xFor(i).toFixed(1)},${yFor(p.score).toFixed(1)}`)
+    .join(" ");
+
+  const last = series[series.length - 1];
+  const lastX = xFor(series.length - 1);
+  const lastY = yFor(last.score);
+
+  return (
+    <svg
+      width={CHART_W}
+      height={CHART_H}
+      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+      style={{ display: "block", overflow: "visible" }}
+    >
+      {/* Y-axis labels */}
+      {[0, 0.5, 1].map((v) => (
+        <text
+          key={v}
+          x={PAD_L - 4}
+          y={yFor(v) + 3.5}
+          textAnchor="end"
+          style={{
+            fontSize: 8,
+            fontFamily: "var(--font-mono)",
+            fill: "var(--muted)",
+          }}
+        >
+          {v.toFixed(1)}
+        </text>
+      ))}
+
+      {/* Hairline grid at 0.5 */}
+      <line
+        x1={PAD_L}
+        y1={yFor(0.5)}
+        x2={PAD_L + innerW}
+        y2={yFor(0.5)}
+        stroke="var(--line)"
+        strokeWidth={0.5}
+        strokeDasharray="3 3"
+      />
+
+      {/* Baseline reference — dashed gray */}
+      {baseline !== null && (
+        <>
+          <line
+            x1={PAD_L}
+            y1={yFor(baseline)}
+            x2={PAD_L + innerW}
+            y2={yFor(baseline)}
+            stroke="var(--muted-2)"
+            strokeWidth={1}
+            strokeDasharray="4 3"
+          />
+          <text
+            x={PAD_L + innerW + 4}
+            y={yFor(baseline) + 3.5}
+            style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--muted)" }}
+          >
+            baseline
+          </text>
+        </>
+      )}
+
+      {/* Target (paper) reference — dashed white */}
+      {target !== null && (
+        <>
+          <line
+            x1={PAD_L}
+            y1={yFor(target)}
+            x2={PAD_L + innerW}
+            y2={yFor(target)}
+            stroke="var(--ink-2)"
+            strokeWidth={1}
+            strokeDasharray="4 3"
+            opacity={0.5}
+          />
+          <text
+            x={PAD_L + innerW + 4}
+            y={yFor(target) + 3.5}
+            style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--ink-2)", opacity: 0.6 }}
+          >
+            target
+          </text>
+        </>
+      )}
+
+      {/* RLM score polyline — orange */}
+      {series.length > 1 && (
+        <polyline
+          points={points}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+        />
+      )}
+
+      {/* End dot + label */}
+      <circle cx={lastX} cy={lastY} r={2.5} fill="var(--accent)" />
+      <text
+        x={PAD_L + innerW + 4}
+        y={lastY + 3.5}
+        style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--accent)", fontWeight: 600 }}
+      >
+        {last.score.toFixed(3)}
+      </text>
+
+      {/* X-axis: step labels */}
+      <text
+        x={PAD_L}
+        y={CHART_H - 2}
+        style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--muted)" }}
+      >
+        step 0
+      </text>
+      {series.length > 1 && (
+        <text
+          x={PAD_L + innerW}
+          y={CHART_H - 2}
+          textAnchor="end"
+          style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--muted)" }}
+        >
+          {series.length - 1}
+        </text>
+      )}
+
+      {/* Legend */}
+      <g transform={`translate(${PAD_L}, ${PAD_T - 2})`}>
+        <line x1={0} y1={0} x2={10} y2={0} stroke="var(--muted-2)" strokeWidth={1} strokeDasharray="3 2" />
+        <text x={13} y={3.5} style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--muted)" }}>baseline</text>
+        <line x1={52} y1={0} x2={62} y2={0} stroke="var(--accent)" strokeWidth={1.5} />
+        <text x={65} y={3.5} style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--accent)" }}>RLM</text>
+        {target !== null && (
+          <>
+            <line x1={87} y1={0} x2={97} y2={0} stroke="var(--ink-2)" strokeWidth={1} strokeDasharray="3 2" opacity={0.5} />
+            <text x={100} y={3.5} style={{ fontSize: 8, fontFamily: "var(--font-mono)", fill: "var(--ink-2)", opacity: 0.6 }}>paper</text>
+          </>
+        )}
+      </g>
+    </svg>
+  );
+}
 
 interface RubricStripProps {
   rubric: RlmRunState["rubric"];
@@ -106,10 +274,10 @@ export function RubricStrip({ rubric }: RubricStripProps) {
         </div>
       </div>
 
-      {/* Line-chart sparkline (one polyline across the series). */}
+      {/* Trajectory chart — multi-line: RLM (orange), baseline (gray dashed), target (white dashed). */}
       {series.length > 0 && (
         <div className={styles.sparkBlock} aria-hidden="true">
-          <Sparkline series={series} width={120} height={28} />
+          <TrajectoryChart series={series} baseline={baseline} target={target} />
         </div>
       )}
 

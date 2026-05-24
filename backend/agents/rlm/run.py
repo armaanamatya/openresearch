@@ -984,6 +984,13 @@ def _finalize(
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
+    # Write worker reports summary at run finalization
+    try:
+        from backend.agents.worker_reports import write_summary_report
+        write_summary_report(project_dir)
+    except Exception:  # noqa: BLE001
+        logger.debug("run_pipeline_rlm: could not write summary_report.json")
+
     rubric_score = report.rubric.get("overall_score")
     cost_usd = report.cost.get("llm_usd")
     status = _verdict_to_status(report.verdict)

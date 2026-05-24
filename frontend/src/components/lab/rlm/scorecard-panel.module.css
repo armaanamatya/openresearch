@@ -1,0 +1,259 @@
+/* ScorecardPanel — FIG § 5.1 reproduction scorecard (full-width, Band 2.5).
+ * Matches the VerificationMock aesthetic from the landing page.
+ */
+
+.panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── FIG label ──────────────────────────────────────────────── */
+
+.figLabel {
+  padding: 6px var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ── Chrome bar ─────────────────────────────────────────────── */
+
+.chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px var(--sp-4);
+  background: color-mix(in oklch, var(--chip) 80%, transparent);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  gap: var(--sp-4);
+  min-height: 0;
+}
+
+.crumbs {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.crumbs b {
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.chromeRight {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* ── Title row ──────────────────────────────────────────────── */
+
+.titleRow {
+  display: flex;
+  align-items: baseline;
+  padding: var(--sp-2) var(--sp-4);
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.subtitle {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* ── Table ──────────────────────────────────────────────────── */
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+
+.thead tr {
+  border-bottom: 1px solid var(--line);
+}
+
+.thead th {
+  padding: 6px var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: color-mix(in oklch, var(--chip) 40%, transparent);
+}
+
+.thId   { width: 56px; }
+.thClaim { width: auto; }
+.thNum  { width: 72px; text-align: right; }
+.thJudge { width: 100px; text-align: right; padding-right: var(--sp-4); }
+
+.row {
+  border-bottom: 1px solid color-mix(in oklch, var(--line) 50%, transparent);
+  transition: background 120ms;
+}
+
+.row:hover {
+  background: color-mix(in oklch, var(--chip) 40%, transparent);
+}
+
+.row[data-status="pass"] .tdId { color: var(--accent); }
+.row[data-status="fail"] .tdId { color: var(--muted); }
+.row[data-status="partial"] .tdId { color: var(--warn-ink, #8a6d00); }
+
+.tdId {
+  padding: 7px var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tdClaim {
+  padding: 7px var(--sp-4);
+  color: var(--ink-2);
+  line-height: 1.4;
+  max-width: 380px;
+}
+
+.tdNum {
+  padding: 7px var(--sp-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tdJudge {
+  padding: 7px var(--sp-4);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Judge badges ────────────────────────────────────────────── */
+
+.badgeMatch {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+}
+
+.badgeDeviation {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in oklch, var(--err) 60%, transparent);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--err);
+  background: color-mix(in oklch, var(--err) 10%, transparent);
+}
+
+.badgeFail {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ── Footer stat bar ────────────────────────────────────────── */
+
+.footer {
+  display: flex;
+  gap: 0;
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklch, var(--chip) 40%, transparent);
+}
+
+.footerCell {
+  flex: 1;
+  padding: var(--sp-2) var(--sp-4);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.footerCell:last-child {
+  border-right: none;
+}
+
+.footerLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.footerValue {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg, 18px);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.footerValueMono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--ink-2);
+  line-height: 1.3;
+}
+
+.footerDim {
+  color: var(--muted-2);
+  font-weight: 400;
+}
+
+.footerSub {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

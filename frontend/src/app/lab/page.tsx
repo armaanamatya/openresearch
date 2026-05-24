@@ -2,7 +2,7 @@ import { LabShell } from "@/components/lab/lab-shell";
 import { fetchRunById, backendBaseUrl } from "@/lib/demo/server-run";
 import { fetchRecentRunsResult } from "@/lib/runs/server-list";
 import { fetchModels } from "@/lib/models/server-fetch";
-import type { AuthStatus } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 
 // The current run is identified by the `?projectId=` query param — that
 // makes the URL the single source of truth, so a refresh or a shared
@@ -35,6 +35,12 @@ export default async function LabPage({
     fetchModels(),
     fetchAuthStatus(),
   ]);
+  const rawSandbox = process.env.REPROLAB_DEFAULT_SANDBOX;
+  const serverDefaultSandbox: DemoSandboxMode | undefined =
+    rawSandbox === "runpod" || rawSandbox === "docker" || rawSandbox === "local" || rawSandbox === "auto"
+      ? rawSandbox
+      : undefined;
+
   return (
     <LabShell
       initialRun={initialRun}
@@ -42,6 +48,7 @@ export default async function LabPage({
       initialRecentsError={recentResult.error}
       initialModels={models}
       initialAuthStatus={authStatus}
+      serverDefaultSandbox={serverDefaultSandbox}
       presentationMode="internal"
     />
   );
