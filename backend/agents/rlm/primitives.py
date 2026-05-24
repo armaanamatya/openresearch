@@ -281,8 +281,14 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     from backend.agents.schemas import PaperClaimMap
 
     claim_map = PaperClaimMap(**{"core_contribution": "", **method_spec})
+    # Thread ctx.gpu_mode through so the Dockerfile picks the CUDA wheel
+    # when GPU passthrough is enabled. Without this, even --gpu-mode prefer
+    # runs end up with torch==2.x+cpu and torch.cuda.is_available() == False
+    # inside the container.
     spec = run_offline(
-        ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"))
+        ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"),
+        gpu_mode=getattr(ctx, "gpu_mode", None),
+    )
     return spec.model_dump()
 
 

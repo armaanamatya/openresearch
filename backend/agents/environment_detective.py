@@ -52,11 +52,18 @@ def run_offline(
     runs_root: Path,
     paper_claim_map: PaperClaimMap,
     artifact_index: dict[str, Any] | None = None,
+    *,
+    gpu_mode: str | None = None,
 ) -> EnvironmentSpec:
     """Deterministic environment inference without LLM.
 
     Uses the claim map's hardware clues, datasets, and training recipe
     to generate a Dockerfile.
+
+    ``gpu_mode`` (``"off"``, ``"auto"``, ``"prefer"``, ``"max"``, or ``None``)
+    drives the torch wheel selection: ``prefer``/``max`` picks the default
+    CUDA-capable PyPI wheel so a GPU-bearing sandbox can actually use the
+    card.  Other values keep the CPU-only wheel (smaller image, faster build).
     """
     # Determine framework from training recipe
     framework, framework_version = _infer_framework(paper_claim_map)
@@ -73,8 +80,9 @@ def run_offline(
         paper_claim_map, framework, framework_version, python_version,
     )
 
-    # Generate Dockerfile
-    dockerfile = _generate_dockerfile(python_version, pip_packages)
+    # Generate Dockerfile — wheel selection follows gpu_mode so a
+    # --gpu-mode prefer / max run actually gets CUDA torch.
+    dockerfile = _generate_dockerfile(python_version, pip_packages, gpu_mode=gpu_mode)
 
     spec = EnvironmentSpec(
         dockerfile=dockerfile,
@@ -224,8 +232,22 @@ def _generate_assumptions(
     return assumptions
 
 
-def _generate_dockerfile(python_version: str, pip_packages: dict[str, str]) -> str:
-    """Generate a working Dockerfile."""
+def _generate_dockerfile(
+    python_version: str,
+    pip_packages: dict[str, str],
+    *,
+    gpu_mode: str | None = None,
+) -> str:
+    """Generate a working Dockerfile.
+
+    ``gpu_mode`` controls the torch wheel selection:
+      - ``prefer`` or ``max`` → default PyPI wheel (includes CUDA 12.x support).
+      - anything else (``off``, ``auto``, None) → ``whl/cpu`` wheel
+        (smaller image, faster build; CUDA passthrough won't be used).
+
+    This matches ``LocalDockerBackend.create_sandbox`` which only injects the
+    NVIDIA ``device_requests`` when ``gpu_mode in {"prefer", "max"}``.
+    """
     lines = [
         f"FROM python:{python_version}-slim",
         "",
@@ -237,7 +259,7 @@ def _generate_dockerfile(python_version: str, pip_packages: dict[str, str]) -> s
         "# Python packages",
     ]
 
-    # Group torch install separately for CPU index
+    # Group torch install separately so we can pick the right wheel index.
     torch_packages = []
     other_packages = []
     for pkg, version in sorted(pip_packages.items()):
@@ -246,11 +268,20 @@ def _generate_dockerfile(python_version: str, pip_packages: dict[str, str]) -> s
         else:
             other_packages.append(f"{pkg}=={version}" if version else pkg)
 
+    _wants_cuda = (gpu_mode or "").lower() in {"prefer", "max"}
+
     if torch_packages:
-        lines.append(
-            f"RUN pip install --no-cache-dir {' '.join(torch_packages)} "
-            f"--index-url https://download.pytorch.org/whl/cpu"
-        )
+        if _wants_cuda:
+            # Default PyPI wheel ships with CUDA 12.x. No --index-url override.
+            lines.append(
+                f"RUN pip install --no-cache-dir {' '.join(torch_packages)}"
+            )
+        else:
+            # CPU-only wheel — smaller, faster install, no CUDA bloat.
+            lines.append(
+                f"RUN pip install --no-cache-dir {' '.join(torch_packages)} "
+                f"--index-url https://download.pytorch.org/whl/cpu"
+            )
 
     if other_packages:
         lines.append(f"RUN pip install --no-cache-dir {' '.join(other_packages)}")

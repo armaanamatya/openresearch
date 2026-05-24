@@ -141,6 +141,31 @@ class TestDockerfileGeneration:
         df = _generate_dockerfile("3.11", packages)
         assert "download.pytorch.org/whl/cpu" in df
 
+    def test_torch_uses_cpu_index_for_gpu_mode_off(self):
+        packages = {"torch": "2.2.0"}
+        df = _generate_dockerfile("3.11", packages, gpu_mode="off")
+        assert "download.pytorch.org/whl/cpu" in df
+
+    def test_torch_uses_cpu_index_for_gpu_mode_auto(self):
+        # --gpu-mode auto does NOT trigger LocalDocker GPU passthrough, so the
+        # container won't see CUDA either way. Keep the smaller CPU wheel.
+        packages = {"torch": "2.2.0"}
+        df = _generate_dockerfile("3.11", packages, gpu_mode="auto")
+        assert "download.pytorch.org/whl/cpu" in df
+
+    def test_torch_uses_cuda_wheel_for_gpu_mode_prefer(self):
+        packages = {"torch": "2.2.0"}
+        df = _generate_dockerfile("3.11", packages, gpu_mode="prefer")
+        # No --index-url override → default PyPI ships CUDA wheel.
+        assert "download.pytorch.org/whl/cpu" not in df
+        assert "torch==2.2.0" in df
+
+    def test_torch_uses_cuda_wheel_for_gpu_mode_max(self):
+        packages = {"torch": "2.2.0"}
+        df = _generate_dockerfile("3.11", packages, gpu_mode="max")
+        assert "download.pytorch.org/whl/cpu" not in df
+        assert "torch==2.2.0" in df
+
     def test_non_torch_packages_separate(self):
         packages = {"torch": "2.2.0", "gymnasium": "0.29.1"}
         df = _generate_dockerfile("3.11", packages)
