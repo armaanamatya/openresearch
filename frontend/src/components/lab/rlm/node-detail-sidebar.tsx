@@ -404,19 +404,27 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
         </div>
       </div>
 
-      {/* GPU plan badge — visible once resolve_gpu_requirements completes */}
-      {gpuPlan && (
-        <div className={styles.gpuPlanBadge} data-testid="gpu-plan-badge" data-source={gpuPlan.source}>
+      {/* GPU plan badge — visible once resolve_gpu_requirements completes.
+          Every field-access is guarded: the SSE payload can arrive
+          partially-formed (e.g. an older run's gpu_plan.json predates a
+          field, or the wire form is missing the field), and a single
+          undefined.toFixed() would crash the whole sidebar. */}
+      {gpuPlan && gpuPlan.short_name && (
+        <div className={styles.gpuPlanBadge} data-testid="gpu-plan-badge" data-source={gpuPlan.source ?? "unknown"}>
           <span className={styles.gpuPlanSku}>{gpuPlan.short_name}</span>
-          <span className={styles.gpuPlanVram}>{gpuPlan.vram_gb} GB</span>
-          {gpuPlan.gpu_count > 1 && (
+          {typeof gpuPlan.vram_gb === "number" && (
+            <span className={styles.gpuPlanVram}>{gpuPlan.vram_gb} GB</span>
+          )}
+          {typeof gpuPlan.gpu_count === "number" && gpuPlan.gpu_count > 1 && (
             <span className={styles.gpuPlanCount}>×{gpuPlan.gpu_count}</span>
           )}
-          <span className={styles.gpuPlanCost}>${gpuPlan.total_usd_per_hr.toFixed(2)}/hr</span>
+          {typeof gpuPlan.total_usd_per_hr === "number" && (
+            <span className={styles.gpuPlanCost}>${gpuPlan.total_usd_per_hr.toFixed(2)}/hr</span>
+          )}
           {gpuPlan.source === "fallback" && (
             <span
               className={styles.gpuPlanFallback}
-              title={gpuPlan.requirements.reasoning}
+              title={gpuPlan.requirements?.reasoning ?? "fallback to default SKU"}
             >
               fallback
             </span>

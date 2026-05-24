@@ -3,7 +3,7 @@
 import { useState, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
-import type { AuthStatus, DemoModelChoice, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
@@ -114,6 +114,11 @@ export function LabShell({
   const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
   const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
   const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
+  // Sandbox state mirrors the `model` pattern — persisted via UserPrefs.
+  // Default to "docker" (CPU-local) because (a) it requires no funding,
+  // (b) it works on any machine, (c) RunPod requires an upfront balance.
+  // Users can switch to "runpod" via the new Sandbox radio in the upload form.
+  const [sandbox, setSandbox] = useState<DemoSandboxMode>(() => readUserPrefs().sandbox ?? "docker");
 
   const {
     run,
@@ -179,6 +184,11 @@ export function LabShell({
               forceSingleGpu={forceSingleGpu}
               maxGpuUsdPerHour={maxGpuUsdPerHour}
               vramGb={vramGb}
+              sandbox={sandbox}
+              onSandboxChange={(value) => {
+                setSandbox(value);
+                writeUserPref("sandbox", value);
+              }}
               onRootProviderChange={(value) => {
                 setRootProvider(value);
                 writeProviderPrefs({ ...readProviderPrefs(), root_provider: value });

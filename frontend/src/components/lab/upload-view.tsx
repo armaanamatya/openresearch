@@ -2,8 +2,18 @@
 
 import { useRef, useState } from "react";
 
-import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
+
+// ---------------------------------------------------------------------------
+// Sandbox options — surface the two end-user-relevant choices.
+// "auto"/"local" exist in the type but the lab path defaults docker on local
+// hardware and runpod on a GPU cloud; they're not meaningful picks for users.
+// ---------------------------------------------------------------------------
+const SANDBOX_OPTIONS: { value: DemoSandboxMode; label: string; hint: string }[] = [
+  { value: "docker", label: "Local (Docker)", hint: "CPU-only on your machine. Fast iteration, no compute cost." },
+  { value: "runpod", label: "RunPod GPU",     hint: "GPU pod on RunPod. Requires funded RunPod account (≈$0.34/hr RTX 4090 COMMUNITY)." },
+];
 import { PRESET_PAPERS } from "@/lib/demo/preset-papers";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { ICONS } from "./icons";
@@ -62,12 +72,14 @@ export function UploadView({
   forceSingleGpu,
   maxGpuUsdPerHour,
   vramGb,
+  sandbox,
   onRootProviderChange,
   onSubagentAuthChange,
   onDynamicGpuChange,
   onForceSingleGpuChange,
   onMaxGpuUsdPerHourChange,
   onVramGbChange,
+  onSandboxChange,
 }: {
   arxiv: string;
   authStatus: AuthStatus | null;
@@ -89,12 +101,14 @@ export function UploadView({
   forceSingleGpu: boolean;
   maxGpuUsdPerHour: number;
   vramGb: number;
+  sandbox: DemoSandboxMode;
   onRootProviderChange: (value: RootProvider) => void;
   onSubagentAuthChange: (value: SubagentAuth) => void;
   onDynamicGpuChange: (value: boolean) => void;
   onForceSingleGpuChange: (value: boolean) => void;
   onMaxGpuUsdPerHourChange: (value: number) => void;
   onVramGbChange: (value: number) => void;
+  onSandboxChange: (value: DemoSandboxMode) => void;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -245,6 +259,29 @@ export function UploadView({
           ))}
         </select>
       </div>
+
+      {/* ── Sandbox radio group ──────────────────────────────────── */}
+      <fieldset className="upload-provider-fieldset" disabled={busy}>
+        <legend className="upload-config-label">Sandbox</legend>
+        <div className="upload-provider-options">
+          {SANDBOX_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              className={`upload-provider-option${sandbox === opt.value ? " selected" : ""}`}
+              title={opt.hint}
+            >
+              <input
+                type="radio"
+                name="sandbox"
+                value={opt.value}
+                checked={sandbox === opt.value}
+                onChange={() => onSandboxChange(opt.value)}
+              />
+              <span className="upload-provider-name">{opt.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       {/* ── LLM provider radio group ─────────────────────────────── */}
       <fieldset className="upload-provider-fieldset" disabled={busy}>
