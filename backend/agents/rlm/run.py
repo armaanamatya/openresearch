@@ -575,6 +575,18 @@ async def run_pipeline_rlm(
     runs_root = Path(runs_root).resolve()
     project_dir = runs_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Archive prior-attempt artifacts before touching anything else.
+    # Fires only when final_report.json exists (a completed prior run);
+    # first-ever runs and incomplete-but-failed runs are handled gracefully.
+    from backend.services.runs.attempt_isolation import maybe_archive_prior_attempt
+    _archived = maybe_archive_prior_attempt(project_id, runs_root)
+    if _archived:
+        logger.info(
+            "run_pipeline_rlm[%s]: prior attempt archived to %s (%d item(s))",
+            project_id, _archived["attempt_dir"], len(_archived["moved"]),
+        )
+
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
     _write_demo_status(project_dir, "running")
