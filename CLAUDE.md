@@ -176,11 +176,18 @@ When `REPROLAB_DEMO_SECRET` is set, run-start endpoints require a matching `X-De
 ## Maintaining this doc and `system_overview.md`
 `system_overview.md` documents the "why" and "how it fits together"; this file documents the day-to-day. When you add a new primitive, a new SSE event type, a new sandbox, or a new fail-soft/fail-closed mode, update both. Don't document "what's where" — the code is named by function.
 
+## Baseline test paper
+[SDAR (arxiv 2605.15155)](https://arxiv.org/abs/2605.15155) — **Self-Distilled Agentic Reinforcement Learning** — is the canonical baseline reproduction. It stresses every dimension of the system at once: 3 Qwen model sizes (1.7B / 3B / 7B), 3 distinct environments (ALFWorld + WebShop + Search-QA), GRPO RL + sigmoid-gated OPSD with token-level teacher-student gap, 5 baselines (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD), and a fine-grained rubric whose leaves inspect for the SDAR algorithm's exact invariants (`g_t = σ(β · Δ_t)`, stop-gradient on the gate, λ=0.1, β=10, real Qwen weights, real ALFWorld episodes). A surrogate cannot pass — the leaf scorer reads the code AND inspects whether the agent loaded the paper's actual model + data.
+
+**Smallest-two scope** (recommended for cost-bounded iteration): pin reproductions to Qwen3-1.7B + Qwen2.5-3B on a single 24–48 GB GPU via the `REPROLAB_BASELINE_EXTRA_GUIDANCE` env var. Full command + the 2026-05-23 debug history + the next-session handoff prompt live in `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.
+
 ## In-flight design docs and plans
 Read whichever is relevant before non-trivial changes:
 - `docs/design/rlm-pivot-brief.md` — canonical architecture reference for the RLM orchestrator.
 - `docs/runbooks/e2e-testing.md` — canonical local end-to-end test and debug reference.
+- `docs/runbooks/2026-05-23-sdar-baseline-handoff.md` — SDAR baseline run command + 2026-05-23 debug cycle + next-session prompt.
 - `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` — locked mode and cleanup decisions for the current launch track.
+- `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` — dynamic-GPU resolver + RunPod escalation (capacity + OOM) design + the per-run guidance hook.
 
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.
