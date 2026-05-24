@@ -887,13 +887,28 @@ async def _execute_in_sandbox(
     # sandbox_mode may be a SandboxMode enum (str(...) is "SandboxMode.runpod")
     # OR a plain string "runpod". Use substring match to cover both forms.
     _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
-    if "runpod" in _mode_str and requirements_path.exists():
-        bootstrap_commands.append(
-            "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
-        )
-        bootstrap_commands.append(
-            "python -m pip install --no-cache-dir -r requirements.txt"
-        )
+    if "runpod" in _mode_str:
+        # Lane 1: auto-derive requirements.txt from the Dockerfile when the
+        # agent forgot to write one. The local-docker sandbox path builds an
+        # image from the Dockerfile (every pip dep installed); the RunPod
+        # path uses a pre-built PyTorch image and ONLY bootstraps from
+        # requirements.txt. Without this, every paper missing requirements.txt
+        # silently fails with ModuleNotFoundError once the agent's train.py
+        # imports anything beyond torch/numpy.
+        if not requirements_path.exists():
+            try:
+                from backend.agents.rlm.requirements_derive import ensure_requirements_txt
+                _project_dir = code_dir.parent if code_dir.name == "code" else code_dir
+                ensure_requirements_txt(code_dir, dockerfile_path=_project_dir / "Dockerfile")
+            except Exception:  # noqa: BLE001 — observability must never block the run
+                logger.exception("_execute_in_sandbox: requirements.txt auto-derive failed")
+        if requirements_path.exists():
+            bootstrap_commands.append(
+                "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
+            )
+            bootstrap_commands.append(
+                "python -m pip install --no-cache-dir -r requirements.txt"
+            )
 
     results = []
     try:
