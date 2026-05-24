@@ -132,6 +132,7 @@ async def run_pipeline_hybrid(
     workspace_service: Any = None,
     workspace_id: str | None = None,
     repair_target: float = _DEFAULT_REPAIR_TARGET,
+    cluster_concurrency: int | None = None,
     # Internal: injected by tests to avoid real I/O.
     _rdr_runner: Any = None,
     _rlm_runner: Any = None,
@@ -232,6 +233,7 @@ async def run_pipeline_hybrid(
             repair_target=repair_target,
             bundles_root=bundles_root,
             run_budget=run_budget,
+            cluster_concurrency=cluster_concurrency,
         )
     except Exception as exc:
         phase1_failed = True

@@ -544,6 +544,48 @@ class FinalReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Dynamic GPU selection (#dynamic-gpu spec 2026-05-23)
+# ---------------------------------------------------------------------------
+
+class GpuRequirements(BaseModel):
+    """LLM-derived hardware requirements extracted from paper text.
+
+    The RLM root constructs this from accumulated PaperClaimMap.hardware_clues
+    plus reasoning over the full workload (training + inference + evaluation).
+    """
+    model_config = {"extra": "ignore"}
+    estimated_vram_gb: int | None = Field(
+        default=None, ge=0, le=1024,
+        description="Whole-workload VRAM estimate; None when LLM cannot estimate",
+    )
+    paper_gpu_string: str | None = None
+    paper_gpu_count: int | None = Field(default=None, ge=0, le=64)
+    reasoning: str = Field(default="", description="One-line rationale, surfaced in SSE event")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class GpuPlan(BaseModel):
+    """Resolved provisioning plan, consumed by RunpodBackend."""
+    model_config = {"extra": "ignore"}
+    runpod_id: str = Field(description="Verbatim RunPod gpu_type identifier")
+    short_name: str = Field(description="Internal short name; matches gpu_catalog.GpuSku.short_name")
+    vram_gb: int = Field(ge=1)
+    gpu_count: int = Field(ge=1, le=8)
+    cloud_type: Literal["COMMUNITY", "SECURE"]
+    sku_usd_per_hr: float = Field(ge=0.0, description="Per-GPU rate from catalog")
+    total_usd_per_hr: float = Field(ge=0.0, description="sku_usd_per_hr * gpu_count")
+    container_disk_gb: int = Field(ge=1)
+    volume_gb: int = Field(ge=1)
+    source: Literal["paper", "fallback", "manual", "informational"]
+    requirements: GpuRequirements
+    ladder_remaining: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Short names of next-larger SKUs for OOM escalation",
+    )
+    resolved_at: str = Field(description="ISO-8601 timestamp")
+
+
+# ---------------------------------------------------------------------------
 # Generic agent output envelope
 # ---------------------------------------------------------------------------
 

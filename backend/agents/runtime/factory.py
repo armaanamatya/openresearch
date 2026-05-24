@@ -124,6 +124,46 @@ def _has_azure_openai_credentials() -> bool:
     )
 
 
+def _has_anthropic_api_credentials() -> bool:
+    """Return True iff an Anthropic API key is available via env or Settings.
+
+    Reads both ``os.environ`` and ``settings.anthropic_api_key`` — pydantic-settings
+    loads ``.env`` even when the env var has been deleted, so checking both keeps
+    the answer accurate. Extracted as a helper so tests can patch this single
+    function rather than having to clear both surfaces independently.
+    """
+    settings = get_settings()
+    return bool(
+        os.getenv("ANTHROPIC_API_KEY")
+        or getattr(settings, "anthropic_api_key", "")
+    )
+
+
+def _has_openai_credentials() -> bool:
+    """Return True iff OpenAI credentials are available via env or Settings.
+
+    Either OPENAI_API_KEY or OPENAI_ADMIN_KEY satisfies the check.
+    Extracted as a helper so tests can patch this single function — see
+    ``_has_anthropic_api_credentials`` for the rationale.
+    """
+    settings = get_settings()
+    return bool(
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("OPENAI_ADMIN_KEY")
+        or getattr(settings, "openai_api_key", "")
+        or getattr(settings, "openai_admin_key", "")
+    )
+
+
+def _has_featherless_credentials() -> bool:
+    """Return True iff a Featherless API key is available via env or Settings."""
+    settings = get_settings()
+    return bool(
+        os.getenv("FEATHERLESS_API_KEY")
+        or getattr(settings, "featherless_api_key", "")
+    )
+
+
 def selected_provider(provider: ProviderName | str | None = None) -> ProviderName:
     """Resolve the requested provider from argument, env, or settings."""
     raw = (
@@ -258,6 +298,74 @@ def configure_openai_agents_sdk_credentials(
         os.environ["OPENAI_ADMIN_KEY"] = admin_key
 
 
+def aggregate_auth_status() -> dict:
+    """Aggregate provider credential availability for the /auth-status endpoint.
+
+    Returns a dict matching the D1 response shape so the UI can enable/disable
+    provider radio buttons without any LLM call or subprocess.
+    """
+    # All provider checks route through dedicated helpers so tests can patch a
+    # single function per provider rather than having to clear env + Settings
+    # independently. pydantic-settings loads .env even after monkeypatch.delenv.
+    anthropic_api_key = _has_anthropic_api_credentials()
+    oauth_available = _has_claude_subscription_oauth()
+    openai_available = _has_openai_credentials()
+    azure_available = _has_azure_openai_credentials()
+    featherless_available = _has_featherless_credentials()
+
+    # Determine defaults (first available wins, in priority order)
+    default_root = "anthropic_oauth" if oauth_available else (
+        "anthropic_api" if anthropic_api_key else (
+            "openai_api" if openai_available else (
+                "azure_openai" if azure_available else (
+                    "featherless" if featherless_available else "anthropic_oauth"
+                )
+            )
+        )
+    )
+
+    # Sub-agent auth: SDK uses ANTHROPIC_API_KEY or OAuth
+    subagent_api = anthropic_api_key
+    subagent_oauth = oauth_available
+    default_subagent = "anthropic_oauth" if subagent_oauth else (
+        "anthropic_api" if subagent_api else "anthropic_oauth"
+    )
+
+    return {
+        "providers": {
+            "anthropic_api": {
+                "available": anthropic_api_key,
+                "detail": "ANTHROPIC_API_KEY set" if anthropic_api_key else "ANTHROPIC_API_KEY missing",
+            },
+            "anthropic_oauth": {
+                "available": oauth_available,
+                "detail": "claude CLI subscription" if oauth_available else "claude login required",
+            },
+            "openai_api": {
+                "available": openai_available,
+                "detail": "OPENAI_API_KEY set" if openai_available else "OPENAI_API_KEY missing",
+            },
+            "azure_openai": {
+                "available": azure_available,
+                "detail": "Azure credentials set" if azure_available else "AZURE_OPENAI_API_KEY missing",
+            },
+            "featherless": {
+                "available": featherless_available,
+                "detail": "FEATHERLESS_API_KEY set" if featherless_available else "FEATHERLESS_API_KEY missing",
+            },
+        },
+        "subagent_auth": {
+            "anthropic_api": subagent_api,
+            "anthropic_oauth": subagent_oauth,
+        },
+        "defaults": {
+            "root_provider": default_root,
+            "root_model": "sonnet",
+            "subagent_auth": default_subagent,
+        },
+    }
+
+
 def make_runtime(
     provider: ProviderName | str | None = None,
     *,
@@ -291,6 +399,7 @@ __all__ = [
     "_has_azure_openai_credentials",
     "_has_claude_subscription_oauth",
     "_scan_wsl_windows_credentials",
+    "aggregate_auth_status",
     "configure_openai_agents_sdk_credentials",
     "has_provider_credentials",
     "make_runtime",

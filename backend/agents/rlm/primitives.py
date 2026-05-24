@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from backend.agents.rlm.context import RunContext
+    from backend.agents.schemas import GpuPlan
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,30 @@ METRICS_FILENAME = "metrics.json"
 # defaults; this is the time bound. Phase 3 (#60) should source it from
 # settings / ctx rather than this module constant.
 _EXEC_TIMEOUT_SECONDS = 3600
+
+# CUDA OOM detection: markers observed in PyTorch / cuBLAS logs (spec 2026-05-23 §OOM).
+# Pattern set is intentionally tight to avoid false positives on unrelated CUDA errors.
+_CUDA_OOM_MARKERS: tuple[str, ...] = (
+    "CUDA out of memory",
+    "RuntimeError: CUDA error: out of memory",
+    "torch.cuda.OutOfMemoryError",
+    "cuBLAS error: CUBLAS_STATUS_ALLOC_FAILED",
+)
+
+
+def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
+    """True when exit-code or stderr tail indicates a CUDA OOM (spec 2026-05-23 §OOM).
+
+    `stderr_tail` should be the last ~4KB of combined stderr/stdout from the failed
+    experiment. Exit code 137 is SIGKILL (OOM killer); substring match covers the
+    documented PyTorch/cuBLAS variants. Pattern set is intentionally tight to avoid
+    false positives on unrelated CUDA errors.
+    """
+    if exit_code == 137:
+        return True
+    if not stderr_tail:
+        return False
+    return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
 
 
 def _cap_logs(text: str) -> str:
@@ -253,10 +278,153 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     return spec.model_dump()
 
 
+def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) -> None:
+    """Append a JSON event line to runs/<id>/dashboard_events.jsonl.
+
+    Fail-soft (D3): any IO error is logged but never propagates — observability
+    must never interrupt a run.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path as _Path
+
+    events_file = _Path(ctx.project_dir) / "dashboard_events.jsonl"
+    line = {
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "event": event_type,
+        "data": payload,
+    }
+    try:
+        with events_file.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(line, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — observability must never break the run
+        logger.exception("dashboard event emit failed for %s", event_type)
+
+
+def resolve_gpu_requirements(
+    requirements: "GpuRequirements | dict",
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Plan-time GPU resolver primitive (RLM #dynamic-gpu spec 2026-05-23).
+
+    The RLM root supplies LLM-derived GpuRequirements (from accumulated
+    PaperClaimMap.hardware_clues + reasoning over env_spec and the full workload).
+    This primitive maps them to a GpuPlan via the catalog, caches the plan in run
+    state for idempotency, and emits a ``gpu_resolved`` SSE event for UI / audit.
+
+    Idempotent: subsequent calls in the same run return the cached plan even if
+    the caller passes different requirements. This avoids cost drift across
+    re-resolution attempts and matches RLM-loop expectations.
+
+    Args:
+        requirements: Either a typed ``GpuRequirements`` instance or a plain dict
+            with the same keys — the REPL typically produces dicts, so both are
+            accepted.
+
+    Returns:
+        A ``GpuPlan`` serialised as a plain dict (JSON-safe via ``model_dump``).
+
+    Never raises — returns an error dict on validation failure so the REPL root
+    can handle it gracefully.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from backend.agents.schemas import GpuRequirements as _Req
+    from backend.config import get_settings
+    from backend.services.runtime import gpu_resolver
+
+    # ---- Idempotency: return cached plan if present.
+    state_dir = _Path(ctx.project_dir) / "rlm_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = state_dir / "gpu_plan.json"
+    if cache_file.exists():
+        try:
+            cached = _json.loads(cache_file.read_text(encoding="utf-8"))
+            return cached
+        except Exception:  # noqa: BLE001 — corrupt cache → recompute
+            logger.warning("resolve_gpu_requirements: cache file unreadable, recomputing")
+
+    # ---- Coerce payload.
+    if isinstance(requirements, dict):
+        req = _Req(**requirements)
+    elif isinstance(requirements, _Req):
+        req = requirements
+    else:
+        raise ValueError(
+            f"resolve_gpu_requirements: requirements must be GpuRequirements or dict, "
+            f"got {type(requirements).__name__}"
+        )
+
+    # ---- vram_override: per-run CLI override bypasses LLM estimate.
+    vram_override = getattr(ctx, "vram_override", None)
+    if vram_override is not None:
+        req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
+
+    settings = get_settings()
+    cloud_types: tuple[str, ...] = (
+        ("COMMUNITY", "SECURE")
+        if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
+        else ("COMMUNITY",)
+    )
+
+    from backend.agents.schemas import GpuPlan as _GpuPlan
+    plan: "_GpuPlan" = gpu_resolver.resolve(
+        req,
+        dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+        force_single_gpu=settings.force_single_gpu,
+        max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+        headroom_multiplier=settings.dynamic_gpu_headroom,
+        fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
+        cloud_types=cloud_types,
+    )
+
+    # ---- Persist atomically.
+    payload = plan.model_dump(mode="json")
+    tmp = cache_file.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(payload, default=str), encoding="utf-8")
+    tmp.replace(cache_file)
+
+    # ---- Emit SSE event: gpu_resolved for all plans; gpu_fallback additionally
+    #      when the resolver fell back to the default SKU (no catalog match).
+    _emit_dashboard_event(ctx, event_type="gpu_resolved", payload=payload)
+    if plan.source == "fallback":
+        _emit_dashboard_event(ctx, event_type="gpu_fallback", payload=payload)
+
+    return payload
+
+
 # Indirection so tests can monkeypatch the async Docker build.
 def _build_image(dockerfile_path, context_dir, tag, **kw):
     from backend.services.runtime.local_docker import build_image
     return build_image(dockerfile_path, context_dir, tag, **kw)
+
+
+def _image_exists(tag: str) -> bool:
+    """Return True iff the Docker image `tag` already exists locally.
+
+    Uses the Docker SDK's images.get() — raises ImageNotFound when the image
+    is absent, any other exception (SDK unavailable, daemon unreachable) is
+    treated conservatively as "not found" so the caller falls through to the
+    normal build path.
+    """
+    try:
+        import docker  # type: ignore[import-untyped]
+        from docker.errors import ImageNotFound  # type: ignore[import-untyped]
+
+        client = docker.from_env()
+        try:
+            client.images.get(tag)
+            return True
+        except ImageNotFound:
+            return False
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except Exception:  # noqa: BLE001 — SDK missing / daemon down: fall through to build
+        return False
 
 
 _ENV_REPAIR_SYSTEM = (
@@ -318,6 +486,15 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # tag to the Dockerfile so distinct environments get distinct images.
         digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
         tag = f"reprolab/{ctx.project_id}:env-{digest}"
+
+        # Three-layer "don't redo work" guard: content-addressed tag → Docker
+        # layer cache → this existence check.  When the image is already
+        # present (same Dockerfile hash → same tag → same bits), skip the
+        # entire rebuild and return immediately.  Re-checked per call so a
+        # manual `docker rmi` between iterations forces a real rebuild (D5).
+        if _image_exists(tag):
+            return {"ok": True, "image_tag": tag, "attempts": 0, "skipped": True}
+
         deadline_abs = time.monotonic() + aggregate_cap_s
         with tempfile.TemporaryDirectory() as tmp:
             context_dir = Path(tmp)
@@ -496,7 +673,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     return str(code_dir)
 
 
-def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None):
+def _backend_for_sandbox_mode(
+    sandbox_mode: object,
+    *,
+    run_budget: object = None,
+    gpu_plan: "GpuPlan | None" = None,
+):
     """Return a RuntimeBackend instance for the given sandbox mode.
 
     ``SandboxMode.docker`` (and ``None`` / the default) map to
@@ -510,6 +692,8 @@ def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None
     produces a result while making the misconfiguration visible.
 
     ``run_budget=None`` is safe for all modes — no cap is enforced.
+    ``gpu_plan=None`` is safe for all modes — RunpodBackend falls back to
+    legacy Settings defaults when None.  Non-runpod backends ignore it.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -533,7 +717,7 @@ def _backend_for_sandbox_mode(sandbox_mode: object, *, run_budget: object = None
         from backend.services.runtime.runpod_backend import RunpodBackend
 
         _runtime.ensure_runpod_available()
-        return RunpodBackend(run_budget=run_budget)
+        return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (local, auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
@@ -572,6 +756,7 @@ async def _execute_in_sandbox(
     run_id: str,
     sandbox_mode: object = None,
     run_budget: object = None,
+    gpu_plan: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -604,7 +789,9 @@ async def _execute_in_sandbox(
     artifact_root = code_dir / "outputs" / run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget))
+    service = RuntimeAppService(_backend_for_sandbox_mode(
+        sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan,
+    ))
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -759,7 +946,6 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
             "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
         })
 
-    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
     # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
     # (b) the run-budget deadline via ctx.remaining_s() (the --max-wall-clock
@@ -784,31 +970,115 @@ def run_experiment(code_path: str, env_id: str, *, ctx: "RunContext") -> dict:
         timeout = ctx.remaining_s()
     else:
         timeout = _timeout_for(ctx, _cap_s)
-    # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
+
+    # Load cached gpu_plan if present (written by resolve_gpu_requirements).
+    from backend.agents.schemas import GpuPlan as _GpuPlan
+    from backend.config import get_settings
+    from backend.services.runtime.gpu_catalog import CATALOG as _CATALOG
+
+    gpu_plan: "_GpuPlan | None" = None
+    plan_path = ctx.project_dir / "rlm_state" / "gpu_plan.json"
+    if plan_path.exists():
         try:
-            result = pool.submit(
-                asyncio.run,
-                _execute_in_sandbox(
-                    code_path, env_id, commands,
-                    project_id=ctx.project_id, run_id=run_id,
-                    sandbox_mode=ctx.sandbox_mode,
-                    run_budget=ctx.run_budget,
-                ),
-            ).result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
+            gpu_plan = _GpuPlan(**json.loads(plan_path.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            logger.warning("run_experiment: gpu_plan.json present but unreadable; using legacy default")
+
+    _settings = get_settings()
+    max_escalations = _settings.dynamic_gpu_max_escalations
+    escalations = 0
+    result: dict = {}
+
+    # Escalation loop (spec 2026-05-23 §OOM): on CUDA OOM, pop the next SKU from
+    # GpuPlan.ladder_remaining, persist the updated plan atomically, emit
+    # gpu_escalated, and retry. Capped by max_escalations. Non-OOM failures and
+    # success exit immediately. I12: explicit shutdown(wait=False) per iteration.
+    while True:
+        run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+        # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            try:
+                result = pool.submit(
+                    asyncio.run,
+                    _execute_in_sandbox(
+                        code_path, env_id, commands,
+                        project_id=ctx.project_id, run_id=run_id,
+                        sandbox_mode=ctx.sandbox_mode,
+                        run_budget=ctx.run_budget,
+                        gpu_plan=gpu_plan,
+                    ),
+                ).result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                result = {
+                    "success": False,
+                    "metrics": {},
+                    "error": (
+                        f"run_experiment: timed out after {timeout:.0f} s"
+                        if timeout is not None
+                        else "run_experiment: timed out (run-budget deadline reached)"
+                    ),
+                }
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        # ---- Escalation gate ----
+        # Break immediately on success, or when no plan is loaded (no gpu_plan
+        # means legacy mode — no ladder to advance), or cap reached.
+        if result.get("success") or gpu_plan is None or escalations >= max_escalations:
+            break
+        stderr_tail = (result.get("logs") or "")[-4096:]
+        exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
+        if not _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+            break
+        if not gpu_plan.ladder_remaining:
             result = {
                 "success": False,
                 "metrics": {},
                 "error": (
-                    f"run_experiment: timed out after {timeout:.0f} s"
-                    if timeout is not None
-                    else "run_experiment: timed out (run-budget deadline reached)"
+                    f"CUDA OOM on {gpu_plan.short_name} ({gpu_plan.vram_gb} GB); "
+                    f"ladder exhausted. Cumulative SKU cost rate: ${gpu_plan.total_usd_per_hr}/hr."
                 ),
+                "logs": result.get("logs", ""),
             }
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+            break
+
+        # Advance ladder: find next SKU by short_name.
+        next_short = gpu_plan.ladder_remaining[0]
+        next_sku = next((s for s in _CATALOG if s.short_name == next_short), None)
+        if next_sku is None:
+            result = {
+                "success": False,
+                "metrics": {},
+                "error": f"ladder advance failed: short_name={next_short!r} not in catalog",
+                "logs": result.get("logs", ""),
+            }
+            break
+
+        new_plan = gpu_plan.model_copy(update={
+            "runpod_id": next_sku.runpod_id,
+            "short_name": next_sku.short_name,
+            "vram_gb": next_sku.vram_gb,
+            "cloud_type": next_sku.cloud_type,
+            "sku_usd_per_hr": next_sku.approx_usd_per_hr,
+            "total_usd_per_hr": round(next_sku.approx_usd_per_hr * gpu_plan.gpu_count, 4),
+            "container_disk_gb": max(50, next_sku.vram_gb),
+            "volume_gb": max(20, next_sku.vram_gb // 4),
+            "ladder_remaining": gpu_plan.ladder_remaining[1:],
+        })
+        # Persist atomically + emit escalation event.
+        tmp = plan_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(new_plan.model_dump(mode="json"), default=str), encoding="utf-8")
+        tmp.replace(plan_path)
+        _emit_dashboard_event(ctx, event_type="gpu_escalated", payload={
+            "from_sku": gpu_plan.short_name,
+            "to_sku": new_plan.short_name,
+            "escalation_index": escalations + 1,
+            "reason": "cuda_oom",
+        })
+        gpu_plan = new_plan
+        escalations += 1
+
     return _persist_experiment_result(ctx, result)
 
 
@@ -1327,6 +1597,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "respond_to_user": respond_to_user,
     "heartbeat": heartbeat,
     "recommend_next_tool": recommend_next_tool,
+    "resolve_gpu_requirements": resolve_gpu_requirements,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -1396,4 +1667,12 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "description of the current situation. Returns {tool, reason, alternatives}. "
         "Use sparingly at major branch points (pre-baseline, post-failure, before "
         "sub-RLM spawn) — costs one LLM call.",
+    "resolve_gpu_requirements": "resolve_gpu_requirements(requirements) -> dict — "
+        "plan-time GPU resolver. `requirements` is a dict (or GpuRequirements) with: "
+        "estimated_vram_gb (int|None), paper_gpu_string (str|None), "
+        "paper_gpu_count (int|None), reasoning (str), confidence (float 0-1). "
+        "Returns a GpuPlan dict: {runpod_id, short_name, vram_gb, gpu_count, "
+        "cloud_type, sku_usd_per_hr, total_usd_per_hr, source, ladder_remaining, ...}. "
+        "Call ONCE per run after accumulating hardware clues from understand_section. "
+        "Idempotent — subsequent calls return the cached plan.",
 }

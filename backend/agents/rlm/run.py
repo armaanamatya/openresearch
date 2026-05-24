@@ -65,8 +65,14 @@ from backend.agents.rlm.system_prompt import build_system_prompt
 
 # Register the anthropic-oauth backend with rlm.clients.get_client — must run
 # before RLM(backend="anthropic-oauth", ...) is constructed below.
-from backend.agents.rlm._oauth_backend_patch import apply_oauth_backend_patch
+# Also install the prompt-caching wrapper for the anthropic API-key path so that
+# the stable system prompt is cached across iterations (~50% input-token saving).
+from backend.agents.rlm._oauth_backend_patch import (
+    apply_oauth_backend_patch,
+    apply_anthropic_caching_patch,
+)
 apply_oauth_backend_patch()
+apply_anthropic_caching_patch()
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +615,12 @@ async def run_pipeline_rlm(
     #    and runs Sonnet rather than the registry's Opus default.
     agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
     logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
+    # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
+    # before Settings construction; consumed here so RunContext carries it and
+    # resolve_gpu_requirements can bypass the LLM VRAM estimate).
+    _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
+    _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
+
     ctx = RunContext(
         project_id=project_id,
         project_dir=project_dir,
@@ -637,6 +649,7 @@ async def run_pipeline_rlm(
         ),
         run_budget=run_budget,
         deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
+        vram_override=_vram_override,
     )
 
     # 5. Primitives — the real binding or the stub provider.

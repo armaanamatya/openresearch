@@ -272,6 +272,34 @@ Use sparingly — it costs one LLM call.  Prefer it at major branch points
 (pre-baseline, post-failure, before sub-RLM spawn) rather than every iteration.
 """
 
+_GPU_SELECTION_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  GPU SELECTION — `resolve_gpu_requirements`
+═══════════════════════════════════════════════════════════════
+
+After your initial `understand_section` passes cover the abstract, method, and
+experiments sections, construct a GpuRequirements payload from the accumulated
+`hardware_clues`. Estimate `estimated_vram_gb` for the WHOLE workload — not just
+training. Include inference, evaluation harness, any auxiliary models the paper
+loads (e.g., a frozen scoring model), and KV cache for generative inference.
+Then call:
+
+    resolve_gpu_requirements({
+        "estimated_vram_gb": <int or None>,
+        "paper_gpu_string": "<verbatim string from paper or None>",
+        "paper_gpu_count": <int or None>,
+        "reasoning": "<one-line rationale>",
+        "confidence": <float 0.0-1.0>,
+    })
+
+Call `resolve_gpu_requirements` ONCE per run. Subsequent calls return the
+cached plan automatically — you do not need to call it again from any later
+iteration. The plan determines pod provisioning for every later `run_experiment`
+call. If you cannot estimate VRAM (paper doesn't mention hardware), set
+`estimated_vram_gb=None` and `confidence` low — the resolver will fall back to
+a safe default SKU and emit a warning event.
+"""
+
 _TRIAGE_INSTRUCTION = """\
 ═══════════════════════════════════════════════════════════════
   TRIAGE — COST AND TIME ARE FINITE
@@ -321,6 +349,16 @@ candidate per run — a verified improvement over baseline, not exhaustive
 exploration.
 """
 
+# ---------------------------------------------------------------------------
+# Optional hints — triage guidance + decision-advisor tool hint.
+# These ~58 lines are rarely-needed advisor text that can be omitted from
+# the stable cached prefix to reduce per-run token spend by ~10%.
+# They are still injected by default (include_hints=True) until telemetry
+# demonstrates safety of disabling them across paper types.
+# ---------------------------------------------------------------------------
+
+_OPTIONAL_HINTS_SECTION = _TRIAGE_INSTRUCTION + _DECISION_ADVISOR_SECTION
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -331,6 +369,7 @@ def build_system_prompt(
     *,
     context_metadata: dict,
     root_model: RootModel,
+    include_hints: bool = True,
 ) -> str:
     """Compose the root system prompt for one RLM reproduction run.
 
@@ -346,6 +385,11 @@ def build_system_prompt(
             without seeing any actual corpus content.
         root_model: The resolved ``RootModel`` from the registry.  Used to
             append ``root_model.prompt_addendum`` verbatim at the end.
+        include_hints: When ``True`` (default), inject ``_OPTIONAL_HINTS_SECTION``
+            (triage instruction + decision-advisor).  Set to ``False`` to omit
+            these ~58 rarely-needed lines from the stable cached prefix and
+            reduce per-run input-token spend.  Defaults to ``True`` for safety
+            until telemetry confirms it's safe to disable across paper types.
 
     Returns:
         The custom system prompt as an ``rlm`` ``.format()`` template: every
@@ -360,10 +404,12 @@ def build_system_prompt(
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
         _DECOMPOSITION_EXAMPLE,
-        _TRIAGE_INSTRUCTION,
         _HEARTBEAT_SECTION,
-        _DECISION_ADVISOR_SECTION,
+        _GPU_SELECTION_SECTION,
     ]
+
+    if include_hints:
+        parts.append(_OPTIONAL_HINTS_SECTION)
 
     if root_model.prompt_addendum:
         parts.append(

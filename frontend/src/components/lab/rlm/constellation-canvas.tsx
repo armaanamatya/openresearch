@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TreeNode as TreeNodeData, IterationView } from "../../../hooks/use-rlm-run";
 import { layoutConstellation, nodeRadius } from "./layout-constellation";
 import type { ConstellationNode } from "./layout-constellation";
@@ -116,7 +116,7 @@ function isActivityNodeVisible(
 
 // ─── Candidate/structural rect rendering ───────────────────────────────────
 
-function NodeRect({
+const NodeRect = memo(function NodeRect({
   node,
   selected,
   expanded,
@@ -289,11 +289,11 @@ function NodeRect({
       )}
     </g>
   );
-}
+});
 
 // ─── Circle node (primitive / llm_primitive / subrlm) ──────────────────────
 
-function NodeCircle({
+const NodeCircle = memo(function NodeCircle({
   node,
   selected,
   visible,
@@ -363,7 +363,7 @@ function NodeCircle({
       )}
     </g>
   );
-}
+});
 
 // ─── ConstellationCanvas ────────────────────────────────────────────────────
 
@@ -376,7 +376,7 @@ function NodeCircle({
  * the "+N" badge. Auto-fits to viewport on load; stops auto-fitting once the user
  * has manually zoomed/panned.
  */
-export function ConstellationCanvas({
+export const ConstellationCanvas = memo(function ConstellationCanvas({
   tree,
   selectedNodeId: externalSelectedNodeId = null,
   onSelectNode,
@@ -692,4 +692,4 @@ export function ConstellationCanvas({
       </button>
     </div>
   );
-}
+});

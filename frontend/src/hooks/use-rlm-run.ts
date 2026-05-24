@@ -8,7 +8,7 @@
  * build `RlmRunState.tree` — a flat node list, each node carrying `parentId`.
  */
 
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useCallback } from "react";
 import type {
   RlmDashboardEvent,
   ReplIterationEvent,
@@ -21,6 +21,7 @@ import type {
   SubRlmCompleteEvent,
   RunWarningEvent,
   IterationHeartbeatEvent,
+  GpuResolvedEvent,
 } from "../lib/events/rlm-events";
 
 // ─── Member types ─────────────────────────────────────────────────────────────
@@ -67,6 +68,33 @@ export interface RunWarning {
   code: string;
   message: string;
   timestamp: string;
+}
+
+/**
+ * GpuPlan — the resolved GPU provisioning plan, populated when a gpu_resolved
+ * SSE event is received.  Mirrors the backend GpuPlan Pydantic model fields
+ * that are relevant to the UI badge (§4.5, dynamic-gpu-selection 2026-05-23).
+ */
+export interface GpuPlan {
+  runpod_id: string;
+  short_name: string;
+  vram_gb: number;
+  gpu_count: number;
+  cloud_type: string;
+  sku_usd_per_hr: number;
+  total_usd_per_hr: number;
+  container_disk_gb: number;
+  volume_gb: number;
+  source: "paper" | "fallback" | "catalog";
+  requirements: {
+    estimated_vram_gb: number | null;
+    paper_gpu_string: string | null;
+    paper_gpu_count: number | null;
+    reasoning: string;
+    confidence: number;
+  };
+  ladder_remaining: number;
+  resolved_at: string;
 }
 
 /** Display-annotation phase a trunk (`work`) node belongs to — §6. Not load-bearing. */
@@ -202,6 +230,13 @@ export interface RlmRunState {
    * when ``status === "running"`` and ``Date.now() - new Date(lastHeartbeatAt) > 60_000``.
    */
   lastHeartbeatAt: string | null;
+
+  /**
+   * The most-recent gpu_resolved payload for this run, or null before the
+   * resolve_gpu_requirements primitive completes.  Consumed by the
+   * NodeDetailSidebar GpuPlan badge (dynamic-gpu-selection 2026-05-23).
+   */
+  gpuPlan: GpuPlan | null;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -228,6 +263,7 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   report: null,
   warnings: [],
   lastHeartbeatAt: null,
+  gpuPlan: null,
 };
 
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
@@ -773,6 +809,28 @@ function foldRunWarning(
   return { ...state, warnings: [...state.warnings, warning] };
 }
 
+function foldGpuResolved(
+  state: RlmRunState,
+  ev: GpuResolvedEvent
+): RlmRunState {
+  const gpuPlan: GpuPlan = {
+    runpod_id: ev.runpod_id,
+    short_name: ev.short_name,
+    vram_gb: ev.vram_gb,
+    gpu_count: ev.gpu_count,
+    cloud_type: ev.cloud_type,
+    sku_usd_per_hr: ev.sku_usd_per_hr,
+    total_usd_per_hr: ev.total_usd_per_hr,
+    container_disk_gb: ev.container_disk_gb,
+    volume_gb: ev.volume_gb,
+    source: ev.source,
+    requirements: { ...ev.requirements },
+    ladder_remaining: ev.ladder_remaining,
+    resolved_at: ev.resolved_at,
+  };
+  return { ...state, gpuPlan };
+}
+
 function foldRunComplete(
   state: RlmRunState,
   ev: RunCompleteEvent
@@ -837,6 +895,8 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
     case "user_message_response":
       // Consumed by other hooks; tree reducer is a no-op.
       return seeded;
+    case "gpu_resolved":
+      return foldGpuResolved(seeded, event);
     default:
       // Exhaustiveness guard; unknown events return state unchanged.
       return seeded;
@@ -853,4 +913,90 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
  */
 export function useRlmRun(events: RlmDashboardEvent[]): RlmRunState {
   return useMemo(() => events.reduce(fold, INITIAL_RLM_STATE), [events]);
+}
+
+// ─── rAF-batched hook ─────────────────────────────────────────────────────────
+
+export interface UseRlmRunBatchedResult {
+  state: RlmRunState;
+  addEvent: (ev: RlmDashboardEvent) => void;
+  reset: () => void;
+}
+
+/**
+ * useRlmRunBatched — push-based variant of useRlmRun that batches state
+ * updates into a single requestAnimationFrame flush.
+ *
+ * Motivation: during heavy primitive calls the SSE stream emits 50–200 events
+ * in rapid succession. Each `addEvent` call queues the event into
+ * `pendingEventsRef`; the FIRST call in a batch schedules a rAF. When the
+ * frame fires, all queued events are folded in one pass and a single setState
+ * is issued — keeping the tree-layout and force-simulation from running 200
+ * times per second.
+ *
+ * Guarantees:
+ *  - Event ordering preserved (FIFO queue, folded left-to-right).
+ *  - No events dropped (flush drains the entire pending buffer atomically).
+ *  - A second batch before the first frame fires is merged into the same frame.
+ *  - Cleanup: the pending rAF handle is cancelled on unmount.
+ *
+ * @param initialEvents Optional array of events to fold synchronously as the
+ *   initial state (lazy initializer). This ensures test renders that pass a
+ *   full fixture array see the folded state on the first render, matching the
+ *   behavior of the pure useRlmRun(events) hook.
+ */
+export function useRlmRunBatched(initialEvents?: RlmDashboardEvent[]): UseRlmRunBatchedResult {
+  const [state, setState] = useState<RlmRunState>(() =>
+    initialEvents && initialEvents.length > 0
+      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      : INITIAL_RLM_STATE
+  );
+
+  // Stable ref: events waiting to be folded into state on the next frame.
+  const pendingEventsRef = useRef<RlmDashboardEvent[]>([]);
+  // The rAF handle, or null when no frame is pending.
+  const rafHandleRef = useRef<number | null>(null);
+  // The most-recently committed state — used as the fold starting point so
+  // we always append to (not replay) the already-committed state.
+  // Initialized to match the lazy initializer above.
+  const committedStateRef = useRef<RlmRunState>(
+    initialEvents && initialEvents.length > 0
+      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      : INITIAL_RLM_STATE
+  );
+
+  // Flush: drain pendingEventsRef, fold into committedState, commit.
+  const flush = useCallback(() => {
+    rafHandleRef.current = null;
+    const events = pendingEventsRef.current;
+    if (events.length === 0) return;
+    pendingEventsRef.current = [];
+    const nextState = events.reduce(fold, committedStateRef.current);
+    committedStateRef.current = nextState;
+    setState(nextState);
+  }, []);
+
+  const addEvent = useCallback((ev: RlmDashboardEvent) => {
+    pendingEventsRef.current.push(ev);
+    // Schedule a rAF only on the first event in a batch; subsequent events
+    // in the same JavaScript task reuse the existing scheduled frame.
+    if (rafHandleRef.current === null) {
+      rafHandleRef.current = requestAnimationFrame(flush);
+    }
+  }, [flush]);
+
+  // Reset: cancel any pending rAF, clear the event queue, and restore to the
+  // initial state. Called when the active run changes (e.g., a new run starts
+  // and the event array is cleared to []).
+  const reset = useCallback(() => {
+    if (rafHandleRef.current !== null) {
+      cancelAnimationFrame(rafHandleRef.current);
+      rafHandleRef.current = null;
+    }
+    pendingEventsRef.current = [];
+    committedStateRef.current = INITIAL_RLM_STATE;
+    setState(INITIAL_RLM_STATE);
+  }, []);
+
+  return { state, addEvent, reset };
 }

@@ -133,6 +133,33 @@ export interface RunWarningEvent {
   message: string;
 }
 
+// ─── §4.5 GPU resolution event (dynamic-gpu-selection 2026-05-23) ─────────────
+
+/** Emitted by resolve_gpu_requirements after a GpuPlan is selected. */
+export interface GpuResolvedEvent {
+  event: "gpu_resolved";
+  timestamp: string;
+  runpod_id: string;
+  short_name: string;
+  vram_gb: number;
+  gpu_count: number;
+  cloud_type: string;
+  sku_usd_per_hr: number;
+  total_usd_per_hr: number;
+  container_disk_gb: number;
+  volume_gb: number;
+  source: "paper" | "fallback" | "catalog";
+  requirements: {
+    estimated_vram_gb: number | null;
+    paper_gpu_string: string | null;
+    paper_gpu_count: number | null;
+    reasoning: string;
+    confidence: number;
+  };
+  ladder_remaining: number;
+  resolved_at: string;
+}
+
 // ─── §4.4 Heartbeat event — liveness signal ────────────────────────────────────
 
 export interface IterationHeartbeatEvent {
@@ -199,6 +226,7 @@ export const RLM_EVENT_TYPES = [
   "cluster_artifact_emitted",
   "cluster_scored",
   "repair_dispatched",
+  "gpu_resolved",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -217,7 +245,8 @@ export type RlmDashboardEvent =
   | ClusterStartedEvent
   | ClusterArtifactEmittedEvent
   | ClusterScoredEvent
-  | RepairDispatchedEvent;
+  | RepairDispatchedEvent
+  | GpuResolvedEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

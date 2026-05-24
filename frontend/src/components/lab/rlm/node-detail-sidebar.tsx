@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
-import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView } from "../../../hooks/use-rlm-run";
+import { memo, useState, type CSSProperties } from "react";
+import type { TreeNode, IterationView, PrimitiveCallView, SubRlmView, GpuPlan } from "../../../hooks/use-rlm-run";
 import type { ChatMessage } from "../../../hooks/use-steering-chat";
 import { SteeringChat } from "./steering-chat";
 import styles from "./node-detail-sidebar.module.css";
@@ -19,6 +19,12 @@ export interface NodeDetailSidebarProps {
   iterationCount: number;
   candidatesProposed: number;
   candidatesPromoted: number;
+  /**
+   * Resolved GPU provisioning plan from the gpu_resolved SSE event, or null
+   * before resolve_gpu_requirements completes.  When present a small badge is
+   * rendered beneath the aggregate-counters strip.
+   */
+  gpuPlan?: GpuPlan | null;
   /** Lift collapsed state to parent (optional — falls back to internal state). */
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
@@ -301,7 +307,7 @@ function SidebarBody({
 
 // ── Main sidebar component ────────────────────────────────────────────────────
 
-export function NodeDetailSidebar({
+export const NodeDetailSidebar = memo(function NodeDetailSidebar({
   node,
   iteration,
   primitiveCalls,
@@ -314,6 +320,7 @@ export function NodeDetailSidebar({
   iterationCount,
   candidatesProposed,
   candidatesPromoted,
+  gpuPlan = null,
   collapsed: collapsedProp,
   onCollapsedChange,
   style,
@@ -397,6 +404,26 @@ export function NodeDetailSidebar({
         </div>
       </div>
 
+      {/* GPU plan badge — visible once resolve_gpu_requirements completes */}
+      {gpuPlan && (
+        <div className={styles.gpuPlanBadge} data-testid="gpu-plan-badge" data-source={gpuPlan.source}>
+          <span className={styles.gpuPlanSku}>{gpuPlan.short_name}</span>
+          <span className={styles.gpuPlanVram}>{gpuPlan.vram_gb} GB</span>
+          {gpuPlan.gpu_count > 1 && (
+            <span className={styles.gpuPlanCount}>×{gpuPlan.gpu_count}</span>
+          )}
+          <span className={styles.gpuPlanCost}>${gpuPlan.total_usd_per_hr.toFixed(2)}/hr</span>
+          {gpuPlan.source === "fallback" && (
+            <span
+              className={styles.gpuPlanFallback}
+              title={gpuPlan.requirements.reasoning}
+            >
+              fallback
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Kind-specific content */}
       <div className={styles.content}>
         {node ? (
@@ -421,4 +448,4 @@ export function NodeDetailSidebar({
       />
     </aside>
   );
-}
+});

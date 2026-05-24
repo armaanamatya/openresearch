@@ -444,3 +444,58 @@
   color: var(--err);
   border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
 }
+
+/* ── GPU plan badge ──────────────────────────────────────────────── */
+
+.gpuPlanBadge {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--line-2);
+  background: var(--canvas-bg);
+  flex-shrink: 0;
+}
+
+.gpuPlanSku {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.gpuPlanVram {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px var(--sp-2);
+}
+
+.gpuPlanCount {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.gpuPlanCost {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.gpuPlanFallback {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--warn, #f59e0b) 15%, transparent);
+  color: var(--warn, #f59e0b);
+  border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 30%, transparent);
+  cursor: help;
+}

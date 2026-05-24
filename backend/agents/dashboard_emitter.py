@@ -9,6 +9,7 @@ by the SSE stream in live_runs.py.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -62,10 +63,13 @@ class DashboardEmitter:
         self._dir = Path(runs_root) / project_id
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "dashboard_events.jsonl"
+        self._lock = threading.Lock()
 
     def _emit(self, event: dict[str, Any]) -> None:
         line = json.dumps(event, default=str) + "\n"
-        with self._path.open("a", encoding="utf-8") as f:
+        # Serialize concurrent appends — parallel RDR cluster execution can
+        # race here and Windows append-to-text-file is not atomic.
+        with self._lock, self._path.open("a", encoding="utf-8") as f:
             f.write(line)
             f.flush()
 

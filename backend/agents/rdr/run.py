@@ -158,6 +158,7 @@ async def run_pipeline_rdr(
     bundles_root: "str | Path | None" = None,
     resume: bool = False,
     run_budget: Any = None,
+    cluster_concurrency: int | None = None,
 ) -> RdrResult:
     """Run one paper reproduction using the rubric-driven ``rdr`` harness.
 
@@ -180,6 +181,9 @@ async def run_pipeline_rdr(
             cluster checkpoints rather than starting fresh.
         run_budget: Optional budget object threaded into primitive calls,
             runtime sandboxes, and controller watchdog metadata.
+        cluster_concurrency: Maximum number of Code Development clusters to
+            dispatch concurrently. ``None`` → resolves to RDR_CLUSTER_CONCURRENCY
+            env var (default 8). Pass 1 to force fully sequential execution.
 
     Returns:
         An :class:`~backend.agents.rdr.models.RdrResult`.
@@ -269,6 +273,7 @@ async def run_pipeline_rdr(
         max_repair_iterations=max_repair_iterations,
         repair_target=repair_target,
         resume=resume,
+        cluster_concurrency=cluster_concurrency,
     )
 
 

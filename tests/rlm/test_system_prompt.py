@@ -385,3 +385,15 @@ class TestHeartbeatInstruction:
         """The prompt must state WHY to call heartbeat (operator visibility)."""
         lower = prompt_gpt5.lower()
         assert "alive" in lower or "operator" in lower or "visible" in lower
+
+
+class TestGpuSelectionSection:
+    """The prompt must instruct the root to call resolve_gpu_requirements."""
+
+    def test_resolve_gpu_requirements_mentioned(self, prompt_gpt5):
+        """'resolve_gpu_requirements' must appear in the prompt."""
+        assert "resolve_gpu_requirements" in prompt_gpt5
+
+    def test_estimated_vram_gb_key_mentioned(self, prompt_gpt5):
+        """The prompt must name the 'estimated_vram_gb' key so the root knows the schema."""
+        assert "estimated_vram_gb" in prompt_gpt5

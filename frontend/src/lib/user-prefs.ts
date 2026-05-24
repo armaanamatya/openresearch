@@ -1,10 +1,41 @@
 const KEY = "reprolab:user-prefs";
+// Provider selection is stored under its own key (D3) so it doesn't
+// collide with the existing user-prefs shape.
+const PROVIDER_KEY = "reprolab.lab.providerSelection";
 
 export interface UserPrefs {
   model?: "sonnet" | "opus";
   sandbox?: "auto" | "local" | "docker" | "runpod";
   executionMode?: "efficient" | "max";
   splitRatio?: number;
+}
+
+export interface ProviderPrefs {
+  root_provider?: string;
+  subagent_auth?: string;
+  dynamic_gpu?: boolean;
+  force_single_gpu?: boolean;
+  max_gpu_usd_per_hour?: number;
+  vram_gb?: number;
+}
+
+export function readProviderPrefs(): ProviderPrefs {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PROVIDER_KEY);
+    return raw ? (JSON.parse(raw) as ProviderPrefs) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeProviderPrefs(prefs: ProviderPrefs): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROVIDER_KEY, JSON.stringify(prefs));
+  } catch {
+    // non-fatal
+  }
 }
 
 export function readUserPrefs(): UserPrefs {

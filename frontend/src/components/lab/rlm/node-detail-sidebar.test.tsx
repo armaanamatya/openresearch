@@ -385,4 +385,106 @@ describe("NodeDetailSidebar", () => {
     expect(screen.queryByTitle("Harness hint: try rlm_query for this size")).not.toBeInTheDocument();
     expect(screen.getByText(/dict\[ambiguities/)).toBeInTheDocument();
   });
+
+  // ── GpuPlan badge ─────────────────────────────────────────────────────────
+
+  it("renders GpuPlan badge when gpuPlan is provided", () => {
+    const gpuPlan = {
+      runpod_id: "NVIDIA_A100_SXM4_80GB",
+      short_name: "a100_80",
+      vram_gb: 80,
+      gpu_count: 1,
+      cloud_type: "COMMUNITY",
+      sku_usd_per_hr: 1.89,
+      total_usd_per_hr: 1.89,
+      container_disk_gb: 40,
+      volume_gb: 50,
+      source: "paper" as const,
+      requirements: {
+        estimated_vram_gb: 72,
+        paper_gpu_string: "A100 80GB",
+        paper_gpu_count: 8,
+        reasoning: "paper states 80GB",
+        confidence: 0.85,
+      },
+      ladder_remaining: 2,
+      resolved_at: "2026-05-23T00:00:01Z",
+    };
+    render(<NodeDetailSidebar {...baseProps({ gpuPlan })} />);
+    const badge = screen.getByTestId("gpu-plan-badge");
+    expect(badge).toBeInTheDocument();
+    expect(screen.getByText("a100_80")).toBeInTheDocument();
+    expect(screen.getByText("80 GB")).toBeInTheDocument();
+    expect(screen.getByText("$1.89/hr")).toBeInTheDocument();
+    // source !== "fallback" so no fallback tag
+    expect(screen.queryByText("fallback")).not.toBeInTheDocument();
+  });
+
+  it("shows gpu_count multiplier when gpu_count > 1", () => {
+    const gpuPlan = {
+      runpod_id: "NVIDIA_A100_SXM4_80GB",
+      short_name: "a100_80",
+      vram_gb: 80,
+      gpu_count: 4,
+      cloud_type: "COMMUNITY",
+      sku_usd_per_hr: 1.89,
+      total_usd_per_hr: 7.56,
+      container_disk_gb: 40,
+      volume_gb: 50,
+      source: "paper" as const,
+      requirements: {
+        estimated_vram_gb: 280,
+        paper_gpu_string: "4x A100 80GB",
+        paper_gpu_count: 4,
+        reasoning: "paper states 4 GPUs",
+        confidence: 0.9,
+      },
+      ladder_remaining: 0,
+      resolved_at: "2026-05-23T00:00:01Z",
+    };
+    render(<NodeDetailSidebar {...baseProps({ gpuPlan })} />);
+    expect(screen.getByText("×4")).toBeInTheDocument();
+    expect(screen.getByText("$7.56/hr")).toBeInTheDocument();
+  });
+
+  it("shows fallback tag with reasoning title when source=fallback", () => {
+    const gpuPlan = {
+      runpod_id: "NVIDIA_RTX_4090",
+      short_name: "rtx4090",
+      vram_gb: 24,
+      gpu_count: 1,
+      cloud_type: "COMMUNITY",
+      sku_usd_per_hr: 0.34,
+      total_usd_per_hr: 0.34,
+      container_disk_gb: 40,
+      volume_gb: 50,
+      source: "fallback" as const,
+      requirements: {
+        estimated_vram_gb: null,
+        paper_gpu_string: null,
+        paper_gpu_count: null,
+        reasoning: "no hardware clues found; defaulting to RTX 4090",
+        confidence: 0.1,
+      },
+      ladder_remaining: 3,
+      resolved_at: "2026-05-23T00:00:01Z",
+    };
+    render(<NodeDetailSidebar {...baseProps({ gpuPlan })} />);
+    const fallbackEl = screen.getByText("fallback");
+    expect(fallbackEl).toBeInTheDocument();
+    expect(fallbackEl).toHaveAttribute(
+      "title",
+      "no hardware clues found; defaulting to RTX 4090"
+    );
+  });
+
+  it("does NOT render GpuPlan badge when gpuPlan is null", () => {
+    render(<NodeDetailSidebar {...baseProps({ gpuPlan: null })} />);
+    expect(screen.queryByTestId("gpu-plan-badge")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render GpuPlan badge when gpuPlan is omitted (default)", () => {
+    render(<NodeDetailSidebar {...baseProps()} />);
+    expect(screen.queryByTestId("gpu-plan-badge")).not.toBeInTheDocument();
+  });
 });

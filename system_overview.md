@@ -114,6 +114,10 @@ is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 a shared link reopens it. A `localStorage` pointer auto-resumes an in-flight run
 when the user lands on a bare `/lab`.
 
+## Dynamic GPU selection (spec 2026-05-23)
+
+When `REPROLAB_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`REPROLAB_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `REPROLAB_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `REPROLAB_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `REPROLAB_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
+
 ## Chat steering surface (2026-05-23)
 
 A bidirectional channel between the user and the running RLM:

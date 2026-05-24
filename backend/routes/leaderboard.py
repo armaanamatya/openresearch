@@ -9,7 +9,6 @@ Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
+from backend.services.events.leaderboard_cache import evict_missing, get_or_load
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,11 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
     fr_path = run_dir / "final_report.json"
     if not fr_path.is_file():
         return None
-    try:
-        data = json.loads(fr_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
+    data = get_or_load(run_dir.name, fr_path)
+    if data is None:
         logger.warning(
-            "leaderboard: skipping %s — unreadable final_report (%s)",
-            run_dir.name, e,
+            "leaderboard: skipping %s — unreadable final_report",
+            run_dir.name,
         )
         return None
 
@@ -132,6 +131,10 @@ def aggregate_leaderboard(
     rows: list[LeaderboardRow] = []
     if not runs_root.is_dir():
         return rows
+
+    # Drop cache entries for run directories that have been deleted since the
+    # last request (D6 — lazy eviction).
+    evict_missing(runs_root)
 
     for entry in sorted(runs_root.iterdir()):
         if not entry.is_dir():

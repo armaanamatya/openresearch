@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +16,8 @@ from backend.agents.runtime.base import ProviderName
 
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_BATCH_SIZE = 25
 
 
 @dataclass(frozen=True)
@@ -97,13 +101,53 @@ class RunCostLedger:
     project_id: str
     entries: list[CostLedgerEntry] = field(default_factory=list)
     path: Path | None = None
+    batch_size: int = _DEFAULT_BATCH_SIZE
+
+    def __post_init__(self) -> None:
+        # Buffer for batched writes; entries are accumulated here until a flush.
+        # The single _lock guards BOTH buffer mutations AND the file write inside
+        # _flush_locked — so this design subsumes the parallel-RDR concurrency
+        # concern that an earlier sibling branch addressed with a per-append lock:
+        # concurrent appends from parallel cluster tasks queue on this lock; the
+        # actual disk write is serialized through the same lock at flush time, so
+        # line-tearing is structurally impossible.
+        self._buffer: list[dict] = []
+        self._lock: threading.Lock = threading.Lock()
 
     def append(self, entry: CostLedgerEntry) -> None:
-        self.entries.append(entry)
-        if self.path is not None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry.to_json(), sort_keys=True) + "\n")
+        """Append an entry to the in-memory list and the write buffer.
+
+        Flushes to disk when the buffer reaches ``self.batch_size``.
+        Safe under concurrent appends from parallel RDR cluster tasks: the lock
+        serializes both buffer mutations and the eventual disk write.
+        """
+        with self._lock:
+            self.entries.append(entry)
+            if self.path is not None:
+                self._buffer.append(entry.to_json())
+                if len(self._buffer) >= self.batch_size:
+                    self._flush_locked()
+
+    def flush(self) -> None:
+        """Flush any buffered entries to disk.
+
+        Idempotent — safe to call when the buffer is empty.
+        If no path is set, this is a no-op.
+        """
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        """Write the buffer to disk (must be called with _lock held)."""
+        if not self._buffer or self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            for row in self._buffer:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._buffer.clear()
 
     def total_usd(self) -> float:
         return round(sum(entry.estimated_usd or 0.0 for entry in self.entries), 8)

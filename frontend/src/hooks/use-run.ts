@@ -112,6 +112,15 @@ export function coalesceRunState(
   };
 }
 
+export interface ProviderRunOptions {
+  rootProvider?: string;
+  subagentAuth?: string;
+  dynamicGpu?: boolean;
+  forceSingleGpu?: boolean;
+  maxGpuUsdPerHour?: number;
+  vramGb?: number;
+}
+
 export interface UseRunResult {
   run: LiveDemoRunState | null;
   busy: boolean;
@@ -127,7 +136,10 @@ export interface UseRunResult {
   resetToUpload: () => void;
 }
 
-export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult {
+export function useRun(
+  initialRun: LiveDemoRunState | null = null,
+  providerOptions: ProviderRunOptions = {},
+): UseRunResult {
   const [run, setRun] = useState<LiveDemoRunState | null>(initialRun);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,6 +150,10 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
   const dashboardProjectIdRef = useRef<string | null>(null);
   const router = useRouter();
   const didAutoResume = useRef(false);
+  // Keep a ref so callbacks always see the latest providerOptions without
+  // invalidating the useCallback memoization on every render.
+  const providerOptionsRef = useRef<ProviderRunOptions>(providerOptions);
+  providerOptionsRef.current = providerOptions;
 
   // Keep the URL in sync with the active run so a refresh or a shared
   // link restores it. `replace` (not `push`) avoids a history pile-up;
@@ -398,6 +414,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     setError(null);
     try {
       const prefs = readUserPrefs();
+      const opts = providerOptionsRef.current;
       // URLSearchParams preserves insertion order; keep the key order
       // mode, executionMode, sandbox, gpuMode, model so the
       // produced URL matches the contract asserted in lab-shell.test.tsx.
@@ -408,6 +425,12 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
         gpuMode: "auto",
         model
       });
+      if (opts.rootProvider) params.set("rootProvider", opts.rootProvider);
+      if (opts.subagentAuth) params.set("subagentAuth", opts.subagentAuth);
+      if (opts.dynamicGpu != null) params.set("dynamicGpu", String(opts.dynamicGpu));
+      if (opts.forceSingleGpu != null) params.set("forceSingleGpu", String(opts.forceSingleGpu));
+      if (opts.maxGpuUsdPerHour != null) params.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
+      if (opts.vramGb != null) params.set("vramGb", String(opts.vramGb));
       const response = await postRunRequest(
         `/api/demo?${params.toString()}`,
         { method: "POST" }
@@ -431,12 +454,19 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     setError(null);
     try {
       const prefs = readUserPrefs();
+      const opts = providerOptionsRef.current;
       const formData = new FormData();
       formData.set("mode", runMode);
       formData.set("executionMode", prefs.executionMode ?? "efficient");
       formData.set("sandbox", prefs.sandbox ?? "runpod");
       formData.set("gpuMode", "auto");
       formData.set("model", model);
+      if (opts.rootProvider) formData.set("rootProvider", opts.rootProvider);
+      if (opts.subagentAuth) formData.set("subagentAuth", opts.subagentAuth);
+      if (opts.dynamicGpu != null) formData.set("dynamicGpu", String(opts.dynamicGpu));
+      if (opts.forceSingleGpu != null) formData.set("forceSingleGpu", String(opts.forceSingleGpu));
+      if (opts.maxGpuUsdPerHour != null) formData.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
+      if (opts.vramGb != null) formData.set("vramGb", String(opts.vramGb));
       formData.set("paper", file);
       const response = await postRunRequest("/api/demo", {
         method: "POST",
@@ -461,6 +491,7 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
     setError(null);
     try {
       const prefs = readUserPrefs();
+      const opts = providerOptionsRef.current;
       // The backend fetches the paper server-side; we just hand it the URL
       // and run-config knobs. arXiv-style paths get rewritten to /pdf on the
       // backend so users can paste either /abs/ or /pdf/ links.
@@ -476,7 +507,13 @@ export function useRun(initialRun: LiveDemoRunState | null = null): UseRunResult
           executionMode: prefs.executionMode ?? "efficient",
           sandbox: prefs.sandbox ?? "runpod",
           gpuMode: "auto",
-          model
+          model,
+          ...(opts.rootProvider ? { root_provider: opts.rootProvider } : {}),
+          ...(opts.subagentAuth ? { subagent_auth: opts.subagentAuth } : {}),
+          ...(opts.dynamicGpu != null ? { dynamic_gpu: opts.dynamicGpu } : {}),
+          ...(opts.forceSingleGpu != null ? { force_single_gpu: opts.forceSingleGpu } : {}),
+          ...(opts.maxGpuUsdPerHour != null ? { max_gpu_usd_per_hour: opts.maxGpuUsdPerHour } : {}),
+          ...(opts.vramGb != null ? { vram_gb: opts.vramGb } : {}),
         })
       });
       if (!response.ok) {

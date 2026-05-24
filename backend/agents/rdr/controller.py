@@ -53,6 +53,13 @@ logger = logging.getLogger(__name__)
 
 _RDR_WATCHDOG_DEFAULT_S = float(os.environ.get("RDR_CLUSTER_WATCHDOG_S", "900"))
 
+# Default concurrency for the Code Dev cluster batch. Code Execution and
+# Result Analysis remain sequential because they depend on Code Dev artifacts.
+# Set via --cluster-concurrency or RDR_CLUSTER_CONCURRENCY env var.
+_RDR_CLUSTER_CONCURRENCY_DEFAULT = int(
+    os.environ.get("RDR_CLUSTER_CONCURRENCY", "8")
+)
+
 
 class _ClusterWatchdog:
     """Per-cluster wall-clock guard.
@@ -338,6 +345,277 @@ def _write_repair_checkpoint(
     os.replace(tmp, path)
 
 
+def _merge_cluster_files(
+    art: Artifacts,
+    cluster: WorkCluster,
+    code_dir: Path,
+    emit: Callable[[str, dict[str, Any]], None],
+    file_merge_lock: threading.Lock,
+) -> None:
+    """Merge an Artifacts payload into code_dir with concurrency-safe writes.
+
+    Holds *file_merge_lock* across the per-cluster write set so a single
+    cluster's files always land atomically with respect to other clusters
+    writing the same paths. Defensive against path-escape and PermissionError
+    (cache files, .lock files, etc.) — bad paths are skipped, not fatal.
+    """
+    for rel_path, content in art.files.items():
+        dest = code_dir / rel_path
+        try:
+            if not dest.resolve().is_relative_to(code_dir.resolve()):
+                logger.warning(
+                    "rdr/controller: refusing to write %r — outside code_dir (cluster %s)",
+                    rel_path, cluster.id,
+                )
+                continue
+        except (OSError, ValueError):
+            logger.warning("rdr/controller: refusing to resolve %r — skipping", rel_path)
+            continue
+        try:
+            with file_merge_lock:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(content, encoding="utf-8")
+            artifact_path = str(rel_path).replace("\\", "/")
+            emit("cluster_artifact_emitted", build_cluster_artifact_emitted(
+                cluster_id=cluster.id,
+                artifact_path=artifact_path,
+                byte_size=len(content.encode("utf-8")),
+                language=_artifact_language(artifact_path),
+            ))
+        except (PermissionError, OSError) as exc:
+            logger.warning(
+                "rdr/controller: skipping %r (%s: %s)",
+                str(dest), type(exc).__name__, exc,
+            )
+
+
+async def _dispatch_one_cluster(
+    cluster: WorkCluster,
+    idx: int,
+    *,
+    reproduce: Callable,
+    ctx: "RunContext",
+    paper: str,
+    done: dict[str, Artifacts],
+    done_lock: threading.Lock,
+    file_merge_lock: threading.Lock,
+    code_dir: Path,
+    iterations_dir: Path,
+    emit: Callable[[str, dict[str, Any]], None],
+    semaphore: asyncio.Semaphore,
+    cluster_timeout_s: float,
+    is_repair: bool = False,
+    repair_pass: int = 0,
+    prior_scores: dict[str, Any] | None = None,
+) -> None:
+    """Run one cluster end-to-end. Safe to call concurrently for distinct clusters.
+
+    Emits SSE lifecycle events, builds the agent context (reading *done* under
+    *done_lock*), invokes *reproduce* with an asyncio-level timeout, merges
+    artifacts into *code_dir* under *file_merge_lock*, writes a per-cluster
+    checkpoint, and stores the cluster's Artifacts in *done* under *done_lock*.
+
+    Per-cluster failures are caught and recorded as Artifacts(failed=True);
+    they NEVER propagate to the gather. This preserves fail-soft semantics
+    under parallel dispatch.
+    """
+    async with semaphore:
+        # SSE: cluster lifecycle started
+        if is_repair:
+            emit("repair_dispatched", build_repair_dispatched(
+                cluster_id=cluster.id,
+                attempt=repair_pass,
+                prior_score=_cluster_score(cluster, prior_scores or {}),
+                failed_leaves=_failed_leaves_for_cluster(
+                    cluster, prior_scores or {}, threshold=0.6,
+                ),
+            ))
+        else:
+            emit("rdr_cluster_started", {
+                "cluster_id": cluster.id,
+                "cluster_index": idx,
+                "cluster_title": cluster.title,
+                "leaf_count": len(cluster.leaves),
+                "weight": cluster.weight,
+                "dominant_category": cluster.dominant_category,
+            })
+            emit("cluster_started", build_cluster_started(
+                cluster_id=cluster.id,
+                cluster_title=cluster.title,
+                leaves=[
+                    {
+                        "id": leaf.id,
+                        "weight": leaf.weight,
+                        "requirements": leaf.requirements,
+                    }
+                    for leaf in cluster.leaves
+                ],
+                iteration=idx + 1,
+            ))
+
+        # Snapshot done under lock before passing into build_context: parallel
+        # peers in the same batch are intentionally invisible to each other
+        # (they're independent code-dev clusters by category).
+        with done_lock:
+            done_snapshot = dict(done)
+        agctx = build_context(
+            cluster,
+            paper=paper,
+            artifacts=done_snapshot,
+            prior_scores=prior_scores,
+        )
+
+        # Per-cluster timeout via asyncio.wait_for. Replaces the legacy
+        # os._exit-based _ClusterWatchdog, which would kill the entire process
+        # — unsafe when multiple clusters are in flight. Each cluster gets its
+        # own asyncio task; a timeout cancels only that task.
+        try:
+            art = await asyncio.wait_for(
+                reproduce(agctx, ctx=ctx),
+                timeout=cluster_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "run_rdr[%s]: cluster %s timed out after %.0fs — marking failed",
+                ctx.project_id, cluster.id, cluster_timeout_s,
+            )
+            art = Artifacts(
+                cluster_id=cluster.id,
+                failed=True,
+                error=f"TimeoutError: cluster exceeded {cluster_timeout_s:.0f}s",
+            )
+        except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
+            logger.warning(
+                "run_rdr[%s]: cluster %s raised %s: %s — marking failed",
+                ctx.project_id, cluster.id, type(exc).__name__, exc,
+            )
+            art = Artifacts(
+                cluster_id=cluster.id,
+                failed=True,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        # Publish to done before merge so any peers built right after see it.
+        with done_lock:
+            done[cluster.id] = art
+
+        # SSE: completion event
+        if is_repair:
+            emit("rdr_repair_cluster_completed", {
+                "pass": repair_pass,
+                "cluster_id": cluster.id,
+                "failed": art.failed,
+                "error": art.error,
+            })
+        else:
+            emit("rdr_cluster_completed", {
+                "cluster_id": cluster.id,
+                "cluster_index": idx,
+                "failed": art.failed,
+                "error": art.error,
+                "file_count": len(art.files),
+            })
+
+        # Merge files (concurrency-safe).
+        _merge_cluster_files(art, cluster, code_dir, emit, file_merge_lock)
+
+        # Per-cluster checkpoint.
+        if is_repair:
+            _write_repair_checkpoint(iterations_dir, repair_pass, cluster, art)
+        else:
+            _write_cluster_checkpoint(iterations_dir, idx, cluster, art)
+
+        if art.failed:
+            logger.warning(
+                "run_rdr[%s]: %scluster %s failed: %s",
+                ctx.project_id,
+                f"repair pass {repair_pass} " if is_repair else "",
+                cluster.id, art.error,
+            )
+
+
+async def _run_cluster_batch(
+    clusters_with_idx: list[tuple[int, WorkCluster]],
+    *,
+    reproduce: Callable,
+    ctx: "RunContext",
+    paper: str,
+    done: dict[str, Artifacts],
+    done_lock: threading.Lock,
+    file_merge_lock: threading.Lock,
+    code_dir: Path,
+    iterations_dir: Path,
+    emit: Callable[[str, dict[str, Any]], None],
+    cluster_concurrency: int,
+    cluster_timeout_s: float,
+    is_repair: bool = False,
+    repair_pass: int = 0,
+    prior_scores: dict[str, Any] | None = None,
+) -> None:
+    """Run a list of clusters with bounded concurrency.
+
+    Concurrency level applies uniformly across the input list — callers that
+    need a mix (e.g., Code Dev parallel, Code Execution sequential) should
+    split their cluster list and call this helper twice.
+
+    Returns after every cluster has either completed or been marked failed
+    via _dispatch_one_cluster's fail-soft path. Never raises per-cluster.
+    """
+    if not clusters_with_idx:
+        return
+    semaphore = asyncio.Semaphore(max(1, int(cluster_concurrency)))
+    tasks = [
+        _dispatch_one_cluster(
+            cluster, idx,
+            reproduce=reproduce,
+            ctx=ctx,
+            paper=paper,
+            done=done,
+            done_lock=done_lock,
+            file_merge_lock=file_merge_lock,
+            code_dir=code_dir,
+            iterations_dir=iterations_dir,
+            emit=emit,
+            semaphore=semaphore,
+            cluster_timeout_s=cluster_timeout_s,
+            is_repair=is_repair,
+            repair_pass=repair_pass,
+            prior_scores=prior_scores,
+        )
+        for idx, cluster in clusters_with_idx
+    ]
+    # return_exceptions=True is defensive — _dispatch_one_cluster already
+    # catches everything, but we don't want a stray cancellation to bring
+    # down the entire batch.
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning(
+                "run_rdr[%s]: _dispatch_one_cluster surfaced %s: %s",
+                ctx.project_id, type(result).__name__, result,
+            )
+
+
+def _split_clusters_by_parallelism(
+    clusters: list[WorkCluster],
+) -> tuple[list[WorkCluster], list[WorkCluster]]:
+    """Partition clusters into (parallelizable, sequential).
+
+    Parallelizable = Code Development (no inter-cluster deps within category).
+    Sequential = Code Execution + Result Analysis (depend on Code Dev outputs
+    and on each other). The split is by ``dominant_category`` — the cluster's
+    own depends_on list is implicit in this category-based topology.
+    """
+    parallel: list[WorkCluster] = []
+    sequential: list[WorkCluster] = []
+    for c in clusters:
+        if c.dominant_category == "Code Development":
+            parallel.append(c)
+        else:
+            sequential.append(c)
+    return parallel, sequential
+
+
 def _resolve_reproduce_fn(reproduce_fn: Callable | None) -> Callable:
     """Return the agent callable: injected or lazily-imported real one."""
     if reproduce_fn is not None:
@@ -405,6 +683,7 @@ async def run_rdr(
     max_leaves_per_cluster: int = 12,
     reproduce_fn: Callable | None = None,
     resume: bool = False,
+    cluster_concurrency: int | None = None,
 ) -> RdrResult:
     """Deterministic controller for a rubric-driven paper reproduction run.
 
@@ -422,6 +701,11 @@ async def run_rdr(
             does not exist yet).
         resume: When True, load completed cluster checkpoints from
             ``ctx.project_dir/iterations/`` and skip those clusters.
+        cluster_concurrency: Maximum number of Code Development clusters to
+            dispatch concurrently. Code Execution and Result Analysis
+            clusters remain sequential because they depend on Code Dev
+            artifacts. ``None`` → resolves to RDR_CLUSTER_CONCURRENCY env
+            var (default 8). Pass 1 to force fully sequential execution.
 
     Returns:
         An :class:`RdrResult` — always; per-cluster and per-phase failures
@@ -429,6 +713,16 @@ async def run_rdr(
     """
     run_started_at = datetime.now(timezone.utc).isoformat()
     _reproduce = _resolve_reproduce_fn(reproduce_fn)
+
+    # Concurrency level — explicit arg > env > default.
+    if cluster_concurrency is None:
+        cluster_concurrency = _RDR_CLUSTER_CONCURRENCY_DEFAULT
+    cluster_concurrency = max(1, int(cluster_concurrency))
+    cluster_timeout_s = _RDR_WATCHDOG_DEFAULT_S
+
+    # Locks shared across the parallel cluster batch.
+    done_lock = threading.Lock()
+    file_merge_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Step 1: Decompose
@@ -487,115 +781,63 @@ async def run_rdr(
     if resume:
         done = _load_resume_done(iterations_dir, clusters)
 
-    clusters_failed = 0
+    # Partition clusters into the parallelizable Code Dev batch and the
+    # sequential tail (Code Execution + Result Analysis). Within each
+    # partition we preserve original index for checkpoint filenames.
+    indexed_clusters = [
+        (idx, cluster) for idx, cluster in enumerate(clusters)
+        if cluster.id not in done
+    ]
+    parallel_batch = [
+        (idx, c) for idx, c in indexed_clusters
+        if c.dominant_category == "Code Development"
+    ]
+    sequential_tail = [
+        (idx, c) for idx, c in indexed_clusters
+        if c.dominant_category != "Code Development"
+    ]
 
-    for idx, cluster in enumerate(clusters):
-        # Resume: skip clusters that have existing checkpoints.
-        if cluster.id in done:
-            existing_art = done[cluster.id]
-            if existing_art.failed:
-                clusters_failed += 1
-            continue
+    logger.info(
+        "run_rdr[%s]: dispatching %d parallel Code Dev clusters "
+        "(concurrency=%d, timeout=%.0fs/cluster), then %d sequential "
+        "Code Exec/Result Analysis clusters",
+        ctx.project_id, len(parallel_batch), cluster_concurrency,
+        cluster_timeout_s, len(sequential_tail),
+    )
 
-        # SSE: rdr_cluster_started
-        _emit("rdr_cluster_started", {
-            "cluster_id": cluster.id,
-            "cluster_index": idx,
-            "cluster_title": cluster.title,
-            "leaf_count": len(cluster.leaves),
-            "weight": cluster.weight,
-            "dominant_category": cluster.dominant_category,
-        })
-        _emit("cluster_started", build_cluster_started(
-            cluster_id=cluster.id,
-            cluster_title=cluster.title,
-            leaves=[
-                {
-                    "id": leaf.id,
-                    "weight": leaf.weight,
-                    "requirements": leaf.requirements,
-                }
-                for leaf in cluster.leaves
-            ],
-            iteration=idx + 1,
-        ))
+    # Phase 1a: Code Dev clusters in parallel.
+    await _run_cluster_batch(
+        parallel_batch,
+        reproduce=_reproduce,
+        ctx=ctx,
+        paper=paper,
+        done=done,
+        done_lock=done_lock,
+        file_merge_lock=file_merge_lock,
+        code_dir=code_dir,
+        iterations_dir=iterations_dir,
+        emit=_emit,
+        cluster_concurrency=cluster_concurrency,
+        cluster_timeout_s=cluster_timeout_s,
+    )
 
-        agctx = build_context(
-            cluster,
-            paper=paper,
-            artifacts=done,
-            prior_scores=None,
-        )
-        wd = _ClusterWatchdog(label=f"cluster_{idx}_{cluster.id}", project_dir=ctx.project_dir)
-        wd.arm()
-        try:
-            art = await _reproduce(agctx, ctx=ctx)
-        except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
-            logger.warning(
-                "run_rdr[%s]: cluster %s raised %s: %s — marking failed",
-                ctx.project_id, cluster.id, type(exc).__name__, exc,
-            )
-            art = Artifacts(
-                cluster_id=cluster.id,
-                failed=True,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        finally:
-            wd.disarm()
+    # Phase 1b: Code Execution + Result Analysis sequentially.
+    await _run_cluster_batch(
+        sequential_tail,
+        reproduce=_reproduce,
+        ctx=ctx,
+        paper=paper,
+        done=done,
+        done_lock=done_lock,
+        file_merge_lock=file_merge_lock,
+        code_dir=code_dir,
+        iterations_dir=iterations_dir,
+        emit=_emit,
+        cluster_concurrency=1,
+        cluster_timeout_s=cluster_timeout_s,
+    )
 
-        done[cluster.id] = art
-
-        # SSE: rdr_cluster_completed
-        _emit("rdr_cluster_completed", {
-            "cluster_id": cluster.id,
-            "cluster_index": idx,
-            "failed": art.failed,
-            "error": art.error,
-            "file_count": len(art.files),
-        })
-
-        # Merge files into the shared code/ dir (agent writes its own copies;
-        # files dict carries the canonical content from the agent's
-        # perspective).  Defensive: skip files we can't write (e.g. cache
-        # locks with restricted perms that slipped past the agent-side
-        # exclusions) so a single bad path doesn't kill the run.
-        for rel_path, content in art.files.items():
-            dest = code_dir / rel_path
-            # Containment guard: reject any path that resolves outside code_dir.
-            try:
-                if not dest.resolve().is_relative_to(code_dir.resolve()):
-                    logger.warning(
-                        "rdr/controller: refusing to write %r — outside code_dir (cluster %s)",
-                        rel_path, cluster.id,
-                    )
-                    continue
-            except (OSError, ValueError):
-                logger.warning("rdr/controller: refusing to resolve %r — skipping", rel_path)
-                continue
-            try:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(content, encoding="utf-8")
-                artifact_path = str(rel_path).replace("\\", "/")
-                _emit("cluster_artifact_emitted", build_cluster_artifact_emitted(
-                    cluster_id=cluster.id,
-                    artifact_path=artifact_path,
-                    byte_size=len(content.encode("utf-8")),
-                    language=_artifact_language(artifact_path),
-                ))
-            except (PermissionError, OSError) as exc:
-                logger.warning(
-                    "rdr/controller: skipping %r (%s: %s)",
-                    str(dest), type(exc).__name__, exc,
-                )
-
-        _write_cluster_checkpoint(iterations_dir, idx, cluster, art)
-
-        if art.failed:
-            clusters_failed += 1
-            logger.warning(
-                "run_rdr[%s]: cluster %s failed: %s",
-                ctx.project_id, cluster.id, art.error,
-            )
+    clusters_failed = sum(1 for art in done.values() if art.failed)
 
     # ------------------------------------------------------------------
     # Step 4: Assemble — write commands.json
@@ -770,87 +1012,72 @@ async def run_rdr(
         )
         _emit("rdr_repair_pass_started", {"pass": rep_n, "weak_count": len(weak)})
 
-        for cluster in weak:
-            # Resume: skip repair clusters that have existing checkpoints.
-            if f"{rep_n}:{cluster.id}" in _completed_repair_keys:
-                logger.info(
-                    "rdr/resume: skipping repair pass %d cluster %s (checkpoint exists)",
-                    rep_n, cluster.id,
-                )
-                continue
-
-            _emit("repair_dispatched", build_repair_dispatched(
-                cluster_id=cluster.id,
-                attempt=rep_n,
-                prior_score=_cluster_score(cluster, scores),
-                failed_leaves=_failed_leaves_for_cluster(cluster, scores, repair_target),
-            ))
-            agctx = build_context(
-                cluster,
-                paper=paper,
-                artifacts=done,
-                prior_scores=scores,
+        # Skip weak clusters whose repair checkpoint already exists (resume).
+        weak_pending = [
+            c for c in weak
+            if f"{rep_n}:{c.id}" not in _completed_repair_keys
+        ]
+        skipped_for_resume = len(weak) - len(weak_pending)
+        if skipped_for_resume:
+            logger.info(
+                "rdr/resume: pass %d skipping %d clusters with existing checkpoints",
+                rep_n, skipped_for_resume,
             )
-            wd = _ClusterWatchdog(label=f"repair_{rep_n}_cluster_{cluster.id}", project_dir=ctx.project_dir)
-            wd.arm()
-            try:
-                art = await _reproduce(agctx, ctx=ctx)
-            except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
-                logger.warning(
-                    "run_rdr[%s]: repair cluster %s raised %s: %s",
-                    ctx.project_id, cluster.id, type(exc).__name__, exc,
-                )
-                art = Artifacts(
-                    cluster_id=cluster.id,
-                    failed=True,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            finally:
-                wd.disarm()
-            done[cluster.id] = art
-            total_agent_dispatches += 1
 
-            # SSE: rdr_repair_cluster_completed
-            _emit("rdr_repair_cluster_completed", {
-                "pass": rep_n,
-                "cluster_id": cluster.id,
-                "failed": art.failed,
-                "error": art.error,
-            })
+        # Partition by parallelizability (same rule as initial pass).
+        # Use the cluster's natural index from the original list so repair
+        # checkpoints don't collide with each other across passes.
+        index_by_id = {c.id: i for i, c in enumerate(clusters)}
+        weak_indexed = [(index_by_id[c.id], c) for c in weak_pending]
+        weak_parallel = [
+            (i, c) for i, c in weak_indexed
+            if c.dominant_category == "Code Development"
+        ]
+        weak_sequential = [
+            (i, c) for i, c in weak_indexed
+            if c.dominant_category != "Code Development"
+        ]
 
-            # Merge repaired files back into code/ (defensive — see the
-            # initial-pass note above).
-            for rel_path, content in art.files.items():
-                dest = code_dir / rel_path
-                # Containment guard: reject any path that resolves outside code_dir.
-                try:
-                    if not dest.resolve().is_relative_to(code_dir.resolve()):
-                        logger.warning(
-                            "rdr/controller: refusing to write %r — outside code_dir (cluster %s)",
-                            rel_path, cluster.id,
-                        )
-                        continue
-                except (OSError, ValueError):
-                    logger.warning("rdr/controller: refusing to resolve %r — skipping", rel_path)
-                    continue
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_text(content, encoding="utf-8")
-                    artifact_path = str(rel_path).replace("\\", "/")
-                    _emit("cluster_artifact_emitted", build_cluster_artifact_emitted(
-                        cluster_id=cluster.id,
-                        artifact_path=artifact_path,
-                        byte_size=len(content.encode("utf-8")),
-                        language=_artifact_language(artifact_path),
-                    ))
-                except (PermissionError, OSError) as exc:
-                    logger.warning(
-                        "rdr/controller: skipping %r (%s: %s)",
-                        str(dest), type(exc).__name__, exc,
-                    )
+        # Repair pass 2a: parallel Code Dev clusters.
+        await _run_cluster_batch(
+            weak_parallel,
+            reproduce=_reproduce,
+            ctx=ctx,
+            paper=paper,
+            done=done,
+            done_lock=done_lock,
+            file_merge_lock=file_merge_lock,
+            code_dir=code_dir,
+            iterations_dir=iterations_dir,
+            emit=_emit,
+            cluster_concurrency=cluster_concurrency,
+            cluster_timeout_s=cluster_timeout_s,
+            is_repair=True,
+            repair_pass=rep_n,
+            prior_scores=scores,
+        )
 
-            # Write a repair-pass checkpoint alongside the initial cluster checkpoints.
-            _write_repair_checkpoint(iterations_dir, rep_n, cluster, art)
+        # Repair pass 2b: sequential Code Exec + Result Analysis.
+        await _run_cluster_batch(
+            weak_sequential,
+            reproduce=_reproduce,
+            ctx=ctx,
+            paper=paper,
+            done=done,
+            done_lock=done_lock,
+            file_merge_lock=file_merge_lock,
+            code_dir=code_dir,
+            iterations_dir=iterations_dir,
+            emit=_emit,
+            cluster_concurrency=1,
+            cluster_timeout_s=cluster_timeout_s,
+            is_repair=True,
+            repair_pass=rep_n,
+            prior_scores=scores,
+        )
+
+        # One dispatch counted per cluster we actually attempted this pass.
+        total_agent_dispatches += len(weak_pending)
 
         # Re-assemble commands
         commands = _dedup_commands(done)
@@ -920,6 +1147,14 @@ async def run_rdr(
 
     cost_dict: dict[str, Any] = {}
     if ctx.cost_ledger is not None:
+        # Lane G: append() buffers writes; flush at run end so the on-disk
+        # cost_ledger.jsonl reflects every entry recorded during the run.
+        # RDR does not go through the RLM binding wrapper that auto-flushes
+        # at primitive boundaries, so an explicit flush is required here.
+        try:
+            ctx.cost_ledger.flush()
+        except Exception:  # noqa: BLE001 — flush failure must not abort the report
+            logger.exception("cost ledger flush failed at RDR run completion")
         try:
             cost_dict = {"llm_usd": ctx.cost_ledger.total_usd(), "primitives": ctx.cost_ledger.total_usd()}
         except Exception:  # noqa: BLE001
