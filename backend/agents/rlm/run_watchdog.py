@@ -80,10 +80,19 @@ def is_enabled() -> bool:
 
 @dataclass(slots=True)
 class WatchdogConfig:
-    """Tunable thresholds.  Env-var aware via :meth:`from_env`."""
+    """Tunable thresholds.  Env-var aware via :meth:`from_env`.
+
+    Policy (2026-05-24): NO warn-then-kill cascade.  If a run is stale long
+    enough to be unrecoverable (no exec.log growth, no heartbeat, no SSE
+    events) it is BLOCKING the rubric — we kill immediately rather than
+    wait through a courtesy warning window.  ``warn_after_seconds`` is kept
+    for backwards-compat but no longer triggers a separate event by default;
+    setting it lower than ``kill_after_seconds`` enables an optional warning
+    breadcrumb.
+    """
 
     warn_after_seconds: float = 300.0
-    kill_after_seconds: float = 1200.0
+    kill_after_seconds: float = 300.0  # collapsed: stale -> kill, no waiting
     poll_interval_seconds: float = 30.0
     heartbeat_filename: str = ".heartbeat"
     exec_log_filename: str = "exec.log"
@@ -101,9 +110,11 @@ class WatchdogConfig:
                 logger.warning("watchdog: ignoring non-numeric %s=%r", name, raw)
                 return default
 
+        # Both warn + kill default to 300 s (5 min).  Operator can split
+        # them via env var if they want the old warn-then-kill behaviour.
         return cls(
             warn_after_seconds=_f(_WARN_ENV_VAR, 300.0),
-            kill_after_seconds=_f(_KILL_ENV_VAR, 1200.0),
+            kill_after_seconds=_f(_KILL_ENV_VAR, 300.0),
             poll_interval_seconds=_f(_POLL_ENV_VAR, 30.0),
         )
 
