@@ -188,7 +188,11 @@ class LocalDockerBackend(RuntimeBackend):
             run_kwargs["nano_cpus"] = int(config.cpus * 1_000_000_000)
         if config.network_disabled:
             run_kwargs["network_mode"] = "none"
-        if config.gpu_mode in {"prefer", "max"}:
+        # gpu_resolution.is_gpu_passthrough_mode is the single authority on
+        # "should we attach a GPU?" — same predicate the Dockerfile-generator
+        # uses to pick the torch wheel, so the two stay in lock-step.
+        from backend.services.runtime.gpu_resolution import is_gpu_passthrough_mode
+        if is_gpu_passthrough_mode(config.gpu_mode):
             run_kwargs["device_requests"] = [_gpu_device_request()]
             run_kwargs["environment"] = {
                 **config.environment,

@@ -240,14 +240,16 @@ def _generate_dockerfile(
 ) -> str:
     """Generate a working Dockerfile.
 
-    ``gpu_mode`` controls the torch wheel selection:
-      - ``prefer`` or ``max`` → default PyPI wheel (includes CUDA 12.x support).
-      - anything else (``off``, ``auto``, None) → ``whl/cpu`` wheel
-        (smaller image, faster build; CUDA passthrough won't be used).
-
-    This matches ``LocalDockerBackend.create_sandbox`` which only injects the
-    NVIDIA ``device_requests`` when ``gpu_mode in {"prefer", "max"}``.
+    Wheel selection for ``torch``/``torchvision``/``torchaudio`` is delegated
+    to :func:`backend.services.runtime.gpu_resolution.select_torch_index_url`,
+    which is the single authority on "do we install CUDA torch?".  It honours
+    both the requested ``gpu_mode`` and the host's actual NVIDIA capability,
+    so ``--gpu-mode prefer`` on a GPU-less host still gets the CPU wheel
+    (the alternative — installing CUDA torch into a container that has no
+    GPU device — wastes ~2 GB of image and ~3 min of build time).
     """
+    from backend.services.runtime.gpu_resolution import select_torch_index_url
+
     lines = [
         f"FROM python:{python_version}-slim",
         "",
@@ -259,7 +261,7 @@ def _generate_dockerfile(
         "# Python packages",
     ]
 
-    # Group torch install separately so we can pick the right wheel index.
+    # Group torch install separately so we can apply the resolved index URL.
     torch_packages = []
     other_packages = []
     for pkg, version in sorted(pip_packages.items()):
@@ -268,19 +270,17 @@ def _generate_dockerfile(
         else:
             other_packages.append(f"{pkg}=={version}" if version else pkg)
 
-    _wants_cuda = (gpu_mode or "").lower() in {"prefer", "max"}
-
     if torch_packages:
-        if _wants_cuda:
-            # Default PyPI wheel ships with CUDA 12.x. No --index-url override.
+        index_url = select_torch_index_url(gpu_mode)
+        if index_url is None:
+            # Default PyPI ships a CUDA-capable wheel on linux/x86_64.
             lines.append(
                 f"RUN pip install --no-cache-dir {' '.join(torch_packages)}"
             )
         else:
-            # CPU-only wheel — smaller, faster install, no CUDA bloat.
             lines.append(
                 f"RUN pip install --no-cache-dir {' '.join(torch_packages)} "
-                f"--index-url https://download.pytorch.org/whl/cpu"
+                f"--index-url {index_url}"
             )
 
     if other_packages:
