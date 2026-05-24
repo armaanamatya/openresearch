@@ -824,7 +824,10 @@ async def _execute_in_sandbox(
     # the Dockerfile IS used to build the image — deps are already baked in.
     requirements_path = code_dir / "requirements.txt"
     bootstrap_commands: list[str] = []
-    if str(sandbox_mode).lower() == "runpod" and requirements_path.exists():
+    # sandbox_mode may be a SandboxMode enum (str(...) is "SandboxMode.runpod")
+    # OR a plain string "runpod". Use substring match to cover both forms.
+    _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
+    if "runpod" in _mode_str and requirements_path.exists():
         bootstrap_commands.append(
             "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
         )
