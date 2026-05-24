@@ -207,6 +207,28 @@ class Settings(BaseSettings):
         description="When to inject the EXECUTION-BUDGET AWARENESS block into the baseline agent prompt",
     )
 
+    # Multi-tenant / production LLM auth strategy.
+    #   "auto" (default) — pick whichever credential is available, preferring
+    #     a funded API key (separate rate-limit pool, billable) over the
+    #     local OAuth subscription (shared, single-user rate limit).  This
+    #     is the right default for solo dev where OAuth is free.
+    #   "api_only" — refuse to start unless a paid API key is present.  Use
+    #     for production / multi-user deployments where OAuth's per-account
+    #     rate limit would throttle every concurrent agent.
+    #   "oauth_only" — force the OAuth subscription path even when an API
+    #     key is set.  Useful for cost-bounded local iteration.
+    # The strategy is enforced at runtime resolution; an unsatisfiable
+    # strategy fails fast at startup rather than silently degrading.
+    llm_auth_strategy: str = Field(
+        default="auto",
+        pattern=r"^(auto|api_only|oauth_only)$",
+        description=(
+            "LLM credential preference. 'api_only' requires a paid API key and "
+            "is the recommended production setting (separate rate-limit pool, "
+            "no single-user OAuth contention)."
+        ),
+    )
+
     # Apify ArXiv MCP server (https://github.com/apify/actor-arxiv-mcp-server).
     # When apify_api_token is set, the Claude agent runtime registers the
     # SSE endpoint as an MCP server named ``apify-arxiv`` and exposes its

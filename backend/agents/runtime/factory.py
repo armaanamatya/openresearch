@@ -207,6 +207,29 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
         # its OAuth session. ``_has_claude_subscription_oauth`` handles both
         # storage backends (file on Linux/older macOS, Keychain on modern macOS).
         has_claude_cli = _has_claude_subscription_oauth()
+        # Lane 4: enforce the production llm_auth_strategy gate.  Each value
+        # narrows which credential surfaces are acceptable; an unsatisfiable
+        # strategy fails fast here rather than silently degrading to the
+        # wrong rate-limit pool at runtime.
+        strategy = (getattr(settings, "llm_auth_strategy", "auto") or "auto").lower()
+        if strategy == "api_only" and not has_api_key:
+            raise ProviderConfigurationError(
+                provider=resolved,
+                reason=(
+                    "REPROLAB_LLM_AUTH_STRATEGY=api_only requires a funded "
+                    "ANTHROPIC_API_KEY but none was found.  Either set the API "
+                    "key, or switch the strategy to 'auto' / 'oauth_only'."
+                ),
+            )
+        if strategy == "oauth_only" and not has_claude_cli:
+            raise ProviderConfigurationError(
+                provider=resolved,
+                reason=(
+                    "REPROLAB_LLM_AUTH_STRATEGY=oauth_only requires a logged-in "
+                    "Claude Code CLI subscription but none was detected.  Run "
+                    "`claude login` or switch the strategy to 'auto' / 'api_only'."
+                ),
+            )
         if not (has_api_key or has_claude_cli):
             raise ProviderConfigurationError(
                 provider=resolved,
