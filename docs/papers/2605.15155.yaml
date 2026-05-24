@@ -1,0 +1,50 @@
+# SDAR — Self-Distilled Agentic Reinforcement Learning (arXiv 2605.15155)
+# Paper: https://arxiv.org/abs/2605.15155
+# Code:  https://github.com/ZJU-REAL/SDAR
+
+algorithm_invariants:
+  gate_formula: "g_t = sigmoid(beta * Delta_t) where Delta_t = log pi_student(y_t|x_t) - log pi_teacher(y_t|x_t, c_priv)"
+  stop_gradient_on_gate: true
+  loss: "L = L_GRPO + lambda * L_OPSD"
+  lambda: 0.1
+  beta: 10
+  divergence: "reverse KL (mode-seeking)"
+  gating_strategy: "gap (Teacher-Student gap on student-sampled token)"
+
+hyperparameters:
+  learning_rate: 1.0e-6
+  group_size_G: 8
+  epochs_per_batch: 1
+  prompt_length: "2048 (ALFWorld), 4096 (Search-QA, WebShop)"
+  eps_clip: 0.2
+  seeds: [42, 43, 44]
+
+models_in_paper:
+  qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct
+  qwen2_5_3b: Qwen/Qwen2.5-3B-Instruct
+  qwen2_5_7b: Qwen/Qwen2.5-7B-Instruct
+
+datasets:
+  alfworld:
+    setup: "pip install alfworld && alfworld-download"
+    paper_split: "GiGPO train split"
+    categories: [Pick, Look, Clean, Heat, Cool, Pick2]
+  search_qa:
+    datasets: [NQ, HotpotQA, TriviaQA, PopQA, 2Wiki, MuSiQue, Bamboogle]
+    setup: "datasets.load_dataset('hotpot_qa', 'distractor') etc.; uses E5 retriever from Search-R1"
+  webshop:
+    setup: "pip install webshop-text-env (or upstream package); 128 validation tasks"
+
+eval_metrics:
+  alfworld: "success rate (%)"
+  search_qa: "exact-match accuracy (%)"
+  webshop: "score (0-100) and accuracy (%)"
+
+baselines:
+  - GRPO
+  - OPSD
+  - Skill-SD
+  - GRPO+OPSD
+  - RLSD
+
+code_release: https://github.com/ZJU-REAL/SDAR
