@@ -888,6 +888,13 @@ async def _execute_in_sandbox(
     # OR a plain string "runpod". Use substring match to cover both forms.
     _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     if "runpod" in _mode_str:
+        # Lane 6: when REPROLAB_BOOTSTRAP_MKDIRS is set by the RunPod backend
+        # (because a network volume is mounted for persistent pip / HF cache),
+        # create those dirs FIRST so pip and HuggingFace can write to them.
+        # Pre-pip step — must run before any other bootstrap.
+        bootstrap_commands.append(
+            'mkdir -p ${REPROLAB_BOOTSTRAP_MKDIRS:-/tmp/.reprolab_noop}'
+        )
         # Lane 1: auto-derive requirements.txt from the Dockerfile when the
         # agent forgot to write one. The local-docker sandbox path builds an
         # image from the Dockerfile (every pip dep installed); the RunPod
@@ -903,11 +910,18 @@ async def _execute_in_sandbox(
             except Exception:  # noqa: BLE001 — observability must never block the run
                 logger.exception("_execute_in_sandbox: requirements.txt auto-derive failed")
         if requirements_path.exists():
+            # Lane 6 detail: drop ``--no-cache-dir`` so pip writes to
+            # PIP_CACHE_DIR.  When PIP_CACHE_DIR points to a mounted network
+            # volume, subsequent pods reuse the cache and skip the ~2 GB
+            # torch+matplotlib+datasets download.  When no volume is mounted
+            # the cache lives in /root/.cache (pod-local, lost on destroy)
+            # which is no worse than the previous ``--no-cache-dir`` path
+            # but uses the cache within the same pod across retries.
             bootstrap_commands.append(
-                "python -m pip install --upgrade --no-cache-dir pip wheel setuptools"
+                "python -m pip install --upgrade pip wheel setuptools"
             )
             bootstrap_commands.append(
-                "python -m pip install --no-cache-dir -r requirements.txt"
+                "python -m pip install -r requirements.txt"
             )
 
     results = []

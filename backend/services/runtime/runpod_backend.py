@@ -448,6 +448,23 @@ class RunpodBackend(RuntimeBackend):
             env.setdefault("PUBLIC_KEY", public_key)
             env.setdefault("SSH_PUBLIC_KEY", public_key)
 
+        # Lane 6: persistent dependency cache via the mounted network volume.
+        # When ``network_volume_id`` is configured (operator created a RunPod
+        # network volume), redirect pip / HuggingFace / torchvision caches to
+        # subdirectories under the mount path so they survive pod destroy
+        # and are reused on the next pod.  Without this, every pod re-pulls
+        # ~2 GB of torch + matplotlib + datasets wheels and ~150 MB of
+        # MNIST/CIFAR per run.  setdefault preserves any operator-set values.
+        if self.network_volume_id:
+            mount = self.volume_mount_path.rstrip("/") or "/workspace"
+            env.setdefault("PIP_CACHE_DIR", f"{mount}/cache/pip")
+            env.setdefault("HF_HOME", f"{mount}/cache/hf")
+            env.setdefault("HF_DATASETS_CACHE", f"{mount}/cache/hf/datasets")
+            env.setdefault("TRANSFORMERS_CACHE", f"{mount}/cache/hf/transformers")
+            env.setdefault("TORCH_HOME", f"{mount}/cache/torch")
+            # Make the cache dirs exist before any pip install runs.
+            env.setdefault("REPROLAB_BOOTSTRAP_MKDIRS", f"{mount}/cache/pip {mount}/cache/hf {mount}/cache/torch")
+
         # Map gpu_mode to RunPod compute type.
         # "off"          → CPU-only pod (no GPU allocation, lower cost).
         # "prefer"/"max" → GPU pod using the configured gpu_type/count.
