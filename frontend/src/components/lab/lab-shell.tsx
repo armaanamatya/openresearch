@@ -28,6 +28,7 @@ type LabShellProps = {
   initialRecentsError?: string | null;
   initialModels?: ModelChoice[];
   initialAuthStatus?: AuthStatus | null;
+  serverDefaultSandbox?: DemoSandboxMode;
   presentationMode?: PresentationMode;
 };
 
@@ -109,6 +110,7 @@ export function LabShell({
   initialRecentsError = null,
   initialModels = [],
   initialAuthStatus = null,
+  serverDefaultSandbox,
   presentationMode = "internal"
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
@@ -149,11 +151,12 @@ export function LabShell({
   const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
   const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
   const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
-  // Sandbox state mirrors the `model` pattern — persisted via UserPrefs.
-  // Default to "docker" (CPU-local) because (a) it requires no funding,
-  // (b) it works on any machine, (c) RunPod requires an upfront balance.
-  // Users can switch to "runpod" via the new Sandbox radio in the upload form.
-  const [sandbox, setSandbox] = useState<DemoSandboxMode>(() => readUserPrefs().sandbox ?? "docker");
+  // Sandbox default: user's saved pref → server-side REPROLAB_DEFAULT_SANDBOX → "docker".
+  // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
+  // the fallback without requiring a code change.
+  const [sandbox, setSandbox] = useState<DemoSandboxMode>(
+    () => readUserPrefs().sandbox ?? serverDefaultSandbox ?? "docker"
+  );
 
   const {
     run,

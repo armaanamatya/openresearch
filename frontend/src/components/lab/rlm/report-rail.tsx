@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import type { RlmRunState } from "../../../hooks/use-rlm-run";
+import type { RlmRunState, PrimitiveCallView } from "../../../hooks/use-rlm-run";
 import type { DemoWorkerReport } from "../../../lib/demo/demo-run-types";
 import styles from "./report-rail.module.css";
 
@@ -11,6 +11,7 @@ export interface ReportRailProps {
   report: RlmRunState["report"];
   rubric: RlmRunState["rubric"];
   workerReports?: DemoWorkerReport[];
+  primitiveCalls?: PrimitiveCallView[];
   style?: CSSProperties;
 }
 
@@ -94,6 +95,7 @@ export function ReportRail({
   report,
   rubric,
   workerReports = [],
+  primitiveCalls = [],
   style,
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
@@ -318,6 +320,58 @@ export function ReportRail({
           </ul>
         </section>
       )}
+
+      {/* ── Experiment run registry (FIG § 4.3) ─────────────── */}
+      <ExperimentRegistry primitiveCalls={primitiveCalls} />
     </aside>
+  );
+}
+
+// ─── Experiment registry ──────────────────────────────────────────────────────
+
+function runStatusLabel(status: PrimitiveCallView["status"]): string {
+  return status === "start" ? "RUNNING" : status === "ok" ? "DONE" : "FAILED";
+}
+
+function ExperimentRegistry({ primitiveCalls }: { primitiveCalls: PrimitiveCallView[] }) {
+  const runs = primitiveCalls.filter((c) => c.primitive === "run_experiment");
+  if (runs.length === 0) return null;
+
+  return (
+    <section className={styles.breakdown} aria-label="Experiment runs">
+      <div className={styles.sectionHeader}>
+        <p className={styles.breakdownHeading}>experiments</p>
+        <span className={styles.sectionCount}>{runs.length}</span>
+      </div>
+      <ul className={styles.runList}>
+        {runs.map((call, i) => {
+          const isRunning = call.status === "start";
+          const isOk = call.status === "ok";
+          const statusLabel = runStatusLabel(call.status);
+          const result = call.result_summary
+            ? call.result_summary.slice(0, 48)
+            : null;
+          return (
+            <li key={`run-${i}`} className={styles.runRow}>
+              <span className={styles.runIdx}>{String(i + 1).padStart(2, "0")}</span>
+              <span className={styles.runTask} title={result ?? undefined}>
+                {result ?? "run experiment"}
+              </span>
+              <span
+                className={
+                  isRunning
+                    ? styles.runBadgeRunning
+                    : isOk
+                    ? styles.runBadgeMatch
+                    : styles.runBadgeFailed
+                }
+              >
+                {statusLabel}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

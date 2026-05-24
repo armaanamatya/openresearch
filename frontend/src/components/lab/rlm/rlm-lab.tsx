@@ -17,6 +17,7 @@ import { ConstellationCanvas } from "./constellation-canvas";
 import { ReportRail } from "./report-rail";
 import { PrimitiveHistoryBar } from "./primitive-history-bar";
 import { RubricBreakdown } from "./rubric-breakdown";
+import { ScorecardPanel } from "./scorecard-panel";
 import { NodeDetailSidebar } from "./node-detail-sidebar";
 import { ResizeHandle } from "./resize-handle";
 import { RunToasts } from "./run-toasts";
@@ -305,6 +306,15 @@ export function RlmLab({
       {/* Band 2 */}
       <RubricStrip rubric={state.rubric} />
 
+      {/* Band 2.5 — Scorecard table (FIG § 5.1). Shows when rubric areas land. */}
+      {state.rubric.areas.length > 0 && (
+        <ScorecardPanel
+          rubric={state.rubric}
+          projectId={runMeta.projectId}
+          paperTitle={runMeta.paperTitle}
+        />
+      )}
+
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
       {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (
         <RubricBreakdown
@@ -352,6 +362,7 @@ export function RlmLab({
               report={state.report}
               rubric={state.rubric}
               workerReports={workerReports}
+              primitiveCalls={state.primitiveCalls}
               style={reportRailStyle}
             />
           </>

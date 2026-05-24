@@ -373,3 +373,22 @@
     margin: 12px auto 0;
   }
 }
+
+.upload-subagent-warn {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  background: var(--warn-soft, rgba(138, 109, 0, 0.12));
+  border: 1px solid color-mix(in oklch, var(--warn, #8a6d00) 40%, transparent);
+  border-radius: var(--r-xs);
+  font-size: 12px;
+  color: var(--warn-ink, #8a6d00);
+  line-height: 1.45;
+}
+
+.upload-subagent-warn code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: color-mix(in oklch, var(--warn, #8a6d00) 15%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}

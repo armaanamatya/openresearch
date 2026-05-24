@@ -345,3 +345,81 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* ── Experiment run registry (FIG § 4.3) ────────────────────────── */
+
+.runList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.runRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 4px var(--sp-1);
+  border-radius: var(--r-xs);
+  background: var(--chip);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.runIdx {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+}
+
+.runTask {
+  flex: 1;
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runBadgeRunning {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  color: var(--hermes-ink, var(--accent-ink));
+  background: var(--hermes-soft, var(--accent-soft));
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.runBadgeMatch {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  color: var(--accent);
+  border: 1px solid color-mix(in oklch, var(--accent) 50%, transparent);
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+}
+
+.runBadgeFailed {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  color: var(--err);
+  background: var(--err-soft);
+}
