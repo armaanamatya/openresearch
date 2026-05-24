@@ -45,7 +45,19 @@ function WorkflowView({
   return (
     <RlmLab
       events={rlmEvents}
-      runMeta={{ projectId: run.projectId, paperTitle, paperMeta, startedAt: run.startedAt }}
+      runMeta={{
+        projectId: run.projectId,
+        paperTitle,
+        paperMeta,
+        startedAt: run.startedAt,
+        // completedAt drives the elapsed-clock freeze on terminal runs.
+        // Only forward when the run is in a terminal state — otherwise a
+        // backend-stamped completedAt from a previous run would freeze the
+        // counter mid-flight on a re-launch.
+        completedAt: (run.status === "completed" || run.status === "failed" || run.status === "stopped")
+          ? (run.completedAt ?? null)
+          : null,
+      }}
       runMode={run.runMode}
       isActive={isActive}
       runError={run.error ?? null}
