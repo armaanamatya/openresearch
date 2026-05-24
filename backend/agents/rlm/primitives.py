@@ -1392,6 +1392,36 @@ def run_experiment(
             "error": "env_id empty and no Dockerfile to rebuild — build_environment must succeed first",
         }, model_id=model_id, eval_env=eval_env)
 
+    # Lane F+I pre-flight: catch scope shortcuts (missing variants, dataset
+    # subsetting) and surrogate models BEFORE burning pod time. Hard
+    # violations block dispatch entirely; soft violations are attached to
+    # the result so the agent's next implement_baseline iteration sees them
+    # but the run still proceeds. The post-run rubric_contract validator
+    # would otherwise catch these only AFTER ~10 minutes of compute.
+    try:
+        from backend.agents.rlm.pre_flight_validator import validate_code_pre_flight
+        from backend.agents.rlm import rubric_contract as _pf_rc
+        _pf_arxiv_id = getattr(ctx, "arxiv_id", None)
+        _pf_targets = _pf_rc.load_paper_targets(_pf_arxiv_id)
+        if _pf_targets:
+            _pf_violations = validate_code_pre_flight(
+                Path(code_path), _pf_targets, arxiv_id=_pf_arxiv_id,
+            )
+            _pf_hard = [v for v in _pf_violations if v.severity == "hard"]
+            if _pf_hard:
+                return _persist_experiment_result(ctx, {
+                    "success": False,
+                    "metrics": {},
+                    "error": (
+                        f"pre_flight: {len(_pf_hard)} hard violation(s) — "
+                        f"see contract_violations"
+                    ),
+                    "contract_violations": [v.to_dict() for v in _pf_violations],
+                    "pre_flight_blocked": True,
+                }, model_id=model_id, eval_env=eval_env)
+    except Exception:  # noqa: BLE001 — pre-flight MUST NOT block on its own bug
+        logger.exception("run_experiment: pre_flight_validator raised — skipping")
+
     # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
     # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
     # (b) the run-budget deadline via ctx.remaining_s() (the --max-wall-clock
