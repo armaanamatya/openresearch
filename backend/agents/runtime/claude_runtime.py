@@ -3,7 +3,26 @@
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any, AsyncIterator
+
+# Suppress the harmless "aclose(): asynchronous generator is already running"
+# RuntimeWarning that the claude-agent-sdk emits on every subprocess teardown.
+# The warning fires from CPython's async-generator finalizer (Objects/genobject.c)
+# when asyncio.shutdown_asyncgens() or GC tries to close the SDK's triple-nested
+# async generator (InternalClient._process_query_inner) while it is still marked
+# as running — a known SDK quirk documented in CLAUDE.md (search "aclose") and
+# analysed in docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+# Option B (module-level filter) is used here because the warning fires in a GC
+# finalizer / asyncio.shutdown_asyncgens() path that executes AFTER our `async for`
+# loop exits, so a scoped `warnings.catch_warnings()` context at the call site would
+# already be closed by the time the warning is emitted.  The filter is intentionally
+# message-specific (regex match) so unrelated RuntimeWarnings are unaffected.
+warnings.filterwarnings(
+    "ignore",
+    message=r"aclose\(\).*asynchronous generator is already running",
+    category=RuntimeWarning,
+)
 
 from backend.agents.runtime.base import (
     AgentRuntimeSpec,
