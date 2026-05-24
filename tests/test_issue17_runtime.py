@@ -82,7 +82,7 @@ def test_local_docker_backend_delegates_lifecycle(tmp_path: Path) -> None:
 
         sandbox = await backend.create_sandbox(config)
         assert sandbox.sandbox_id == "ctr_1"
-        assert client.containers.created_kwargs["volumes"][str(tmp_path)]["bind"] == "/work"
+        assert client.containers.created_kwargs["volumes"][str(tmp_path)]["bind"] == "/code"
         assert client.containers.created_kwargs["network_mode"] == "none"
         assert client.containers.created_kwargs["mem_limit"] == "4g"
         assert client.containers.created_kwargs["nano_cpus"] == 2_000_000_000
@@ -94,8 +94,8 @@ def test_local_docker_backend_delegates_lifecycle(tmp_path: Path) -> None:
         assert result.stdout == "ok"
         assert client.containers.container.exec_calls == [["/bin/sh", "-lc", "python train.py"]]
 
-        await backend.copy_in(sandbox, "/work/config.json", b"{}")
-        assert client.containers.container.put_paths == ["/work"]
+        await backend.copy_in(sandbox, "/code/config.json", b"{}")
+        assert client.containers.container.put_paths == ["/code"]
 
         copied = await backend.copy_out(sandbox, "/artifacts/metrics.json")
         assert copied == b'{"mean_reward": 500}'
