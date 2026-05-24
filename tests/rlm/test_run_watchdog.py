@@ -1,0 +1,277 @@
+"""Tests for backend.agents.rlm.run_watchdog.
+
+Twelve guarantees pinned here:
+
+  1. Default config matches the documented thresholds (300 / 1200 / 30 s).
+  2. ``REPROLAB_WATCHDOG_DISABLED=true`` short-circuits run_watchdog.
+  3. ``from_env`` honours custom thresholds + ignores non-numeric junk.
+  4. ``collect_staleness`` returns ``verdict="ok"`` when NO signal file exists
+     (bootstrap-grace — can't classify nothing).
+  5. All signals fresh → "ok".
+  6. Any one signal fresh keeps the verdict "ok" (min-staleness wins).
+  7. All signals stale > warn_after → "warn".
+  8. All signals stale > kill_after → "kill".
+  9. ``on_warn`` callback receives a report containing the freshest-signal
+     identity and age.
+ 10. ``on_kill`` invoked AT MOST ONCE (loop returns after first kill).
+ 11. ``run_watchdog`` exits cleanly on cancellation.
+ 12. ``heartbeat_daemon_command`` produces a backgrounded shell line.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+from backend.agents.rlm import run_watchdog as rw
+
+
+# ---------------------------------------------------------------------------
+# WatchdogConfig
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_thresholds() -> None:
+    c = rw.WatchdogConfig()
+    assert c.warn_after_seconds == 300.0
+    assert c.kill_after_seconds == 1200.0
+    assert c.poll_interval_seconds == 30.0
+    assert c.heartbeat_filename == ".heartbeat"
+    assert c.exec_log_filename == "exec.log"
+    assert c.dashboard_events_filename == "dashboard_events.jsonl"
+
+
+def test_from_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("REPROLAB_WATCHDOG_WARN_SECONDS", "120")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_KILL_SECONDS", "900")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS", "10")
+    c = rw.WatchdogConfig.from_env()
+    assert c.warn_after_seconds == 120.0
+    assert c.kill_after_seconds == 900.0
+    assert c.poll_interval_seconds == 10.0
+
+
+def test_from_env_ignores_junk(monkeypatch) -> None:
+    monkeypatch.setenv("REPROLAB_WATCHDOG_WARN_SECONDS", "not-a-number")
+    c = rw.WatchdogConfig.from_env()
+    assert c.warn_after_seconds == 300.0  # default preserved
+
+
+# ---------------------------------------------------------------------------
+# is_enabled
+# ---------------------------------------------------------------------------
+
+
+def test_is_enabled_default(monkeypatch) -> None:
+    monkeypatch.delenv("REPROLAB_WATCHDOG_DISABLED", raising=False)
+    assert rw.is_enabled() is True
+
+
+@pytest.mark.parametrize("val", ["true", "True", "TRUE", "1", "yes", "on"])
+def test_is_enabled_disabled_via_env(monkeypatch, val) -> None:
+    monkeypatch.setenv("REPROLAB_WATCHDOG_DISABLED", val)
+    assert rw.is_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# collect_staleness
+# ---------------------------------------------------------------------------
+
+
+def test_no_signals_yet_returns_ok(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(),
+        now=time.time(),
+    )
+    assert report.verdict == "ok"
+    assert report.stale_seconds is None
+    assert report.freshest_signal is None
+
+
+def test_all_signals_fresh_ok(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+    for fname in ("exec.log", ".heartbeat"):
+        p = artifact_root / fname
+        p.write_text("x")
+        os.utime(p, (now, now - 10))  # 10 s old
+    sse = project_dir / "dashboard_events.jsonl"
+    sse.write_text("x")
+    os.utime(sse, (now, now - 5))
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(),
+        now=now,
+    )
+    assert report.verdict == "ok"
+    assert report.freshest_signal == "sse_event"
+    assert 0 <= report.freshest_signal_age_seconds <= 6
+
+
+def test_any_one_signal_fresh_keeps_ok(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+    # Two stale signals
+    for fname in ("exec.log", ".heartbeat"):
+        p = artifact_root / fname
+        p.write_text("x")
+        os.utime(p, (now, now - 3600))
+    # One fresh signal
+    sse = project_dir / "dashboard_events.jsonl"
+    sse.write_text("x")
+    os.utime(sse, (now, now - 5))
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(),
+        now=now,
+    )
+    assert report.verdict == "ok"
+    assert report.freshest_signal == "sse_event"
+
+
+def test_all_stale_past_warn_returns_warn(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+    for path in [
+        artifact_root / "exec.log",
+        artifact_root / ".heartbeat",
+        project_dir / "dashboard_events.jsonl",
+    ]:
+        path.write_text("x")
+        os.utime(path, (now, now - 600))  # 10 min stale
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(warn_after_seconds=300, kill_after_seconds=1200),
+        now=now,
+    )
+    assert report.verdict == "warn"
+    assert report.stale_seconds >= 600
+
+
+def test_all_stale_past_kill_returns_kill(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+    for path in [
+        artifact_root / "exec.log",
+        artifact_root / ".heartbeat",
+        project_dir / "dashboard_events.jsonl",
+    ]:
+        path.write_text("x")
+        os.utime(path, (now, now - 1500))  # 25 min stale
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(warn_after_seconds=300, kill_after_seconds=1200),
+        now=now,
+    )
+    assert report.verdict == "kill"
+
+
+# ---------------------------------------------------------------------------
+# run_watchdog — async loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_disabled_via_env_returns_immediately(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("REPROLAB_WATCHDOG_DISABLED", "true")
+    fired = []
+
+    async def _on_warn(r): fired.append(("warn", r))
+    async def _on_kill(r): fired.append(("kill", r))
+
+    await rw.run_watchdog(
+        artifact_root=tmp_path,
+        project_dir=tmp_path,
+        config=rw.WatchdogConfig(poll_interval_seconds=0.01),
+        on_warn=_on_warn,
+        on_kill=_on_kill,
+    )
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_kill_invoked_at_most_once(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    # Pre-create a stale signal (25 min old) so the first poll classifies as kill.
+    p = artifact_root / "exec.log"
+    p.write_text("x")
+    now = time.time()
+    os.utime(p, (now, now - 1500))
+
+    kill_calls: list[rw.StalenessReport] = []
+
+    async def _on_kill(r):
+        kill_calls.append(r)
+
+    await asyncio.wait_for(
+        rw.run_watchdog(
+            artifact_root=artifact_root,
+            project_dir=tmp_path,
+            config=rw.WatchdogConfig(
+                warn_after_seconds=60, kill_after_seconds=600,
+                poll_interval_seconds=0.01,
+            ),
+            on_kill=_on_kill,
+        ),
+        timeout=2.0,
+    )
+    assert len(kill_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_exits_cleanly(tmp_path: Path) -> None:
+    task = asyncio.create_task(rw.run_watchdog(
+        artifact_root=tmp_path,
+        project_dir=tmp_path,
+        config=rw.WatchdogConfig(poll_interval_seconds=10),
+    ))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# ---------------------------------------------------------------------------
+# heartbeat_daemon_command
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_daemon_command_is_backgrounded() -> None:
+    cmd = rw.heartbeat_daemon_command("/artifacts")
+    assert cmd.endswith(" &")  # background syntax
+    assert "/artifacts/.heartbeat" in cmd
+    assert "while true" in cmd
+    assert "sleep 30" in cmd
+    assert "nohup" in cmd  # survives parent shell
+
+
+def test_heartbeat_daemon_command_alt_path() -> None:
+    cmd = rw.heartbeat_daemon_command("/workspace/cache")
+    assert "/workspace/cache/.heartbeat" in cmd

@@ -323,17 +323,15 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     return result
 
 
-def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) -> None:
-    """Append a JSON event line to runs/<id>/dashboard_events.jsonl.
-
-    Fail-soft (D3): any IO error is logged but never propagates — observability
-    must never interrupt a run.
-    """
+def _emit_dashboard_event_to_path(project_dir, *, event_type: str, payload: dict) -> None:
+    """Path-based emit — same JSONL contract as _emit_dashboard_event but
+    addressable from places that don't have a RunContext (e.g. the watchdog
+    async task that lives below the primitive layer).  Fail-soft."""
     import json as _json
     from datetime import datetime as _dt, timezone as _tz
     from pathlib import Path as _Path
 
-    events_file = _Path(ctx.project_dir) / "dashboard_events.jsonl"
+    events_file = _Path(project_dir) / "dashboard_events.jsonl"
     line = {
         "ts": _dt.now(_tz.utc).isoformat(),
         "event": event_type,
@@ -344,6 +342,15 @@ def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) 
             fh.write(_json.dumps(line, default=str) + "\n")
     except Exception:  # noqa: BLE001 — observability must never break the run
         logger.exception("dashboard event emit failed for %s", event_type)
+
+
+def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) -> None:
+    """Append a JSON event line to runs/<id>/dashboard_events.jsonl.
+
+    Fail-soft (D3): any IO error is logged but never propagates — observability
+    must never interrupt a run.
+    """
+    _emit_dashboard_event_to_path(ctx.project_dir, event_type=event_type, payload=payload)
 
 
 def resolve_gpu_requirements(
@@ -943,6 +950,19 @@ async def _execute_in_sandbox(
     # the Dockerfile IS used to build the image — deps are already baked in.
     requirements_path = code_dir / "requirements.txt"
     bootstrap_commands: list[str] = []
+
+    # Lane E: pod-side heartbeat daemon. Writes a unix timestamp to
+    # /artifacts/.heartbeat every 30 s. Detects pod-level wedges (NCCL
+    # deadlock, dead kernel, frozen HF download) that produce zero stdout
+    # — exec.log size stays flat for hours but the pod itself is wedged.
+    # Backgrounded via ``nohup ... &`` so it doesn't block subsequent commands.
+    try:
+        from backend.agents.rlm.run_watchdog import heartbeat_daemon_command, is_enabled as _watchdog_enabled
+        if _watchdog_enabled():
+            bootstrap_commands.append(heartbeat_daemon_command("/artifacts"))
+    except Exception:  # noqa: BLE001 — instrumentation MUST NOT block the run
+        logger.exception("_execute_in_sandbox: heartbeat-daemon injection failed")
+
     # sandbox_mode may be a SandboxMode enum (str(...) is "SandboxMode.runpod")
     # OR a plain string "runpod". Use substring match to cover both forms.
     _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
@@ -984,14 +1004,102 @@ async def _execute_in_sandbox(
             )
 
     results = []
+    # Lane E: spawn the stall watchdog alongside command execution.
+    # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
+    # and emits run_warning SSE events at the warn-threshold + invokes
+    # on_kill at the hard-threshold (which raises WatchdogKilled to break
+    # out of the execute loop).
+    from backend.agents.rlm.run_watchdog import (
+        WatchdogConfig as _WatchdogConfig,
+        run_watchdog as _run_watchdog,
+        is_enabled as _watchdog_enabled,
+    )
+
+    class _WatchdogKilled(RuntimeError):
+        """Raised by on_kill so the execute loop unwinds cleanly via finally."""
+
+    project_dir_for_watchdog = code_dir.parent if code_dir.name == "code" else code_dir
+
+    async def _emit_warn_real(report) -> None:
+        try:
+            _emit_dashboard_event_to_path(
+                project_dir_for_watchdog,
+                event_type="run_warning",
+                payload={
+                    "reason": "stale_run",
+                    **report.to_dict(),
+                    "thresholds": {
+                        "warn_after_seconds": _wd_cfg.warn_after_seconds,
+                        "kill_after_seconds": _wd_cfg.kill_after_seconds,
+                    },
+                },
+            )
+        except Exception:  # noqa: BLE001 — observability never blocks
+            logger.exception("watchdog warn-emit failed")
+
+    async def _emit_kill_real(report) -> None:
+        try:
+            _emit_dashboard_event_to_path(
+                project_dir_for_watchdog,
+                event_type="run_warning",
+                payload={
+                    "reason": "pod_killed_by_watchdog",
+                    **report.to_dict(),
+                    "thresholds": {
+                        "warn_after_seconds": _wd_cfg.warn_after_seconds,
+                        "kill_after_seconds": _wd_cfg.kill_after_seconds,
+                    },
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("watchdog kill-emit failed")
+        # Tear down the sandbox so the in-flight execute returns promptly.
+        try:
+            await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
+        except Exception:  # noqa: BLE001
+            logger.exception("watchdog kill-destroy failed")
+        raise _WatchdogKilled(
+            f"Watchdog killed run after {report.stale_seconds:.0f}s of no signal "
+            f"(freshest={report.freshest_signal})"
+        )
+
+    _wd_cfg = _WatchdogConfig.from_env()
+    _wd_task = None
+    if _watchdog_enabled():
+        _wd_task = asyncio.create_task(_run_watchdog(
+            artifact_root=artifact_root,
+            project_dir=project_dir_for_watchdog,
+            config=_wd_cfg,
+            on_warn=_emit_warn_real,
+            on_kill=_emit_kill_real,
+        ))
+
     try:
         for command in (*bootstrap_commands, *commands):
             results.append(await service.execute(
                 ExecuteCommand(sandbox=sandbox, command=command,
                                timeout=_EXEC_TIMEOUT_SECONDS)))
+    except _WatchdogKilled as exc:
+        # Surface as a fail-soft error dict so the caller's outer escalation
+        # loop treats it like an OOM (advance ladder / repair_context).
+        return {
+            "success": False,
+            "metrics": {},
+            "logs": _cap_logs(_combine_command_output(results)),
+            "error": f"run_experiment: {exc}",
+            "watchdog_killed": True,
+        }
     finally:
-        # asyncio.shield: destroy completes even if the surrounding
-        # wait_for / thread-pool timeout cancels this coroutine (A2-C1).
+        # Cancel the watchdog task BEFORE destroy so an in-flight on_kill
+        # doesn't double-destroy. asyncio.shield: destroy completes even
+        # if the surrounding wait_for / thread-pool timeout cancels this
+        # coroutine (A2-C1).
+        if _wd_task is not None and not _wd_task.done():
+            _wd_task.cancel()
+            try:
+                await _wd_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
 
     # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
