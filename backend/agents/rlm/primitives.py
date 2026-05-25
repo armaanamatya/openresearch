@@ -763,20 +763,91 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     timeout = _timeout_for(ctx, 14400)
     # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    # SDK aclose deadlock watchdog (2026-05-24): on Windows, the claude-agent-sdk's
+    # async generator cleanup hangs after the sub-agent finishes writing code.
+    # The future never resolves even though all files are on disk. We detect this
+    # by polling: if commands.json exists AND no new files are written for
+    # _ACLOSE_STALL_S seconds, the SDK is deadlocked — break out and proceed
+    # with the code that was already written.
+    _ACLOSE_STALL_S = 120  # 2 min of no file changes after code is written
+    _POLL_S = 10
+
+    code_dir = ctx.runs_root / ctx.project_id / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+
     try:
-        try:
-            result = pool.submit(asyncio.run, _run()).result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            _err = {
-                "success": False,
-                "error": (
-                    f"implement_baseline: timed out after {timeout:.0f} s"
-                ),
-            }
-            # Cache the timeout dict so an identical-input retry returns
-            # the same fail-soft error without spending another 4 h.
-            _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
-            return _err
+        future = pool.submit(asyncio.run, _run())
+        import time as _time
+        _stall_start: float | None = None
+
+        while True:
+            try:
+                result = future.result(timeout=_POLL_S)
+                break  # Normal return
+            except concurrent.futures.TimeoutError:
+                pass  # Check watchdog conditions below
+
+            # Check overall timeout
+            elapsed = _timeout_for(ctx, timeout)
+            if elapsed <= 0:
+                _err = {
+                    "success": False,
+                    "error": f"implement_baseline: timed out after {timeout:.0f} s",
+                }
+                _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
+                return _err
+
+            # SDK aclose deadlock detection: if commands.json exists (code written)
+            # and no files have changed recently, the SDK is hung on cleanup.
+            commands_json = code_dir / "commands.json"
+            if commands_json.exists():
+                # Check if any file in code/ was modified in the last _POLL_S
+                now = _time.time()
+                latest_mtime = max(
+                    (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
+                    default=0,
+                )
+                if now - latest_mtime > _POLL_S:
+                    # No file changes — start or continue the stall timer
+                    if _stall_start is None:
+                        _stall_start = _time.time()
+                        logger.info(
+                            "implement_baseline: code written, SDK idle — "
+                            "watching for aclose deadlock (%ds grace)",
+                            _ACLOSE_STALL_S,
+                        )
+                    elif _time.time() - _stall_start > _ACLOSE_STALL_S:
+                        logger.warning(
+                            "implement_baseline: SDK aclose deadlock detected — "
+                            "code is on disk but SDK hung for %ds. Breaking out.",
+                            int(_time.time() - _stall_start),
+                        )
+                        # Read commands.json that the agent already wrote
+                        try:
+                            commands = json.loads(commands_json.read_text(encoding="utf-8"))
+                            if not isinstance(commands, list):
+                                commands = []
+                        except (json.JSONDecodeError, OSError):
+                            commands = []
+                        _code_path = str(code_dir)
+                        _cache.put(
+                            ctx.project_dir,
+                            "implement_baseline",
+                            payload=_payload,
+                            result={"_kind": "path", "value": _code_path},
+                        )
+                        return _code_path
+                else:
+                    # Files still being written — reset stall timer
+                    _stall_start = None
+    except concurrent.futures.TimeoutError:
+        _err = {
+            "success": False,
+            "error": f"implement_baseline: timed out after {timeout:.0f} s",
+        }
+        _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
+        return _err
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -784,7 +855,6 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # derive commands.json's directory the same way (not ctx.project_dir/code)
     # so the manifest provably lands alongside the code regardless of how
     # RunContext.project_dir was constructed.
-    code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     commands = list(getattr(result, "commands_to_run", []) or [])
     (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")

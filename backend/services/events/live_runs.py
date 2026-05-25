@@ -312,6 +312,55 @@ class FileLiveRunService:
         self.runs_root = (runs_root or self.repo_root / "runs").resolve()
         self.python_bin = python_bin or sys.executable
 
+    def _subprocess_env(self, request: StartRunRequest) -> dict[str, str]:
+        """Build the environment dict for the run subprocess.
+
+        Ensures claude CLI is on PATH (for claude-agent-sdk OAuth) and
+        threads .env vars through to the child process.
+        """
+        import shutil as _shutil
+        env: dict[str, str] = {**os.environ}
+
+        # Load .env file if present (subprocess doesn't inherit dotenv).
+        # REPROLAB_* keys in .env are always authoritative: a stale shell
+        # export from a previous login (e.g. REPROLAB_RUNPOD_SSH_KEY_PATH
+        # pointing to a different user's home) must not override the
+        # project-level .env which reflects the operator's deliberate config.
+        # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
+        # standard precedence: shell export > .env.
+        dotenv_path = self.repo_root / ".env"
+        if dotenv_path.is_file():
+            try:
+                for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        # REPROLAB_ settings: .env wins over stale process env.
+                        # Everything else: only add if not already in env.
+                        if k and (k.startswith("REPROLAB_") or k not in env):
+                            env[k] = v
+            except OSError:
+                pass
+
+        # Ensure claude CLI is on PATH for the SDK
+        if _shutil.which("claude") is None and sys.platform == "win32":
+            userprofile = os.environ.get("USERPROFILE", "")
+            if userprofile:
+                local_bin = os.path.join(userprofile, ".local", "bin")
+                if os.path.isdir(local_bin):
+                    env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
+
+        # Thread run-specific vars
+        env["REPROLAB_GPU_MODE"] = request.gpuMode
+        env["REPROLAB_LLM_PROVIDER"] = request.provider
+        if request.verificationProvider:
+            env["REPROLAB_VERIFICATION_PROVIDER"] = request.verificationProvider
+
+        return env
+
     async def start_run(self, request: StartRunRequest) -> LiveRunState:
         project_id = _fixture_project_id(request)
         return await self._start_python_run(
@@ -599,16 +648,7 @@ class FileLiveRunService:
                 stderr=stderr,
                 stdin=subprocess.DEVNULL,
                 creationflags=creation_flags,
-                env={
-                    **os.environ,
-                    "REPROLAB_GPU_MODE": request.gpuMode,
-                    "REPROLAB_LLM_PROVIDER": request.provider,
-                    **(
-                        {"REPROLAB_VERIFICATION_PROVIDER": request.verificationProvider}
-                        if request.verificationProvider
-                        else {}
-                    ),
-                },
+                env=self._subprocess_env(request),
             )
         finally:
             stderr.close()

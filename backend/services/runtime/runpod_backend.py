@@ -550,7 +550,30 @@ class RunpodBackend(RuntimeBackend):
             payload["networkVolumeId"] = self.network_volume_id
         if self.data_center_ids:
             payload["dataCenterIds"] = self.data_center_ids
-        return await self._request_json("POST", "/pods", json=payload)
+        try:
+            return await self._request_json("POST", "/pods", json=payload)
+        except SandboxRuntimeError as exc:
+            # A generic HTTP 500 at pod-creation time (i.e., NOT already tagged
+            # RUNPOD_CAPACITY_EXHAUSTED or RUNPOD_BALANCE_TOO_LOW) is almost
+            # always a transient availability or capacity failure on RunPod's
+            # side — RunPod does not always include the canonical capacity-
+            # marker strings in the response body.  Re-wrap with the
+            # RUNPOD_CAPACITY_EXHAUSTED sentinel so the escalation loop in
+            # run_experiment can advance to the next SKU on the ladder instead
+            # of failing the entire run.
+            exc_msg = str(exc)
+            if (
+                "HTTP 500" in exc_msg
+                and "RUNPOD_CAPACITY_EXHAUSTED" not in exc_msg
+                and "RUNPOD_BALANCE_TOO_LOW" not in exc_msg
+            ):
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"RUNPOD_CAPACITY_EXHAUSTED: pod creation HTTP 500 on GPU {self.gpu_type!r}. "
+                    f"Original error: {exc_msg}",
+                    retryable=True,
+                ) from exc
+            raise
 
     async def _wait_for_pod_ssh(self, pod_id: str) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + self.boot_timeout_seconds

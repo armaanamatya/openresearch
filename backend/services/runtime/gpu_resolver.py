@@ -62,8 +62,18 @@ def resolve(
     # Fallback path: no estimate OR confidence too low.
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
         sku = _by_short_name(_FALLBACK_SHORT_NAME)
+        # Populate the full escalation ladder even on the fallback path.
+        # When the default SKU (RTX 4090) is unavailable due to capacity issues
+        # or RunPod API errors, the escalation loop in run_experiment can advance
+        # to the next cheapest GPU rather than failing immediately.
+        full_ladder = find_ladder(
+            min_vram_gb=sku.vram_gb,
+            max_per_gpu_usd_per_hr=None,
+            cloud_types=cloud_types,
+        )
+        remaining = tuple(s.short_name for s in full_ladder if s.short_name != sku.short_name)
         return _build_plan(sku, gpu_count=1, source="fallback",
-                           requirements=requirements, ladder=(), now_iso=now_iso)
+                           requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier; round up.
     needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))

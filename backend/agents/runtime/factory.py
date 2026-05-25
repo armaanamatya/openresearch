@@ -75,17 +75,27 @@ def _has_claude_subscription_oauth() -> bool:
     function scans the Windows-mounted user profiles and emits an actionable
     warning with the symlink command the user should run.
 
-    Returns True iff the ``claude`` binary is on ``PATH`` AND a stored session
-    is detectable by the SDK (i.e. under ``~``). Times out at 5 s on the
+    Returns True iff a stored session is detectable by the SDK (i.e. under
+    ``~`` or ``%USERPROFILE%``). On Windows, the ``claude`` binary may not be
+    on PATH (Git Bash doesn't inherit the Windows PATH entry for
+    ``~/.local/bin``), but the SDK can still read the credentials file and
+    locate the binary via known install paths.  Times out at 5 s on the
     Keychain probe to prevent a hung Keychain Access daemon from blocking
     pipeline startup.
     """
-    if shutil.which("claude") is None:
-        return False
     # 1. POSIX user home — the canonical location the SDK reads from.
     if os.path.isfile(os.path.expanduser("~/.claude/.credentials.json")):
-        return True
-    # 2. macOS Keychain (modern Claude Code on macOS).
+        # On non-Windows, also verify claude binary is available.
+        if sys.platform == "win32" or shutil.which("claude") is not None:
+            return True
+    # 2. Windows: check USERPROFILE path (Git Bash ~ may differ from USERPROFILE).
+    if sys.platform == "win32":
+        userprofile = os.environ.get("USERPROFILE", "")
+        if userprofile:
+            win_creds = os.path.join(userprofile, ".claude", ".credentials.json")
+            if os.path.isfile(win_creds):
+                return True
+    # 3. macOS Keychain (modern Claude Code on macOS).
     if sys.platform == "darwin":
         try:
             result = subprocess.run(
@@ -97,19 +107,20 @@ def _has_claude_subscription_oauth() -> bool:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
         return result.returncode == 0
-    # 3. WSL diagnostic — surface a helpful warning if creds exist on the Windows side
+    # 4. WSL diagnostic — surface a helpful warning if creds exist on the Windows side
     #    but are not reachable by the SDK (which reads from $HOME, not /mnt/c).
-    wsl_creds = _scan_wsl_windows_credentials()
-    if wsl_creds is not None:
-        logger.warning(
-            "_has_claude_subscription_oauth: Claude OAuth credentials found at %s "
-            "(Windows side) but the claude-agent-sdk reads from $HOME=%s, not /mnt/c. "
-            "Either symlink them — `ln -s %s ~/.claude/.credentials.json` — or run "
-            "`claude login` from inside WSL.",
-            wsl_creds,
-            os.path.expanduser("~"),
-            wsl_creds,
-        )
+    if shutil.which("claude") is None and sys.platform != "win32":
+        wsl_creds = _scan_wsl_windows_credentials()
+        if wsl_creds is not None:
+            logger.warning(
+                "_has_claude_subscription_oauth: Claude OAuth credentials found at %s "
+                "(Windows side) but the claude-agent-sdk reads from $HOME=%s, not /mnt/c. "
+                "Either symlink them — `ln -s %s ~/.claude/.credentials.json` — or run "
+                "`claude login` from inside WSL.",
+                wsl_creds,
+                os.path.expanduser("~"),
+                wsl_creds,
+            )
     return False
 
 
