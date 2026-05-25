@@ -129,6 +129,35 @@ class RuntimeBackend(ABC):
     @abstractmethod
     async def destroy(self, sandbox: Sandbox) -> None: ...
 
+    # ----------------------------------------------------------------
+    # Optional probe / soft-recovery hooks (Lane N)
+    #
+    # The watchdog uses these to distinguish "pod is dead → destroy" from
+    # "pod is alive but a single in-pod process is wedged → kill that
+    # process and keep the pod warm".  Default implementations are no-ops
+    # safe for backends that don't share the wedge failure mode (local
+    # process, local docker — process death is observable directly).
+    # ----------------------------------------------------------------
+
+    async def probe_alive(self, sandbox: Sandbox, *, timeout: float = 10.0) -> bool:
+        """Return True if the sandbox is reachable RIGHT NOW.
+
+        For network-isolated backends (local_process, local_docker) the
+        sandbox is always reachable, so this defaults to True. RunPod
+        overrides to open a FRESH SSH channel (not the wedged execute
+        channel) and run a small probe command.
+        """
+        return True
+
+    async def soft_recover(self, sandbox: Sandbox) -> bool:
+        """Attempt in-pod process recovery without destroying the sandbox.
+
+        Returns True if a kill signal was successfully delivered to in-pod
+        processes, False otherwise. Default no-op returns False so the
+        watchdog falls through to destroy.
+        """
+        return False
+
 
 __all__ = [
     "ExecResult",

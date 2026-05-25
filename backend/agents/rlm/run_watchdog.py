@@ -52,6 +52,7 @@ Design contract:
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import os
 import time
@@ -60,6 +61,28 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class KillVerdict(str, enum.Enum):
+    """Return-value contract for the ``on_kill`` callback.
+
+    Lane N — replaces the prior all-or-nothing destroy semantics with a
+    two-tier policy:
+
+    * ``DESTROY`` — pod is truly dead OR recovery budget exhausted; the
+      callback has already torn down the pod (or run-level cleanup will).
+      The watchdog exits its poll loop.
+    * ``RECOVERED`` — probe found the pod alive on a fresh transport; the
+      callback has soft-killed the wedged in-pod process and reset
+      whatever signal it can. The watchdog CONTINUES polling — staleness
+      will reset naturally once the agent writes the next exec.log line.
+
+    ``None`` (or any unrecognised return) is treated as ``DESTROY`` for
+    backward compatibility with the v1 callback signature.
+    """
+
+    DESTROY = "destroy"
+    RECOVERED = "recovered"
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +367,10 @@ def heartbeat_daemon_command(artifact_dir_in_container: str = "/artifacts") -> s
 
 
 WarnCallback = Callable[[StalenessReport], Awaitable[None]]
-KillCallback = Callable[[StalenessReport], Awaitable[None]]
+# Lane N: on_kill MAY return ``KillVerdict.RECOVERED`` to ask the watchdog
+# to keep polling.  Returning ``None`` (or anything else) defaults to
+# ``KillVerdict.DESTROY`` — v1 semantics preserved.
+KillCallback = Callable[[StalenessReport], Awaitable[Optional[KillVerdict]]]
 
 
 async def run_watchdog(
@@ -355,7 +381,7 @@ async def run_watchdog(
     on_warn: Optional[WarnCallback] = None,
     on_kill: Optional[KillCallback] = None,
 ) -> None:
-    """Poll signals until cancelled OR ``on_kill`` fires.
+    """Poll signals until cancelled OR ``on_kill`` returns ``DESTROY``.
 
     Cancellation: the caller's ``finally`` block typically calls
     ``task.cancel()`` to stop the watchdog when the protected coroutine
@@ -363,9 +389,12 @@ async def run_watchdog(
 
     Disabled: returns immediately when ``REPROLAB_WATCHDOG_DISABLED=true``.
 
-    On-kill semantics: invoked AT MOST ONCE.  After the first ``"kill"``
-    verdict the callback fires, the watchdog logs and returns — no further
-    poll cycles.
+    On-kill semantics (Lane N): the callback may decide to recover the
+    sandbox instead of destroying it.  If it returns ``KillVerdict.RECOVERED``
+    the watchdog continues polling — staleness will reset on the next
+    exec.log write.  Returning ``DESTROY`` (or ``None``, or raising) makes
+    the watchdog exit; the callback is expected to have torn down the
+    pod (or set fail-soft state so run-level cleanup will).
 
     Fail-soft on warn-callback errors — if ``on_warn`` raises, log + carry
     on.  Kill-callback errors propagate (they indicate the operator's
@@ -403,7 +432,15 @@ async def run_watchdog(
                     report.stale_seconds or 0.0, report.freshest_signal or "?",
                 )
                 if on_kill is not None:
-                    await on_kill(report)
+                    verdict = await on_kill(report)
+                    if verdict == KillVerdict.RECOVERED:
+                        logger.info(
+                            "watchdog: on_kill returned RECOVERED — pod kept warm, "
+                            "resuming poll loop",
+                        )
+                        # Reset warn de-dup so the next stale cycle reports cleanly.
+                        warn_emitted_at = None
+                        continue
                 return
 
             if report.verdict == "warn":
@@ -428,6 +465,7 @@ async def run_watchdog(
 
 
 __all__ = [
+    "KillVerdict",
     "StalenessReport",
     "WatchdogConfig",
     "collect_staleness",

@@ -1235,6 +1235,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     reproduce.add_argument(
+        "--no-cache",
+        dest="no_cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable the primitive_cache for this run (debugging aid). "
+            "Equivalent to REPROLAB_PRIMITIVE_CACHE=disabled. Forces every "
+            "cacheable primitive (understand_section, plan_reproduction, "
+            "implement_baseline, verify_against_rubric, etc.) to recompute. "
+            "Cache hits still validate via schema-on-hit even when enabled, "
+            "so use this only when you suspect poisoning or want a clean baseline."
+        ),
+    )
+    reproduce.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -1355,6 +1369,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # --no-cache: disable primitive_cache as early as possible so no module
+    # that imports primitive_cache caches a stale ``is_enabled()`` read.
+    if getattr(args, "no_cache", False):
+        os.environ["REPROLAB_PRIMITIVE_CACHE"] = "disabled"
     return int(args.func(args))
 
 

@@ -1090,6 +1090,7 @@ async def _execute_in_sandbox(
     # on_kill at the hard-threshold (which raises WatchdogKilled to break
     # out of the execute loop).
     from backend.agents.rlm.run_watchdog import (
+        KillVerdict as _KillVerdict,
         WatchdogConfig as _WatchdogConfig,
         run_watchdog as _run_watchdog,
         is_enabled as _watchdog_enabled,
@@ -1099,6 +1100,10 @@ async def _execute_in_sandbox(
         """Raised by on_kill so the execute loop unwinds cleanly via finally."""
 
     project_dir_for_watchdog = code_dir.parent if code_dir.name == "code" else code_dir
+    # Lane N — bounded recovery budget. Pod is destroyed once this is exhausted.
+    import os as _os_env_wd
+    _MAX_SOFT_RECOVERIES = int(_os_env_wd.environ.get("REPROLAB_WATCHDOG_MAX_SOFT_RECOVERIES", "3"))
+    _soft_recovery_count = 0
 
     async def _emit_warn_real(report) -> None:
         try:
@@ -1117,13 +1122,80 @@ async def _execute_in_sandbox(
         except Exception:  # noqa: BLE001 — observability never blocks
             logger.exception("watchdog warn-emit failed")
 
-    async def _emit_kill_real(report) -> None:
+    async def _emit_kill_real(report):
+        """Lane N — escalating probe-recover.
+
+        Distinguishes "pod truly dead" from "pod alive, agent slow-printing".
+        Each KILL verdict from the watchdog walks one rung up the ladder:
+
+          Strike 0 (probe OK, count=0): just warn + RECOVERED — give the
+            run more time. A train.py with prints-every-25-epochs at 12 s/epoch
+            takes >10 min between prints; that's slow, not wedged.
+          Strike 1 (probe OK, count=1): warn + soft_recover (pkill in-pod
+            train.py) + RECOVERED — first benefit-of-doubt was used; the
+            staleness is persistent, so the in-pod process is likely wedged.
+          Strike 2+ (probe OK, count >= MAX): destroy pod, raise
+            _WatchdogKilled. We've spent the budget.
+          Any probe FAIL: destroy immediately (pod is gone).
+        """
+        nonlocal _soft_recovery_count
+
+        # 1. probe alive via FRESH SSH channel (not the wedged one).
+        probe_ok = False
+        try:
+            probe_ok = await service.probe_alive(sandbox, timeout=10.0)
+        except Exception:  # noqa: BLE001 — probe never raises in our impl
+            logger.exception("watchdog probe raised — treating as dead")
+
+        # 2. Escalating recovery if alive.
+        if probe_ok and _soft_recovery_count < _MAX_SOFT_RECOVERIES:
+            current_strike = _soft_recovery_count
+            _soft_recovery_count += 1
+            # Strike 0 = benefit of doubt (no in-pod kill, just warn).
+            # Strikes >= 1 = the staleness is persistent, soft-recover.
+            should_soft_recover = current_strike >= 1
+            recover_ok = False
+            if should_soft_recover:
+                try:
+                    recover_ok = await service.soft_recover(sandbox)
+                except Exception:  # noqa: BLE001
+                    logger.exception("watchdog soft_recover raised")
+            reason = (
+                "pod_alive_under_watchdog_soft_recovered" if should_soft_recover
+                else "pod_alive_under_watchdog_grace"
+            )
+            try:
+                _emit_dashboard_event_to_path(
+                    project_dir_for_watchdog,
+                    event_type="run_warning",
+                    payload={
+                        "reason": reason,
+                        "soft_recovery_count": _soft_recovery_count,
+                        "max_soft_recoveries": _MAX_SOFT_RECOVERIES,
+                        "soft_recover_attempted": should_soft_recover,
+                        "soft_recover_succeeded": recover_ok,
+                        **report.to_dict(),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("watchdog recover-emit failed")
+            logger.warning(
+                "watchdog: probe OK strike=%d/%d soft_recover=%s ok=%s — keeping pod warm",
+                _soft_recovery_count, _MAX_SOFT_RECOVERIES,
+                should_soft_recover, recover_ok,
+            )
+            return _KillVerdict.RECOVERED
+
+        # 3. Destroy: pod is dead OR we've recovered too many times.
         try:
             _emit_dashboard_event_to_path(
                 project_dir_for_watchdog,
                 event_type="run_warning",
                 payload={
                     "reason": "pod_killed_by_watchdog",
+                    "probe_ok": probe_ok,
+                    "soft_recovery_count": _soft_recovery_count,
+                    "max_soft_recoveries": _MAX_SOFT_RECOVERIES,
                     **report.to_dict(),
                     "thresholds": {
                         "warn_after_seconds": _wd_cfg.warn_after_seconds,
@@ -1140,7 +1212,8 @@ async def _execute_in_sandbox(
             logger.exception("watchdog kill-destroy failed")
         raise _WatchdogKilled(
             f"Watchdog killed run after {report.stale_seconds:.0f}s of no signal "
-            f"(freshest={report.freshest_signal})"
+            f"(freshest={report.freshest_signal}); probe_ok={probe_ok} "
+            f"recoveries={_soft_recovery_count}/{_MAX_SOFT_RECOVERIES}"
         )
 
     _wd_cfg = _WatchdogConfig.from_env()

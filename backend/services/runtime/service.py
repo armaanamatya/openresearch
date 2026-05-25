@@ -101,6 +101,29 @@ class RuntimeAppService:
             )
             self._append(agg, agg.handle_destroyed(), cid)
 
+    async def probe_alive(
+        self,
+        sandbox: Sandbox,
+        *,
+        timeout: float = 10.0,
+    ) -> bool:
+        """Lane N: probe the sandbox over a fresh transport.
+
+        Used by the watchdog to distinguish "pod dead" (probe fails) from
+        "pod alive but in-pod work wedged" (probe succeeds). Never raises.
+        """
+        try:
+            return await self._backend.probe_alive(sandbox, timeout=timeout)
+        except Exception:  # noqa: BLE001 — probe never blocks
+            return False
+
+    async def soft_recover(self, sandbox: Sandbox) -> bool:
+        """Lane N: in-pod soft-kill — keep sandbox warm, drop wedged process."""
+        try:
+            return await self._backend.soft_recover(sandbox)
+        except Exception:  # noqa: BLE001 — recover never blocks
+            return False
+
     def _load_aggregate(self, project_id: str, run_id: str) -> SandboxAggregate:
         agg = SandboxAggregate.empty(project_id, run_id)
         if self._store is None:

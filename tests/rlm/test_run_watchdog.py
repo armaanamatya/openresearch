@@ -261,6 +261,119 @@ async def test_kill_invoked_at_most_once(tmp_path: Path) -> None:
     assert len(kill_calls) == 1
 
 
+# ---------------------------------------------------------------------------
+# Lane N — KillVerdict.RECOVERED keeps watchdog polling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kill_verdict_recovered_keeps_watchdog_polling(tmp_path: Path) -> None:
+    """When on_kill returns RECOVERED, watchdog must continue polling
+    instead of returning. After staleness is refreshed by an external
+    write, the loop returns to verdict=ok and the next kill won't fire."""
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    p = artifact_root / "exec.log"
+    p.write_text("x")
+    now = time.time()
+    os.utime(p, (now, now - 1500))  # 25 min stale
+
+    kill_calls: list[rw.StalenessReport] = []
+    refreshed = False
+
+    async def _on_kill(r):
+        nonlocal refreshed
+        kill_calls.append(r)
+        # Simulate soft-recovery: refresh the signal so next poll sees verdict=ok.
+        if not refreshed:
+            refreshed = True
+            os.utime(p, (time.time(), time.time()))
+            return rw.KillVerdict.RECOVERED
+        return rw.KillVerdict.DESTROY  # second time, destroy
+
+    # If RECOVERED works, the watchdog should NOT return after the first kill —
+    # it should reset and continue. We give it 1 s and then expect to cancel.
+    task = asyncio.create_task(rw.run_watchdog(
+        artifact_root=artifact_root, project_dir=tmp_path,
+        config=rw.WatchdogConfig(
+            warn_after_seconds=60, kill_after_seconds=600,
+            poll_interval_seconds=0.01,
+        ),
+        on_kill=_on_kill,
+    ))
+    await asyncio.sleep(0.3)  # give the loop time to fire kill + recover + see ok
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    # First kill fired (RECOVERED), no second kill (because signals fresh now).
+    assert len(kill_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_kill_verdict_destroy_exits_watchdog(tmp_path: Path) -> None:
+    """DESTROY (or None) returns from on_kill makes the watchdog return."""
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    p = artifact_root / "exec.log"
+    p.write_text("x")
+    now = time.time()
+    os.utime(p, (now, now - 1500))
+
+    async def _on_kill(r):
+        return rw.KillVerdict.DESTROY
+
+    # run_watchdog should return on its own — no need to cancel.
+    await asyncio.wait_for(
+        rw.run_watchdog(
+            artifact_root=artifact_root, project_dir=tmp_path,
+            config=rw.WatchdogConfig(
+                warn_after_seconds=60, kill_after_seconds=600,
+                poll_interval_seconds=0.01,
+            ),
+            on_kill=_on_kill,
+        ),
+        timeout=2.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kill_verdict_none_defaults_to_destroy(tmp_path: Path) -> None:
+    """Backward compatibility: a v1 callback returning None should not
+    leave the watchdog polling forever."""
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    p = artifact_root / "exec.log"
+    p.write_text("x")
+    now = time.time()
+    os.utime(p, (now, now - 1500))
+
+    async def _on_kill_v1(r):
+        return None  # v1 callbacks return None
+
+    await asyncio.wait_for(
+        rw.run_watchdog(
+            artifact_root=artifact_root, project_dir=tmp_path,
+            config=rw.WatchdogConfig(
+                warn_after_seconds=60, kill_after_seconds=600,
+                poll_interval_seconds=0.01,
+            ),
+            on_kill=_on_kill_v1,
+        ),
+        timeout=2.0,
+    )
+
+
+def test_kill_verdict_is_string_enum() -> None:
+    """KillVerdict values are stringly typed so they survive event-stream
+    JSON serialisation without custom handlers."""
+    assert rw.KillVerdict.DESTROY.value == "destroy"
+    assert rw.KillVerdict.RECOVERED.value == "recovered"
+    # Equality between enum and string works (StrEnum semantics).
+    assert rw.KillVerdict.RECOVERED == "recovered"
+
+
 @pytest.mark.asyncio
 async def test_cancelled_exits_cleanly(tmp_path: Path) -> None:
     task = asyncio.create_task(rw.run_watchdog(

@@ -82,6 +82,92 @@ _DISABLE_ENV_VAR: Final[str] = "REPROLAB_PRIMITIVE_CACHE"
 
 
 # ---------------------------------------------------------------------------
+# Hit-time schema validators
+#
+# Every cache HIT runs the matching validator before returning the cached
+# result.  A bad first call can poison the cache (e.g. an LLM-call primitive
+# returns a malformed dict during a transient outage); validating on every hit
+# means the poison gets evicted on the very next request instead of returning
+# the stale wrong answer forever.  Validators are *structural* only — they
+# check shape, not correctness; correctness checks would defeat the cache.
+#
+# On failed validation: log a warning, treat the entry as a miss, continue
+# scanning subsequent JSONL entries.  ``put`` will append a fresh good entry
+# after the recompute, so the bad entry is effectively retired.
+# ---------------------------------------------------------------------------
+
+
+def _v_understand_section(r: dict) -> bool:
+    """understand_section returns 5 list-valued keys (Lane I §2)."""
+    if not isinstance(r, dict):
+        return False
+    required = {"datasets", "metrics", "training_recipe", "hardware_clues", "ambiguities"}
+    return required.issubset(set(r))
+
+
+def _v_extract_hyperparameters(r: dict) -> bool:
+    """extract_hyperparameters returns hparam slots; accept partial returns."""
+    if not isinstance(r, dict):
+        return False
+    expected = {
+        "optimizer", "learning_rate", "batch_size", "epochs_or_steps",
+        "scheduler", "other_hparams", "_meta",
+    }
+    return bool(expected & set(r))
+
+
+def _v_detect_environment(r: dict) -> bool:
+    """detect_environment returns an EnvironmentSpec dict (must have dockerfile)."""
+    if not isinstance(r, dict):
+        return False
+    return "dockerfile" in r and "framework" in r and "python_version" in r
+
+
+def _v_plan_reproduction(r: dict) -> bool:
+    """plan_reproduction returns a ReproductionContract; reject error dicts."""
+    if not isinstance(r, dict):
+        return False
+    if r.get("success") is False:
+        return False  # don't keep a cached failure that can self-heal on retry
+    return any(
+        k in r for k in (
+            "smoke_test_plan", "eval_plan", "verification_checklist",
+            "datasets", "primary_metric",
+        )
+    )
+
+
+def _v_verify_against_rubric(r: dict) -> bool:
+    """verify_against_rubric returns {overall_score, target_score, areas, ...}."""
+    if not isinstance(r, dict):
+        return False
+    return "overall_score" in r and "target_score" in r and "areas" in r
+
+
+def _v_implement_baseline(r: dict) -> bool:
+    """implement_baseline cache wraps str path as {_kind, value} OR stores an error dict."""
+    if not isinstance(r, dict):
+        return False
+    if r.get("_kind") == "path":
+        return isinstance(r.get("value"), str) and len(r["value"]) > 0
+    # Cached error dict (e.g. timeout). Reject empty/malformed errors so the
+    # next attempt actually re-tries the agent.
+    if "success" in r:
+        return bool(r.get("error")) or bool(r.get("logs"))
+    return False
+
+
+_CACHE_VALIDATORS: Final[dict[str, Any]] = {
+    "understand_section":      _v_understand_section,
+    "extract_hyperparameters": _v_extract_hyperparameters,
+    "detect_environment":      _v_detect_environment,
+    "plan_reproduction":       _v_plan_reproduction,
+    "verify_against_rubric":   _v_verify_against_rubric,
+    "implement_baseline":      _v_implement_baseline,
+}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -134,9 +220,18 @@ def maybe_get(project_dir: Path, primitive: str, *, payload: Any) -> dict | None
                     continue
                 if entry.get("key") == key:
                     result = entry.get("result")
-                    if isinstance(result, dict):
-                        logger.debug("primitive_cache HIT %s key=%s", primitive, key[-8:])
-                        return result
+                    if not isinstance(result, dict):
+                        continue
+                    validator = _CACHE_VALIDATORS.get(primitive)
+                    if validator is not None and not validator(result):
+                        logger.warning(
+                            "primitive_cache: hit-validation failed for %s key=%s "
+                            "(stale or poisoned entry) — treating as miss",
+                            primitive, key[-8:],
+                        )
+                        continue
+                    logger.debug("primitive_cache HIT %s key=%s", primitive, key[-8:])
+                    return result
     except OSError:
         return None
     return None

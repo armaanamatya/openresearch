@@ -460,11 +460,52 @@ class RunpodBackend(RuntimeBackend):
             ) from exc
 
     async def destroy(self, sandbox: Sandbox) -> None:
-        await self._sync_artifacts_to_host_quietly(sandbox)
+        # Lane N — bulletproof teardown on a wedged pod.
+        #
+        # The 2026-05-24 wedge: watchdog correctly killed a stale Dropout pod,
+        # but the agent's run_experiment thread stayed blocked in
+        # ``asyncssh.recv()`` on the underlying socket for >7 minutes — and
+        # would have stayed wedged for hours (default TCP keepalive). Root
+        # cause: ``conn.close()`` is a *graceful* asyncssh disconnect — it
+        # sends a DISCONNECT message and waits for the peer to ack via
+        # ``wait_closed()``. On a wedged or already-deleted pod the peer
+        # never responds → wait_closed() blocks forever → the ESTABLISHED
+        # socket FD persists → every concurrent ``recv()`` on it hangs.
+        #
+        # Same risk applies to ``_sync_artifacts_to_host_quietly`` which
+        # silently catches *exceptions* but cannot escape a silent hang.
+        #
+        # Fix: bound the artifact sync, then forcibly abort the asyncssh
+        # transport (``conn.abort()`` = no DISCONNECT, no peer wait, just
+        # tear down the socket on our end). Always — because by the time
+        # destroy() is called the pod is about to be DELETE'd anyway, so a
+        # graceful disconnect serves no purpose.
+        try:
+            await asyncio.wait_for(
+                self._sync_artifacts_to_host_quietly(sandbox), timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            _log.warning(
+                "Runpod destroy(): artifact sync timed out for %s after 15s — "
+                "proceeding with force-abort (logs may be partial).",
+                sandbox.sandbox_id,
+            )
         conn = self._ssh_clients.pop(sandbox.sandbox_id, None)
         if conn is not None:
-            conn.close()
-            await conn.wait_closed()
+            # Force-abort first: drops the local socket immediately and
+            # unblocks any in-flight recv() on it. Then a bounded wait_closed()
+            # cleans up asyncssh's internal state.
+            try:
+                conn.abort()
+            except Exception:  # noqa: BLE001 — observability never blocks teardown
+                _log.debug("Runpod destroy(): conn.abort() raised (ignored).", exc_info=True)
+            try:
+                await asyncio.wait_for(conn.wait_closed(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                _log.debug(
+                    "Runpod destroy(): wait_closed() after abort timed out (ignored).",
+                    exc_info=True,
+                )
         self._connections.pop(sandbox.sandbox_id, None)
         # Persistent pods (attached via REPROLAB_RUNPOD_POD_ID, or any pod
         # not in our ownership allowlist) are never deleted. The
@@ -481,6 +522,97 @@ class RunpodBackend(RuntimeBackend):
             # DELETE call — a paid RunPod pod must be terminated even if
             # the surrounding task is cancelled (e.g. wall-clock timeout).
             await asyncio.shield(self._delete_pod(sandbox.sandbox_id))
+
+    # ------------------------------------------------------------------
+    # Lane N — watchdog probe + soft-recovery
+    #
+    # The 2026-05-24 Dropout wedge proved that the existing exec SSH
+    # channel can be silently held open by a wedged in-pod process. The
+    # watchdog needs an INDEPENDENT signal of pod liveness — a probe over
+    # a FRESH asyncssh connection that doesn't share the wedged channel's
+    # transport. If the probe succeeds the pod is alive (only the in-pod
+    # train.py is wedged), so we can ``soft_recover`` it by pkill'ing the
+    # wedged subprocess and keeping the pod warm.
+    # ------------------------------------------------------------------
+
+    async def probe_alive(self, sandbox: Sandbox, *, timeout: float = 10.0) -> bool:
+        """Open a NEW SSH channel to the pod and run a tiny probe command.
+
+        Never reuses ``self._ssh_clients`` (which may be the wedged channel).
+        Returns True iff the probe completed within ``timeout`` and the
+        pod returned a recognizable response.
+        """
+        connection = self._connections.get(sandbox.sandbox_id)
+        if connection is None:
+            return False
+        host = connection.public_ip
+        port = connection.ssh_port
+
+        async def _probe() -> bool:
+            import asyncssh
+            try:
+                async with asyncssh.connect(
+                    host=host,
+                    port=int(port),
+                    username=self.ssh_user,
+                    client_keys=[self.ssh_key_path] if self.ssh_key_path else None,
+                    known_hosts=None,
+                    connect_timeout=timeout,
+                ) as conn:
+                    res = await conn.run("echo runpod_probe_ok", check=False, timeout=timeout)
+                    return "runpod_probe_ok" in (res.stdout or "")
+            except Exception:  # noqa: BLE001 — probe never raises
+                return False
+
+        try:
+            return await asyncio.wait_for(_probe(), timeout=timeout + 5.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            return False
+
+    async def soft_recover(self, sandbox: Sandbox) -> bool:
+        """Kill the wedged in-pod train.py / python process; keep pod warm.
+
+        Opens a fresh SSH channel (not the wedged exec channel) and runs
+        a sequence of escalating pkill signals. Returns True iff a kill
+        command was successfully delivered.
+        """
+        connection = self._connections.get(sandbox.sandbox_id)
+        if connection is None:
+            return False
+        host = connection.public_ip
+        port = connection.ssh_port
+
+        async def _kill_in_pod() -> bool:
+            import asyncssh
+            # Escalating kill: SIGTERM first (allow graceful), then SIGKILL.
+            # Patterns target the agent's train.py and orphaned Python procs
+            # that the wedged invocation is likely blocked on. The 2>&1; true
+            # is so the SSH command returns success even if no procs match.
+            kill_script = (
+                "pkill -TERM -f 'python.*train.py' 2>&1 || true; "
+                "sleep 2; "
+                "pkill -KILL -f 'python.*train.py' 2>&1 || true; "
+                "pkill -KILL -f 'pip install' 2>&1 || true; "
+                "echo soft_recover_done"
+            )
+            try:
+                async with asyncssh.connect(
+                    host=host,
+                    port=int(port),
+                    username=self.ssh_user,
+                    client_keys=[self.ssh_key_path] if self.ssh_key_path else None,
+                    known_hosts=None,
+                    connect_timeout=10.0,
+                ) as conn:
+                    res = await conn.run(kill_script, check=False, timeout=20.0)
+                    return "soft_recover_done" in (res.stdout or "")
+            except Exception:  # noqa: BLE001 — soft_recover never raises
+                return False
+
+        try:
+            return await asyncio.wait_for(_kill_in_pod(), timeout=30.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            return False
 
     async def _create_pod(self, config: SandboxConfig, image: str) -> dict[str, Any]:
         # network_disabled is not supported on RunPod: the pod communicates

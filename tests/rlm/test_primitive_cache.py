@@ -13,6 +13,7 @@ Pinned guarantees:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -127,13 +128,34 @@ def test_maybe_get_skips_corrupt_lines(tmp_path: Path) -> None:
     cache_dir.mkdir()
     cache_file = cache_dir / pc._CACHE_FILENAME
     # Mix of corrupt + valid lines; the valid one should still be readable.
+    # Result shape must pass the hit-time schema validator (5 understand_section keys).
     key = pc.make_key("understand_section", payload={"x": 1})
+    valid_result = {
+        "datasets": ["MNIST"], "metrics": ["accuracy"], "training_recipe": {},
+        "hardware_clues": [], "ambiguities": [],
+    }
     cache_file.write_text(
         "not-json\n"
         '{"key": "wrong"}\n'
+        f'{{"key": "{key}", "primitive": "understand_section", "result": {json.dumps(valid_result)}}}\n'
+    )
+    got = pc.maybe_get(tmp_path, "understand_section", payload={"x": 1})
+    assert got == valid_result
+
+
+def test_maybe_get_skips_validator_failures(tmp_path: Path) -> None:
+    """Lane M: hit-time schema validation rejects malformed cached results.
+    A cached entry that doesn't match the primitive's contract is treated
+    as a miss, even if its key matches."""
+    cache_dir = tmp_path / "rlm_state"
+    cache_dir.mkdir()
+    cache_file = cache_dir / pc._CACHE_FILENAME
+    key = pc.make_key("understand_section", payload={"x": 1})
+    # {"y": 7} is a structurally invalid understand_section result.
+    cache_file.write_text(
         f'{{"key": "{key}", "primitive": "understand_section", "result": {{"y": 7}}}}\n'
     )
-    assert pc.maybe_get(tmp_path, "understand_section", payload={"x": 1}) == {"y": 7}
+    assert pc.maybe_get(tmp_path, "understand_section", payload={"x": 1}) is None
 
 
 def test_maybe_get_wrong_payload_misses(tmp_path: Path) -> None:
@@ -147,9 +169,14 @@ def test_maybe_get_wrong_payload_misses(tmp_path: Path) -> None:
 
 
 def test_put_then_get_roundtrip(tmp_path: Path) -> None:
-    pc.put(tmp_path, "understand_section", payload={"x": 1}, result={"y": 2, "datasets": ["MNIST"]})
+    # Result shape must pass the hit-time schema validator.
+    valid = {
+        "datasets": ["MNIST"], "metrics": ["accuracy"], "training_recipe": {},
+        "hardware_clues": [], "ambiguities": [],
+    }
+    pc.put(tmp_path, "understand_section", payload={"x": 1}, result=valid)
     out = pc.maybe_get(tmp_path, "understand_section", payload={"x": 1})
-    assert out == {"y": 2, "datasets": ["MNIST"]}
+    assert out == valid
 
 
 def test_put_creates_rlm_state(tmp_path: Path) -> None:
