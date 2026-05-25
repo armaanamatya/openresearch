@@ -539,6 +539,72 @@ _RUNTIME_DETECTION_BLOCK = (
 )
 
 
+# GPU VRAM estimates (approx, in GB) — keyed by RunPod GPU type string.
+# Refresh quarterly when SKU lineup changes. Conservative — assumes
+# the SDC version (i.e. single-card capacity).
+_GPU_VRAM_ESTIMATE_GB: dict[str, int] = {
+    "NVIDIA GeForce RTX 4090": 24,
+    "NVIDIA RTX 4090": 24,
+    "NVIDIA RTX A6000": 48,
+    "NVIDIA A6000": 48,
+    "NVIDIA L40S": 48,
+    "NVIDIA L40": 48,
+    "NVIDIA A40": 48,
+    "NVIDIA A100-SXM4-40GB": 40,
+    "NVIDIA A100 40GB": 40,
+    "NVIDIA A100-SXM4-80GB": 80,
+    "NVIDIA A100 80GB": 80,
+    "NVIDIA H100": 80,
+    "NVIDIA H100 SXM": 80,
+    "NVIDIA H200": 141,
+}
+
+
+def _hardware_specs_block(sandbox_mode: object) -> str:
+    """Static hardware brief — what GPU + image + disk the agent will actually
+    run against. Saves the agent from having to discover via probes and
+    prevents OOM-by-batch-size-guessing.
+
+    Only emits when the run targets RunPod. Pulls live values from the
+    same env vars that drive the backend (REPROLAB_RUNPOD_*); if those
+    differ from what's docked in code, this prompt reflects the truth.
+    """
+    if "runpod" not in str(sandbox_mode).lower():
+        return ""
+    import os as _os
+    gpu_type = _os.environ.get("REPROLAB_RUNPOD_GPU_TYPE", "").strip()
+    gpu_count = _os.environ.get("REPROLAB_RUNPOD_GPU_COUNT", "1").strip()
+    cloud_type = _os.environ.get("REPROLAB_RUNPOD_CLOUD_TYPE", "SECURE").strip()
+    image = _os.environ.get("REPROLAB_RUNPOD_IMAGE", "").strip()
+    container_disk = _os.environ.get("REPROLAB_RUNPOD_CONTAINER_DISK_GB", "50").strip()
+    volume_gb = _os.environ.get("REPROLAB_RUNPOD_VOLUME_GB", "20").strip()
+    volume_mount = _os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip()
+    vram_override = _os.environ.get("REPROLAB_VRAM_OVERRIDE_GB", "").strip()
+    if not gpu_type:
+        return ""  # no spec to share — quietly skip
+    if vram_override:
+        vram_gb: int | None = int(vram_override)
+    else:
+        vram_gb = _GPU_VRAM_ESTIMATE_GB.get(gpu_type)
+    vram_line = f"  - VRAM: {vram_gb} GB" if vram_gb else "  - VRAM: unknown (assume ≤24 GB to be safe)"
+    return (
+        "\n\nSANDBOX HARDWARE BRIEF — your actual runtime:\n"
+        f"  - GPU: {gpu_type} × {gpu_count} ({cloud_type} tier)\n"
+        f"{vram_line}\n"
+        f"  - Base image: {image}\n"
+        f"    (torch + torchvision + torchaudio + CUDA libs are PRE-INSTALLED — "
+        f"do NOT list them in requirements.txt)\n"
+        f"  - Container disk: {container_disk} GB (ephemeral, wiped on pod destroy)\n"
+        f"  - Persistent volume: {volume_gb} GB at {volume_mount} (survives pod replacement)\n"
+        "Pick batch_size / model_size / sequence_length so the activation memory\n"
+        "fits in VRAM with headroom — empirically aim for ≤80% peak. If the paper\n"
+        "used a bigger GPU (e.g. 8× H100, 80GB), declare a scope reduction in\n"
+        "plan_reproduction (e.g. epochs ÷4, batch ÷2) and the verification rubric\n"
+        "will adjust accordingly. NEVER use mocks/surrogates to fit a real model\n"
+        "into smaller VRAM — reduce scope, do not substitute.\n"
+    )
+
+
 _ARTIFACT_COMPLETENESS_BLOCK = (
     "\n\nARTIFACT COMPLETENESS — always emit these alongside metrics.json:\n"
     "  $OUTPUT_DIR/\n"
@@ -1050,6 +1116,9 @@ def _compute_constraint_guidance(
     # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:
         guidance += _POD_SETUP_BLOCK
+        # 3.5. Concrete hardware brief — GPU type, VRAM, image, disk. Lets
+        # the agent size batches without probing or guessing.
+        guidance += _hardware_specs_block(sandbox_mode)
 
     # 4. DATASET SETUP — always-on; tells the agent how to download real data.
     guidance += _DATASET_SETUP_BLOCK
