@@ -515,11 +515,67 @@ def _check_required_artifacts(
 # ---------------------------------------------------------------------------
 
 
+def _check_requirements_torch_redundancy(
+    code_dir: Path,
+    base_image: str | None,
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch if requirements.txt re-installs torch on a runpod/pytorch base.
+
+    The official RunPod PyTorch images (``runpod/pytorch:*-py*-cuda*-*``)
+    ship with torch / torchvision / torchaudio pre-installed.  Putting them
+    in ``requirements.txt`` triggers a 755 MB+ re-download that has hit a
+    ~50% mid-stream-truncation rate on every recent v10-class run.  Hard
+    violation — the auto-derive should have stripped these, but the agent
+    can still write its own requirements.txt and bypass auto-derive.
+    """
+    if not base_image:
+        return
+    bi = base_image.lower()
+    if not (bi.startswith("runpod/pytorch") or "runpod/pytorch" in bi):
+        return
+    req_path = code_dir / "requirements.txt"
+    if not req_path.exists():
+        return
+    try:
+        text = req_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    import re as _re
+    offenders: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _re.match(r"([A-Za-z0-9_\-\.]+)", stripped)
+        if not m:
+            continue
+        name = m.group(1).lower()
+        if name in {"torch", "torchvision", "torchaudio"}:
+            offenders.append(stripped)
+    for off in offenders:
+        out.append(PreFlightViolation(
+            severity="hard",
+            area="Experiment execution and reproducibility",
+            detail=(
+                f"requirements.txt contains {off!r} but base image "
+                f"{base_image} already has it pre-installed — re-installation "
+                f"costs ~10 min + ~755 MB download which has dropped mid-stream "
+                f"~50% of recent runs."
+            ),
+            hint=(
+                f"Remove {off!r} (and any of torch/torchvision/torchaudio) "
+                f"from requirements.txt.  The base image already provides them."
+            ),
+        ))
+
+
 def validate_code_pre_flight(
     code_dir: Path,
     paper_targets: dict | None,
     *,
     arxiv_id: str | None = None,  # noqa: ARG001 — accepted for future hooks
+    base_image: str | None = None,
 ) -> list[PreFlightViolation]:
     """Static AST + grep checks on train.py + every exp_*.py BEFORE dispatch.
 
@@ -545,11 +601,18 @@ def validate_code_pre_flight(
     violations were collected so far.  Pre-flight observability MUST NOT
     block a run on its own bug.
     """
-    if not isinstance(paper_targets, dict) or not paper_targets:
-        return []
-
     code_dir = Path(code_dir)
     violations: list[PreFlightViolation] = []
+
+    # The torch-redundancy check runs even without a paper_targets contract —
+    # it's a base-image invariant, not a paper-specific one.
+    try:
+        _check_requirements_torch_redundancy(code_dir, base_image, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not isinstance(paper_targets, dict) or not paper_targets:
+        return violations
 
     files = _iter_python_files(code_dir)
     if not files:

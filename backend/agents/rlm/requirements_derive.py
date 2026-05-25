@@ -231,22 +231,77 @@ def parse_pip_packages_from_dockerfile(dockerfile_text: str) -> list[str]:
     return sorted(packages)
 
 
-def synthesize_requirements_txt(dockerfile_text: str) -> str:
-    """Return the full text of a synthesized requirements.txt."""
+# Packages already baked into RunPod's pytorch base image
+# (runpod/pytorch:*-py*-cuda*-*).  Installing them again over pip wastes
+# ~10 min and ~2 GB of download for nothing — they're already present —
+# AND triggers the network-flake torch-download class of failure we've
+# repeatedly hit (torch wheel is 755 MB and pip's connection sometimes
+# drops mid-stream).  Strip them when synthesizing requirements.txt for
+# a RunPod base.
+_RUNPOD_PYTORCH_PREINSTALLED: frozenset[str] = frozenset({
+    "torch", "torchvision", "torchaudio",
+})
+
+
+def _is_runpod_pytorch_base(base_image: str | None) -> bool:
+    """True when the configured RunPod base image is the official PyTorch one."""
+    if not base_image:
+        return False
+    return base_image.startswith("runpod/pytorch")
+
+
+def _strip_preinstalled(packages: list[str], base_image: str | None) -> list[str]:
+    """Drop packages already baked into the base image, preserving everything else."""
+    if not _is_runpod_pytorch_base(base_image):
+        return packages
+    out: list[str] = []
+    for spec in packages:
+        # Extract the package name — spec may be `torch==2.2.0`, `torch>=2.0`,
+        # `torch[extras]`, or bare `torch`.
+        m = re.match(r"([A-Za-z0-9_\-\.]+)", spec)
+        name = (m.group(1) if m else spec).lower()
+        if name in _RUNPOD_PYTORCH_PREINSTALLED:
+            logger.info(
+                "requirements_derive: dropping %r — already in %s base image",
+                spec, base_image,
+            )
+            continue
+        out.append(spec)
+    return out
+
+
+def synthesize_requirements_txt(
+    dockerfile_text: str, *, base_image: str | None = None,
+) -> str:
+    """Return the full text of a synthesized requirements.txt.
+
+    ``base_image`` — when set to a RunPod pytorch base, strips
+    ``torch``/``torchvision``/``torchaudio`` from the output (they're
+    already installed and re-installing them costs 10 min + 2 GB download
+    + a non-trivial network-flake failure rate on the torch wheel).
+    """
     packages = parse_pip_packages_from_dockerfile(dockerfile_text)
+    packages = _strip_preinstalled(packages, base_image)
     if not packages:
         return ""
-    header = (
-        "# Auto-derived from Dockerfile by backend.agents.rlm.requirements_derive\n"
-        "# Source of truth for pip installs is the Dockerfile; this file is\n"
-        "# regenerated on every runpod bootstrap when missing.\n"
-    )
-    return header + "\n".join(packages) + "\n"
+    header_lines = [
+        "# Auto-derived from Dockerfile by backend.agents.rlm.requirements_derive",
+        "# Source of truth for pip installs is the Dockerfile; this file is",
+        "# regenerated on every runpod bootstrap when missing.",
+    ]
+    if _is_runpod_pytorch_base(base_image):
+        header_lines.append(
+            "# torch/torchvision/torchaudio stripped — already in "
+            f"{base_image} base image."
+        )
+    return "\n".join(header_lines) + "\n" + "\n".join(packages) + "\n"
 
 
 def ensure_requirements_txt(
     code_dir: Path,
     dockerfile_path: Path | None = None,
+    *,
+    base_image: str | None = None,
 ) -> Path | None:
     """If ``requirements.txt`` is missing under ``code_dir``, synthesize one
     from the project's Dockerfile.
@@ -258,6 +313,10 @@ def ensure_requirements_txt(
     The Dockerfile path defaults to ``code_dir.parent / "Dockerfile"``,
     matching the layout used by ``environment_detective.run_offline`` and
     by ``run_experiment``'s rebuild-from-Dockerfile logic.
+
+    ``base_image`` — pass-through to :func:`synthesize_requirements_txt`.
+    When set to a ``runpod/pytorch*`` image, the derived file is stripped of
+    torch/torchvision/torchaudio (already in the base image).
     """
     req_path = code_dir / "requirements.txt"
     if req_path.exists():
@@ -274,7 +333,7 @@ def ensure_requirements_txt(
         logger.warning("requirements_derive: cannot read Dockerfile: %s", exc)
         return None
 
-    content = synthesize_requirements_txt(text)
+    content = synthesize_requirements_txt(text, base_image=base_image)
     if not content:
         return None
 

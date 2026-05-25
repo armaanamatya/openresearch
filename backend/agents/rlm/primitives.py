@@ -985,7 +985,17 @@ async def _execute_in_sandbox(
             try:
                 from backend.agents.rlm.requirements_derive import ensure_requirements_txt
                 _project_dir = code_dir.parent if code_dir.name == "code" else code_dir
-                ensure_requirements_txt(code_dir, dockerfile_path=_project_dir / "Dockerfile")
+                # Pass the RunPod base image so the synthesized requirements.txt
+                # can strip packages already baked into the image (torch /
+                # torchvision / torchaudio on runpod/pytorch* bases).  Without
+                # this strip, every cold pod re-downloaded the 755 MB torch
+                # wheel and ~50% of the time the connection dropped mid-stream
+                # (Adam v10 #2 failure).
+                ensure_requirements_txt(
+                    code_dir,
+                    dockerfile_path=_project_dir / "Dockerfile",
+                    base_image=env_id,
+                )
             except Exception:  # noqa: BLE001 — observability must never block the run
                 logger.exception("_execute_in_sandbox: requirements.txt auto-derive failed")
         if requirements_path.exists():
@@ -1403,9 +1413,14 @@ def run_experiment(
         from backend.agents.rlm import rubric_contract as _pf_rc
         _pf_arxiv_id = getattr(ctx, "arxiv_id", None)
         _pf_targets = _pf_rc.load_paper_targets(_pf_arxiv_id)
-        if _pf_targets:
+        # ALWAYS run pre-flight when a base image is set, even with no paper_targets,
+        # because the torch-redundancy check is a base-image invariant not a
+        # paper-specific check.  This blocks the v10-class torch-download
+        # failure regardless of which paper is being reproduced.
+        if _pf_targets or env_id:
             _pf_violations = validate_code_pre_flight(
                 Path(code_path), _pf_targets, arxiv_id=_pf_arxiv_id,
+                base_image=env_id,
             )
             _pf_hard = [v for v in _pf_violations if v.severity == "hard"]
             if _pf_hard:
