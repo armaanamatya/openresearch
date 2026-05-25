@@ -888,6 +888,58 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         view.variables, project_id, runs_root
     )
 
+    # Lane U — write paper identity to demo_status.json so the lab UI
+    # doesn't render "Untitled Paper". The CLI path (cmd_reproduce) was
+    # missing this; only the API-side /runs/upload path was populating
+    # paperTitle. Derive paperId from the source kind: arxiv → bare id,
+    # pdf path → filename stem, doi → the doi string. Derive paperTitle
+    # from the parser if it stored a title-like first section; otherwise
+    # fall back to a readable variant of paperId (better than "Untitled").
+    try:
+        _ds_path = runs_root / project_id / "demo_status.json"
+        _existing = {}
+        if _ds_path.exists():
+            try:
+                _existing = json.loads(_ds_path.read_text(encoding="utf-8")) or {}
+            except (json.JSONDecodeError, OSError):
+                _existing = {}
+        _paper_id = ""
+        _paper_title = ""
+        if isinstance(source, ArxivId):
+            _paper_id = source.arxiv_id
+            _paper_title = f"arXiv:{source.arxiv_id}"
+        elif isinstance(source, PdfPath):
+            _stem = Path(source.path).stem
+            _paper_id = _stem
+            _paper_title = _stem.replace("_", " ").replace("-", " ").strip() or _stem
+        elif isinstance(source, DoiRef):
+            _paper_id = source.doi
+            _paper_title = f"doi:{source.doi}"
+        # Try to upgrade _paper_title from the workspace claim map (the
+        # parser may have extracted the real title into the first section).
+        _entries = (workspace_claim_map or {}).get("entries") or []
+        _first_title = (_entries[0].get("title") if _entries else "") or ""
+        # Reject the noise titles the bundle path produces ("Abstract",
+        # "Introduction", "1 Introduction"). Anything else is probably real.
+        _is_noise = (not _first_title) or _first_title.strip().lower() in {
+            "abstract", "introduction", "1 introduction", "1. introduction",
+            "summary", "overview",
+        }
+        if not _is_noise:
+            _paper_title = _first_title.strip()
+        _existing.update({
+            "paperId": _paper_id,
+            "paperTitle": _paper_title,
+            "paper": {"id": _paper_id, "title": _paper_title},
+        })
+        # Atomic write so a crash mid-write leaves either old or new JSON.
+        _tmp = _ds_path.with_suffix(_ds_path.suffix + ".tmp")
+        _tmp.parent.mkdir(parents=True, exist_ok=True)
+        _tmp.write_text(json.dumps(_existing, indent=2), encoding="utf-8")
+        os.replace(_tmp, _ds_path)
+    except Exception:  # noqa: BLE001 — title rendering must not block the run
+        pass
+
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"Workspace ready — {len(view.variables)} variables", file=sys.stderr)
 
