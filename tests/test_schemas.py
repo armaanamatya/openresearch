@@ -197,3 +197,65 @@ def test_training_recipe_long_prose_truncated_to_1000():
     long = "x " * 1000  # 2000 chars
     pcm = PaperClaimMap(core_contribution="", training_recipe=long)
     assert len(pcm.training_recipe.other_hparams["raw"]) <= 1000
+
+
+# ---------------------------------------------------------------------------
+# Lane V — generic string-field coercion for model_architecture,
+# evaluation_protocol, core_contribution (the 2026-05-25 Dropout regression
+# pattern: agent passes dict / list where pydantic expects str)
+# ---------------------------------------------------------------------------
+
+
+def test_model_architecture_dict_coerced_to_json():
+    pcm = PaperClaimMap(
+        core_contribution="ok",
+        model_architecture={"layers": ["embedding", "lstm", "fc"], "hidden": 800},
+    )
+    # Should be a JSON-shaped str, not the raw dict.
+    assert isinstance(pcm.model_architecture, str)
+    assert "layers" in pcm.model_architecture
+    assert "lstm" in pcm.model_architecture
+
+
+def test_model_architecture_list_coerced_to_joined_string():
+    pcm = PaperClaimMap(
+        core_contribution="ok",
+        model_architecture=["embedding", "lstm", "fc"],
+    )
+    assert isinstance(pcm.model_architecture, str)
+    assert "embedding" in pcm.model_architecture
+    assert "lstm" in pcm.model_architecture
+
+
+def test_evaluation_protocol_dict_coerced():
+    pcm = PaperClaimMap(
+        core_contribution="ok",
+        evaluation_protocol={"metric": "accuracy", "split": "test"},
+    )
+    assert isinstance(pcm.evaluation_protocol, str)
+    assert "accuracy" in pcm.evaluation_protocol
+
+
+def test_core_contribution_list_coerced():
+    pcm = PaperClaimMap(
+        core_contribution=["dropout", "regularization", "co-adaptation"],
+    )
+    assert isinstance(pcm.core_contribution, str)
+    assert "dropout" in pcm.core_contribution
+
+
+def test_core_contribution_none_becomes_empty_string():
+    pcm = PaperClaimMap(core_contribution=None)
+    assert pcm.core_contribution == ""
+
+
+def test_str_fields_pass_through_unchanged():
+    """Strings already in str form must round-trip without distortion."""
+    pcm = PaperClaimMap(
+        core_contribution="A clear sentence about the contribution.",
+        model_architecture="MLP 784-800-800-10 with dropout",
+        evaluation_protocol="80/10/10 train/val/test split, accuracy on test",
+    )
+    assert pcm.core_contribution == "A clear sentence about the contribution."
+    assert "MLP 784-800-800-10" in pcm.model_architecture
+    assert "train/val/test" in pcm.evaluation_protocol

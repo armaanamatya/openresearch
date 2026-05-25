@@ -834,3 +834,201 @@ def test_violation_to_dict_carries_all_fields() -> None:
         "detail": "surrogate detected",
         "hint": "use the real model",
     }
+
+
+# ---------------------------------------------------------------------------
+# Lane W — optimizer double-keyword check
+# ---------------------------------------------------------------------------
+
+
+def test_optimizer_double_keyword_caught(tmp_path: Path) -> None:
+    """The exact 2026-05-25 Adam pattern: momentum passed twice."""
+    body = """\
+def make_optimizer(name, params, lr, **kwargs):
+    return SGDNesterov(params, lr=lr, momentum=0.9, **kwargs)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    bug = next(
+        (v for v in hard if "momentum" in v.detail and "multiple values" in v.detail), None,
+    )
+    assert bug is not None
+    assert "pop" in bug.hint.lower()
+
+
+def test_optimizer_double_keyword_torch_optim_attribute_caught(tmp_path: Path) -> None:
+    body = """\
+def make_opt(params, lr, **kwargs):
+    return torch.optim.Adam(params, lr=lr, betas=(0.9, 0.999), **kwargs)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    # Check fires with the first explicit kwarg in the message — name doesn't
+    # matter, just confirm we caught the attribute-form torch.optim.Adam call.
+    flagged = [v for v in _hard(out) if "Adam" in v.detail and "multiple values" in v.detail]
+    assert flagged, f"didn't catch torch.optim.Adam double-pass: {[v.detail[:80] for v in _hard(out)]}"
+
+
+def test_optimizer_only_kwargs_no_explicit_pass(tmp_path: Path) -> None:
+    """Pass: kwargs-only call with no explicit duplicate."""
+    body = """\
+def make_optimizer(params, **kwargs):
+    return Adam(params, **kwargs)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    opt_v = [v for v in _hard(out) if "multiple values" in v.detail]
+    assert opt_v == []
+
+
+def test_optimizer_only_explicit_no_kwargs_pass(tmp_path: Path) -> None:
+    """Pass: no starred kwargs."""
+    body = "opt = SGD(params, lr=0.01, momentum=0.9)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    opt_v = [v for v in _hard(out) if "multiple values" in v.detail]
+    assert opt_v == []
+
+
+def test_non_optimizer_call_with_kwargs_pass(tmp_path: Path) -> None:
+    """Pass: dict(a=1, **kwargs) is NOT an optimizer — don't flag."""
+    body = "d = dict(a=1, b=2, **extra)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    opt_v = [v for v in _hard(out) if "multiple values" in v.detail]
+    assert opt_v == []
+
+
+# ---------------------------------------------------------------------------
+# Lane X — paper-invariants checks (stop_gradient + real_model)
+# Driven by docs/papers/<arxiv_id>.yaml; the SDAR yaml at 2605.15155.yaml
+# already declares both invariants
+# ---------------------------------------------------------------------------
+
+
+def test_stop_gradient_on_gate_caught_for_sdar(tmp_path: Path) -> None:
+    """gate = sigmoid(...) WITHOUT .detach() must be blocked when paper
+    yaml declares stop_gradient_on_gate: true (SDAR 2605.15155)."""
+    body = """\
+import torch
+def step(student_logp, teacher_logp, beta):
+    delta_t = student_logp - teacher_logp
+    g_t = torch.sigmoid(beta * delta_t)  # ← missing .detach()
+    return g_t
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    hard = _hard(out)
+    bug = next(
+        (v for v in hard if "g_t" in v.detail and "stop_gradient" in v.detail.lower()), None,
+    )
+    assert bug is not None
+    assert ".detach()" in bug.hint
+
+
+def test_stop_gradient_with_detach_passes(tmp_path: Path) -> None:
+    body = """\
+import torch
+def step(student_logp, teacher_logp, beta):
+    delta_t = student_logp - teacher_logp
+    g_t = torch.sigmoid(beta * delta_t).detach()
+    return g_t
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    sg = [v for v in _hard(out) if "g_t" in v.detail and "stop_gradient" in v.detail.lower()]
+    assert sg == []
+
+
+def test_stop_gradient_with_no_grad_block_passes(tmp_path: Path) -> None:
+    body = """\
+import torch
+def step(student_logp, teacher_logp, beta):
+    delta_t = student_logp - teacher_logp
+    with torch.no_grad():
+        g_t = torch.sigmoid(beta * delta_t)
+    return g_t
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    sg = [v for v in _hard(out) if "g_t" in v.detail and "stop_gradient" in v.detail.lower()]
+    assert sg == []
+
+
+def test_real_model_required_passes_with_from_pretrained(tmp_path: Path) -> None:
+    body = """\
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B-Instruct")
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail or "canonical model" in v.detail]
+    assert rm == []
+
+
+def test_real_model_required_passes_with_substring_match(tmp_path: Path) -> None:
+    """The yaml lists `Qwen/Qwen3-1.7B-Instruct`; if the agent uses
+    `Qwen/Qwen3-1.7B` (substring) the check tolerates it."""
+    body = """\
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B")
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail or "canonical model" in v.detail]
+    assert rm == []
+
+
+def test_real_model_required_blocked_with_surrogate_only(tmp_path: Path) -> None:
+    body = """\
+import torch.nn as nn
+class SDARModel(nn.Module):
+    def __init__(self, d, V):
+        super().__init__()
+        self.lm_head = nn.Linear(d, V)
+        self.embed = nn.Embedding(V, d)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    hard = _hard(out)
+    bug = next((v for v in hard if "from_pretrained" in v.detail), None)
+    assert bug is not None
+    assert "Qwen" in bug.detail
+    assert "from_pretrained" in bug.hint
+
+
+def test_arxiv_id_without_yaml_is_noop(tmp_path: Path) -> None:
+    """Papers without docs/papers/<id>.yaml → check is silent."""
+    body = "g_t = sigmoid(beta * delta_t)\n"  # would crash an SDAR run
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="9999.99999")
+    sg = [v for v in _hard(out) if "stop_gradient" in v.detail.lower()]
+    assert sg == []
+
+
+def test_arxiv_id_none_is_noop(tmp_path: Path) -> None:
+    """No arxiv_id → check is silent (CLI may not have plumbed it)."""
+    body = "g_t = sigmoid(beta * delta_t)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id=None)
+    sg = [v for v in _hard(out) if "stop_gradient" in v.detail.lower()]
+    assert sg == []
+
+
+def test_paper_invariants_load_sdar_yaml() -> None:
+    """The SDAR yaml at docs/papers/2605.15155.yaml is the golden fixture
+    — verify load_paper_invariants extracts the expected structure."""
+    from backend.agents.rlm.paper_invariants import load_paper_invariants
+    inv = load_paper_invariants("2605.15155")
+    assert inv is not None
+    assert inv.algorithm is not None
+    # The yaml declares stop_gradient_on_gate: true → default vars used.
+    assert "g_t" in inv.algorithm.stop_gradient_variables
+    assert "gate" in inv.algorithm.stop_gradient_variables
+    # models_in_paper declared → real_model_required True, canonical models populated.
+    assert inv.algorithm.real_model_required is True
+    assert inv.models is not None
+    # The yaml lists qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct (and 3b, 7b).
+    assert "qwen3_1_7b" in inv.models.canonical_models
+    assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B-Instruct"

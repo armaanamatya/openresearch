@@ -166,6 +166,47 @@ class PaperClaimMap(BaseModel):
             return {"other_hparams": {"items": [str(x)[:200] for x in v[:20]]}}
         return v
 
+    # Lane V — generic string-field coercion for the three free-text fields
+    # the agent routinely passes as dict / list when it builds method_spec.
+    # 2026-05-25 Dropout regression: agent passed `model_architecture` as a
+    # dict like `{"layers": [...]}` (extracted from understand_section) and
+    # pydantic refused with `ValidationError: model_architecture: Input
+    # should be a valid string (string_type)`. Same shape as the
+    # training_recipe regression. One shared coercion helper keeps the
+    # three validators DRY without inheritance gymnastics.
+
+    @staticmethod
+    def _coerce_to_string(v: Any) -> Any:
+        """Best-effort str coercion. Dict → JSON, list → joined str, else pass through."""
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v[:5000]
+        if isinstance(v, dict):
+            try:
+                import json as _json
+                return _json.dumps(v, default=str)[:2000]
+            except Exception:  # noqa: BLE001
+                return str(v)[:2000]
+        if isinstance(v, list):
+            return "; ".join(str(x)[:200] for x in v[:20])
+        return str(v)[:2000]
+
+    @field_validator("model_architecture", mode="before")
+    @classmethod
+    def _coerce_model_architecture(cls, v: Any) -> Any:
+        return cls._coerce_to_string(v)
+
+    @field_validator("evaluation_protocol", mode="before")
+    @classmethod
+    def _coerce_evaluation_protocol(cls, v: Any) -> Any:
+        return cls._coerce_to_string(v)
+
+    @field_validator("core_contribution", mode="before")
+    @classmethod
+    def _coerce_core_contribution(cls, v: Any) -> Any:
+        return cls._coerce_to_string(v)
+
 
 # ---------------------------------------------------------------------------
 # Environment Detective (#24)

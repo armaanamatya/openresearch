@@ -728,6 +728,293 @@ def _check_absurd_learning_rate(
                         _flag(path, node.lineno, key_node.value, val)
 
 
+def _check_optimizer_double_keyword(
+    trees: dict[Path, ast.AST],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block ``Optimizer(params, lr=lr, momentum=0.9, **kwargs)`` patterns.
+
+    The 2026-05-25 Adam regression: the agent wrote ::
+
+        def make_optimizer(name, params, lr, **kwargs):
+            if name == "sgd_nesterov":
+                return SGDNesterov(params, lr=lr or 0.01, momentum=0.9, **kwargs)
+
+    and then called ``make_optimizer("sgd_nesterov", params, lr, momentum=0.9)``
+    — the explicit ``momentum=0.9`` AND ``**kwargs`` BOTH passed momentum,
+    triggering ``TypeError: SGDNesterov() got multiple values for keyword
+    argument 'momentum'``. Pre-flight catches it generically — any call
+    with both an explicit kwarg AND a starred-double kwargs is suspect
+    when there's no preceding ``kwargs.pop(<key>, None)`` guard.
+
+    Two patterns flagged:
+      * Pattern A — function def with ``**kwargs`` that contains a call
+        with explicit kwargs alongside ``**kwargs`` passthrough.
+      * Pattern B — any call with both ``arg=<name>`` AND a ``**`` starred
+        argument anywhere in the keywords list.
+    """
+    # Names that are "obviously optimizer-shaped" — narrow the false-positive
+    # surface so we don't flag every `dict(**kwargs, extra=1)` constructor.
+    _OPTIMIZER_HINT_NAMES = (
+        "Adam", "SGD", "SGDNesterov", "SGDM", "Adagrad", "AdaGrad",
+        "RMSprop", "RMSProp", "Adadelta", "AdaDelta", "AdamW",
+        "Optimizer", "LARS", "LAMB", "Lion", "make_optimizer",
+        "Sophia", "Adafactor", "Shampoo",
+    )
+
+    def _looks_like_optimizer_call(node: ast.Call) -> bool:
+        func = node.func
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            return False
+        # Substring match — `torch.optim.Adam`, `optim.AdamW`, `MyAdamWrapper` all match.
+        return any(hint in name for hint in _OPTIMIZER_HINT_NAMES) or any(
+            name.lower().endswith(suffix.lower()) for suffix in ("Optimizer", "Opt")
+        )
+
+    def _double_keyword_in_call(node: ast.Call) -> tuple[str | None, str | None]:
+        """Return (explicit_keyword_name, starred_kwargs_name) when a Call
+        has both an explicit ``arg=value`` AND a ``**<name>`` starred
+        kwargs entry.  Returns (None, None) when no risk."""
+        explicit_kwargs = [k.arg for k in node.keywords if k.arg is not None]
+        starred = [k for k in node.keywords if k.arg is None]
+        if not explicit_kwargs or not starred:
+            return (None, None)
+        # The starred name (for the hint message) — pull the inner Name if simple.
+        starred_name = "**kwargs"
+        for kw in starred:
+            if isinstance(kw.value, ast.Name):
+                starred_name = f"**{kw.value.id}"
+                break
+        return (explicit_kwargs[0], starred_name)
+
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not _looks_like_optimizer_call(node):
+                continue
+            explicit, starred = _double_keyword_in_call(node)
+            if explicit is None or starred is None:
+                continue
+            # Pattern A (inside function with **kwargs) vs Pattern B (direct call):
+            # we don't try to distinguish — both have the same fix.
+            func_name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else getattr(node.func, "attr", "<call>")
+            )
+            out.append(PreFlightViolation(
+                severity="hard",
+                area="Experiment execution and reproducibility",
+                detail=(
+                    f"{path.name}:{node.lineno}: `{func_name}(..., {explicit}=<value>, {starred})` "
+                    f"passes `{explicit}` BOTH as an explicit keyword AND via the "
+                    f"starred kwargs. If the caller's kwargs dict contains a "
+                    f"`{explicit}` entry this raises `TypeError: {func_name}() "
+                    f"got multiple values for keyword argument '{explicit}'`. "
+                    f"The 2026-05-25 Adam regression died here for `momentum`."
+                ),
+                hint=(
+                    f"Either remove the explicit `{explicit}=` and let the kwargs "
+                    f"dict supply it, OR pop it from kwargs first: "
+                    f"`{starred[2:]}.pop('{explicit}', None)` before the call. "
+                    f"NOT both."
+                ),
+            ))
+
+
+def _check_paper_invariants(
+    code_dir: Path,
+    trees: dict[Path, ast.AST],
+    arxiv_id: str | None,
+    out: list[PreFlightViolation],
+) -> None:
+    """Lane X — pre-flight checks driven by ``docs/papers/<arxiv_id>.yaml``.
+
+    The paper-hint yaml may declare ``algorithm_invariants.stop_gradient_on_gate``,
+    ``algorithm_invariants.real_model_required``, and ``models_in_paper:
+    {short_name: hf_path}``. ``load_paper_invariants`` (in paper_invariants.py)
+    parses these into a structured ``PaperInvariants`` object. This function
+    consumes that object and dispatches to specific AST checks per declared
+    invariant. New papers get checks automatically by adding YAML — no code
+    change needed.
+    """
+    if not arxiv_id:
+        return
+    from backend.agents.rlm.paper_invariants import load_paper_invariants
+
+    inv = load_paper_invariants(arxiv_id)
+    if inv is None:
+        return
+
+    # stop_gradient enforcement.
+    if inv.algorithm is not None and inv.algorithm.stop_gradient_variables:
+        _check_stop_gradient_on_variables(
+            trees, inv.algorithm.stop_gradient_variables, out
+        )
+
+    # Real-model enforcement.
+    if (
+        inv.algorithm is not None
+        and inv.algorithm.real_model_required
+        and inv.models is not None
+        and inv.models.canonical_models
+    ):
+        _check_real_model_loaded(
+            trees, list(inv.models.canonical_models.values()), out
+        )
+
+
+def _check_stop_gradient_on_variables(
+    trees: dict[Path, ast.AST],
+    variable_names: tuple[str, ...] | list[str],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch when a paper invariant requires ``stop_gradient`` on
+    a named variable and train.py assigns it without ``.detach()`` (and
+    not inside ``with torch.no_grad():``).
+
+    The 2026-05-25 codex review surfaced SDAR's sigmoid-gated OPSD gate
+    as the canonical case: ``g_t = sigmoid(beta * Delta_t)`` MUST be
+    stop-gradient'd or the OPSD objective is wrong. Paper YAML declares
+    the gate variable names; this checker enforces them generically.
+    """
+    name_set = {n for n in variable_names if n}
+    if not name_set:
+        return
+
+    def _rhs_has_detach(node: ast.AST) -> bool:
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                if n.func.attr == "detach":
+                    return True
+        return False
+
+    for path, tree in trees.items():
+        # Pre-compute the lineno ranges inside any `with torch.no_grad():` block.
+        no_grad_ranges: list[tuple[int, int]] = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.With):
+                for item in n.items:
+                    ce = item.context_expr
+                    # Match `torch.no_grad()` / `no_grad()` / `inference_mode()`.
+                    if isinstance(ce, ast.Call):
+                        attr = ""
+                        if isinstance(ce.func, ast.Attribute):
+                            attr = ce.func.attr
+                        elif isinstance(ce.func, ast.Name):
+                            attr = ce.func.id
+                        if attr in {"no_grad", "inference_mode"}:
+                            start = n.lineno
+                            end_attr = getattr(n, "end_lineno", None)
+                            end = end_attr if end_attr is not None else start + 1
+                            no_grad_ranges.append((start, end))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id not in name_set:
+                continue
+            # Inside a no_grad block? Skip.
+            if any(s <= node.lineno <= e for s, e in no_grad_ranges):
+                continue
+            # RHS contains .detach()? Skip.
+            if _rhs_has_detach(node.value):
+                continue
+            out.append(PreFlightViolation(
+                severity="hard",
+                area="Method fidelity to the paper",
+                detail=(
+                    f"{path.name}:{node.lineno}: `{target.id} = <expr>` "
+                    f"without `.detach()` or `torch.no_grad()` — the paper's "
+                    f"algorithm_invariants.stop_gradient_on_gate requires "
+                    f"this variable to be stop-gradient'd. Without it the "
+                    f"distillation loss flows gradients back through the "
+                    f"teacher signal and the objective is wrong (silently)."
+                ),
+                hint=(
+                    f"Either append `.detach()` to the RHS, e.g. "
+                    f"`{target.id} = (sigmoid(beta * delta_t)).detach()`, "
+                    f"OR wrap the assignment inside `with torch.no_grad(): "
+                    f"{target.id} = ...`."
+                ),
+            ))
+
+
+def _check_real_model_loaded(
+    trees: dict[Path, ast.AST],
+    canonical_hf_paths: list[str],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch when paper requires loading real weights and the
+    agent's train.py has no ``AutoModelForCausalLM.from_pretrained(<canonical>)``
+    call. Catches the surrogate-model class — agent stubbing the LM with
+    ``nn.Linear(d, V)`` to make code runnable but the paper's claim
+    untestable.
+
+    Substring match on the constant path argument tolerates the agent
+    adding suffixes like `-Instruct` if the yaml lists `Qwen/Qwen3-1.7B`
+    but the agent uses `Qwen/Qwen3-1.7B-Instruct`.
+    """
+    if not canonical_hf_paths:
+        return
+    # Look for ANY from_pretrained call whose first arg substring-matches
+    # one of the canonical paths. If at least one match exists, no violation.
+    found = False
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "from_pretrained":
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                continue
+            for canonical in canonical_hf_paths:
+                # Substring match either direction — tolerates suffix/prefix drift.
+                if canonical and (canonical in first.value or first.value in canonical):
+                    found = True
+                    break
+            if found:
+                break
+        if found:
+            break
+    if found:
+        return
+    # No matching from_pretrained call found anywhere across all parsed files.
+    # Pick a representative path for the hint.
+    rep = canonical_hf_paths[0]
+    out.append(PreFlightViolation(
+        severity="hard",
+        area="Method fidelity to the paper",
+        detail=(
+            f"no `AutoModelForCausalLM.from_pretrained(...)` call references "
+            f"any of the canonical model paths declared in the paper's yaml "
+            f"({', '.join(canonical_hf_paths)}). The paper's invariant "
+            f"requires loading the real model weights, not a surrogate."
+        ),
+        hint=(
+            f"Add the canonical load to train.py, e.g.:\n"
+            f"    from transformers import AutoModelForCausalLM\n"
+            f"    model = AutoModelForCausalLM.from_pretrained('{rep}')\n"
+            f"Replace any `nn.Linear(d, V)` / `nn.Embedding(V, d)` surrogate "
+            f"LM heads with the real model loaded via from_pretrained."
+        ),
+    ))
+
+
 def _check_deprecated_hf_dataset_aliases(
     trees: dict[Path, ast.AST],
     out: list[PreFlightViolation],
@@ -957,6 +1244,23 @@ def validate_code_pre_flight(
     # (2026-05-25 Adam regression: load_dataset("imdb") → HfUriError).
     try:
         _check_deprecated_hf_dataset_aliases(trees, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Lane W — optimizer double-keyword check. Runs regardless of paper_targets.
+    # (2026-05-25 Adam regression: `SGDNesterov(params, lr=..., momentum=0.9, **kwargs)`
+    # double-passed momentum.)
+    try:
+        _check_optimizer_double_keyword(trees, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Lane X — per-paper invariants. The yaml at docs/papers/<arxiv_id>.yaml
+    # declares stop_gradient variables + canonical model paths; this dispatcher
+    # turns those into AST checks. Generic across papers — adding new yaml
+    # entries unlocks the checks for new papers without any code change.
+    try:
+        _check_paper_invariants(code_dir, trees, arxiv_id, violations)
     except Exception:  # noqa: BLE001
         pass
 
