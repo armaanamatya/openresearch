@@ -144,3 +144,56 @@ def test_fully_formed_paper_claim_map():
     assert pcm.claims[0]["method"] == "PPO"
     assert pcm.metrics[0].name == "Mean Episode Reward"
     assert pcm.metrics[0].definition == "average cumulative reward per episode"
+
+
+# ---------------------------------------------------------------------------
+# training_recipe coercion — pins the 2026-05-25 Adam regression
+# (agent built method_spec with `str(s2.get("training_recipe", ""))[:300]`,
+# turning a dict into a string, which crashed detect_environment's PaperClaimMap
+# construction with `ValidationError: training_recipe: Input should be a valid
+# dictionary or instance of TrainingRecipe`)
+# ---------------------------------------------------------------------------
+
+
+def test_training_recipe_dict_passes_through():
+    pcm = PaperClaimMap(core_contribution="", training_recipe={"optimizer": "SGD", "learning_rate": "0.01"})
+    assert pcm.training_recipe.optimizer == "SGD"
+    assert pcm.training_recipe.learning_rate == "0.01"
+
+
+def test_training_recipe_str_dict_repr_parsed():
+    """The exact 2026-05-25 Adam pattern: str() of a dict."""
+    pcm = PaperClaimMap(
+        core_contribution="",
+        training_recipe="{'optimizer': 'Adam', 'learning_rate': '0.001', 'batch_size': '128'}",
+    )
+    assert pcm.training_recipe.optimizer == "Adam"
+    assert pcm.training_recipe.learning_rate == "0.001"
+    assert pcm.training_recipe.batch_size == "128"
+
+
+def test_training_recipe_str_prose_wraps_into_other_hparams():
+    """Non-dict prose strings are preserved in other_hparams.raw, not lost."""
+    pcm = PaperClaimMap(
+        core_contribution="",
+        training_recipe="Adam optimizer with lr=0.001 batch=128 dropout=0.5",
+    )
+    assert pcm.training_recipe.other_hparams.get("raw") == \
+        "Adam optimizer with lr=0.001 batch=128 dropout=0.5"
+
+
+def test_training_recipe_list_wraps_into_other_hparams():
+    pcm = PaperClaimMap(core_contribution="", training_recipe=["Adam", "lr=0.001"])
+    assert pcm.training_recipe.other_hparams.get("items") == ["Adam", "lr=0.001"]
+
+
+def test_training_recipe_none_defaults_to_empty():
+    pcm = PaperClaimMap(core_contribution="", training_recipe=None)
+    assert pcm.training_recipe.optimizer == ""
+    assert pcm.training_recipe.learning_rate == ""
+
+
+def test_training_recipe_long_prose_truncated_to_1000():
+    long = "x " * 1000  # 2000 chars
+    pcm = PaperClaimMap(core_contribution="", training_recipe=long)
+    assert len(pcm.training_recipe.other_hparams["raw"]) <= 1000

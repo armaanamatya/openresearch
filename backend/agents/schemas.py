@@ -130,6 +130,42 @@ class PaperClaimMap(BaseModel):
         # MetricSpec.definition defaults to "", so a {name} dict validates.
         return cls._coerce_str_items(v, "name")
 
+    # 2026-05-25 Adam regression: agent built method_spec as
+    #     "training_recipe": str(s2.get("training_recipe", ""))[:300]
+    # — calling str() on the dict it got back from understand_section, in
+    # the name of "defensive truncation". Pydantic refused to coerce that
+    # string into TrainingRecipe and the run died at detect_environment.
+    # Same kind of LLM-defensive-coding mismatch as the list-of-strings
+    # case for claims/datasets/metrics. Coerce gracefully:
+    #   * dict / TrainingRecipe → pass through (pydantic validates).
+    #   * str → try ast.literal_eval; if it's a dict-repr, use it. Otherwise
+    #     wrap in TrainingRecipe.other_hparams.raw so the agent's textual
+    #     description is preserved (detect_environment doesn't strictly
+    #     need a structured recipe — it's mostly metadata for downstream).
+    #   * list → wrap items into other_hparams.
+    #   * None → empty dict → uses TrainingRecipe default factory.
+    @field_validator("training_recipe", mode="before")
+    @classmethod
+    def _coerce_training_recipe(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    import ast as _ast
+                    parsed = _ast.literal_eval(stripped)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except (ValueError, SyntaxError):
+                    pass
+            # Otherwise wrap the prose into other_hparams.raw so the agent's
+            # information survives without crashing the schema.
+            return {"other_hparams": {"raw": stripped[:1000]}}
+        if isinstance(v, list):
+            return {"other_hparams": {"items": [str(x)[:200] for x in v[:20]]}}
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Environment Detective (#24)
