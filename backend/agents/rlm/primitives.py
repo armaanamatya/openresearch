@@ -2026,6 +2026,59 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             ],
             "leaf_scores": leaf_scores,
         }
+        # Lane P phase B (codex review 2026-05-25): when metrics.json carries
+        # an `experiments` dict with per-experiment {status, reason_class},
+        # compute the scope-adjusted rubric and attach it alongside the raw
+        # score. The UI / leaderboard can then surface both — uncontrollable
+        # failures (HF URI deprecation, runpod 500, etc.) don't tank the
+        # score, while controllable agent-code bugs still do.
+        try:
+            experiments = (
+                results.get("experiments")
+                or (results.get("metrics") or {}).get("experiments")
+                or {}
+            )
+            if isinstance(experiments, dict) and experiments:
+                from backend.agents.rlm.scope_classifier import (
+                    compute_scope_adjusted_rubric,
+                )
+                # Map leaf_scores into the shape compute_scope_adjusted_rubric expects.
+                # Leaves carry their own experiment binding when the rubric author
+                # populated it; otherwise treat the leaf as paper-wide (always-in).
+                _leaf_map = {
+                    str(e.get("id", f"leaf_{i}")): {
+                        "score": float(e.get("score", 0.0) or 0.0),
+                        "weight": float(e.get("weight", 1.0) or 1.0),
+                        "experiment": e.get("experiment"),
+                    }
+                    for i, e in enumerate(leaf_scores)
+                    if isinstance(e, dict)
+                }
+                sar = compute_scope_adjusted_rubric(
+                    experiments=experiments,
+                    leaf_scores=_leaf_map,
+                    target_score=target,
+                )
+                result["scope_adjusted"] = {
+                    "overall_score": sar.overall_score,
+                    "target_score": sar.target_score,
+                    "meets_target": sar.meets_target,
+                    "coverage": sar.coverage,
+                    "insufficient_coverage": sar.insufficient_coverage,
+                    "notes": sar.notes,
+                    "judgements": [
+                        {
+                            "effective_status": j.effective_status,
+                            "credit": j.credit,
+                            "in_denominator": j.in_denominator,
+                            "reason_class": j.reason_class,
+                            "notes": j.notes,
+                        }
+                        for j in sar.judgements
+                    ],
+                }
+        except Exception:  # noqa: BLE001 — scope adjustment is augmenting, not mandatory
+            logger.exception("verify_against_rubric: scope_adjusted computation failed")
         _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)
         return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)

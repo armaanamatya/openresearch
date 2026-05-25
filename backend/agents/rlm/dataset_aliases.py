@@ -77,6 +77,21 @@ HF_SHORT_NAME_REMAP: Final[dict[str, str]] = {
     "yahoo_answers_topics": "yahoo_answers_topics",  # still works
     "yelp_polarity":     "fancyzhx/yelp_polarity",
     "yelp_review_full":  "Yelp/yelp_review_full",
+    # SDAR (arXiv 2605.15155) Search-QA evaluation set — added 2026-05-25 per
+    # codex review. The paper benchmarks GRPO+OPSD across 6 QA suites; without
+    # canonical owner/name remaps a bare load_dataset("hotpot_qa") fails the
+    # same way load_dataset("imdb") did earlier today.
+    "hotpot_qa":         "hotpotqa/hotpot_qa",
+    "trivia_qa":         "mandarjoshi/trivia_qa",
+    "triviaqa":          "mandarjoshi/trivia_qa",
+    "popqa":             "akariasai/PopQA",
+    "natural_questions": "google-research-datasets/natural_questions",
+    "musique":           "dgslibisey/MuSiQue",
+    "bamboogle":         "chiayewken/bamboogle",
+    "2wikimultihopqa":   "hotpotqa/2wikimultihopqa",
+    "2wiki":             "hotpotqa/2wikimultihopqa",
+    "alfworld":          "alfworld/alfworld",
+    "webshop":           "webshop/webshop",
 }
 
 

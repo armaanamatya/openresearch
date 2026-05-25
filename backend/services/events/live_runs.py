@@ -410,11 +410,16 @@ class FileLiveRunService:
             "sandbox": status.get("sandboxMode", get_settings().default_sandbox),
             "gpuMode": status.get("gpuMode", "auto"),
             "model": status.get("model", "sonnet"),
+            # Lane Q parity fix (codex review 2026-05-25): resumed runs must
+            # preserve the original minimize_compute choice, otherwise the
+            # agent silently switches reproduction style mid-run.
+            "minimize_compute": status.get("minimizeCompute"),
         }
         if request_overrides:
             for key in (
                 "mode", "provider", "verificationProvider",
                 "executionMode", "sandbox", "gpuMode", "model",
+                "minimize_compute",
             ):
                 value = request_overrides.get(key)
                 if value is not None:

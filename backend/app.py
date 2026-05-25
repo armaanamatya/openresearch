@@ -596,6 +596,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             sandbox=_form_value(form, "sandbox", settings.default_sandbox),
             gpuMode=_form_value(form, "gpuMode", "auto"),
             model=_form_value(form, "model", "sonnet"),
+            # Lane Q parity fix (codex review 2026-05-25): the multipart upload
+            # path was dropping minimize_compute silently. /runs/arxiv forwards
+            # it (line ~564); this path now matches.
+            minimize_compute=_optional_form_bool(form, "minimizeCompute"),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1087,3 +1091,19 @@ def _optional_form_value(form: Any, key: str) -> str | None:
     if value in (None, "", "same"):
         return None
     return str(value)
+
+
+def _optional_form_bool(form: Any, key: str) -> bool | None:
+    """Parse a multipart form field as an optional bool.
+
+    Accepts "true"/"1"/"yes" → True, "false"/"0"/"no" → False, missing/empty → None.
+    """
+    value = form.get(key)
+    if value in (None, ""):
+        return None
+    v = str(value).strip().lower()
+    if v in {"true", "1", "yes", "on"}:
+        return True
+    if v in {"false", "0", "no", "off"}:
+        return False
+    return None

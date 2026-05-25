@@ -828,7 +828,7 @@ async def run_pipeline_rlm(
             "Inspect the existing code, understand what each weak cluster requires "
             "(see the rubric in context['rubric_spec']), implement targeted fixes, "
             "re-run the experiment with run_experiment, and re-score with "
-            "score_against_rubric. Do NOT rewrite passing clusters. "
+            "verify_against_rubric. Do NOT rewrite passing clusters. "
             "When finished, call FINAL_VAR on the updated report dict — "
             "exactly as the system prompt's termination contract describes."
         )
