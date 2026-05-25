@@ -42,54 +42,58 @@ export function ReplStateRail({
   const buttonLabel = collapsed ? "Expand REPL state rail" : "Collapse REPL state rail";
 
   if (collapsed) {
+    // Lane Z (2026-05-25): collapsed rail is now a clickable column with a
+    // rotated vertical title so users always know what they're collapsing.
+    // The chevron sits at the top + the title runs down the rail + the
+    // count badge anchors the bottom. The whole thing is clickable.
     return (
       <aside className={`${styles.rail} ${styles.railCollapsed}`} aria-label="REPL state rail" data-testid="repl-state-rail">
         <button
-          className={styles.toggleBtn}
+          className={styles.collapsedClickable}
           aria-label={buttonLabel}
+          aria-expanded={false}
           onClick={onToggle}
           type="button"
+          title="Expand REPL state"
         >
-          {/* Compact icon: two horizontal lines (≡) */}
+          {/* Chevron-right (expand) at top */}
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none">
-            <line x1="2" y1="4" x2="12" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="2" y1="8" x2="12" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="2" y1="12" x2="12" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <polyline points="5,2 9,7 5,12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
+          <span className={styles.collapsedTitle}>REPL state</span>
+          <span
+            className={styles.collapsedCount}
+            title={`${setCount} of ${totalCount} tracked REPL variables are set.`}
+          >
+            {setCount}/{totalCount}
+          </span>
         </button>
-        <span
-          className={styles.collapsedCount}
-          title={`${setCount} of ${totalCount} tracked REPL variables are set.`}
-        >
-          {setCount}/{totalCount}
-        </span>
       </aside>
     );
   }
 
   return (
     <aside className={styles.rail} style={style} aria-label="REPL state rail" data-testid="repl-state-rail">
-      {/* Header row */}
-      <div className={styles.header}>
-        <span className={styles.heading}>REPL state</span>
+      {/* Header row — Lane Z: full-width clickable title bar */}
+      <button
+        className={styles.titleBar}
+        onClick={onToggle}
+        aria-label={buttonLabel}
+        aria-expanded={true}
+        type="button"
+      >
+        <span className={styles.titleBarHeading}>REPL state</span>
         <span
           className={styles.setCount}
           title={`${setCount} of ${totalCount} tracked REPL variables are set. Variables arrive with repl_iteration events.`}
         >
           {setCount}/{totalCount} set
         </span>
-        <button
-          className={styles.toggleBtn}
-          aria-label={buttonLabel}
-          onClick={onToggle}
-          type="button"
-        >
-          {/* Chevron-left collapse icon */}
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none">
-            <polyline points="9,2 5,7 9,12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      </div>
+        {/* Chevron-left (collapse) at right edge */}
+        <svg className={styles.titleBarChevron} width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none">
+          <polyline points="9,2 5,7 9,12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
 
       {/* Variables section */}
       <section className={styles.section} aria-label="Variables">

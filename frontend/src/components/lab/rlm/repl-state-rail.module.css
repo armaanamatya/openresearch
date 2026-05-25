@@ -14,11 +14,58 @@
 }
 
 .railCollapsed {
-  width: 36px;
-  min-width: 36px;
+  width: 32px;
+  min-width: 32px;
+  align-items: stretch;
+  padding: 0;
+  gap: 0;
+}
+
+/* Lane Z — collapsed rail is one big clickable column showing the
+ * rotated title + count badge. The user always sees what's collapsible. */
+.collapsedClickable {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  padding-top: var(--sp-2);
-  gap: var(--sp-2);
+  justify-content: flex-start;
+  width: 100%;
+  height: 100%;
+  background: var(--panel);
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: var(--sp-3) 0;
+  gap: var(--sp-3);
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.collapsedClickable:hover {
+  background: var(--chip);
+  color: var(--ink);
+}
+
+.collapsedClickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.collapsedTitle {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapsedClickable {
+    transition: none;
+  }
 }
 
 /* Header row */
@@ -40,6 +87,54 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Lane Z — full-width clickable title bar (replaces .header for expanded mode).
+ * Whole bar is the toggle; chevron is just a visual indicator on the right. */
+.titleBar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--panel);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  min-height: 36px;
+  color: var(--ink-2);
+  transition: background 150ms ease;
+}
+
+.titleBar:hover {
+  background: var(--chip);
+}
+
+.titleBar:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.titleBarHeading {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  flex: 1;
+  text-align: left;
+}
+
+.titleBarChevron {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .titleBar {
+    transition: none;
+  }
 }
 
 .setCount {

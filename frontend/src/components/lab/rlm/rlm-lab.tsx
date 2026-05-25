@@ -124,12 +124,15 @@ export function RlmLab({
 
   const { sizes, dragHandle, collapsedByViewport } = useResizablePanels();
 
+  // Lane Z (2026-05-25): both sidebars default to COLLAPSED so the constellation
+  // graph dominates the workspace on first render. Title bars stay visible
+  // (rotated-vertical when collapsed) so users always know what they can expand.
   // ReplStateRail collapse state is owned here (the rail itself is a pure
   // presenter — it receives collapsed/onToggle props).
-  const [replRailCollapsed, setReplRailCollapsed] = useState(false);
+  const [replRailCollapsed, setReplRailCollapsed] = useState(true);
 
   // NodeDetailSidebar internal collapsed state, lifted so the handle can be hidden.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 
   // ── Lifted selection state ──────────────────────────────────────────────
   // The canvas notifies us via onSelectNode; we forward the id to both the

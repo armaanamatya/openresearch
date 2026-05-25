@@ -431,6 +431,9 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
   }
 
   if (collapsed) {
+    // Lane Z — collapsed sidebar mirrors the REPL state rail: full-column
+    // clickable button with a chevron + rotated "Detail" title so users
+    // always know what they can expand.
     return (
       <aside
         className={styles.sidebarCollapsed}
@@ -440,12 +443,20 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
       >
         <button
           type="button"
-          className={styles.toggleBtn}
+          className={styles.collapsedClickable}
           onClick={() => setCollapsed(false)}
           aria-label="Expand node detail sidebar"
-          title="Expand"
+          aria-expanded={false}
+          title="Expand Detail"
         >
-          {"<<"}
+          {/* Chevron-left (expand pointing into the page) at top */}
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none">
+            <polyline points="9,2 5,7 9,12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className={styles.collapsedTitle}>Detail</span>
+          {node ? (
+            <span className={styles.collapsedKindBadge}>{kindLabel(node.kind)}</span>
+          ) : null}
         </button>
       </aside>
     );
@@ -458,17 +469,16 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
       data-testid="node-detail-sidebar"
       aria-label="Node detail sidebar"
     >
-      {/* Header */}
-      <div className={styles.header}>
-        <button
-          type="button"
-          className={styles.toggleBtn}
-          onClick={() => setCollapsed(true)}
-          aria-label="Collapse node detail sidebar"
-          title="Collapse"
-        >
-          {">>"}
-        </button>
+      {/* Header — Lane Z: full-width clickable title bar */}
+      <button
+        type="button"
+        className={styles.titleBar}
+        onClick={() => setCollapsed(true)}
+        aria-label="Collapse node detail sidebar"
+        aria-expanded={true}
+        title="Collapse"
+      >
+        <span className={styles.titleBarHeading}>Detail</span>
         {node ? (
           <div className={styles.identity}>
             <span className={styles.title}>{node.title}</span>
@@ -480,7 +490,11 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
         ) : (
           <span className={styles.noSelection}>no node selected</span>
         )}
-      </div>
+        {/* Chevron-right (collapse) at right edge */}
+        <svg className={styles.titleBarChevron} width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none">
+          <polyline points="5,2 9,7 5,12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
 
       {/* Aggregate counters — always visible */}
       <div className={styles.countersStrip} data-testid="aggregate-counters">
