@@ -118,7 +118,7 @@ export function buildFixtureMeta(
   runMode: DemoRunMode,
   llmProvider?: DemoProvider,
   verificationProvider?: DemoProvider,
-  executionMode: DemoExecutionMode = "efficient",
+  executionMode: DemoExecutionMode = "max",
   sandboxMode: DemoSandboxMode = "runpod",
   gpuMode: DemoGpuMode = "auto"
 ): LiveDemoMeta {

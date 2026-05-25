@@ -384,7 +384,12 @@ _REPRODUCE_DEFAULTS = {
     "verification_provider": None,
     "hints": None,
     "n_paths": 3,
-    "execution_mode": "efficient",
+    # Default flipped 2026-05-25: "max" removes the per-agent turn / tool-call /
+    # 20-min wall-clock caps that bound the "efficient" profile. Run-level
+    # budgets (--max-wall-clock, --max-usd) still bind. User explicitly asked
+    # for "no compute limitations" as the default; turn caps were biting the
+    # paper-faithful reproductions.
+    "execution_mode": "max",
     "sandbox": DEFAULT_SANDBOX_MODE.value,
     "gpu_mode": "auto",
     "command_timeout": None,
@@ -616,7 +621,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
     from backend.services.runtime import SandboxRuntimeError
 
     execution_profile = ExecutionProfile.from_mode(
-        getattr(args, "execution_mode", "efficient"),
+        getattr(args, "execution_mode", "max"),
         command_timeout_seconds=getattr(args, "command_timeout", None),
         sandbox_network_disabled=not getattr(args, "allow_sandbox_network", False),
         sandbox_memory_limit=getattr(args, "sandbox_memory", None),
@@ -1114,8 +1119,13 @@ def _build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument(
         "--execution-mode",
         choices=("efficient", "max"),
-        default="efficient",
-        help="Execution profile: efficient keeps current bounded defaults; max raises budgets.",
+        default="max",
+        help=(
+            "Execution profile (default `max` since 2026-05-25): "
+            "`max` removes per-agent turn / tool-call / 20-min wall-clock caps; "
+            "`efficient` re-enables them for cost-sensitive runs. Run-level "
+            "budgets (--max-wall-clock, --max-usd) still bind in both modes."
+        ),
     )
     reproduce.add_argument(
         "--sandbox",

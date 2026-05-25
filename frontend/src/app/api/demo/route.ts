@@ -208,7 +208,7 @@ export async function POST(request: Request) {
       mode: runMode,
       provider: toProvider(request) ?? "anthropic",
       verificationProvider: toVerificationProvider(request),
-      executionMode: toExecutionMode(request) ?? "efficient",
+      executionMode: toExecutionMode(request) ?? "max",
       sandbox: toSandboxMode(request) ?? "runpod",
       gpuMode: toGpuMode(request) ?? "auto",
       model: toModelChoice(request) ?? "sonnet"

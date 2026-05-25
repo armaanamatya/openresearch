@@ -49,7 +49,7 @@ class StartRunRequest(BaseModel):
     mode: RunMode = "rlm"
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
-    executionMode: ExecutionMode = "efficient"
+    executionMode: ExecutionMode = "max"
     sandbox: SandboxMode = "runpod"
     gpuMode: GpuMode = "auto"
     model: ModelChoice = "sonnet"
