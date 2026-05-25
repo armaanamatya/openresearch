@@ -728,6 +728,104 @@ def _check_absurd_learning_rate(
                         _flag(path, node.lineno, key_node.value, val)
 
 
+def _check_deprecated_hf_dataset_aliases(
+    trees: dict[Path, ast.AST],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block ``load_dataset("imdb")`` and other deprecated bare short names.
+
+    The 2026-05-25 Adam regression: agent wrote ``load_dataset("imdb")``,
+    which produced ``hf://datasets/imdb@.../plain_text/train-*`` — a URI
+    the modern huggingface_hub library refuses to parse because it now
+    requires ``namespace/name``. The bare short names were valid years
+    ago, persist in many tutorials, and the agent reads them from the
+    paper or from its own training data.
+
+    We catch this at pre-flight against a curated registry. Two outcomes:
+
+    * For text datasets (imdb, glue, squad, etc.) — emit a hard violation
+      whose hint tells the agent the canonical owner/name string to use
+      instead. The agent rewrites the call on next iteration.
+    * For vision datasets (mnist, cifar10, svhn, etc.) — emit a hard
+      violation whose hint tells the agent to use ``torchvision.datasets``
+      directly (faster, no HF mid-stream URI breakage).
+
+    Walks AST for ``load_dataset("<bare>", ...)`` and
+    ``datasets.load_dataset("<bare>", ...)`` patterns.
+    """
+    from backend.agents.rlm.dataset_aliases import (
+        HF_SHORT_NAME_REMAP,
+        USE_NATIVE_LIB_INSTEAD,
+    )
+
+    def _is_load_dataset_call(call: ast.Call) -> bool:
+        func = call.func
+        if isinstance(func, ast.Name) and func.id == "load_dataset":
+            return True
+        if (isinstance(func, ast.Attribute)
+                and func.attr == "load_dataset"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "datasets"):
+            return True
+        return False
+
+    def _first_string_arg(call: ast.Call) -> str | None:
+        if not call.args:
+            return None
+        first = call.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+        return None
+
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not _is_load_dataset_call(node):
+                continue
+            name = _first_string_arg(node)
+            if name is None:
+                continue
+            lower = name.lower().strip()
+            # Native-lib group — block + suggest torchvision direct.
+            if lower in USE_NATIVE_LIB_INSTEAD:
+                out.append(PreFlightViolation(
+                    severity="hard",
+                    area="Data and preprocessing fidelity",
+                    detail=(
+                        f"{path.name}:{node.lineno}: `load_dataset({name!r})` "
+                        f"routes through HuggingFace, which (a) is slower than "
+                        f"the native loader and (b) regularly breaks "
+                        f"mid-stream on URI-format changes. Use the native "
+                        f"torchvision API instead — it caches to disk and "
+                        f"the URLs are pinned."
+                    ),
+                    hint=(
+                        f"Replace with:\n    {USE_NATIVE_LIB_INSTEAD[lower]}"
+                    ),
+                ))
+                continue
+            # Owner-rename group — block + suggest canonical owner/name.
+            if lower in HF_SHORT_NAME_REMAP:
+                canonical = HF_SHORT_NAME_REMAP[lower]
+                out.append(PreFlightViolation(
+                    severity="hard",
+                    area="Data and preprocessing fidelity",
+                    detail=(
+                        f"{path.name}:{node.lineno}: `load_dataset({name!r})` "
+                        f"is a deprecated bare short name. The modern HuggingFace "
+                        f"Hub requires `owner/name` and rejects this with "
+                        f"`HfUriError: Repository id must be 'namespace/name', "
+                        f"got '{name}'`. The 2026-05-25 Adam run died here."
+                    ),
+                    hint=(
+                        f"Replace `load_dataset({name!r})` with "
+                        f"`load_dataset({canonical!r})` — the canonical "
+                        f"owner/name on the modern Hub."
+                    ),
+                ))
+
+
 def _check_requirements_torch_redundancy(
     code_dir: Path,
     base_image: str | None,
@@ -852,6 +950,13 @@ def validate_code_pre_flight(
     # regression: lr=10.0 produced train_loss=NaN for the entire run).
     try:
         _check_absurd_learning_rate(trees, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Deprecated HF dataset alias check — runs regardless of paper_targets
+    # (2026-05-25 Adam regression: load_dataset("imdb") → HfUriError).
+    try:
+        _check_deprecated_hf_dataset_aliases(trees, violations)
     except Exception:  # noqa: BLE001
         pass
 

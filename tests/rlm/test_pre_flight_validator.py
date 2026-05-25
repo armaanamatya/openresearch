@@ -705,6 +705,122 @@ opt = Adam(model.parameters(), lr=cfg.learning_rate)
     assert not any("lr=" in v.detail for v in _hard(out))
 
 
+# ---------------------------------------------------------------------------
+# Deprecated HF dataset aliases — pins the 2026-05-25 Adam IMDB regression
+# ---------------------------------------------------------------------------
+
+
+def test_load_dataset_imdb_bare_name_blocked(tmp_path: Path) -> None:
+    """The exact 2026-05-25 Adam crash pattern: load_dataset('imdb')."""
+    body = """\
+from datasets import load_dataset
+ds = load_dataset("imdb")
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    bug = next((v for v in hard if "'imdb'" in v.detail), None)
+    assert bug is not None
+    assert "stanfordnlp/imdb" in bug.hint
+    assert "HfUriError" in bug.detail or "deprecated" in bug.detail.lower()
+
+
+def test_load_dataset_glue_subset_pattern_blocked(tmp_path: Path) -> None:
+    body = "ds = load_dataset('glue', 'sst2')\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("nyu-mll/glue" in v.hint for v in _hard(out))
+
+
+def test_load_dataset_namespace_form_passes(tmp_path: Path) -> None:
+    """The CORRECT form must not trigger the violation."""
+    body = "ds = load_dataset('stanfordnlp/imdb')\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    bad = [v for v in _hard(out) if "load_dataset" in v.detail]
+    assert bad == []
+
+
+def test_load_dataset_mnist_routed_to_torchvision(tmp_path: Path) -> None:
+    """MNIST exists on HF but agent should use torchvision native."""
+    body = "ds = load_dataset('mnist')\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    bug = next((v for v in hard if "'mnist'" in v.detail), None)
+    assert bug is not None
+    assert "torchvision.datasets.MNIST" in bug.hint
+
+
+def test_load_dataset_cifar10_routed_to_torchvision(tmp_path: Path) -> None:
+    body = "ds = load_dataset('cifar10')\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("torchvision.datasets.CIFAR10" in v.hint for v in _hard(out))
+
+
+def test_load_dataset_via_datasets_module_attribute_caught(tmp_path: Path) -> None:
+    """``datasets.load_dataset('imdb')`` is the same bug, different syntax."""
+    body = """\
+import datasets
+ds = datasets.load_dataset("imdb")
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("stanfordnlp/imdb" in v.hint for v in _hard(out))
+
+
+def test_load_dataset_unknown_name_passes(tmp_path: Path) -> None:
+    """A short name we don't recognise is not flagged — could be a custom dataset."""
+    body = "ds = load_dataset('my_private_dataset')\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    bad = [v for v in _hard(out) if "load_dataset" in v.detail]
+    assert bad == []
+
+
+def test_load_dataset_dynamic_name_not_flagged(tmp_path: Path) -> None:
+    """Variable / expression as the name argument — pre-flight can't tell statically; skip."""
+    body = """\
+name = "imdb"
+ds = load_dataset(name)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    bad = [v for v in _hard(out) if "load_dataset" in v.detail]
+    assert bad == []
+
+
+def test_dataset_registry_self_consistency() -> None:
+    """The registry's canonical names must all be in ``owner/name`` form."""
+    from backend.agents.rlm.dataset_aliases import HF_SHORT_NAME_REMAP
+    for short, canonical in HF_SHORT_NAME_REMAP.items():
+        # Allow a handful of legacy single-token canonical names that HF still
+        # accepts (recorded in the map verbatim — caught by an exact match here
+        # if the maintainer makes them in the future). Otherwise require '/'.
+        if canonical == "newsroom" or canonical == "yahoo_answers_topics":
+            continue
+        assert "/" in canonical, (
+            f"{short!r} maps to {canonical!r} which is not owner/name shape"
+        )
+
+
+def test_canonicalize_hf_id_helper() -> None:
+    """The public helper must round-trip the registry correctly."""
+    from backend.agents.rlm.dataset_aliases import canonicalize_hf_id
+    canonical, hint = canonicalize_hf_id("imdb")
+    assert canonical == "stanfordnlp/imdb"
+    assert hint == ""
+    # Native-lib case: canonical is None.
+    canonical, hint = canonicalize_hf_id("mnist")
+    assert canonical is None
+    assert "torchvision.datasets.MNIST" in hint
+    # Unknown name: pass-through.
+    canonical, hint = canonicalize_hf_id("unknown_dataset_xyz")
+    assert canonical == "unknown_dataset_xyz"
+    assert hint == ""
+
+
 def test_violation_to_dict_carries_all_fields() -> None:
     v = PreFlightViolation(
         severity="hard",
