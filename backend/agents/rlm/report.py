@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -603,7 +604,14 @@ def write_final_report_rlm(
     """Write `final_report.json` and `final_report.md` atomically.
 
     Both files are written via a temp-file + `os.replace` to avoid partial
-    writes on crash or timeout.
+    writes on crash or timeout. On non-failed verdicts (i.e. the run
+    produced a real reproduction, partial or full), also stamp a
+    ``.preserved`` marker file in ``project_dir`` — a tiny JSON manifest
+    flagging this run as worth keeping. The marker is a GC signal: any
+    cleanup script that prunes ``runs/`` MUST skip directories carrying
+    this file. It survives process kill (it is on disk) and is written
+    after the canonical artifacts, so a half-written final_report.json
+    cannot leave behind a stale "preserved" claim.
 
     Args:
         report: The completed final report.
@@ -625,12 +633,54 @@ def write_final_report_rlm(
     md_content = _render_markdown(report)
     _atomic_write(md_path, md_content)
 
+    # --- Preservation marker --------------------------------------------
+    # Stamp a tiny manifest so future cleanup / GC scripts know this run
+    # produced real reproduction artifacts and must not be pruned. We
+    # stamp on every non-failed verdict — partial reproductions are still
+    # valuable, and a future operator can grep ``.preserved`` files to
+    # rebuild the leaderboard if other state is ever lost.
+    try:
+        if report.verdict != "failed":
+            _write_preserved_marker(project_dir, report)
+    except Exception:  # noqa: BLE001 — marker is best-effort; never crash the run
+        logger.exception("report: failed to write .preserved marker (non-fatal)")
+
     logger.info(
         "report: wrote final_report.{json,md} to %s (verdict=%s)",
         project_dir,
         report.verdict,
     )
     return json_path, md_path
+
+
+def _write_preserved_marker(project_dir: Path, report: RLMFinalReport) -> None:
+    """Write the ``.preserved`` GC-protection marker.
+
+    The marker is a small JSON manifest, intentionally smaller than the
+    final report so it stays cheap to scan. Schema is forward-compatible
+    (extra keys ignored by readers); the canonical fields are verdict,
+    rubric_overall_score, paper_id, paper_title, preserved_at_utc.
+    """
+    rubric = getattr(report, "rubric", None)
+    overall_score = None
+    if isinstance(rubric, dict):
+        overall_score = rubric.get("overall_score")
+    paper = getattr(report, "paper", None) or {}
+    paper_id = paper.get("id") if isinstance(paper, dict) else None
+    paper_title = paper.get("title") if isinstance(paper, dict) else None
+    manifest = {
+        "verdict": report.verdict,
+        "rubric_overall_score": overall_score,
+        "paper_id": paper_id,
+        "paper_title": paper_title,
+        "iterations": getattr(report, "iterations", None),
+        "preserved_at_utc": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 1,
+    }
+    _atomic_write(
+        project_dir / ".preserved",
+        json.dumps(manifest, indent=2, sort_keys=True),
+    )
 
 
 def _atomic_write(path: Path, content: str) -> None:
