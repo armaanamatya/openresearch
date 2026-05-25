@@ -7,7 +7,6 @@ build/
 .eggs/
 
 # Virtual environments
-.venv
 .venv/
 venv/
 
@@ -30,102 +29,64 @@ htmlcov/
 
 # SQLite
 *.db
+reprolab.db-shm
+reprolab.db-wal
+reprolab.db.offline_backup
+reprolab.db.corrupt-*
 
 # Local worktrees
 .worktrees/
 
-# Brainstorming companion scratch
-.superpowers/
-
 # Frontend
-frontend/node_modules
 frontend/node_modules/
-frontend/.next
 frontend/.next/
+frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+frontend/tmp-screens/
+
+# Stray root-level node_modules
+/node_modules/
+
+# Local run outputs (anchored to root -- must not match nested source paths)
+/runs/
+/runs
+/logs/
+/logs
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Codex companion local state
-.codex
-.codex/
-
-# Claude Code local state
-.claude/
-
-# Local run outputs (anchored to repo root — must not match nested
-# source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/
-# or backend/services/runs/)
-/runs/
-/runs
-# Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
-/logs/
-/logs
-
-# Windows artifacts
-%APPDATA%/
 *:Zone.Identifier
 
-# Frontend build artifacts
-frontend/tsconfig.tsbuildinfo
+# Claude Code / Codex local state
+.claude/
+.codex/
+.superpowers/
 
-# Test runner output (Playwright traces, screenshots, JSON artifacts)
+# Test runner output
 test-results/
-frontend/test-results/
-frontend/playwright-report/
-
-# Repo-root /screenshots is produced by scripts/lab_screenshot_tail.mjs
-# during E2E monitoring runs; outputs are ephemeral, do not commit.
 /screenshots/
+/playwright/
+.playwright-mcp/
 
-# Stray root-level node_modules (the real one is frontend/node_modules/)
-/node_modules/
+# DeepEval runtime cache
+.deepeval/
 
-# Local-only test logs and DB backups
-_test_logs/
-reprolab.db.offline_backup
-reprolab.db-shm
-reprolab.db-wal
-
-# Sample input PDFs — keep paperbench1.pdf as the canonical FTRL fixture.
-# Add ! exceptions if more named samples should be tracked.
+# Sample PDFs -- keep paperbench1.pdf as the canonical FTRL fixture
 /paperbench*.pdf
 !/paperbench1.pdf
 
-# Stray pip output written into repo root
+# Stray build artifacts written to repo root
+/package-lock.json
 /[0-9]*.[0-9]*.[0-9]*
 
-# Stray npm lockfile written into repo root; the real lockfile is frontend/package-lock.json.
-/package-lock.json
-
-# Local planning prompts, ad-hoc screenshots, and corrupt DB recovery snapshots.
-# Root-level PNGs are ad-hoc screenshots; intentional doc assets live in docs/.
+# Ad-hoc planning/review files
 /claude_plan_*.md
 /claude_review_*.md
 /codex_prompt*.md
 /conflicts.md
 /*.png
-/reprolab.db.corrupt-*
-
-# Playwright MCP screenshot artifacts
-.playwright-mcp
-.playwright-mcp/
-
-# DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
-.deepeval
-.deepeval/
-
-# Landing-page exploration artifact (figma/AI export). Canonical mockups
-# live in docs/idealui/; this dir is local working state, not source.
 /LANDING/
-
-# Stale "output" snapshots — committed once as test inputs, never referenced.
-# Recreate via the live test suite if needed.
 /runs_e2e_local/
 /runs_e2e_docker/
-
-# Landing screenshot scratch dir
-frontend/tmp-screens
-frontend/tmp-screens/
-/playwright/
