@@ -594,6 +594,117 @@ def test_tensor_device_mismatch_works_without_paper_targets(tmp_path: Path) -> N
     assert any("cuda:0 and cpu" in v.detail for v in _hard(out))
 
 
+# ---------------------------------------------------------------------------
+# Learning-rate sanity — pins the Dropout 2026-05-25 NaN-training regression
+# ---------------------------------------------------------------------------
+
+
+def test_lr_kwarg_above_one_is_hard_blocked(tmp_path: Path) -> None:
+    """Adam(lr=10) — the exact 2026-05-25 Dropout pattern — must be blocked."""
+    body = """\
+import torch
+opt = torch.optim.Adam(model.parameters(), lr=10.0)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    assert any("lr=10.0" in v.detail for v in hard), \
+        f"didn't catch lr=10.0: {[v.detail[:80] for v in hard]}"
+
+
+def test_lr_assignment_above_one_is_hard_blocked(tmp_path: Path) -> None:
+    body = """\
+learning_rate = 5.0
+lr = 10
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    # Both must be flagged.
+    assert any("learning_rate=5.0" in v.detail for v in hard)
+    assert any("lr=10" in v.detail for v in hard)
+
+
+def test_lr_dict_literal_above_one_is_hard_blocked(tmp_path: Path) -> None:
+    """The Dropout pattern — lr inside a config dict in a list of configs."""
+    body = """\
+MLP_OPT_CONFIGS_STOCH = [
+    {"lr": 10.0, "momentum": 0.9},
+    {"lr": 0.01, "momentum": 0.5},
+]
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    assert any("lr=10.0" in v.detail for v in hard)
+    # The sane lr=0.01 must NOT be flagged.
+    assert not any("lr=0.01" in v.detail for v in hard)
+
+
+def test_lr_within_sane_range_not_flagged(tmp_path: Path) -> None:
+    body = """\
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+sgd = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    lr_v = [v for v in _hard(out) if "lr=" in v.detail]
+    assert lr_v == []
+
+
+def test_lr_one_is_borderline_accepted(tmp_path: Path) -> None:
+    """lr=1.0 is the upper bound — accepted (some scheduled-LR codes hit it)."""
+    body = "opt = SGD(model.parameters(), lr=1.0)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert not any("lr=1.0" in v.detail for v in _hard(out))
+
+
+def test_lr_too_small_is_blocked(tmp_path: Path) -> None:
+    """lr=1e-9 effectively disables learning — block."""
+    body = "opt = Adam(model.parameters(), lr=1e-9)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("lr=" in v.detail for v in _hard(out))
+
+
+def test_lr_aliases_caught(tmp_path: Path) -> None:
+    """The check covers common LR aliases (alpha, base_lr, max_lr, etc.)."""
+    body = """\
+alpha = 2.5
+base_lr = 5.0
+max_lr = 3.0
+init_lr = 8.0
+initial_lr = 6.0
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    aliases = ("alpha", "base_lr", "max_lr", "init_lr", "initial_lr")
+    for a in aliases:
+        assert any(f"{a}=" in v.detail for v in hard), f"missed alias: {a}"
+
+
+def test_lr_negative_literal_caught(tmp_path: Path) -> None:
+    """``-1e-3`` via UnaryOp(USub, Constant) — must be parsed correctly."""
+    body = "opt = Adam(model.parameters(), lr=-1e-3)\n"
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    # -1e-3 is technically below the lower bound (negative); block it.
+    assert any("lr=-0.001" in v.detail for v in _hard(out))
+
+
+def test_lr_non_literal_value_skipped(tmp_path: Path) -> None:
+    """When lr is a Name/Expr (not a literal), we can't statically tell — skip."""
+    body = """\
+lr = some_function()
+opt = Adam(model.parameters(), lr=cfg.learning_rate)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert not any("lr=" in v.detail for v in _hard(out))
+
+
 def test_violation_to_dict_carries_all_fields() -> None:
     v = PreFlightViolation(
         severity="hard",

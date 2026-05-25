@@ -627,6 +627,107 @@ def _check_tensor_device_mismatch(
                 ))
 
 
+def _check_absurd_learning_rate(
+    trees: dict[Path, ast.AST],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch when an LR literal is outside the sane training range.
+
+    The 2026-05-25 Dropout regression: the agent extracted MNIST hyperparameters
+    and picked ``lr=10.0`` (the paper's Section 2 mentioned a scaling factor of
+    10 that the agent confused for the base learning rate). Result: train_loss
+    immediately became NaN, training churned for 30+ minutes with zero useful
+    output, watchdog killed.
+
+    Sane training-LR range for SGD/Adam-class optimizers in practice:
+      * lower: 1e-7 (below this is effectively no learning)
+      * upper: 1.0  (above this is divergent for all standard architectures)
+
+    This check looks for assignments like ``lr=10.0``, ``learning_rate = 5``,
+    ``Optimizer(lr=20)``, and any obvious-literal pattern. AST visitor walks
+    keyword args + simple assignments. False positives on non-LR variables
+    named ``lr_something`` are avoided by checking the exact key.
+    """
+    LR_NAMES = {
+        "lr", "learning_rate", "alpha", "base_lr", "max_lr",
+        "init_lr", "initial_lr",
+    }
+    LOWER_BOUND = 1e-7
+    UPPER_BOUND = 1.0
+
+    def _flag(path: Path, lineno: int, key: str, value: float) -> None:
+        out.append(PreFlightViolation(
+            severity="hard",
+            area="Experiment execution and reproducibility",
+            detail=(
+                f"{path.name}:{lineno}: `{key}={value}` is outside the sane "
+                f"training range [{LOWER_BOUND}, {UPPER_BOUND}]. Standard "
+                f"optimizers (SGD/Momentum/Adam) diverge with lr > 1.0 — "
+                f"the 2026-05-25 Dropout run hit lr=10.0 and produced "
+                f"train_loss=NaN from epoch 1, churning for 30 min before "
+                f"watchdog kill."
+            ),
+            hint=(
+                f"Set {key} to a value in {{1e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1}} "
+                f"depending on optimizer/architecture (Adam: ~1e-3 typical, "
+                f"SGD+momentum: ~1e-2 typical). If the paper genuinely uses "
+                f"the requested literal as a *scale factor* applied to a base, "
+                f"reify that in code (`base_lr * scale`) rather than as the lr."
+            ),
+        ))
+
+    def _maybe_float(node: ast.AST) -> float | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        # Handle unary-minus literals like ``-1e-3``
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+                and isinstance(node.operand, ast.Constant)
+                and isinstance(node.operand.value, (int, float))):
+            return float(-node.operand.value)
+        return None
+
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            # Pattern A: assignments — ``lr = 10`` / ``learning_rate = 5.0``
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if target.id not in LR_NAMES:
+                        continue
+                    val = _maybe_float(node.value)
+                    if val is None:
+                        continue
+                    if val < LOWER_BOUND or val > UPPER_BOUND:
+                        _flag(path, node.lineno, target.id, val)
+            # Pattern B: keyword args — ``Optimizer(lr=10)`` / ``Adam(lr=5)``
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg not in LR_NAMES:
+                        continue
+                    val = _maybe_float(kw.value)
+                    if val is None:
+                        continue
+                    if val < LOWER_BOUND or val > UPPER_BOUND:
+                        _flag(path, node.lineno, kw.arg, val)
+            # Pattern C: dict literals — ``CONFIG = {"lr": 10.0}`` /
+            # ``MLP_CONFIGS = [{"lr": 10}, ...]`` — covers Dropout's case
+            # where lr lived in a list of config dicts, not a top-level assign.
+            if isinstance(node, ast.Dict):
+                for key_node, val_node in zip(node.keys, node.values):
+                    if not isinstance(key_node, ast.Constant):
+                        continue
+                    if not isinstance(key_node.value, str):
+                        continue
+                    if key_node.value not in LR_NAMES:
+                        continue
+                    val = _maybe_float(val_node)
+                    if val is None:
+                        continue
+                    if val < LOWER_BOUND or val > UPPER_BOUND:
+                        _flag(path, node.lineno, key_node.value, val)
+
+
 def _check_requirements_torch_redundancy(
     code_dir: Path,
     base_image: str | None,
@@ -744,6 +845,13 @@ def validate_code_pre_flight(
     # 2026-05-24 Dropout Exp 1+3 crash); runs regardless of paper_targets.
     try:
         _check_tensor_device_mismatch(trees, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Absurd-LR check — runs regardless of paper_targets (2026-05-25 Dropout
+    # regression: lr=10.0 produced train_loss=NaN for the entire run).
+    try:
+        _check_absurd_learning_rate(trees, violations)
     except Exception:  # noqa: BLE001
         pass
 
