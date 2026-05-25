@@ -71,6 +71,19 @@ class ForcedIterationPolicy:
     # Callable invoked when the policy refuses a FINAL_VAR.  Used to emit the
     # `run_warning` SSE event.  Receives a single `message: str` argument.
     on_refusal: Callable[[str], None]
+    # Lane O — count of "honest" candidate outcomes recorded so far. An
+    # honest outcome is "promoted", "failed", or "marginal" — the agent
+    # actually ran the candidate's experiment. "declined" and "skipped"
+    # are NOT honest. When None, this check is disabled (back-compat with
+    # tests that don't supply it).
+    #
+    # Pinned by the 2026-05-25 Adam regression: agent reached iter 2,
+    # called propose_improvements(), then blanket-declined all 3 in a
+    # for-loop without running any, then FINAL_VAR'd with rubric=0/0.6.
+    # The min_iterations floor alone wasn't enough — the agent satisfied
+    # iteration count by ingesting + planning + a single failed experiment,
+    # never honestly testing an improvement.
+    honest_candidate_outcomes: Callable[[], int] | None = None
     # Counter — how many FINAL_VAR refusals have been issued for this run.
     # The runtime stops refusing past `_MAX_REFUSALS_PER_RUN` so a stubborn
     # root model can still terminate the run.  A defensive bound, not a
@@ -87,6 +100,8 @@ class ForcedIterationPolicy:
           2. No rubric data yet — accept (the run is rubric-less).
           3. Score >= target — accept (the rubric is satisfied).
           4. current_iteration < min_iterations — refuse.
+          4.5. Lane O — iteration floor reached BUT no candidate was
+               honestly tested (everything was declined/skipped) — refuse.
           5. Otherwise — accept (best-effort exit; ran the floor of attempts).
 
         The message returned on refuse=True is a single-line, plain-English
@@ -128,6 +143,28 @@ class ForcedIterationPolicy:
                 "iteration floor is reached."
             )
             return (True, msg)
+
+        # 4.5. Lane O — iteration floor reached AND rubric below target AND
+        # no candidate has been honestly tested. Blanket-declining everything
+        # is observer bias, not triage.
+        if self.honest_candidate_outcomes is not None:
+            try:
+                tested = self.honest_candidate_outcomes()
+            except Exception:  # noqa: BLE001 — never crash the policy
+                tested = 0
+            if tested == 0:
+                msg = (
+                    f"rubric overall_score={score:.3f} is below target_score={target:.3f} "
+                    f"and no improvement candidate has been honestly tested yet "
+                    f"(zero outcomes with 'promoted'/'failed'/'marginal'). "
+                    "Pick ONE candidate from your latest propose_improvements result, "
+                    "implement_baseline with that candidate's hypothesis in repair_context, "
+                    "run_experiment, verify_against_rubric, then record_candidate_outcome "
+                    "with the truthful outcome ('promoted' if rubric improved, 'failed' if "
+                    "it didn't). Blanket-declining all candidates without running any is "
+                    "observer bias and FINAL_VAR remains refused."
+                )
+                return (True, msg)
 
         # 5. Iteration floor reached — accept the partial result.
         return (False, None)

@@ -212,6 +212,18 @@ FORCED-ITERATION POLICY:
     4. Re-score with `verify_against_rubric` — only THEN try `FINAL_VAR` again.
   The policy bypasses when wall-clock <= 60s remain (better to ship partial
   than time out), so a near-timeout `FINAL_VAR` always works.
+
+  Lane O — blanket-decline check: `FINAL_VAR` is ALSO refused if the
+  iteration floor has been reached BUT zero candidates have an "honest"
+  outcome (`promoted`, `failed`, or `marginal`). The 2026-05-25 Adam
+  regression was a `for imp in improvements: record_candidate_outcome(pid,
+  "declined")` loop that closed out the run with rubric=0 without testing
+  any candidate. That shape is now refused. To pass: pick ONE candidate
+  from `propose_improvements`, implement_baseline with its hypothesis in
+  repair_context, run_experiment, verify_against_rubric, then
+  record_candidate_outcome with the truthful outcome — "promoted" if the
+  rubric improved, "failed" if it didn't. Declining without running is
+  observer bias and not accepted as terminal.
 """
 
 _DECOMPOSITION_EXAMPLE = """\

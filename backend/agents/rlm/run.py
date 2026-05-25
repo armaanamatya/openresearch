@@ -916,6 +916,38 @@ async def run_pipeline_rlm(
         except Exception:  # noqa: BLE001 — emit must never block the policy
             logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
 
+    def _count_honest_candidate_outcomes() -> int:
+        """Count candidate_outcome events with truthful outcomes.
+
+        Lane O — "honest" means the agent actually ran the candidate's
+        experiment and reported the result. Declined / skipped don't count.
+        Reads dashboard_events.jsonl since the events flow through that
+        single egress chokepoint regardless of which primitive recorded them.
+        """
+        ev_path = ctx.project_dir / "dashboard_events.jsonl"
+        if not ev_path.exists():
+            return 0
+        honest = {"promoted", "failed", "marginal"}
+        count = 0
+        try:
+            with ev_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or '"candidate_outcome"' not in line:
+                        continue
+                    try:
+                        import json as _json
+                        e = _json.loads(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if e.get("event") != "candidate_outcome":
+                        continue
+                    if str(e.get("outcome") or "").lower() in honest:
+                        count += 1
+        except OSError:
+            return 0
+        return count
+
     iteration_policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (
@@ -926,6 +958,7 @@ async def run_pipeline_rlm(
         current_iteration=lambda: rlm_logger.iteration_count,
         remaining_s=lambda: ctx.remaining_s(),
         on_refusal=_emit_forced_iteration_warning,
+        honest_candidate_outcomes=_count_honest_candidate_outcomes,
     )
 
     result_obj: Any = None

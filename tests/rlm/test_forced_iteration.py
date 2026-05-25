@@ -303,3 +303,129 @@ def test_on_refusal_exception_does_not_break_interceptor() -> None:
 
     assert "Variable '" in out
     assert "FINAL_VAR" in out
+
+
+# ---------------------------------------------------------------------------
+# Lane O — refuse FINAL_VAR when iteration floor is met but no candidate was
+# honestly tested (the 2026-05-25 Adam blanket-decline regression)
+# ---------------------------------------------------------------------------
+
+
+def test_lane_o_blanket_decline_refuses_final_var() -> None:
+    """Iteration floor reached + score < target + no honest outcomes → refuse.
+
+    The 2026-05-25 Adam regression: agent reached iter 2 (= min_iterations),
+    called propose_improvements, then blanket-declined all 3 candidates in
+    a for-loop without running any, then FINAL_VAR'd with overall=0/0.6.
+    The new check must refuse this exact shape.
+    """
+    refusals: list[str] = []
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.0, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: refusals.append(m),
+        honest_candidate_outcomes=lambda: 0,  # ← all 3 declined, zero honest
+    )
+    refuse, msg = policy.should_refuse()
+    assert refuse is True
+    assert msg is not None
+    assert "honestly tested" in msg
+    assert "blanket-decl" in msg.lower() or "observer bias" in msg.lower()
+    # Pick one + run it guidance
+    assert "implement_baseline" in msg
+    assert "record_candidate_outcome" in msg
+
+
+def test_lane_o_at_least_one_tested_allows_final_var() -> None:
+    """Iteration floor met + at least one honest outcome → accept.
+    Even if rubric is below target — the agent honestly tried."""
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.3, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=lambda: 1,  # one candidate honestly tested
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
+
+
+def test_lane_o_marginal_counts_as_honest() -> None:
+    """'marginal' is a truthful outcome — counts toward honest tested."""
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.3, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=lambda: 1,
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
+
+
+def test_lane_o_below_floor_uses_floor_message_not_blanket_decline() -> None:
+    """Below iteration floor — older check (#4) wins; lane O check doesn't fire."""
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.3, 0.6, 1),
+        current_iteration=lambda: 1,  # below floor
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=lambda: 0,
+    )
+    refuse, msg = policy.should_refuse()
+    assert refuse is True
+    assert msg is not None
+    # Should be the OLDER message, not the Lane O one.
+    assert "min_rubric_iterations" in msg
+
+
+def test_lane_o_callable_unset_means_disabled() -> None:
+    """When honest_candidate_outcomes=None, the lane O check doesn't fire —
+    back-compat with v1 callers that didn't supply this field."""
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.0, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=None,  # disabled
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
+
+
+def test_lane_o_callable_raising_is_failsoft() -> None:
+    """If the honest_candidate_outcomes callable raises, treat as 0
+    (refuse for safety — the agent shouldn't shortcut on a buggy callable)."""
+    def _bad_counter() -> int:
+        raise RuntimeError("dashboard_events.jsonl read failed")
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.0, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=_bad_counter,
+    )
+    refuse, _msg = policy.should_refuse()
+    # 0 from fail-soft → refuse, same as if no candidates tested.
+    assert refuse is True
+
+
+def test_lane_o_score_above_target_skips_check() -> None:
+    """When rubric is satisfied, Lane O doesn't fire even if 0 honest outcomes."""
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.85, 0.6, 2),  # SATISFIED
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        honest_candidate_outcomes=lambda: 0,
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
