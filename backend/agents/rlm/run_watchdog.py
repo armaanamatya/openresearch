@@ -236,6 +236,16 @@ def _latest_meaningful_sse_event_age(
             continue
         if ev_type == "primitive_call" and primitive == "heartbeat":
             continue
+        # 2026-05-25 circular-freshness fix (Lane S): the watchdog itself
+        # writes `run_warning` events to this same JSONL on every stale
+        # detection. Counting those as fresh signals creates a feedback
+        # loop where the watchdog can never escalate to kill verdict —
+        # Adam sat wedged for 100+ min with 9 stale_run warnings and 0
+        # kills because every warning emission reset sse_event_age below
+        # the kill threshold. Filter run_warning + worker_report_* so the
+        # only signals that count are real forward progress.
+        if ev_type in {"run_warning", "worker_report_started", "worker_report_failed"}:
+            continue
         # Found a real event.  Parse its timestamp.
         ts_str = d.get("ts") or d.get("timestamp") or ""
         if not ts_str:

@@ -420,3 +420,137 @@ def test_heartbeat_daemon_command_full_fd_detachment() -> None:
 def test_heartbeat_daemon_command_alt_path() -> None:
     cmd = rw.heartbeat_daemon_command("/workspace/cache")
     assert "/workspace/cache/.heartbeat" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Lane S — circular-freshness fix: run_warning events don't mask staleness
+# ---------------------------------------------------------------------------
+
+
+def test_run_warning_events_are_not_counted_as_fresh_signal(tmp_path: Path) -> None:
+    """The 2026-05-25 Adam wedge: the watchdog emits ``run_warning`` events
+    every 10 min on stale detection. Those writes update dashboard_events.jsonl
+    mtime AND show up as recent events when ``_latest_meaningful_sse_event_age``
+    walks backwards. If we count them as "fresh" signals, the watchdog can
+    never escalate to kill verdict — it sits in `warn` forever, masking the
+    underlying wedge.
+
+    Set up: exec.log + heartbeat genuinely stale (90 min), but the most recent
+    event in dashboard_events.jsonl is a run_warning (just written 5 s ago).
+    Filter must skip it and find no other recent events, so sse_age comes back
+    None — leaving exec_log + heartbeat as the freshest signals (both stale).
+    """
+    import json
+    from datetime import datetime, timezone
+
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+
+    # Both pod-side signals 90 min stale.
+    for fname in ("exec.log", ".heartbeat"):
+        p = artifact_root / fname
+        p.write_text("x")
+        os.utime(p, (now, now - 5400))
+
+    # SSE log has ONLY a recent run_warning (5 s ago) — exactly what the
+    # watchdog itself emitted on the last stale detection. Plus a much older
+    # meaningful event (90 min ago, matching the pod-side staleness).
+    sse = project_dir / "dashboard_events.jsonl"
+    older_meaningful = json.dumps({
+        "event": "primitive_call",
+        "primitive": "run_experiment",
+        "status": "start",
+        "ts": datetime.fromtimestamp(now - 5400, tz=timezone.utc).isoformat(),
+    })
+    recent_run_warning = json.dumps({
+        "event": "run_warning",
+        "data": {"reason": "stale_run"},
+        "ts": datetime.fromtimestamp(now - 5, tz=timezone.utc).isoformat(),
+    })
+    sse.write_text(older_meaningful + "\n" + recent_run_warning + "\n")
+    os.utime(sse, (now, now - 5))
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(warn_after_seconds=600, kill_after_seconds=1500),
+        now=now,
+    )
+    # The run_warning was filtered, so the freshest sse event is the OLD one.
+    # Combined with stale exec.log + heartbeat, verdict must be kill.
+    assert report.verdict == "kill"
+    # freshest_signal can be any of the three (all stale at ~5400 s); the
+    # invariant is just that it's NOT below the kill threshold.
+    assert report.freshest_signal_age_seconds >= 1500
+
+
+def test_worker_report_started_does_not_mask_staleness(tmp_path: Path) -> None:
+    """worker_report_started is emitted alongside every run_warning — same
+    circular-freshness risk."""
+    import json
+    from datetime import datetime, timezone
+
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+
+    for fname in ("exec.log", ".heartbeat"):
+        p = artifact_root / fname
+        p.write_text("x")
+        os.utime(p, (now, now - 5400))
+
+    sse = project_dir / "dashboard_events.jsonl"
+    sse.write_text(json.dumps({
+        "event": "worker_report_started",
+        "ts": datetime.fromtimestamp(now - 5, tz=timezone.utc).isoformat(),
+    }) + "\n")
+    os.utime(sse, (now, now - 5))
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(warn_after_seconds=600, kill_after_seconds=1500),
+        now=now,
+    )
+    assert report.verdict == "kill"
+
+
+def test_meaningful_event_alongside_run_warning_is_still_fresh(tmp_path: Path) -> None:
+    """If a REAL primitive_call lands AFTER the watchdog's run_warning, the
+    filter must still find it — we're not blindly skipping everything."""
+    import json
+    from datetime import datetime, timezone
+
+    artifact_root = tmp_path / "outputs" / "r1"
+    artifact_root.mkdir(parents=True)
+    project_dir = tmp_path
+    now = time.time()
+
+    # Pod-side signals stale.
+    for fname in ("exec.log", ".heartbeat"):
+        p = artifact_root / fname
+        p.write_text("x")
+        os.utime(p, (now, now - 5400))
+
+    sse = project_dir / "dashboard_events.jsonl"
+    # An older run_warning (filtered), THEN a recent primitive_call (counts).
+    sse.write_text(
+        json.dumps({"event": "run_warning",
+                    "ts": datetime.fromtimestamp(now - 60, tz=timezone.utc).isoformat()}) + "\n" +
+        json.dumps({"event": "primitive_call", "primitive": "verify_against_rubric",
+                    "ts": datetime.fromtimestamp(now - 10, tz=timezone.utc).isoformat()}) + "\n"
+    )
+    os.utime(sse, (now, now - 10))
+
+    report = rw.collect_staleness(
+        artifact_root=artifact_root,
+        project_dir=project_dir,
+        config=rw.WatchdogConfig(warn_after_seconds=600, kill_after_seconds=1500),
+        now=now,
+    )
+    # SSE has a recent real event → fresh signal → verdict ok.
+    assert report.verdict == "ok"
+    assert report.freshest_signal == "sse_event"

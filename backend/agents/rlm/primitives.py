@@ -1527,6 +1527,34 @@ def run_experiment(
     import uuid
     from pathlib import Path
 
+    # Lane T — guard against `code_path` being the error dict that
+    # ``implement_baseline`` returns on failure. The 2026-05-25 Dropout
+    # regression: agent did `code_path2 = implement_baseline(plan); run_experiment(code_path2, env)`
+    # without checking whether implement_baseline succeeded; the error dict
+    # got passed to Path(...) which raised TypeError, killing the iteration
+    # mid-stream. Emit a clean fail-soft error instead.
+    if not isinstance(code_path, str) or not code_path.strip():
+        return _persist_experiment_result(ctx, {
+            "success": False, "metrics": {},
+            "error": (
+                f"run_experiment: code_path must be a non-empty string path, "
+                f"got {type(code_path).__name__} ({str(code_path)[:200]}). "
+                f"This usually means implement_baseline returned its error "
+                f"dict instead of a directory — check the previous primitive's "
+                f"result before passing it to run_experiment."
+            ),
+            "contract_violations": [{
+                "area": "Experiment execution and reproducibility",
+                "detail": f"code_path was {type(code_path).__name__!r}, not a str path",
+                "hint": (
+                    "After implement_baseline, check `isinstance(code_path, str)` "
+                    "(or `if not code_path: ...`) before calling run_experiment. "
+                    "When implement_baseline errors, propose_improvements + retry "
+                    "instead of forwarding the error dict downstream."
+                ),
+            }],
+        }, model_id=model_id, eval_env=eval_env)
+
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
     if not commands:
