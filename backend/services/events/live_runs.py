@@ -843,7 +843,7 @@ class FileLiveRunService:
         return source_pdf, benchmark
 
     def _fixture_pdf_path(self) -> Path | None:
-        for name in ("demo_paper.pdf", "paperbench1.pdf"):
+        for name in ("paperbench1.pdf",):
             candidate = self.repo_root / name
             if candidate.exists() and candidate.is_file():
                 return candidate

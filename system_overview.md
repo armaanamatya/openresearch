@@ -185,11 +185,8 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 - `docs/runbooks/e2e-testing.md` — canonical end-to-end testing and debug reference.
 - `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
   locked launch decisions, including the hybrid default and leaderboard surface.
-- `learn.md` — post-mortems: bugs shipped + the guardrail for each.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
-  and deployment. README.md also documents the two-surfaces LLM auth model
-  and the empty-`ANTHROPIC_API_KEY` + Claude Code OAuth pattern preferred for
-  local dev.
+  and deployment.
 
 ## Maintaining this doc
 

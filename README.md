@@ -1,18 +1,261 @@
 # ReproLab
 
-ReproLab reproduces research papers end-to-end, runs the resulting code, scores it against a PaperBench-style rubric, and serves the run in a live lab UI.
+Automated research paper reproduction. Given a paper (arXiv link or PDF), ReproLab ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-cd frontend && npm ci && cd ..
-export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
-.venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
-cd frontend && npm run dev
-python -m backend.cli reproduce ftrl --mode rlm --max-usd 0.50 --sandbox local
-python -m backend.cli ingest 2512.24601
+Built on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm. The paper is offloaded as a REPL variable; an LLM root model writes Python to orchestrate the reproduction through domain-specific primitives. There is no fixed pipeline -- the model decides what to call and when.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    User([User]) --> UI[Next.js Frontend]
+    User --> CLI[CLI]
+
+    UI -->|server-side proxy| API[FastAPI Backend :8000]
+    CLI --> API
+
+    API -->|spawns subprocess| Run[Run Subprocess]
+
+    Run --> RLM[RLM Root Model]
+
+    RLM -->|writes Python| REPL[Persistent REPL]
+    REPL -->|executes| Primitives
+
+    subgraph Primitives[Domain Primitives]
+        direction LR
+        Understand[understand_section\nextract_hyperparameters]
+        Env[detect_environment\nbuild_environment]
+        Impl[plan_reproduction\nimplement_baseline]
+        Exec[run_experiment]
+        Score[verify_against_rubric]
+        Improve[propose_improvements\nrecord_candidate_outcome]
+    end
+
+    Understand -->|LLM sub-calls| SubLLM[Sub-LLM Queries]
+    Impl -->|Claude Agent SDK| Coder[Coding Agent]
+    Env -->|Docker build| Sandbox
+    Exec --> Sandbox[Sandbox: Docker / RunPod GPU / Local]
+
+    Score --> Rubric[(Rubric JSON)]
+    Sandbox --> Metrics[Experiment Metrics]
+    Metrics --> Score
+
+    Run -->|SSE events| API
+    API -->|event stream| UI
+
+    Run -->|atomic writes| FS[(File System\nruns/project_id/)]
+    FS --> Report[final_report.json + .md]
+
+    style RLM fill:#1a1a2e,color:#e0e0ff
+    style Sandbox fill:#0d1b2a,color:#e0e0ff
+    style Primitives fill:#1b2838,color:#e0e0ff
 ```
 
-- Modes: `--mode rlm` is the default hybrid path, `--mode rdr` is the pure rubric-driven controller, and `--mode rlm-pure` is the pre-hybrid escape hatch.
-- UI: `/` landing, `/lab` live run view, `/leaderboard` persistent ranking, `/library` run browser.
-- Docs: [system_overview.md](system_overview.md), [CLAUDE.md](CLAUDE.md), [setup guide](docs/guides/setup-guide.md), [deployment guide](docs/guides/deployment.md), [e2e testing](docs/runbooks/e2e-testing.md).
+**How the pieces connect:**
+
+- The **frontend** is a pure renderer. It never talks to the backend directly from the browser -- all requests route through Next.js server-side proxy routes (`/api/demo/*`). No CORS layer.
+- Each **run** is a long-lived subprocess. The backend HTTP layer is stateless: it spawns processes and reads their output files.
+- **Run state is file-backed**, not a service. `runs/<project_id>/` holds the status snapshot, checkpoints, event log, cost ledger, reproduced code, and final report.
+- The **SSE event stream** is append-only (`dashboard_events.jsonl`). Clients can reconnect and replay the full history.
+- The **paper corpus never reaches the frontend**. A single egress chokepoint (`sse_bridge.sanitize_iteration`) strips REPL locals and bounds output to metadata-only summaries.
+
+## Reproduction Workflow
+
+1. **Ingest** -- Parse the paper (HTML > PDF > OCR cascade via `ResolvingParser`). The winning parse becomes `parsed_full_text.txt`.
+2. **Understand** -- The RLM root calls `understand_section` and `extract_hyperparameters` to map the paper's claims, methods, and training recipes.
+3. **Environment** -- `detect_environment` reads framework/package clues; `build_environment` creates and repairs a Docker image.
+4. **Plan & Implement** -- `plan_reproduction` defines the reproduction contract; `implement_baseline` dispatches a coding agent (Claude Sonnet via `claude-agent-sdk`) to write the code.
+5. **Execute** -- `run_experiment` runs the code inside a sandboxed environment (Docker, RunPod GPU pod, or local process).
+6. **Score** -- `verify_against_rubric` grades the reproduction against a PaperBench-style rubric.
+7. **Improve** -- `propose_improvements` generates hypotheses; the root evaluates them and iterates. The loop continues until the rubric target is met or budget is exhausted.
+8. **Report** -- `final_report.json` and `final_report.md` with verdict, rubric scores, cost breakdown, and model metadata.
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.14, FastAPI, SQLite (event store) |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
+| RLM Engine | [`rlms`](https://pypi.org/project/rlms/) library (Algorithm 1 reference implementation) |
+| Sub-agents | Claude Agent SDK (Sonnet) |
+| Root models | GPT-5, Claude (API or OAuth), Qwen3-Coder, Azure OpenAI |
+| Sandbox | Docker (CPU), RunPod (GPU), local process |
+| PDF Parsing | PyMuPDF, BeautifulSoup (arXiv HTML), Tesseract OCR |
+| Evaluation | PaperBench rubric framework |
+
+## Quick Start
+
+### Prerequisites
+
+- Python >= 3.11
+- Node.js >= 20.19 (< 21) or >= 22.12
+- At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
+
+### Setup
+
+```bash
+# Backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.txt  # pytest + parallel runners
+
+# Frontend
+cd frontend && npm ci && cd ..
+
+# Environment
+cp .env.example .env
+# Edit .env: set at least one API key
+```
+
+### Run
+
+```bash
+# Terminal 1: backend
+.venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
+
+# Terminal 2: frontend
+cd frontend
+export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+npm run dev
+# Open http://localhost:3000
+```
+
+Or use the launcher with RunPod preflight checks:
+
+```bash
+./start.sh  # defaults sandbox to runpod; runs preflight checks
+```
+
+### CLI
+
+```bash
+python -m backend.cli reproduce paper.pdf --sandbox docker
+python -m backend.cli reproduce 2605.15155 --sandbox runpod
+python -m backend.cli ingest 2512.24601  # ingest only
+```
+
+**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,runpod}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
+
+### Docker
+
+```bash
+cp .env.example .env  # set API keys
+docker compose up --build
+```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | One of these | Root model (GPT-5) |
+| `ANTHROPIC_API_KEY` | required | Sub-agents (Sonnet). Leave empty to use Claude OAuth. |
+| `REPROLAB_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` |
+| `REPROLAB_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
+| `REPROLAB_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
+| `REPROLAB_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
+| `REPROLAB_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
+| `REPROLAB_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
+
+See `.env.example` for the full list.
+
+## UI Pages
+
+| Route | Description |
+|---|---|
+| `/` | Landing page |
+| `/lab` | Live run viewer -- exploration tree, rubric climb, primitive history, steering chat |
+| `/lab?projectId=<id>` | View a specific run |
+| `/leaderboard` | Ranked completed runs across models and papers |
+| `/library` | Browse all runs |
+
+## Testing
+
+```bash
+# Backend tests
+.venv/bin/python -m pytest tests/               # all (~220 tests)
+.venv/bin/python -m pytest tests/ -n auto        # parallel
+.venv/bin/python -m pytest tests/rlm/            # RLM tests only
+
+# Frontend
+cd frontend
+npx tsc --noEmit      # type check
+npm test              # vitest (requires Node >= 22.12)
+npm run lint          # eslint
+
+# E2E
+cd frontend && npx playwright test
+```
+
+## Project Structure
+
+```
+backend/
+  agents/
+    rlm/              # RLM orchestrator: primitives, binding, system prompt, SSE bridge
+    rdr/              # Rubric-driven harness (--mode rdr)
+    runtime/          # LLM runtime resolution (Claude, OpenAI, Azure)
+    resilience/       # Budget, cost tracking, failure classification
+  services/
+    ingestion/        # Paper parsing: PDF, HTML, OCR, arXiv fetcher
+    runtime/          # Sandbox backends: Docker, RunPod, local, GPU catalog
+    events/           # SSE event stream, run lifecycle
+  evals/              # PaperBench scoring, leaf scorer, A/B testing
+  routes/             # HTTP routes: leaderboard, messages, reports
+  app.py              # FastAPI application factory
+  cli.py              # CLI entry point
+  config.py           # Settings (pydantic-settings)
+
+frontend/
+  src/
+    app/              # Next.js pages: lab, leaderboard, library, landing
+    components/
+      lab/rlm/        # Lab UI: exploration canvas, rubric strip, steering chat, sidebar
+      landing/        # Landing page
+      library/        # Run browser
+    hooks/            # React hooks: useRlmRun, useSteeringChat, useRdrArtifacts
+    lib/              # Shared utilities, event types, auth
+
+tests/                # ~220 backend tests (pytest)
+scripts/              # Dev tools: RunPod preflight, PaperBench runners, monitoring
+third_party/          # Vendored PaperBench bundles (rubrics + paper markdown)
+docs/                 # Design docs, runbooks, setup guides
+```
+
+## Execution Modes
+
+| Mode | Flag | Description |
+|---|---|---|
+| **RLM (hybrid)** | `--mode rlm` (default) | RDR Phase 1 (rubric decomposition without repair) + RLM adaptive repair on weak clusters |
+| **RDR** | `--mode rdr` | Pure rubric-driven controller. Decomposes rubric into work-clusters, dispatches one coding agent per cluster, repairs weak clusters in a capped loop. No LLM in the control flow. |
+| **RLM-pure** | `--mode rlm-pure` | Direct RLM root loop without the hybrid RDR phase. The pre-hybrid path. |
+
+## Dynamic GPU Selection
+
+When `REPROLAB_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
+
+## LLM Auth Model
+
+Two independent auth surfaces:
+
+1. **Root model** (RLM library) -- raw HTTP. Pick one: `--model gpt-5` (OpenAI), `--model claude` (Anthropic API key), `--model claude-oauth` (Claude CLI subscription), `--model azure` (Azure OpenAI).
+2. **Sub-agents** (Claude Sonnet via `claude-agent-sdk`) -- uses `ANTHROPIC_API_KEY` if set and funded, otherwise falls back to Claude CLI OAuth (free on subscription).
+
+For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents ($0).
+
+## Current Limitations
+
+- Single-user local deployment. No multi-tenant auth or distributed state.
+- Cost ledger reports $0 for OAuth runs (SDK doesn't surface token counts).
+- No GPU sandbox without RunPod account and API key.
+- Frontend vitest requires Node >= 22.12.
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [system_overview.md](system_overview.md) | Architecture rationale and how the pieces fit together |
+| [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas |
+| [rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM architecture reference |
+| [setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions |
+| [deployment.md](docs/guides/deployment.md) | Deployment guide |
+| [e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook |
