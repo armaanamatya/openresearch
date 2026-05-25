@@ -25,12 +25,15 @@ ANY fresh signal means the run is alive):
 
 Two thresholds with tiered actions:
 
-  * ``warn_after_seconds`` (default 300 = 5 min): emit a ``run_warning``
+  * ``warn_after_seconds`` (default 600 = 10 min): emit a ``run_warning``
     SSE event with the diagnostic payload.  Run continues.
-  * ``kill_after_seconds`` (default 1200 = 20 min): emit a final
-    ``run_warning`` AND invoke the operator-supplied ``on_kill`` callback.
-    Watchdog exits.  Callback is responsible for tearing down the pod
-    and unblocking the in-flight ``service.execute``.
+  * ``kill_after_seconds`` (default 1500 = 25 min): invoke ``on_kill``.
+    With Lane N probe-recover the callback may return ``RECOVERED`` to
+    keep the pod warm; only after the recovery budget is exhausted (or
+    a probe fails) does the pod actually get destroyed. The kill bound
+    is generous because a train.py that prints every N epochs at slow
+    epoch speed legitimately produces silent stretches of 10-15 min;
+    killing a working pod is much worse than a few extra min of wait.
 
 Design contract:
 
@@ -120,7 +123,7 @@ class WatchdogConfig:
     # the policy to "stale -> kill" (no warn-then-kill courtesy window) per
     # operator direction 2026-05-24.
     warn_after_seconds: float = 600.0
-    kill_after_seconds: float = 600.0
+    kill_after_seconds: float = 1500.0
     poll_interval_seconds: float = 30.0
     heartbeat_filename: str = ".heartbeat"
     exec_log_filename: str = "exec.log"
@@ -140,7 +143,7 @@ class WatchdogConfig:
 
         return cls(
             warn_after_seconds=_f(_WARN_ENV_VAR, 600.0),
-            kill_after_seconds=_f(_KILL_ENV_VAR, 600.0),
+            kill_after_seconds=_f(_KILL_ENV_VAR, 1500.0),
             poll_interval_seconds=_f(_POLL_ENV_VAR, 30.0),
         )
 
