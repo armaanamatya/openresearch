@@ -407,6 +407,193 @@ def test_validator_completes_under_500ms_on_realistic_input(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Tensor device-mismatch — pins the Dropout 2026-05-24 Exp 1+3 crash class
+# ---------------------------------------------------------------------------
+
+
+_DROPOUT_BAD = """\
+import torch
+
+class AdamOptimizer:
+    def __init__(self, params):
+        self.params = list(params)
+        self.m = [torch.zeros_like(p) for p in self.params]
+
+    def step(self):
+        for i, p in enumerate(self.params):
+            g = p.grad.data
+            self.m[i] = 0.9 * self.m[i] + 0.1 * g  # crashes if mixed device
+
+
+def main():
+    model = MyModel()
+    opt = AdamOptimizer(model.parameters())  # built BEFORE .to() → bug
+    run_epochs(model, loader, opt, torch.device("cuda"), 10)
+
+
+def run_epochs(model, loader, optimizer, device, epochs):
+    model.to(device)  # ← THE BUG: optimizer was built before this
+    for _ in range(epochs):
+        for xb, yb in loader:
+            xb.to(device)  # this is OK (batch tensor) — should NOT fire
+            optimizer.step()
+"""
+
+_FIXED_PATTERN = """\
+import torch
+
+
+def main():
+    model = MyModel()
+    device = torch.device("cuda")
+    model.to(device)
+    optimizer = AdamOptimizer(model.parameters())
+    train(model, optimizer, device)
+
+
+def train(model, optimizer, device):
+    # No .to() here — model was moved BEFORE optimizer construction.
+    for _ in range(10):
+        optimizer.step()
+"""
+
+
+def test_tensor_device_mismatch_catches_dropout_bug(tmp_path: Path) -> None:
+    """The exact 2026-05-24 Dropout Exp 1+3 pattern must be hard-blocked."""
+    _write(tmp_path / "train.py", _DROPOUT_BAD)
+    out = validate_code_pre_flight(tmp_path, {})  # NO paper_targets — invariant check
+    hard = _hard(out)
+    assert len(hard) >= 1
+    bug = next((v for v in hard if "to(...)" in v.detail and "run_epochs" in v.detail), None)
+    assert bug is not None, f"didn't catch the run_epochs(...) bug, got: {[v.detail[:60] for v in hard]}"
+    assert "cuda:0 and cpu" in bug.detail
+    assert "BEFORE" in bug.hint  # standard PyTorch idiom hint
+
+
+def test_tensor_device_mismatch_no_false_positive_on_correct_idiom(tmp_path: Path) -> None:
+    """The standard PyTorch idiom (model.to() at outer scope, optimizer
+    constructed after) must NOT trigger the violation."""
+    _write(tmp_path / "train.py", _FIXED_PATTERN)
+    out = validate_code_pre_flight(tmp_path, {})
+    tensor_v = [v for v in out if "cuda:0 and cpu" in v.detail]
+    assert tensor_v == []
+
+
+def test_tensor_device_mismatch_no_violation_when_no_optimizer_param(tmp_path: Path) -> None:
+    """A function with .to(device) but no `optimizer` parameter is innocent."""
+    body = """\
+def setup(model, device):
+    model.to(device)
+    return model
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    tensor_v = [v for v in out if "cuda:0 and cpu" in v.detail]
+    assert tensor_v == []
+
+
+def test_tensor_device_mismatch_detects_opt_arg_alias(tmp_path: Path) -> None:
+    """The shorthand `opt` is also a smoking-gun parameter name."""
+    body = """\
+def setup():
+    model.parameters()  # marks model as the model
+def train_loop(model, loader, opt, device):
+    model.to(device)
+    opt.step()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    assert any("train_loop" in v.detail for v in hard)
+
+
+def test_tensor_device_mismatch_handles_string_cuda_arg(tmp_path: Path) -> None:
+    """`.to(\"cuda\")` (string literal) is also caught."""
+    body = """\
+def setup():
+    _ = model.parameters()
+def go(model, optimizer):
+    model.to("cuda")
+    optimizer.step()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("to(...)" in v.detail and "go" in v.detail for v in _hard(out))
+
+
+def test_tensor_device_mismatch_handles_torch_device_call(tmp_path: Path) -> None:
+    """`.to(torch.device(\"cuda\"))` is caught via the call-attr-call form."""
+    body = """\
+import torch
+def setup():
+    _ = model.parameters()
+def go(model, optimizer):
+    model.to(torch.device("cuda"))
+    optimizer.step()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert any("to(...)" in v.detail and "go" in v.detail for v in _hard(out))
+
+
+def test_tensor_device_mismatch_catches_dot_cuda_form(tmp_path: Path) -> None:
+    """`model.cuda()` is the same bug as `model.to('cuda')` — must be caught."""
+    body = """\
+def main():
+    model = MyModel()
+    opt = AdamOptimizer(model.parameters())  # built BEFORE .cuda()
+    go(model, opt)
+
+def go(model, optimizer):
+    model.cuda()  # ← same bug, different syntax
+    optimizer.step()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    hard = _hard(out)
+    assert any("model.cuda(...)" in v.detail for v in hard), \
+        f"didn't catch .cuda() form: {[v.detail[:80] for v in hard]}"
+
+
+def test_tensor_device_mismatch_skips_batch_tensors(tmp_path: Path) -> None:
+    """xb.to(device) and yb.to(device) inside a train loop are FINE —
+    they're batch tensors, not the model. Must not flag them as bugs."""
+    body = """\
+def main():
+    model = MyModel().to(device)
+    opt = AdamOptimizer(model.parameters())
+
+def run_epochs(model, loader, optimizer, device):
+    for xb, yb in loader:
+        xb = xb.to(device)
+        yb = yb.to(device)
+        optimizer.step()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    tensor_v = [v for v in _hard(out) if "cuda:0 and cpu" in v.detail]
+    assert tensor_v == [], f"false positive on batch tensor: {[v.detail[:80] for v in tensor_v]}"
+
+
+def test_tensor_device_mismatch_fail_soft_on_syntax_error(tmp_path: Path) -> None:
+    """A file with a SyntaxError emits the syntax violation, but the
+    tensor-device check shouldn't crash the whole pre-flight."""
+    _write(tmp_path / "train.py", "def f(:\n")  # broken
+    out = validate_code_pre_flight(tmp_path, {})
+    # No tensor-device violation (can't parse), and pre-flight still returned
+    # something (the syntax violation, or empty in fail-soft case).
+    tensor_v = [v for v in out if "cuda:0 and cpu" in v.detail]
+    assert tensor_v == []  # check didn't crash, just had nothing to walk
+
+
+def test_tensor_device_mismatch_works_without_paper_targets(tmp_path: Path) -> None:
+    """Invariant check fires even when paper_targets is None."""
+    _write(tmp_path / "train.py", _DROPOUT_BAD)
+    out = validate_code_pre_flight(tmp_path, None)
+    assert any("cuda:0 and cpu" in v.detail for v in _hard(out))
+
+
 def test_violation_to_dict_carries_all_fields() -> None:
     v = PreFlightViolation(
         severity="hard",

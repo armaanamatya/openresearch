@@ -515,6 +515,118 @@ def _check_required_artifacts(
 # ---------------------------------------------------------------------------
 
 
+def _check_tensor_device_mismatch(
+    trees: dict[Path, ast.AST],
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch if model.to(device) appears inside a function that
+    takes ``optimizer`` as a parameter.
+
+    Symptom this catches: the 2026-05-24 Dropout Exp 1 + Exp 3 crash —
+
+        ``RuntimeError: Expected all tensors to be on the same device,
+        but found at least two devices, cuda:0 and cpu``
+
+    Root cause: the agent constructed ``AdamOptimizer(model.parameters(),
+    ...)`` BEFORE moving the model to the GPU. The optimizer's stored
+    state tensors (``self.m``, ``self.v`` allocated via ``zeros_like(p)``)
+    are on CPU; the gradient ``g = p.grad.data`` comes from the model's
+    GPU params after a later ``model.to(device)`` (often inside
+    ``run_epochs(model, loader, optimizer, ...)``). The ``self.m[i] = ...``
+    update mixes CPU and GPU tensors → crash.
+
+    The Pythonic fix is: ``model.to(device)`` THEN ``Optimizer(model.parameters(),
+    ...)``. The agent's repair_context surfaces the hint so the next
+    ``implement_baseline`` iteration writes correct code.
+    """
+    # Per-file pass: identify which names had ``.parameters()`` called on
+    # them (those are the model objects the optimizer was built around).
+    # ``xb.to(device)`` on a batch tensor is a false positive; ``model.to(device)``
+    # is the real bug. We only flag the .to() target if the same name has
+    # .parameters() somewhere else in the same file.
+    for path, tree in trees.items():
+        names_with_params: set[str] = set()
+        for n in ast.walk(tree):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "parameters"
+                and isinstance(n.func.value, ast.Name)
+            ):
+                names_with_params.add(n.func.value.id)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Function must accept ``optimizer`` as a positional param —
+            # that's the smoking-gun shape for "optimizer constructed
+            # elsewhere, model moved here".
+            arg_names = {a.arg for a in node.args.args}
+            arg_names |= {a.arg for a in getattr(node.args, "kwonlyargs", [])}
+            if "optimizer" not in arg_names and "opt" not in arg_names:
+                continue
+            # Walk the function body for ``something.to(<device_expr>)`` or
+            # the ``something.cuda()`` shorthand (same bug, different syntax).
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.Call):
+                    continue
+                if not isinstance(inner.func, ast.Attribute):
+                    continue
+                attr = inner.func.attr
+                if attr not in {"to", "cuda"}:
+                    continue
+                # Target must look like a model (parameters() called on it
+                # elsewhere in the same file) — skip batch tensors xb/yb.
+                target = ""
+                if isinstance(inner.func.value, ast.Name):
+                    target = inner.func.value.id
+                if target not in names_with_params:
+                    continue
+                # ``.cuda()`` with no args is unambiguous — flag.
+                # ``.to(...)`` needs a device-shaped first arg.
+                if attr == "to":
+                    if not inner.args:
+                        continue
+                    first = inner.args[0]
+                    device_like = False
+                    if isinstance(first, ast.Name) and first.id in {"device", "DEVICE"}:
+                        device_like = True
+                    elif isinstance(first, ast.Constant) and isinstance(first.value, str):
+                        if first.value.startswith("cuda") or first.value == "cpu":
+                            device_like = True
+                    elif isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute):
+                        # torch.device("cuda") pattern
+                        if first.func.attr == "device":
+                            device_like = True
+                    if not device_like:
+                        continue
+                # We have: function-with-optimizer-param containing
+                # model.to(device) or model.cuda() where model.parameters() exists.
+                call_shape = f"{target or '<expr>'}.{attr}(...)"
+                out.append(PreFlightViolation(
+                    severity="hard",
+                    area="Result match",
+                    detail=(
+                        f"{path.name}:{inner.lineno}: `{call_shape}` "
+                        f"inside function `{node.name}` that takes `optimizer` "
+                        f"as a parameter. The optimizer was constructed BEFORE "
+                        f"this function ran, capturing CPU-tensor refs; its "
+                        f"state tensors (self.m, self.v from zeros_like) stay "
+                        f"on CPU while the model moves to GPU. The next "
+                        f"optimizer.step() mixes CPU + GPU tensors and crashes "
+                        f"with `RuntimeError: tensors on cuda:0 and cpu`."
+                    ),
+                    hint=(
+                        f"Move the `.to(device)` call BEFORE constructing the "
+                        f"optimizer — the standard PyTorch idiom: "
+                        f"\n    model = MyModel().to(device)\n"
+                        f"    optimizer = AdamOptimizer(model.parameters(), ...)\n"
+                        f"NOT inside a function that receives `optimizer` as "
+                        f"an argument."
+                    ),
+                ))
+
+
 def _check_requirements_torch_redundancy(
     code_dir: Path,
     base_image: str | None,
@@ -611,28 +723,36 @@ def validate_code_pre_flight(
     except Exception:  # noqa: BLE001
         pass
 
+    # Parse every Python file once. Both the paper-independent
+    # tensor-device-mismatch check AND the paper-specific checks need
+    # ASTs; sharing the parse is cheap and keeps line-number reporting
+    # consistent across all violations.
+    files = _iter_python_files(code_dir)
+    trees: dict[Path, ast.AST] = {}
+    if files:
+        try:
+            for path in files:
+                tree, syn_err = _parse_or_violation(path)
+                if syn_err is not None:
+                    violations.append(syn_err)
+                if tree is not None:
+                    trees[path] = tree
+        except Exception:  # noqa: BLE001 — never raise from pre-flight
+            return violations
+
+    # Tensor-device-mismatch is a runtime-correctness invariant (catches the
+    # 2026-05-24 Dropout Exp 1+3 crash); runs regardless of paper_targets.
+    try:
+        _check_tensor_device_mismatch(trees, violations)
+    except Exception:  # noqa: BLE001
+        pass
+
     if not isinstance(paper_targets, dict) or not paper_targets:
         return violations
 
-    files = _iter_python_files(code_dir)
     if not files:
         # No files to check — leave the variant / surrogate checks silent.
         # rubric_contract.py will catch the missing-artifact failure post-run.
-        return []
-
-    # Pre-parse every file once; remember syntax errors as hard violations
-    # but keep going with the rest of the files. A file that doesn't parse
-    # contributes nothing to the text-grep either (its text WAS read but the
-    # AST-only checks below skip it).
-    trees: dict[Path, ast.AST] = {}
-    try:
-        for path in files:
-            tree, syn_err = _parse_or_violation(path)
-            if syn_err is not None:
-                violations.append(syn_err)
-            if tree is not None:
-                trees[path] = tree
-    except Exception:  # noqa: BLE001 — never raise from pre-flight
         return violations
 
     # Build the lowercased corpus once. Used by all string-grep checks.

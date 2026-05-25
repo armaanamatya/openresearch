@@ -519,6 +519,23 @@ _RUNTIME_DETECTION_BLOCK = (
     "  - For evaluation papers without training: load the real evaluation model and "
     "the real benchmark data. If a remote API is unreachable, FAIL with an explicit "
     "`metrics.json={\"error\":\"api_unreachable\"}` rather than substituting mock outputs.\n"
+    "\n"
+    "DEVICE-PLACEMENT ORDERING — REQUIRED (the 2026-05-24 Dropout crash):\n"
+    "  - `model.to(device)` MUST happen BEFORE `Optimizer(model.parameters(), ...)`. "
+    "If you flip this order, the optimizer's internal state tensors (e.g. Adam's "
+    "self.m, self.v allocated via zeros_like(p)) end up on CPU while the model's "
+    "gradients are on GPU, and optimizer.step() raises "
+    "`RuntimeError: tensors on cuda:0 and cpu`.\n"
+    "  - Do NOT put `model.to(device)` inside a function that takes `optimizer` as "
+    "a parameter — by the time that function runs, the optimizer was already built "
+    "from CPU refs and the .to() call is too late.\n"
+    "  - Custom optimizer state (m, v, exp_avg, etc.) MUST be allocated with "
+    "`torch.zeros_like(p)` AFTER `model.to(device)`, or explicitly `torch.zeros(p.shape, device=p.device)`. "
+    "Never use `torch.zeros(p.shape)` without `device=` — that defaults to CPU.\n"
+    "  - When in doubt, use the canonical PyTorch order:\n"
+    "        model = MyModel().to(device)\n"
+    "        optimizer = Optimizer(model.parameters(), ...)\n"
+    "        # only NOW pass model + optimizer to your train loop\n"
 )
 
 
