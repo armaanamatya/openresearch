@@ -1,0 +1,7 @@
+# PPO CartPole-v1 baseline requirements
+# Applied assumptions: ENV001 (torch 2.2.0), ENV002 (Python 3.11), ENV003 (CPU-only)
+torch==2.2.0
+numpy==1.26.4
+gymnasium==0.29.1
+matplotlib==3.8.0
+tqdm==4.66.0

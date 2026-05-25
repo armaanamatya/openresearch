@@ -1,0 +1,13 @@
+# torch is intentionally NOT pinned here.
+# - RunPod sandbox: the official runpod/pytorch image ships torch with CUDA
+#   support pre-installed. Pinning torch==2.2.0 here would pip-install the
+#   CPU-only wheel from PyPI, *overwriting* the CUDA-enabled install and
+#   breaking GPU detection (torch.cuda.is_available() → False).
+# - Docker sandbox: torch is installed by the Dockerfile (CPU wheel for
+#   CartPole which is CPU-bound anyway), so this file is a no-op for torch.
+# If you need an explicit pin for a specific environment, use:
+#   torch>=2.1.0  (RunPod: resolves against the already-installed package)
+numpy==1.26.4
+gymnasium==0.29.1
+matplotlib==3.8.0
+tqdm==4.66.0

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-24T23:29:28.144235+00:00", "success": false, "metrics": {}, "error": "CUDA OOM on rtx4090 (24 GB); ladder exhausted. Cumulative SKU cost rate: $0.34/hr.", "logs": "", "model_id": "default", "eval_env": "default"}

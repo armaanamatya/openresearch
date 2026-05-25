@@ -1,0 +1,159 @@
+{
+  "id": "f40355b4a8244699a15e9e427ed1945a",
+  "requirements": "Reproduce: Abstract",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "d572a542ae65485dbeccecf3088aedf7",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.33333333333333337,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "19e18bab56c0479aa16d3a0e9d98e979",
+          "requirements": "The implementation includes a proximal policy optimization algorithm as described in the paper.",
+          "weight": 0.6,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "29d62ad3f19e49229234dd4a0165e774",
+          "requirements": "The code contains a function that implements the surrogate objective optimization as outlined in the experiments.",
+          "weight": 0.4,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "8cdc402f078b4dd2be36747863124e93",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.125,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "7cec146718b544f292d269c2d71e36b4",
+          "requirements": "The code uses the CartPole-v1 environment from OpenAI Gym as specified in the experiments.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "04c86b2511794df48c851b868f33e826",
+          "requirements": "The data collection process samples data in accordance with the described policy gradient methods.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "48daa114088c458a8b2ffcf9f0a697dc",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.16666666666666669,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "ae3c11c92a934767aa29c736780276b7",
+          "requirements": "The experiments are run for 500000 timesteps as stated in the paper.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f4da0400fa794bd4ad7be8e31ce1123b",
+          "requirements": "The code allows for the execution of multiple episodes to gather mean reward metrics.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "94ad2190305a4de998ca6e54b9c17880",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.16666666666666669,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "eabfc1bcfc97481f9219170c8fba8e5f",
+          "requirements": "The mean reward is calculated over 100 episodes as described in the experiments.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "7c1f6bcbca6e4c57a0163b329b696899",
+          "requirements": "The reported mean reward of 475.0 is computed correctly based on the collected data.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "5be5b697b80e4c338f2d63d262054c0b",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.16666666666666669,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "0603c349922644aeb61fc7de7532f1ac",
+          "requirements": "The reproduction achieves a mean reward close to 475.0 after 500000 timesteps.",
+          "weight": 0.5,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "25cf7834cb254a10b8ea9c98ad983ef3",
+          "requirements": "The results are compared against the reported performance metrics in the paper.",
+          "weight": 0.5,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "53d250102256431bae35d38832d6007b",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.04166666666666667,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "828c575c12534dfdbf494aa047ebb43f",
+          "requirements": "The repository includes a README file that explains how to run the experiments.",
+          "weight": 0.5,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "0fa1e3d389f042338293ef07fbbcebaa",
+          "requirements": "All code files are properly documented with comments explaining their functionality.",
+          "weight": 0.5,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

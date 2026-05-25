@@ -1,0 +1,17 @@
+2026-05-24 17:59:54,660  INFO  Compute: CPU
+2026-05-24 17:59:54,662  INFO  PPO CartPole-v1 | seeds=[0] | timesteps=2048 | eval_ep=3 | device=cpu
+2026-05-24 17:59:54,662  INFO  === Seed 0 | device=cpu | timesteps=2048 ===
+2026-05-24 17:59:57,779  INFO  Evaluating seed=0 over 3 episodes …
+2026-05-24 17:59:57,853  INFO  Seed 0: mean_eval_reward = 174.33  (1.6s)
+2026-05-24 17:59:57,859  INFO  Checkpoint saved: C:\Users\armaa\OneDrive\Desktop\openresearch\runs\ui_rlm_openai_1779662820532\code\smoke_out\checkpoints\ppo_cartpole_seed0.pt
+2026-05-24 17:59:57,860  INFO  
+============================================================
+2026-05-24 17:59:57,860  INFO  FINAL RESULTS over 1 seeds:
+2026-05-24 17:59:57,860  INFO    mean_reward = 174.33 ± 0.00
+2026-05-24 17:59:57,860  INFO    best_reward = 174.33
+2026-05-24 17:59:57,861  INFO    target      = 475.0
+2026-05-24 17:59:57,861  INFO    wall_time   = 3.2s
+2026-05-24 17:59:57,861  INFO  ============================================================
+2026-05-24 17:59:57,862  INFO  metrics.json written to: C:\Users\armaa\OneDrive\Desktop\openresearch\runs\ui_rlm_openai_1779662820532\code\smoke_out\metrics.json
+2026-05-24 17:59:57,863  INFO  metrics.json also written to: C:\Users\armaa\OneDrive\Desktop\openresearch\runs\ui_rlm_openai_1779662820532\code\metrics.json
+2026-05-24 17:59:57,864  INFO  Done.

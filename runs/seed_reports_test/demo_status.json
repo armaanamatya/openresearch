@@ -1,0 +1,10 @@
+{
+  "projectId": "seed_reports_test",
+  "outputDir": "./runs/seed_reports_test",
+  "runMode": "rlm",
+  "llmProvider": "anthropic",
+  "status": "completed",
+  "startedAt": "2026-05-24T19:41:28+00:00",
+  "updatedAt": "2026-05-24T19:41:28+00:00",
+  "sourceLabel": "Seeded test run"
+}

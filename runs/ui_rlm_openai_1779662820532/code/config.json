@@ -1,0 +1,25 @@
+{
+  "_comment": "PPO hyperparameters for CartPole-v1 reproduction. Matches paper spec where stated; assumptions logged as ENV001-ENV003.",
+  "env_id": "CartPole-v1",
+
+  "total_timesteps": 500000,
+  "n_steps": 2048,
+  "n_envs": 1,
+
+  "learning_rate": 3e-4,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_epsilon": 0.2,
+  "entropy_coef": 0.01,
+  "value_coef": 0.5,
+  "max_grad_norm": 0.5,
+  "n_epochs": 10,
+  "minibatch_size": 64,
+
+  "eval_episodes": 100,
+  "num_seeds": 3,
+  "log_interval": 10,
+
+  "assumptions_applied": ["ENV001", "ENV002", "ENV003"],
+  "notes": "On CPU the script automatically reduces total_timesteps to 200000 to fit wallclock budget while preserving model/env/metric identity."
+}

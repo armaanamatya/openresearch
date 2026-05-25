@@ -1,0 +1,65 @@
+{
+  "project_id": "ui_rlm_openai_1779665578321",
+  "benchmark": "PaperBench-style final benchmark",
+  "paperbench_task_id": "reprolab-demo/ppo-cartpole-v1",
+  "run_mode": "rlm",
+  "execution_profile": "efficient",
+  "source": {
+    "fileName": "reprolab-demo-paper.pdf",
+    "title": "ReproLab PPO Reproducibility Demo",
+    "sizeBytes": 2923532,
+    "sha256": "e78feadadbdbb0b601b3c2bcc81404722cd431a489b307545f9b7bea1e8c4f5b",
+    "pageCount": 12,
+    "runPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779665578321\\raw_paper.pdf",
+    "codePath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779665578321\\code\\paper.pdf"
+  },
+  "claim": {
+    "metric": "mean_reward",
+    "target": 475.0,
+    "environment": "CartPole-v1",
+    "evaluation_protocol": "100 deterministic evaluation episodes after PPO training"
+  },
+  "result": {
+    "metric": "mean_reward",
+    "value": 492.3,
+    "delta_vs_target": 17.3,
+    "status": "reproduced_with_caveats"
+  },
+  "rubric": [
+    {
+      "area": "paper_understanding",
+      "score": 0.96,
+      "evidence": "paper_claim_map.json"
+    },
+    {
+      "area": "environment_reconstruction",
+      "score": 0.92,
+      "evidence": "Dockerfile"
+    },
+    {
+      "area": "baseline_implementation",
+      "score": 0.91,
+      "evidence": "train.py"
+    },
+    {
+      "area": "execution_artifacts",
+      "score": 0.88,
+      "evidence": "metrics.json, commands.log, provenance.json"
+    },
+    {
+      "area": "comparison_quality",
+      "score": 0.9,
+      "evidence": "final_benchmark_report.md"
+    }
+  ],
+  "artifact_expectations": [
+    "paper.pdf",
+    "train.py",
+    "config.json",
+    "Dockerfile",
+    "commands.log",
+    "metrics.json",
+    "provenance.json",
+    "final_benchmark_report.md"
+  ]
+}

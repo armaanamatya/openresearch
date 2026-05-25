@@ -1,0 +1,14 @@
+{
+  "mean_reward": 174.33333333333334,
+  "std_reward": 0.0,
+  "best_seed_reward": 174.33333333333334,
+  "eval_episodes": 3,
+  "total_timesteps": 2048,
+  "num_seeds": 1,
+  "target_mean_reward": 475.0,
+  "target_met": 0.0,
+  "wall_time_seconds": 3.197594404220581,
+  "per_seed_rewards": {
+    "seed_0": 174.33333333333334
+  }
+}

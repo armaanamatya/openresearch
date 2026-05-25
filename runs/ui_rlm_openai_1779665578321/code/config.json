@@ -1,0 +1,25 @@
+{
+  "algorithm": "PPO",
+  "environment": "CartPole-v1",
+  "total_timesteps": 500000,
+  "n_steps": 2048,
+  "n_epochs": 10,
+  "minibatch_size": 64,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_epsilon": 0.2,
+  "entropy_coeff": 0.01,
+  "vf_coeff": 0.5,
+  "max_grad_norm": 0.5,
+  "learning_rate": 3e-4,
+  "optimizer": "Adam",
+  "seed": 42,
+  "eval_episodes": 100,
+  "network": {
+    "hidden_dim": 64,
+    "activation": "Tanh",
+    "init": "orthogonal"
+  },
+  "assumptions_applied": ["A001", "ENV001", "ENV002", "ENV003"],
+  "_notes": "A001: PPO chosen as RL algorithm from rubric; ENV001-003: framework/Python/CPU assumptions from environment_spec."
+}

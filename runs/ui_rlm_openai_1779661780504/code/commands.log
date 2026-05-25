@@ -1,0 +1,48 @@
+# Commands log — Baseline Implementation Agent
+# Project: ui_rlm_openai_1779661780504
+# Paper: Proximal Policy Optimization Algorithms (Schulman et al. 2017)
+# Mode: implement-from-paper (no reference repo used)
+# Assumptions applied: ENV001, ENV002, ENV003
+
+[SETUP] mkdir -p runs/ui_rlm_openai_1779661780504/code
+[WRITE]  train.py
+[WRITE]  config.json
+[WRITE]  requirements.txt
+[WRITE]  commands.json
+[WRITE]  Dockerfile
+[WRITE]  README.md
+[WRITE]  commands.log
+
+[RUN]    python train.py --config config.json
+         (executed by sandbox runtime via commands.json)
+
+# ── Failure diagnosis + fixes (2026-05-24) ───────────────────────────────────
+# FAILURE: run_experiment: SandboxRuntimeError: RunPod sandbox is selected but
+#          SSH private key was not found: \Users\aayushbaniya\.ssh\...
+#          Root cause: REPROLAB_RUNPOD_SSH_KEY_PATH pointed to another user's
+#          SSH key. The .env has been corrected to C:/Users/armaa/.ssh/...
+#          and the key now exists. No code change needed for this.
+#
+# BUG FIX 1 — train.py: GAE done-mask off-by-one (A001-fix)
+#   RolloutBuffer.compute_returns_and_advantages: changed
+#     next_non_terminal = 1.0 - self.dones[t + 1].item()   (WRONG)
+#   to
+#     next_non_terminal = 1.0 - self.dones[t].item()        (CORRECT)
+#   Convention: dones[t] = terminated|truncated from env.step at step t,
+#   meaning obs[t+1] is from a new episode when dones[t]=True.
+#   Using dones[t+1] inverted the mask at every episode boundary.
+#
+# BUG FIX 2 — requirements.txt: removed torch pin (A002-fix)
+#   torch==2.2.0 without --index-url installs a CPU-only wheel on RunPod,
+#   overriding the pre-installed CUDA torch. Torch is now handled by the
+#   Dockerfile (Docker) and the pre-installed image (RunPod).
+#
+# BUG FIX 3 — commands.json: explicit --output-dir $OUTPUT_DIR
+#   ["python train.py"]  →  ["python train.py --output-dir \"$OUTPUT_DIR\""]
+#   Ensures all artifacts (metrics.json, checkpoints) go to the writable
+#   sandbox volume even if the env var is not inherited by the subprocess.
+
+[FIX]    Edit train.py GAE dones[t+1] → dones[t]          exit 0
+[FIX]    Rewrite requirements.txt (remove torch pin)        exit 0
+[FIX]    Rewrite commands.json (explicit --output-dir)      exit 0
+[FIX]    ast.parse(train.py) syntax check                   exit 0

@@ -1,0 +1,151 @@
+{
+  "id": "1962768e6dfc4c41b26083c2155c11c3",
+  "requirements": "Reproduce: Abstract",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "e766038d8454456885494f20a9bfa224",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.32,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "77767c76a04d4adfada5d9c74e9526c0",
+          "requirements": "The implementation includes a proximal policy optimization algorithm as described in the paper.",
+          "weight": 0.3,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "32af9e3a0eab459593dd03b9b8d08888",
+          "requirements": "The code contains a function that implements the surrogate objective optimization as outlined in the methodology.",
+          "weight": 0.3,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f1bdbf8c36524f048b3bb7955bf7cb86",
+          "requirements": "The training loop alternates between sampling data and optimizing the surrogate objective as specified.",
+          "weight": 0.4,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "6a455f7ae801467d931a6281695d53ff",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.12,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "198409564157416db1e824ab1ca7d3a9",
+          "requirements": "The CartPole-v1 environment is used for training and evaluation as stated in the experiments section.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f5135b1a3c774eababa893218ab460db",
+          "requirements": "The data collection process matches the sampling method described in the paper.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "c2658dfaec324e70be38cf7d8afc1015",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.16,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "ea2ce412408d4d69808e0d56691ad8c6",
+          "requirements": "The Adam optimizer is used with a learning rate of 3e-4 as specified in the experiments.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "0bc6a94adbab4471ae15405234173e06",
+          "requirements": "The batch size is set to 64 during training as mentioned in the paper.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "74909d4c4fc5498d999007f473a86750",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.16,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "408a763a17f1422bb845c349d15b2a61",
+          "requirements": "The mean reward is calculated over 100 episodes as described in the experiments.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5cc2f2695c024c60974f739e422c3cf6",
+          "requirements": "The evaluation is conducted after 500000 timesteps as specified in the paper.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "4343ba17f05a4aca8016b972818976ee",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.2,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "a23649b718db4ce5a82b21fa9da6a879",
+          "requirements": "The reported mean reward is at least 475.0 over 100 episodes after 500000 timesteps.",
+          "weight": 1.0,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "e310dafe648b48beb52a71df6dd449a6",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.04,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "ffb13f3b49634265b12c352669330906",
+          "requirements": "All source code and configuration files are included and properly documented.",
+          "weight": 1.0,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+Traceback (most recent call last):
+  File "<string>", line 207, in <module>
+    asyncio.run(run_pipeline_hybrid(
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+        project_id,
+        ^^^^^^^^^^^
+    ...<6 lines>...
+        run_budget=_run_budget,
+        ^^^^^^^^^^^^^^^^^^^^^^^
+    ))
+    ^^
+  File "C:\Users\armaa\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\armaa\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\armaa\AppData\Local\Programs\Python\Python313\Lib\asyncio\base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\armaa\OneDrive\Desktop\openresearch\backend\agents\hybrid\controller.py", line 200, in run_pipeline_hybrid
+    return await _rlm(
+           ^^^^^^^^^^^
+    ...<14 lines>...
+    )
+    ^
+  File "C:\Users\armaa\OneDrive\Desktop\openresearch\backend\agents\rlm\run.py", line 659, in run_pipeline_rlm
+    root_model = resolve_root_model(model)
+  File "C:\Users\armaa\OneDrive\Desktop\openresearch\backend\agents\rlm\models.py", line 520, in resolve_root_model
+    raise ValueError(
+    ...<4 lines>...
+    )
+ValueError: Root model 'claude-oauth' requires Claude credentials (ANTHROPIC_API_KEY or `claude` CLI OAuth login) but neither was found. Run `claude login` or set ANTHROPIC_API_KEY, or choose a different model via REPROLAB_RLM_ROOT_MODEL / --model.

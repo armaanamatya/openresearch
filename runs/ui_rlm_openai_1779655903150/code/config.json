@@ -1,0 +1,7 @@
+{
+    "optimizer": "Adam",
+    "learning_rate": 3e-4,
+    "batch_size": 64,
+    "timesteps": 500000,
+    "env_name": "CartPole-v1"
+}

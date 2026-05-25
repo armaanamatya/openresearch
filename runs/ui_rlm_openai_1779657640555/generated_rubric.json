@@ -1,0 +1,143 @@
+{
+  "id": "0cc882dfbc294d3e99c666731c6f7cb6",
+  "requirements": "Reproduce: Abstract",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "3e82cf699a264774a202248d77a4e746",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.32,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "b430e3ae4adc4777a5681e75c83e33ac",
+          "requirements": "The implementation includes a proximal policy optimization algorithm as described in the paper.",
+          "weight": 0.6,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "301262d0162b4e60a1d6784d237635cc",
+          "requirements": "The code contains a function that optimizes a surrogate objective using stochastic gradient ascent.",
+          "weight": 0.4,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f77efddf79e0462fa6df8760ff158811",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.12,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "df3391b73b3944e1b8919f1ac0f05a21",
+          "requirements": "The code uses the CartPole-v1 environment as specified in the experiments section.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "915a9cb77263432f8efead2f555eb9ce",
+          "requirements": "The data collection process samples data from the environment as described in the paper.",
+          "weight": 0.5,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "c23a1eb0152347d585f02908f93614fe",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.16,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "60131603253e408cba0a27d3305d2cf9",
+          "requirements": "The experiments are run for 500000 timesteps as stated in the paper.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "17dbbce7fbe342a78b256c4e1dd235fe",
+          "requirements": "The code executes the training process for 100 episodes as mentioned in the experiments section.",
+          "weight": 0.5,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "b51694d256ea4df4ac210d44b81034a1",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.16,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "622722f93e4148fe894be3a7cb43e590",
+          "requirements": "The mean reward is calculated over 100 episodes as described in the paper.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "4fd9758bd18c4163a3f3af46c044d3bb",
+          "requirements": "The reported mean reward of 475.0 is computed correctly based on the collected data.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "7bd148fbbe0f464cba136bfa6deeeec8",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.2,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "fb1a87d9557a4a15852e3fcd0339e606",
+          "requirements": "The reproduction achieves a mean reward of at least 475.0 over 100 episodes.",
+          "weight": 1.0,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "4643768c1090460c8ca25b90fe198232",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.04,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "3e7448ac95924017b80ce6bebfed4197",
+          "requirements": "The repository includes a README file that explains how to run the experiments.",
+          "weight": 1.0,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

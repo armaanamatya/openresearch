@@ -1,0 +1,25 @@
+{
+  "total_workers": 3,
+  "by_status": {"completed": 1, "failed": 1, "blocked": 1},
+  "critical_blockers": [
+    {
+      "title": "SDK success-with-no-text",
+      "description": "Claude Code returned exit status 'success' but produced no text output.",
+      "severity": "critical",
+      "source": "claude_agent_sdk"
+    }
+  ],
+  "files_changed": ["Dockerfile", "requirements.txt", "setup.py"],
+  "commands_run": 4,
+  "failed_commands": 2,
+  "tests_summary": {"passed": 0, "failed": 0},
+  "final_run_status": "completed",
+  "top_next_actions": [
+    {
+      "priority": "high",
+      "action": "Investigate SDK success-with-no-text pattern",
+      "owner_or_component": "claude_agent_sdk"
+    }
+  ],
+  "generated_at": "2026-05-24T19:41:28+00:00"
+}

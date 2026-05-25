@@ -1,0 +1,7 @@
+2026-05-10T09:30:12Z paperbench-eval INFO loaded task reprolab-demo/ppo-cartpole-v1
+2026-05-10T09:30:13Z paperbench-eval INFO project=ui_rlm_openai_1779662820532
+2026-05-10T09:30:14Z paperbench-eval INFO validating source artifact code/paper.pdf
+2026-05-10T09:30:15Z paperbench-eval INFO checking generated code root manifest
+2026-05-10T09:30:16Z paperbench-eval INFO replaying command log and provenance refs
+2026-05-10T09:30:19Z paperbench-eval INFO final metric comparison: mean_reward=492.3, target=475.0, delta=+17.3
+2026-05-10T09:30:20Z paperbench-eval INFO verdict=reproduced_with_caveats

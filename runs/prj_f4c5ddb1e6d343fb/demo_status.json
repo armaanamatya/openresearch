@@ -1,0 +1,40 @@
+{
+  "projectId": "prj_f4c5ddb1e6d343fb",
+  "outputDir": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb",
+  "runMode": "rlm",
+  "executionMode": "efficient",
+  "sandboxMode": "runpod",
+  "gpuMode": "auto",
+  "model": "gpt-5",
+  "sourcePdf": {
+    "fileName": "demo_paper.pdf",
+    "title": "Demo paper",
+    "sizeBytes": 2923532,
+    "sha256": "e78feadadbdbb0b601b3c2bcc81404722cd431a489b307545f9b7bea1e8c4f5b",
+    "pageCount": 12,
+    "runPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\raw_paper.pdf",
+    "codePath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\paper.pdf"
+  },
+  "benchmark": {
+    "benchmarkName": "PaperBench-style final benchmark",
+    "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+    "overallScore": 0.0,
+    "targetMetric": "mean_reward",
+    "targetValue": 475.0,
+    "reproducedValue": 0.0,
+    "deltaValue": 0.0,
+    "verdict": "pending_pipeline_result",
+    "reportPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\final_benchmark_report.md",
+    "comparisonPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\paperbench_comparison.json",
+    "logPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\logs\\paperbench_eval.log"
+  },
+  "status": "failed",
+  "startedAt": "2026-05-24T20:22:44.347671+00:00",
+  "updatedAt": "2026-05-24T20:48:55.202959+00:00",
+  "sourceKind": "uploaded_pdf",
+  "sourceLabel": "demo_paper.pdf",
+  "sourceNote": "This run started from a PDF uploaded directly in the lab. The backend copied it into the generated code root as paper.pdf before running reproduction.",
+  "pid": 42068,
+  "completedAt": "2026-05-24T20:48:55.202970+00:00",
+  "error": "ModuleNotFoundError: No module named 'rlm'"
+}

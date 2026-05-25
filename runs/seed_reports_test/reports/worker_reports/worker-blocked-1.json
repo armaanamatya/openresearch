@@ -1,0 +1,44 @@
+{
+  "report_id": "wr-blocked-1",
+  "worker_id": "worker-blocked-1",
+  "worker_type": "rlm_primitive",
+  "agent_id": "run_experiment",
+  "status": "blocked",
+  "started_at": "2026-05-24T19:41:28+00:00",
+  "finished_at": "2026-05-24T19:41:28+00:00",
+  "model": "gpt-5",
+  "provider": "openai",
+  "duration_ms": 3000,
+  "implemented": [],
+  "left_undone": ["Experiment execution"],
+  "commands": [
+    {"command": "docker run experiment", "exit_code": 137, "source": "worker_report"}
+  ],
+  "issues": ["OOM killed"],
+  "procedures_followed": null,
+  "procedure_notes": "",
+  "error": "Container was OOM-killed (exit 137)",
+  "assignment": {
+    "summary": "Execute training experiment in Docker container"
+  },
+  "blockers": [
+    {
+      "title": "OOM Kill",
+      "description": "Docker container killed due to insufficient memory",
+      "severity": "high",
+      "source": "docker",
+      "suggested_fix": "Increase container memory limit or reduce batch size"
+    }
+  ],
+  "errors": [
+    {
+      "message": "Container was OOM-killed (exit 137)",
+      "recoverable": true
+    }
+  ],
+  "artifacts": [
+    {"path": "logs/experiment.log", "type": "log", "description": "Experiment stderr"}
+  ],
+  "tests": [],
+  "next_actions": []
+}

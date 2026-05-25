@@ -1,0 +1,77 @@
+{
+  "projectId": "ui_rlm_openai_1779655903150",
+  "outputDir": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150",
+  "runMode": "rlm",
+  "executionMode": "efficient",
+  "sandboxMode": "local",
+  "gpuMode": "off",
+  "model": "gpt-4o",
+  "sourcePdf": {
+    "fileName": "reprolab-demo-paper.pdf",
+    "title": "ReproLab PPO Reproducibility Demo",
+    "sizeBytes": 2923532,
+    "sha256": "e78feadadbdbb0b601b3c2bcc81404722cd431a489b307545f9b7bea1e8c4f5b",
+    "pageCount": 12,
+    "runPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150\\raw_paper.pdf",
+    "codePath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150\\code\\paper.pdf"
+  },
+  "benchmark": {
+    "benchmarkName": "PaperBench-style final benchmark",
+    "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+    "overallScore": 0.0,
+    "targetMetric": "mean_reward",
+    "targetValue": 475.0,
+    "reproducedValue": null,
+    "deltaValue": 17.3,
+    "verdict": "partial",
+    "reportPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150\\final_report.md",
+    "comparisonPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150\\final_report.json",
+    "logPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\ui_rlm_openai_1779655903150\\code\\logs\\paperbench_eval.log",
+    "source": "computed_final_report_rlm",
+    "ourRubricScore": 0.0,
+    "meetsTarget": false,
+    "rubricAreas": [
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "notes": ""
+      }
+    ],
+    "improvementIterations": 4,
+    "comparisonSummary": "Attempted an end-to-end baseline reproduction using auto-detected environment and a plan derived from the available slice. Ran the baseline with up to two automated repair cycles, then verified against the provided rubric. If the run did not succeed, no metrics are reported and the outcome is marked partial."
+  },
+  "status": "completed",
+  "startedAt": "2026-05-24T20:51:43.185683+00:00",
+  "updatedAt": "2026-05-24T21:08:48.043143+00:00",
+  "sourceKind": "workspace_fixture",
+  "sourceLabel": "ReproLab PPO demo paper",
+  "sourceNote": "This demo uses a checked-in PPO-style paper PDF, a deterministic generated codebase, and a PaperBench-style final benchmark comparison.",
+  "pid": 40716,
+  "primitiveProvider": "real",
+  "completedAt": "2026-05-24T21:08:47.981846+00:00"
+}

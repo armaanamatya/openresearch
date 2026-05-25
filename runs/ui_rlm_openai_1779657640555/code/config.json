@@ -1,0 +1,31 @@
+{
+  "env_id": "CartPole-v1",
+  "total_timesteps": 500000,
+  "learning_rate": 3e-4,
+  "num_envs": 4,
+  "num_steps": 128,
+  "minibatch_size": 64,
+  "update_epochs": 4,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_coef": 0.2,
+  "clip_vloss": true,
+  "ent_coef": 0.01,
+  "vf_coef": 0.5,
+  "max_grad_norm": 0.5,
+  "adam_eps": 1e-5,
+  "seed": 42,
+  "num_eval_episodes": 100,
+  "_assumptions_applied": {
+    "A001": "Adam epsilon=1e-5",
+    "A002": "Orthogonal weight initialization",
+    "A003": "Linear LR decay",
+    "A004": "Per-minibatch advantage normalization",
+    "A005": "Clipped value function loss",
+    "A006": "max_grad_norm=0.5",
+    "A007": "GAE lambda=0.95",
+    "A008": "Entropy coefficient=0.01",
+    "A009": "seed=42 (not specified in paper)",
+    "A010": "num_envs=4 (not specified in paper)"
+  }
+}

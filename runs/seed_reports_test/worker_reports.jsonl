@@ -1,0 +1,2 @@
+{"report_id":"wr-success-1","agent_id":"baseline-implementation","status":"completed","implemented":["Environment setup"],"commands":[{"command":"pip install torch","exit_code":0}],"issues":[],"procedures_followed":true}
+{"report_id":"wr-failed-1","agent_id":"baseline-implementation","status":"failed","implemented":[],"commands":[{"command":"python train.py","exit_code":1}],"issues":["Exception: Claude Code returned an error result: success"],"error":"Exception: Claude Code returned an error result: success"}

@@ -1,0 +1,9 @@
+[
+  {
+    "seed": 0,
+    "mean_eval_reward": 145.6,
+    "total_timesteps_run": 2048,
+    "wall_time_seconds": 2.7736871242523193,
+    "reward_history": []
+  }
+]

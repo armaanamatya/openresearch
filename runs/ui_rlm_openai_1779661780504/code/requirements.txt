@@ -1,0 +1,15 @@
+# PPO CartPole-v1 reproduction requirements
+# Assumptions applied: ENV001 (torch 2.2.0), ENV002 (python 3.11), ENV003 (CPU-only)
+#
+# NOTE on torch: torch is intentionally NOT pinned here.
+#   - Docker: the Dockerfile installs torch==2.2.0 (CPU wheel) via --index-url.
+#   - RunPod: the base image ships with CUDA-enabled torch; re-installing from
+#     PyPI without the CUDA index URL would replace it with a CPU-only wheel,
+#     losing CUDA support.  Omitting the pin lets pip see the pre-installed
+#     version as satisfying the dependency and skips the reinstall.
+#   - Local: install torch separately via `pip install torch` (or the
+#     platform-appropriate wheel) before running `pip install -r requirements.txt`.
+numpy==1.26.4
+gymnasium==0.29.1
+matplotlib==3.8.0
+tqdm==4.66.0

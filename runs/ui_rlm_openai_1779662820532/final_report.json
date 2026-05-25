@@ -1,0 +1,125 @@
+{
+  "paper": {
+    "id": "unknown-id",
+    "title": "Abstract"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "run_experiment failed after up to two repair cycles.",
+  "baseline_metrics": {},
+  "paper_claims": {
+    "core_contribution": "Error: Child RLM completion failed - Error code: 400 - {'error': {'message': 'invalid model ID', 'type': 'invalid_request_error', 'param': None, 'code': None}}",
+    "claims": [
+      {
+        "method": "paper_method",
+        "dataset": "CartPole-v1",
+        "metric": "reward",
+        "expected_result": "unspecified"
+      }
+    ],
+    "metrics": [
+      {
+        "name": "reward",
+        "definition": "Mean episode reward"
+      }
+    ],
+    "datasets": [
+      {
+        "name": "CartPole-v1",
+        "source": "Gymnasium",
+        "download_method": "bundled",
+        "size_estimate": "",
+        "notes": ""
+      }
+    ]
+  },
+  "rubric": {
+    "overall_score": 0.0,
+    "meets_target": false,
+    "areas": [
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.33333333333333337,
+        "notes": null
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.125,
+        "notes": null
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.16666666666666669,
+        "notes": null
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.16666666666666669,
+        "notes": null
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.16666666666666669,
+        "notes": null
+      },
+      {
+        "name": null,
+        "score": 0.0,
+        "weight": 0.04166666666666667,
+        "notes": null
+      }
+    ]
+  },
+  "improvements": [
+    {
+      "title": "Enhance Method Fidelity",
+      "outcome": "skipped",
+      "delta": "not executed in this run"
+    }
+  ],
+  "primitive_trace": {
+    "calls": 37,
+    "by_primitive": {
+      "check_user_messages": 3,
+      "understand_section": 3,
+      "extract_hyperparameters": 3,
+      "detect_environment": 3,
+      "resolve_gpu_requirements": 2,
+      "heartbeat": 9,
+      "build_environment": 2,
+      "plan_reproduction": 2,
+      "implement_baseline": 4,
+      "run_experiment": 3,
+      "verify_against_rubric": 1,
+      "propose_improvements": 1,
+      "record_candidate_outcome": 1
+    }
+  },
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 3,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "gpt-4o-mini",
+    "executor": "claude-sonnet-4-6",
+    "verifier": null,
+    "grader": null
+  },
+  "started_at": "2026-05-24T22:47:00.916670+00:00",
+  "completed_at": "2026-05-24T23:24:11.582515+00:00",
+  "scope": {
+    "requested": "Full paper baseline to the extent supported by available offloaded paper_text.",
+    "ran": [],
+    "gaps": [
+      "Run executed but did not succeed; metrics omitted."
+    ]
+  }
+}

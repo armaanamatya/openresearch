@@ -1,0 +1,29 @@
+# Baseline Implementation Command History
+# Project: ui_rlm_openai_1779663058972
+# Mode: implement_from_paper (no upstream repo found)
+# Date: 2026-05-24
+
+# 1. Verify dependencies in project venv
+.venv/Scripts/python -c "import torch; import gymnasium; print('OK')"
+# exit 0 (torch 2.12.0+cpu, gymnasium 1.3.0)
+
+# 2. Smoke test (4096 timesteps, 5 eval episodes)
+OUTPUT_DIR=<tempdir> python train.py
+# exit 0
+# Verified: training loop runs, metrics.json written to OUTPUT_DIR,
+#           model saved, plot generated
+
+# 3. Full run command (500 000 timesteps, 100 eval episodes)
+python train.py
+# Expected: mean_reward >= 475.0 after ~500 000 steps on CartPole-v1
+# Expected wall time: ~3-8 min on CPU, <1 min on GPU
+
+# Assumptions applied:
+#   A001 - CartPole-v1 from Gymnasium (bundled)
+#   A002 - PPO inferred from rubric leaf "proximal policy optimization"
+#   A003 - GAE lambda=0.95 (Schulman 2017 default)
+#   A004 - n_steps=2048 rollout buffer; batch_size=64 mini-batch SGD size
+#   A005 - MLP 2 hidden layers x 64 units, tanh activation
+#   ENV001 - pytorch 2.2.0
+#   ENV002 - Python 3.11
+#   ENV003 - CPU-only

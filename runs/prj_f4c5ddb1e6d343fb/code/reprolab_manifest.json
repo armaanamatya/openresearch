@@ -1,0 +1,35 @@
+{
+  "project_id": "prj_f4c5ddb1e6d343fb",
+  "source_pdf": {
+    "fileName": "demo_paper.pdf",
+    "title": "Demo paper",
+    "sizeBytes": 2923532,
+    "sha256": "e78feadadbdbb0b601b3c2bcc81404722cd431a489b307545f9b7bea1e8c4f5b",
+    "pageCount": 12,
+    "runPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\raw_paper.pdf",
+    "codePath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\paper.pdf"
+  },
+  "benchmark": {
+    "benchmarkName": "PaperBench-style final benchmark",
+    "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+    "overallScore": 0.0,
+    "targetMetric": "mean_reward",
+    "targetValue": 475.0,
+    "reproducedValue": 0.0,
+    "deltaValue": 0.0,
+    "verdict": "pending_pipeline_result",
+    "reportPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\final_benchmark_report.md",
+    "comparisonPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\paperbench_comparison.json",
+    "logPath": "C:\\Users\\armaa\\OneDrive\\Desktop\\openresearch\\runs\\prj_f4c5ddb1e6d343fb\\code\\logs\\paperbench_eval.log"
+  },
+  "root_files": [
+    "paper.pdf",
+    "README.md",
+    "reprolab_manifest.json",
+    "paperbench_comparison.json",
+    "final_benchmark_report.md"
+  ],
+  "log_files": [
+    "logs/paperbench_eval.log"
+  ]
+}

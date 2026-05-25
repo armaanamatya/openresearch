@@ -1,0 +1,19 @@
+{
+  "total_workers": 21,
+  "by_status": {
+    "failed": 9,
+    "completed": 11,
+    "running": 1
+  },
+  "critical_blockers": [],
+  "files_changed": [],
+  "commands_run": 0,
+  "failed_commands": 0,
+  "tests_summary": {
+    "passed": 0,
+    "failed": 0
+  },
+  "final_run_status": "running",
+  "top_next_actions": [],
+  "generated_at": "2026-05-24T21:08:47.882404+00:00"
+}
