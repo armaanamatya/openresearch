@@ -1674,11 +1674,22 @@ def _python_script(
     else:
         _model_id = request.model
     # Resolve budget defaults from a cached estimate when estimate_id is provided.
+    # Codex C4 fix: pass the actual paper's sha8 so a stale estimate_id from
+    # a prior session (browser-cached, copy-pasted) doesn't apply an unrelated
+    # budget cap to this run.
     _max_usd_from_estimate: float | None = None
     _max_pod_seconds_from_estimate: float | None = None
     if request.estimate_id:
+        expected_sha8: str | None = None
+        if uploaded_paper and uploaded_paper.get("path"):
+            try:
+                import hashlib as _hashlib
+                _pdf_bytes = Path(uploaded_paper["path"]).read_bytes()
+                expected_sha8 = _hashlib.sha256(_pdf_bytes).hexdigest()[:8]
+            except OSError:
+                expected_sha8 = None
         _max_usd_from_estimate, _max_pod_seconds_from_estimate = _resolve_budget_from_estimate(
-            request.estimate_id, runs_root
+            request.estimate_id, runs_root, expected_sha8=expected_sha8
         )
 
     common = {
@@ -2202,12 +2213,21 @@ def _terminate_pid(pid: int, *, _sigkill_grace_seconds: float = 5.0) -> None:
 def _resolve_budget_from_estimate(
     estimate_id: str,
     runs_root: Path,
+    *,
+    expected_sha8: str | None = None,
 ) -> tuple[float | None, float | None]:
     """Read a cached estimate and return (max_usd, max_pod_seconds) defaults.
 
     Uses spec coupling formula:
       max_usd = 1.5 × api_usd_best (from the estimate's primary recipe)
       max_pod_seconds = 1.5 × estimated_hours.p90 × 3600
+
+    Codex C4 integrity check: when ``expected_sha8`` is provided, the
+    cached estimate's ``paper.sha256[:8]`` must match. Otherwise this
+    estimate was generated for a *different* paper and applying its
+    budget to the current run silently truncates the wrong target. On
+    mismatch we log a warning and return ``(None, None)`` so the run
+    proceeds uncapped rather than under the wrong cap.
 
     Returns (None, None) on any read / parse failure so the run proceeds
     without a budget cap rather than failing to start.
@@ -2221,6 +2241,18 @@ def _resolve_budget_from_estimate(
         if not cache_file.exists():
             return None, None
         data = _json.loads(cache_file.read_text(encoding="utf-8"))
+
+        if expected_sha8 is not None:
+            cached_sha = (data.get("paper") or {}).get("sha256") or ""
+            cached_sha8 = str(cached_sha)[:8]
+            if cached_sha8 and cached_sha8 != expected_sha8:
+                logger.warning(
+                    "live_runs: estimate_id=%r references paper sha8=%r but the "
+                    "current run is for sha8=%r — refusing to apply its budget cap. "
+                    "(estimate/paper mismatch; running uncapped)",
+                    estimate_id, cached_sha8, expected_sha8,
+                )
+                return None, None
 
         recipes = data.get("recipes") or {}
         gpu = data.get("gpu") or {}

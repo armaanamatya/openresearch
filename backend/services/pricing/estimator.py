@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -23,7 +24,14 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-_OVERHEAD_MULTIPLIER: float = 1.5
+# Codex C5 fix: 1.5 was the original spec value but doesn't absorb RunPod
+# cold-start (5-10 min flat on a 30-min run = 20-33% overhead alone). 2.0
+# covers cold-start (~10 min) + eval (~10%) + checkpoint I/O (~5%) + safety.
+# Override via REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER for operators willing to
+# run tighter.
+_OVERHEAD_MULTIPLIER: float = float(
+    os.environ.get("REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER", "2.0")
+)
 _COMPRESSED_RATIO: float = 0.15
 _P90_MULTIPLIER: float = 1.4  # p50 → p90 for GPU hours
 _MAX_PAPER_CHARS: int = 120_000  # ~30k tokens at 4 chars/token
@@ -89,8 +97,74 @@ async def _fetch_pdf_bytes(source_kind: str, source: str) -> tuple[bytes, str]:
     return resp.content, arxiv_id
 
 
+# Codex C3 fix: PDFs occasionally carry embedded text-layer content like
+# author email signatures, leaked credentials in appendices, or quoted .env
+# fragments. Anthropic logs every prompt input — sending raw bytes to the
+# estimator's Sonnet call is a leakage vector. We strip lines that match
+# common secret patterns *before* the text reaches the LLM. The patterns are
+# conservative (false positives just redact a paragraph; false negatives
+# leak); add new ones cautiously.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sk-(?:ant-|proj-|svcacct-|[A-Za-z0-9]{20,})[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|API_KEY)\s*[=:]\s*\S+"),
+    re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[A-Za-z0-9]{30,}"),
+    re.compile(r"gho_[A-Za-z0-9]{30,}"),
+)
+
+
+def _redact_secrets(text: str) -> str:
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub("[REDACTED]", text)
+    return text
+
+
+# Codex C2 helper: best-effort regex extraction of paper hardware clues so
+# the GPU resolver picks a realistic SKU instead of a hardcoded RTX 4090.
+# Returns (gpu_string_for_resolver, vram_gb_estimate). Heuristics are
+# conservative: a paper that explicitly says "H100 80GB" should resolve to
+# h100; a paper with no GPU mention falls back to the safe 24GB default.
+_GPU_MENTION_PATTERNS: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    (re.compile(r"\bH200\b", re.IGNORECASE), "H200", 141),
+    (re.compile(r"\bH100[\s-]*SXM\b", re.IGNORECASE), "H100 SXM", 80),
+    (re.compile(r"\bH100\b", re.IGNORECASE), "H100", 80),
+    (re.compile(r"\bA100[\s-]*(?:SXM|80\s*GB)\b", re.IGNORECASE), "A100 80GB", 80),
+    (re.compile(r"\bA100\b", re.IGNORECASE), "A100", 40),
+    (re.compile(r"\bA6000\b", re.IGNORECASE), "A6000", 48),
+    (re.compile(r"\bA5000\b", re.IGNORECASE), "A5000", 24),
+    (re.compile(r"\bRTX[\s-]*4090\b", re.IGNORECASE), "RTX 4090", 24),
+    (re.compile(r"\bV100[\s-]*32\s*GB\b", re.IGNORECASE), "V100 32GB", 32),
+    (re.compile(r"\bV100\b", re.IGNORECASE), "V100", 16),
+    (re.compile(r"\bP100\b", re.IGNORECASE), "P100", 16),
+    (re.compile(r"\bTPU\b", re.IGNORECASE), "TPU", 16),  # treat as 16GB fallback
+)
+
+
+def _extract_gpu_clues(paper_text: str) -> tuple[str, int]:
+    """Best-effort paper-text → (GPU label, VRAM estimate in GB).
+
+    Picks the *highest-VRAM* explicit mention so an ablation paper that
+    cites both RTX 4090 and H100 resolves to H100 (worst-case for cost).
+    Falls back to (RTX 4090, 24GB) when no recognizable GPU is mentioned.
+    """
+    best_vram = 0
+    best_label = ""
+    for pat, label, vram_gb in _GPU_MENTION_PATTERNS:
+        if pat.search(paper_text) and vram_gb > best_vram:
+            best_vram = vram_gb
+            best_label = label
+    if best_label:
+        return best_label, best_vram
+    return "RTX 4090", 24
+
+
 def _extract_text_from_pdf(pdf_bytes: bytes, max_chars: int = _MAX_PAPER_CHARS) -> str:
-    """Extract text from PDF bytes using pymupdf (fitz), truncated to max_chars."""
+    """Extract text from PDF bytes using pymupdf (fitz), truncated to max_chars.
+
+    Output is run through `_redact_secrets` so any embedded API keys / tokens
+    / private keys are masked before downstream consumers (LLM, logs) see it.
+    """
     try:
         import fitz  # type: ignore[import-not-found]
     except ImportError:
@@ -102,7 +176,7 @@ def _extract_text_from_pdf(pdf_bytes: bytes, max_chars: int = _MAX_PAPER_CHARS) 
         doc = fitz.open(tmp.name)
         pages = [doc[i].get_text() for i in range(min(len(doc), 30))]
         doc.close()
-    return "\n".join(pages)[:max_chars]
+    return _redact_secrets("\n".join(pages))[:max_chars]
 
 
 async def _llm_estimate_workload(
@@ -288,11 +362,19 @@ async def estimate_paper_budget(
     paper_category = _classify_paper(paper_text)
 
     # --- 3. GPU resolution (lightweight — no SSE, no disk cache, no context needed)
+    # Codex C2 fix: extract paper-mentioned GPU + a rough VRAM estimate from
+    # the paper text *before* calling the resolver. The previous hardcoded
+    # 24GB RTX 4090 was wrong for any H100-class paper. We use a regex pass
+    # rather than a second LLM call to keep the estimator one round-trip.
+    paper_gpu_string, estimated_vram_gb = _extract_gpu_clues(paper_text)
     default_req = GpuRequirements(
-        estimated_vram_gb=24,
-        paper_gpu_string="RTX 4090",
+        estimated_vram_gb=estimated_vram_gb,
+        paper_gpu_string=paper_gpu_string,
         paper_gpu_count=1,
-        reasoning="estimator default — no LLM VRAM estimate",
+        reasoning=(
+            f"estimator regex extraction: gpu={paper_gpu_string!r}, "
+            f"vram={estimated_vram_gb}GB"
+        ),
         confidence=0.5,
     )
     try:
@@ -319,7 +401,11 @@ async def estimate_paper_budget(
         sku_id = "rtx4090"
         usd_per_hour = GPU_PRICING["rtx4090"].usd_per_hour
 
-    sku_label = f"{sku_id.upper()} (RunPod COMMUNITY)"
+    # Codex I6 fix: derive label from the resolved SKU's cloud_type instead
+    # of hardcoded "COMMUNITY".
+    _entry = GPU_PRICING.get(sku_id)
+    _cloud_label = _entry.cloud_type if _entry is not None else "COMMUNITY"
+    sku_label = f"{sku_id.upper()} (RunPod {_cloud_label})"
 
     # --- 4. LLM workload estimate (one call) — fail-soft: defaults if LLM fails
     try:
@@ -353,8 +439,11 @@ async def estimate_paper_budget(
     except Exception:  # noqa: BLE001
         pass
 
-    precision_window = max(100, 100 - calibration_n * 5)  # 100% with 0 runs, ~25% with ~15 runs
-    precision_window = max(10, min(100, precision_window))
+    # Codex C1 fix: was max(100, ...) which always returned 100, defeating the
+    # whole calibration feedback loop. The intent is "start at 100, shrink as
+    # runs accumulate, floor at 10". Each preserved run shaves 5 pts off the
+    # window; capped at the 10-100 range.
+    precision_window = max(10, min(100, 100 - calibration_n * 5))
 
     now_utc = datetime.now(timezone.utc).isoformat()
     results: dict[str, dict] = {}

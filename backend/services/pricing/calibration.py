@@ -38,7 +38,7 @@ _DEFAULT_PRIORS: dict[str, dict[str, float]] = {
     "propose_improvements": {"avg_input_tokens": 8_000, "avg_output_tokens": 1_000},
 }
 
-_DEFAULT_PRIMITIVE_CALL_COUNTS: dict[str, int] = {
+_DEFAULT_PRIMITIVE_CALL_COUNTS: dict[str, dict[str, int]] = {
     "strict": {
         "understand_section": 4,
         "extract_hyperparameters": 2,

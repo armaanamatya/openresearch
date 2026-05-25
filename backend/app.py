@@ -31,6 +31,8 @@ from backend.services.events.live_runs import (
 )
 from backend.services.research_workspace import ResearchWorkspaceService
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # rdr introspection helpers
 # ---------------------------------------------------------------------------
@@ -993,6 +995,24 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # Budget estimation route — POST /paper/estimate.
     from backend.routes.estimate import router as estimate_router
     app.include_router(estimate_router)
+
+    # Codex I3 fix: audit freshness was defined but never invoked. Run at
+    # startup so the operator sees a stale-pricing WARNING in logs the
+    # moment the process boots. Non-blocking on failure.
+    try:
+        from backend.services.pricing import check_audit_freshness
+        stale = check_audit_freshness()
+        if stale:
+            logger.warning(
+                "pricing: %d catalog entr%s past the 90-day audit window: %s. "
+                "Refresh docs/runbooks/pricing-audit-YYYY-QN.md and bump "
+                "CATALOG_SCHEMA_VERSION.",
+                len(stale),
+                "y is" if len(stale) == 1 else "ies are",
+                ", ".join(sorted(stale)[:8]),
+            )
+    except Exception:  # noqa: BLE001 — startup hook must never block app boot
+        logger.exception("pricing: audit freshness check raised at startup")
 
     return app
 
