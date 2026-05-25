@@ -192,6 +192,53 @@ class PaperClaimMap(BaseModel):
             return "; ".join(str(x)[:200] for x in v[:20])
         return str(v)[:2000]
 
+    # Lane W — list[str] / list[Ambiguity] coercion. The LLM frequently passes
+    # `hardware_clues="GPU"` or `hardware_clues="NVIDIA K40c, 24GB"` (a string)
+    # where the schema expects list[str]. Same shape as the claims/datasets
+    # regression — same surgical fix. Splits on commas / semicolons / slashes
+    # / " and " so multi-item strings still parse into separate clues.
+    @staticmethod
+    def _coerce_to_str_list(v: Any) -> Any:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            # Coerce each element to str so a stray int/None never breaks list[str].
+            return [str(x) for x in v if x is not None]
+        if isinstance(v, (tuple, set)):
+            return [str(x) for x in v if x is not None]
+        if isinstance(v, str):
+            import re as _re
+            parts = [p.strip() for p in _re.split(r",|;|/|\band\b", v) if p.strip()]
+            return parts or ([v.strip()] if v.strip() else [])
+        return [str(v)]
+
+    @field_validator("hardware_clues", mode="before")
+    @classmethod
+    def _coerce_hardware_clues(cls, v: Any) -> Any:
+        return cls._coerce_to_str_list(v)
+
+    @field_validator("ambiguities", mode="before")
+    @classmethod
+    def _coerce_ambiguities(cls, v: Any) -> Any:
+        # LLM-natural shapes:
+        #   * None → []
+        #   * str → single Ambiguity with bare detail and an auto-id.
+        #   * list[str] → one Ambiguity per item with auto-ids A001, A002…
+        #   * list[dict] / list[Ambiguity] → pass through (pydantic validates).
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [{"assumption_id": "A001", "detail": v}]
+        if not isinstance(v, list):
+            return v
+        coerced = []
+        for i, item in enumerate(v, start=1):
+            if isinstance(item, str):
+                coerced.append({"assumption_id": f"A{i:03d}", "detail": item})
+            else:
+                coerced.append(item)
+        return coerced
+
     @field_validator("model_architecture", mode="before")
     @classmethod
     def _coerce_model_architecture(cls, v: Any) -> Any:

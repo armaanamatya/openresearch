@@ -259,3 +259,94 @@ def test_str_fields_pass_through_unchanged():
     assert pcm.core_contribution == "A clear sentence about the contribution."
     assert "MLP 784-800-800-10" in pcm.model_architecture
     assert "train/val/test" in pcm.evaluation_protocol
+
+
+# ---------------------------------------------------------------------------
+# PaperClaimMap — hardware_clues coercion (Lane W; 2026-05-25 VAE regression)
+# ---------------------------------------------------------------------------
+# Root LLM in the RLM REPL routinely writes `method_spec["hardware_clues"]` as
+# a bare string ("GPU", "NVIDIA Tesla K40c, 24GB RAM") instead of list[str].
+# Without coercion this raised `ValidationError: hardware_clues: Input should
+# be a valid list` and forced the root to burn one full iteration recovering.
+
+def test_hardware_clues_bare_string_wrapped_in_list():
+    pcm = PaperClaimMap(core_contribution="x", hardware_clues="GPU")
+    assert pcm.hardware_clues == ["GPU"]
+
+
+def test_hardware_clues_comma_separated_split():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        hardware_clues="NVIDIA Tesla K40c, 24GB RAM, CUDA 11",
+    )
+    assert pcm.hardware_clues == ["NVIDIA Tesla K40c", "24GB RAM", "CUDA 11"]
+
+
+def test_hardware_clues_and_separator():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        hardware_clues="RTX 4090 and 64GB RAM",
+    )
+    assert pcm.hardware_clues == ["RTX 4090", "64GB RAM"]
+
+
+def test_hardware_clues_none_becomes_empty_list():
+    pcm = PaperClaimMap(core_contribution="x", hardware_clues=None)
+    assert pcm.hardware_clues == []
+
+
+def test_hardware_clues_list_passes_through():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        hardware_clues=["8x V100", "256GB RAM"],
+    )
+    assert pcm.hardware_clues == ["8x V100", "256GB RAM"]
+
+
+def test_hardware_clues_tuple_coerced_to_list():
+    pcm = PaperClaimMap(core_contribution="x", hardware_clues=("A100", "H100"))
+    assert pcm.hardware_clues == ["A100", "H100"]
+
+
+def test_hardware_clues_strips_nones_and_coerces_non_strings():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        hardware_clues=["A100", None, 8, "TPU v4"],
+    )
+    assert pcm.hardware_clues == ["A100", "8", "TPU v4"]
+
+
+# ---------------------------------------------------------------------------
+# PaperClaimMap — ambiguities coercion (same shape, will hit next without it)
+# ---------------------------------------------------------------------------
+
+def test_ambiguities_bare_string_becomes_single_assumption():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        ambiguities="learning-rate schedule not specified",
+    )
+    assert len(pcm.ambiguities) == 1
+    assert pcm.ambiguities[0].assumption_id == "A001"
+    assert pcm.ambiguities[0].detail == "learning-rate schedule not specified"
+
+
+def test_ambiguities_list_of_strings_gets_auto_ids():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        ambiguities=["batch size missing", "weight decay unclear"],
+    )
+    assert [a.assumption_id for a in pcm.ambiguities] == ["A001", "A002"]
+    assert pcm.ambiguities[0].detail == "batch size missing"
+
+
+def test_ambiguities_dict_passes_through():
+    pcm = PaperClaimMap(
+        core_contribution="x",
+        ambiguities=[{"assumption_id": "Z999", "detail": "x"}],
+    )
+    assert pcm.ambiguities[0].assumption_id == "Z999"
+
+
+def test_ambiguities_none_becomes_empty_list():
+    pcm = PaperClaimMap(core_contribution="x", ambiguities=None)
+    assert pcm.ambiguities == []

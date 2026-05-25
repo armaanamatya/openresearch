@@ -957,6 +957,7 @@ async def _execute_in_sandbox(
     sandbox_mode: object = None,
     run_budget: object = None,
     gpu_plan: object = None,
+    gpu_mode: object = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -992,12 +993,22 @@ async def _execute_in_sandbox(
     service = RuntimeAppService(_backend_for_sandbox_mode(
         sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan,
     ))
+    # gpu_mode threads ctx.gpu_mode → SandboxConfig so LocalDockerBackend's
+    # is_gpu_passthrough_mode predicate sees the user's actual choice. Without
+    # this the SandboxConfig default ("auto") makes --gpus all silently
+    # skipped, and the container runs CPU-only even with --gpu-mode prefer.
+    _gpu_mode_str = (
+        getattr(gpu_mode, "value", str(gpu_mode))
+        if gpu_mode is not None
+        else "auto"
+    )
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
         image=env_id,
         project_root=code_dir,
         artifact_root=artifact_root,
+        gpu_mode=_gpu_mode_str,
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -1692,6 +1703,7 @@ def run_experiment(
                         sandbox_mode=ctx.sandbox_mode,
                         run_budget=ctx.run_budget,
                         gpu_plan=gpu_plan,
+                        gpu_mode=getattr(ctx, "gpu_mode", None),
                     ),
                 ).result(timeout=timeout)
             except concurrent.futures.TimeoutError:
