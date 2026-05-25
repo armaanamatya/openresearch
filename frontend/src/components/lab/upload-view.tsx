@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 
 import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
+import type { ProviderCredentialsInput } from "@/hooks/use-run";
 
 // ---------------------------------------------------------------------------
 // Sandbox options — surface the two end-user-relevant choices.
@@ -74,6 +75,7 @@ export function UploadView({
   vramGb,
   minimizeCompute,
   sandbox,
+  providerCredentials,
   onRootProviderChange,
   onSubagentAuthChange,
   onDynamicGpuChange,
@@ -82,6 +84,7 @@ export function UploadView({
   onVramGbChange,
   onMinimizeComputeChange,
   onSandboxChange,
+  onProviderCredentialsChange,
 }: {
   arxiv: string;
   authStatus: AuthStatus | null;
@@ -105,6 +108,7 @@ export function UploadView({
   vramGb: number;
   minimizeCompute: boolean;
   sandbox: DemoSandboxMode;
+  providerCredentials: ProviderCredentialsInput;
   onRootProviderChange: (value: RootProvider) => void;
   onSubagentAuthChange: (value: SubagentAuth) => void;
   onDynamicGpuChange: (value: boolean) => void;
@@ -113,9 +117,29 @@ export function UploadView({
   onVramGbChange: (value: number) => void;
   onMinimizeComputeChange: (value: boolean) => void;
   onSandboxChange: (value: DemoSandboxMode) => void;
+  onProviderCredentialsChange: (value: ProviderCredentialsInput) => void;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // BYO keys: per-session reveal toggle keyed by field name. Defaults to
+  // hidden so a casual screenshot won't expose the value. The credentials
+  // themselves are kept in `providerCredentials` (parent state, in-memory
+  // only — never written to localStorage).
+  const [revealKey, setRevealKey] = useState<Record<string, boolean>>({});
+  const setCredField = (key: keyof ProviderCredentialsInput, value: string): void => {
+    onProviderCredentialsChange({ ...providerCredentials, [key]: value });
+  };
+  const toggleReveal = (key: string): void => {
+    setRevealKey((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  // Show the BYO key block when the picked provider has a typeable key
+  // surface. anthropic_oauth + featherless don't surface here:
+  // - oauth uses the local `claude login` subscription, no key.
+  // - featherless is operator-only (cheapest plan), not a per-run BYO surface.
+  const showAnthropicKey = rootProvider === "anthropic_api";
+  const showOpenAIKey = rootProvider === "openai_api";
+  const showAzureFields = rootProvider === "azure_openai";
+  const showCredentialsBlock = showAnthropicKey || showOpenAIKey || showAzureFields;
 
   const providers: RootProvider[] = [
     "anthropic_api",
@@ -398,6 +422,94 @@ export function UploadView({
         );
       })()}
 
+      {/* ── BYO API keys (optional) ─────────────────────────────── */}
+      {showCredentialsBlock ? (
+        <fieldset className="upload-provider-fieldset upload-byo-fieldset" disabled={busy}>
+          <legend className="upload-config-label">API keys (optional)</legend>
+          <p className="upload-byo-hint">
+            Paste a key to use it for this run only. Values are sent to the
+            backend over localhost and injected into the run subprocess&apos;s
+            env — never persisted to disk and never echoed in logs.
+          </p>
+          {showAnthropicKey ? (
+            <ByoKeyField
+              fieldName="anthropic_api_key"
+              label="ANTHROPIC_API_KEY"
+              placeholder="sk-ant-…"
+              value={providerCredentials.anthropic_api_key ?? ""}
+              revealed={revealKey.anthropic_api_key ?? false}
+              onChange={(v) => setCredField("anthropic_api_key", v)}
+              onToggleReveal={() => toggleReveal("anthropic_api_key")}
+              hint={
+                authStatus?.providers.anthropic_api?.available
+                  ? "Overrides the server-side ANTHROPIC_API_KEY for this run."
+                  : "Server-side key not set — provide one to run via Anthropic."
+              }
+              busy={busy}
+            />
+          ) : null}
+          {showOpenAIKey ? (
+            <ByoKeyField
+              fieldName="openai_api_key"
+              label="OPENAI_API_KEY"
+              placeholder="sk-…"
+              value={providerCredentials.openai_api_key ?? ""}
+              revealed={revealKey.openai_api_key ?? false}
+              onChange={(v) => setCredField("openai_api_key", v)}
+              onToggleReveal={() => toggleReveal("openai_api_key")}
+              hint={
+                authStatus?.providers.openai_api?.available
+                  ? "Overrides the server-side OPENAI_API_KEY for this run."
+                  : "Server-side key not set — provide one to run via OpenAI."
+              }
+              busy={busy}
+            />
+          ) : null}
+          {showAzureFields ? (
+            <>
+              <ByoKeyField
+                fieldName="azure_openai_api_key"
+                label="AZURE_OPENAI_API_KEY"
+                placeholder="32-char key from Azure portal"
+                value={providerCredentials.azure_openai_api_key ?? ""}
+                revealed={revealKey.azure_openai_api_key ?? false}
+                onChange={(v) => setCredField("azure_openai_api_key", v)}
+                onToggleReveal={() => toggleReveal("azure_openai_api_key")}
+                hint=""
+                busy={busy}
+              />
+              <ByoTextField
+                fieldName="azure_openai_endpoint"
+                label="AZURE_OPENAI_ENDPOINT"
+                placeholder="https://my-resource.openai.azure.com"
+                value={providerCredentials.azure_openai_endpoint ?? ""}
+                onChange={(v) => setCredField("azure_openai_endpoint", v)}
+                hint="Required for Azure. The resource URL — without a trailing path."
+                busy={busy}
+              />
+              <ByoTextField
+                fieldName="azure_openai_deployment"
+                label="AZURE_OPENAI_DEPLOYMENT"
+                placeholder="gpt-4o"
+                value={providerCredentials.azure_openai_deployment ?? ""}
+                onChange={(v) => setCredField("azure_openai_deployment", v)}
+                hint="Optional. Defaults to the model name."
+                busy={busy}
+              />
+              <ByoTextField
+                fieldName="azure_openai_api_version"
+                label="AZURE_OPENAI_API_VERSION"
+                placeholder="2024-10-21 (current GA)"
+                value={providerCredentials.azure_openai_api_version ?? ""}
+                onChange={(v) => setCredField("azure_openai_api_version", v)}
+                hint="Optional. Leave blank to use the backend default."
+                busy={busy}
+              />
+            </>
+          ) : null}
+        </fieldset>
+      ) : null}
+
       {/* ── Minimize compute (top-level — reproduction philosophy choice) ── */}
       <fieldset className="upload-provider-fieldset" disabled={busy}>
         <legend className="upload-config-label">Reproduction style</legend>
@@ -488,6 +600,109 @@ export function UploadView({
       </details>
 
       {error ? <p className="upload-error">{error}</p> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BYO key helper components — local to upload-view.
+// Kept small + uncontrolled-state-free; parent owns the value, this just
+// renders the input + reveal toggle. type="password" by default; "text"
+// when the user explicitly clicks the show toggle.
+// ---------------------------------------------------------------------------
+
+interface ByoKeyFieldProps {
+  fieldName: string;
+  label: string;
+  placeholder: string;
+  value: string;
+  revealed: boolean;
+  onChange: (value: string) => void;
+  onToggleReveal: () => void;
+  hint: string;
+  busy: boolean;
+}
+
+function ByoKeyField({
+  fieldName,
+  label,
+  placeholder,
+  value,
+  revealed,
+  onChange,
+  onToggleReveal,
+  hint,
+  busy,
+}: ByoKeyFieldProps) {
+  return (
+    <div className="upload-byo-row">
+      <label className="upload-byo-label" htmlFor={`byo-${fieldName}`}>
+        {label}
+      </label>
+      <div className="upload-byo-input-wrap">
+        <input
+          id={`byo-${fieldName}`}
+          type={revealed ? "text" : "password"}
+          autoComplete="off"
+          spellCheck={false}
+          className="upload-byo-input mono"
+          value={value}
+          disabled={busy}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          className="upload-byo-reveal"
+          aria-pressed={revealed}
+          aria-label={revealed ? "Hide key" : "Show key"}
+          disabled={busy}
+          onClick={onToggleReveal}
+        >
+          {revealed ? "Hide" : "Show"}
+        </button>
+      </div>
+      {hint ? <p className="upload-byo-fieldhint">{hint}</p> : null}
+    </div>
+  );
+}
+
+interface ByoTextFieldProps {
+  fieldName: string;
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  hint: string;
+  busy: boolean;
+}
+
+function ByoTextField({
+  fieldName,
+  label,
+  placeholder,
+  value,
+  onChange,
+  hint,
+  busy,
+}: ByoTextFieldProps) {
+  return (
+    <div className="upload-byo-row">
+      <label className="upload-byo-label" htmlFor={`byo-${fieldName}`}>
+        {label}
+      </label>
+      <input
+        id={`byo-${fieldName}`}
+        type="text"
+        autoComplete="off"
+        spellCheck={false}
+        className="upload-byo-input mono"
+        value={value}
+        disabled={busy}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {hint ? <p className="upload-byo-fieldhint">{hint}</p> : null}
     </div>
   );
 }

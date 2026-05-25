@@ -112,6 +112,36 @@ export function coalesceRunState(
   };
 }
 
+// Drop undefined/empty fields from the BYO credentials object so we
+// don't send a payload that fails the backend's strip-then-validate
+// path. Returns null when no field carries a value so callers can
+// branch on "did the user provide anything" cleanly.
+function compactProviderCredentials(
+  raw: ProviderCredentialsInput | undefined
+): Record<string, string> | null {
+  if (!raw) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "string" && v.trim()) {
+      out[k] = v.trim();
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// Per-run bring-your-own LLM credentials. Mirrors the backend
+// ProviderCredentials Pydantic model. Whichever fields are non-empty
+// are forwarded; empty strings/undefined are stripped before submit
+// so the backend's edge validator sees a clean object.
+export interface ProviderCredentialsInput {
+  anthropic_api_key?: string;
+  openai_api_key?: string;
+  azure_openai_api_key?: string;
+  azure_openai_endpoint?: string;
+  azure_openai_deployment?: string;
+  azure_openai_api_version?: string;
+}
+
 export interface ProviderRunOptions {
   rootProvider?: string;
   subagentAuth?: string;
@@ -122,6 +152,9 @@ export interface ProviderRunOptions {
   // Lane Q — "reproduce the CLAIM, not the recipe" mode. Pipes to the
   // baseline-implementation prompt's _MINIMIZE_COMPUTE_BLOCK.
   minimizeCompute?: boolean;
+  // Bring-your-own LLM credentials — never persisted, scoped to this
+  // run's subprocess via the backend's _subprocess_env merge.
+  providerCredentials?: ProviderCredentialsInput;
 }
 
 export interface UseRunResult {
@@ -472,6 +505,8 @@ export function useRun(
       if (opts.maxGpuUsdPerHour != null) formData.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) formData.set("vramGb", String(opts.vramGb));
       if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
+      const creds = compactProviderCredentials(opts.providerCredentials);
+      if (creds) formData.set("providerCredentials", JSON.stringify(creds));
       formData.set("paper", file);
       const response = await postRunRequest("/api/demo", {
         method: "POST",
@@ -520,6 +555,9 @@ export function useRun(
           ...(opts.maxGpuUsdPerHour != null ? { max_gpu_usd_per_hour: opts.maxGpuUsdPerHour } : {}),
           ...(opts.vramGb != null ? { vram_gb: opts.vramGb } : {}),
           ...(opts.minimizeCompute != null ? { minimize_compute: opts.minimizeCompute } : {}),
+          ...(compactProviderCredentials(opts.providerCredentials)
+            ? { provider_credentials: compactProviderCredentials(opts.providerCredentials) }
+            : {}),
         })
       });
       if (!response.ok) {

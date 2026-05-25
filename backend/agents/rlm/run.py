@@ -88,7 +88,13 @@ logger = logging.getLogger(__name__)
 # --- Tuning constants ------------------------------------------------------
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
-_DEFAULT_WALL_CLOCK_S = 3600.0
+# 2026-05-25 — wall-clock ceiling is now FULLY USER-CONTROLLED. When no
+# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set,
+# the run is unbounded. Adam (1412.6980) and Dropout (1207.0580) both
+# hard-stopped at 4h/2h ceilings under the old default; the user mandate
+# is "no ceiling unless the operator opts in." The watchdog still fires
+# but only when a deadline was explicitly requested.
+_DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
 
@@ -533,12 +539,12 @@ def _write_demo_status(
 
 
 def _arm_watchdog(
-    deadline_s: float,
+    deadline_s: float | None,
     *,
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
-) -> threading.Timer:
+) -> threading.Timer | None:
     """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
 
     ``rlm``'s ``max_timeout`` only checks between iterations; a primitive wedged
@@ -550,8 +556,11 @@ def _arm_watchdog(
 
     ``iteration_count`` is a zero-arg callable returning the iterations done so
     far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
-    it on normal completion.
+    it on normal completion. Returns ``None`` when ``deadline_s`` is ``None``
+    (no ceiling): the watchdog is fully bypassed and there is nothing to cancel.
     """
+    if deadline_s is None:
+        return None
     def _fire() -> None:
         logger.error(
             "run_pipeline_rlm: wall-clock watchdog fired (%.0fs + %.0fs grace) — "
@@ -659,7 +668,12 @@ async def run_pipeline_rlm(
     )
     dashboard = DashboardEmitter(project_id, runs_root)
     emit = make_emit(dashboard)
-    wall_clock_s = _DEFAULT_WALL_CLOCK_S
+    # wall_clock_s is intentionally Optional[float] — None means unbounded
+    # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
+    # the operator must opt-in to a ceiling via --max-wall-clock or
+    # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
+    # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
+    wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
     if run_budget is not None and run_budget.max_wall_clock_seconds:
         wall_clock_s = float(run_budget.max_wall_clock_seconds)
 
@@ -743,7 +757,11 @@ async def run_pipeline_rlm(
             else None
         ),
         run_budget=run_budget,
-        deadline_utc=datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s),  # M-DEADLINE
+        deadline_utc=(
+            datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s)
+            if wall_clock_s is not None
+            else None
+        ),  # M-DEADLINE — None when no wall-clock ceiling was requested.
         vram_override=_vram_override,
         scope_spec=_scope_spec,
         arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
@@ -977,7 +995,9 @@ async def run_pipeline_rlm(
         run_failed = True
         logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
     finally:
-        watchdog.cancel()
+        # Watchdog is None when no wall-clock ceiling was requested.
+        if watchdog is not None:
+            watchdog.cancel()
 
     # 12. Build, write, and report (close event_store in finally — A4-9).
     try:

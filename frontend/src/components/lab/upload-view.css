@@ -292,6 +292,100 @@
   white-space: nowrap;
 }
 
+/* ── BYO key fields (optional, conditional on root provider) ────────────── */
+
+.upload-byo-fieldset {
+  /* tighter, less-prominent than the surrounding radio groups: this is
+     an opt-in surface, not a default knob. */
+  border: 1px dashed var(--line-2);
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+}
+
+.upload-byo-hint {
+  margin: 2px 0 8px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.upload-byo-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.upload-byo-row:last-child {
+  margin-bottom: 0;
+}
+
+.upload-byo-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.upload-byo-input-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.upload-byo-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.upload-byo-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 25%, var(--panel));
+}
+
+.upload-byo-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.upload-byo-reveal {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.upload-byo-reveal:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.upload-byo-reveal:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.upload-byo-fieldhint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-muted);
+  line-height: 1.35;
+}
+
 .upload-provider-badge {
   font-size: 11px;
   font-family: var(--font-mono);

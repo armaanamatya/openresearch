@@ -7,7 +7,18 @@ temperature=0 for deterministic recursion replay.
 
 from __future__ import annotations
 
+import os
+
 from backend.services.context.workspace.tools._retry import with_429_backoff
+
+# Current Azure OpenAI Chat Completions GA used as the default when the
+# operator (or BYO body) doesn't specify one. 2024-10-21 is the
+# longest-stable GA that supports gpt-4o, gpt-4o-mini, o1, and
+# structured-output JSON mode — picked over the older 2024-02-01 that
+# the rlm library still ships with. Override per-deployment by setting
+# ``AZURE_OPENAI_API_VERSION`` in the run env, or by passing
+# ``azure_openai_api_version`` in the upload form's BYO credentials.
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 
 class AzureOpenAILlmClient:
@@ -18,8 +29,8 @@ class AzureOpenAILlmClient:
         ``https://<resource>.openai.azure.com``.
       - ``azure_deployment``: deployment name (may differ from model name).
 
-    ``api_version`` defaults to ``"2024-02-01"`` — the same default the rlm
-    library's own AzureOpenAIClient uses.
+    ``api_version`` resolves in this order: constructor arg → the
+    ``AZURE_OPENAI_API_VERSION`` env var → ``DEFAULT_AZURE_OPENAI_API_VERSION``.
     """
 
     def __init__(
@@ -29,17 +40,22 @@ class AzureOpenAILlmClient:
         api_key: str | None = None,
         azure_endpoint: str,
         azure_deployment: str | None = None,
-        api_version: str = "2024-02-01",
+        api_version: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 300.0,
     ) -> None:
         from openai import AzureOpenAI
 
+        resolved_version = (
+            api_version
+            or os.environ.get("AZURE_OPENAI_API_VERSION")
+            or DEFAULT_AZURE_OPENAI_API_VERSION
+        )
         self._client = AzureOpenAI(
             api_key=api_key,
             azure_endpoint=azure_endpoint,
             azure_deployment=azure_deployment,
-            api_version=api_version,
+            api_version=resolved_version,
             timeout=timeout,
             max_retries=6,
         )

@@ -11,6 +11,7 @@ import { UploadView } from "./upload-view";
 import { LabSidebar } from "./lab-sidebar";
 import { CommandPalette } from "./command-palette";
 import { ShortcutOverlay } from "./shortcut-overlay";
+import type { ProviderCredentialsInput } from "@/hooks/use-run";
 import { useRun } from "@/hooks/use-run";
 import { useCommandPalette } from "@/hooks/use-command-palette";
 import { useShortcutOverlay } from "@/hooks/use-shortcut-overlay";
@@ -154,6 +155,10 @@ export function LabShell({
   // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
   // prefs so the user's preferred reproduction style sticks across reloads.
   const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
+  // Bring-your-own API keys. Kept in-memory only — never persisted to
+  // localStorage by default, so a page reload requires the user to retype.
+  // This is the safest default for credentials a user typed into a browser.
+  const [providerCredentials, setProviderCredentials] = useState<ProviderCredentialsInput>({});
   // Sandbox default: user's saved pref → server-side REPROLAB_DEFAULT_SANDBOX → "docker".
   // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
   // the fallback without requiring a code change.
@@ -179,6 +184,7 @@ export function LabShell({
     maxGpuUsdPerHour: maxGpuUsdPerHour > 0 ? maxGpuUsdPerHour : undefined,
     vramGb: vramGb > 0 ? vramGb : undefined,
     minimizeCompute: minimizeCompute || undefined,
+    providerCredentials,
   });
 
   const palette = useCommandPalette();
@@ -260,6 +266,8 @@ export function LabShell({
                 setMinimizeCompute(value);
                 writeProviderPrefs({ ...readProviderPrefs(), minimize_compute: value });
               }}
+              providerCredentials={providerCredentials}
+              onProviderCredentialsChange={setProviderCredentials}
             />
           )}
         </RlmFixtureContent>

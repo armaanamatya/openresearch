@@ -30,7 +30,7 @@ _WATCHDOG_POLL_INTERVAL = 2.0    # seconds between stderr re-reads
 
 import logging
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from backend.config import get_settings
 
@@ -43,6 +43,126 @@ SandboxMode = Literal["auto", "docker", "local", "runpod"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
 ModelChoice = str
 RunStatus = Literal["queued", "running", "stopped", "completed", "failed"]
+
+
+class ProviderCredentials(BaseModel):
+    """Per-run bring-your-own LLM credentials.
+
+    Optional override for the credentials normally read from environment
+    variables at backend startup. When present, the named values are merged
+    into the run subprocess's env dict so the LLM client constructors pick
+    them up via the existing ``os.environ`` lookups — never persisted to
+    disk, never reflected in SSE events, never echoed in logs.
+
+    All fields are marked ``repr=False`` so pydantic's auto-repr scrubs them.
+    ``model_dump()`` and ``model_dump_json()`` are overridden to emit
+    ``"***"`` placeholders for any non-None secret value while still
+    returning the endpoint/deployment/api_version verbatim (those are not
+    secrets — they identify the resource).
+    """
+
+    anthropic_api_key: str | None = Field(default=None, repr=False)
+    openai_api_key: str | None = Field(default=None, repr=False)
+    azure_openai_api_key: str | None = Field(default=None, repr=False)
+    azure_openai_endpoint: str | None = Field(default=None, repr=False)
+    azure_openai_deployment: str | None = Field(default=None, repr=False)
+    azure_openai_api_version: str | None = Field(default=None, repr=False)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator(
+        "anthropic_api_key",
+        "openai_api_key",
+        "azure_openai_api_key",
+        "azure_openai_endpoint",
+        "azure_openai_deployment",
+        "azure_openai_api_version",
+        mode="before",
+    )
+    @classmethod
+    def _normalize(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        if len(s) > 512:
+            # 512 covers Anthropic (109), OpenAI (51), Azure key (84) + a
+            # generous safety margin without inviting megabyte-scale payloads.
+            raise ValueError("credential value exceeds 512 characters")
+        if any(c in s for c in ("\n", "\r", "\x00")):
+            # Reject control characters — they can't appear in any real
+            # credential and could smuggle env-var injection on Windows.
+            raise ValueError("credential value contains control characters")
+        return s
+
+    @field_validator("azure_openai_endpoint")
+    @classmethod
+    def _validate_endpoint(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("https://"):
+            raise ValueError("azure_openai_endpoint must start with https://")
+        return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _validate_azure_completeness(self) -> "ProviderCredentials":
+        # If the user supplied any Azure-shaped field, require at least the
+        # key + endpoint pair — partial config silently falls back to env
+        # at runtime, masking the user's intent and producing a misleading
+        # "credentials missing" failure deep inside the agent run.
+        azure_any = any(
+            (
+                self.azure_openai_api_key,
+                self.azure_openai_endpoint,
+                self.azure_openai_deployment,
+                self.azure_openai_api_version,
+            )
+        )
+        if azure_any and not (self.azure_openai_api_key and self.azure_openai_endpoint):
+            raise ValueError(
+                "Azure BYO credentials are incomplete: provide both "
+                "azure_openai_api_key and azure_openai_endpoint."
+            )
+        return self
+
+    def to_env_overrides(self) -> dict[str, str]:
+        """Return env var names → values for the spawned subprocess.
+
+        Only emits keys for fields the user actually set. Empty result is
+        safe — ``_subprocess_env`` then takes the no-op merge path.
+        """
+        out: dict[str, str] = {}
+        if self.anthropic_api_key:
+            out["ANTHROPIC_API_KEY"] = self.anthropic_api_key
+        if self.openai_api_key:
+            out["OPENAI_API_KEY"] = self.openai_api_key
+        if self.azure_openai_api_key:
+            out["AZURE_OPENAI_API_KEY"] = self.azure_openai_api_key
+        if self.azure_openai_endpoint:
+            out["AZURE_OPENAI_ENDPOINT"] = self.azure_openai_endpoint
+        if self.azure_openai_deployment:
+            out["AZURE_OPENAI_DEPLOYMENT"] = self.azure_openai_deployment
+        if self.azure_openai_api_version:
+            out["AZURE_OPENAI_API_VERSION"] = self.azure_openai_api_version
+        return out
+
+    @model_serializer
+    def _serialize_scrubbed(self) -> dict[str, str | None]:
+        # Fired by pydantic for every model_dump / model_dump_json call,
+        # including when this model is nested inside StartRunRequest. The
+        # raw values therefore cannot leak through any pydantic-driven
+        # serialization path. Endpoint / deployment / api_version are
+        # resource identifiers (not secrets) so we emit them verbatim —
+        # a future audit log can confirm which Azure resource was hit.
+        return {
+            "anthropic_api_key": "***" if self.anthropic_api_key else None,
+            "openai_api_key": "***" if self.openai_api_key else None,
+            "azure_openai_api_key": "***" if self.azure_openai_api_key else None,
+            "azure_openai_endpoint": self.azure_openai_endpoint,
+            "azure_openai_deployment": self.azure_openai_deployment,
+            "azure_openai_api_version": self.azure_openai_api_version,
+        }
 
 
 class StartRunRequest(BaseModel):
@@ -73,6 +193,11 @@ class StartRunRequest(BaseModel):
     # paper schedules for modern fast equivalents (annotated in
     # scope.declared_reductions).
     minimize_compute: bool | None = None
+    # Bring-your-own LLM credentials — see ProviderCredentials docstring.
+    # When None the existing env-var / .env path is the sole source of
+    # truth. When set, the listed keys take precedence over .env *for
+    # this run's subprocess only* (never written to disk).
+    provider_credentials: ProviderCredentials | None = Field(default=None, repr=False)
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -364,6 +489,13 @@ class FileLiveRunService:
         if request.verificationProvider:
             env["REPROLAB_VERIFICATION_PROVIDER"] = request.verificationProvider
 
+        # Bring-your-own credentials — these override .env (and process env)
+        # for the subprocess only, because the user explicitly typed them
+        # in the upload form for *this* run. Nothing is written to disk.
+        if request.provider_credentials is not None:
+            for key, value in request.provider_credentials.to_env_overrides().items():
+                env[key] = value
+
         return env
 
     async def start_run(self, request: StartRunRequest) -> LiveRunState:
@@ -424,6 +556,13 @@ class FileLiveRunService:
                 value = request_overrides.get(key)
                 if value is not None:
                     merged[key] = value
+            # BYO credentials are not persisted to demo_status.json so a
+            # vanilla resume won't see them — but if the caller passes a
+            # fresh provider_credentials dict in the override body, honor
+            # it. This is the same shape the start_run endpoint accepts.
+            byo = request_overrides.get("provider_credentials")
+            if byo is not None:
+                merged["provider_credentials"] = byo
         request = StartRunRequest(**{k: v for k, v in merged.items() if v is not None})
         # Re-derive uploaded_paper from the persisted source-pdf record so
         # _start_python_run can hand the same artifact back to the orchestrator

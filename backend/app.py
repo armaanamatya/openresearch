@@ -24,7 +24,11 @@ from backend.services.context.graph import KnowledgeGraphService
 from backend.services.context.memory import CrossProjectMemoryService, MemoryKind
 from backend.services.datasets import DatasetCacheService
 from backend.services.diagnostics import FailureDiagnosisService
-from backend.services.events.live_runs import FileLiveRunService, StartRunRequest
+from backend.services.events.live_runs import (
+    FileLiveRunService,
+    ProviderCredentials,
+    StartRunRequest,
+)
 from backend.services.research_workspace import ResearchWorkspaceService
 
 # ---------------------------------------------------------------------------
@@ -562,6 +566,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             gpuMode=request.gpuMode or "auto",
             model=request.model or "sonnet",
             minimize_compute=request.minimize_compute,
+            provider_credentials=request.provider_credentials,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -600,6 +605,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             # path was dropping minimize_compute silently. /runs/arxiv forwards
             # it (line ~564); this path now matches.
             minimize_compute=_optional_form_bool(form, "minimizeCompute"),
+            provider_credentials=_optional_form_provider_credentials(form),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1026,6 +1032,9 @@ class StartArxivRunRequest(BaseModel):
     # StartRunRequest.minimize_compute when the lab UI passes it via
     # /api/demo/arxiv.
     minimize_compute: bool | None = None
+    # BYO LLM credentials — when present, override env-var defaults for
+    # this run's subprocess. Never persisted; see live_runs.ProviderCredentials.
+    provider_credentials: ProviderCredentials | None = None
 
 
 class ApprovalEvaluateRequest(BaseModel):
@@ -1107,3 +1116,39 @@ def _optional_form_bool(form: Any, key: str) -> bool | None:
     if v in {"false", "0", "no", "off"}:
         return False
     return None
+
+
+def _optional_form_provider_credentials(form: Any) -> ProviderCredentials | None:
+    """Parse the optional ``providerCredentials`` form field as JSON.
+
+    Multipart form fields are strings, so the BYO-key dict has to be
+    JSON-stringified on the client. Empty or missing → None. Malformed
+    JSON or invalid pydantic shape → HTTP 400 with the validator's
+    actual error message (so the user sees "Azure config incomplete"
+    rather than a generic 500).
+    """
+    raw = form.get("providerCredentials")
+    if raw in (None, ""):
+        return None
+    try:
+        import json as _json
+        data = _json.loads(str(raw))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"providerCredentials field is not valid JSON: {exc}",
+        ) from exc
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="providerCredentials field must be a JSON object.",
+        )
+    if not data:
+        return None
+    try:
+        return ProviderCredentials(**data)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"providerCredentials validation failed: {exc}",
+        ) from exc

@@ -78,6 +78,8 @@ const DEFAULT_PROPS = {
   onVramGbChange: NOP,
   onMinimizeComputeChange: NOP,
   onSandboxChange: NOP,
+  providerCredentials: {},
+  onProviderCredentialsChange: NOP,
 };
 
 beforeEach(() => {
