@@ -475,7 +475,7 @@ _POD_SETUP_BLOCK = (
 
 
 # Lane γ: per_model metrics block
-_PER_MODEL_METRICS_BLOCK = (
+_PER_MODEL_METRICS_BLOCK_BASE = (
     "\n\nPER-MODEL METRICS — when the paper tests multiple model variants:\n"
     "If the paper specifies more than one model variant (e.g. Qwen2.5-0.5B and\n"
     "Qwen2.5-3B, or BERT-base and BERT-large), your `metrics.json` MUST include\n"
@@ -502,6 +502,59 @@ _PER_MODEL_METRICS_BLOCK = (
     "format is sufficient. Never fabricate `per_model` entries for variants you\n"
     "did not actually run — use `scope.models_skipped` instead.\n"
 )
+
+
+def _per_model_metrics_block(arxiv_id: str | None = None) -> str:
+    """Build the per-model metrics prompt block.
+
+    For multi-env papers (SDAR — alfworld + search_qa + webshop), the
+    paper YAML's ``datasets:`` block declares >1 environment.
+    ``load_paper_invariants`` exposes that as ``inv.multi_env``. When
+    set, we append a nested ``per_model[<model>].per_dataset[<env>]``
+    requirement + name the exact environment IDs the rubric grader
+    expects. Otherwise the base block is sufficient.
+    """
+    if not arxiv_id:
+        return _PER_MODEL_METRICS_BLOCK_BASE
+    try:
+        from backend.agents.rlm.paper_invariants import load_paper_invariants
+        inv = load_paper_invariants(arxiv_id)
+    except Exception:  # noqa: BLE001 — never block on paper-hint loading
+        return _PER_MODEL_METRICS_BLOCK_BASE
+    if inv is None or not inv.multi_env:
+        return _PER_MODEL_METRICS_BLOCK_BASE
+
+    env_list = ", ".join(inv.multi_env)
+    env_example = inv.multi_env[0]
+    variants = ""
+    if inv.models is not None and inv.models.variants_required:
+        variants = (
+            f"\n  Variants the rubric grader expects (each must appear in "
+            f"`per_model` OR be honestly listed in `scope.models_skipped`): "
+            f"{', '.join(inv.models.variants_required)}.\n"
+        )
+    return _PER_MODEL_METRICS_BLOCK_BASE + (
+        "\n\nMULTI-ENV METRICS NESTING — this paper benchmarks across\n"
+        f"  multiple environments ({env_list}). Your `per_model` dict MUST\n"
+        f"  nest a `per_dataset` entry per environment so the rubric grader\n"
+        f"  can verify each (model, env) cell independently:\n"
+        f"    \"per_model\": {{\n"
+        f"      \"<model_short_name>\": {{\n"
+        f"        \"per_dataset\": {{\n"
+        f"          \"{env_example}\": {{\"<metric>\": <number>, ...}},\n"
+        + "".join(
+            f"          \"{e}\": {{\"<metric>\": <number>, ...}},\n"
+            for e in inv.multi_env[1:]
+        ) +
+        f"        }},\n"
+        f"        ...flat per-model metrics still allowed alongside per_dataset...\n"
+        f"      }},\n"
+        f"    }}\n"
+        f"  Use the EXACT environment keys above ({env_list}) — the rubric\n"
+        f"  grader pattern-matches on these short names. Skipped environments\n"
+        f"  belong in `scope.envs_skipped` with a one-line reason.\n"
+        + variants
+    )
 
 _RUNTIME_DETECTION_BLOCK = (
     "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
@@ -1412,7 +1465,9 @@ def _compute_constraint_guidance(
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
-    guidance += _PER_MODEL_METRICS_BLOCK
+    # Lane AA — per-model block adapts to multi-env papers (SDAR-style)
+    # by nesting per_dataset under each model. Arxiv id drives the lookup.
+    guidance += _per_model_metrics_block(arxiv_id=arxiv_id)
     # Lane Q — minimize-compute substitution rules + scope.declared_reductions
     # contract. Only injected when the user opted in via the CLI flag or the
     # lab UI checkbox; strict reproduction stays the default.

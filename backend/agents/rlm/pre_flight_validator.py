@@ -826,6 +826,72 @@ def _check_optimizer_double_keyword(
             ))
 
 
+def _check_loss_terms_present(
+    code_dir: Path,
+    loss_invariants: tuple,  # tuple[LossInvariant, ...]
+    out: list[PreFlightViolation],
+) -> None:
+    """Block dispatch when train.py doesn't reference the paper's algorithm
+    tokens. Catches the regression where the agent silently substitutes the
+    paper's algorithm with a simpler one (e.g. SDAR's L = L_GRPO + λ·L_OPSD
+    becomes vanilla CE).
+
+    For each declared ``LossInvariant``, count how many of its required
+    tokens appear in train.py source text. If fewer than
+    ``min_matching_tokens`` match, emit a hard violation. Source-text
+    grep (case-insensitive) tolerates the agent's variable-naming
+    paraphrasing — what we want is presence of the algorithmic concept,
+    not exact symbol identity.
+    """
+    if not loss_invariants:
+        return
+    # Read every train*.py + exp_*.py file's source text once.
+    candidate_paths: list[Path] = []
+    for p in code_dir.glob("**/*.py"):
+        if p.name == "train.py" or p.name.startswith("exp_") or p.name == "main.py":
+            candidate_paths.append(p)
+    if not candidate_paths:
+        return
+    corpus = ""
+    for p in candidate_paths:
+        try:
+            corpus += "\n" + p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+    corpus_lower = corpus.lower()
+    if not corpus_lower.strip():
+        return
+    for inv in loss_invariants:
+        matches: list[str] = []
+        for tok in inv.required_tokens:
+            if tok.lower() in corpus_lower:
+                matches.append(tok)
+        if len(matches) < inv.min_matching_tokens:
+            missing = [t for t in inv.required_tokens if t not in matches]
+            out.append(PreFlightViolation(
+                severity="hard",
+                area="Method fidelity to the paper",
+                detail=(
+                    f"train.py / exp_*.py references only {len(matches)}/{len(inv.required_tokens)} "
+                    f"of the paper's `{inv.name}` algorithm tokens "
+                    f"({inv.required_tokens!r}); minimum required is "
+                    f"{inv.min_matching_tokens}. Matched: {matches!r}. "
+                    f"Missing: {missing!r}. The agent likely substituted "
+                    f"`{inv.name}` with a simpler loss (e.g. plain "
+                    f"cross-entropy), which silently invalidates the paper's "
+                    f"reproduction claim."
+                ),
+                hint=(
+                    f"Implement the `{inv.name}` loss faithfully — your "
+                    f"train.py should reference at least these symbols "
+                    f"(any naming): {', '.join(missing[:4])}. See the "
+                    f"paper's algorithm section for the exact form; the "
+                    f"paper-hint yaml's `algorithm_invariants.loss` field "
+                    f"names what's required."
+                ),
+            ))
+
+
 def _check_paper_invariants(
     code_dir: Path,
     trees: dict[Path, ast.AST],
@@ -866,6 +932,10 @@ def _check_paper_invariants(
         _check_real_model_loaded(
             trees, list(inv.models.canonical_models.values()), out
         )
+
+    # Loss-term enforcement (Lane AA — GRPO / OPSD / DPO / etc. dropped).
+    if inv.algorithm is not None and inv.algorithm.loss_invariants:
+        _check_loss_terms_present(code_dir, inv.algorithm.loss_invariants, out)
 
 
 def _check_stop_gradient_on_variables(

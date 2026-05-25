@@ -56,6 +56,77 @@ _SURROGATE_MODEL_TOKENS = (
 )
 
 
+# Registry of well-known training-algorithm token sets. When a paper YAML
+# declares a `loss` like ``"L = L_GRPO + lambda * L_OPSD"``, we parse the
+# algorithm names (case-insensitive substring) and pull the canonical
+# token set each algorithm's train.py implementation should reference.
+# Pre-flight then verifies the agent's train.py actually mentions those
+# tokens — catches "agent dropped GRPO entirely and used vanilla CE"
+# class regressions. Refresh as new RL/distillation algorithms land.
+_ALGORITHM_TOKEN_PATTERNS: dict[str, tuple[str, ...]] = {
+    # RL — policy gradient family
+    "grpo":      ("logprobs", "advantages", "ratio", "clip"),
+    "ppo":       ("logprobs", "advantages", "ratio", "clip"),
+    "trpo":      ("logprobs", "advantages", "kl"),
+    "reinforce": ("logprobs", "rewards"),
+    "dpo":       ("logprobs", "ref_logprobs", "beta"),
+    # Self-distillation family
+    "opsd":      ("teacher", "student", "sigmoid"),
+    "rlsd":     ("teacher", "student", "kl"),
+    "skill-sd":  ("teacher", "student", "skill"),
+    "kd":        ("teacher", "student", "kl"),
+    # Standard supervised
+    "ce":        ("cross_entropy",),
+    "mle":       ("log",),
+}
+
+
+@dataclass
+class LossInvariant:
+    """One algorithmic loss term that train.py must reference.
+
+    Extracted heuristically from ``algorithm_invariants.loss`` in the
+    paper YAML. The pre-flight check verifies at least
+    ``min_matching_tokens`` of ``required_tokens`` appear in the source
+    text of train.py. Tolerant of paraphrasing — the agent's variable
+    names may differ slightly from the canonical reference."""
+
+    name: str
+    required_tokens: tuple[str, ...]
+    min_matching_tokens: int = 2
+
+
+def _extract_loss_invariants(loss_str: str) -> tuple[LossInvariant, ...]:
+    """Heuristically parse ``"L = L_GRPO + lambda * L_OPSD"``-style strings.
+
+    Walks the string for any algorithm name in ``_ALGORITHM_TOKEN_PATTERNS``;
+    returns one ``LossInvariant`` per match. Case-insensitive substring,
+    word-boundary aware so ``"reinforce-style"`` matches but ``"reinforcement"``
+    does NOT (avoids over-matching).
+    """
+    if not loss_str:
+        return ()
+    import re as _re
+    out: list[LossInvariant] = []
+    for algo, tokens in _ALGORITHM_TOKEN_PATTERNS.items():
+        # Match algorithm name with non-alphanumeric boundaries — allows
+        # underscore-prefixed forms like ``L_GRPO`` (common in paper loss
+        # expressions) but rejects substring matches like ``REINFORCEment``
+        # (where the char after is alphabetic).
+        pattern = rf"(?<![A-Za-z0-9]){_re.escape(algo)}(?![A-Za-z0-9])"
+        if _re.search(pattern, loss_str, flags=_re.IGNORECASE):
+            # min_matching_tokens scales with the token set size: a 4-token
+            # algorithm requires 2 matches (50%); a 2-token algorithm
+            # requires 1.
+            mm = max(1, len(tokens) // 2)
+            out.append(LossInvariant(
+                name=algo.upper(),
+                required_tokens=tokens,
+                min_matching_tokens=mm,
+            ))
+    return tuple(out)
+
+
 @dataclass
 class AlgorithmInvariant:
     """Per-paper algorithmic invariants the agent's train.py must satisfy."""
@@ -74,6 +145,13 @@ class AlgorithmInvariant:
     """When True, the training loop is rollout-based (GRPO, PPO, REINFORCE)
     not epoch-based. Affects prompt text: per-epoch print cadence is
     replaced with per-rollout / per-policy-update cadence."""
+
+    loss_invariants: tuple[LossInvariant, ...] = ()
+    """Algorithm-specific token sets that train.py must reference. Derived
+    from the paper YAML's ``algorithm_invariants.loss`` field. The
+    pre-flight check verifies at least ``min_matching_tokens`` appear
+    in train.py source for each invariant; catches "agent dropped the
+    paper's algorithm and used vanilla CE" regressions."""
 
 
 @dataclass
@@ -165,14 +243,20 @@ def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> Paper
                 sg_vars = _DEFAULT_GATE_VARIABLE_NAMES
         rl_rollout = bool(algo_block.get("rl_rollout_centric", False))
         # Heuristic auto-detect: paper YAML names a GRPO / PPO loss term?
+        loss_str = str(algo_block.get("loss", ""))
         if not rl_rollout:
-            loss_str = str(algo_block.get("loss", "")).lower()
-            if "grpo" in loss_str or "ppo" in loss_str or "reinforce" in loss_str:
+            ll = loss_str.lower()
+            if "grpo" in ll or "ppo" in ll or "reinforce" in ll:
                 rl_rollout = True
+        # Parse loss invariants from the loss expression — catches the
+        # GRPO+OPSD class of regressions where the agent silently drops
+        # the paper's algorithm and substitutes vanilla CE.
+        loss_invariants = _extract_loss_invariants(loss_str)
         inv.algorithm = AlgorithmInvariant(
             stop_gradient_variables=sg_vars,
             real_model_required=bool(algo_block.get("real_model_required", False)),
             rl_rollout_centric=rl_rollout,
+            loss_invariants=loss_invariants,
         )
 
     # --- models_in_paper ---
@@ -213,10 +297,13 @@ def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> Paper
 
 __all__ = [
     "AlgorithmInvariant",
+    "LossInvariant",
     "ModelInvariants",
     "PaperInvariants",
     "load_paper_invariants",
     "_short_to_pyident",
+    "_extract_loss_invariants",
+    "_ALGORITHM_TOKEN_PATTERNS",
     "_DEFAULT_GATE_VARIABLE_NAMES",
     "_SURROGATE_MODEL_TOKENS",
 ]

@@ -1032,3 +1032,98 @@ def test_paper_invariants_load_sdar_yaml() -> None:
     # The yaml lists qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct (and 3b, 7b).
     assert "qwen3_1_7b" in inv.models.canonical_models
     assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B-Instruct"
+
+
+# ---------------------------------------------------------------------------
+# Lane AA — loss-term presence checks + multi-env nesting
+# ---------------------------------------------------------------------------
+
+
+def test_loss_invariants_parsed_from_sdar_yaml() -> None:
+    """SDAR yaml declares loss: L = L_GRPO + lambda * L_OPSD. Loader must
+    extract GRPO + OPSD as separate loss invariants."""
+    from backend.agents.rlm.paper_invariants import load_paper_invariants
+    inv = load_paper_invariants("2605.15155")
+    assert inv is not None
+    assert inv.algorithm is not None
+    names = {li.name for li in inv.algorithm.loss_invariants}
+    assert "GRPO" in names
+    assert "OPSD" in names
+
+
+def test_loss_terms_present_passes_with_full_grpo_implementation(tmp_path: Path) -> None:
+    """train.py with logprobs + advantages + ratio + clip → GRPO present."""
+    body = """\
+def grpo_step(model, batch):
+    logprobs = model.log_prob(batch.actions)
+    advantages = batch.rewards - batch.value
+    ratio = (logprobs - batch.old_logprobs).exp()
+    loss = -torch.min(ratio * advantages, torch.clamp(ratio, 0.8, 1.2) * advantages).mean()
+    return loss
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    grpo_v = [v for v in _hard(out) if "GRPO" in v.detail]
+    assert grpo_v == [], f"unexpected GRPO violation: {[v.detail[:80] for v in grpo_v]}"
+
+
+def test_loss_terms_missing_grpo_blocked(tmp_path: Path) -> None:
+    """train.py with vanilla CE (no GRPO tokens) → blocked when paper requires GRPO."""
+    body = """\
+import torch.nn.functional as F
+def train_step(model, x, y):
+    logits = model(x)
+    return F.cross_entropy(logits, y)
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    grpo_v = [v for v in _hard(out) if "GRPO" in v.detail]
+    assert grpo_v, f"missing GRPO violation; got: {[v.detail[:80] for v in _hard(out)]}"
+    assert "logprobs" in grpo_v[0].hint or "advantages" in grpo_v[0].hint
+
+
+def test_loss_terms_present_passes_with_opsd_distillation(tmp_path: Path) -> None:
+    """train.py with teacher + student + sigmoid → OPSD present."""
+    body = """\
+def opsd_step(student, teacher, x, beta):
+    student_logp = student.log_prob(x)
+    teacher_logp = teacher.log_prob(x).detach()
+    delta = student_logp - teacher_logp
+    gate = torch.sigmoid(beta * delta).detach()
+    return (gate * (student_logp - teacher_logp.detach()) ** 2).mean()
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    opsd_v = [v for v in _hard(out) if "OPSD" in v.detail]
+    assert opsd_v == []
+
+
+def test_extract_loss_invariants_word_boundary() -> None:
+    """`reinforcement` must NOT match `reinforce` (word boundary safety)."""
+    from backend.agents.rlm.paper_invariants import _extract_loss_invariants
+    out = _extract_loss_invariants("Used reinforcement learning techniques.")
+    assert out == ()
+    out2 = _extract_loss_invariants("L = L_REINFORCE + L_baseline")
+    assert any(li.name == "REINFORCE" for li in out2)
+
+
+def test_per_model_metrics_block_multi_env_nesting() -> None:
+    """When SDAR YAML declares multi-env datasets, the prompt block tells
+    the agent to nest per_dataset under per_model with the exact env names."""
+    from backend.agents.baseline_implementation import _per_model_metrics_block
+    block = _per_model_metrics_block(arxiv_id="2605.15155")
+    assert "MULTI-ENV METRICS NESTING" in block
+    assert "alfworld" in block
+    assert "search_qa" in block or "webshop" in block
+    assert "per_dataset" in block
+
+
+def test_per_model_metrics_block_single_env_omits_nesting() -> None:
+    """For papers without YAML / without multi_env, no nesting block appears."""
+    from backend.agents.baseline_implementation import _per_model_metrics_block
+    # No arxiv_id supplied → no YAML lookup → base block only.
+    block_none = _per_model_metrics_block(arxiv_id=None)
+    assert "MULTI-ENV METRICS NESTING" not in block_none
+    # Unknown arxiv id → no YAML → base block only.
+    block_unknown = _per_model_metrics_block(arxiv_id="9999.99999")
+    assert "MULTI-ENV METRICS NESTING" not in block_unknown
