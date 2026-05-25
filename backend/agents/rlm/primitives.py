@@ -1187,6 +1187,18 @@ def _persist_experiment_result(
     # whether the agent forgot to write train.py, the container timed out, or
     # the eval lacked an API key.
     _logs_tail = (result.get("logs") or "")[-1500:]
+    # Auto root-cause: classify the failure shape from error+logs and surface
+    # the class + suggested fix on the event AND in the result dict (so the
+    # next iteration's repair_context can show the agent exactly what to fix
+    # instead of re-diagnosing an opaque traceback).
+    try:
+        from backend.agents.rlm.failure_classifier import classify_failure
+        _fclass, _fsuggest = classify_failure(result)
+    except Exception:  # noqa: BLE001 — observability never blocks
+        _fclass, _fsuggest = ("unknown", "")
+    if _fclass and _fclass != "ok":
+        result.setdefault("failure_class", _fclass)
+        result.setdefault("suggested_fix", _fsuggest)
     _emit_dashboard_event(ctx, event_type="experiment_completed", payload={
         "success": result.get("success", False),
         "metrics": result.get("metrics", {}),
@@ -1197,6 +1209,9 @@ def _persist_experiment_result(
         # actionable gaps (missing keys, off-by-X% numbers, missing variants).
         "contract_violations": result.get("contract_violations") or None,
         "contract_summary": result.get("contract_summary") or None,
+        # Auto-classified root cause + suggested fix (Lane K).
+        "failure_class": result.get("failure_class") or None,
+        "suggested_fix": result.get("suggested_fix") or None,
     })
     return result
 
