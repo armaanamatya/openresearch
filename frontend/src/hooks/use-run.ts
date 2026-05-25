@@ -155,6 +155,12 @@ export interface ProviderRunOptions {
   // Bring-your-own LLM credentials — never persisted, scoped to this
   // run's subprocess via the backend's _subprocess_env merge.
   providerCredentials?: ProviderCredentialsInput;
+  // Budget estimation linkage. When the user approves a pre-Begin budget
+  // estimate, the panel hands its cache key + recipe choice back. The
+  // backend reads the cached estimate via estimate_id and uses its p90
+  // numbers as default budget caps for this run.
+  estimateId?: string;
+  recipeMode?: "strict" | "compressed";
 }
 
 export interface UseRunResult {
@@ -507,6 +513,11 @@ export function useRun(
       if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
       const creds = compactProviderCredentials(opts.providerCredentials);
       if (creds) formData.set("providerCredentials", JSON.stringify(creds));
+      if (opts.estimateId) formData.set("estimateId", opts.estimateId);
+      if (opts.recipeMode === "compressed") {
+        // The compressed recipe is the same on-disk path as minimize_compute=true.
+        formData.set("minimizeCompute", "true");
+      }
       formData.set("paper", file);
       const response = await postRunRequest("/api/demo", {
         method: "POST",
@@ -558,6 +569,8 @@ export function useRun(
           ...(compactProviderCredentials(opts.providerCredentials)
             ? { provider_credentials: compactProviderCredentials(opts.providerCredentials) }
             : {}),
+          ...(opts.estimateId ? { estimate_id: opts.estimateId } : {}),
+          ...(opts.recipeMode === "compressed" ? { minimize_compute: true } : {}),
         })
       });
       if (!response.ok) {

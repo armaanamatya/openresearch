@@ -193,6 +193,11 @@ class StartRunRequest(BaseModel):
     # paper schedules for modern fast equivalents (annotated in
     # scope.declared_reductions).
     minimize_compute: bool | None = None
+    # Budget estimation coupling (spec 2026-05-25-budget-estimation-design §Coupling).
+    # When set, the backend reads the cached estimate and applies its p90 values
+    # as default max_usd and max_pod_seconds for this run.  The user can still
+    # override both in the Advanced panel — this is just a default.
+    estimate_id: str | None = None
     # Bring-your-own LLM credentials — see ProviderCredentials docstring.
     # When None the existing env-var / .env path is the sole source of
     # truth. When set, the listed keys take precedence over .env *for
@@ -1668,6 +1673,14 @@ def _python_script(
         )
     else:
         _model_id = request.model
+    # Resolve budget defaults from a cached estimate when estimate_id is provided.
+    _max_usd_from_estimate: float | None = None
+    _max_pod_seconds_from_estimate: float | None = None
+    if request.estimate_id:
+        _max_usd_from_estimate, _max_pod_seconds_from_estimate = _resolve_budget_from_estimate(
+            request.estimate_id, runs_root
+        )
+
     common = {
         "project_id": project_id,
         "run_mode": request.mode,
@@ -1682,9 +1695,9 @@ def _python_script(
         "uploaded_paper": uploaded_paper,
         # A4-7: budget fields threaded through so an API-set budget is honored
         # in the non-uploaded rlm path (run_pipeline_rlm call below).
-        "max_usd": None,
+        "max_usd": _max_usd_from_estimate,
         "max_wall_clock": None,
-        "max_pod_seconds": None,
+        "max_pod_seconds": _max_pod_seconds_from_estimate,
         "max_invocations": None,
         # rdr-specific: PaperBench bundle identifier (only used when mode='rdr').
         "paper_id": request.paper_id if request.mode == "rdr" else None,
@@ -2184,6 +2197,51 @@ def _terminate_pid(pid: int, *, _sigkill_grace_seconds: float = 5.0) -> None:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
+
+
+def _resolve_budget_from_estimate(
+    estimate_id: str,
+    runs_root: Path,
+) -> tuple[float | None, float | None]:
+    """Read a cached estimate and return (max_usd, max_pod_seconds) defaults.
+
+    Uses spec coupling formula:
+      max_usd = 1.5 × api_usd_best (from the estimate's primary recipe)
+      max_pod_seconds = 1.5 × estimated_hours.p90 × 3600
+
+    Returns (None, None) on any read / parse failure so the run proceeds
+    without a budget cap rather than failing to start.
+    """
+    try:
+        import json as _json
+        estimates_dir = runs_root / "_estimates"
+        if not estimates_dir.is_dir():
+            return None, None
+        cache_file = estimates_dir / f"{estimate_id}.json"
+        if not cache_file.exists():
+            return None, None
+        data = _json.loads(cache_file.read_text(encoding="utf-8"))
+
+        recipes = data.get("recipes") or {}
+        gpu = data.get("gpu") or {}
+
+        api_usd_best: float | None = None
+        for recipe in recipes.values():
+            v = recipe.get("api_usd_best")
+            if v is not None:
+                api_usd_best = float(v) if api_usd_best is None else min(api_usd_best, float(v))
+
+        hours_p90 = (gpu.get("estimated_hours") or {}).get("p90")
+
+        max_usd = 1.5 * api_usd_best if api_usd_best is not None else None
+        max_pod_seconds = 1.5 * float(hours_p90) * 3600 if hours_p90 is not None else None
+        return max_usd, max_pod_seconds
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "live_runs: failed to resolve budget from estimate_id=%r — proceeding uncapped",
+            estimate_id,
+        )
+        return None, None
 
 
 def _summarize_failure(log: str) -> str:

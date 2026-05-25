@@ -1,0 +1,361 @@
+/* Budget Panel — pre-Begin blocking estimate UI. Inserted between upload
+   zone and Begin button on the lab upload route. */
+
+.budget-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.budget-panel--loading,
+.budget-panel--error {
+  align-items: center;
+  text-align: center;
+  padding: 24px 20px;
+}
+
+.budget-panel-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--line-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: budget-spin 0.8s linear infinite;
+}
+
+@keyframes budget-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.budget-panel-loading-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.budget-panel-loading-sub {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.budget-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.budget-panel-title {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.budget-panel-sub {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.budget-panel-confidence {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+}
+
+.budget-panel-confidence-label {
+  font-size: 10px;
+  color: var(--ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.budget-panel-confidence-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.budget-panel-confidence-meta {
+  font-size: 10.5px;
+  color: var(--ink-muted);
+}
+
+.budget-panel-gpu {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  font-size: 12.5px;
+}
+
+.budget-panel-gpu-label {
+  font-weight: 600;
+  color: var(--ink-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+.budget-panel-gpu-sku {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.budget-panel-gpu-rate,
+.budget-panel-gpu-hours {
+  color: var(--ink-muted);
+}
+
+.budget-panel-gpu-total {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ── Recipe cards ──────────────────────────────────────────────────────── */
+
+.budget-panel-recipes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.budget-panel-recipe-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease,
+    transform 0.14s ease;
+}
+
+.budget-panel-recipe-card:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 15%, var(--panel));
+}
+
+.budget-panel-recipe-card.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--panel));
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.budget-panel-recipe-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.budget-panel-recipe-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.budget-panel-recipe-fidelity {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+}
+
+.budget-panel-recipe-cost {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+}
+
+.budget-panel-recipe-cost-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.budget-panel-recipe-time {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.budget-panel-recipe-desc {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.budget-panel-recipe-reductions {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.budget-panel-recipe-reductions li {
+  margin-bottom: 2px;
+}
+
+/* ── Breakdown ─────────────────────────────────────────────────────────── */
+
+.budget-panel-breakdown {
+  border-top: 1px dashed var(--line-2);
+  padding-top: 10px;
+}
+
+.budget-panel-breakdown-toggle {
+  font-size: 11.5px;
+  background: none;
+  border: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+  font-weight: 500;
+}
+
+.budget-panel-breakdown-toggle:hover {
+  color: var(--ink);
+}
+
+.budget-panel-breakdown-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.budget-panel-breakdown-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-xs);
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.budget-panel-breakdown-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 20%, transparent);
+}
+
+.budget-panel-breakdown-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 30%, transparent);
+}
+
+.budget-panel-breakdown-provider {
+  color: var(--ink);
+}
+
+.budget-panel-breakdown-usd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.budget-panel-breakdown-tag {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+}
+
+.budget-panel-breakdown-note {
+  grid-column: 2 / 4;
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  margin-top: -2px;
+}
+
+/* ── Actions ───────────────────────────────────────────────────────────── */
+
+.budget-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.budget-panel-confirm-btn,
+.budget-panel-skip-btn {
+  padding: 10px 16px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+
+.budget-panel-confirm-btn {
+  background: var(--accent);
+  color: var(--panel);
+  border: 1px solid var(--accent);
+}
+
+.budget-panel-confirm-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.budget-panel-confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.budget-panel-skip-btn {
+  background: var(--panel);
+  color: var(--ink-muted);
+  border: 1px solid var(--line-2);
+}
+
+.budget-panel-skip-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink-muted);
+}
+
+.budget-panel-error-msg {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--err, #c33);
+  font-weight: 500;
+}
+
+.budget-panel-error-hint {
+  margin: 4px 0 12px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  max-width: 460px;
+}

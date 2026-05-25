@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
 import type { ProviderCredentialsInput } from "@/hooks/use-run";
+import { BudgetPanel, type PaperBudgetEstimate, type RecipeMode } from "./budget/budget-panel";
 
 // ---------------------------------------------------------------------------
 // Sandbox options — surface the two end-user-relevant choices.
@@ -85,6 +86,17 @@ export function UploadView({
   onMinimizeComputeChange,
   onSandboxChange,
   onProviderCredentialsChange,
+  budgetEstimate,
+  budgetLoading,
+  budgetError,
+  selectedRecipe,
+  selectedProvider,
+  hasPendingPaper,
+  estimateSkipped,
+  onSelectRecipe,
+  onSelectProvider,
+  onSkipEstimate,
+  onConfirmRun,
 }: {
   arxiv: string;
   authStatus: AuthStatus | null;
@@ -118,6 +130,17 @@ export function UploadView({
   onMinimizeComputeChange: (value: boolean) => void;
   onSandboxChange: (value: DemoSandboxMode) => void;
   onProviderCredentialsChange: (value: ProviderCredentialsInput) => void;
+  budgetEstimate: PaperBudgetEstimate | null;
+  budgetLoading: boolean;
+  budgetError: string | null;
+  selectedRecipe: RecipeMode;
+  selectedProvider: string | null;
+  hasPendingPaper: boolean;
+  estimateSkipped: boolean;
+  onSelectRecipe: (mode: RecipeMode) => void;
+  onSelectProvider: (modelId: string) => void;
+  onSkipEstimate: () => void;
+  onConfirmRun: () => void;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -170,8 +193,28 @@ export function UploadView({
         ...models,
       ];
 
+  // The BudgetPanel is shown whenever a paper is pending (file dropped or
+  // arXiv URL submitted) AND the user hasn't explicitly skipped a failed
+  // estimate. It blocks Begin until the panel's Confirm is clicked, which
+  // is the user-mandated "no run without seeing the estimate" gate.
+  const showBudgetPanel = hasPendingPaper && !estimateSkipped;
+
   return (
     <div className="upload-shell">
+      {showBudgetPanel ? (
+        <BudgetPanel
+          estimate={budgetEstimate}
+          loading={budgetLoading}
+          error={budgetError}
+          selectedRecipe={selectedRecipe}
+          selectedProvider={selectedProvider}
+          onSelectRecipe={onSelectRecipe}
+          onSelectProvider={onSelectProvider}
+          onSkip={onSkipEstimate}
+          onConfirm={onConfirmRun}
+          busy={busy}
+        />
+      ) : null}
       <div
         className={`upload-zone${over ? " over" : ""}`}
         onDragOver={(event) => {

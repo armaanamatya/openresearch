@@ -567,6 +567,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             model=request.model or "sonnet",
             minimize_compute=request.minimize_compute,
             provider_credentials=request.provider_credentials,
+            estimate_id=request.estimate_id,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -606,6 +607,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             # it (line ~564); this path now matches.
             minimize_compute=_optional_form_bool(form, "minimizeCompute"),
             provider_credentials=_optional_form_provider_credentials(form),
+            estimate_id=_optional_form_value(form, "estimateId"),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -988,6 +990,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from backend.routes.reports import router as reports_router
     app.include_router(reports_router)
 
+    # Budget estimation route — POST /paper/estimate.
+    from backend.routes.estimate import router as estimate_router
+    app.include_router(estimate_router)
+
     return app
 
 
@@ -1035,6 +1041,9 @@ class StartArxivRunRequest(BaseModel):
     # BYO LLM credentials — when present, override env-var defaults for
     # this run's subprocess. Never persisted; see live_runs.ProviderCredentials.
     provider_credentials: ProviderCredentials | None = None
+    # Budget estimate coupling — the cached estimate's p90 numbers are used
+    # as default budget caps for the actual run.
+    estimate_id: str | None = None
 
 
 class ApprovalEvaluateRequest(BaseModel):

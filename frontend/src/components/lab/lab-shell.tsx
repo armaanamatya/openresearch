@@ -13,6 +13,8 @@ import { CommandPalette } from "./command-palette";
 import { ShortcutOverlay } from "./shortcut-overlay";
 import type { ProviderCredentialsInput } from "@/hooks/use-run";
 import { useRun } from "@/hooks/use-run";
+import { useBudgetEstimate } from "@/hooks/use-budget-estimate";
+import type { RecipeMode } from "./budget/budget-panel";
 import { useCommandPalette } from "@/hooks/use-command-palette";
 import { useShortcutOverlay } from "@/hooks/use-shortcut-overlay";
 import { PresentationModeProvider, type PresentationMode } from "@/lib/presentation-mode";
@@ -159,6 +161,19 @@ export function LabShell({
   // localStorage by default, so a page reload requires the user to retype.
   // This is the safest default for credentials a user typed into a browser.
   const [providerCredentials, setProviderCredentials] = useState<ProviderCredentialsInput>({});
+
+  // Budget estimation state. The hook owns request lifecycle + race-safety;
+  // these two pieces of selection state belong to the UI.
+  const budget = useBudgetEstimate();
+  const [selectedRecipe, setSelectedRecipe] = useState<RecipeMode>("strict");
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  // When the user "skips" a failed estimate, we set this to bypass the
+  // blocking Begin gate. Cleared on a fresh paper selection.
+  const [estimateSkipped, setEstimateSkipped] = useState(false);
+  // The selected PDF file is held here (not in upload-view) so the
+  // BudgetPanel's Confirm button can launch the run on click. arXiv URL
+  // lives in `arxiv` already.
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   // Sandbox default: user's saved pref → server-side REPROLAB_DEFAULT_SANDBOX → "docker".
   // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
   // the fallback without requiring a code change.
@@ -185,6 +200,8 @@ export function LabShell({
     vramGb: vramGb > 0 ? vramGb : undefined,
     minimizeCompute: minimizeCompute || undefined,
     providerCredentials,
+    estimateId: budget.estimate?.estimate_id,
+    recipeMode: selectedRecipe,
   });
 
   const palette = useCommandPalette();
@@ -213,12 +230,48 @@ export function LabShell({
               models={initialModels}
               runMode={runMode}
               onArxivChange={setArxiv}
-              onArxivSubmit={() =>
-                arxiv.trim().length > 0
-                  ? void startArxivRun(arxiv, model)
-                  : void startFixtureRun(model)
-              }
-              onFileSelected={(file) => void startUploadedRun(file, model)}
+              onArxivSubmit={() => {
+                if (arxiv.trim().length === 0) {
+                  void startFixtureRun(model);
+                  return;
+                }
+                // If the user already chose to skip a failed estimate, a
+                // second submit launches the run directly. Otherwise we
+                // fire the estimator and let the panel gate the launch.
+                if (estimateSkipped) {
+                  void startArxivRun(arxiv, model);
+                  return;
+                }
+                setSelectedFile(null);
+                void budget.estimateFromArxiv(arxiv);
+              }}
+              onFileSelected={(file) => {
+                setSelectedFile(file);
+                // Re-uploading after a skip: fresh paper deserves a fresh
+                // estimate attempt, so reset the skip flag.
+                setEstimateSkipped(false);
+                void budget.estimateFromFile(file);
+              }}
+              budgetEstimate={budget.estimate}
+              budgetLoading={budget.loading}
+              budgetError={budget.error}
+              selectedRecipe={selectedRecipe}
+              selectedProvider={selectedProvider}
+              hasPendingPaper={selectedFile !== null || (arxiv.trim().length > 0 && budget.loading)}
+              estimateSkipped={estimateSkipped}
+              onSelectRecipe={setSelectedRecipe}
+              onSelectProvider={setSelectedProvider}
+              onSkipEstimate={() => {
+                budget.reset();
+                setEstimateSkipped(true);
+              }}
+              onConfirmRun={() => {
+                if (selectedFile) {
+                  void startUploadedRun(selectedFile, model);
+                } else if (arxiv.trim().length > 0) {
+                  void startArxivRun(arxiv, model);
+                }
+              }}
               onModelChange={(value) => {
                 setModel(value);
                 writeUserPref("model", value);

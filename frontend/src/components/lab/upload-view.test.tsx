@@ -80,6 +80,17 @@ const DEFAULT_PROPS = {
   onSandboxChange: NOP,
   providerCredentials: {},
   onProviderCredentialsChange: NOP,
+  budgetEstimate: null,
+  budgetLoading: false,
+  budgetError: null,
+  selectedRecipe: "strict" as const,
+  selectedProvider: null,
+  hasPendingPaper: false,
+  estimateSkipped: false,
+  onSelectRecipe: NOP,
+  onSelectProvider: NOP,
+  onSkipEstimate: NOP,
+  onConfirmRun: NOP,
 };
 
 beforeEach(() => {

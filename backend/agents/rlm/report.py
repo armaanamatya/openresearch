@@ -645,6 +645,16 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — marker is best-effort; never crash the run
         logger.exception("report: failed to write .preserved marker (non-fatal)")
 
+    # Update calibration priors from the new preserved run so the next estimate
+    # is more accurate. Runs in a try/except so it never blocks report writing.
+    if report.verdict != "failed":
+        try:
+            from backend.services.pricing.calibration import recompute_calibration
+            runs_root = project_dir.parent
+            recompute_calibration(runs_root)
+        except Exception:  # noqa: BLE001 — calibration update is non-critical
+            logger.warning("report: calibration recompute failed (non-fatal)")
+
     logger.info(
         "report: wrote final_report.{json,md} to %s (verdict=%s)",
         project_dir,
