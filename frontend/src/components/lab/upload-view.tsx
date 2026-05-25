@@ -72,6 +72,7 @@ export function UploadView({
   forceSingleGpu,
   maxGpuUsdPerHour,
   vramGb,
+  minimizeCompute,
   sandbox,
   onRootProviderChange,
   onSubagentAuthChange,
@@ -79,6 +80,7 @@ export function UploadView({
   onForceSingleGpuChange,
   onMaxGpuUsdPerHourChange,
   onVramGbChange,
+  onMinimizeComputeChange,
   onSandboxChange,
 }: {
   arxiv: string;
@@ -101,6 +103,7 @@ export function UploadView({
   forceSingleGpu: boolean;
   maxGpuUsdPerHour: number;
   vramGb: number;
+  minimizeCompute: boolean;
   sandbox: DemoSandboxMode;
   onRootProviderChange: (value: RootProvider) => void;
   onSubagentAuthChange: (value: SubagentAuth) => void;
@@ -108,6 +111,7 @@ export function UploadView({
   onForceSingleGpuChange: (value: boolean) => void;
   onMaxGpuUsdPerHourChange: (value: number) => void;
   onVramGbChange: (value: number) => void;
+  onMinimizeComputeChange: (value: boolean) => void;
   onSandboxChange: (value: DemoSandboxMode) => void;
 }) {
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -393,6 +397,27 @@ export function UploadView({
           </fieldset>
         );
       })()}
+
+      {/* ── Minimize compute (top-level — reproduction philosophy choice) ── */}
+      <fieldset className="upload-provider-fieldset" disabled={busy}>
+        <legend className="upload-config-label">Reproduction style</legend>
+        <label
+          className={`upload-provider-option${minimizeCompute ? " selected" : ""}`}
+          title="When enabled, the agent reproduces the paper's CLAIM (its reported metric) rather than its exact recipe — substituting slow paper schedules (SGD+linear-decay-from-10 × 3000 epochs) with modern fast equivalents (Adam@lr=0.001 × 200-500 epochs). Every substitution is annotated in scope.declared_reductions and the scope-adjusted rubric scores the metric match. Off by default — strict reproduction is the safer baseline."
+        >
+          <input
+            id="minimize-compute-checkbox"
+            type="checkbox"
+            checked={minimizeCompute}
+            disabled={busy}
+            onChange={(e) => onMinimizeComputeChange(e.target.checked)}
+          />
+          <span className="upload-provider-name">Minimize compute</span>
+          <span className="upload-provider-badge">
+            {minimizeCompute ? "claim-match" : "strict"}
+          </span>
+        </label>
+      </fieldset>
 
       {/* ── Advanced options (collapsible) ──────────────────────── */}
       <details

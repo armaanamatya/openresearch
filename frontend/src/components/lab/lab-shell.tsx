@@ -151,6 +151,9 @@ export function LabShell({
   const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
   const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
   const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
+  // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
+  // prefs so the user's preferred reproduction style sticks across reloads.
+  const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
   // Sandbox default: user's saved pref → server-side REPROLAB_DEFAULT_SANDBOX → "docker".
   // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
   // the fallback without requiring a code change.
@@ -175,6 +178,7 @@ export function LabShell({
     forceSingleGpu: forceSingleGpu || undefined,
     maxGpuUsdPerHour: maxGpuUsdPerHour > 0 ? maxGpuUsdPerHour : undefined,
     vramGb: vramGb > 0 ? vramGb : undefined,
+    minimizeCompute: minimizeCompute || undefined,
   });
 
   const palette = useCommandPalette();
@@ -222,6 +226,7 @@ export function LabShell({
               forceSingleGpu={forceSingleGpu}
               maxGpuUsdPerHour={maxGpuUsdPerHour}
               vramGb={vramGb}
+              minimizeCompute={minimizeCompute}
               sandbox={sandbox}
               onSandboxChange={(value) => {
                 setSandbox(value);
@@ -250,6 +255,10 @@ export function LabShell({
               onVramGbChange={(value) => {
                 setVramGb(value);
                 writeProviderPrefs({ ...readProviderPrefs(), vram_gb: value });
+              }}
+              onMinimizeComputeChange={(value) => {
+                setMinimizeCompute(value);
+                writeProviderPrefs({ ...readProviderPrefs(), minimize_compute: value });
               }}
             />
           )}

@@ -108,6 +108,11 @@ function toVramGb(request: Request): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
+function toMinimizeCompute(request: Request): boolean | undefined {
+  const v = search(request).get("minimizeCompute");
+  return v === "true" ? true : v === "false" ? false : undefined;
+}
+
 function backendQuery(request: Request): URLSearchParams {
   const params = new URLSearchParams();
   const mode = toRunMode(request);
@@ -219,12 +224,14 @@ export async function POST(request: Request) {
     const forceSingleGpu = toForceSingleGpu(request);
     const maxGpuUsdPerHour = toMaxGpuUsdPerHour(request);
     const vramGb = toVramGb(request);
+    const minimizeCompute = toMinimizeCompute(request);
     if (rootProvider != null) runBody.root_provider = rootProvider;
     if (subagentAuth != null) runBody.subagent_auth = subagentAuth;
     if (dynamicGpu != null) runBody.dynamic_gpu = dynamicGpu;
     if (forceSingleGpu != null) runBody.force_single_gpu = forceSingleGpu;
     if (maxGpuUsdPerHour != null) runBody.max_gpu_usd_per_hour = maxGpuUsdPerHour;
     if (vramGb != null) runBody.vram_gb = vramGb;
+    if (minimizeCompute != null) runBody.minimize_compute = minimizeCompute;
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",

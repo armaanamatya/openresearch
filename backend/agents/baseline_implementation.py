@@ -626,10 +626,12 @@ _RUNTIME_DETECTION_BLOCK = (
 )
 
 
-# GPU VRAM estimates (approx, in GB) — keyed by RunPod GPU type string.
-# Refresh quarterly when SKU lineup changes. Conservative — assumes
-# the SDC version (i.e. single-card capacity).
+# GPU VRAM estimates (approx, in GB) — keyed by canonical GPU model name.
+# Used by every cloud-provider hardware brief resolver. Refresh quarterly
+# when SKU lineup changes.  Multi-vendor (RunPod GPU strings + Azure VM
+# SKUs that embed the GPU model + raw H100/A100/L40S/etc. names).
 _GPU_VRAM_ESTIMATE_GB: dict[str, int] = {
+    # RunPod-style GPU strings
     "NVIDIA GeForce RTX 4090": 24,
     "NVIDIA RTX 4090": 24,
     "NVIDIA RTX A6000": 48,
@@ -643,8 +645,133 @@ _GPU_VRAM_ESTIMATE_GB: dict[str, int] = {
     "NVIDIA A100 80GB": 80,
     "NVIDIA H100": 80,
     "NVIDIA H100 SXM": 80,
+    "NVIDIA H100 NVL": 94,
     "NVIDIA H200": 141,
+    "NVIDIA T4": 16,
+    "NVIDIA V100": 32,
 }
+
+
+# Azure ML VM SKU → (GPU model, GPU count, VRAM per GPU).  Sourced from
+# Microsoft Learn `/azure/virtual-machines/sizes/gpu-accelerated` (verified
+# 2026-05-25 via context7 query).  Refresh quarterly — Azure adds H200
+# (ND_H200_v5) and NC*as_T4_v3 successors regularly.
+_AZURE_VM_SKU_CATALOG: dict[str, tuple[str, int, int]] = {
+    # T4 (older, cheap)
+    "Standard_NC4as_T4_v3":     ("NVIDIA T4",        1, 16),
+    "Standard_NC8as_T4_v3":     ("NVIDIA T4",        1, 16),
+    "Standard_NC16as_T4_v3":    ("NVIDIA T4",        1, 16),
+    "Standard_NC64as_T4_v3":    ("NVIDIA T4",        4, 16),
+    # A10 (NVads A10 v5 — visualization+inference; 8 GB partitioned slices)
+    "Standard_NV6ads_A10_v5":   ("NVIDIA A10 (1/6)", 1,  4),
+    "Standard_NV12ads_A10_v5":  ("NVIDIA A10 (1/3)", 1,  8),
+    "Standard_NV18ads_A10_v5":  ("NVIDIA A10 (1/2)", 1, 12),
+    "Standard_NV36ads_A10_v5":  ("NVIDIA A10",       1, 24),
+    "Standard_NV72ads_A10_v5":  ("NVIDIA A10",       2, 24),
+    # A100 80GB (NCads_A100_v4 — single-VM, PCIe)
+    "Standard_NC24ads_A100_v4": ("NVIDIA A100 80GB", 1, 80),
+    "Standard_NC48ads_A100_v4": ("NVIDIA A100 80GB", 2, 80),
+    "Standard_NC96ads_A100_v4": ("NVIDIA A100 80GB", 4, 80),
+    # A100 80GB (NDm_A100_v4 — 8-GPU NVLink scale-out training)
+    "Standard_ND96amsr_A100_v4":("NVIDIA A100 80GB", 8, 80),
+    # H100 NVL 94 GB (NCads_H100_v5 — single-VM, PCIe)
+    "Standard_NC40ads_H100_v5": ("NVIDIA H100 NVL",  1, 94),
+    "Standard_NC80adis_H100_v5":("NVIDIA H100 NVL",  2, 94),
+    # H100 SXM 80 GB (ND_H100_v5 — 8-GPU NVLink scale-out training)
+    "Standard_ND96isr_H100_v5": ("NVIDIA H100 SXM",  8, 80),
+    # H200 (ND_H200_v5)
+    "Standard_ND96isr_H200_v5": ("NVIDIA H200",      8,141),
+}
+
+
+def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
+    """Resolve concrete hardware specs from whichever cloud the run targets.
+
+    Multi-cloud — works for RunPod (REPROLAB_RUNPOD_*), Azure ML
+    (REPROLAB_AZURE_*), and Brev (REPROLAB_BREV_*).  Returns a normalised
+    dict::
+
+        {
+          "cloud":          "RunPod" | "Azure ML" | "Brev",
+          "gpu":            "NVIDIA L40S",
+          "gpu_count":      1,
+          "tier":           "SECURE" | "<region>" | "",
+          "vram_gb":        48,
+          "image":          "runpod/pytorch:..." | "mcr.microsoft.com/azureml/..." | "",
+          "container_disk_gb": 50,
+          "volume_gb":      20,
+          "volume_mount":   "/workspace",
+          "vram_known":     True,
+        }
+
+    or ``None`` when no provider-specific env is set (e.g. local docker).
+    """
+    import os as _os
+
+    mode = str(sandbox_mode or "").lower()
+    vram_override_str = _os.environ.get("REPROLAB_VRAM_OVERRIDE_GB", "").strip()
+    vram_override = int(vram_override_str) if vram_override_str.isdigit() else None
+
+    # --- RunPod ---
+    rp_gpu = _os.environ.get("REPROLAB_RUNPOD_GPU_TYPE", "").strip()
+    if "runpod" in mode and rp_gpu:
+        vram_gb: int | None = vram_override or _GPU_VRAM_ESTIMATE_GB.get(rp_gpu)
+        return {
+            "cloud": "RunPod",
+            "gpu": rp_gpu,
+            "gpu_count": int(_os.environ.get("REPROLAB_RUNPOD_GPU_COUNT", "1") or "1"),
+            "tier": _os.environ.get("REPROLAB_RUNPOD_CLOUD_TYPE", "SECURE").strip(),
+            "vram_gb": vram_gb,
+            "vram_known": vram_gb is not None,
+            "image": _os.environ.get("REPROLAB_RUNPOD_IMAGE", "").strip(),
+            "container_disk_gb": int(_os.environ.get("REPROLAB_RUNPOD_CONTAINER_DISK_GB", "50") or "50"),
+            "volume_gb": int(_os.environ.get("REPROLAB_RUNPOD_VOLUME_GB", "20") or "20"),
+            "volume_mount": _os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip(),
+        }
+
+    # --- Azure ML ---
+    az_size = _os.environ.get("REPROLAB_AZURE_VM_SIZE", "").strip()
+    if ("azure" in mode or _os.environ.get("REPROLAB_AZURE_REGION")) and az_size:
+        sku = _AZURE_VM_SKU_CATALOG.get(az_size)
+        if sku is not None:
+            gpu_model, gpu_count, per_gpu_vram = sku
+        else:
+            gpu_model, gpu_count, per_gpu_vram = (az_size, 1, 0)
+        vram_gb = vram_override or per_gpu_vram or None
+        return {
+            "cloud": "Azure ML",
+            "gpu": gpu_model,
+            "gpu_count": gpu_count,
+            "tier": _os.environ.get("REPROLAB_AZURE_REGION", "").strip(),
+            "vram_gb": vram_gb,
+            "vram_known": vram_gb is not None,
+            "image": _os.environ.get(
+                "REPROLAB_AZURE_IMAGE",
+                "mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest",
+            ).strip(),
+            "container_disk_gb": int(_os.environ.get("REPROLAB_AZURE_DATA_DISK_GB", "100") or "100"),
+            "volume_gb": int(_os.environ.get("REPROLAB_AZURE_DATASTORE_GB", "0") or "0"),
+            "volume_mount": _os.environ.get("REPROLAB_AZURE_DATASTORE_MOUNT", "/mnt/azureml").strip(),
+        }
+
+    # --- Brev ---
+    brev_gpu = _os.environ.get("REPROLAB_BREV_GPU_TYPE", "").strip()
+    if "brev" in mode and brev_gpu:
+        vram_gb = vram_override or _GPU_VRAM_ESTIMATE_GB.get(brev_gpu)
+        return {
+            "cloud": "Brev",
+            "gpu": brev_gpu,
+            "gpu_count": int(_os.environ.get("REPROLAB_BREV_GPU_COUNT", "1") or "1"),
+            "tier": _os.environ.get("REPROLAB_BREV_REGION", "").strip(),
+            "vram_gb": vram_gb,
+            "vram_known": vram_gb is not None,
+            "image": _os.environ.get("REPROLAB_BREV_IMAGE", "").strip(),
+            "container_disk_gb": int(_os.environ.get("REPROLAB_BREV_CONTAINER_DISK_GB", "50") or "50"),
+            "volume_gb": 0,
+            "volume_mount": "",
+        }
+
+    return None
 
 
 def _hardware_specs_block(sandbox_mode: object) -> str:
@@ -652,43 +779,66 @@ def _hardware_specs_block(sandbox_mode: object) -> str:
     run against. Saves the agent from having to discover via probes and
     prevents OOM-by-batch-size-guessing.
 
-    Only emits when the run targets RunPod. Pulls live values from the
-    same env vars that drive the backend (REPROLAB_RUNPOD_*); if those
-    differ from what's docked in code, this prompt reflects the truth.
+    Multi-cloud — emits for RunPod, Azure ML, and Brev, dispatching via
+    :func:`_resolve_cloud_hardware`. Returns "" when no cloud-provider
+    env is set (e.g. local docker / local process), since there's no
+    fixed hardware shape to brief.
     """
-    if "runpod" not in str(sandbox_mode).lower():
+    spec = _resolve_cloud_hardware(sandbox_mode)
+    if spec is None:
         return ""
-    import os as _os
-    gpu_type = _os.environ.get("REPROLAB_RUNPOD_GPU_TYPE", "").strip()
-    gpu_count = _os.environ.get("REPROLAB_RUNPOD_GPU_COUNT", "1").strip()
-    cloud_type = _os.environ.get("REPROLAB_RUNPOD_CLOUD_TYPE", "SECURE").strip()
-    image = _os.environ.get("REPROLAB_RUNPOD_IMAGE", "").strip()
-    container_disk = _os.environ.get("REPROLAB_RUNPOD_CONTAINER_DISK_GB", "50").strip()
-    volume_gb = _os.environ.get("REPROLAB_RUNPOD_VOLUME_GB", "20").strip()
-    volume_mount = _os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip()
-    vram_override = _os.environ.get("REPROLAB_VRAM_OVERRIDE_GB", "").strip()
-    if not gpu_type:
-        return ""  # no spec to share — quietly skip
-    if vram_override:
-        vram_gb: int | None = int(vram_override)
+    if not spec.get("gpu"):
+        return ""
+    vram_line = (
+        f"  - VRAM: {spec['vram_gb']} GB per GPU"
+        if spec.get("vram_known")
+        else "  - VRAM: unknown (assume ≤24 GB to be safe)"
+    )
+    tier_part = f" ({spec['tier']})" if spec.get("tier") else ""
+    # Per-cloud image guidance — pre-installed packages differ.
+    if spec["cloud"] == "RunPod":
+        image_note = (
+            "    (torch + torchvision + torchaudio + CUDA libs are PRE-INSTALLED — "
+            "do NOT list them in requirements.txt)"
+        )
+    elif spec["cloud"] == "Azure ML":
+        image_note = (
+            "    (Azure ML curated environment — PyTorch + CUDA pre-installed "
+            "via mcr.microsoft.com/azureml/curated/acpt-pytorch-*; do NOT "
+            "re-install torch.  Custom env spec via conda_dependencies.yml "
+            "or `docker.dockerfile_path` in your job YAML)"
+        )
     else:
-        vram_gb = _GPU_VRAM_ESTIMATE_GB.get(gpu_type)
-    vram_line = f"  - VRAM: {vram_gb} GB" if vram_gb else "  - VRAM: unknown (assume ≤24 GB to be safe)"
+        image_note = "    (verify pre-installed packages before adding to requirements.txt)"
+    # Volume line is provider-specific.
+    if spec.get("volume_gb"):
+        volume_line = (
+            f"  - Persistent volume: {spec['volume_gb']} GB at {spec['volume_mount']} "
+            f"(survives compute replacement)"
+        )
+    else:
+        volume_line = (
+            f"  - Datastore mount: {spec.get('volume_mount') or '/mnt/data'} "
+            "(Azure ML Datastore — backed by Blob/ADLS; no fixed quota)"
+            if spec["cloud"] == "Azure ML"
+            else "  - No persistent volume configured"
+        )
     return (
         "\n\nSANDBOX HARDWARE BRIEF — your actual runtime:\n"
-        f"  - GPU: {gpu_type} × {gpu_count} ({cloud_type} tier)\n"
+        f"  - Cloud: {spec['cloud']}\n"
+        f"  - GPU: {spec['gpu']} × {spec['gpu_count']}{tier_part}\n"
         f"{vram_line}\n"
-        f"  - Base image: {image}\n"
-        f"    (torch + torchvision + torchaudio + CUDA libs are PRE-INSTALLED — "
-        f"do NOT list them in requirements.txt)\n"
-        f"  - Container disk: {container_disk} GB (ephemeral, wiped on pod destroy)\n"
-        f"  - Persistent volume: {volume_gb} GB at {volume_mount} (survives pod replacement)\n"
+        f"  - Base image: {spec.get('image') or '<unset>'}\n"
+        f"{image_note}\n"
+        f"  - Container disk: {spec['container_disk_gb']} GB (ephemeral, wiped on compute destroy)\n"
+        f"{volume_line}\n"
         "Pick batch_size / model_size / sequence_length so the activation memory\n"
         "fits in VRAM with headroom — empirically aim for ≤80% peak. If the paper\n"
-        "used a bigger GPU (e.g. 8× H100, 80GB), declare a scope reduction in\n"
-        "plan_reproduction (e.g. epochs ÷4, batch ÷2) and the verification rubric\n"
-        "will adjust accordingly. NEVER use mocks/surrogates to fit a real model\n"
-        "into smaller VRAM — reduce scope, do not substitute.\n"
+        "used a bigger GPU (e.g. 8× H100 80GB), declare a scope reduction in\n"
+        "plan_reproduction (epochs ÷4, batch ÷2, fewer experiments) and the\n"
+        "scope-adjusted verification rubric will reweight accordingly. NEVER use\n"
+        "mocks/surrogates to fit a real model into smaller VRAM — reduce scope,\n"
+        "do not substitute.\n"
     )
 
 
@@ -1118,12 +1268,70 @@ def _budget_awareness_block(remaining_s: float | None) -> str:
     return "\n" + _BUDGET_AWARENESS_BLOCK_TEMPLATE.format(budget_s=rounded) + "\n"
 
 
+_MINIMIZE_COMPUTE_BLOCK = (
+    "\n\nMINIMIZE-COMPUTE MODE — reproduce the CLAIM, not the recipe:\n"
+    "The user enabled minimize-compute (--minimize-compute or the lab UI\n"
+    "checkbox), which means the paper's training schedule is allowed to be\n"
+    "substituted with a modern fast equivalent AS LONG AS the metric claim\n"
+    "is still verifiable. The paper's reported number is what you reproduce.\n"
+    "The way they got there is editable when their way is a historical\n"
+    "artefact (slow optimizers from 2012, 3000-epoch schedules, etc.).\n"
+    "\n"
+    "Substitution rules (apply when the paper's recipe is in the LEFT column):\n"
+    "  • SGD + linear-decay-from-10 × 3000 epochs   →   Adam @ lr=0.001 × 200-500 epochs\n"
+    "  • SGD + momentum × 1000+ epochs              →   Adam @ lr=0.001 × 100-300 epochs\n"
+    "  • LR schedule starting at lr > 1.0           →   Adam OR SGD with init_lr ≤ 0.1\n"
+    "  • Cosine schedule over 1000 epochs           →   cosine over 100 epochs (same min_lr)\n"
+    "  • 500+ epochs with no warmup                 →   100-200 epochs with brief warmup\n"
+    "\n"
+    "Architectures (model parameters) are NEVER substituted — only the\n"
+    "training schedule is. Replacing the model's hidden size or depth is a\n"
+    "claim violation, not a recipe substitution.\n"
+    "\n"
+    "Datasets are NEVER substituted (in scope or scale). If a dataset is\n"
+    "unavailable, that's a DATASET-LOAD failure (handled by the soft-fail\n"
+    "block above), not a minimize-compute substitution.\n"
+    "\n"
+    "Every substitution MUST appear in scope.declared_reductions:\n"
+    "  scope = {\n"
+    "    \"requested\": \"<paper's full scope>\",\n"
+    "    \"ran\": [...],\n"
+    "    \"gaps\": [],\n"
+    "    \"declared_reductions\": [\n"
+    "      {\n"
+    "        \"axis\": \"training_schedule\",\n"
+    "        \"paper\": \"SGD+linear-decay-from-10 × 3000 epochs\",\n"
+    "        \"actual\": \"Adam@lr=0.001 × 300 epochs\",\n"
+    "        \"rationale\": \"minimize_compute=True; paper's recipe was a 2012-era SGD schedule; modern Adam reaches the paper's reported test error in ~10% of compute\"\n"
+    "      }\n"
+    "    ]\n"
+    "  }\n"
+    "\n"
+    "The scope-adjusted rubric reads `declared_reductions` and weights the\n"
+    "training-schedule leaves at 0 (they're scope-reduced) while keeping\n"
+    "the metric-match leaves at full weight. Net effect: minimize-compute\n"
+    "runs that match the paper's reported test error score well on the\n"
+    "scope-adjusted rubric; runs that diverge from the metric score poorly\n"
+    "regardless of minimize-compute.\n"
+    "\n"
+    "When to NOT minimize compute (override the user):\n"
+    "  - Paper's central claim IS about the training schedule (curriculum\n"
+    "    learning, warmup ablation, schedule comparison study) — then the\n"
+    "    schedule IS the claim. Run faithfully and surface this in\n"
+    "    scope.declared_reductions=[] with `notes=\"paper claim is schedule-dependent\"`.\n"
+    "  - Paper studies long-horizon convergence (overfitting onset, final\n"
+    "    plateau test error after 3000 ep) — short runs can't validate.\n"
+    "    Note in scope, but follow the paper's epoch count.\n"
+)
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
     project_dir: Path | None = None,
     arxiv_id: str | None = None,
     remaining_s: float | None = None,
+    minimize_compute: bool = False,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1199,6 +1407,11 @@ def _compute_constraint_guidance(
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
     guidance += _PER_MODEL_METRICS_BLOCK
+    # Lane Q — minimize-compute substitution rules + scope.declared_reductions
+    # contract. Only injected when the user opted in via the CLI flag or the
+    # lab UI checkbox; strict reproduction stays the default.
+    if minimize_compute:
+        guidance += _MINIMIZE_COMPUTE_BLOCK
 
     # 3. RUNPOD POD SETUP — only when sandbox=runpod.
     if "runpod" in mode_str:
@@ -1300,6 +1513,7 @@ async def run_with_sdk(
     gpu_mode: object = None,
     arxiv_id: str | None = None,
     remaining_s: float | None = None,
+    minimize_compute: bool = False,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1339,6 +1553,7 @@ async def run_with_sdk(
     sandbox_guidance = _compute_constraint_guidance(
         sandbox_mode, gpu_mode, project_dir=project_dir,
         arxiv_id=_resolved_arxiv_id, remaining_s=remaining_s,
+        minimize_compute=minimize_compute,
     )
 
     if repair_context:

@@ -119,6 +119,9 @@ export interface ProviderRunOptions {
   forceSingleGpu?: boolean;
   maxGpuUsdPerHour?: number;
   vramGb?: number;
+  // Lane Q — "reproduce the CLAIM, not the recipe" mode. Pipes to the
+  // baseline-implementation prompt's _MINIMIZE_COMPUTE_BLOCK.
+  minimizeCompute?: boolean;
 }
 
 export interface UseRunResult {
@@ -431,6 +434,7 @@ export function useRun(
       if (opts.forceSingleGpu != null) params.set("forceSingleGpu", String(opts.forceSingleGpu));
       if (opts.maxGpuUsdPerHour != null) params.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) params.set("vramGb", String(opts.vramGb));
+      if (opts.minimizeCompute != null) params.set("minimizeCompute", String(opts.minimizeCompute));
       const response = await postRunRequest(
         `/api/demo?${params.toString()}`,
         { method: "POST" }
@@ -467,6 +471,7 @@ export function useRun(
       if (opts.forceSingleGpu != null) formData.set("forceSingleGpu", String(opts.forceSingleGpu));
       if (opts.maxGpuUsdPerHour != null) formData.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) formData.set("vramGb", String(opts.vramGb));
+      if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
       formData.set("paper", file);
       const response = await postRunRequest("/api/demo", {
         method: "POST",
@@ -514,6 +519,7 @@ export function useRun(
           ...(opts.forceSingleGpu != null ? { force_single_gpu: opts.forceSingleGpu } : {}),
           ...(opts.maxGpuUsdPerHour != null ? { max_gpu_usd_per_hour: opts.maxGpuUsdPerHour } : {}),
           ...(opts.vramGb != null ? { vram_gb: opts.vramGb } : {}),
+          ...(opts.minimizeCompute != null ? { minimize_compute: opts.minimizeCompute } : {}),
         })
       });
       if (!response.ok) {

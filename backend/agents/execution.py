@@ -76,6 +76,13 @@ class ExecutionProfile:
     sandbox_platform: str | None = None
     gpu_mode: GpuMode = GpuMode.auto
     sandbox_environment: dict[str, str] | None = None
+    # Lane Q — minimize-compute mode. When True, the agent prompt gets a
+    # "reproduce the CLAIM, not the recipe" block that swaps slow paper
+    # recipes (SGD+linear-decay-from-10 × 3000 epochs) for modern fast
+    # equivalents (Adam@lr=0.001 × 200-500 epochs) and annotates every
+    # substitution in scope.declared_reductions so the scope-adjusted
+    # rubric scores the metric claim, not the recipe-step count.
+    minimize_compute: bool = False
 
     @classmethod
     def from_mode(
@@ -88,6 +95,7 @@ class ExecutionProfile:
         sandbox_cpus: float | None = None,
         sandbox_platform: str | None = None,
         gpu_mode: GpuMode | str = GpuMode.auto,
+        minimize_compute: bool = False,
     ) -> "ExecutionProfile":
         resolved_mode = ExecutionMode(mode)
         resolved_gpu_mode = GpuMode(gpu_mode)
@@ -179,6 +187,7 @@ class ExecutionProfile:
             sandbox_platform=sandbox_platform,
             gpu_mode=resolved_gpu_mode,
             sandbox_environment=base.sandbox_environment,
+            minimize_compute=minimize_compute,
         )
 
 

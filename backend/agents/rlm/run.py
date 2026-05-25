@@ -748,6 +748,13 @@ async def run_pipeline_rlm(
         scope_spec=_scope_spec,
         arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
                              # docs/papers/<id>.yaml even on hashed project IDs.
+        # Lane Q — --minimize-compute / lab UI checkbox. Threaded onto ctx so the
+        # implement_baseline primitive can pass it into run_with_sdk.
+        minimize_compute=(
+            bool(getattr(execution_profile, "minimize_compute", False))
+            if execution_profile is not None
+            else False
+        ),
     )
 
     # 5. Primitives — the real binding or the stub provider.

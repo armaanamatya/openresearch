@@ -17,6 +17,11 @@ export interface ProviderPrefs {
   force_single_gpu?: boolean;
   max_gpu_usd_per_hour?: number;
   vram_gb?: number;
+  // Lane Q — minimize-compute mode. When true, the agent's prompt gets a
+  // "reproduce the CLAIM, not the recipe" block that swaps slow paper
+  // schedules for modern fast equivalents and annotates the substitutions
+  // in scope.declared_reductions.
+  minimize_compute?: boolean;
 }
 
 export function readProviderPrefs(): ProviderPrefs {

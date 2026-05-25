@@ -403,6 +403,9 @@ _REPRODUCE_DEFAULTS = {
     "project_id": None,
     "paper_hint": None,
     "scope_spec": None,
+    # Lane Q — defaults to False (strict reproduction). Set to True via
+    # --minimize-compute or the lab UI "Minimize compute" checkbox.
+    "minimize_compute": False,
 }
 
 
@@ -910,6 +913,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         sandbox_cpus=args.sandbox_cpus,
         sandbox_platform=args.sandbox_platform,
         gpu_mode=getattr(args, "gpu_mode", "auto"),
+        minimize_compute=getattr(args, "minimize_compute", False),
     )
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
@@ -1246,6 +1250,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "implement_baseline, verify_against_rubric, etc.) to recompute. "
             "Cache hits still validate via schema-on-hit even when enabled, "
             "so use this only when you suspect poisoning or want a clean baseline."
+        ),
+    )
+    reproduce.add_argument(
+        "--minimize-compute",
+        dest="minimize_compute",
+        action="store_true",
+        default=False,
+        help=(
+            "Reproduce the paper's CLAIM, not its recipe. The agent gets a "
+            "prompt block instructing it to swap slow paper schedules "
+            "(SGD+linear-decay-from-10 over 3000 epochs) for modern fast "
+            "equivalents (Adam@lr=0.001 over 200-500 epochs), and to record "
+            "each substitution in scope.declared_reductions so the "
+            "scope-adjusted rubric scores the metric match (paper's reported "
+            "test error / accuracy / etc.) rather than the recipe-step count. "
+            "Use when budget is tight or the paper's training schedule is "
+            "obviously a historical artefact (slow optimizers, excess epochs). "
+            "Off by default — strict reproduction is the safer baseline."
         ),
     )
     reproduce.add_argument(

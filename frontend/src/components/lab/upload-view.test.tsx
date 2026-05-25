@@ -68,6 +68,7 @@ const DEFAULT_PROPS = {
   forceSingleGpu: false,
   maxGpuUsdPerHour: 0,
   vramGb: 0,
+  minimizeCompute: false,
   sandbox: "docker" as const,
   onRootProviderChange: NOP,
   onSubagentAuthChange: NOP,
@@ -75,6 +76,7 @@ const DEFAULT_PROPS = {
   onForceSingleGpuChange: NOP,
   onMaxGpuUsdPerHourChange: NOP,
   onVramGbChange: NOP,
+  onMinimizeComputeChange: NOP,
   onSandboxChange: NOP,
 };
 

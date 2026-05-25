@@ -561,6 +561,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             sandbox=request.sandbox or settings.default_sandbox,
             gpuMode=request.gpuMode or "auto",
             model=request.model or "sonnet",
+            minimize_compute=request.minimize_compute,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1017,6 +1018,10 @@ class StartArxivRunRequest(BaseModel):
     sandbox: str | None = None
     gpuMode: str | None = None
     model: str | None = None
+    # Lane Q — "reproduce the CLAIM, not the recipe" mode. Forwarded to
+    # StartRunRequest.minimize_compute when the lab UI passes it via
+    # /api/demo/arxiv.
+    minimize_compute: bool | None = None
 
 
 class ApprovalEvaluateRequest(BaseModel):

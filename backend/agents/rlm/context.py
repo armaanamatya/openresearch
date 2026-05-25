@@ -62,6 +62,10 @@ class RunContext:
                                  # so implement_baseline can route docs/papers/<id>.yaml even
                                  # when project_id is a hashed `prj_<digest>` string that the
                                  # _extract_arxiv_id regex cannot parse.
+    minimize_compute: bool = False  # Lane Q — --minimize-compute / lab UI checkbox. When True,
+                                    # implement_baseline prompt gets the substitution rules
+                                    # (modern fast equivalents for slow paper schedules) and
+                                    # the scope.declared_reductions contract.
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so

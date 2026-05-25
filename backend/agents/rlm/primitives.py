@@ -756,6 +756,10 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # Budget awareness: hand the agent the same remaining_s the
             # run_experiment primitive uses, so its train.py can scale to fit.
             remaining_s=ctx.remaining_s(),
+            # Lane Q — minimize-compute knob, threaded through the execution
+            # profile. When True, the agent's prompt gets the substitution
+            # rules + scope.declared_reductions contract.
+            minimize_compute=getattr(ctx, "minimize_compute", False),
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).

@@ -68,6 +68,11 @@ class StartRunRequest(BaseModel):
     force_single_gpu: bool | None = None
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
+    # Lane Q — "reproduce the CLAIM, not the recipe" mode. When True the
+    # subprocess gets --minimize-compute and the agent's prompt swaps slow
+    # paper schedules for modern fast equivalents (annotated in
+    # scope.declared_reductions).
+    minimize_compute: bool | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -1541,6 +1546,9 @@ def _python_script(
         "paper_id": request.paper_id if request.mode == "rdr" else None,
         "max_repair_iterations": 2,
         "repair_target": 0.6,
+        # Lane Q — when True the cmd_reproduce Namespace gets minimize_compute=True,
+        # which threads through the ExecutionProfile to the agent's prompt.
+        "minimize_compute": bool(request.minimize_compute),
     }
     return f"""
 import asyncio
@@ -1722,11 +1730,15 @@ try:
             "max_wall_clock": config["max_wall_clock"],
             "max_pod_seconds": config["max_pod_seconds"],
             "max_invocations": config["max_invocations"],
+            "minimize_compute": config["minimize_compute"],
         }}))
         if exit_code != 0:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
     else:
-        profile = ExecutionProfile.from_mode(config["execution_mode"], gpu_mode=config["gpu_mode"])
+        profile = ExecutionProfile.from_mode(
+            config["execution_mode"], gpu_mode=config["gpu_mode"],
+            minimize_compute=config["minimize_compute"],
+        )
         # A4-7: build run_budget once from threaded-through config fields so
         # an API-set budget is honored on both the rlm and rdr paths.
         _run_budget = None
