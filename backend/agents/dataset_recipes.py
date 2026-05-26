@@ -101,11 +101,11 @@ DATASET_RECIPES: tuple[DatasetRecipe, ...] = (
     DatasetRecipe(
         canonical_name="Frey Face",
         aliases=("frey face", "frey", "freyfaces", "frey_face"),
-        canonical_import="import urllib.request, pickle, io",
+        canonical_import="import urllib.request, pickle",
         canonical_loader=(
             "pickle.loads(urllib.request.urlopen("
             "'https://raw.githubusercontent.com/y0ast/Variational-Autoencoder/master/freyfaces.pkl'"
-            ", timeout=60).read()).reshape(-1, 28, 20)"
+            ", timeout=60).read(), encoding='latin1').reshape(-1, 28, 20)"
         ),
         fallback_mirrors=(
             "https://raw.githubusercontent.com/y0ast/Variational-Autoencoder/master/freyfaces.pkl",
@@ -114,8 +114,10 @@ DATASET_RECIPES: tuple[DatasetRecipe, ...] = (
         notes=(
             "The original cs.nyu.edu mirror returns HTTP 403 in many networks; the "
             "github raw mirror above is the canonical replacement and serves a "
-            "pickled numpy array of shape (1965, 560). For maximum robustness, "
-            "wrap the load in: try: <primary>; except Exception: <fallback>. "
+            "Python-2 pickle of shape (1965, 560) — MUST load with "
+            "pickle.loads(data, encoding='latin1') or you'll hit UnicodeDecodeError "
+            "on the first non-ASCII byte. For maximum robustness, wrap the load in: "
+            "try: <primary>; except Exception: <fallback>. "
             "If every mirror fails, declare 'frey_face' in data_load_failures and "
             "skip the Frey Face experiment — do NOT substitute a synthetic dataset."
         ),
