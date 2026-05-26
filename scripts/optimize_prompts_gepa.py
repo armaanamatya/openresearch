@@ -18,6 +18,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Allow running as `python scripts/optimize_prompts_gepa.py` from repo root
+# without requiring PYTHONPATH=.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from backend.agents.optimization.eval_budget import EvalBudgetEnforcer
 from backend.agents.optimization.gepa_adapter import (
     SURFACES,
