@@ -50,8 +50,22 @@ handles selection, mutation, Pareto bookkeeping.
 
 ### Lane GEPA-B - land first
 
-Optimize `IMPROVEMENT_ORCHESTRATOR_PROMPT` in
-`backend/agents/prompts/improvement.py`.
+Optimize the three improvement-flow prompts in
+`backend/agents/prompts/improvement.py`:
+`IMPROVEMENT_ORCHESTRATOR_PROMPT`, `ADAPTIVE_POOL_GENERATION_PROMPT`,
+`ADAPTIVE_RERANK_PROMPT`. All three are load-bearing — orchestrator chooses
+which hypothesis to run, pool-generation produces the candidate set, rerank
+breaks ties. Optimizing only the orchestrator while the other two stay
+fixed leaves two confounders. v1 seeds them as three independent component
+ids (`improvement.orchestrator.body`, `improvement.pool_generation.body`,
+`improvement.rerank.body`); freeze any two as immutable controls only if
+GEPA's search space proves too wide in practice.
+
+Cache warning (same hazard as Lane C):
+`AGENT_REGISTRY["improvement-orchestrator"]` copies
+`IMPROVEMENT_ORCHESTRATOR_PROMPT` into an `AgentSpec` at import time
+(`backend/agents/registry.py:104-112`). Monkey-patching the module global
+will NOT take effect. Use the prompt-override seam from §4.3.
 
 - Trainset row shape: `(current_results, rubric_scores, paper_archetype) ->
   (selected_hypothesis, post-run rubric score)`.
@@ -104,7 +118,8 @@ Optimize `BASELINE_IMPLEMENTATION_PROMPT` in
 - Trainset: papers with cached `plan` + `repair_context` traces.
 - Metric: `run_experiment.success` and `metrics.json` contains all rubric
   required keys; failures score `0.0` with trace.
-- ASI: CUDA OOM markers, `RubricGuardFailure` JSON, missing-artifact errors,
+- ASI: CUDA OOM markers, `RubricGuardFailure` JSON
+  (`backend/agents/rlm/rubric_guard.py`), missing-artifact errors,
   preflight violations, schema-mismatch reports.
 - Cache warning: this lane is invalid unless `implement_baseline` cache keys
   include candidate hash + surface, or the cache is disabled for candidate
@@ -197,15 +212,257 @@ result = gepa.optimize(
 - Failure handling. Paper-level failures return score `0.0` plus trajectory;
   only systemic setup failures raise.
 - Trace minimization. `make_reflective_dataset` emits concise redacted JSON, not
-  raw logs.
+  raw logs. See §4.4 for schema.
+- Dependency. `gepa` is not yet vendored; pin a version in
+  `backend/requirements.txt` (e.g. `gepa==0.x.y`) before P1 lands.
+
+## 4.1 Component architecture
+
+New modules under `backend/agents/optimization/`:
+
+- `mutable_regions.py` — `MutableRegionRegistry`. Owns the default text for
+  every mutable prompt section and a stable `component_id` for each.
+- `prompt_overrides.py` — `PromptOverrideContext` (thread-local stack +
+  context-manager). Read by `build_system_prompt` and `invoke_agent`. Empty
+  by default — production runs see exactly today's prompts.
+- `gepa_adapter.py` — `ReproLabGEPAAdapter` (the GEPA contract). Holds the
+  optimization-run config and dispatches per-eval `run_pipeline_rlm` calls.
+- `trace_minimizer.py` — turns `final_report.json` + artifacts +
+  `cost_ledger.jsonl` + Hermes JSON into the reflective-dataset record
+  (§4.4). Extends the redaction rules already used by
+  `sse_bridge.sanitize_iteration`.
+- `eval_budget.py` — `EvalBudgetEnforcer` wrapping `RunBudget`. Kills
+  runaway evals; scores them `0.0` with a structured timeout trace.
+
+Touched (small additive changes, no behavior change when no override is
+active):
+
+- `backend/agents/rlm/system_prompt.py:build_system_prompt` — accepts
+  optional `overrides: dict[component_id, str]`.
+- `backend/agents/registry.py:AgentSpec.to_runtime_spec` — accepts optional
+  `prompt_override: str | None`.
+- `backend/agents/runtime/invoke.py:invoke_agent` — reads the active
+  `PromptOverrideContext` and threads through.
+
+Driver: `scripts/optimize_prompts_gepa.py` (new, per-lane CLI flags).
+
+## 4.2 Mutable region registry
+
+```python
+# backend/agents/optimization/mutable_regions.py
+@dataclass(frozen=True)
+class MutableRegion:
+    component_id: str
+    default_text: str
+    description: str       # what this region governs
+    char_budget: int       # soft cap; mutations exceeding are rejected
+
+REGIONS: dict[str, MutableRegion] = {
+    # Lane A
+    "root_system.decomposition_example": MutableRegion(...),
+    # optional follow-ups, gated on telemetry showing repeated failures:
+    # "root_system.triage_hints", "root_system.decomposition_strategy"
+
+    # Lane B
+    "improvement.orchestrator.body": MutableRegion(...),
+    "improvement.pool_generation.body": MutableRegion(...),
+    "improvement.rerank.body": MutableRegion(...),
+
+    # Lane C
+    "baseline_agent.body": MutableRegion(...),
+}
+```
+
+`system_prompt.py` `_DECOMPOSITION_EXAMPLE`, `improvement.py`'s three
+prompt constants, and `baseline_implementation.py`'s
+`BASELINE_IMPLEMENTATION_PROMPT` are moved into the registry; the original
+modules re-export them as `REGIONS["..."].default_text` for source
+compatibility. Immutable sections (Algorithm-2 guard, `FINAL_VAR`
+contract, heartbeat, GPU selection, chat steering, forced-iteration
+policy, security text) are not added to the registry — they cannot be
+selected as targets at all.
+
+## 4.3 Prompt-override seam
+
+Two threading paths, both stateless at module load:
+
+RLM root prompt (Lane A):
+
+```python
+# backend/agents/rlm/system_prompt.py
+def build_system_prompt(
+    ctx: RunContext,
+    ...,
+    overrides: Mapping[str, str] | None = None,
+) -> str:
+    text_for = lambda cid: (
+        (overrides or {}).get(cid) or REGIONS[cid].default_text
+    )
+    # Assemble using text_for(...) for each mutable region.
+```
+
+The adapter constructs `overrides` from the GEPA candidate dict and threads
+through `run_pipeline_rlm(..., system_prompt_overrides=overrides)`. No
+process-global state, no monkey-patching.
+
+AgentSpec-mediated sub-agents (Lanes B + C):
+
+```python
+# backend/agents/optimization/prompt_overrides.py
+class PromptOverrideContext:
+    @contextmanager
+    def use(self, overrides: dict[str, str]) -> Iterator[None]: ...
+    def current(self) -> dict[str, str]: ...
+
+PROMPT_OVERRIDES = PromptOverrideContext()
+
+# backend/agents/runtime/invoke.py
+def invoke_agent(agent_id: str, ...) -> ...:
+    override = PROMPT_OVERRIDES.current().get(agent_id)
+    spec = AGENT_REGISTRY[agent_id].to_runtime_spec(
+        provider=provider, prompt_override=override
+    )
+    ...
+```
+
+The adapter wraps each evaluation in
+`with PROMPT_OVERRIDES.use({"baseline-implementation": candidate_text}):`.
+Resolution happens at invocation, so the import-time
+`AgentSpec.prompt = BASELINE_IMPLEMENTATION_PROMPT` snapshot is no longer
+the load-bearing copy.
+
+## 4.4 Reflective dataset schema
+
+One record per (component, paper) eval, max ~8KB after redaction:
+
+```json
+{
+  "component_id": "improvement.orchestrator.body",
+  "example_id": "arxiv:2605.15155",
+  "paper_archetype": "rl-agent",
+  "score": 0.62,
+  "hermes_clamped_score": 0.62,
+  "input": {
+    "rubric_overall_before": 0.55,
+    "rubric_areas_before": {"...": 0.4},
+    "weak_leaves_before": [
+      {"name": "...", "score": 0.0, "rationale": "<=200 chars"}
+    ],
+    "current_results_digest": "<=400 chars"
+  },
+  "candidate_output": {
+    "selected_hypothesis": {"...": "..."},
+    "candidate_id": "...",
+    "category": "..."
+  },
+  "execution_trace": {
+    "rubric_overall_after": 0.62,
+    "rubric_delta_areas": {"...": 0.07},
+    "weak_leaves_after": [],
+    "run_experiment_success": true,
+    "repair_summaries": ["<=200 chars each"],
+    "forced_iteration_warnings": 0,
+    "blanket_decline_count": 0,
+    "hermes": {
+      "status": "grounded|caveat|unsupported|unavailable|system_error",
+      "unsupported_claims": ["..."],
+      "evidence_refs_snippets": ["<=120 chars each (top 3)"]
+    }
+  }
+}
+```
+
+Redaction (all enforced by `TraceMinimizer`):
+
+- Strip paper corpus, REPL locals, secrets, env vars.
+- Truncate stdout/stderr to first 200 + last 200 chars.
+- Drop artifact bodies; keep filenames and schema keys only.
+- Hash anything that looks like a file path under `runs/` to a short tag
+  (the reflection LM never needs the path; mentioning it leaks scope).
+
+## 4.5 Candidate isolation + concurrency
+
+Artifact tree:
+
+```
+runs/_gepa/<ts>/
+  manifest.json
+  trainset.json, valset.json
+  candidates/
+    <candidate_hash>/
+      overrides.json
+      evals/
+        <paper_id>/              # = RunContext.project_id for the eval
+          demo_status.json
+          rlm_state/
+          final_report.json
+          hermes_audit/
+          primitive_cache.jsonl
+          dashboard_events.jsonl # written but no live SSE consumer
+  pareto_front.jsonl
+  reflective_dataset.jsonl
+  mutations.jsonl
+  scores.jsonl
+  eval_manifest.jsonl
+  source_snapshot.patch
+```
+
+`primitive_cache` namespacing rule:
+
+- Prompt-invariant primitives (`understand_section`,
+  `extract_hyperparameters`, `detect_environment`) cache as today; their
+  inputs already exclude prompt text.
+- Prompt-dependent primitives (`implement_baseline`,
+  `propose_improvements`, `verify_against_rubric` when the rubric is
+  derived) include `candidate_hash` + `surface_id` in the cache key, or
+  the cache is disabled for the lane.
+- Validation runs (held-out, post-acceptance) always disable the cache.
+
+Concurrency:
+
+- Lane B is CPU/LLM-bound, no GPU. Parallelize evals via a
+  `concurrent.futures.ProcessPoolExecutor` with `min(8, len(papers))`
+  workers. `primitive_cache` writes are append-only and tolerate this.
+- Lane A/C consume RunPod pods. Cap with
+  `REPROLAB_GEPA_MAX_PARALLEL_PODS=2`; serialize when unset. Per-pod
+  `RunBudget.max_usd` enforces the per-eval ceiling.
+- GEPA's selection / mutation / merge phases are always serial — the
+  library handles this.
+
+## 4.6 Mutation acceptance protocol
+
+When GEPA accepts a mutation, the adapter materializes:
+
+```
+runs/_gepa/<ts>/proposed_mutations/<mutation_id>/
+  before.txt, after.txt
+  diff.patch                # against current source default_text
+  reflective_examples.jsonl # the records that drove this mutation
+  eval_summary.json         # per-paper score deltas, train + val
+  validation_run.json       # required: one real run_experiment on a
+                            # held-out paper not in train+val. Missing
+                            # or failed → mutation is parked, not
+                            # promoted.
+  pr_body.md                # human-readable PR description
+```
+
+Promotion is explicit: `scripts/promote_gepa_mutation.py <ts>/<id>` opens
+a PR that updates `MutableRegionRegistry`'s `default_text` for that
+`component_id`, attaches `pr_body.md` as the PR body, and tags
+`gepa-mutation`. GEPA proposes; humans review and merge (G6 + G7). Parked
+mutations stay on disk for archaeology — nothing auto-deletes.
 
 ## 5. Cost model
 
-| Lane | Eval cost per row | Rows/run | Reflection cost | Total/optimization |
-|---|---:|---:|---:|---:|
-| B improvement | ~$0.05 | ~50 | ~$5 | ~$10 |
-| A root prompt | ~$1.00 + GPU | ~80 | ~$10 | ~$100 + GPU |
-| C baseline agent | ~$0.50 + GPU | ~60 | ~$10 | ~$45 + GPU |
+| Lane | Eval cost/row | Rows/run | Reflection | Hermes/eval | Validation run | Total/opt |
+|---|---:|---:|---:|---:|---:|---:|
+| B improvement | ~$0.05 | ~50 | ~$5 | ~$0.02 | ~$0.50 | ~$11 |
+| A root prompt | ~$1.00 + GPU | ~80 | ~$10 | ~$0.02 | ~$1.00 + GPU | ~$102 + GPU |
+| C baseline agent | ~$0.50 + GPU | ~60 | ~$10 | ~$0.02 | ~$0.50 + GPU | ~$46 + GPU |
+
+Per-mutation validation (§4.6) costs one full real `run_experiment` per
+accepted mutation on a held-out paper; budget 1-3 of these per
+optimization run.
 
 Mitigations:
 
@@ -303,7 +560,25 @@ specialize per archetype and system-aware merge can combine specializations.
 1. Should the reflection LM see paper text? Default no. It should see redacted
    trace only.
 2. Do optimized prompts stay per-archetype or merge into one union prompt?
+   GEPA's system-aware merge is the natural seam for this; revisit after
+   Lane B produces ≥2 archetype-specialized Pareto candidates.
 3. Does optimization happen per root model or against one canonical root model?
+4. Reflection-LM context: does `gepa` call the reflection LM per-example or
+   per-batch? Per-batch with minibatch=50 risks overflowing GPT-5 context
+   even after redaction. Verify the library default and gate before P1.
+5. Where do paper-archetype labels live? Proposal:
+   `tests/fixtures/papers/<arxiv_id>/archetype.txt` (one of
+   `rl-agent`, `nlp-eval`, `cv-ablation`, ...). The trainset loader reads
+   this; archetype is a trace field, not a candidate input.
+6. Noise floor: root-model + sandbox stochasticity make a single-run score
+   noisy. Per-example n=1 (cheap, high variance) vs n=2 paired
+   (2x cost, halved variance)? v1 picks n=1 plus a wider Pareto front; if
+   acceptance noise dominates after P2, escalate to n=2 on a per-mutation
+   basis at acceptance time.
+7. Should the forced-iteration policy stay enabled during GEPA inner-loop
+   evals? Disabling it speeds inner evals but biases the optimizer toward
+   prompts that terminate too early. v1 leaves it ON; revisit if cost
+   forces it off.
 
 ## 10. Out of scope
 
