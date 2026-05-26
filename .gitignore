@@ -129,3 +129,4 @@ reprolab.db-wal
 frontend/tmp-screens
 frontend/tmp-screens/
 /playwright/
+.venv-gepa/

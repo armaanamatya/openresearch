@@ -260,19 +260,36 @@ class ReproLabGEPAAdapter:
 def _make_evaluation_batch(
     *, scores: list[float], outputs: list[dict], trajectories: list[dict]
 ) -> Any:
-    """Construct ``gepa.core.adapter.EvaluationBatch`` if available, else a stub."""
+    """Construct ``gepa.core.adapter.EvaluationBatch`` if available, else a stub.
+
+    Real gepa.EvaluationBatch has 4 fields: ``outputs``, ``scores``,
+    ``trajectories``, ``objective_scores``. We don't decompose the score into
+    multiple objectives (Pareto axis is per-paper, not per-objective per spec
+    §7), so ``objective_scores`` mirrors ``scores`` as a single-objective view.
+    """
     try:
         from gepa.core.adapter import EvaluationBatch  # type: ignore[import-not-found]
 
-        return EvaluationBatch(scores=scores, outputs=outputs, trajectories=trajectories)
+        return EvaluationBatch(
+            scores=scores,
+            outputs=outputs,
+            trajectories=trajectories,
+            objective_scores=None,
+        )
     except ImportError:
         @dataclass
         class _StubBatch:
             scores: list[float]
             outputs: list[dict]
             trajectories: list[dict]
+            objective_scores: list[float] | None = None
 
-        return _StubBatch(scores=scores, outputs=outputs, trajectories=trajectories)
+        return _StubBatch(
+            scores=scores,
+            outputs=outputs,
+            trajectories=trajectories,
+            objective_scores=None,
+        )
 
 
 __all__ = [
