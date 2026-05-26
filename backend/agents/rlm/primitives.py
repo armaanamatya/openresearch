@@ -76,6 +76,14 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     "runpod_balance_too_low",
 }
 
+# PR-ζ: transient-error retry policy for _execute_in_sandbox.
+# Three retries with exponential backoff: 5s, 10s, 20s.
+# Total retry budget is capped so it cannot blow through the primitive
+# wall-clock limit (the surrounding run_experiment timeout still bounds).
+_MAX_TRANSIENT_RETRIES: int = 3
+_BACKOFF_BASE_S: float = 5.0
+_RETRY_TIMEOUT_TOTAL_S: float = 90.0
+
 
 def _with_outcome(result: dict, outcome: PrimitiveOutcome) -> dict:
     """Attach primitive typestate to a result dict without disturbing payload shape."""
@@ -1182,7 +1190,7 @@ async def _execute_in_sandbox(
     import json as _json
     from pathlib import Path
 
-    from backend.services.runtime.interface import SandboxConfig
+    from backend.services.runtime.interface import SandboxConfig, SandboxRuntimeError
     from backend.services.runtime.service import (
         CreateSandbox, DestroySandbox, ExecuteCommand,
     )
@@ -1242,8 +1250,6 @@ async def _execute_in_sandbox(
             "PYTHONUNBUFFERED": "1",
         },
     )
-    sandbox = await service.create_sandbox(CreateSandbox(config=config))
-
     # Auto-install requirements.txt on RunPod BEFORE commands.json runs. The
     # agent's prompt has repeatedly forgotten to wire `python -m pip install -r
     # requirements.txt` into commands.json on runpod (Dockerfile is doc-only;
@@ -1316,7 +1322,6 @@ async def _execute_in_sandbox(
                 "python -m pip install -r requirements.txt"
             )
 
-    results = []
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
     # and emits run_warning SSE events at the warn-threshold + invokes
@@ -1336,157 +1341,251 @@ async def _execute_in_sandbox(
     # Lane N — bounded recovery budget. Pod is destroyed once this is exhausted.
     import os as _os_env_wd
     _MAX_SOFT_RECOVERIES = int(_os_env_wd.environ.get("REPROLAB_WATCHDOG_MAX_SOFT_RECOVERIES", "3"))
-    _soft_recovery_count = 0
 
-    async def _emit_warn_real(report) -> None:
-        try:
-            _emit_dashboard_event_to_path(
-                project_dir_for_watchdog,
-                event_type="run_warning",
-                payload={
-                    "reason": "stale_run",
-                    **report.to_dict(),
-                    "thresholds": {
-                        "warn_after_seconds": _wd_cfg.warn_after_seconds,
-                        "kill_after_seconds": _wd_cfg.kill_after_seconds,
-                    },
-                },
-            )
-        except Exception:  # noqa: BLE001 — observability never blocks
-            logger.exception("watchdog warn-emit failed")
+    _wd_cfg = _WatchdogConfig.from_env()
 
-    async def _emit_kill_real(report):
-        """Lane N — escalating probe-recover.
+    # PR-ζ: transient-error retry loop.
+    # Wraps the entire create→execute→destroy lifecycle. The bootstrap_commands
+    # and watchdog callback closures are computed once; only the sandbox
+    # creation and execution are retried. Each retry gets a fresh sandbox —
+    # the watchdog closures close over `sandbox` by name and see the updated
+    # value at call time.
+    #
+    # Wall-clock guard: total time spent in the retry loop (backoff only, not
+    # the experiment itself) is capped at _RETRY_TIMEOUT_TOTAL_S so this
+    # cannot blow through the surrounding run_experiment timeout.
+    from backend.services.runtime.transient_classifier import (
+        TransientClass as _TransientClass,
+        classify_exception as _classify_exception,
+    )
+    _retry_attempts: list[dict] = []
+    _retry_loop_start = asyncio.get_event_loop().time()
 
-        Distinguishes "pod truly dead" from "pod alive, agent slow-printing".
-        Each KILL verdict from the watchdog walks one rung up the ladder:
+    # `sandbox` is declared here so the watchdog closures (defined inside the
+    # loop) close over it by name and always reference the current attempt's
+    # sandbox — not a stale reference from a prior attempt.
+    sandbox = None
 
-          Strike 0 (probe OK, count=0): just warn + RECOVERED — give the
-            run more time. A train.py with prints-every-25-epochs at 12 s/epoch
-            takes >10 min between prints; that's slow, not wedged.
-          Strike 1 (probe OK, count=1): warn + soft_recover (pkill in-pod
-            train.py) + RECOVERED — first benefit-of-doubt was used; the
-            staleness is persistent, so the in-pod process is likely wedged.
-          Strike 2+ (probe OK, count >= MAX): destroy pod, raise
-            _WatchdogKilled. We've spent the budget.
-          Any probe FAIL: destroy immediately (pod is gone).
-        """
-        nonlocal _soft_recovery_count
+    for _retry_idx in range(_MAX_TRANSIENT_RETRIES + 1):
+        sandbox = None
+        results = []
+        _soft_recovery_count = 0
+        _wd_task = None
+        _last_sre: SandboxRuntimeError | None = None
+        _backoff: float = _BACKOFF_BASE_S * (2 ** _retry_idx)
 
-        # 1. probe alive via FRESH SSH channel (not the wedged one).
-        probe_ok = False
-        try:
-            probe_ok = await service.probe_alive(sandbox, timeout=10.0)
-        except Exception:  # noqa: BLE001 — probe never raises in our impl
-            logger.exception("watchdog probe raised — treating as dead")
-
-        # 2. Escalating recovery if alive.
-        if probe_ok and _soft_recovery_count < _MAX_SOFT_RECOVERIES:
-            current_strike = _soft_recovery_count
-            _soft_recovery_count += 1
-            # Strike 0 = benefit of doubt (no in-pod kill, just warn).
-            # Strikes >= 1 = the staleness is persistent, soft-recover.
-            should_soft_recover = current_strike >= 1
-            recover_ok = False
-            if should_soft_recover:
-                try:
-                    recover_ok = await service.soft_recover(sandbox)
-                except Exception:  # noqa: BLE001
-                    logger.exception("watchdog soft_recover raised")
-            reason = (
-                "pod_alive_under_watchdog_soft_recovered" if should_soft_recover
-                else "pod_alive_under_watchdog_grace"
-            )
+        async def _emit_warn_real(report) -> None:
             try:
                 _emit_dashboard_event_to_path(
                     project_dir_for_watchdog,
                     event_type="run_warning",
                     payload={
-                        "reason": reason,
+                        "reason": "stale_run",
+                        **report.to_dict(),
+                        "thresholds": {
+                            "warn_after_seconds": _wd_cfg.warn_after_seconds,
+                            "kill_after_seconds": _wd_cfg.kill_after_seconds,
+                        },
+                    },
+                )
+            except Exception:  # noqa: BLE001 — observability never blocks
+                logger.exception("watchdog warn-emit failed")
+
+        async def _emit_kill_real(report):
+            """Lane N — escalating probe-recover.
+
+            Distinguishes "pod truly dead" from "pod alive, agent slow-printing".
+            Each KILL verdict from the watchdog walks one rung up the ladder:
+
+              Strike 0 (probe OK, count=0): just warn + RECOVERED — give the
+                run more time. A train.py with prints-every-25-epochs at 12 s/epoch
+                takes >10 min between prints; that's slow, not wedged.
+              Strike 1 (probe OK, count=1): warn + soft_recover (pkill in-pod
+                train.py) + RECOVERED — first benefit-of-doubt was used; the
+                staleness is persistent, so the in-pod process is likely wedged.
+              Strike 2+ (probe OK, count >= MAX): destroy pod, raise
+                _WatchdogKilled. We've spent the budget.
+              Any probe FAIL: destroy immediately (pod is gone).
+            """
+            nonlocal _soft_recovery_count
+
+            # 1. probe alive via FRESH SSH channel (not the wedged one).
+            probe_ok = False
+            try:
+                probe_ok = await service.probe_alive(sandbox, timeout=10.0)
+            except Exception:  # noqa: BLE001 — probe never raises in our impl
+                logger.exception("watchdog probe raised — treating as dead")
+
+            # 2. Escalating recovery if alive.
+            if probe_ok and _soft_recovery_count < _MAX_SOFT_RECOVERIES:
+                current_strike = _soft_recovery_count
+                _soft_recovery_count += 1
+                # Strike 0 = benefit of doubt (no in-pod kill, just warn).
+                # Strikes >= 1 = the staleness is persistent, soft-recover.
+                should_soft_recover = current_strike >= 1
+                recover_ok = False
+                if should_soft_recover:
+                    try:
+                        recover_ok = await service.soft_recover(sandbox)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("watchdog soft_recover raised")
+                reason = (
+                    "pod_alive_under_watchdog_soft_recovered" if should_soft_recover
+                    else "pod_alive_under_watchdog_grace"
+                )
+                try:
+                    _emit_dashboard_event_to_path(
+                        project_dir_for_watchdog,
+                        event_type="run_warning",
+                        payload={
+                            "reason": reason,
+                            "soft_recovery_count": _soft_recovery_count,
+                            "max_soft_recoveries": _MAX_SOFT_RECOVERIES,
+                            "soft_recover_attempted": should_soft_recover,
+                            "soft_recover_succeeded": recover_ok,
+                            **report.to_dict(),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("watchdog recover-emit failed")
+                logger.warning(
+                    "watchdog: probe OK strike=%d/%d soft_recover=%s ok=%s — keeping pod warm",
+                    _soft_recovery_count, _MAX_SOFT_RECOVERIES,
+                    should_soft_recover, recover_ok,
+                )
+                return _KillVerdict.RECOVERED
+
+            # 3. Destroy: pod is dead OR we've recovered too many times.
+            try:
+                _emit_dashboard_event_to_path(
+                    project_dir_for_watchdog,
+                    event_type="run_warning",
+                    payload={
+                        "reason": "pod_killed_by_watchdog",
+                        "probe_ok": probe_ok,
                         "soft_recovery_count": _soft_recovery_count,
                         "max_soft_recoveries": _MAX_SOFT_RECOVERIES,
-                        "soft_recover_attempted": should_soft_recover,
-                        "soft_recover_succeeded": recover_ok,
                         **report.to_dict(),
+                        "thresholds": {
+                            "warn_after_seconds": _wd_cfg.warn_after_seconds,
+                            "kill_after_seconds": _wd_cfg.kill_after_seconds,
+                        },
                     },
                 )
             except Exception:  # noqa: BLE001
-                logger.exception("watchdog recover-emit failed")
-            logger.warning(
-                "watchdog: probe OK strike=%d/%d soft_recover=%s ok=%s — keeping pod warm",
-                _soft_recovery_count, _MAX_SOFT_RECOVERIES,
-                should_soft_recover, recover_ok,
-            )
-            return _KillVerdict.RECOVERED
-
-        # 3. Destroy: pod is dead OR we've recovered too many times.
-        try:
-            _emit_dashboard_event_to_path(
-                project_dir_for_watchdog,
-                event_type="run_warning",
-                payload={
-                    "reason": "pod_killed_by_watchdog",
-                    "probe_ok": probe_ok,
-                    "soft_recovery_count": _soft_recovery_count,
-                    "max_soft_recoveries": _MAX_SOFT_RECOVERIES,
-                    **report.to_dict(),
-                    "thresholds": {
-                        "warn_after_seconds": _wd_cfg.warn_after_seconds,
-                        "kill_after_seconds": _wd_cfg.kill_after_seconds,
-                    },
-                },
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("watchdog kill-emit failed")
-        # Tear down the sandbox so the in-flight execute returns promptly.
-        try:
-            await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
-        except Exception:  # noqa: BLE001
-            logger.exception("watchdog kill-destroy failed")
-        raise _WatchdogKilled(
-            f"Watchdog killed run after {report.stale_seconds:.0f}s of no signal "
-            f"(freshest={report.freshest_signal}); probe_ok={probe_ok} "
-            f"recoveries={_soft_recovery_count}/{_MAX_SOFT_RECOVERIES}"
-        )
-
-    _wd_cfg = _WatchdogConfig.from_env()
-    _wd_task = None
-    if _watchdog_enabled():
-        _wd_task = asyncio.create_task(_run_watchdog(
-            artifact_root=artifact_root,
-            project_dir=project_dir_for_watchdog,
-            config=_wd_cfg,
-            on_warn=_emit_warn_real,
-            on_kill=_emit_kill_real,
-        ))
-
-    try:
-        for command in (*bootstrap_commands, *commands):
-            results.append(await service.execute(
-                ExecuteCommand(sandbox=sandbox, command=command,
-                               timeout=_EXEC_TIMEOUT_SECONDS)))
-    except _WatchdogKilled as exc:
-        # Surface as a fail-soft error dict so the caller's outer escalation
-        # loop treats it like an OOM (advance ladder / repair_context).
-        return {
-            "success": False,
-            "metrics": {},
-            "logs": _cap_logs(_combine_command_output(results)),
-            "error": f"run_experiment: {exc}",
-            "watchdog_killed": True,
-        }
-    finally:
-        # Cancel the watchdog task BEFORE destroy so an in-flight on_kill
-        # doesn't double-destroy. asyncio.shield: destroy completes even
-        # if the surrounding wait_for / thread-pool timeout cancels this
-        # coroutine (A2-C1).
-        if _wd_task is not None and not _wd_task.done():
-            _wd_task.cancel()
+                logger.exception("watchdog kill-emit failed")
+            # Tear down the sandbox so the in-flight execute returns promptly.
             try:
-                await _wd_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
+                await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
+            except Exception:  # noqa: BLE001
+                logger.exception("watchdog kill-destroy failed")
+            raise _WatchdogKilled(
+                f"Watchdog killed run after {report.stale_seconds:.0f}s of no signal "
+                f"(freshest={report.freshest_signal}); probe_ok={probe_ok} "
+                f"recoveries={_soft_recovery_count}/{_MAX_SOFT_RECOVERIES}"
+            )
+
+        try:
+            sandbox = await service.create_sandbox(CreateSandbox(config=config))
+
+            if _watchdog_enabled():
+                _wd_task = asyncio.create_task(_run_watchdog(
+                    artifact_root=artifact_root,
+                    project_dir=project_dir_for_watchdog,
+                    config=_wd_cfg,
+                    on_warn=_emit_warn_real,
+                    on_kill=_emit_kill_real,
+                ))
+
+            for command in (*bootstrap_commands, *commands):
+                results.append(await service.execute(
+                    ExecuteCommand(sandbox=sandbox, command=command,
+                                   timeout=_EXEC_TIMEOUT_SECONDS)))
+        except _WatchdogKilled as exc:
+            # Surface as a fail-soft error dict so the caller's outer escalation
+            # loop treats it like an OOM (advance ladder / repair_context).
+            # Watchdog kills are not retried — the pod was destroyed deliberately.
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": _cap_logs(_combine_command_output(results)),
+                "error": f"run_experiment: {exc}",
+                "watchdog_killed": True,
+            }
+        except SandboxRuntimeError as _sre:
+            # PR-ζ: classify and decide whether to retry.
+            _klass = _classify_exception(_sre)
+            _retry_attempts.append({
+                "attempt": _retry_idx + 1,
+                "transient_class": _klass.value,
+                "error": str(_sre)[:300],
+            })
+            _elapsed_retry = asyncio.get_event_loop().time() - _retry_loop_start
+            _can_retry = (
+                _klass == _TransientClass.transient
+                and _retry_idx < _MAX_TRANSIENT_RETRIES
+                and (_elapsed_retry + _backoff) <= _RETRY_TIMEOUT_TOTAL_S
+            )
+            if _klass == _TransientClass.fatal or _klass == _TransientClass.code_bug:
+                # Propagate immediately — no retry benefit.
+                raise
+            if _can_retry:
+                try:
+                    _emit_dashboard_event_to_path(
+                        project_dir_for_watchdog,
+                        event_type="sandbox_retry",
+                        payload={
+                            "attempt": _retry_idx + 1,
+                            "max": _MAX_TRANSIENT_RETRIES,
+                            "backoff_s": _backoff,
+                            "transient_class": _klass.value,
+                            "error": str(_sre)[:300],
+                        },
+                    )
+                except Exception:  # noqa: BLE001 — observability never blocks
+                    logger.exception("_execute_in_sandbox: sandbox_retry emit failed")
+                logger.warning(
+                    "_execute_in_sandbox: transient error (attempt %d/%d) — "
+                    "retrying after %.0fs backoff. %s",
+                    _retry_idx + 1, _MAX_TRANSIENT_RETRIES + 1,
+                    _backoff, str(_sre)[:200],
+                )
+                # Continue to finally (which destroys the sandbox if it was
+                # created), then sleep, then the next loop iteration.
+                _last_sre = _sre
+            else:
+                # Exhausted retries or unknown class — propagate with attempts
+                # so the caller's repair_context shows what was tried.
+                _sre._retry_attempts = _retry_attempts  # type: ignore[attr-defined]
+                raise
+        finally:
+            # Cancel the watchdog task BEFORE destroy so an in-flight on_kill
+            # doesn't double-destroy. asyncio.shield: destroy completes even
+            # if the surrounding wait_for / thread-pool timeout cancels this
+            # coroutine (A2-C1).
+            if _wd_task is not None and not _wd_task.done():
+                _wd_task.cancel()
+                try:
+                    await _wd_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            if sandbox is not None:
+                await asyncio.shield(service.destroy(DestroySandbox(sandbox=sandbox)))
+
+        if _last_sre is None:
+            # Normal success path — break out of the retry loop.
+            break
+        # Transient retry: sleep then loop.
+        await asyncio.sleep(_backoff)
+
+    # PR-ζ: sandbox fallback — when RunPod retries are exhausted and the host
+    # supports local docker + GPU, optionally swap ctx.sandbox_mode to local
+    # for the remainder of the run. Opt-in via REPROLAB_RUNPOD_AUTO_FALLBACK=true
+    # (default off). The ctx object is not available inside _execute_in_sandbox
+    # (it does not receive ctx); fallback is handled in run_experiment which
+    # calls this function. See _apply_sandbox_fallback_if_eligible in run_experiment.
+    # TODO(PR-ζ-followup): thread ctx into _execute_in_sandbox so fallback can
+    # be applied here with the correct emit surface.
 
     # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
     metrics: dict = {}
@@ -1977,13 +2076,43 @@ def run_experiment(
                     infra_error_kind = "runpod_transient_500"
                     result = {
                         "success": False, "metrics": {},
-                        "error": f"runpod transient 500 on {gpu_plan.short_name if gpu_plan else 'unknown'}",
+                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
                     }
                 else:
                     result = {
                         "success": False, "metrics": {},
                         "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
                     }
+                # PR-ζ: opt-in sandbox fallback after transient retry exhaustion.
+                # When REPROLAB_RUNPOD_AUTO_FALLBACK=true and the exception carries
+                # _retry_attempts (set by _execute_in_sandbox after exhausting
+                # transient retries), check whether local docker + GPU is viable
+                # and if so mutate ctx.sandbox_mode for the rest of this run.
+                import os as _os_fallback
+                if _os_fallback.environ.get("REPROLAB_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
+                    _retry_attempts_on_exc = getattr(exc, "_retry_attempts", None)
+                    _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
+                    if (
+                        _retry_attempts_on_exc
+                        and "runpod" in _mode_str_fb
+                    ):
+                        try:
+                            from backend.agents.execution import SandboxMode as _SandboxMode, _docker_reachable
+                            from backend.services.runtime.gpu_resolution import host_supports_nvidia_gpu
+                            if host_supports_nvidia_gpu() and _docker_reachable():
+                                ctx.sandbox_mode = _SandboxMode.docker
+                                _emit_dashboard_event(ctx, event_type="sandbox_fallback", payload={
+                                    "from": "runpod",
+                                    "to": "local",
+                                    "reason": "max_retries_exhausted_after_transient_failures",
+                                    "attempts": _retry_attempts_on_exc,
+                                })
+                                logger.warning(
+                                    "run_experiment: RunPod transient retries exhausted — "
+                                    "auto-fallback to local docker for the rest of this run."
+                                )
+                        except Exception:  # noqa: BLE001 — fallback must never crash the run
+                            logger.exception("run_experiment: sandbox fallback check failed")
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
