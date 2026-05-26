@@ -16,6 +16,7 @@ closure) — never through `dashboard._emit` directly.
 from __future__ import annotations
 
 import inspect
+import json as _json
 import logging
 import threading
 from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
@@ -496,6 +497,37 @@ def _emit_supplemental(
                     for a in areas if isinstance(a, dict)
                 ],
             ))
+
+            # 2026-05-26: persist the full verify_against_rubric payload so
+            # write_final_report_rlm can merge per-leaf justifications into
+            # final_report.json::rubric. The SSE event surface stays minimal
+            # (areas only); the deep data lives on disk. Atomic write so a
+            # mid-write crash never leaves a half-baked rubric_evaluation.json.
+            try:
+                import os as _os
+                from pathlib import Path as _Path
+                eval_path = _Path(ctx.project_dir) / "rubric_evaluation.json"
+                tmp = eval_path.with_suffix(".json.tmp")
+                payload = {
+                    "iteration": ctx.current_iteration,
+                    "overall_score": float(score),
+                    "target_score": float(target) if target is not None else None,
+                    "meets_target": result.get("meets_target"),
+                    "leaf_count": result.get("leaf_count"),
+                    "graded": result.get("graded"),
+                    "rubric_source": result.get("rubric_source"),
+                    "degraded": result.get("degraded"),
+                    "compute_adjusted_score": result.get("compute_adjusted_score"),
+                    "compute_scope": result.get("compute_scope"),
+                    "coverage_pct": result.get("coverage_pct"),
+                    "areas": areas,
+                    "leaf_scores": result.get("leaf_scores", []),
+                    "weak_leaves": result.get("weak_leaves", []),
+                }
+                tmp.write_text(_json.dumps(payload, indent=2, default=str))
+                _os.replace(tmp, eval_path)
+            except Exception:  # noqa: BLE001 — persistence is best-effort
+                logger.debug("binding: rubric_evaluation.json persist failed (non-fatal)")
 
     elif name == "record_candidate_outcome" and isinstance(result, dict):
         # 2026-05-23: only emit when the primitive returned success — bad input

@@ -625,6 +625,29 @@ def write_final_report_rlm(
     json_path = project_dir / "final_report.json"
     md_path = project_dir / "final_report.md"
 
+    # --- Merge deep rubric evaluation (2026-05-26) -------------------------
+    # binding.py persists the full verify_against_rubric payload to
+    # rubric_evaluation.json on every successful verification. Merge the
+    # per-leaf justifications + weak_leaves into the report's rubric block
+    # so final_report.json carries the WHY-this-score evidence instead of
+    # just the rolled-up area numbers. Idempotent — if the eval file doesn't
+    # exist (failed run, never reached verify), the existing rubric block is
+    # preserved untouched.
+    try:
+        eval_path = project_dir / "rubric_evaluation.json"
+        if eval_path.exists():
+            import json as _json
+            deep = _json.loads(eval_path.read_text())
+            current = dict(report.rubric or {})
+            for key in ("leaf_scores", "weak_leaves", "leaf_count", "graded",
+                        "rubric_source", "coverage_pct", "compute_adjusted_score",
+                        "compute_scope"):
+                if key in deep and deep[key] is not None and key not in current:
+                    current[key] = deep[key]
+            report.rubric = current
+    except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
+        logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
+
     # --- JSON (canonical) ---
     json_content = report.model_dump_json(indent=2)
     _atomic_write(json_path, json_content)
