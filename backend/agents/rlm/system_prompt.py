@@ -423,6 +423,7 @@ def build_system_prompt(
     context_metadata: dict,
     root_model: RootModel,
     include_hints: bool = True,
+    overrides: "Mapping[str, str] | None" = None,
 ) -> str:
     """Compose the root system prompt for one RLM reproduction run.
 
@@ -443,6 +444,14 @@ def build_system_prompt(
             these ~58 rarely-needed lines from the stable cached prefix and
             reduce per-run input-token spend.  Defaults to ``True`` for safety
             until telemetry confirms it's safe to disable across paper types.
+        overrides: GEPA prompt-override seam. Maps ``component_id`` →
+            replacement text for any mutable region listed in
+            ``backend/agents/optimization/mutable_regions.py``. Immutable
+            sections (RLM operating model, Algorithm-2 guard, FINAL_VAR
+            contract, forced-iteration policy, chat steering, heartbeat, GPU
+            selection, model-specific addenda) are NOT addressable and any
+            attempt to override them is silently ignored. When ``None``
+            (default), production behavior is byte-identical to pre-GEPA.
 
     Returns:
         The custom system prompt as an ``rlm`` ``.format()`` template: every
@@ -450,16 +459,37 @@ def build_system_prompt(
         ``{custom_tools_section}`` placeholder marks where ``rlm`` injects the
         auto-generated primitive tool docs.
     """
+    # GEPA region resolver: look up the override for ``component_id``; fall
+    # back to the constant. Only call this for MUTABLE regions — immutable
+    # sections (Algorithm-2 guard, FINAL_VAR contract, heartbeat, GPU
+    # selection, chat steering, security text) are inlined as plain
+    # constants below and cannot be addressed by ``overrides``.
+    _ov: dict[str, str] = dict(overrides) if overrides else {}
+
+    def _mut(component_id: str, default: str) -> str:
+        return _ov.get(component_id, default)
+
     parts: list[str] = [
+        # GEPA-IMMUTABLE-BEGIN: RLM operating model + Algorithm-2 guard
         _RLM_OPERATING_MODEL,
+        # GEPA-IMMUTABLE-END
         _context_metadata_section(context_metadata),
+        # GEPA-IMMUTABLE-BEGIN: chat steering surface
         _CHAT_STEERING_SECTION,
+        # GEPA-IMMUTABLE-END
+        # GEPA-IMMUTABLE-BEGIN: primitive signatures (auto-generated)
         _PRIMITIVES_SECTION,
+        # GEPA-IMMUTABLE-END
+        # GEPA-IMMUTABLE-BEGIN: FINAL_VAR contract + forced-iteration policy
         _TERMINATION_CONTRACT,
         _ITERATION_DISCIPLINE,
-        _DECOMPOSITION_EXAMPLE,
+        # GEPA-IMMUTABLE-END
+        # GEPA-MUTABLE: root_system.decomposition_example
+        _mut("root_system.decomposition_example", _DECOMPOSITION_EXAMPLE),
+        # GEPA-IMMUTABLE-BEGIN: heartbeat + GPU selection
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
+        # GEPA-IMMUTABLE-END
     ]
 
     if include_hints:

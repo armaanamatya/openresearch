@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.agents.optimization.mutable_regions import AGENT_TO_COMPONENT
+from backend.agents.optimization.prompt_overrides import PROMPT_OVERRIDES
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.runtime.base import AgentRuntime, ProviderName, StreamText, StreamToolCall
 from backend.agents.runtime.factory import make_runtime
@@ -29,11 +31,17 @@ async def collect_agent_text(
     """Run one agent and return concatenated text output."""
     selected_runtime = runtime or make_runtime(provider)
     started_at = datetime.now(timezone.utc).isoformat()
+    # GEPA override seam: when an optimization run has pushed a candidate text
+    # for this agent's component_id, use it instead of the registry default.
+    # Outside an active PromptOverrideContext this is a no-op (returns None).
+    component_id = AGENT_TO_COMPONENT.get(agent_id)
+    override = PROMPT_OVERRIDES.get(component_id) if component_id else None
     spec = AGENT_REGISTRY[agent_id].to_runtime_spec(
         selected_runtime.provider_name,
         model_override=model,
         working_directory=project_dir,
         max_turns=max_turns,
+        prompt_override=override,
     )
     collected: list[str] = []
     tool_calls: list[dict[str, object]] = []
