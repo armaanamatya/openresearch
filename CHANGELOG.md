@@ -149,7 +149,6 @@ version + date and start a new `[Unreleased]` block above it.
     flow + repair + fail-soft, run.py bundle resolution, full offline e2e on
     the real `sequential-neural-score-estimation` bundle). Full suite green:
     1362 passed, 3 skipped.
-  - Design spec: `docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`.
 - **RLM Phase 4 — RLM lab frontend (feat/rlm-phase4-frontend, #61).** Ships the
   RLM lab UI: a live, branching **exploration-tree canvas** (the centerpiece) wrapped
   in a lab-notebook shell — rich header (paper metadata, project id, status pill,

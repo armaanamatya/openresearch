@@ -189,8 +189,9 @@ Read whichever is relevant before non-trivial changes:
 - `docs/design/rlm-pivot-brief.md` — canonical architecture reference for the RLM orchestrator.
 - `docs/runbooks/e2e-testing.md` — canonical local end-to-end test and debug reference.
 - `docs/runbooks/2026-05-23-sdar-baseline-handoff.md` — SDAR baseline run command + 2026-05-23 debug cycle + next-session prompt.
-- `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` — locked mode and cleanup decisions for the current launch track.
-- `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` — dynamic-GPU resolver + RunPod escalation (capacity + OOM) design + the per-run guidance hook.
+- `docs/superpowers/specs/2026-05-25-gepa-prompt-optimization-design.md` — GEPA prompt-optimization design (current active track).
+- `docs/superpowers/specs/2026-05-26-gepa-phase0-audit.md` — GEPA Phase-0 audit and prerequisites.
+- `docs/superpowers/specs/2026-05-26-systemic-failure-resolution-design.md` — umbrella record of systemic failure modes; most fixes shipped piecemeal, kept as the consolidated reference.
 
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.

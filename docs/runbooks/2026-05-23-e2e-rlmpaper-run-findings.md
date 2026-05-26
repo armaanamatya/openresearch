@@ -1,7 +1,5 @@
 # Findings - E2E localhost run of the RLM paper (2026-05-23)
 
-Companion to `docs/superpowers/specs/2026-05-23-e2e-rlmpaper-localhost-run-design.md`.
-
 This is the final, reconciled log for the localhost reproduction of arXiv
 2512.24601, "Recursive Language Models", through ReproLab's RLM path. It
 records each backend, UI, and config defect found during the run, the fix that
