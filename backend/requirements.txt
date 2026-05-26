@@ -35,3 +35,10 @@ numpy>=1.26
 # --- RLM orchestrator -------------------------------------------------------
 rlms==0.1.1
 python-dotenv>=1.2.1,<2
+
+# --- Prompt optimization (GEPA) ---------------------------------------------
+# Used by backend/agents/optimization/* (Phase 1+ of GEPA integration).
+# Spec: docs/superpowers/specs/2026-05-25-gepa-prompt-optimization-design.md
+# Adapter contract: gepa.core.adapter.GEPAAdapter (evaluate + make_reflective_dataset).
+# Pin exact — re-pin only with adapter regression tests.
+gepa==0.1.1
