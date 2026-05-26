@@ -400,6 +400,7 @@ _REPRODUCE_DEFAULTS = {
     "max_usd": None,
     "max_wall_clock": None,
     "max_pod_seconds": None,
+    "max_rlm_iterations": None,
     "max_invocations": None,
     "seed": None,
     "attempt_id": None,
@@ -761,6 +762,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     if getattr(args, "vram_gb", None) is not None:
         _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+    _max_rlm_iter = getattr(args, "max_rlm_iterations", None)
+    if _max_rlm_iter is not None and _max_rlm_iter > 0:
+        _os.environ["REPROLAB_MAX_RLM_ITERATIONS"] = str(_max_rlm_iter)
+    elif _max_rlm_iter == 0:
+        # Explicit 0 disables the cap; clear any inherited env var.
+        _os.environ.pop("REPROLAB_MAX_RLM_ITERATIONS", None)
 
     # Paper-hint + operator scope-spec composition. The two flags are independent —
     # either, both, or neither may be set. Result is persisted via env vars so the
@@ -1364,6 +1371,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "Purge any prior run of the same paper before starting. "
             "Deletes runs/<project_id>/ and all event-store rows for the project "
             "so the re-run starts with a clean slate."
+        ),
+    )
+    reproduce.add_argument(
+        "--max-rlm-iterations",
+        dest="max_rlm_iterations",
+        type=int,
+        default=None,
+        help=(
+            "(rlm mode) hard cap on the total number of RLM root-loop iterations. "
+            "When the root reaches this count, FINAL_VAR is accepted unconditionally "
+            "and the best partial report is shipped. Default: from "
+            "REPROLAB_MAX_RLM_ITERATIONS env var (default 5). "
+            "Set to 0 to disable the cap."
         ),
     )
     reproduce.add_argument(

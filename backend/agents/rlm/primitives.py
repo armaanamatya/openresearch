@@ -967,6 +967,97 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     repair_context = plan.get("repair_context")
 
     # ------------------------------------------------------------------
+    # PR-ι.2 — Patch-mode implement_baseline (killer fix for repeated bugs).
+    #
+    # When this is the 2nd+ call on the same run AND a prior train.py exists
+    # on disk AND the repair_context carries structured contract/preflight
+    # violations, DO NOT full-rewrite.  Instead:
+    #   1. Read the prior train.py from disk.
+    #   2. Build a "minimal diff" prompt: prior file + violation list.
+    #   3. Apply the diff; on apply failure → fall back to full rewrite.
+    #
+    # This makes the violation hint structurally unavoidable — the exact
+    # line+file appears in the prompt and Sonnet produces a diff against
+    # the same file, so the bug must be fixed rather than re-introduced.
+    # ------------------------------------------------------------------
+    _train_py_path = ctx.project_dir / "code" / "train.py"
+    _has_violations = bool(
+        repair_context
+        and (
+            repair_context.get("contract_violations")
+            or repair_context.get("preflight_violations")
+        )
+    )
+    _use_patch_mode = (
+        repair_context is not None
+        and _has_violations
+        and _train_py_path.exists()
+        and getattr(ctx, "current_iteration", 0) >= 1
+    )
+    if _use_patch_mode:
+        import asyncio as _asyncio
+        from backend.agents.baseline_implementation import (
+            patch_mode_run_with_sdk as _patch_run,
+            _extract_violations_from_repair_context as _extract_violations,
+        )
+        _violations = _extract_violations(repair_context)
+        _prior_content = _train_py_path.read_text(encoding="utf-8", errors="replace")
+        logger.info(
+            "implement_baseline[%s]: patch-mode triggered — %d violations, "
+            "prior train.py is %d lines",
+            ctx.project_id, len(_violations), _prior_content.count("\n"),
+        )
+        # Emit a warning so the SSE stream shows patch-mode is active.
+        try:
+            from backend.agents.rlm.sse_bridge import build_run_warning_event as _warn_ev
+            if ctx.emit is not None:
+                ctx.emit(_warn_ev(
+                    level="info",
+                    code="implement_baseline_patch_mode",
+                    message=(
+                        f"implement_baseline: using patch-mode ({len(_violations)} violations) "
+                        f"instead of full rewrite — diff will be applied to existing train.py"
+                    ),
+                ))
+        except Exception:  # noqa: BLE001
+            logger.debug("implement_baseline: could not emit patch-mode SSE warning")
+
+        try:
+            _patch_success, _patch_result = _asyncio.run(
+                _patch_run(
+                    ctx.project_id,
+                    ctx.runs_root,
+                    _prior_content,
+                    _violations,
+                    repair_context,
+                    model=getattr(ctx, "agent_model", None),
+                    runtime=getattr(ctx, "runtime", None),
+                )
+            )
+        except Exception as _patch_exc:  # noqa: BLE001
+            _patch_success = False
+            _patch_result = str(_patch_exc)
+
+        if _patch_success:
+            # Write the patched train.py back to disk atomically.
+            _tmp = _train_py_path.with_suffix(".py.patch_tmp")
+            _tmp.write_text(_patch_result, encoding="utf-8")
+            import os as _os
+            _os.replace(_tmp, _train_py_path)
+            logger.info(
+                "implement_baseline[%s]: patch-mode succeeded — train.py updated in-place",
+                ctx.project_id,
+            )
+            return str(ctx.project_dir / "code")
+        else:
+            logger.warning(
+                "implement_baseline[%s]: patch-mode failed (%s) — "
+                "falling back to full rewrite",
+                ctx.project_id, _patch_result,
+            )
+            # Fall through to full rewrite path below.
+
+    # ------------------------------------------------------------------
     # Cache lookup BEFORE we spawn the expensive sub-agent.
     # Payload deliberately excludes ``remaining_s`` (every call differs)
     # but includes ``repair_context`` (different failure → different fix).

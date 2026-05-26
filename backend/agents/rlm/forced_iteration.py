@@ -72,6 +72,13 @@ class ForcedIterationPolicy:
     # Callable invoked when the policy refuses a FINAL_VAR.  Used to emit the
     # `run_warning` SSE event.  Receives a single `message: str` argument.
     on_refusal: Callable[[str], None]
+    # PR-ι.1 — hard per-run iteration cap.  When current_iteration() >=
+    # max_rlm_iterations, FINAL_VAR is ACCEPTED unconditionally (the budget is
+    # exhausted and we must not loop indefinitely).  None disables this check.
+    # Read from REPROLAB_MAX_RLM_ITERATIONS env var (default 5).
+    max_rlm_iterations: int | None = None
+    # Callable invoked when the iteration budget is exceeded.
+    on_budget_exceeded: Callable[[str], None] | None = None
     # Lane O — count of "honest" candidate outcomes recorded so far. An
     # honest outcome is "promoted", "failed", or "marginal" — the agent
     # actually ran the candidate's experiment. "declined" and "skipped"
@@ -140,6 +147,34 @@ class ForcedIterationPolicy:
         remaining = self.remaining_s()
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
             return (False, None)
+
+        # 0.3. PR-ι.1 — per-run iteration budget cap.  When the iteration
+        # budget is exhausted, ACCEPT FINAL_VAR unconditionally — no further
+        # refusing is possible, and the run must terminate.  Wall-clock floor
+        # (check 0) already catches the near-timeout case, so this fires only
+        # when the root has consumed its full iteration allowance.
+        _max_iter = self.max_rlm_iterations
+        if _max_iter is None:
+            # Fall back to env var so callers that predate max_rlm_iterations
+            # still get the cap without re-constructing the policy object.
+            _raw = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
+            _max_iter = int(_raw) if _raw.isdigit() and int(_raw) > 0 else None
+        if _max_iter is not None and _max_iter > 0:
+            cur = self.current_iteration()
+            if cur >= _max_iter:
+                msg = (
+                    f"Iteration budget exhausted: current_iteration={cur} has "
+                    f"reached max_rlm_iterations={_max_iter}. "
+                    "Accepting FINAL_VAR and shipping the best partial report available."
+                )
+                logger.info("forced_iteration: iteration_budget_exceeded — %s", msg)
+                cb = self.on_budget_exceeded or self.on_refusal
+                try:
+                    cb(msg)
+                except Exception:  # noqa: BLE001
+                    logger.exception("forced_iteration: on_budget_exceeded callback raised")
+                self._pending_refusal_code = "iteration_budget_exceeded"
+                return (False, None)
 
         # 0.5. Defensive max-refusals cap.
         if self.refusal_count >= _MAX_REFUSALS_PER_RUN:
@@ -363,4 +398,5 @@ __all__ = [
     "ForcedIterationPolicy",
     "apply_forced_iteration_patch",
     "forced_iteration_policy",
+    "_WALL_CLOCK_FLOOR_S",
 ]

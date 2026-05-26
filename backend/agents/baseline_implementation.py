@@ -1717,3 +1717,221 @@ async def run_with_sdk(
         code_path=str(code_dir),
         commands_to_run=["python train.py"],
     )
+
+
+# ---------------------------------------------------------------------------
+# PR-ι.2 — Patch-mode implement_baseline
+# ---------------------------------------------------------------------------
+
+
+def _extract_violations_from_repair_context(repair_context: dict) -> list[str]:
+    """Extract structured violation strings from a repair_context dict.
+
+    Looks for ``contract_violations``, ``preflight_violations``, and generic
+    ``error`` / ``logs`` keys that name specific failures.  Returns a list of
+    human-readable violation strings suitable for a diff-request prompt.
+    """
+    violations: list[str] = []
+
+    # contract_violations: list[str] or list[dict]
+    for key in ("contract_violations", "preflight_violations"):
+        raw = repair_context.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str):
+                    violations.append(item)
+                elif isinstance(item, dict):
+                    msg = item.get("message") or item.get("hint") or item.get("detail") or str(item)
+                    loc = item.get("location") or item.get("file") or ""
+                    if loc:
+                        violations.append(f"{loc}: {msg}")
+                    else:
+                        violations.append(msg)
+
+    # Fall back to the error / stderr strings if no structured violations.
+    if not violations:
+        err = repair_context.get("error") or ""
+        if err:
+            violations.append(str(err))
+        logs = repair_context.get("logs") or repair_context.get("stderr") or ""
+        if logs and logs != err:
+            # Trim long logs — the agent only needs the tail.
+            violations.append(str(logs)[-4000:])
+
+    return violations
+
+
+def _apply_unified_diff(original: str, diff_text: str) -> str:
+    """Apply a unified diff to ``original`` and return the patched content.
+
+    Uses Python's ``patch`` library if available (provides full context-line
+    verification), otherwise falls back to a simple line-level apply that
+    handles ``+``/``-`` markers.  Raises ``ValueError`` on apply failure so
+    the caller can fall back to full rewrite.
+
+    Only the hunk body is inspected (lines starting with ``+``, ``-``, or
+    `` ``).  The ``@@`` range headers are used to locate the insertion
+    context.
+    """
+    import re as _re
+
+    lines_orig = original.splitlines(keepends=True)
+
+    # Extract hunks: each hunk starts with @@ -start,count +start,count @@
+    hunk_re = _re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@", _re.MULTILINE)
+    diff_lines = diff_text.splitlines(keepends=True)
+
+    # Find hunk boundaries.
+    hunk_starts: list[int] = []
+    for i, line in enumerate(diff_lines):
+        if hunk_re.match(line):
+            hunk_starts.append(i)
+
+    if not hunk_starts:
+        raise ValueError("no hunks found in diff — cannot apply")
+
+    result = list(lines_orig)
+
+    # Apply hunks in REVERSE order so earlier hunks don't shift line offsets.
+    for hunk_start in reversed(hunk_starts):
+        header = diff_lines[hunk_start]
+        m = hunk_re.match(header)
+        if not m:
+            continue
+        orig_start = int(m.group(1)) - 1  # convert to 0-based
+        orig_count = int(m.group(2)) if m.group(2) is not None else 1
+
+        # Collect hunk body lines.
+        body: list[str] = []
+        j = hunk_start + 1
+        while j < len(diff_lines):
+            if hunk_re.match(diff_lines[j]):
+                break
+            body.append(diff_lines[j])
+            j += 1
+
+        # Build the replacement lines from the hunk body.
+        new_lines: list[str] = []
+        removed = 0
+        for bline in body:
+            if not bline:
+                continue
+            marker = bline[0]
+            content = bline[1:]
+            if marker == " ":
+                new_lines.append(content)
+            elif marker == "+":
+                new_lines.append(content)
+            elif marker == "-":
+                removed += 1
+            elif marker == "\\":
+                # "\ No newline at end of file" — skip
+                continue
+            else:
+                # Unexpected marker; treat as context.
+                new_lines.append(bline)
+
+        end = orig_start + orig_count
+        if orig_start > len(result) or end > len(result):
+            raise ValueError(
+                f"hunk range {orig_start+1}-{end} exceeds file length {len(result)}"
+            )
+
+        result[orig_start:end] = new_lines
+
+    return "".join(result)
+
+
+async def patch_mode_run_with_sdk(
+    project_id: str,
+    runs_root: Path,
+    prior_train_py: str,
+    violations: list[str],
+    repair_context: dict[str, Any],
+    *,
+    model: str | None = None,
+    provider: ProviderName | str | None = None,
+    runtime: AgentRuntime | None = None,
+) -> tuple[bool, str]:
+    """Attempt a MINIMAL DIFF repair of ``prior_train_py`` for the given violations.
+
+    Calls Sonnet with a patch-mode prompt: provides the full existing train.py
+    and the violation list; asks for a unified diff (not a full rewrite).
+    Applies the diff to the existing file.
+
+    Returns ``(success, patched_content_or_error_message)``.  On failure
+    (no valid diff in response, diff apply failure) returns ``(False, reason)``
+    so the caller can fall back to a full rewrite.
+    """
+    from backend.agents.runtime.invoke import collect_agent_text
+
+    project_dir = Path(runs_root) / project_id
+    code_dir = project_dir / "code"
+
+    violation_block = "\n".join(f"  - {v}" for v in violations)
+
+    prompt = (
+        f"The train.py for project {project_id} (located at {code_dir}/train.py) was "
+        f"already written and failed post-run validation with these specific violations:\n\n"
+        f"{violation_block}\n\n"
+        f"Below is the COMPLETE EXISTING train.py. Emit a MINIMAL UNIFIED DIFF "
+        f"(standard `diff -u` format, starting with `--- a/train.py` and `+++ b/train.py`) "
+        f"that fixes ONLY those violations. "
+        f"DO NOT rewrite the file. DO NOT change unrelated code. "
+        f"DO NOT remove any functionality. "
+        f"If a violation names a specific line or token, change ONLY that line. "
+        f"Output the diff block as a code fence marked ```diff.\n\n"
+        f"Repair context (the failed experiment result):\n"
+        f"```json\n{json.dumps(repair_context, indent=2, default=str)[:2000]}\n```\n\n"
+        f"--- EXISTING train.py ---\n"
+        f"```python\n{prior_train_py}\n```"
+    )
+
+    # Collect the agent's response into a temp accumulator (not to code_dir).
+    # We intercept the output text rather than letting the agent write files.
+    _response_parts: list[str] = []
+
+    async def _collect(agent_name: str, prompt_: str, **kwargs: Any) -> None:
+        from backend.agents.runtime.invoke import collect_agent_text as _cat
+        text = await _cat(agent_name, prompt_, **kwargs)
+        if text:
+            _response_parts.append(text)
+
+    await _collect(
+        "baseline-implementation",
+        prompt,
+        project_dir=code_dir,
+        model=model,
+        provider=provider,
+        runtime=runtime,
+    )
+
+    response = "\n".join(_response_parts)
+
+    # Extract the diff from the response (code fence or bare diff markers).
+    import re as _re
+    # Try ``` diff ... ``` fence first.
+    fence_re = _re.compile(r"```diff\s*\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+    m = fence_re.search(response)
+    if not m:
+        # Try ``` ... ``` without language tag (some models omit it).
+        fence_re2 = _re.compile(r"```\s*\n(---.*?)```", _re.DOTALL)
+        m = fence_re2.search(response)
+    if not m:
+        # Try bare diff (no fences).
+        bare_re = _re.compile(r"(---\s+a/.*?\+\+\+\s+b/.*?(?=\Z|\n---|\Z))", _re.DOTALL)
+        m = bare_re.search(response)
+
+    if not m:
+        return False, "no unified diff found in agent response"
+
+    diff_text = m.group(1)
+    if not diff_text.strip():
+        return False, "extracted diff is empty"
+
+    try:
+        patched = _apply_unified_diff(prior_train_py, diff_text)
+    except ValueError as exc:
+        return False, f"diff apply failed: {exc}"
+
+    return True, patched

@@ -812,6 +812,125 @@ def _arm_watchdog(
 
 
 # ---------------------------------------------------------------------------
+# PR-ι.3 — Rolling cost surfacing
+# ---------------------------------------------------------------------------
+
+
+def _compute_cost_summary(project_dir: Path, iteration_count: int) -> dict:
+    """Aggregate cost_ledger.jsonl into a cost_summary dict.
+
+    Reads cost entries from disk and computes:
+    - usd_total: sum of all entries
+    - usd_this_iter: sum of entries for the current iteration
+    - iter_count: current iteration number
+    - usd_per_iter_p50: median USD spend per iteration (over completed iterations)
+
+    Fail-soft: returns a minimal dict on any I/O / parse error.
+    """
+    import json as _json
+    import statistics as _stats
+
+    ledger_path = project_dir / "cost_ledger.jsonl"
+    if not ledger_path.exists():
+        return {
+            "usd_total": 0.0,
+            "usd_this_iter": 0.0,
+            "iter_count": iteration_count,
+            "usd_per_iter_p50": 0.0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    try:
+        lines = ledger_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {
+            "usd_total": 0.0,
+            "usd_this_iter": 0.0,
+            "iter_count": iteration_count,
+            "usd_per_iter_p50": 0.0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    entries: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(_json.loads(line))
+        except _json.JSONDecodeError:
+            continue
+
+    if not entries:
+        return {
+            "usd_total": 0.0,
+            "usd_this_iter": 0.0,
+            "iter_count": iteration_count,
+            "usd_per_iter_p50": 0.0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    usd_total = sum(float(e.get("cost_usd") or e.get("estimated_usd") or 0.0) for e in entries)
+
+    # Group by iteration index (approximated via timestamp order).
+    # The ledger has no iteration tag, so we split costs into per-iteration
+    # buckets by dividing the entry list into `iteration_count` equal slices.
+    per_iter_usd: list[float] = []
+    if iteration_count > 0:
+        slice_size = max(1, len(entries) // iteration_count)
+        for i in range(iteration_count):
+            start = i * slice_size
+            end = start + slice_size if i < iteration_count - 1 else len(entries)
+            bucket = entries[start:end]
+            per_iter_usd.append(
+                sum(float(e.get("cost_usd") or e.get("estimated_usd") or 0.0) for e in bucket)
+            )
+        usd_this_iter = per_iter_usd[-1] if per_iter_usd else 0.0
+        p50 = float(_stats.median(per_iter_usd)) if len(per_iter_usd) >= 2 else usd_this_iter
+    else:
+        usd_this_iter = usd_total
+        p50 = 0.0
+
+    return {
+        "usd_total": round(usd_total, 6),
+        "usd_this_iter": round(usd_this_iter, 6),
+        "iter_count": iteration_count,
+        "usd_per_iter_p50": round(p50, 6),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _update_cost_summary_loop(
+    project_dir: Path,
+    stop_event: threading.Event,
+    iteration_count: Any,  # zero-arg callable
+    interval_s: float = 30.0,
+) -> None:
+    """Background daemon: update demo_status.json::cost_summary every ``interval_s``s.
+
+    Reads cost_ledger.jsonl and merges ``cost_summary`` into the existing
+    demo_status.json via an atomic tmp-write. Fail-soft — never crashes the run.
+    """
+    while not stop_event.wait(timeout=interval_s):
+        try:
+            cur_iter = iteration_count()
+            summary = _compute_cost_summary(project_dir, cur_iter)
+            status_path = project_dir / "demo_status.json"
+            existing: dict = {}
+            if status_path.exists():
+                try:
+                    existing = json.loads(status_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    existing = {}
+            existing["cost_summary"] = summary
+            tmp = status_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            os.replace(tmp, status_path)
+        except Exception:  # noqa: BLE001 — cost surfacing must never crash the run
+            logger.debug("cost_summary_loop: update failed (will retry)", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -1141,6 +1260,9 @@ async def run_pipeline_rlm(
     # thread-local stack so the patched _final_var consults this run's state.
     settings = get_settings()
     min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
+    # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
+    _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
+    _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
 
     def _emit_forced_iteration_warning(message: str) -> None:
         try:
@@ -1151,6 +1273,16 @@ async def run_pipeline_rlm(
             ))
         except Exception:  # noqa: BLE001 — emit must never block the policy
             logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
+
+    def _emit_iteration_budget_exceeded(message: str) -> None:
+        try:
+            emit(build_run_warning_event(
+                level="warn",
+                code="iteration_budget_exceeded",
+                message=message,
+            ))
+        except Exception:  # noqa: BLE001 — emit must never block the policy
+            logger.exception("run_pipeline_rlm: iteration-budget-exceeded warning emit failed")
 
     def _emit_forced_repair_warning(message: str) -> None:
         try:
@@ -1206,11 +1338,28 @@ async def run_pipeline_rlm(
         on_refusal=_emit_forced_iteration_warning,
         honest_candidate_outcomes=_count_honest_candidate_outcomes,
         on_repair_refusal=_emit_forced_repair_warning,
+        max_rlm_iterations=_max_rlm_iterations,
+        on_budget_exceeded=_emit_iteration_budget_exceeded,
     )
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
     # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
     repair_policy_holder.append(iteration_policy)
+
+    # PR-ι.3 — rolling cost surfacing.  A background daemon thread updates
+    # demo_status.json::cost_summary every 30 s while the RLM loop runs.
+    _cost_stop_event = threading.Event()
+    _cost_thread = threading.Thread(
+        target=_update_cost_summary_loop,
+        kwargs={
+            "project_dir": project_dir,
+            "stop_event": _cost_stop_event,
+            "iteration_count": lambda: rlm_logger.iteration_count,
+        },
+        daemon=True,
+        name=f"cost-summary-{project_id}",
+    )
+    _cost_thread.start()
 
     result_obj: Any = None
     run_failed = False
@@ -1233,6 +1382,9 @@ async def run_pipeline_rlm(
         # Watchdog is None when no wall-clock ceiling was requested.
         if watchdog is not None:
             watchdog.cancel()
+        # Stop the cost-summary background thread.
+        _cost_stop_event.set()
+        _cost_thread.join(timeout=5.0)
 
     # 12. Build, write, and report (close event_store in finally — A4-9).
     try:

@@ -99,6 +99,52 @@ _KILL_ENV_VAR: str = "REPROLAB_WATCHDOG_KILL_SECONDS"
 _POLL_ENV_VAR: str = "REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS"
 
 
+# ---------------------------------------------------------------------------
+# PR-ι.4 — Per-primitive idle-threshold gradient
+# ---------------------------------------------------------------------------
+
+# Baseline idle thresholds (in seconds) for each named primitive.
+# Primitives not listed here fall back to _DEFAULT_IDLE_BASELINE_S.
+#
+# Rationale:
+#   - implement_baseline: Sonnet code-writing agent; can legitimately take
+#     up to 4h per the existing timeout in primitives.py. Match that cap.
+#   - run_experiment: GPU training on RunPod; legitimately takes 2-3h on
+#     large models. Adam v8 sat 25 min idle in implement_baseline while
+#     heartbeat kept SSE fresh — the real risk is pod NCCL deadlock, which
+#     stops heartbeat too; 2h is generous enough to cover real training.
+#   - build_environment: Docker image build; up to 30 min is plausible on
+#     a cold node with many pip deps.
+#   - All other primitives (understand_section, extract_hyperparameters,
+#     detect_environment, plan_reproduction, verify_against_rubric, etc.)
+#     are LLM-driven with < 5 min expected latency; 30 min is generous.
+PRIMITIVE_IDLE_BASELINE_S: dict[str, float] = {
+    "implement_baseline": 14400.0,  # 4 h — matches existing timeout in primitives.py
+    "run_experiment": 7200.0,       # 2 h — GPU training legitimately takes hours
+    "build_environment": 1800.0,    # 30 min — Docker build on cold node
+}
+_DEFAULT_IDLE_BASELINE_S: float = 1800.0  # 30 min for any other primitive
+
+
+def effective_idle_threshold(primitive_name: str | None, config: "WatchdogConfig") -> float:
+    """Return the effective kill-after-seconds for the currently-active primitive.
+
+    When ``primitive_name`` is None (unknown / no primitive active), the config's
+    global ``kill_after_seconds`` is returned unchanged.  When a known primitive
+    is active, its specific baseline replaces the global threshold if larger —
+    we never make the threshold MORE aggressive, only more lenient.
+
+    This prevents the watchdog from killing a legitimately slow ``run_experiment``
+    (GPU training, hours) or ``implement_baseline`` (Sonnet code-writing, 4h cap)
+    while still catching truly wedged non-experiment primitives within 30 min.
+    """
+    if primitive_name is None:
+        return config.kill_after_seconds
+    baseline = PRIMITIVE_IDLE_BASELINE_S.get(primitive_name, _DEFAULT_IDLE_BASELINE_S)
+    # Never more aggressive than the operator-configured threshold; only more lenient.
+    return max(baseline, config.kill_after_seconds)
+
+
 def is_enabled() -> bool:
     """Return ``False`` when ``REPROLAB_WATCHDOG_DISABLED=true``.  Case-insensitive."""
     return os.environ.get(_DISABLE_ENV_VAR, "").lower() not in {"true", "1", "yes", "on"}
@@ -265,6 +311,7 @@ def collect_staleness(
     project_dir: Path,
     config: WatchdogConfig,
     now: Optional[float] = None,
+    active_primitive: Optional[str] = None,
 ) -> StalenessReport:
     """Snapshot the three liveness signals + classify.
 
@@ -274,6 +321,11 @@ def collect_staleness(
     The SSE-event signal filters out pure-liveness events (iteration_heartbeat,
     primitive_call:heartbeat) so the watchdog can't be deceived by an agent
     that emits heartbeats while making zero forward progress.
+
+    ``active_primitive`` — the name of the currently-active primitive (PR-ι.4).
+    When provided, the kill threshold is looked up from
+    :data:`PRIMITIVE_IDLE_BASELINE_S` to avoid falsely killing a legitimately
+    slow ``run_experiment`` or ``implement_baseline`` call.
     """
     if now is None:
         now = time.time()
@@ -314,7 +366,9 @@ def collect_staleness(
     freshest_signal, freshest_age = min(observed, key=lambda x: x[1])
     stale_seconds = freshest_age
 
-    if stale_seconds >= config.kill_after_seconds:
+    # PR-ι.4: use per-primitive kill threshold when a primitive is active.
+    _kill_threshold = effective_idle_threshold(active_primitive, config)
+    if stale_seconds >= _kill_threshold:
         verdict = "kill"
     elif stale_seconds >= config.warn_after_seconds:
         verdict = "warn"
@@ -379,6 +433,41 @@ def heartbeat_daemon_command(artifact_dir_in_container: str = "/artifacts") -> s
 # ---------------------------------------------------------------------------
 
 
+def _detect_active_primitive(sse_log_path: Path, max_lookback_lines: int = 100) -> Optional[str]:
+    """Return the name of the most recently started (but not yet completed) primitive.
+
+    Scans the last ``max_lookback_lines`` lines of ``dashboard_events.jsonl``
+    looking for a ``primitive_call`` event with ``phase="start"``.  Returns
+    the primitive name, or ``None`` if not found or the file doesn't exist.
+
+    Fail-soft: any I/O or parse error returns ``None``.
+    """
+    if not sse_log_path.exists():
+        return None
+    try:
+        with sse_log_path.open(encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+
+    import json as _json
+    # Walk backwards to find the most recent primitive_call with phase=start.
+    for line in reversed(lines[-max_lookback_lines:]):
+        try:
+            d = _json.loads(line.strip())
+        except _json.JSONDecodeError:
+            continue
+        if d.get("event") != "primitive_call":
+            continue
+        if str(d.get("phase") or "").lower() == "start":
+            primitive = d.get("primitive") or d.get("name") or ""
+            if primitive:
+                return str(primitive)
+    return None
+
+
 WarnCallback = Callable[[StalenessReport], Awaitable[None]]
 # Lane N: on_kill MAY return ``KillVerdict.RECOVERED`` to ask the watchdog
 # to keep polling.  Returning ``None`` (or anything else) defaults to
@@ -426,14 +515,21 @@ async def run_watchdog(
         cfg.warn_after_seconds, cfg.kill_after_seconds, interval,
     )
 
+    sse_log_path = project_dir / cfg.dashboard_events_filename
+
     try:
         while True:
             await asyncio.sleep(interval)
             try:
+                # PR-ι.4: detect the currently-active primitive so collect_staleness
+                # can apply a more lenient idle threshold for slow primitives
+                # (run_experiment, implement_baseline) that legitimately take hours.
+                _active = _detect_active_primitive(sse_log_path)
                 report = collect_staleness(
                     artifact_root=artifact_root,
                     project_dir=project_dir,
                     config=cfg,
+                    active_primitive=_active,
                 )
             except Exception:  # noqa: BLE001 — collection MUST NOT crash the run
                 logger.exception("watchdog: collect_staleness raised — skipping cycle")
@@ -479,9 +575,11 @@ async def run_watchdog(
 
 __all__ = [
     "KillVerdict",
+    "PRIMITIVE_IDLE_BASELINE_S",
     "StalenessReport",
     "WatchdogConfig",
     "collect_staleness",
+    "effective_idle_threshold",
     "heartbeat_daemon_command",
     "is_enabled",
     "run_watchdog",
