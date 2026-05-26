@@ -43,8 +43,15 @@ class AgentSpec:
         max_turns: int | None = None,
         working_directory: Path | None = None,
         sub_agents: tuple[AgentRuntimeSpec, ...] = (),
+        prompt_override: str | None = None,
     ) -> AgentRuntimeSpec:
-        """Convert a registry entry into the provider-neutral runtime contract."""
+        """Convert a registry entry into the provider-neutral runtime contract.
+
+        ``prompt_override`` — when non-None, substituted in place of
+        ``self.prompt`` for ``AgentRuntimeSpec.instructions``. This is the GEPA
+        override seam (see ``backend/agents/optimization/prompt_overrides.py``);
+        the import-time ``self.prompt`` snapshot is no longer load-bearing.
+        """
         settings = get_settings()
         configured_model = _model_override_from_settings(
             self.agent_id,
@@ -59,7 +66,7 @@ class AgentSpec:
         return AgentRuntimeSpec(
             name=self.agent_id,
             description=self.description,
-            instructions=self.prompt,
+            instructions=prompt_override if prompt_override is not None else self.prompt,
             model=model,
             tools=tuple(
                 ToolSpec(
