@@ -241,7 +241,7 @@ def score_reproduction(
     """Grade a reproduction run against a PaperBench rubric tree.
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
-    leaf_scores, degraded, target_score.
+    leaf_scores, degraded, coverage_pct, target_score.
 
     ``rubric_source`` is passed through to the result dict unchanged — callers set
     it to "generated" when the rubric was derived at run-time rather than from a
@@ -254,6 +254,11 @@ def score_reproduction(
     ``baseline_metrics``). Callers with a results dict in hand should pass
     ``degraded`` explicitly so the in-loop case (no final_report.json on disk
     yet) is also capped.
+
+    ``coverage_pct`` (β2): fraction of leaves that received a real LLM grade
+    (0.0–1.0). On degraded runs this is 0.0. Exposed as a separate signal so
+    callers can distinguish "4/6 leaves scored perfectly" from "6/6 leaves
+    scored perfectly" even when the renormalized overall_score is the same.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -291,6 +296,7 @@ def score_reproduction(
             "rubric_source": rubric_source,
             "leaf_scores": leaf_score_records,
             "degraded": True,
+            "coverage_pct": 0.0,
             "target_score": target_score,
         }
 
@@ -353,6 +359,11 @@ def score_reproduction(
     except (TypeError, ValueError):
         target_score = None
 
+    # β2: coverage_pct = fraction of leaves that got a real LLM grade.
+    # On non-degraded runs graded_count counts leaves where the LLM actually
+    # returned a score; ungraded (batch_error) leaves count against coverage.
+    coverage_pct: float = (graded_count / len(leaves)) if len(leaves) > 0 else 1.0
+
     return {
         "overall_score": overall_score,
         "leaf_count": len(leaves),
@@ -360,6 +371,7 @@ def score_reproduction(
         "rubric_source": rubric_source,
         "leaf_scores": leaf_score_records,
         "degraded": degraded,
+        "coverage_pct": coverage_pct,
         "target_score": target_score,
     }
 
@@ -444,6 +456,16 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         # C2b: surface the degraded flag so the UI / human reviewer can see
         # *why* a low score was reached. False/missing → run was honest.
         "degraded": bool(score.get("degraded", False)),
+        # β2: coverage_pct — fraction of leaves that received a real grade.
+        "coverage_pct": float(score.get("coverage_pct", 1.0) or 1.0),
+        # β3: preserve compute_adjusted_score + compute_scope from the in-loop
+        # verify_against_rubric call (which applied floor-anchored scoring).
+        # Falls back to overall_score on max-mode or legacy runs (always-emit).
+        "compute_adjusted_score": previous_rubric.get(
+            "compute_adjusted_score",
+            score["overall_score"],
+        ),
+        "compute_scope": previous_rubric.get("compute_scope"),
         "areas": previous_rubric.get("areas", []),
     }
 

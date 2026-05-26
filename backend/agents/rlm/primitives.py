@@ -254,6 +254,59 @@ _PLAN_REPRODUCTION_SYSTEM = (
     "and nothing else. Do NOT write files; do NOT reference any filesystem path."
 )
 
+# β3: compute-adjusted rubric — appended to the planning prompt when clipping is active.
+_COMPUTE_SCOPE_INSTRUCTION = """
+
+You are planning under a deliberately CLIPPED compute budget. In addition to
+the standard ReproductionContract fields, include a "compute_scope" key in
+your JSON response so the grader can score against an achievable floor instead
+of the paper's headline target.
+
+Fill compute_scope.metric_floors with ONE entry per result_match leaf the
+grader will evaluate (one per metric the paper claims). For each entry:
+
+  - metric: the metric name matching the rubric leaf (e.g. "mnist_test_loss").
+  - direction: "higher" for accuracy/F1/reward-style, "lower" for loss/error/cost.
+  - paper_target: the paper's reported headline value for this metric.
+  - floor: the value plausibly reachable given the actual compute budget.
+    Use convergence-trajectory reasoning:
+    Adam-style: exponential approach → 1/N budget reaches ~30% of final gain.
+    SGD+cosine: closer to logarithmic → 1/N budget reaches ~50%.
+    GAN losses: non-monotonic — set a permissive floor; be honest.
+  - rationale: one short sentence explaining the floor choice.
+
+CONSTRAINT: floor MUST be WORSE than paper_target.
+  direction="higher": floor <= paper_target (floor can be equal but not exceed).
+  direction="lower": floor >= paper_target (floor can be equal but not below).
+
+compute_scope JSON shape:
+  "compute_scope": {
+    "is_clipped": true,
+    "paper_epochs": <int or null>,
+    "actual_epochs": <int or null>,
+    "rationale": "<one sentence>",
+    "metric_floors": [
+      {"metric": "...", "direction": "higher"|"lower",
+       "paper_target": <float>, "floor": <float>, "rationale": "..."}
+    ]
+  }
+"""
+
+
+def _is_clipping_active(ctx: "RunContext") -> bool:
+    """True iff the planning agent should emit ComputeScope.
+
+    Triggered by either: execution_profile.mode == "efficient", OR
+    minimize_compute=True. Either is an opt-in compute budget cap.
+    """
+    minimize = bool(getattr(ctx, "minimize_compute", False))
+    profile = getattr(ctx, "execution_profile", None)
+    mode = ""
+    if profile is not None:
+        m = getattr(profile, "mode", None)
+        mode = str(getattr(m, "value", m) or "").lower()
+    return minimize or mode == "efficient"
+
 
 _HINT_THRESHOLD = 10_000  # chars
 
@@ -746,12 +799,43 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     if _cached is not None:
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
+    # β3: extend the planning prompt when compute is clipped.
+    system_prompt = _PLAN_REPRODUCTION_SYSTEM
+    if _is_clipping_active(ctx):
+        system_prompt = system_prompt + _COMPUTE_SCOPE_INSTRUCTION
+
     try:
-        raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
+        raw = ctx.llm_client.complete(system=system_prompt, user=user)
         data = _extract_json(raw)
         if not any(k in data for k in ReproductionContract.model_fields):
             raise ValueError(
                 f"LLM response has no ReproductionContract fields: {list(data)}")
+
+        # β3: when clipping is active, parse compute_scope from the LLM response.
+        # Wrap in try/except so a malformed compute_scope doesn't abort the plan.
+        if _is_clipping_active(ctx) and "compute_scope" in data:
+            from pydantic import ValidationError as _PydanticValidationError
+            from backend.agents.schemas import ComputeScope as _ComputeScope
+            cs_dict = data.get("compute_scope")
+            if isinstance(cs_dict, dict):
+                try:
+                    data["compute_scope"] = _ComputeScope(**cs_dict).model_dump()
+                except _PydanticValidationError as _ve:
+                    logger.warning(
+                        "plan_reproduction: compute_scope validation failed (%s) — dropping",
+                        _ve,
+                    )
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "compute_scope_invalid",
+                        "message": str(_ve)[:500],
+                    })
+                    data["compute_scope"] = None
+            else:
+                data["compute_scope"] = None
+        elif "compute_scope" not in data:
+            # Not in the response (max mode or no instruction sent) — leave as None.
+            data["compute_scope"] = None
+
         result = _with_outcome(ReproductionContract(**data).model_dump(), PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
         return result
@@ -2050,6 +2134,152 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     return areas
 
 
+# ---------------------------------------------------------------------------
+# β3: Compute-adjusted scoring helpers
+# ---------------------------------------------------------------------------
+
+
+def score_with_floor(
+    *,
+    actual: float,
+    paper_target: float,
+    floor: float,
+    direction: str,
+) -> float:
+    """Compute compute-adjusted credit for a result_match leaf.
+
+    Returns 1.0 if the actual metric meets the floor (or beats the paper),
+    linearly interpolated partial credit between floor and paper_target,
+    or 0.0 when the actual is worse than the floor.
+
+    Direction-aware: "higher" treats larger values as better (accuracy);
+    "lower" treats smaller values as better (loss / error / cost).
+
+    When floor == paper_target the scoring degenerates to a step function:
+    actual >= floor → 1.0, actual < floor → 0.0.
+    """
+    if direction == "higher":
+        if actual >= paper_target:
+            return 1.0
+        denom = paper_target - floor
+        if denom <= 0:
+            # floor >= paper_target (degenerate or floor==target) — step function
+            return 1.0 if actual >= floor else 0.0
+        if actual < floor:
+            return 0.0
+        # floor <= actual < paper_target → linear interp (actual==floor gives 0/denom = 0,
+        # but the spec says floor == full credit, so return 1.0 when actual == floor exactly)
+        if actual == floor:
+            return 1.0
+        return max(0.0, min(1.0, (actual - floor) / denom))
+
+    if direction == "lower":
+        if actual <= paper_target:
+            return 1.0
+        denom = floor - paper_target
+        if denom <= 0:
+            # floor <= paper_target (degenerate or floor==target) — step function
+            return 1.0 if actual <= floor else 0.0
+        if actual > floor:
+            return 0.0
+        # paper_target < actual <= floor → full credit at floor
+        if actual == floor:
+            return 1.0
+        return max(0.0, min(1.0, (floor - actual) / denom))
+
+    raise ValueError(
+        f"score_with_floor: direction must be 'higher' or 'lower', got {direction!r}"
+    )
+
+
+def _apply_compute_adjusted_scoring(
+    rubric_result: dict,
+    compute_scope: "ComputeScope | None",
+    actual_metrics: dict,
+) -> dict:
+    """Augment rubric_result with compute_adjusted_score per area + overall.
+
+    When compute_scope is None or not clipped, compute_adjusted_score mirrors
+    the raw score (always-emit semantic — UI never sees null).
+
+    When compute_scope is present and clipped, result_match leaves whose metric
+    is found in compute_scope.metric_floors get re-scored against the floor.
+    Other areas are copied through unchanged.
+
+    Mutates and returns rubric_result (a fresh copy is NOT made — callers
+    must pass a copy if they want to preserve the original).
+    """
+    # Always-emit path: no clipping declared or no floors → copy raw values.
+    if (
+        compute_scope is None
+        or not compute_scope.is_clipped
+        or not compute_scope.metric_floors
+    ):
+        for area in rubric_result.get("areas", []):
+            area["compute_adjusted_score"] = area.get("score", 0.0)
+        rubric_result["compute_adjusted_score"] = rubric_result.get("overall_score", 0.0)
+        rubric_result["compute_scope"] = compute_scope.model_dump() if compute_scope else None
+        return rubric_result
+
+    # Clipped path: re-score result_match leaves against floors.
+    floors_by_metric: dict[str, "MetricFloor"] = {
+        mf.metric: mf for mf in compute_scope.metric_floors
+    }
+
+    overall_adjusted = 0.0
+    total_weight = 0.0
+
+    for area in rubric_result.get("areas", []):
+        area_name = area.get("area", "").lower()
+        is_result_match = "result match" in area_name or "result_match" in area_name
+        area_weight = float(area.get("weight") or 0.0)
+
+        if is_result_match:
+            leaf_scores_adj: list[float] = []
+            for leaf in area.get("leaves", []):
+                metric_name = leaf.get("metric")
+                actual = actual_metrics.get(metric_name) if metric_name else None
+                floor_def = floors_by_metric.get(metric_name) if metric_name else None
+                if actual is not None and floor_def is not None:
+                    adj = score_with_floor(
+                        actual=float(actual),
+                        paper_target=float(floor_def.paper_target),
+                        floor=float(floor_def.floor),
+                        direction=floor_def.direction,
+                    )
+                    leaf["compute_adjusted_score"] = adj
+                    leaf_scores_adj.append(adj)
+                else:
+                    # No floor mapped for this leaf → fall back to raw score.
+                    raw = float(leaf.get("score", 0.0) or 0.0)
+                    leaf["compute_adjusted_score"] = raw
+                    leaf_scores_adj.append(raw)
+            area_adj = (
+                sum(leaf_scores_adj) / len(leaf_scores_adj) if leaf_scores_adj
+                else float(area.get("score", 0.0) or 0.0)
+            )
+            area["compute_adjusted_score"] = area_adj
+        else:
+            area_adj = float(area.get("score", 0.0) or 0.0)
+            area["compute_adjusted_score"] = area_adj
+
+        overall_adjusted += area_adj * area_weight
+        total_weight += area_weight
+
+    # Normalize if weights don't sum to 1 (some rubrics use integer weights).
+    if total_weight > 0 and abs(total_weight - 1.0) > 1e-6:
+        overall_adjusted = overall_adjusted / total_weight
+
+    rubric_result["compute_adjusted_score"] = _clamp01(overall_adjusted)
+    rubric_result["compute_scope"] = compute_scope.model_dump()
+    return rubric_result
+
+
+# Import type alias for type checkers only — avoids circular import at runtime.
+if False:  # TYPE_CHECKING
+    from backend.agents.schemas import ComputeScope, MetricFloor  # noqa: F401
+
+
 def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> dict:
     """Score the run against `rubric` using the authoritative PaperBench leaf scorer.
 
@@ -2110,6 +2340,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
+        # β1 — tri-state partial-success contract.
+        #
         # C2b in-loop wiring: derive `degraded` from the `results` dict we
         # already have. The leaf scorer's auto-detection reads
         # final_report.json, but in-loop (called from the improvement loop
@@ -2117,13 +2349,19 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         # auto-detection returns False and the cap would not fire. Pass it
         # explicitly so the in-loop optimization signal matches what the
         # post-run authoritative score will become.
-        # Two-layer degraded predicate: post-run path checks verdict+metrics via
-        # final_report.json (_is_degraded_run); in-loop path checks success+metrics
-        # via the live run_experiment result dict (verdict is a report-level concept
-        # not yet written at this point).  Both are correct at their respective layer.
+        #
+        # Tri-state logic (β1):
+        #   success=True                   → ok      → degraded=False (full grading)
+        #   success=False, metrics non-empty → partial → degraded=False (partial evidence
+        #       is real evidence; leaf scorer grades against captured metrics)
+        #   success=False, metrics empty   → failed  → degraded=True  (cap at ceiling)
+        #
+        # This ensures a VAE that crashes after capturing 15 real metrics is
+        # graded against those metrics, not capped at 0.35 across every leaf.
         has_experiment_result = "success" in results or "metrics" in results
+        metrics_present = bool(results.get("metrics") or {})
         degraded = has_experiment_result and (
-            (results.get("success") is False) or (not (results.get("metrics") or {}))
+            (results.get("success") is False) and (not metrics_present)
         )
         scored = score_reproduction(
             rubric_tree=rubric,
@@ -2167,6 +2405,9 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "graded": scored.get("graded", 0),
             "rubric_source": scored.get("rubric_source", "paperbench_bundle"),
             "degraded": degraded,
+            # β2: coverage_pct from score_reproduction (graded / total leaves).
+            # 0.0 on fully-degraded runs; 0.0–1.0 on partial/full runs.
+            "coverage_pct": float(scored.get("coverage_pct", 1.0) or 1.0),
             "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
@@ -2228,6 +2469,27 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 }
         except Exception:  # noqa: BLE001 — scope adjustment is augmenting, not mandatory
             logger.exception("verify_against_rubric: scope_adjusted computation failed")
+
+        # β3: compute-adjusted scoring against per-metric floors.
+        # Reads compute_scope from the run context's reproduction contract (if
+        # available). Falls back gracefully: when compute_scope is None or
+        # not clipped, adjusted == raw (always-emit semantic).
+        try:
+            from backend.agents.schemas import ComputeScope as _ComputeScope
+            _compute_scope: "_ComputeScope | None" = None
+            _contract = getattr(ctx, "reproduction_contract", None)
+            if _contract is not None:
+                _cs = getattr(_contract, "compute_scope", None)
+                if isinstance(_cs, _ComputeScope):
+                    _compute_scope = _cs
+            _actual_metrics = dict(results.get("metrics") or {})
+            result = _apply_compute_adjusted_scoring(result, _compute_scope, _actual_metrics)
+        except Exception:  # noqa: BLE001 — compute-adjusted is augmenting, not mandatory
+            logger.exception("verify_against_rubric: _apply_compute_adjusted_scoring failed")
+            # Ensure always-emit fields are present even on failure.
+            result.setdefault("compute_adjusted_score", result.get("overall_score", 0.0))
+            result.setdefault("compute_scope", None)
+
         result = _with_outcome(result, PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)
         return result

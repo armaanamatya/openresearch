@@ -175,6 +175,12 @@ function TrajectoryChart({
 
 interface RubricStripProps {
   rubric: RlmRunState["rubric"];
+  /** β3: compute-adjusted score from the final report (optional).
+   * When provided and the run was compute-clipped, this becomes the headline
+   * and the raw score moves to a small footnote. */
+  computeAdjustedScore?: number | null;
+  /** β3: true when the run declared a clipped ComputeScope. */
+  computeScopeIsClipped?: boolean;
 }
 
 const STATUS_RANK: Record<"pass" | "partial" | "fail", number> = {
@@ -209,11 +215,15 @@ function statusGlyph(status: "pass" | "partial" | "fail"): string {
  *
  * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.1, §4.3.
  */
-export function RubricStrip({ rubric }: RubricStripProps) {
+export function RubricStrip({ rubric, computeAdjustedScore, computeScopeIsClipped }: RubricStripProps) {
   const { current, baseline, target, series, areas, previousAreas, attributableCandidate } = rubric;
 
   const isScored = current !== null;
-  const tweenedCurrent = useCountUp(isScored ? current! : 0, 400);
+  // β3: when compute is clipped and we have an adjusted score, headline uses
+  // the adjusted number; raw moves to a small footnote.
+  const isClipped = computeScopeIsClipped === true && computeAdjustedScore != null;
+  const headlineScore = isClipped ? computeAdjustedScore! : (current ?? 0);
+  const tweenedCurrent = useCountUp(isScored ? headlineScore : 0, 400);
 
   const fmtScore = (n: number) => n.toFixed(2);
   const fillPct = isScored ? `${Math.min(1, Math.max(0, tweenedCurrent)) * 100}%` : "0%";
@@ -244,7 +254,20 @@ export function RubricStrip({ rubric }: RubricStripProps) {
         <span className={isScored ? styles.scoreValue : styles.scorePlaceholder}>
           {isScored ? fmtScore(tweenedCurrent) : "—"}
         </span>
+        {isClipped && (
+          <span
+            className={styles.computeAdjustedBadge}
+            title="Scored against an achievable floor given the efficient-mode budget, not the paper's headline target."
+          >
+            compute-adjusted
+          </span>
+        )}
         <span className={styles.scoreLabel}>rubric score</span>
+        {isClipped && current !== null && (
+          <span className={styles.rawScoreFootnote}>
+            {`vs paper headline: ${fmtScore(current)}`}
+          </span>
+        )}
       </div>
 
       {!isScored && (

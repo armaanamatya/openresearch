@@ -39,6 +39,12 @@ class LeaderboardRow(BaseModel):
     mode: Literal["rlm", "rdr"] = "rlm"
     models: RoleModels = Field(default_factory=RoleModels)
     overall_score: float | None
+    # β3: compute_adjusted_score — floor-anchored score on clipped runs.
+    # Equals overall_score on max-mode runs (always-emit semantic).
+    # None on very old reports written before this field was added.
+    compute_adjusted_score: float | None = None
+    # β4: execution_mode — "efficient" | "max" | None (legacy).
+    execution_mode: str | None = None
     meets_target: bool
     degraded: bool
     cost_usd: float | None
@@ -76,6 +82,18 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
     models = _as_dict(data.get("models"))
     started_at = data.get("started_at")
     completed_at = data.get("completed_at")
+    # β4: read execution_mode from demo_status.json (executionMode field) first,
+    # then fall back to the run's direct demo_status read if it's in the data.
+    # demo_status.json isn't loaded here — read it lazily from disk.
+    _execution_mode: str | None = None
+    _demo_status_path = run_dir / "demo_status.json"
+    if _demo_status_path.is_file():
+        try:
+            import json as _json_m
+            _ds = _json_m.loads(_demo_status_path.read_text(encoding="utf-8"))
+            _execution_mode = _ds.get("executionMode") or _ds.get("execution_mode")
+        except Exception:
+            pass
 
     wall_clock_s: float | None = None
     if started_at and completed_at:
@@ -94,6 +112,13 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
     score_raw = rubric.get("overall_score")
     overall_score: float | None = float(score_raw) if score_raw is not None else None
 
+    # β3: compute_adjusted_score — floor-anchored score on clipped runs.
+    # Falls back to overall_score for old reports without the field.
+    _adj_raw = rubric.get("compute_adjusted_score")
+    compute_adjusted_score: float | None = (
+        float(_adj_raw) if _adj_raw is not None else overall_score
+    )
+
     return LeaderboardRow(
         project_id=run_dir.name,
         paper_id=str(paper.get("id") or run_dir.name),
@@ -106,6 +131,8 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
             grader=models.get("grader"),
         ),
         overall_score=overall_score,
+        compute_adjusted_score=compute_adjusted_score,
+        execution_mode=_execution_mode,
         meets_target=bool(rubric.get("meets_target") or False),
         degraded=bool(data.get("degraded") or rubric.get("degraded") or False),
         cost_usd=float(cost["llm_usd"]) if cost.get("llm_usd") is not None else None,
@@ -150,8 +177,10 @@ def aggregate_leaderboard(
 
     def _sort_key(r: LeaderboardRow):
         if order_by == "score":
-            # Push None scores to the bottom; rank scored runs by -score (desc).
-            return (r.overall_score is None, -(r.overall_score or 0.0))
+            # β3: default sort by compute_adjusted_score so efficient and max
+            # runs are comparable. Falls back to overall_score when not present.
+            adj = r.compute_adjusted_score if r.compute_adjusted_score is not None else r.overall_score
+            return (adj is None, -(adj or 0.0))
         if order_by == "cost":
             return (r.cost_usd is None, r.cost_usd if r.cost_usd is not None else 0.0)
         if order_by == "time":

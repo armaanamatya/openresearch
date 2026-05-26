@@ -9,7 +9,7 @@ from __future__ import annotations
 import enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +258,68 @@ class PaperClaimMap(BaseModel):
 # ---------------------------------------------------------------------------
 # Environment Detective (#24)
 # ---------------------------------------------------------------------------
+# Compute-adjusted rubric (spec 2026-05-25-compute-adjusted-rubric-design.md)
+# ---------------------------------------------------------------------------
+
+
+class MetricFloor(BaseModel):
+    """Per-metric floor used by the compute-adjusted rubric grader.
+
+    The grader scores `result_match` leaves against `floor` instead of the
+    paper's `paper_target` when compute is clipped. `direction` tells the
+    grader whether higher or lower values of the metric are better.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    metric: str = Field(description="Rubric leaf id / metric name (e.g. 'mnist_test_loss').")
+    direction: Literal["higher", "lower"] = Field(
+        description="'higher' for accuracy-style, 'lower' for loss/error-style.",
+    )
+    paper_target: float = Field(description="Paper's headline value for this metric.")
+    floor: float = Field(description="Plausibly-reachable value given the actual compute budget.")
+    rationale: str = Field(default="", description="One-sentence justification for the floor.")
+
+    @model_validator(mode="after")
+    def _floor_consistent_with_direction(self) -> "MetricFloor":
+        if self.direction == "higher" and self.floor > self.paper_target:
+            raise ValueError(
+                f"MetricFloor: direction='higher' requires floor (= {self.floor}) "
+                f"<= paper_target (= {self.paper_target}). A floor cannot exceed the paper's headline."
+            )
+        if self.direction == "lower" and self.floor < self.paper_target:
+            raise ValueError(
+                f"MetricFloor: direction='lower' requires floor (= {self.floor}) "
+                f">= paper_target (= {self.paper_target}). A loss floor cannot beat the paper's headline."
+            )
+        return self
+
+
+class ComputeScope(BaseModel):
+    """Declared compute envelope for a reproduction.
+
+    Emitted by the planning agent when `execution_profile.mode == "efficient"`
+    or `minimize_compute=True`. Consumed by the grader to score result_match
+    leaves against `metric_floors[*].floor` instead of paper targets.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    is_clipped: bool = Field(
+        description="True when ANY axis (epochs, dataset size) is reduced vs paper.",
+    )
+    paper_epochs: int | None = None
+    actual_epochs: int | None = None
+    paper_dataset_size: int | None = None
+    actual_dataset_size: int | None = None
+    rationale: str = Field(default="", description="One-sentence summary of the budget reduction.")
+    metric_floors: list[MetricFloor] = Field(
+        default_factory=list,
+        description="Per-result_match-leaf floor; empty when is_clipped=False.",
+    )
+
+
+# ---------------------------------------------------------------------------
 
 class EnvironmentSpec(BaseModel):
     """Dockerfile and dependency specification."""
@@ -294,6 +356,10 @@ class ReproductionContract(BaseModel):
     dataset_plan: str | list[str] = ""
     evaluation_plan: str | list[str] = ""
     verification_checklist: list[str] = Field(default_factory=list)
+    # Compute-adjusted rubric: opt-in; None on max mode or when not yet declared.
+    # The planning agent fills this when execution_profile.mode == "efficient" or
+    # minimize_compute=True (spec 2026-05-25-compute-adjusted-rubric-design.md).
+    compute_scope: ComputeScope | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,25 @@
   text-transform: lowercase;
 }
 
+/* β3: compute-adjusted badge + raw score footnote */
+.computeAdjustedBadge {
+  display: inline-block;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  line-height: 1.4;
+}
+
+.rawScoreFootnote {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
 .emptyHint {
   flex: 1 1 220px;
   color: var(--muted);

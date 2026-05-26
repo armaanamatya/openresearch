@@ -15,6 +15,8 @@ function row(overrides: Partial<LeaderboardRow> = {}): LeaderboardRow {
       grader: null,
     },
     overall_score: 0.5,
+    compute_adjusted_score: 0.5,
+    execution_mode: "max",
     meets_target: false,
     degraded: false,
     cost_usd: 1.23,

@@ -15,6 +15,10 @@ export interface LeaderboardRow {
     grader: string | null;
   };
   overall_score: number | null;
+  /** β3: floor-anchored score; equals overall_score on max-mode runs. */
+  compute_adjusted_score: number | null;
+  /** β4: "efficient" | "max" | null (legacy). */
+  execution_mode: string | null;
   meets_target: boolean;
   degraded: boolean;
   cost_usd: number | null;
@@ -28,8 +32,10 @@ export interface LeaderboardRow {
 
 type SortKey =
   | "score"
+  | "adj_score"
   | "paper"
   | "mode"
+  | "exec_mode"
   | "planner"
   | "executor"
   | "cost"
@@ -42,8 +48,10 @@ type SortDir = "asc" | "desc";
 
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
   score: "desc",
+  adj_score: "desc",
   paper: "asc",
   mode: "asc",
+  exec_mode: "asc",
   planner: "asc",
   executor: "asc",
   cost: "asc",
@@ -119,9 +127,11 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
   const headers: Array<{ label: string; k: SortKey }> = [
     { label: "Paper", k: "paper" },
     { label: "Mode", k: "mode" },
+    { label: "Exec mode", k: "exec_mode" },
     { label: "Planner", k: "planner" },
     { label: "Executor", k: "executor" },
-    { label: "Score", k: "score" },
+    { label: "Score (adj)", k: "adj_score" },
+    { label: "Score (raw)", k: "score" },
     { label: "Cost", k: "cost" },
     { label: "Iterations", k: "iterations" },
     { label: "Time", k: "time" },
@@ -175,9 +185,14 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
                   </a>
                 </td>
                 <td><span className={styles.modeBadge}>{r.mode}</span></td>
+                <td>{r.execution_mode || <Dash />}</td>
                 <td>{r.models.planner || <Dash />}</td>
                 <td>{r.models.executor || <Dash />}</td>
-                <td className={`${styles.numeric} ${scoreCls}`.trim()}>
+                <td className={`${styles.numeric} ${scoreCls}`.trim()}
+                    title={r.execution_mode === "efficient" ? "Floor-anchored compute-adjusted score" : undefined}>
+                  {r.compute_adjusted_score !== null ? r.compute_adjusted_score.toFixed(2) : <Dash />}
+                </td>
+                <td className={`${styles.numeric}`.trim()}>
                   {r.overall_score !== null ? r.overall_score.toFixed(2) : <Dash />}
                 </td>
                 <td className={styles.numeric}>
@@ -199,8 +214,10 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
 function keyFor(r: LeaderboardRow, k: SortKey): string | number | null {
   switch (k) {
     case "score": return r.overall_score;
+    case "adj_score": return r.compute_adjusted_score;
     case "paper": return r.paper_title ?? r.paper_id;
     case "mode": return r.mode;
+    case "exec_mode": return r.execution_mode;
     case "planner": return r.models.planner;
     case "executor": return r.models.executor;
     case "cost": return r.cost_usd;
