@@ -130,7 +130,7 @@ Existing task #77 ("Pre-flight: tensor device-mismatch AST scan") is the spiritu
 
 ### Solution VI — Three-source ensemble estimator + multi-stage workload + iteration modeling
 
-The spec `docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md` plus Codex's diagnostic refinements from today:
+The shipped three-source ensemble estimator (`backend/services/pricing/`) plus Codex's diagnostic refinements from today:
 - **Capture wall-clock per preserved run** to `timing.json` (extract from `dashboard_events.jsonl`)
 - **k-NN over preserved wall-clocks** keyed on paper feature vector
 - **Multi-stage workload schema**: `{main_experiments, lr_probes, baselines, sweeps}` instead of single `epochs × experiment_count`

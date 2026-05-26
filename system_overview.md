@@ -87,8 +87,7 @@ locally, Azure OpenAI as an alternative — and `run_experiment` /
 for environment, scoring, reporting.
 
 `rdr` targets PaperBench bundle papers (the official rubric is required); arXiv
-papers can use it secondarily with a generated rubric. The design spec is
-`docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`; the package
+papers can use it secondarily with a generated rubric. The package
 is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 `controller`, `run`); the launcher is `scripts/rdr_paperbench.py`.
 
@@ -183,8 +182,6 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 
 - `docs/design/rlm-pivot-brief.md` — the canonical architecture reference and design rationale.
 - `docs/runbooks/e2e-testing.md` — canonical end-to-end testing and debug reference.
-- `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
-  locked launch decisions, including the hybrid default and leaderboard surface.
 - `learn.md` — post-mortems: bugs shipped + the guardrail for each.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model

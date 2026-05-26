@@ -31,10 +31,8 @@ In this exact order, fully:
 2. `system_overview.md` — why the system fits together the way it does. SSE event types, file-backed run state, sandbox layers.
 3. `docs/runbooks/e2e-testing.md` — canonical end-to-end debug + test reference.
 4. `docs/runbooks/readiness.md` — describes the optional `scripts/readiness.sh` you should run for tiers 1–5. If the script exists, prefer it over re-implementing the checks; only manually verify tiers 6+7.
-5. `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` — §3 locked decisions (do not relitigate), §5 phase specs, §8 acceptance.
-6. `docs/superpowers/plans/2026-05-23-phase1-rdr-lab-ui.md` — what the lab-UI gap-close work looks like if it hasn't shipped yet.
-7. `learn.md` top 10 entries — recent root causes, guardrails.
-8. `progress.md` — running journal.
+5. `learn.md` top 10 entries — recent root causes, guardrails.
+6. `progress.md` — running journal.
 
 ---
 
@@ -93,7 +91,7 @@ Acceptance: every check below passes; commit as `fix(frontend): close audit find
 - [ ] Every async data-fetcher has a loading state, an error state, and a success state.
 - [ ] Every `<a href>` resolves to a real route or external URL — no `href="#"` placeholders.
 - [ ] Every `<button>` has an `aria-label` or accessible inner text.
-- [ ] The lab page handles all 3 modes (`rlm`, `rdr`, `rlm-pure`) without crashing — the canvas, popup, and rubric strip all render. If the rdr cluster-event reducer isn't wired, follow `docs/superpowers/plans/2026-05-23-phase1-rdr-lab-ui.md`.
+- [ ] The lab page handles all 3 modes (`rlm`, `rdr`, `rlm-pure`) without crashing — the canvas, popup, and rubric strip all render.
 - [ ] The landing page renders all sections (hero + §1.0–§7.0 if ported) without overlapping cells. Check `1280×800`, `1440×900`, and `390×844` viewports via Playwright MCP.
 
 When all green: commit as `fix(frontend): close ship-readiness audit findings (Phase 3)`.

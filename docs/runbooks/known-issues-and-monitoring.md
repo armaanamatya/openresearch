@@ -11,7 +11,7 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | # | Issue | Severity | Status | Where fixed / Where to look |
 |---|---|---|---|---|
 | 1 | SDK `aclose()` deadlock kills RLM root (Defect 1) | blocker | **resolved 2026-05-23** | `backend/services/context/workspace/tools/rlm_query.py::ClaudeLlmClient.complete` — always thread-isolates now |
-| 2 | SDK `transport.close()` futex hang on WSL2 (Defect 2) | blocker on WSL | mitigated | Same fix as #1 contains it. See `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`. |
+| 2 | SDK `transport.close()` futex hang on WSL2 (Defect 2) | blocker on WSL | mitigated | Same fix as #1 contains it. |
 | 3 | SSR↔client hydration mismatch in resize handles | dev-mode warning | **resolved 2026-05-23** | `frontend/src/hooks/use-resizable-panels.ts` — `useState` seeds with `defaultSizes`, storage hydrated in post-mount `useEffect` |
 | 4 | UI "no signal Xs" chip false-alarms during long primitives | UX | resolved 2026-05-23 | `RlmHeader` now shows the in-flight primitive instead |
 | 5 | Sub-RLM root strategy queries the same paper slice repeatedly | run quality | **open** | `rlms` PyPI library — root prompt or `primitives.py` cache |
@@ -474,8 +474,6 @@ echo "SDK workers: $(pgrep -fa 'claude_agent_sdk/_bundled' | wc -l)"
 - **UI walkthrough + happy path:** `docs/runbooks/e2e-testing.md`
 - **Preflight gates:** `docs/runbooks/readiness.md`
 - **RLM pivot rationale:** `docs/design/rlm-pivot-brief.md`
-- **Locked launch decisions:** `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md`
-- **SDK aclose deep-dive (Defect 1 + 2):** `docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`
 - **Source of truth for events:** `runs/<project_id>/dashboard_events.jsonl`
 - **Source of truth for status snapshot:** `runs/<project_id>/demo_status.json` (lossy; see §3.6)
 - **SSE egress chokepoint:** `backend/agents/rlm/sse_bridge.py`
