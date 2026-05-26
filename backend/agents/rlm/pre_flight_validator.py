@@ -1334,6 +1334,29 @@ def validate_code_pre_flight(
     except Exception:  # noqa: BLE001
         pass
 
+    # PR-γ.1 — Scoped AST pre-flight (missing attribute, undefined name, local
+    # import-from of nonexistent symbol).  Catches the 2026-05-26 VAE crash shape
+    # (WakeSleepVAE.reparameterize called but not defined) before sandbox dispatch.
+    # Runs regardless of paper_targets — it's a code-correctness invariant.
+    # NOTE: SyntaxError violations are intentionally excluded here — the outer
+    # validator already detects and reports them via _parse_or_violation above.
+    # De-duplicating here avoids two "SyntaxError" hard violations for the same file.
+    try:
+        from backend.agents.rlm.preflight_ast import scan_code_dir as _scan_ast
+        _ast_violations = _scan_ast(code_dir)
+        for _av in _ast_violations:
+            # Skip syntax-error violations — already handled by _parse_or_violation.
+            if _av.missing_attr is None and "SyntaxError" in _av.detail:
+                continue
+            violations.append(PreFlightViolation(
+                severity=_av.severity,
+                area="Experiment execution and reproducibility",
+                detail=_av.detail,
+                hint=_av.suggested_fix,
+            ))
+    except Exception:  # noqa: BLE001 — pre-flight MUST NOT block on its own bug
+        pass
+
     if not isinstance(paper_targets, dict) or not paper_targets:
         return violations
 

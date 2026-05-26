@@ -272,11 +272,14 @@ def test_multiple_surrogates_produce_multiple_violations(tmp_path: Path) -> None
 
 def test_surrogate_detection_walks_exp_files(tmp_path: Path) -> None:
     _write(tmp_path / "train.py", "from exp_a import run\nrun()\n")
-    _write(tmp_path / "exp_a.py", "class TinyResNet: pass\n")
+    # exp_a.py exports `run` so the import-from check passes; TinyResNet is the
+    # surrogate under test.  PR-γ.1 would otherwise flag the missing `run` import.
+    _write(tmp_path / "exp_a.py", "class TinyResNet: pass\n\ndef run(): pass\n")
     out = validate_code_pre_flight(tmp_path, {"variants_required": []})
     hard = _hard(out)
-    assert len(hard) == 1
-    assert "TinyResNet" in hard[0].detail
+    assert any("TinyResNet" in v.detail for v in hard), (
+        f"Expected TinyResNet surrogate violation, got: {hard}"
+    )
 
 
 # ---------------------------------------------------------------------------

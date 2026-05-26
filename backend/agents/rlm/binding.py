@@ -17,11 +17,42 @@ from __future__ import annotations
 
 import inspect
 import logging
+import threading
+from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable
 
 from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# PR-γ.2 — Per-primitive wall-clock timeout table.
+#
+# Each entry gives a hard cap in seconds for that primitive's execution.
+# On timeout the wrapper returns a retryable-outcome dict so PR-α's typestate
+# routes the failure correctly.
+#
+# Intentionally EXCLUDES ``implement_baseline`` and ``run_experiment`` — both
+# have existing, separately-designed caps (4h aclose watchdog and
+# REPROLAB_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
+# The default for any primitive NOT in the table is 1800 s (30 min).
+# ---------------------------------------------------------------------------
+
+PRIMITIVE_TIMEOUT_S: dict[str, int] = {
+    "understand_section": 300,
+    "extract_hyperparameters": 300,
+    "detect_environment": 600,
+    "plan_reproduction": 600,
+    "verify_against_rubric": 600,
+    "propose_improvements": 300,
+    "check_user_messages": 30,
+    "respond_to_user": 30,
+    "record_candidate_outcome": 60,
+    "heartbeat": 30,
+    # implement_baseline + run_experiment have their own existing caps — NOT here.
+}
+
+_DEFAULT_PRIMITIVE_TIMEOUT_S: int = 1800  # 30 min catch-all
 
 
 def _coerce_args(fn: Callable[..., Any], args: tuple, kwargs: dict) -> tuple[tuple, dict, bool]:
@@ -215,9 +246,64 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             except Exception:  # noqa: BLE001
                 _wr_report = None
 
+        # PR-γ.2 — per-primitive wall-clock enforcement.
+        # Look up the timeout for this primitive; primitives not in the explicit
+        # table use the 1800s default. implement_baseline and run_experiment are
+        # intentionally absent from PRIMITIVE_TIMEOUT_S — they have their own caps.
+        _timeout_s = PRIMITIVE_TIMEOUT_S.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)
+
         try:
             try:
-                result = fn(*args, ctx=ctx, **kwargs)
+                # Run the primitive in a daemon thread so a hung call does NOT
+                # prevent the process from returning. Python cannot forcibly
+                # interrupt a thread mid-execution, but a daemon thread is
+                # silently abandoned when the main thread moves on — it won't
+                # hold up the interpreter or the test runner.
+                _prim_future: Future = Future()
+
+                def _runner() -> None:
+                    try:
+                        _prim_future.set_result(fn(*args, **{**kwargs, "ctx": ctx}))
+                    except Exception as _e:  # noqa: BLE001
+                        _prim_future.set_exception(_e)
+
+                _t = threading.Thread(
+                    target=_runner,
+                    name=f"prim-{name}",
+                    daemon=True,
+                )
+                _t.start()
+                try:
+                    result = _prim_future.result(timeout=_timeout_s)
+                except FuturesTimeoutError:
+                    logger.warning(
+                        "primitive %s timed out after %ss — marking retryable",
+                        name, _timeout_s,
+                    )
+                    # Emit a run_warning SSE event so the UI and cost-ledger
+                    # reflect the hung primitive.
+                    try:
+                        from backend.agents.rlm.primitives import (
+                            _emit_dashboard_event as _emit_evt,
+                        )
+                        _emit_evt(ctx, event_type="run_warning", payload={
+                            "code": "primitive_timeout",
+                            "primitive": name,
+                            "wall_clock_s": _timeout_s,
+                            "message": (
+                                f"primitive `{name}` exceeded its wall-clock "
+                                f"cap of {_timeout_s}s and was interrupted. "
+                                f"The orchestrator can retry this primitive."
+                            ),
+                        })
+                    except Exception:  # noqa: BLE001 — emit MUST NOT break the run
+                        pass
+                    result = {
+                        "outcome": "retryable",
+                        "error": "primitive_hung",
+                        "primitive": name,
+                        "wall_clock_s": _timeout_s,
+                    }
             except Exception as exc:
                 # Value-free event: an exception MESSAGE can carry raw LLM output,
                 # paper text or paths, and result_summary is streamed to the UI.
