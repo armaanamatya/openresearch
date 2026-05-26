@@ -1,15 +1,25 @@
 import json
-from unittest.mock import MagicMock
+import os
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rlm.core.types import CodeBlock, REPLResult, RLMIteration
 from rlm.utils.parsing import format_iteration
 
+from backend.agents.rlm.forced_iteration import (
+    ForcedIterationPolicy,
+    apply_forced_iteration_patch,
+    forced_iteration_policy,
+)
 from backend.agents.rlm.run import (
     _FatalBackendGateLogger,
     _FatalPrimitiveAbort,
     _finalize_fatal_primitive_abort,
+    _outcome_value,
+    _record_last_primitive_result_tools,
 )
+
+apply_forced_iteration_patch()
 
 
 def _fatal_result() -> dict:
@@ -93,3 +103,118 @@ def test_fatal_finalize_writes_failed_status_and_partial_report(make_context, tm
     assert report["verdict"] == "partial"
     assert report["baseline_metrics"] == {"accuracy": 0.42}
     assert any(event.get("event") == "run_fatal" for event in emitted)
+
+
+# ---------------------------------------------------------------------------
+# PR-α followup integration: repairable outcome → record_repair_attempt →
+# forced_iteration_policy refuses FINAL_VAR
+# ---------------------------------------------------------------------------
+
+def _repairable_result(failure_class: str = "preflight_blocked") -> dict:
+    return {
+        "success": False,
+        "metrics": {},
+        "error": "preflight checks failed: 5 AST violations",
+        "failure_class": failure_class,
+        "outcome": "repairable",
+    }
+
+
+def test_repairable_outcome_records_repair_attempt_via_tool_wrapper(make_context, tmp_path):
+    """_record_last_primitive_result_tools calls policy.record_repair_attempt when
+    run_experiment returns outcome='repairable' and the policy holder is populated.
+
+    This is the integration path: tool wrapper → repair_policy_holder → policy.
+    """
+    ctx = make_context(tmp_path)
+    repair_policy_holder: list = []
+
+    # Build a minimal fake tool that returns a repairable result.
+    fake_tool_result = _repairable_result("preflight_blocked")
+    fake_tools = {
+        "run_experiment": {
+            "tool": lambda *a, **kw: fake_tool_result,
+            "description": "fake",
+        }
+    }
+
+    wrapped = _record_last_primitive_result_tools(fake_tools, ctx, repair_policy_holder)
+
+    # Policy doesn't exist yet — tool call before policy creation should be safe.
+    wrapped["run_experiment"]["tool"]()
+    assert ctx._last_primitive_result == fake_tool_result
+
+    # Now create and register the policy (mirrors run.py's late-binding pattern).
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.0, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+    )
+    repair_policy_holder.append(policy)
+
+    # Second tool call — now the holder is populated, so record_repair_attempt fires.
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
+        wrapped["run_experiment"]["tool"]()
+
+    assert policy._repair_iter_count == 1
+    assert policy._last_repair_failure_class == "preflight_blocked"
+
+
+def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tmp_path):
+    """Synthetic repairable outcome → orchestrator records repair attempt →
+    forced_iteration_policy refuses FINAL_VAR.
+
+    Full integration scenario from the PR description: iter 1 returns
+    outcome='repairable' with failure_class='preflight_blocked'; the root
+    tries to FINAL_VAR; the policy blocks it and emits forced_repair_iteration.
+    """
+    from rlm.environments.local_repl import LocalREPL
+
+    ctx = make_context(tmp_path)
+    repair_policy_holder: list = []
+    repair_warnings: list[str] = []
+
+    fake_tools = {
+        "run_experiment": {
+            "tool": lambda *a, **kw: _repairable_result("preflight_blocked"),
+            "description": "fake",
+        }
+    }
+    wrapped = _record_last_primitive_result_tools(fake_tools, ctx, repair_policy_holder)
+
+    policy = ForcedIterationPolicy(
+        min_iterations=2,
+        rubric_snapshot=lambda: (0.0, 0.6, 2),
+        current_iteration=lambda: 2,
+        remaining_s=lambda: 3600.0,
+        on_refusal=lambda m: None,
+        on_repair_refusal=lambda m: repair_warnings.append(m),
+    )
+    repair_policy_holder.append(policy)
+
+    repl = LocalREPL()
+    repl.locals["report"] = "{'score': 0.0}"
+
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
+        # Simulate run_experiment call (records the repair attempt).
+        wrapped["run_experiment"]["tool"]()
+
+        # Simulate root calling FINAL_VAR immediately after the repairable outcome.
+        with forced_iteration_policy(policy):
+            out = repl._final_var("report")
+
+    # The FINAL_VAR must be blocked.
+    assert "Variable '" in out
+    assert "' not found" in out
+    assert "FINAL_VAR" in out
+    assert "repairable outcome" in out
+    assert "preflight_blocked" in out
+
+    # on_repair_refusal callback must have been invoked.
+    assert len(repair_warnings) == 1
+    assert "preflight_blocked" in repair_warnings[0]
+
+    # repair_iter_count must reflect the one attempt.
+    assert policy._repair_iter_count == 1

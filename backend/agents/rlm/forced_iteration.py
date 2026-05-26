@@ -33,9 +33,10 @@ Idempotent.  Side effects scoped per-run via a thread-local stack.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,29 @@ class ForcedIterationPolicy:
     # root model can still terminate the run.  A defensive bound, not a
     # primary correctness lever.
     refusal_count: int = 0
+    # PR-α followup — repair-iteration counter.  Incremented each time
+    # run_experiment returns outcome="repairable" (preflight_blocked, code
+    # error, etc.).  When _repair_iter_count < REPROLAB_MIN_REPAIR_ITERATIONS
+    # the policy refuses FINAL_VAR, forcing the root to attempt another repair.
+    _repair_iter_count: int = field(default=0, compare=False, repr=False)
+    _last_repair_failure_class: str | None = field(default=None, compare=False, repr=False)
+    # Optional separate callback for the repair-refusal path so the SSE event
+    # can carry code="forced_repair_iteration" distinct from "forced_iteration".
+    # Defaults to None; when None the existing on_refusal is used as fallback.
+    on_repair_refusal: Callable[[str], None] | None = None
+    # Internal: set by should_refuse() to signal which SSE event code the
+    # interceptor should use when calling on_refusal / on_repair_refusal.
+    _pending_refusal_code: str = field(default="forced_iteration", compare=False, repr=False)
+
+    def record_repair_attempt(self, failure_class: str) -> None:
+        """Record that run_experiment returned a repairable outcome.
+
+        Called from the tool wrapper in run.py whenever run_experiment yields
+        outcome="repairable". The count is consulted by should_refuse() to
+        decide whether to block the next FINAL_VAR call.
+        """
+        self._repair_iter_count += 1
+        self._last_repair_failure_class = failure_class
 
     def should_refuse(self) -> tuple[bool, str | None]:
         """Return (refuse, message). When refuse=True, message is non-None.
@@ -96,12 +120,16 @@ class ForcedIterationPolicy:
         Order of checks (each takes precedence over the next):
 
           0. Wall-clock floor — never refuse if remaining_s <= floor.
-          1. min_iterations==0 — policy disabled, always accept.
-          2. No rubric data yet — accept (the run is rubric-less).
-          3. Score >= target — accept (the rubric is satisfied).
-          4. current_iteration < min_iterations — refuse.
+          0.5. Defensive max-refusals cap — a stubborn root still terminates.
+          1. min_iterations==0 — rubric-iteration policy disabled; skip to 4.6.
+          2. No rubric data yet — accept (the run is rubric-less) unless
+             repair floor fires (4.6).
+          3. Score >= target — accept the result.
+          4. current_iteration < min_iterations — refuse (rubric floor).
           4.5. Lane O — iteration floor reached BUT no candidate was
                honestly tested (everything was declined/skipped) — refuse.
+          4.6. PR-α followup — repair iteration floor.  Last run_experiment
+               returned repairable AND repair_iter < MIN_REPAIR — refuse.
           5. Otherwise — accept (best-effort exit; ran the floor of attempts).
 
         The message returned on refuse=True is a single-line, plain-English
@@ -113,18 +141,33 @@ class ForcedIterationPolicy:
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
             return (False, None)
 
-        # 1. Disabled.
-        if self.min_iterations <= 0:
+        # 0.5. Defensive max-refusals cap.
+        if self.refusal_count >= _MAX_REFUSALS_PER_RUN:
             return (False, None)
 
-        # Stop after a defensive max refusals — a stubborn root can still ship.
-        if self.refusal_count >= _MAX_REFUSALS_PER_RUN:
+        # Compute repair-iteration refusal eagerly — this check is independent
+        # of min_iterations (rubric floor) so it fires even when the rubric
+        # policy is disabled via REPROLAB_MIN_RUBRIC_ITERATIONS=0.
+        min_repair = int(os.environ.get("REPROLAB_MIN_REPAIR_ITERATIONS", "2"))
+        _repair_refuse = (
+            min_repair > 0
+            and self._last_repair_failure_class is not None
+            and self._repair_iter_count < min_repair
+        )
+
+        # 1. Rubric-iteration policy disabled — skip rubric checks; only the
+        # repair floor (4.6) can still refuse.
+        if self.min_iterations <= 0:
+            if _repair_refuse:
+                return self._build_repair_refusal(min_repair)
             return (False, None)
 
         score, target, _score_iter = self.rubric_snapshot()
 
-        # 2. No rubric data — accept honestly.
+        # 2. No rubric data — only repair floor can refuse.
         if score is None or target is None:
+            if _repair_refuse:
+                return self._build_repair_refusal(min_repair)
             return (False, None)
 
         # 3. Score satisfies target — accept.
@@ -166,8 +209,30 @@ class ForcedIterationPolicy:
                 )
                 return (True, msg)
 
+        # 4.6. PR-α followup — repair iteration floor.  Even when the rubric
+        # iteration floor is satisfied, refuse FINAL_VAR if the last
+        # run_experiment returned a repairable outcome AND fewer than
+        # REPROLAB_MIN_REPAIR_ITERATIONS repair attempts have been made.
+        # This prevents the root from giving up after a single preflight
+        # failure (e.g. AST-caught code bugs) without trying to fix them.
+        if _repair_refuse:
+            return self._build_repair_refusal(min_repair)
+
         # 5. Iteration floor reached — accept the partial result.
         return (False, None)
+
+    def _build_repair_refusal(self, min_repair: int) -> tuple[bool, str]:
+        """Return the repair-refusal tuple and set the pending SSE event code."""
+        failure_class = self._last_repair_failure_class or "unknown"
+        msg = (
+            f"FINAL_VAR refused: last primitive returned repairable outcome "
+            f"'{failure_class}'; {self._repair_iter_count}/{min_repair} repair "
+            "iterations completed. Next step: implement_baseline + run_experiment "
+            "to fix the violations — do NOT call FINAL_VAR until the repair "
+            "floor is reached or the rubric is satisfied."
+        )
+        self._pending_refusal_code = "forced_repair_iteration"
+        return (True, msg)
 
 
 # A run can stubbornly call FINAL_VAR every iteration.  Past this many
@@ -253,10 +318,17 @@ def apply_forced_iteration_patch() -> None:
             assert message is not None  # invariant from should_refuse contract
             policy.refusal_count += 1
 
-            # Notify the policy's on_refusal callback so the orchestrator can
-            # surface a run_warning SSE event. The callback must not raise.
+            # Notify the policy's callback so the orchestrator can surface a
+            # run_warning SSE event. Route to on_repair_refusal when the
+            # pending code signals a repair refusal and the callback is set;
+            # otherwise fall back to the standard on_refusal. Must not raise.
+            _code = getattr(policy, "_pending_refusal_code", "forced_iteration")
+            if _code == "forced_repair_iteration" and policy.on_repair_refusal is not None:
+                _cb = policy.on_repair_refusal
+            else:
+                _cb = policy.on_refusal
             try:
-                policy.on_refusal(message)
+                _cb(message)
             except Exception:  # noqa: BLE001 — defensive; emit failures must not block
                 logger.exception("forced_iteration: on_refusal callback raised")
 

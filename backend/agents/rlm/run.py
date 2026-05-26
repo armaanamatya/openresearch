@@ -551,11 +551,22 @@ def _outcome_value(value: object) -> str:
     return str(getattr(value, "value", value or ""))
 
 
-def _record_last_primitive_result_tools(custom_tools: dict, ctx: RunContext) -> dict:
+def _record_last_primitive_result_tools(
+    custom_tools: dict,
+    ctx: RunContext,
+    repair_policy_holder: list | None = None,
+) -> dict:
     """Wrap RLM tools so run.py can gate on the last primitive outcome.
 
     This sits outside binding.py to keep PR-alpha's fatal policy local to the
     orchestrator. Tool behavior is otherwise unchanged.
+
+    ``repair_policy_holder``, when supplied, must be a single-element list
+    ``[ForcedIterationPolicy]`` that is populated after the policy is created
+    (the tools are wrapped before the policy exists). When run_experiment
+    returns outcome="repairable", the wrapper calls
+    ``policy.record_repair_attempt(failure_class)`` on the policy in the
+    holder. This is the PR-α-followup repair-iteration accounting hook.
     """
     wrapped_tools: dict = {}
 
@@ -565,6 +576,22 @@ def _record_last_primitive_result_tools(custom_tools: dict, ctx: RunContext) -> 
             if isinstance(result, dict) and "outcome" in result:
                 setattr(ctx, "_last_primitive_name", name)
                 setattr(ctx, "_last_primitive_result", result)
+                # PR-α followup: when run_experiment yields a repairable
+                # outcome, notify the forced-iteration policy so it can
+                # enforce the repair-iteration floor.
+                if (
+                    name == "run_experiment"
+                    and _outcome_value(result.get("outcome")) == "repairable"
+                    and repair_policy_holder
+                ):
+                    policy = repair_policy_holder[0]
+                    failure_class = str(result.get("failure_class") or "unknown")
+                    try:
+                        policy.record_repair_attempt(failure_class)
+                    except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                        logger.exception(
+                            "_record_last_primitive_result_tools: record_repair_attempt failed"
+                        )
             return result
 
         _wrapped.__name__ = getattr(tool, "__name__", name)
@@ -954,8 +981,13 @@ async def run_pipeline_rlm(
     )
 
     # 5. Primitives — the real binding or the stub provider.
+    # repair_policy_holder is a late-binding 1-slot list: the tool wrappers
+    # close over it, and run.py populates slot 0 after the ForcedIterationPolicy
+    # is constructed below.  This lets _record_last_primitive_result_tools notify
+    # the policy of repairable run_experiment outcomes without circular deps.
+    repair_policy_holder: list = []
     custom_tools, tools_label = _resolve_custom_tools(ctx)
-    custom_tools = _record_last_primitive_result_tools(custom_tools, ctx)
+    custom_tools = _record_last_primitive_result_tools(custom_tools, ctx, repair_policy_holder)
     logger.info(
         "run_pipeline_rlm: project=%s root=%s primitives=%s",
         project_id,
@@ -1120,6 +1152,16 @@ async def run_pipeline_rlm(
         except Exception:  # noqa: BLE001 — emit must never block the policy
             logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
 
+    def _emit_forced_repair_warning(message: str) -> None:
+        try:
+            emit(build_run_warning_event(
+                level="warn",
+                code="forced_repair_iteration",
+                message=message,
+            ))
+        except Exception:  # noqa: BLE001 — emit must never block the policy
+            logger.exception("run_pipeline_rlm: forced-repair-iteration warning emit failed")
+
     def _count_honest_candidate_outcomes() -> int:
         """Count candidate_outcome events with truthful outcomes.
 
@@ -1163,7 +1205,12 @@ async def run_pipeline_rlm(
         remaining_s=lambda: ctx.remaining_s(),
         on_refusal=_emit_forced_iteration_warning,
         honest_candidate_outcomes=_count_honest_candidate_outcomes,
+        on_repair_refusal=_emit_forced_repair_warning,
     )
+    # PR-α followup: populate the late-binding holder so the tool wrapper
+    # can call policy.record_repair_attempt() when run_experiment returns
+    # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
+    repair_policy_holder.append(iteration_policy)
 
     result_obj: Any = None
     run_failed = False
