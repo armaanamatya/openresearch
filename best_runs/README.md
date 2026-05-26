@@ -53,25 +53,82 @@ The pattern across both runs is the same: methodology and execution land high, a
 
 ## Token usage
 
-Both runs used Claude Code OAuth (subscription billing), so per-token API spend is zero. The numbers below are useful as a *workload* signal — what an equivalent Anthropic-API or Azure-OpenAI deployment would meter.
+Both runs used Claude Code OAuth (Claude Sonnet via subscription), so per-token API spend is zero. The numbers are a *workload* signal — what an equivalent Anthropic-API or Azure-OpenAI deployment would meter.
 
-| | Calls | Input | Output | Cache write | Cache read |
-|---|---:|---:|---:|---:|---:|
-| Adam | 20 | 12 | 2,075 | 13,629 | 72,978 |
-| VAE | 34 | 32 | 4,867 | 63,858 | 217,338 |
-| **Total** | **54** | **44** | **6,942** | **77,487** | **290,316** |
+### How to read the columns
 
-### Per-paper totals
+- **Input** — fresh tokens the model reads on a call, excluding anything served from cache.
+- **Output** — tokens the model generates. Priced highest on every vendor.
+- **Cache write** — first-time-seen prompt content the provider caches for cheap replay.
+- **Cache read** — prompt content served from cache. ~10× cheaper than fresh input on Anthropic and Azure.
+- **Total** — sum of all four. Everything the meter touched.
 
-| Paper | Total tokens | Of which generated |
+### Adam — 19 iterations, ~16 min wall clock
+
+| | Tokens |
+|---|---:|
+| Input (fresh) | 12 |
+| Output (generated) | 2,075 |
+| Cache write | 13,629 |
+| Cache read | 72,978 |
+| **Total** | **88,694** |
+| Root calls | 20 |
+
+Per-primitive output (only the primitives that emit at the root — the rest dispatch to sub-agents or are pure I/O):
+
+| Primitive | Calls | Output |
 |---|---:|---:|
-| Adam | 88,694 | 2,075 |
-| VAE | 286,095 | 4,867 |
-| **Combined** | **374,789** | **6,942** |
+| `plan_reproduction` | 1 | 1,104 |
+| `propose_improvements` | 1 | 971 |
+| `understand_section` | 4 | 0 (sub-agent meter) |
+| `implement_baseline` | 1 | 0 (Sonnet sub-agent) |
+| `verify_against_rubric` | 1 | 0 (grader sub-agent) |
+| `run_experiment` | 1 | 0 (Docker, no LLM) |
+| `heartbeat` | 6 | 0 |
+| 5 other primitives | 1 ea. | 0 |
 
-Total = input + output + cache write + cache read. ~98% of the traffic is cache-served prompt replay — the cost driver in any per-token billing model is *cache reads*, not generation. VAE used ~3.2× the tokens of Adam, mostly because its 3-iteration outer loop replays a longer scratchpad on each turn (Adam ran more iterations, but on a tighter context).
+### VAE — 3 iterations, ~30 min wall clock
 
-Heaviest primitives on Adam: `plan_reproduction` (1,104 output tokens) and `propose_improvements` (971). The remaining primitives are dispatch — they invoke sub-agents and tools rather than emitting tokens at the root. The bulk of cache reads come from the RLM root's iteration loop replaying its own scratchpad against a warm prompt cache; this is what makes 19-iteration runs affordable.
+| | Tokens |
+|---|---:|
+| Input (fresh) | 32 |
+| Output (generated) | 4,867 |
+| Cache write | 63,858 |
+| Cache read | 217,338 |
+| **Total** | **286,095** |
+| Root calls | 34 |
+
+Per-primitive output:
+
+| Primitive | Calls | Output |
+|---|---:|---:|
+| `plan_reproduction` | 1 | 2,549 |
+| `propose_improvements` | 1 | 1,186 |
+| `verify_against_rubric` | 4 | 1,132 |
+| `understand_section` | 4 | 0 (sub-agent meter) |
+| `implement_baseline` | 3 | 0 (Sonnet sub-agent) |
+| `run_experiment` | 3 | 0 (Docker, no LLM) |
+| `record_candidate_outcome` | 3 | 0 |
+| `heartbeat` | 10 | 0 |
+| 5 other primitives | 1 ea. | 0 |
+
+### Side-by-side
+
+| | Adam | VAE | Combined |
+|---|---:|---:|---:|
+| Root calls | 20 | 34 | 54 |
+| Input (fresh) | 12 | 32 | 44 |
+| Output (generated) | 2,075 | 4,867 | **6,942** |
+| Cache write | 13,629 | 63,858 | 77,487 |
+| Cache read | 72,978 | 217,338 | 290,316 |
+| **Total tokens** | **88,694** | **286,095** | **374,789** |
+
+### What this tells you
+
+- **~98% of traffic is cache I/O.** The root generated only 6,942 tokens across both reproductions; everything else is the RLM scratchpad being replayed against a warm prompt cache. That replay pattern is what makes 19-iteration runs affordable.
+- **VAE used ~3.2× Adam's tokens** despite running 6× fewer iterations. The driver is scratchpad length per turn — VAE's `plan_reproduction` emitted 2,549 output tokens (vs Adam's 1,104), and each subsequent iteration replays the cumulative state.
+- **Three primitives carry all root-side generation:** `plan_reproduction`, `propose_improvements`, and (on multi-iteration runs) `verify_against_rubric`. Everything else dispatches to a sub-agent on its own meter, or is pure file I/O.
+- **Sub-agent tokens are not in these totals.** `implement_baseline` invokes a Sonnet sub-agent through `claude-agent-sdk`; that traffic rolls up under the local subscription, not under the root run's `tokens_total.json`. A production billing view would add the sub-agent ledger on top.
 
 ---
 
