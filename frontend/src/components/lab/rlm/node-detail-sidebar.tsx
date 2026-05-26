@@ -169,10 +169,19 @@ function PrimitiveList({
   emptyMsg,
 }: {
   calls: PrimitiveCallView[];
-  allowedPrimitives: Set<string>;
+  /**
+   * When provided, only calls whose primitive name is in this set are
+   * displayed. When undefined / null, ALL primitive calls render — the
+   * lab default since 2026-05-25, so the operator sees every event the
+   * root model issued without having to think about which work-cluster
+   * type they're inspecting.
+   */
+  allowedPrimitives?: Set<string> | null;
   emptyMsg: string;
 }) {
-  const filtered = calls.filter((c) => allowedPrimitives.has(c.primitive));
+  const filtered = allowedPrimitives
+    ? calls.filter((c) => allowedPrimitives.has(c.primitive))
+    : calls;
   if (filtered.length === 0) {
     return <p className={styles.noDetail}>{emptyMsg}</p>;
   }
@@ -295,18 +304,16 @@ function SidebarBody({
   }
 
   if (kind === "work") {
-    // Map work phase to appropriate primitive set.
-    const isEnv = node.phase === "environment";
-    const allowed = isEnv ? ENVIRONMENT_PRIMITIVES : COMPREHENSION_PRIMITIVES;
-    const emptyMsg = isEnv
-      ? "no detect_environment / build_environment calls yet"
-      : "no understand_section / extract_hyperparameters calls yet";
+    // 2026-05-25 — show-all default. The phase-specific filter was a
+    // historical UX choice that hid 80% of the events the root model
+    // actually issued (heartbeats, propose_improvements, verify_against_rubric,
+    // record_candidate_outcome, etc.). Operator now sees every primitive call
+    // by default; filtering can be re-introduced as an opt-in toggle later.
     return (
       <div className={styles.body}>
         <PrimitiveList
           calls={primitiveCalls}
-          allowedPrimitives={allowed}
-          emptyMsg={emptyMsg}
+          emptyMsg="no primitive calls yet"
         />
         {nowBlock}
       </div>

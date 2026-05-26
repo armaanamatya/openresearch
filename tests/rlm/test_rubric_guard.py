@@ -140,3 +140,79 @@ def test_empty_required_keys_with_artifacts(tmp_path: Path) -> None:
         required_artifacts=["README.md"],
         artifact_dir=tmp_path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fingerprint matching (2026-05-25 Adam regression)
+# ---------------------------------------------------------------------------
+# rubric_guard previously required exact dotted-path matches. The Sonnet
+# sub-agent for Adam emitted nested keys like
+# `per_model.mnist_logistic.per_dataset.mnist.adam_final_nll` while the
+# rubric expected the flat-underscore form `mnist_logistic_adam_final_nll`.
+# Tier-2 fingerprint matching now tolerates the nested form when the
+# required key's tokens appear as an ordered subsequence in some present
+# leaf path. Token order is still required to avoid false positives.
+
+
+def test_fingerprint_nested_with_dots_matches_flat_underscore_required() -> None:
+    """Required `foo_bar` should match nested {"foo": {"bar": ...}}."""
+    metrics = {"foo": {"bar": 1.0}}
+    # No raise — fingerprint matches `foo.bar` against required `foo_bar`.
+    assert_metrics_schema(metrics, required_keys=["foo_bar"])
+
+
+def test_fingerprint_deeply_nested_with_generic_keys_matches() -> None:
+    """The 2026-05-25 Adam case — required flat key matches deep nested path
+    with intermediate generic keys (`per_model`, `per_dataset`)."""
+    metrics = {
+        "per_model": {
+            "mnist_logistic": {
+                "per_dataset": {
+                    "mnist": {"adam_final_nll": 0.4137}
+                }
+            }
+        }
+    }
+    assert_metrics_schema(metrics, required_keys=["mnist_logistic_adam_final_nll"])
+
+
+def test_fingerprint_truly_missing_still_raises() -> None:
+    """A key whose tokens don't appear in any path must still fail."""
+    metrics = {"baz": {"qux": 1.0}}
+    with pytest.raises(RubricGuardFailure) as excinfo:
+        assert_metrics_schema(metrics, required_keys=["foo_bar"])
+    detail = json.loads(str(excinfo.value))
+    assert "foo_bar" in detail["missing_keys"]
+
+
+def test_fingerprint_token_order_matters() -> None:
+    """Required `adam_mnist_loss` must NOT match present `mnist_adam_loss`
+    — tokens appear but in different order."""
+    metrics = {"mnist_adam_loss": 0.1}
+    with pytest.raises(RubricGuardFailure) as excinfo:
+        assert_metrics_schema(metrics, required_keys=["adam_mnist_loss"])
+    detail = json.loads(str(excinfo.value))
+    assert "adam_mnist_loss" in detail["missing_keys"]
+
+
+def test_fingerprint_partial_token_subset_does_not_match() -> None:
+    """Required `mnist_adam_loss` must NOT match present `mnist_loss`
+    — required has a token ("adam") the present path lacks."""
+    metrics = {"mnist_loss": 0.1}
+    with pytest.raises(RubricGuardFailure) as excinfo:
+        assert_metrics_schema(metrics, required_keys=["mnist_adam_loss"])
+    detail = json.loads(str(excinfo.value))
+    assert "mnist_adam_loss" in detail["missing_keys"]
+
+
+def test_fingerprint_exact_match_still_works() -> None:
+    """Tier-1 exact match unchanged — flat-flat contract behavior preserved."""
+    metrics = {"mnist_baseline_final_acc": 0.81}
+    assert_metrics_schema(metrics, required_keys=["mnist_baseline_final_acc"])
+
+
+def test_fingerprint_required_with_dots_matches_underscore_present() -> None:
+    """Required `foo.bar` matches present `foo_bar` (token equivalence is
+    bidirectional — _ and . are both separators)."""
+    metrics = {"foo_bar": 1.0}
+    assert_metrics_schema(metrics, required_keys=["foo.bar"])

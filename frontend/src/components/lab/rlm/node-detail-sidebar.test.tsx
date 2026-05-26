@@ -119,7 +119,7 @@ describe("NodeDetailSidebar", () => {
     expect(screen.getByText("extract_hyperparameters")).toBeInTheDocument();
   });
 
-  it("kind=work shows empty-state message when no comprehension calls", () => {
+  it("kind=work shows empty-state message when no calls", () => {
     render(
       <NodeDetailSidebar
         {...baseProps({
@@ -129,11 +129,15 @@ describe("NodeDetailSidebar", () => {
       />
     );
     expect(
-      screen.getByText(/no understand_section \/ extract_hyperparameters calls yet/i)
+      screen.getByText(/no primitive calls yet/i)
     ).toBeInTheDocument();
   });
 
-  it("kind=work (environment phase) shows environment primitives", () => {
+  it("kind=work shows ALL primitive calls by default (no phase filter)", () => {
+    // 2026-05-25 — show-all default. Previously the work-cluster sidebar
+    // filtered to comprehension OR environment primitives depending on
+    // node.phase. Now every primitive call renders so the operator sees
+    // the full activity stream.
     const calls = [
       {
         primitive: "detect_environment",
@@ -144,6 +148,24 @@ describe("NodeDetailSidebar", () => {
         rubric_delta: null,
         timestamp: "2026-05-21T00:00:00Z",
       },
+      {
+        primitive: "verify_against_rubric",
+        status: "ok" as const,
+        args_summary: {},
+        result_summary: "overall=0.42",
+        iteration: 5,
+        rubric_delta: 0.12,
+        timestamp: "2026-05-21T00:00:30Z",
+      },
+      {
+        primitive: "heartbeat",
+        status: "ok" as const,
+        args_summary: {},
+        result_summary: "",
+        iteration: 5,
+        rubric_delta: null,
+        timestamp: "2026-05-21T00:01:00Z",
+      },
     ];
     render(
       <NodeDetailSidebar
@@ -153,7 +175,11 @@ describe("NodeDetailSidebar", () => {
         })}
       />
     );
+    // All three render — even though only `detect_environment` would have
+    // matched the old environment-phase filter.
     expect(screen.getByText("detect_environment")).toBeInTheDocument();
+    expect(screen.getByText("verify_against_rubric")).toBeInTheDocument();
+    expect(screen.getByText("heartbeat")).toBeInTheDocument();
   });
 
   it("shows structured primitive error detail with recovery guidance", () => {
