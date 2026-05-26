@@ -55,6 +55,21 @@ PRIMITIVE_TIMEOUT_S: dict[str, int] = {
 
 _DEFAULT_PRIMITIVE_TIMEOUT_S: int = 1800  # 30 min catch-all
 
+# PR-μ.1 — the comment above is now ENFORCED. Before this fix, the
+# `.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)` line silently fell through to
+# 1800s for `implement_baseline` and `run_experiment`, killing every max-mode
+# `run_experiment` call at exactly 30 min regardless of PR-μ Solution B's
+# inner 6h cap (the 0.305 Adam max-mode rerun was killed by this outer wrap,
+# not by the inner resolver).  These primitives have their OWN internal
+# caps (`resolve_experiment_timeout_s` for run_experiment; claude-agent-sdk
+# session limits + 4h watchdog for implement_baseline).  The outer wrap here
+# is a defensive long-tail bracket above the inner cap so it can never fire
+# before the inner cap does.
+_LONG_RUNNING_PRIMITIVES: dict[str, int] = {
+    "run_experiment": 28800,      # 8h — bracket above 6h max-mode inner cap
+    "implement_baseline": 21600,  # 6h — generous bracket; inner ~4h watchdog
+}
+
 
 def _coerce_args(fn: Callable[..., Any], args: tuple, kwargs: dict) -> tuple[tuple, dict, bool]:
     """Attempt one simple coercion pass when a positional arg has an obvious type mismatch.
@@ -248,10 +263,15 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 _wr_report = None
 
         # PR-γ.2 — per-primitive wall-clock enforcement.
-        # Look up the timeout for this primitive; primitives not in the explicit
-        # table use the 1800s default. implement_baseline and run_experiment are
-        # intentionally absent from PRIMITIVE_TIMEOUT_S — they have their own caps.
-        _timeout_s = PRIMITIVE_TIMEOUT_S.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)
+        # Resolution order:
+        #   1. _LONG_RUNNING_PRIMITIVES (run_experiment, implement_baseline)
+        #      — they have inner caps; outer wrap is a defensive long-tail.
+        #   2. PRIMITIVE_TIMEOUT_S — explicit table.
+        #   3. _DEFAULT_PRIMITIVE_TIMEOUT_S (1800s) — catch-all for everything else.
+        if name in _LONG_RUNNING_PRIMITIVES:
+            _timeout_s = _LONG_RUNNING_PRIMITIVES[name]
+        else:
+            _timeout_s = PRIMITIVE_TIMEOUT_S.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)
 
         try:
             try:
