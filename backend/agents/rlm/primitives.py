@@ -914,6 +914,39 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         + json.dumps(fields)
         + ". String-valued keys hold prose; list-valued keys hold arrays of strings."
     )
+    # Bug 1a — paper grounding check: if the method_spec contains dataset/method
+    # names not found in the paper text, the plan_reproduction inputs are likely
+    # contaminated from a different paper. Check before the LLM call so we don't
+    # embed hallucinated names into the contract. Fail-soft: only emit a warning
+    # (not a repairable error) if the paper text file is missing or the check itself
+    # raises — grounding is advisory at plan_reproduction time to avoid false-positive
+    # aborts on partial or summary-only paper texts.
+    try:
+        _paper_text_path = ctx.project_dir / "parsed_full_text.txt"
+        if _paper_text_path.exists():
+            from backend.agents.paper_grounding import assert_paper_grounded as _assert_grounded
+            _grounding_violations = _assert_grounded(method_spec, _paper_text_path.read_text(encoding="utf-8", errors="replace"))
+            if _grounding_violations:
+                _unfounded = [v.value for v in _grounding_violations]
+                logger.warning(
+                    "plan_reproduction[%s]: %d grounding violation(s) — "
+                    "input method_spec contains names not found in paper text: %s",
+                    ctx.project_id, len(_grounding_violations), _unfounded,
+                )
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "paper_grounding_failed",
+                    "message": (
+                        f"plan_reproduction: {len(_grounding_violations)} name(s) in "
+                        f"method_spec not found in paper text: {_unfounded[:5]}"
+                    ),
+                    "violations": [
+                        {"field": v.field, "value": v.value, "suggestion": v.suggestion}
+                        for v in _grounding_violations
+                    ],
+                })
+    except Exception as _pg_exc:  # noqa: BLE001 — never block on grounding check
+        logger.debug("plan_reproduction: grounding check failed (%s) — skipping", _pg_exc)
+
     from backend.agents.rlm import primitive_cache as _cache
     _payload = {"method_spec": method_spec, "env_spec": env_spec}
     _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
@@ -935,9 +968,10 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             raise ValueError(
                 f"LLM response has no ReproductionContract fields: {list(data)}")
 
-        # β3: when clipping is active, parse compute_scope from the LLM response.
-        # Wrap in try/except so a malformed compute_scope doesn't abort the plan.
-        if _is_clipping_active(ctx) and "compute_scope" in data:
+        # β3: parse compute_scope whenever the key is present in the LLM response.
+        # Unconditional sanitization — a string-valued or malformed compute_scope
+        # must never reach ReproductionContract(**data) regardless of clipping mode.
+        if "compute_scope" in data:
             from pydantic import ValidationError as _PydanticValidationError
             from backend.agents.schemas import ComputeScope as _ComputeScope
             cs_dict = data.get("compute_scope")
@@ -955,8 +989,21 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
                     })
                     data["compute_scope"] = None
             else:
+                # String, None, or any non-dict — coerce to None rather than aborting.
+                if cs_dict is not None:
+                    logger.warning(
+                        "plan_reproduction: compute_scope is not a dict (%s) — dropping",
+                        type(cs_dict).__name__,
+                    )
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "compute_scope_invalid",
+                        "message": (
+                            f"compute_scope must be a dict or null; got "
+                            f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
+                        ),
+                    })
                 data["compute_scope"] = None
-        elif "compute_scope" not in data:
+        else:
             # Not in the response (max mode or no instruction sent) — leave as None.
             data["compute_scope"] = None
 
@@ -1061,8 +1108,43 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # partial paper_claim_map (e.g. understand_section's output) validates.
     pcm = PaperClaimMap(**{"core_contribution": "", **plan.get("paper_claim_map", {})})
     env = EnvironmentSpec(**plan.get("environment_spec", {}))
-    contract = (ReproductionContract(**plan["reproduction_contract"])
-                if plan.get("reproduction_contract") else None)
+
+    # Bug 3 fix: detect error envelopes from plan_reproduction before constructing
+    # ReproductionContract. An envelope looks like {"success": False, "error": "..."}
+    # or has an "error" key with no ReproductionContract fields (other than "outcome").
+    _contract_dict = plan.get("reproduction_contract")
+    contract: ReproductionContract | None = None
+    if _contract_dict:
+        _is_envelope = (
+            _contract_dict.get("success") is False
+            or (
+                "error" in _contract_dict
+                and not any(
+                    k in _contract_dict
+                    for k in ReproductionContract.model_fields
+                    if k != "outcome"
+                )
+            )
+        )
+        if _is_envelope:
+            _envelope_error = _contract_dict.get("error", "unknown plan_reproduction failure")
+            logger.warning(
+                "implement_baseline[%s]: plan_reproduction returned error envelope — "
+                "contract set to None; fallback recipe recovery active. Error: %s",
+                ctx.project_id, _envelope_error,
+            )
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "plan_reproduction_failed_envelope",
+                "message": (
+                    f"plan_reproduction returned a failed envelope "
+                    f"(error: {str(_envelope_error)[:300]}); "
+                    f"proceeding with fallback recipe recovery"
+                ),
+            })
+            contract = None
+        else:
+            contract = ReproductionContract(**_contract_dict)
+
     artifact_index = plan.get("artifact_index")
 
     # An optional plan["repair_context"] (a failed run_experiment result) puts
@@ -1168,15 +1250,49 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # Sandbox/gpu enums are coerced to their .value strings so the key is
     # canonical across run instances.
     # ------------------------------------------------------------------
+    # Bug 1b — second-chance paper grounding check on plan["paper_claim_map"].
+    # Fail-soft: if the paper text file is missing or the check raises, skip silently.
+    try:
+        _paper_text_path = ctx.project_dir / "parsed_full_text.txt"
+        _pcm_for_grounding = plan.get("paper_claim_map") or {}
+        if _paper_text_path.exists() and _pcm_for_grounding:
+            from backend.agents.paper_grounding import assert_paper_grounded as _assert_grounded2
+            _grounding2 = _assert_grounded2(
+                _pcm_for_grounding,
+                _paper_text_path.read_text(encoding="utf-8", errors="replace"),
+            )
+            if _grounding2:
+                _unfounded2 = [v.value for v in _grounding2]
+                logger.warning(
+                    "implement_baseline[%s]: %d grounding violation(s) — "
+                    "paper_claim_map contains names not in paper text: %s",
+                    ctx.project_id, len(_grounding2), _unfounded2,
+                )
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "paper_grounding_failed",
+                    "message": (
+                        f"implement_baseline: {len(_grounding2)} name(s) in "
+                        f"paper_claim_map not found in paper text: {_unfounded2[:5]}"
+                    ),
+                    "violations": [
+                        {"field": v.field, "value": v.value, "suggestion": v.suggestion}
+                        for v in _grounding2
+                    ],
+                })
+    except Exception as _pg2_exc:  # noqa: BLE001 — never block on grounding check
+        logger.debug("implement_baseline: grounding check failed (%s) — skipping", _pg2_exc)
+
     from backend.agents.rlm import primitive_cache as _cache
     _sandbox_key = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode) if ctx.sandbox_mode is not None else None)
     _gpu_key = getattr(getattr(ctx, "gpu_mode", None), "value", str(getattr(ctx, "gpu_mode", None)) if getattr(ctx, "gpu_mode", None) is not None else None)
+    from backend.agents.baseline_knowledge import KNOWLEDGE_CHANNEL_VERSION as _KC_VER
     _payload = {
         "plan": plan,
         "repair_context": repair_context,
         "arxiv_id": getattr(ctx, "arxiv_id", None),
         "sandbox_mode": _sandbox_key,
         "gpu_mode": _gpu_key,
+        "knowledge_channel_version": _KC_VER,
     }
     _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
     if _cached is not None:
@@ -1362,6 +1478,35 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     code_dir.mkdir(parents=True, exist_ok=True)
     commands = list(getattr(result, "commands_to_run", []) or [])
     (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
+
+    # PR-ξ γ: surface knowledge-channel strict violations as a repairable envelope.
+    # run_with_sdk encodes violations in diff_summary and assumptions_applied when
+    # the post-emit verifier found strict violations. Check and propagate here.
+    _kc_summary = getattr(result, "diff_summary", "") or ""
+    if _kc_summary.startswith("knowledge_channel:"):
+        _kc_assumptions = list(getattr(result, "assumptions_applied", []) or [])
+        _kc_preflight = [
+            {
+                "kind": a.split(":", 2)[1] if a.count(":") >= 2 else "strict_violation",
+                "fact_id": a.split(":", 2)[2] if a.count(":") >= 2 else a,
+                "detail": a,
+            }
+            for a in _kc_assumptions
+            if a.startswith("kc_violation:")
+        ]
+        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+            "code": "knowledge_channel_strict_violation",
+            "message": _kc_summary,
+            "violations": _kc_preflight,
+        })
+        _err = _with_outcome({
+            "success": False,
+            "error": _kc_summary,
+            "preflight_violations": _kc_preflight,
+        }, PrimitiveOutcome.repairable)
+        # Do NOT cache a strict-violation result — force recompute on next attempt.
+        return _err
+
     _code_path = str(code_dir)
     # Cache value wraps the str path so the dict-only cache contract is preserved.
     _cache.put(

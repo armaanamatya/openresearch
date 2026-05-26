@@ -30,6 +30,12 @@ class DatasetRecipe:
     normalization_stats: dict | None = None
     license_note: str = ""
     notes: str = ""
+    # PR-ξ fields: knowledge-channel metadata (all default-empty for backward compat)
+    recipe_id: str = ""                    # stable id, e.g. "dataset.frey_face"
+    severity: str = "preferred"            # "strict" | "preferred" | "advisory"
+    banned_literals: tuple[str, ...] = ()  # known-bad URL / import patterns
+    helper_name: str = ""                  # python identifier for the curated loader
+    helper_body: str = ""                  # full def source; rendered into _reprolab_curated.py
 
 
 DATASET_RECIPES: tuple[DatasetRecipe, ...] = (
@@ -120,6 +126,37 @@ DATASET_RECIPES: tuple[DatasetRecipe, ...] = (
             "try: <primary>; except Exception: <fallback>. "
             "If every mirror fails, declare 'frey_face' in data_load_failures and "
             "skip the Frey Face experiment — do NOT substitute a synthetic dataset."
+        ),
+        recipe_id="dataset.frey_face",
+        severity="strict",
+        banned_literals=(
+            "cs.nyu.edu/~roweis/data/frey_rawface.mat",
+            "roweis/data/frey_rawface.mat",
+        ),
+        helper_name="load_frey_face",
+        helper_body=(
+            "def load_frey_face():\n"
+            "    \"\"\"Load the Frey Face dataset from the canonical GitHub mirror.\"\"\"\n"
+            "    import pickle\n"
+            "    import urllib.request\n"
+            "    _PRIMARY = (\n"
+            "        \"https://raw.githubusercontent.com/y0ast/\"\n"
+            "        \"Variational-Autoencoder/master/freyfaces.pkl\"\n"
+            "    )\n"
+            "    _FALLBACKS = [\n"
+            "        \"https://raw.githubusercontent.com/y0ast/\"\n"
+            "        \"Variational-Autoencoder/master/freyfaces.pkl\",\n"
+            "    ]\n"
+            "    last_exc = None\n"
+            "    for url in [_PRIMARY] + _FALLBACKS:\n"
+            "        try:\n"
+            "            data = urllib.request.urlopen(url, timeout=60).read()\n"
+            "            return pickle.loads(data, encoding=\"latin1\").reshape(-1, 28, 20)\n"
+            "        except Exception as exc:\n"
+            "            last_exc = exc\n"
+            "    raise RuntimeError(\n"
+            "        f\"load_frey_face: all mirrors failed — last error: {last_exc}\"\n"
+            "    )\n"
         ),
     ),
     DatasetRecipe(
@@ -246,13 +283,24 @@ def find_recipe(name: str) -> DatasetRecipe | None:
     return None
 
 
+def _normalize(s: str) -> str:
+    """Lowercase, replace underscores with spaces, collapse runs of whitespace."""
+    import re as _re
+    return _re.sub(r"\s+", " ", s.lower().replace("_", " ")).strip()
+
+
 def find_recipes_in_text(text: str) -> list[DatasetRecipe]:
-    """Scan text for dataset mentions; return matching recipes in declared order."""
+    """Scan text for dataset mentions; return matching recipes in declared order.
+
+    Matching is alias-normalized: underscores and extra whitespace are collapsed
+    before substring check so "frey_face" and "Frey  Face" both match the Frey
+    Face recipe. Dedup by canonical_name is preserved.
+    """
     found: list[DatasetRecipe] = []
     seen: set[str] = set()
-    needle_text = text.lower()
+    needle_text = _normalize(text)
     for r in DATASET_RECIPES:
-        names_to_check = [r.canonical_name.lower()] + [a.lower() for a in r.aliases]
+        names_to_check = [_normalize(r.canonical_name)] + [_normalize(a) for a in r.aliases]
         for n in names_to_check:
             if n in needle_text and r.canonical_name not in seen:
                 found.append(r)

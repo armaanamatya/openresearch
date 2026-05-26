@@ -429,7 +429,7 @@ _NO_STUB_BLOCK = (
     "\n\nNO STUB / NO SURROGATE — hard rule:\n"
     "Your `train.py` MUST be a fully-fledged reproduction. NEVER substitute:\n"
     "  - the paper's model with a `TinyLM`, hand-rolled mini-transformer, or random-init MLP\n"
-    "  - the paper's dataset with synthetic / mock / Gaussian / 'ALFWorld-like' data\n"
+    "  - the paper's dataset with synthetic / mock / Gaussian / 'paper-like' data\n"
     "  - the paper's training loop with a no-op that emits zero-everything metrics\n"
     "Even a smoke run loads the REAL pretrained weights named in the paper "
     "(via `transformers.AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-3B-Instruct')` "
@@ -507,8 +507,8 @@ _PER_MODEL_METRICS_BLOCK_BASE = (
 def _per_model_metrics_block(arxiv_id: str | None = None) -> str:
     """Build the per-model metrics prompt block.
 
-    For multi-env papers (SDAR — alfworld + search_qa + webshop), the
-    paper YAML's ``datasets:`` block declares >1 environment.
+    For multi-env papers (e.g. an RL paper with multiple environments),
+    the paper YAML's ``datasets:`` block declares >1 environment.
     ``load_paper_invariants`` exposes that as ``inv.multi_env``. When
     set, we append a nested ``per_model[<model>].per_dataset[<env>]``
     requirement + name the exact environment IDs the rubric grader
@@ -984,6 +984,8 @@ _EAGER_METRICS_BLOCK = (
 _DATASET_SETUP_BLOCK = (
     "\n\nDATASET SETUP — required patterns by environment family:\n"
     "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
+    "\n"
+    "EXAMPLES — apply ONLY when the listed environment/dataset is named verbatim in YOUR paper:\n"
     "\n"
     "ALFWorld:\n"
     "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
@@ -1476,8 +1478,40 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
     table = "\n".join(rows)
     supp = ("\n\nNotes per dataset:\n" + "\n".join(notes_lines)) if notes_lines else ""
 
+    # PR-ξ: prepend a hard import contract for STRICT-severity recipes whose
+    # helper has already been written to _reprolab_curated.py. This makes the
+    # contract structurally unavoidable rather than advisory-text-only.
+    strict_contracts: list[str] = []
+    for r in data_recipes:
+        if (r.get("severity") == "strict"
+                and r.get("helper_name")
+                and r.get("helper_body")):
+            hn = str(r["helper_name"])
+            banned = [str(b) for b in (r.get("banned_literals") or ())]
+            strict_contracts.append(
+                f"  Dataset: {r.get('canonical_name', hn)}\n"
+                f"    In train.py you MUST write:\n"
+                f"        from _reprolab_curated import {hn}\n"
+                f"    and CALL {hn}(...) to obtain the dataset. "
+                f"Do NOT inline the loader body.\n"
+                f"    The helper is already written at code_dir/_reprolab_curated.py.\n"
+                + (
+                    f"    Banned literal patterns (will fail postflight if found in train.py):\n"
+                    + "".join(f"        {b}\n" for b in banned)
+                    if banned else ""
+                )
+            )
+
+    strict_block = ""
+    if strict_contracts:
+        strict_block = (
+            "\n\nCURATED LOADER CONTRACT (STRICT) — applies to these datasets:\n"
+            + "\n".join(strict_contracts)
+        )
+
     return (
-        "\n\nDATASET LOADING — use these canonical loaders verbatim:\n\n"
+        strict_block
+        + "\n\nDATASET LOADING — use these canonical loaders verbatim:\n\n"
         + header + "\n"
         + table + "\n\n"
         "Use the import lines and loader expressions in the table EXACTLY. "
@@ -1574,7 +1608,7 @@ def _compute_constraint_guidance(
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
-    # Lane AA — per-model block adapts to multi-env papers (SDAR-style)
+    # Lane AA — per-model block adapts to multi-env papers
     # by nesting per_dataset under each model. Arxiv id drives the lookup.
     guidance += _per_model_metrics_block(arxiv_id=arxiv_id)
     # Lane Q — minimize-compute substitution rules + scope.declared_reductions
@@ -1720,13 +1754,6 @@ async def run_with_sdk(
     code_dir.mkdir(parents=True, exist_ok=True)
     _copy_source_pdf_to_code_root(Path(runs_root), project_id, code_dir)
 
-    context = {
-        "paper_claim_map": paper_claim_map.model_dump(),
-        "environment_spec": environment_spec.model_dump(),
-        "reproduction_contract": reproduction_contract.model_dump() if reproduction_contract else {},
-        "artifact_index": artifact_index or {},
-    }
-
     # P0: prefer the explicit arxiv_id (threaded from RunContext.arxiv_id, which
     # was resolved from artifact_index.json / demo_status.json by run_pipeline_rlm)
     # over the fallback regex.  The regex is kept as a fallback for legacy
@@ -1736,6 +1763,34 @@ async def run_with_sdk(
     # artifacts so direct callers of run_with_sdk without a RunContext still get
     # the override (belt-and-suspenders; the primary path is ctx.arxiv_id → kwarg).
     _resolved_arxiv_id = arxiv_id or _extract_arxiv_id(project_id) or _derive_arxiv_id_from_disk(project_dir)
+
+    # λ: extract data_recipes from the reproduction_contract when not explicitly
+    # passed. plan_reproduction populates this via dataset_recipes.find_recipes_in_text.
+    # Resolved early (before knowledge channel) so _effective_data_recipes is
+    # available for both curated-helper generation and the guidance block.
+    _effective_data_recipes: list[dict] | None = data_recipes
+    if _effective_data_recipes is None and reproduction_contract is not None:
+        _raw_dr = getattr(reproduction_contract, "data_recipes", None) or []
+        _effective_data_recipes = [
+            (r.model_dump() if hasattr(r, "model_dump") else dict(r))
+            for r in _raw_dr
+            if r is not None
+        ] or None
+
+    # PR-ξ γ: knowledge channel — write _reprolab_curated.py + manifest before
+    # the sub-agent is invoked. Facts are derived from the resolved data_recipes
+    # so the channel is independent of whether plan_reproduction succeeded.
+    from backend.agents import baseline_knowledge as _bk
+    _kc_facts = _bk.from_recipes(_effective_data_recipes or [])
+    _kc_manifest = _bk.write_curated_artifacts(code_dir, _kc_facts)
+
+    context = {
+        "paper_claim_map": paper_claim_map.model_dump(),
+        "environment_spec": environment_spec.model_dump(),
+        "reproduction_contract": reproduction_contract.model_dump() if reproduction_contract else {},
+        "artifact_index": artifact_index or {},
+    }
+
     # θ: extract metrics_shape from the reproduction_contract when not explicitly
     # passed. This path handles calls where the contract is available but the
     # caller hasn't extracted the shape separately (e.g. implement_baseline in
@@ -1748,17 +1803,6 @@ async def run_with_sdk(
             (mp.model_dump() if hasattr(mp, "model_dump") else dict(mp))
             for mp in _raw
             if mp is not None
-        ] or None
-
-    # λ: extract data_recipes from the reproduction_contract when not explicitly
-    # passed. plan_reproduction populates this via dataset_recipes.find_recipes_in_text.
-    _effective_data_recipes: list[dict] | None = data_recipes
-    if _effective_data_recipes is None and reproduction_contract is not None:
-        _raw_dr = getattr(reproduction_contract, "data_recipes", None) or []
-        _effective_data_recipes = [
-            (r.model_dump() if hasattr(r, "model_dump") else dict(r))
-            for r in _raw_dr
-            if r is not None
         ] or None
 
     sandbox_guidance = _compute_constraint_guidance(
@@ -1803,6 +1847,34 @@ async def run_with_sdk(
         provider=provider,
         runtime=runtime,
     )
+
+    # PR-ξ γ: post-emit knowledge-channel verification. After the sub-agent has
+    # written train.py, check that curated constraints are satisfied. Strict
+    # violations block execution and return a repairable result so patch-mode
+    # can fix the exact import/use gap on the next iteration.
+    _train_py = code_dir / "train.py"
+    if _train_py.exists() and _kc_manifest.get("facts"):
+        _kc_violations = _bk.verify_emitted_code(_train_py, _kc_manifest, code_dir)
+        _kc_strict = [v for v in _kc_violations if v.severity == _bk.Severity.STRICT]
+        if _kc_strict:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "baseline_implementation[%s]: %d strict knowledge-channel violation(s) — "
+                "returning repairable result; patch-mode will fix on next iteration",
+                project_id, len(_kc_strict),
+            )
+            return BaselineResult(
+                mode="implement_from_paper",
+                code_path=str(code_dir),
+                commands_to_run=["python train.py"],
+                diff_summary=(
+                    f"knowledge_channel: {len(_kc_strict)} strict violation(s); "
+                    f"repair required before execution"
+                ),
+                assumptions_applied=[
+                    f"kc_violation:{v.kind}:{v.fact_id}" for v in _kc_strict
+                ],
+            )
 
     # Read result from disk or parse from output
     result_path = project_dir / "baseline_result.json"
