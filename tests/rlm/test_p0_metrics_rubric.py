@@ -82,7 +82,8 @@ def test_execute_in_sandbox_reads_metrics_from_code_root(
     # bare success/logs dict (metrics reading happens AFTER the finally block
     # in the real implementation, so we replicate that by letting run_experiment
     # call the real code path against a fake sandbox coroutine).
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None, gpu_plan=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
         # Simulate the sandbox: commands ran, no logs, no metrics from container.
         # The real code then reads metrics.json from code_path on the host.
         import json as _json
@@ -134,7 +135,8 @@ def test_execute_in_sandbox_fails_soft_on_malformed_metrics_json(
         "{ this is not valid json !!!", encoding="utf-8"
     )
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None, gpu_plan=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
         import json as _json
         from pathlib import Path as _Path
         from backend.agents.rlm.primitives import METRICS_FILENAME as _MF

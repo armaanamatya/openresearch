@@ -13,18 +13,23 @@ from backend.agents.schemas import GpuPlan, GpuRequirements
 
 
 @pytest.fixture
-def ctx(tmp_path: Path):
+def ctx(tmp_path: Path, monkeypatch):
+    from backend.config import get_settings
+
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_ENABLED", "true")
+    get_settings(_force_reload=True)
     runs_root = tmp_path / "runs"
     project_dir = runs_root / "proj1"
     project_dir.mkdir(parents=True)
     (project_dir / "rlm_state").mkdir()
-    return SimpleNamespace(
+    yield SimpleNamespace(
         project_id="proj1",
         runs_root=runs_root,
         project_dir=project_dir,
         run_budget=None,
         sandbox_mode="runpod",
     )
+    get_settings(_force_reload=True)
 
 
 def test_returns_gpu_plan_dict_from_typed_input(ctx):

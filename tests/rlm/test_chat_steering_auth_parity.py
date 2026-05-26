@@ -207,7 +207,8 @@ def test_check_user_messages_works_without_any_llm_credentials(monkeypatch, make
 
     # --- respond_to_user: file write, no LLM ---
     reply = respond_to_user("Understood, pivoting to data section.", ctx=ctx)
-    assert reply == {"sent": True}, f"Expected sent=True, got {reply!r}"
+    assert reply["sent"] is True, f"Expected sent=True, got {reply!r}"
+    assert reply["outcome"] == "ok"
 
     lines = msgs_path.read_text().splitlines()
     # The original user message + the assistant reply.

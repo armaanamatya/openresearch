@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -30,6 +31,81 @@ logger = logging.getLogger(__name__)
 # Module-level alias so tests can monkeypatch RuntimeAppService without
 # requiring a live Docker daemon.
 from backend.services.runtime.service import RuntimeAppService
+
+
+class PrimitiveOutcome(str, Enum):
+    ok = "ok"
+    partial_evidence = "partial_evidence"
+    repairable = "repairable"
+    retryable = "retryable"
+    fatal = "fatal"
+
+
+_RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
+    "code_bug",
+    "contract_violation",
+    # Existing classifier labels that require agent-side repair.
+    "missing_module",
+    "torch_redundancy",
+    "cuda_oom",
+    "requirements_not_found",
+    "missing_dataset",
+    "exec_timeout",
+    "watchdog_killed",
+    "preflight_blocked",
+    "permission_denied",
+    "syntax_error",
+    "scope_shape_violation",
+    "unknown",
+}
+_RUN_EXPERIMENT_RETRYABLE_FAILURES = {
+    "transient",
+    "ssh_drop",
+    "pod_unavailable",
+    # Existing classifier labels for backend/network transients.
+    "network_flake",
+    "runpod_capacity",
+    "runpod_transient_500",
+    "runpod_ssh_timeout",
+}
+_RUN_EXPERIMENT_FATAL_FAILURES = {
+    "balance_too_low",
+    "auth_failed",
+    "quota_exceeded",
+    # Existing classifier label for the same fatal funding state.
+    "runpod_balance_too_low",
+}
+
+
+def _with_outcome(result: dict, outcome: PrimitiveOutcome) -> dict:
+    """Attach primitive typestate to a result dict without disturbing payload shape."""
+    result.setdefault("outcome", outcome.value)
+    return result
+
+
+def _failure_class_key(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
+    """Map a run_experiment result dict to its primitive typestate."""
+    if result.get("success") is True:
+        return PrimitiveOutcome.ok
+
+    metrics = result.get("metrics")
+    if isinstance(metrics, dict) and bool(metrics):
+        return PrimitiveOutcome.partial_evidence
+
+    failure_class = _failure_class_key(result.get("failure_class"))
+    if not failure_class:
+        return PrimitiveOutcome.repairable
+    if failure_class in _RUN_EXPERIMENT_REPAIRABLE_FAILURES:
+        return PrimitiveOutcome.repairable
+    if failure_class in _RUN_EXPERIMENT_RETRYABLE_FAILURES:
+        return PrimitiveOutcome.retryable
+    if failure_class in _RUN_EXPERIMENT_FATAL_FAILURES:
+        return PrimitiveOutcome.fatal
+    return PrimitiveOutcome.repairable
 
 
 def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
@@ -202,7 +278,7 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
     _payload = {"text_slice": text_slice}
     _cached = _cache.maybe_get(ctx.project_dir, "understand_section", payload=_payload)
     if _cached is not None:
-        return _cached
+        return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     from backend.agents.paper_understanding import (
         _extract_datasets, _extract_metrics, _extract_training_recipe,
@@ -229,6 +305,7 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
             "slice_chars": len(text_slice),
             "threshold": _HINT_THRESHOLD,
         }
+    result = _with_outcome(result, PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "understand_section", payload=_payload, result=result)
     return result
 
@@ -250,7 +327,7 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     _payload = {"text_slice": text_slice}
     _cached = _cache.maybe_get(ctx.project_dir, "extract_hyperparameters", payload=_payload)
     if _cached is not None:
-        return _cached
+        return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     from backend.agents.paper_understanding import _extract_training_recipe
     result = _extract_training_recipe({"_": text_slice}).model_dump()
@@ -267,6 +344,7 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
             "slice_chars": len(text_slice),
             "threshold": _HINT_THRESHOLD,
         }
+    result = _with_outcome(result, PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "extract_hyperparameters", payload=_payload, result=result)
     return result
 
@@ -288,13 +366,13 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     string or None), return an error dict rather than raising.
     """
     if not isinstance(method_spec, dict):
-        return {
+        return _with_outcome({
             "success": False,
             "error": (
                 f"detect_environment: method_spec must be a dict, "
                 f"got {type(method_spec).__name__!r}"
             ),
-        }
+        }, PrimitiveOutcome.repairable)
 
     from backend.agents.rlm import primitive_cache as _cache
     _payload = {
@@ -304,7 +382,7 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     }
     _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
     if _cached is not None:
-        return _cached
+        return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     from backend.agents.environment_detective import run_offline
     from backend.agents.schemas import PaperClaimMap
@@ -318,7 +396,7 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"),
         gpu_mode=getattr(ctx, "gpu_mode", None),
     )
-    result = spec.model_dump()
+    result = _with_outcome(spec.model_dump(), PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)
     return result
 
@@ -394,7 +472,7 @@ def resolve_gpu_requirements(
     if cache_file.exists():
         try:
             cached = _json.loads(cache_file.read_text(encoding="utf-8"))
-            return cached
+            return _with_outcome(cached, PrimitiveOutcome.ok)
         except Exception:  # noqa: BLE001 — corrupt cache → recompute
             logger.warning("resolve_gpu_requirements: cache file unreadable, recomputing")
 
@@ -404,10 +482,13 @@ def resolve_gpu_requirements(
     elif isinstance(requirements, _Req):
         req = requirements
     else:
-        raise ValueError(
+        return _with_outcome({
+            "success": False,
+            "error": (
             f"resolve_gpu_requirements: requirements must be GpuRequirements or dict, "
             f"got {type(requirements).__name__}"
-        )
+            ),
+        }, PrimitiveOutcome.repairable)
 
     # ---- vram_override: per-run CLI override bypasses LLM estimate.
     vram_override = getattr(ctx, "vram_override", None)
@@ -433,7 +514,7 @@ def resolve_gpu_requirements(
     )
 
     # ---- Persist atomically.
-    payload = plan.model_dump(mode="json")
+    payload = _with_outcome(plan.model_dump(mode="json"), PrimitiveOutcome.ok)
     tmp = cache_file.with_suffix(".tmp")
     tmp.write_text(_json.dumps(payload, default=str), encoding="utf-8")
     tmp.replace(cache_file)
@@ -517,8 +598,12 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
 
     dockerfile = str(env_spec.get("dockerfile") or "").strip()
     if not dockerfile:
-        return {"ok": False, "image_tag": "", "error": "env_spec.dockerfile is empty",
-                "attempts": 0}
+        return _with_outcome({
+            "ok": False,
+            "image_tag": "",
+            "error": "env_spec.dockerfile is empty",
+            "attempts": 0,
+        }, PrimitiveOutcome.repairable)
 
     attempts, ok, tag, error = 0, False, "", ""
     try:
@@ -545,7 +630,12 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # entire rebuild and return immediately.  Re-checked per call so a
         # manual `docker rmi` between iterations forces a real rebuild (D5).
         if _image_exists(tag):
-            return {"ok": True, "image_tag": tag, "attempts": 0, "skipped": True}
+            return _with_outcome({
+                "ok": True,
+                "image_tag": tag,
+                "attempts": 0,
+                "skipped": True,
+            }, PrimitiveOutcome.ok)
 
         deadline_abs = time.monotonic() + aggregate_cap_s
         with tempfile.TemporaryDirectory() as tmp:
@@ -595,14 +685,31 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
                             break
             finally:
                 pool.shutdown(wait=False, cancel_futures=True)
-    except SandboxRuntimeError:
-        raise  # infrastructure failure — not a Dockerfile problem; propagate
+    except SandboxRuntimeError as exc:
+        # Infrastructure failures are not Dockerfile repair opportunities, but
+        # they must still be fail-soft so the REPL does not cascade through
+        # undefined variables after build_environment raises.
+        outcome = PrimitiveOutcome.retryable if getattr(exc, "retryable", False) else PrimitiveOutcome.fatal
+        return _with_outcome({
+            "ok": False,
+            "image_tag": "",
+            "error": f"build_environment: {type(exc).__name__}: {exc}",
+            "attempts": attempts,
+        }, outcome)
     except Exception as exc:  # noqa: BLE001 — fail-soft (D3): any other failure
-        return {"ok": False, "image_tag": "",
-                "error": f"{type(exc).__name__}: {exc}", "attempts": attempts}
+        return _with_outcome({
+            "ok": False,
+            "image_tag": "",
+            "error": f"{type(exc).__name__}: {exc}",
+            "attempts": attempts,
+        }, PrimitiveOutcome.repairable)
 
-    return {"ok": ok, "image_tag": tag if ok else "", "error": error,
-            "attempts": attempts}
+    return _with_outcome({
+        "ok": ok,
+        "image_tag": tag if ok else "",
+        "error": error,
+        "attempts": attempts,
+    }, PrimitiveOutcome.ok if ok else PrimitiveOutcome.repairable)
 
 
 def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -> dict:
@@ -637,7 +744,7 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     _payload = {"method_spec": method_spec, "env_spec": env_spec}
     _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
     if _cached is not None:
-        return _cached
+        return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     try:
         raw = ctx.llm_client.complete(system=_PLAN_REPRODUCTION_SYSTEM, user=user)
@@ -645,11 +752,14 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         if not any(k in data for k in ReproductionContract.model_fields):
             raise ValueError(
                 f"LLM response has no ReproductionContract fields: {list(data)}")
-        result = ReproductionContract(**data).model_dump()
+        result = _with_outcome(ReproductionContract(**data).model_dump(), PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
         return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
-        return {"success": False, "error": f"plan_reproduction: {type(exc).__name__}: {exc}"}
+        return _with_outcome({
+            "success": False,
+            "error": f"plan_reproduction: {type(exc).__name__}: {exc}",
+        }, PrimitiveOutcome.repairable)
 
 
 def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw):
@@ -736,7 +846,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             )
         elif isinstance(_value, dict):
             # Cached error dict (e.g. timeout) — return as-is.
-            return _value
+            return _with_outcome(_value, PrimitiveOutcome.repairable)
 
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
@@ -783,22 +893,30 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     try:
         future = pool.submit(asyncio.run, _run())
         import time as _time
+        deadline_abs = _time.monotonic() + timeout
         _stall_start: float | None = None
 
         while True:
+            remaining_timeout = deadline_abs - _time.monotonic()
+            if remaining_timeout <= 0:
+                _err = _with_outcome({
+                    "success": False,
+                    "error": f"implement_baseline: timed out after {timeout:.0f} s",
+                }, PrimitiveOutcome.repairable)
+                _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
+                return _err
             try:
-                result = future.result(timeout=_POLL_S)
+                result = future.result(timeout=max(0.1, min(_POLL_S, remaining_timeout)))
                 break  # Normal return
             except concurrent.futures.TimeoutError:
                 pass  # Check watchdog conditions below
 
             # Check overall timeout
-            elapsed = _timeout_for(ctx, timeout)
-            if elapsed <= 0:
-                _err = {
+            if deadline_abs - _time.monotonic() <= 0:
+                _err = _with_outcome({
                     "success": False,
                     "error": f"implement_baseline: timed out after {timeout:.0f} s",
-                }
+                }, PrimitiveOutcome.repairable)
                 _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
                 return _err
 
@@ -846,10 +964,10 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                     # Files still being written — reset stall timer
                     _stall_start = None
     except concurrent.futures.TimeoutError:
-        _err = {
+        _err = _with_outcome({
             "success": False,
             "error": f"implement_baseline: timed out after {timeout:.0f} s",
-        }
+        }, PrimitiveOutcome.repairable)
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
         return _err
     finally:
@@ -984,6 +1102,22 @@ async def _execute_in_sandbox(
     from backend.services.runtime.service import (
         CreateSandbox, DestroySandbox, ExecuteCommand,
     )
+
+    # Sandbox routing authority: callers must pass ctx.sandbox_mode into this
+    # argument; env_id is an image identifier only. If the model accidentally
+    # passes a backend name as env_id, ignore it for routing and keep using
+    # sandbox_mode.
+    _env_hint = str(env_id or "").strip().lower()
+    _mode_value = (
+        str(getattr(sandbox_mode, "value", sandbox_mode or "")).strip().lower()
+    )
+    if _env_hint in {"local", "docker", "runpod"} and _env_hint != _mode_value:
+        logger.warning(
+            "_execute_in_sandbox: env_id=%r looks like a backend hint; "
+            "ignoring it for sandbox routing and using sandbox_mode=%r",
+            env_id,
+            sandbox_mode,
+        )
 
     code_dir = Path(code_path)
     # Per-call artifact dir: deterministic per run_id so retries don't clobber.
@@ -1320,6 +1454,20 @@ def _persist_experiment_result(
     import json
     from datetime import datetime, timezone
 
+    # Auto root-cause: classify the failure shape from error+logs and surface
+    # the class + suggested fix on the event AND in the result dict (so the
+    # next iteration's repair_context can show the agent exactly what to fix
+    # instead of re-diagnosing an opaque traceback).
+    try:
+        from backend.agents.rlm.failure_classifier import classify_failure
+        _fclass, _fsuggest = classify_failure(result)
+    except Exception:  # noqa: BLE001 — observability never blocks
+        _fclass, _fsuggest = ("unknown", "")
+    if _fclass and _fclass != "ok":
+        result.setdefault("failure_class", _fclass)
+        result.setdefault("suggested_fix", _fsuggest)
+    _with_outcome(result, _classify_run_experiment_outcome(result))
+
     if not result.get("success"):
         logger.warning(
             "run_experiment failed: %s",
@@ -1345,18 +1493,6 @@ def _persist_experiment_result(
     # whether the agent forgot to write train.py, the container timed out, or
     # the eval lacked an API key.
     _logs_tail = (result.get("logs") or "")[-1500:]
-    # Auto root-cause: classify the failure shape from error+logs and surface
-    # the class + suggested fix on the event AND in the result dict (so the
-    # next iteration's repair_context can show the agent exactly what to fix
-    # instead of re-diagnosing an opaque traceback).
-    try:
-        from backend.agents.rlm.failure_classifier import classify_failure
-        _fclass, _fsuggest = classify_failure(result)
-    except Exception:  # noqa: BLE001 — observability never blocks
-        _fclass, _fsuggest = ("unknown", "")
-    if _fclass and _fclass != "ok":
-        result.setdefault("failure_class", _fclass)
-        result.setdefault("suggested_fix", _fsuggest)
     _emit_dashboard_event(ctx, event_type="experiment_completed", payload={
         "success": result.get("success", False),
         "metrics": result.get("metrics", {}),
@@ -1370,6 +1506,7 @@ def _persist_experiment_result(
         # Auto-classified root cause + suggested fix (Lane K).
         "failure_class": result.get("failure_class") or None,
         "suggested_fix": result.get("suggested_fix") or None,
+        "outcome": result.get("outcome") or None,
     })
     return result
 
@@ -1930,10 +2067,10 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     Fail-soft (A2-H3 / D3 pattern): any exception returns an error dict.
     """
     if not rubric or not isinstance(rubric, dict):
-        return {
+        return _with_outcome({
             "success": False,
             "error": "verify_against_rubric: rubric must be a non-empty dict",
-        }
+        }, PrimitiveOutcome.repairable)
 
     # Cache key: rubric + metrics + a content hash of the code dir + the
     # paper's metrics.json bytes if present. The leaf scorer reads code +
@@ -1968,7 +2105,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     }
     _cached = _cache.maybe_get(ctx.project_dir, "verify_against_rubric", payload=_payload)
     if _cached is not None:
-        return _cached
+        return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
@@ -2004,13 +2141,13 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         graded = int(scored.get("graded", 0) or 0)
         leaf_count = int(scored.get("leaf_count", 0) or 0)
         if leaf_count > 0 and graded == 0 and not scored.get("degraded"):
-            return {
+            return _with_outcome({
                 "success": False,
                 "error": (
                     f"verify_against_rubric: leaf scorer graded 0/{leaf_count} leaves — "
                     f"LLM grader output was unparseable on every batch; no honest score available"
                 ),
-            }
+            }, PrimitiveOutcome.repairable)
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
         meets_target = overall_score >= target
@@ -2091,13 +2228,14 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 }
         except Exception:  # noqa: BLE001 — scope adjustment is augmenting, not mandatory
             logger.exception("verify_against_rubric: scope_adjusted computation failed")
+        result = _with_outcome(result, PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)
         return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
-        return {
+        return _with_outcome({
             "success": False,
             "error": f"verify_against_rubric: {type(exc).__name__}: {exc}",
-        }
+        }, PrimitiveOutcome.repairable)
 
 
 def propose_improvements(current_results: dict, rubric_scores: dict,
@@ -2135,10 +2273,10 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
         raw = ctx.llm_client.complete(system=IMPROVEMENT_ORCHESTRATOR_PROMPT, user=user)
         items = _extract_json(raw).get("hypotheses", [])
     except Exception as exc:  # noqa: BLE001 — fail-soft (D3 / T11 / review I3)
-        return [{
+        return [_with_outcome({
             "success": False,
             "error": f"propose_improvements: {type(exc).__name__}: {exc}",
-        }]
+        }, PrimitiveOutcome.repairable)]
 
     out: list[dict] = []
     for item in items:
@@ -2246,13 +2384,10 @@ def record_candidate_outcome(
     if cid is None or cid_str.strip() in {"", "None", "null"}:
         return {
             "success": False,
-            "error": (
-                f"record_candidate_outcome requires a real candidate_id (got {cid!r}). "
-                f"Use the 'id' field from the most recent propose_improvements result "
-                f"(e.g. 'path_1', 'path_2')."
-            ),
+            "outcome": PrimitiveOutcome.repairable.value,
+            "error": "candidate_id missing — pass the most recent proposed candidate",
             "candidate_id": cid_str,
-            "outcome": str(outcome) if outcome is not None else "",
+            "candidate_outcome": str(outcome) if outcome is not None else "",
             "parent_id": parent_id,
         }
     # 2026-05-23: canonicalize outcome instead of strict-reject. The model
@@ -2356,7 +2491,10 @@ def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
     from datetime import datetime, timezone
 
     if not message or not str(message).strip():
-        return {"sent": False, "error": "respond_to_user: message must be non-empty"}
+        return _with_outcome({
+            "sent": False,
+            "error": "respond_to_user: message must be non-empty",
+        }, PrimitiveOutcome.repairable)
 
     ts = datetime.now(timezone.utc).isoformat()
     assistant_entry = {"role": "assistant", "content": message, "ts": ts}
@@ -2376,9 +2514,12 @@ def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
         with dashboard_path.open("a", encoding="utf-8") as fh:
             fh.write(_json.dumps(dashboard_entry, default=str) + "\n")
     except OSError as exc:
-        return {"sent": False, "error": f"respond_to_user: IO error: {exc}"}
+        return _with_outcome({
+            "sent": False,
+            "error": f"respond_to_user: IO error: {exc}",
+        }, PrimitiveOutcome.repairable)
 
-    return {"sent": True}
+    return _with_outcome({"sent": True}, PrimitiveOutcome.ok)
 
 
 # Module-level monotonic counter for heartbeat events (thread-safe via GIL for
@@ -2418,9 +2559,14 @@ def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
             "tool": str(parsed.get("tool", "")),
             "reason": str(parsed.get("reason", "")),
             "alternatives": [str(a) for a in (parsed.get("alternatives") or [])],
+            "outcome": PrimitiveOutcome.ok.value,
         }
     except Exception as exc:  # noqa: BLE001 — advisory; never break the root run
-        return {"tool": "", "reason": f"recommend_next_tool failed: {type(exc).__name__}", "alternatives": []}
+        return _with_outcome({
+            "tool": "",
+            "reason": f"recommend_next_tool failed: {type(exc).__name__}",
+            "alternatives": [],
+        }, PrimitiveOutcome.repairable)
 
 
 def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
@@ -2464,7 +2610,7 @@ def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
     except Exception:  # noqa: BLE001 — observability must never interrupt the run
         logger.exception("heartbeat: failed to write iteration_heartbeat event")
 
-    return {"alive": True, "counter": counter, "note": note}
+    return _with_outcome({"alive": True, "counter": counter, "note": note}, PrimitiveOutcome.ok)
 
 
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {

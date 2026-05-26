@@ -45,7 +45,7 @@ def test_build_environment_cap_exhausted_returns_fail_soft(make_context, tmp_pat
     assert result["attempts"] >= 1
 
 
-def test_build_environment_propagates_sandbox_runtime_error(make_context, tmp_path, monkeypatch):
+def test_build_environment_maps_sandbox_runtime_error(make_context, tmp_path, monkeypatch):
     from backend.services.runtime.interface import RuntimeCauseKind, SandboxRuntimeError
 
     ctx = make_context(tmp_path)
@@ -54,8 +54,10 @@ def test_build_environment_propagates_sandbox_runtime_error(make_context, tmp_pa
         raise SandboxRuntimeError(RuntimeCauseKind.backend_unavailable, "daemon unreachable")
 
     monkeypatch.setattr(primitives, "_build_image", daemon_down)
-    with pytest.raises(SandboxRuntimeError):
-        build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+    result = build_environment({"dockerfile": "FROM python:3.11-slim\n"}, ctx=ctx)
+    assert result["ok"] is False
+    assert result["outcome"] == "fatal"
+    assert "daemon unreachable" in result["error"]
 
 
 def test_build_environment_distinct_dockerfiles_get_distinct_tags(

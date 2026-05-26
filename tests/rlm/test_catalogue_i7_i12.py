@@ -128,7 +128,8 @@ def test_run_experiment_threads_sandbox_mode_to_execute_in_sandbox(
 
     captured = {}
 
-    async def fake_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None, gpu_plan=None):
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
         captured["sandbox_mode"] = sandbox_mode
         return {"metrics": {}, "success": True, "logs": ""}
 
@@ -166,7 +167,8 @@ def test_run_experiment_does_not_block_on_shutdown_when_worker_wedges(
     # An event the fake worker blocks on indefinitely.
     unblock = threading.Event()
 
-    async def wedging_exec(code_path, env_id, commands, *, project_id, run_id, sandbox_mode=None, run_budget=None, gpu_plan=None):
+    async def wedging_exec(code_path, env_id, commands, *, project_id, run_id,
+                           sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
         # Block until the test releases us — simulates a wedged Docker call.
         unblock.wait()
         return {"metrics": {}, "success": True, "logs": ""}

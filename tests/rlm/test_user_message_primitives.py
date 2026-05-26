@@ -111,7 +111,8 @@ class TestRespondToUser:
     def test_returns_sent_true(self, make_context, tmp_path):
         ctx = make_context(tmp_path)
         result = respond_to_user("Here is my reply.", ctx=ctx)
-        assert result == {"sent": True}
+        assert result["sent"] is True
+        assert result["outcome"] == "ok"
 
     def test_appends_to_user_messages_jsonl(self, make_context, tmp_path):
         ctx = make_context(tmp_path)

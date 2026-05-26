@@ -493,7 +493,7 @@ def _write_demo_status(
     project_dir: Path,
     status: str,
     *,
-    error: str | None = None,
+    error: Any | None = None,
     primitive_provider: str = "real",  # T21 / review I8
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
@@ -536,6 +536,184 @@ def _write_demo_status(
         os.replace(tmp, path)
     except Exception:  # noqa: BLE001 — status is best-effort; never crash the run
         logger.exception("run_pipeline_rlm: could not write demo_status.json")
+
+
+class _FatalPrimitiveAbort(RuntimeError):
+    """Controlled abort when a primitive reports a non-recoverable backend state."""
+
+    def __init__(self, *, primitive_name: str, result: dict) -> None:
+        super().__init__(str(result.get("error") or "fatal primitive outcome"))
+        self.primitive_name = primitive_name
+        self.result = result
+
+
+def _outcome_value(value: object) -> str:
+    return str(getattr(value, "value", value or ""))
+
+
+def _record_last_primitive_result_tools(custom_tools: dict, ctx: RunContext) -> dict:
+    """Wrap RLM tools so run.py can gate on the last primitive outcome.
+
+    This sits outside binding.py to keep PR-alpha's fatal policy local to the
+    orchestrator. Tool behavior is otherwise unchanged.
+    """
+    wrapped_tools: dict = {}
+
+    def _wrap_tool(name: str, tool: Any) -> Any:
+        def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = tool(*args, **kwargs)
+            if isinstance(result, dict) and "outcome" in result:
+                setattr(ctx, "_last_primitive_name", name)
+                setattr(ctx, "_last_primitive_result", result)
+            return result
+
+        _wrapped.__name__ = getattr(tool, "__name__", name)
+        return _wrapped
+
+    for name, entry in custom_tools.items():
+        if isinstance(entry, dict) and callable(entry.get("tool")):
+            wrapped_tools[name] = {**entry, "tool": _wrap_tool(name, entry["tool"])}
+        else:
+            wrapped_tools[name] = entry
+    return wrapped_tools
+
+
+def _fatal_primitive_result(ctx: RunContext | None) -> tuple[str, dict] | None:
+    if ctx is None:
+        return None
+    result = getattr(ctx, "_last_primitive_result", None)
+    if not isinstance(result, dict):
+        return None
+    if _outcome_value(result.get("outcome")) != "fatal":
+        return None
+    return (str(getattr(ctx, "_last_primitive_name", "unknown")), result)
+
+
+class _FatalBackendGateLogger(ReproLabRLMLogger):
+    """Logger hook that aborts before RLM appends fatal REPL output to history."""
+
+    def log(self, iteration: Any) -> None:
+        super().log(iteration)
+        fatal = _fatal_primitive_result(getattr(self, "_ctx", None))
+        if fatal is not None:
+            primitive_name, result = fatal
+            raise _FatalPrimitiveAbort(
+                primitive_name=primitive_name,
+                result=result,
+            )
+
+
+def _fatal_error_payload(abort: _FatalPrimitiveAbort) -> dict[str, Any]:
+    result = abort.result
+    metrics = result.get("metrics")
+    return {
+        "primitive": abort.primitive_name,
+        "outcome": "fatal",
+        "error": result.get("error") or "fatal primitive outcome",
+        "failure_class": result.get("failure_class"),
+        "suggested_fix": result.get("suggested_fix"),
+        "metrics_present": isinstance(metrics, dict) and bool(metrics),
+    }
+
+
+def _partial_evidence_from_experiment_runs(project_dir: Path) -> list[dict[str, Any]]:
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return []
+    evidence: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            metrics = entry.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                evidence.append({
+                    "timestamp": entry.get("timestamp"),
+                    "success": entry.get("success"),
+                    "metrics": metrics,
+                    "failure_class": entry.get("failure_class"),
+                    "model_id": entry.get("model_id"),
+                    "eval_env": entry.get("eval_env"),
+                })
+    except OSError:
+        return []
+    return evidence
+
+
+def _finalize_fatal_primitive_abort(
+    *,
+    abort: _FatalPrimitiveAbort,
+    ctx: RunContext,
+    iterations: int,
+    project_dir: Path,
+    emit: Any,
+    tools_label: str = "real",
+) -> RLMRunResult:
+    error_payload = _fatal_error_payload(abort)
+    try:
+        emit({
+            "event": "run_fatal",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "iteration": iterations,
+            "error": error_payload,
+        })
+    except Exception:  # noqa: BLE001 — finalization should continue
+        logger.exception("run_pipeline_rlm: could not emit run_fatal event")
+
+    primitive_provider = "stub" if "stub" in tools_label.lower() else "real"
+    _write_demo_status(
+        project_dir,
+        "failed",
+        error=error_payload,
+        primitive_provider=primitive_provider,
+    )
+
+    evidence = _partial_evidence_from_experiment_runs(project_dir)
+    baseline_metrics: dict[str, Any] = {}
+    if len(evidence) == 1:
+        baseline_metrics = evidence[0]["metrics"]
+    elif evidence:
+        baseline_metrics = {"partial_experiment_runs": evidence}
+    report = RLMFinalReport(
+        verdict="partial" if evidence else "failed",
+        reproduction_summary=(
+            "The run stopped at an orchestrator fatal-backend gate: "
+            f"{error_payload['error']}"
+        ),
+        baseline_metrics=baseline_metrics,
+        iterations=iterations,
+        primitive_provider=primitive_provider,
+        degraded=True,
+        mode="rlm",
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    json_path, _md_path = write_final_report_rlm(report, project_dir)
+
+    try:
+        emit(
+            build_run_complete_event(
+                status="failed",
+                iterations=iterations,
+                rubric_score=None,
+                cost_usd=None,
+                final_report_path=str(json_path),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("run_pipeline_rlm: could not emit fatal run_complete event")
+
+    return RLMRunResult(
+        project_id=ctx.project_id,
+        status="failed",
+        iterations=iterations,
+        rubric_score=None,
+        cost_usd=None,
+        final_report_path=str(json_path),
+    )
 
 
 def _arm_watchdog(
@@ -777,6 +955,7 @@ async def run_pipeline_rlm(
 
     # 5. Primitives — the real binding or the stub provider.
     custom_tools, tools_label = _resolve_custom_tools(ctx)
+    custom_tools = _record_last_primitive_result_tools(custom_tools, ctx)
     logger.info(
         "run_pipeline_rlm: project=%s root=%s primitives=%s",
         project_id,
@@ -869,7 +1048,7 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         sentinels=corpus_sentinels,
     )
-    rlm_logger = ReproLabRLMLogger(
+    rlm_logger = _FatalBackendGateLogger(
         emit=emit,
         checkpointer=checkpointer,
         sentinels=corpus_sentinels,
@@ -988,9 +1167,18 @@ async def run_pipeline_rlm(
 
     result_obj: Any = None
     run_failed = False
+    fatal_abort: _FatalPrimitiveAbort | None = None
     try:
         with forced_iteration_policy(iteration_policy):
             result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
+    except _FatalPrimitiveAbort as exc:
+        fatal_abort = exc
+        run_failed = True
+        logger.error(
+            "run_pipeline_rlm: fatal primitive outcome from %s: %s",
+            exc.primitive_name,
+            exc.result.get("error") or exc.result,
+        )
     except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
         run_failed = True
         logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
@@ -1001,6 +1189,15 @@ async def run_pipeline_rlm(
 
     # 12. Build, write, and report (close event_store in finally — A4-9).
     try:
+        if fatal_abort is not None:
+            return _finalize_fatal_primitive_abort(
+                abort=fatal_abort,
+                ctx=ctx,
+                iterations=rlm_logger.iteration_count,
+                project_dir=project_dir,
+                emit=emit,
+                tools_label=tools_label,
+            )
         return _finalize(
             result_obj=result_obj,
             run_failed=run_failed,
