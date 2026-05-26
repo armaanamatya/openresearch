@@ -39,6 +39,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
+
+@dataclass
+class PolicyDecision:
+    """Return type for should_refuse_final_var — carries refuse flag + reason."""
+    refuse: bool
+    reason: str = ""
+
 logger = logging.getLogger(__name__)
 
 _PATCH_APPLIED = False
@@ -64,14 +71,15 @@ class ForcedIterationPolicy:
     # Callable that returns the latest (score, target, iteration_when_recorded)
     # tuple.  Reading via callable rather than direct field access lets tests
     # supply lambdas and lets production code read the live RunContext.
-    rubric_snapshot: Callable[[], tuple[float | None, float | None, int]]
+    # None disables rubric-snapshot checks (used in PR-μ simplified tests).
+    rubric_snapshot: Callable[[], tuple[float | None, float | None, int]] | None = None
     # Callable that returns the current root-loop iteration index (1-based).
-    current_iteration: Callable[[], int]
+    current_iteration: Callable[[], int] | None = None
     # Callable that returns remaining wall-clock seconds, or None if no budget.
-    remaining_s: Callable[[], float | None]
+    remaining_s: Callable[[], float | None] | None = None
     # Callable invoked when the policy refuses a FINAL_VAR.  Used to emit the
     # `run_warning` SSE event.  Receives a single `message: str` argument.
-    on_refusal: Callable[[str], None]
+    on_refusal: Callable[[str], None] | None = None
     # PR-ι.1 — hard per-run iteration cap.  When current_iteration() >=
     # max_rlm_iterations, FINAL_VAR is ACCEPTED unconditionally (the budget is
     # exhausted and we must not loop indefinitely).  None disables this check.
@@ -110,6 +118,17 @@ class ForcedIterationPolicy:
     # Internal: set by should_refuse() to signal which SSE event code the
     # interceptor should use when calling on_refusal / on_repair_refusal.
     _pending_refusal_code: str = field(default="forced_iteration", compare=False, repr=False)
+    # PR-μ Solution C — per-iteration run_experiment outcome sequence.
+    # Tracks outcomes of all run_experiment calls in the current root turn;
+    # reset by on_iteration_advance() at each turn boundary.
+    _experiments_in_iteration: list[str] = field(default_factory=list, compare=False, repr=False)
+    # PR-μ Solution C — simplified constructor fields for test ergonomics and
+    # future direct instantiation without callables.  Production code continues
+    # to use the callable-based fields (rubric_snapshot, current_iteration,
+    # remaining_s, on_refusal) which are still required.
+    target_score: float | None = field(default=None, compare=False, repr=False)
+    run_id: str | None = field(default=None, compare=False, repr=False)
+    ctx: Any | None = field(default=None, compare=False, repr=False)
 
     def record_repair_attempt(self, failure_class: str) -> None:
         """Record that run_experiment returned a repairable outcome.
@@ -144,7 +163,7 @@ class ForcedIterationPolicy:
         """
         # 0. Wall-clock floor — always honored. Better to ship partial than
         # to time out with nothing.
-        remaining = self.remaining_s()
+        remaining = self.remaining_s() if self.remaining_s is not None else None
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
             return (False, None)
 
@@ -159,7 +178,7 @@ class ForcedIterationPolicy:
             # still get the cap without re-constructing the policy object.
             _raw = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
             _max_iter = int(_raw) if _raw.isdigit() and int(_raw) > 0 else None
-        if _max_iter is not None and _max_iter > 0:
+        if _max_iter is not None and _max_iter > 0 and self.current_iteration is not None:
             cur = self.current_iteration()
             if cur >= _max_iter:
                 msg = (
@@ -169,10 +188,11 @@ class ForcedIterationPolicy:
                 )
                 logger.info("forced_iteration: iteration_budget_exceeded — %s", msg)
                 cb = self.on_budget_exceeded or self.on_refusal
-                try:
-                    cb(msg)
-                except Exception:  # noqa: BLE001
-                    logger.exception("forced_iteration: on_budget_exceeded callback raised")
+                if cb is not None:
+                    try:
+                        cb(msg)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("forced_iteration: on_budget_exceeded callback raised")
                 self._pending_refusal_code = "iteration_budget_exceeded"
                 return (False, None)
 
@@ -197,7 +217,10 @@ class ForcedIterationPolicy:
                 return self._build_repair_refusal(min_repair)
             return (False, None)
 
-        score, target, _score_iter = self.rubric_snapshot()
+        if self.rubric_snapshot is None:
+            score, target = None, None
+        else:
+            score, target, _score_iter = self.rubric_snapshot()
 
         # 2. No rubric data — only repair floor can refuse.
         if score is None or target is None:
@@ -210,7 +233,7 @@ class ForcedIterationPolicy:
             return (False, None)
 
         # 4. Below target AND haven't hit the iteration floor — refuse.
-        cur = self.current_iteration()
+        cur = self.current_iteration() if self.current_iteration is not None else 0
         if cur < self.min_iterations:
             msg = (
                 f"rubric overall_score={score:.3f} is below target_score={target:.3f} "
@@ -268,6 +291,45 @@ class ForcedIterationPolicy:
         )
         self._pending_refusal_code = "forced_repair_iteration"
         return (True, msg)
+
+    # PR-μ Solution C — per-iteration run_experiment tracking.
+
+    _FAILURE_OUTCOMES = frozenset({"repairable", "partial_evidence", "fatal"})
+
+    def record_run_experiment(self, outcome: str) -> None:
+        """Append an outcome to the current iteration's run_experiment sequence.
+        Called from the run_experiment primitive after computing its outcome."""
+        self._experiments_in_iteration.append(outcome)
+
+    def on_iteration_advance(self) -> None:
+        """Reset per-iteration trackers when a new REPL turn starts."""
+        self._experiments_in_iteration = []
+
+    def should_refuse_final_var(self, current_score: float, iteration_count: int) -> PolicyDecision:
+        """Check the two-experiment anti-pattern only; return a PolicyDecision.
+
+        Refuses when the same iteration contains >=2 run_experiment calls and
+        the LAST one returned a failure outcome (repairable/partial_evidence/
+        fatal). This is the 0.305 Adam pattern: root chained both attempts into
+        one turn and tried to FINAL_VAR without a fresh iteration.
+
+        This method is independent of the existing should_refuse() callable-based
+        checks; it is called from the FINAL_VAR interceptor BEFORE should_refuse().
+        """
+        if (
+            len(self._experiments_in_iteration) >= 2
+            and self._experiments_in_iteration[-1] in self._FAILURE_OUTCOMES
+        ):
+            last = self._experiments_in_iteration[-1]
+            return PolicyDecision(
+                refuse=True,
+                reason=(
+                    f"two run_experiment calls in this iteration; the latter returned "
+                    f"'{last}'. End this iteration so the failure surfaces as fresh "
+                    f"next-turn context."
+                ),
+            )
+        return PolicyDecision(refuse=False)
 
 
 # A run can stubbornly call FINAL_VAR every iteration.  Past this many
@@ -346,6 +408,31 @@ def apply_forced_iteration_patch() -> None:
             if policy is None:
                 return _original_final_var(self, variable_name)
 
+            # PR-μ Solution C: two-experiment-per-iteration anti-pattern check.
+            # Refuses BEFORE the existing should_refuse() so the message is precise.
+            current_score = 0.0
+            try:
+                snap = policy.rubric_snapshot() if policy.rubric_snapshot else None
+                if snap and len(snap) >= 1 and snap[0] is not None:
+                    current_score = float(snap[0])
+            except Exception:
+                pass
+            current_iter = 0
+            try:
+                current_iter = int(policy.current_iteration()) if policy.current_iteration else 0
+            except Exception:
+                pass
+            two_exp_decision = policy.should_refuse_final_var(current_score, current_iter)
+            if two_exp_decision.refuse:
+                policy.refusal_count += 1
+                if policy.on_refusal is not None:
+                    try:
+                        policy.on_refusal(two_exp_decision.reason)
+                    except Exception:
+                        logger.exception("forced_iteration: on_refusal (two-exp) raised")
+                policy.on_iteration_advance()
+                return _build_block_message(variable_name, two_exp_decision.reason)
+
             refuse, message = policy.should_refuse()
             if not refuse:
                 return _original_final_var(self, variable_name)
@@ -362,11 +449,15 @@ def apply_forced_iteration_patch() -> None:
                 _cb = policy.on_repair_refusal
             else:
                 _cb = policy.on_refusal
-            try:
-                _cb(message)
-            except Exception:  # noqa: BLE001 — defensive; emit failures must not block
-                logger.exception("forced_iteration: on_refusal callback raised")
+            if _cb is not None:
+                try:
+                    _cb(message)
+                except Exception:  # noqa: BLE001 — defensive; emit failures must not block
+                    logger.exception("forced_iteration: on_refusal callback raised")
 
+            # PR-μ Solution C: reset per-iteration trackers since the root will
+            # start a fresh iteration after the refusal block message lands.
+            policy.on_iteration_advance()
             return _build_block_message(variable_name, message)
 
         LocalREPL._final_var = _intercepted_final_var  # type: ignore[method-assign]
@@ -396,6 +487,7 @@ def forced_iteration_policy(policy: ForcedIterationPolicy) -> Iterator[None]:
 
 __all__ = [
     "ForcedIterationPolicy",
+    "PolicyDecision",
     "apply_forced_iteration_patch",
     "forced_iteration_policy",
     "_WALL_CLOCK_FLOOR_S",

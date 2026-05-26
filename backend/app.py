@@ -6,8 +6,10 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import re
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -387,6 +389,51 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
         raise HTTPException(status_code=401, detail="A valid demo access secret is required.")
 
 
+def _make_lifespan():
+    """Build the FastAPI lifespan context manager with pod-sweep startup + periodic sweep.
+
+    Fail-soft: startup sweep and scheduler errors are logged but never block
+    the backend from starting — the typical local-dev case has no RUNPOD key.
+    """
+    from backend.services.runtime.pod_sweep_scheduler import PodSweepScheduler
+    from backend.services.runtime.pod_sweeper import sweep_stale_pods
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup
+        _pod_sweep_enabled = (
+            bool(os.environ.get("REPROLAB_RUNPOD_API_KEY"))
+            and os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower()
+            not in {"false", "0", "no", "off"}
+        )
+        scheduler = PodSweepScheduler()
+        if _pod_sweep_enabled:
+            try:
+                max_age = int(os.environ.get("REPROLAB_POD_SWEEP_MAX_AGE_S", "7200"))
+                summary = await asyncio.to_thread(
+                    sweep_stale_pods,
+                    max_age_seconds=max_age,
+                    dry_run=False,
+                )
+                logger.info("startup pod sweep: %s", summary)
+            except Exception as exc:
+                logger.warning("startup pod sweep failed (non-fatal): %s", exc)
+        try:
+            await scheduler.start()
+        except Exception as exc:
+            logger.warning("pod_sweep_scheduler start failed (non-fatal): %s", exc)
+
+        yield
+
+        # Shutdown
+        try:
+            await scheduler.stop()
+        except Exception:
+            pass
+
+    return lifespan
+
+
 def create_app(*, run_service: Any | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     import os as _os
@@ -444,6 +491,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         title="ReproLab Agent",
         version=__version__,
         debug=settings.debug,
+        lifespan=_make_lifespan(),
     )
 
     @app.exception_handler(Exception)

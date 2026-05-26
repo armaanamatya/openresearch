@@ -502,8 +502,12 @@ async def _reproduce_inner(
     root_before = _snapshot_repo_root_entries()
     try:
         # Workaround B: thread-isolate the SDK call so its aclose race / WSL2
-        # SIGCHLD hang cannot deadlock our controller. See
-        # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+        # SIGCHLD hang cannot deadlock our controller. The shared chokepoint is
+        # now backend.agents.runtime.sdk_isolation.run_isolated, called inside
+        # collect_agent_text. _run_sdk_in_thread wraps it with a per-cluster
+        # wall-clock cap and the non-blocking ThreadPoolExecutor pattern.
+        # See docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md
+        # and PR-μ runtime-resilience design (2026-05-26).
         agent_text = await asyncio.to_thread(
             _run_sdk_in_thread,
             prompt,

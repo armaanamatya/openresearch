@@ -226,6 +226,27 @@ FORCED-ITERATION POLICY:
   observer bias and not accepted as terminal.
 """
 
+_ITERATION_DISCIPLINE = """\
+ITERATION DISCIPLINE — one run_experiment per iteration:
+  After every `run_experiment` call, *return from the current iteration*.
+  Do not write a follow-up propose_improvements -> implement_baseline ->
+  run_experiment -> verify_against_rubric chain in the same REPL turn -- let
+  the experiment result land as next-iteration context.
+
+  This is MANDATORY when run_experiment returned `outcome="repairable"`
+  or `outcome="partial_evidence"`. You will see a banner:
+
+    ╔═ ITERATION BOUNDARY RECOMMENDED ═╗
+    ║ run_experiment returned <outcome>; end this iteration ...
+    ╚══════════════════════════════════╝
+
+  Returning from the iteration immediately after this banner is the only
+  way the forced-iteration policy can correctly bound the retry loop and
+  cleanly surface the failure to the next root-turn's context window. The
+  policy will REFUSE FINAL_VAR if you call run_experiment twice in one
+  iteration with the latter failing -- pack one experiment per iteration.
+"""
+
 _DECOMPOSITION_EXAMPLE = """\
 ═══════════════════════════════════════════════════════════════
   IN-CONTEXT DECOMPOSITION EXAMPLE  (paper Fig 4a)
@@ -435,6 +456,7 @@ def build_system_prompt(
         _CHAT_STEERING_SECTION,
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
+        _ITERATION_DISCIPLINE,
         _DECOMPOSITION_EXAMPLE,
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
@@ -471,3 +493,14 @@ def build_system_prompt(
         f"missing [[REPROLAB_CUSTOM_TOOLS_SECTION]] markers."
     )
     return result
+
+
+# Module-level constant for smoke tests and static inspection.  Contains the
+# context-independent sections; build_system_prompt() produces the full prompt.
+SYSTEM_PROMPT: str = "\n".join([
+    _RLM_OPERATING_MODEL,
+    _CHAT_STEERING_SECTION,
+    _PRIMITIVES_SECTION,
+    _TERMINATION_CONTRACT,
+    _ITERATION_DISCIPLINE,
+])

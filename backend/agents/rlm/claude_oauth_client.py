@@ -38,7 +38,11 @@ class ClaudeOauthClient(BaseLM):
     Unlike ``AnthropicClient``, this client requires NO ``api_key`` — auth is
     resolved by ``claude-agent-sdk`` from either ``ANTHROPIC_API_KEY`` or the
     Claude Code subscription's OAuth login. Each completion is thread-isolated
-    via Workaround B to contain the SDK's known ``aclose()`` deadlock.
+    inside ``ClaudeLlmClient.complete()`` (rlm_query.py) via a dedicated
+    ThreadPoolExecutor, keeping the SDK's ``aclose()`` race in the worker
+    thread. Sub-agent calls via ``collect_agent_text`` additionally route
+    through ``backend.agents.runtime.sdk_isolation.run_isolated`` (PR-μ
+    Solution A).
 
     Constructor args:
         model_name: Claude model to use (default ``claude-sonnet-4-6``).

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
 import stat
@@ -193,6 +194,12 @@ class RunpodBackend(RuntimeBackend):
         # Record ownership BEFORE the SSH-wait try block so the cleanup
         # path's _delete_pod_quietly call is allowed to proceed.
         self._owned_pod_ids.add(pod_id)
+        # Layer 1 of the pod-cleanup defense: register an atexit hook so the
+        # pod is deleted even when the process crashes and the normal
+        # lifecycle's finally block never runs. The hook is idempotent — the
+        # normal destroy() path discards from _owned_pod_ids first, so atexit
+        # finds an empty set and returns immediately on clean exits.
+        self._register_atexit_cleanup(pod_id)
         try:
             return await self._finish_create(config, image, pod_id, pod)
         except Exception:
@@ -1091,6 +1098,57 @@ class RunpodBackend(RuntimeBackend):
             await self._delete_pod(pod_id)
         except Exception:
             return
+
+    def _delete_pod_sync(self, pod_id: str) -> None:
+        """Synchronous pod delete for atexit cleanup — uses httpx.Client.
+
+        Idempotent: silently no-ops when pod_id is not in _owned_pod_ids
+        (already deleted by the normal lifecycle, or never created).
+        """
+        if pod_id not in self._owned_pod_ids:
+            return
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            with httpx.Client(
+                base_url=self.api_base_url,
+                headers=headers,
+                timeout=30,
+            ) as client:
+                # Best-effort name-prefix check — skip if GET fails.
+                try:
+                    info = client.get(f"/pods/{pod_id}")
+                    info.raise_for_status()
+                    pod_name = str((info.json() or {}).get("name") or "")
+                    if pod_name and not pod_name.startswith("reprolab-"):
+                        _log.warning(
+                            "atexit cleanup: refusing to delete pod %r (name %r): "
+                            "name does not start with 'reprolab-'.",
+                            pod_id,
+                            pod_name,
+                        )
+                        return
+                except Exception:
+                    pass  # GET failure → proceed with delete (allowlist already passed)
+                response = client.delete(f"/pods/{pod_id}")
+                response.raise_for_status()
+                _log.info("atexit cleanup: deleted RunPod pod %s.", pod_id)
+        except Exception as exc:
+            _log.warning("atexit cleanup: failed to delete pod %s: %s", pod_id, exc)
+        finally:
+            self._owned_pod_ids.discard(pod_id)
+
+    def _cleanup_atexit(self, pod_id: str) -> None:
+        """atexit handler: terminate the pod if still alive. Idempotent."""
+        if pod_id not in self._owned_pod_ids:
+            return  # already torn down by the normal lifecycle
+        try:
+            self._delete_pod_sync(pod_id)
+        except Exception as exc:
+            _log.warning("atexit cleanup of pod %s failed: %s", pod_id, exc)
+
+    def _register_atexit_cleanup(self, pod_id: str) -> None:
+        """Register an atexit hook to ensure pod_id is deleted on process exit."""
+        atexit.register(self._cleanup_atexit, pod_id)
 
     def _public_key(self) -> str:
         if self.ssh_public_key:

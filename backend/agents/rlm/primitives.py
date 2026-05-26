@@ -131,6 +131,65 @@ def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
     return max(1.0, min(cap_s, remaining))
 
 
+EXPERIMENT_TIMEOUT_BY_MODE: dict[str, int] = {
+    "efficient": 7200,   # 2h per call
+    "max": 21600,        # 6h per call
+}
+_DEFAULT_EXPERIMENT_TIMEOUT_S: int = 7200  # fallback when execution_mode unknown
+
+
+def resolve_experiment_timeout_s(ctx) -> int:
+    """Resolve the wall-clock cap for a single run_experiment call.
+
+    Order:
+      1. REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var (if set and > 0)
+      2. EXPERIMENT_TIMEOUT_BY_MODE[ctx.execution_mode]
+      3. _DEFAULT_EXPERIMENT_TIMEOUT_S
+
+    Then clamp to ctx.remaining_s() only when finite — infinite remaining
+    means no --max-wall-clock was set; honor the mode default unchanged.
+    """
+    import math as _math
+    import os as _os
+
+    _env = _os.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", "").strip()
+    if _env:
+        try:
+            override = int(_env)
+            if override > 0:
+                resolved = override
+            else:
+                resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
+                    getattr(ctx, "execution_mode", None)
+                    or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+                    _DEFAULT_EXPERIMENT_TIMEOUT_S,
+                )
+        except ValueError:
+            resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
+                getattr(ctx, "execution_mode", None)
+                or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+                _DEFAULT_EXPERIMENT_TIMEOUT_S,
+            )
+    else:
+        resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
+            getattr(ctx, "execution_mode", None)
+            or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+            _DEFAULT_EXPERIMENT_TIMEOUT_S,
+        )
+
+    try:
+        remaining = ctx.remaining_s()
+    except Exception:
+        remaining = _math.inf
+    if remaining is None:
+        remaining = _math.inf
+    if _math.isfinite(remaining):
+        # Clamp to remaining budget; floor at 1 s so .result(timeout=0) is not
+        # passed accidentally (matches the _timeout_for convention).
+        resolved = max(1, min(resolved, int(remaining)))
+    return resolved
+
+
 def _extract_json(text: str) -> dict:
     """Pull the first JSON object out of an LLM response.
 
@@ -519,6 +578,31 @@ def _emit_dashboard_event(ctx: "RunContext", *, event_type: str, payload: dict) 
     must never interrupt a run.
     """
     _emit_dashboard_event_to_path(ctx.project_dir, event_type=event_type, payload=payload)
+
+
+def _emit_iteration_boundary_warning(run_dir, outcome: str, brief: str) -> None:
+    """Append an iteration_boundary_recommended run_warning to dashboard_events.jsonl.
+    Only fires for repairable/partial_evidence; pure file I/O; fail-soft."""
+    if outcome not in {"repairable", "partial_evidence"}:
+        return
+    try:
+        from pathlib import Path as _Path
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        events_path = _Path(run_dir) / "dashboard_events.jsonl"
+        event = {
+            "event": "run_warning",
+            "timestamp": _dt.now(_tz.utc).isoformat(),
+            "code": "iteration_boundary_recommended",
+            "message": (
+                f"run_experiment returned {outcome}; end this iteration so the "
+                f"failure surfaces as fresh next-turn context. ({brief})"
+            ),
+        }
+        with open(events_path, "a") as f:
+            f.write(_json.dumps(event) + "\n")
+    except Exception:  # noqa: BLE001 — observability is best-effort
+        pass
 
 
 def resolve_gpu_requirements(
@@ -1897,6 +1981,33 @@ def _persist_experiment_result(
         "suggested_fix": result.get("suggested_fix") or None,
         "outcome": result.get("outcome") or None,
     })
+    # PR-μ Solution C: emit iteration_boundary_recommended warning and feed the
+    # forced-iteration policy so it can refuse FINAL_VAR on the two-experiment
+    # anti-pattern (root chains two run_experiment calls in one REPL turn).
+    _outcome_str = result.get("outcome") or "ok"
+    _brief = str(result.get("error") or result.get("failure_class") or "")[:120]
+    _emit_iteration_boundary_warning(
+        run_dir=ctx.project_dir,
+        outcome=_outcome_str,
+        brief=_brief,
+    )
+    # Print REPL banner so the root model sees the recommendation in its output.
+    if _outcome_str in {"repairable", "partial_evidence"}:
+        print(
+            "╔═ ITERATION BOUNDARY RECOMMENDED ═╗\n"
+            f"║ run_experiment returned {_outcome_str}; end this iteration\n"
+            f"║ so the failure surfaces as fresh next-turn context.\n"
+            "╚══════════════════════════════════╝",
+            flush=True,
+        )
+    # Feed the forced-iteration policy's per-iteration experiment tracker.
+    # The policy object lives on ctx._forced_iteration_policy (set by run.py).
+    _fip = getattr(ctx, "_forced_iteration_policy", None)
+    if _fip is not None:
+        try:
+            _fip.record_run_experiment(_outcome_str)
+        except Exception:  # noqa: BLE001 — never crash for observability
+            pass
     return result
 
 
@@ -2164,30 +2275,11 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — pre-flight MUST NOT block on its own bug
         logger.exception("run_experiment: pre_flight_validator raised — skipping")
 
-    # 2026-05-23 (final): NO default per-primitive cap. Only honor explicit
-    # caps from either (a) REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var, or
-    # (b) the run-budget deadline via ctx.remaining_s() (the --max-wall-clock
-    # CLI flag). Without either set, run_experiment is unbounded — long-running
-    # experiments must use the env var or the --max-wall-clock budget if they
-    # need a cap. (User mandate 2026-05-23: "no cost cap until set".)
-    # The pattern that previously hung B2 — model writes CPU-bound train.py —
-    # is now addressed at the agent prompt layer (sandbox-aware
-    # implement_baseline picks --smoke-test for CPU sandboxes), not via cap.
-    _cap_s = None
-    try:
-        import os as _os_env
-        _override = _os_env.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S")
-        if _override:
-            _cap_s = float(_override)
-    except (TypeError, ValueError):
-        pass
-    if _cap_s is None:
-        # No explicit env-var cap: respect only the run-budget. ctx.remaining_s()
-        # returns None when no budget is set, which becomes timeout=None below
-        # → .result(timeout=None) waits indefinitely.
-        timeout = ctx.remaining_s()
-    else:
-        timeout = _timeout_for(ctx, _cap_s)
+    # PR-μ Solution B: mode-scaled wall-clock cap.
+    # resolve_experiment_timeout_s applies REPROLAB_RUN_EXPERIMENT_TIMEOUT_S >
+    # EXPERIMENT_TIMEOUT_BY_MODE[execution_mode] > _DEFAULT_EXPERIMENT_TIMEOUT_S,
+    # clamped to ctx.remaining_s() when finite.
+    timeout = resolve_experiment_timeout_s(ctx)
 
     # Load cached gpu_plan if present (written by resolve_gpu_requirements).
     from backend.agents.schemas import GpuPlan as _GpuPlan

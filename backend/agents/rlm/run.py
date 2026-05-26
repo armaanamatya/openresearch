@@ -1345,6 +1345,11 @@ async def run_pipeline_rlm(
     # can call policy.record_repair_attempt() when run_experiment returns
     # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
     repair_policy_holder.append(iteration_policy)
+    # PR-μ Solution C: expose the policy on ctx so run_experiment can feed
+    # per-iteration outcomes via record_run_experiment(); the consumer side
+    # at primitives.py:_emit_iteration_boundary_warning is fail-soft when
+    # ctx._forced_iteration_policy is None.
+    ctx._forced_iteration_policy = iteration_policy
 
     # PR-ι.3 — rolling cost surfacing.  A background daemon thread updates
     # demo_status.json::cost_summary every 30 s while the RLM loop runs.

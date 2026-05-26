@@ -8,6 +8,7 @@ from pathlib import Path
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.runtime.base import AgentRuntime, ProviderName, StreamText, StreamToolCall
 from backend.agents.runtime.factory import make_runtime
+from backend.agents.runtime.sdk_isolation import run_isolated
 from backend.agents.worker_reports import (
     append_worker_report_instruction,
     build_worker_report,
@@ -36,19 +37,28 @@ async def collect_agent_text(
     )
     collected: list[str] = []
     tool_calls: list[dict[str, object]] = []
-    try:
+
+    async def _do_sdk_call() -> tuple[list[str], list[dict[str, object]]]:
+        # Inner coroutine so run_isolated can thread-isolate the SDK call and
+        # contain its aclose race within the worker's event loop.
+        _inner_collected: list[str] = []
+        _inner_tool_calls: list[dict[str, object]] = []
         async for event in selected_runtime.run_agent(
             agent=spec,
             user_input=append_worker_report_instruction(prompt),
         ):
             if isinstance(event, StreamText):
-                collected.append(event.text)
+                _inner_collected.append(event.text)
             elif isinstance(event, StreamToolCall):
-                tool_calls.append({
+                _inner_tool_calls.append({
                     "tool_id": event.tool_id,
                     "tool_name": event.tool_name,
                     "tool_input": event.tool_input,
                 })
+        return _inner_collected, _inner_tool_calls
+
+    try:
+        collected, tool_calls = await run_isolated(_do_sdk_call())
     except Exception as exc:
         raw_text = "\n".join(collected)
         report = build_worker_report(
