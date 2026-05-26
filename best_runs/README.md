@@ -1,5 +1,11 @@
 # Best Runs
 
+**Start here:** [`EXECUTIVE_SUMMARY.md`](./EXECUTIVE_SUMMARY.md) — 2-minute read with headline numbers and what this means for MSFT.
+
+Then:
+- [`PAPER_CLAIMS_VS_REPRODUCED.md`](./PAPER_CLAIMS_VS_REPRODUCED.md) — side-by-side of every paper claim vs. agent-derived metric.
+- [`METHODOLOGY.md`](./METHODOLOGY.md) — how the agent does this (the 12 primitives + observability surfaces).
+
 Best reproductions per paper. Compact artifacts (final report, rubric, generated code, environment spec) extracted from the full run directories under `runs/` (gitignored).
 
 | Paper | Verdict | Overall Rubric Score | Iterations | Path |
