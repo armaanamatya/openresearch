@@ -1415,6 +1415,73 @@ def _metrics_shape_binding_block(metrics_shape: list[dict]) -> str:
     )
 
 
+def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
+    """Return a prompt block binding the agent to canonical dataset loaders.
+
+    Only injected when plan_reproduction found matching recipes in the paper
+    text. Parallel to _metrics_shape_binding_block (PR-θ): a contract-binding
+    table followed by a hard instruction.
+
+    Columns:  Dataset  |  Import  |  Loader
+    Normalization stats and license notes are appended per-recipe so the agent
+    sees them in context rather than as a separate lookup.
+    """
+    if not data_recipes:
+        return ""
+
+    rows: list[str] = []
+    notes_lines: list[str] = []
+    for r in data_recipes:
+        name = str(r.get("canonical_name", "")).strip()
+        imp = str(r.get("canonical_import", "")).strip()
+        loader = str(r.get("canonical_loader", "")).strip()
+        if not name:
+            continue
+        # Truncate import/loader for table readability (full values in notes).
+        imp_short = (imp[:42] + "…") if len(imp) > 43 else imp
+        loader_short = (loader[:60] + "…") if len(loader) > 61 else loader
+        rows.append(f"  {name:<22} {imp_short:<44} {loader_short}")
+
+        # Per-recipe supplementary notes.
+        norm = r.get("normalization_stats")
+        if norm:
+            mean_s = str(norm.get("mean", ""))
+            std_s = str(norm.get("std", ""))
+            notes_lines.append(
+                f"  {name}: apply transforms.Normalize(mean={mean_s}, std={std_s})"
+            )
+        lic = str(r.get("license_note", "") or "").strip()
+        if lic:
+            notes_lines.append(f"  {name} license: {lic}")
+        note = str(r.get("notes", "") or "").strip()
+        if note:
+            notes_lines.append(f"  {name}: {note}")
+
+    if not rows:
+        return ""
+
+    header = (
+        "  " + f"{'Dataset':<22} {'Import':<44} Loader\n"
+        "  " + "-" * 22 + " " + "-" * 44 + " " + "-" * 40
+    )
+    table = "\n".join(rows)
+    supp = ("\n\nNotes per dataset:\n" + "\n".join(notes_lines)) if notes_lines else ""
+
+    return (
+        "\n\nDATASET LOADING — use these canonical loaders verbatim:\n\n"
+        + header + "\n"
+        + table + "\n\n"
+        "Use the import lines and loader expressions in the table EXACTLY. "
+        "Do NOT use bare short names (e.g. load_dataset('imdb')) — the modern "
+        "HuggingFace Hub requires owner/name format and rejects bare short names "
+        "with HfUriError. For vision datasets (MNIST, CIFAR-*, STL-10, SVHN) "
+        "use torchvision.datasets directly — faster, no HF schema drift risk.\n"
+        "If a dataset has license_note: it cannot be auto-downloaded — declare "
+        "it in scope.gaps[] instead of substituting a surrogate.\n"
+        + supp + "\n"
+    )
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
@@ -1423,6 +1490,7 @@ def _compute_constraint_guidance(
     remaining_s: float | None = None,
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
+    data_recipes: list[dict] | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1549,6 +1617,13 @@ def _compute_constraint_guidance(
     if metrics_shape:
         guidance += _metrics_shape_binding_block(metrics_shape)
 
+    # 5.10. λ: data_recipes binding — when plan_reproduction found canonical
+    # loader recipes for paper-mentioned datasets, bind the agent to use them
+    # verbatim. Injected after the metrics-shape block so both contracts are
+    # visible together. Empty list → no block (backward compat).
+    if data_recipes:
+        guidance += _data_recipes_binding_block(data_recipes)
+
     # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)
     if override:
@@ -1615,6 +1690,7 @@ async def run_with_sdk(
     remaining_s: float | None = None,
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
+    data_recipes: list[dict] | None = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1665,11 +1741,23 @@ async def run_with_sdk(
             if mp is not None
         ] or None
 
+    # λ: extract data_recipes from the reproduction_contract when not explicitly
+    # passed. plan_reproduction populates this via dataset_recipes.find_recipes_in_text.
+    _effective_data_recipes: list[dict] | None = data_recipes
+    if _effective_data_recipes is None and reproduction_contract is not None:
+        _raw_dr = getattr(reproduction_contract, "data_recipes", None) or []
+        _effective_data_recipes = [
+            (r.model_dump() if hasattr(r, "model_dump") else dict(r))
+            for r in _raw_dr
+            if r is not None
+        ] or None
+
     sandbox_guidance = _compute_constraint_guidance(
         sandbox_mode, gpu_mode, project_dir=project_dir,
         arxiv_id=_resolved_arxiv_id, remaining_s=remaining_s,
         minimize_compute=minimize_compute,
         metrics_shape=_effective_metrics_shape or [],
+        data_recipes=_effective_data_recipes or [],
     )
 
     if repair_context:

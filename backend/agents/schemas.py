@@ -398,6 +398,23 @@ class ReproductionContract(BaseModel):
             "back to the existing fingerprint matcher."
         ),
     )
+    # λ: canonical loader recipes for paper-mentioned datasets (PR-λ, 2026-05-26).
+    # Populated by plan_reproduction via dataset_recipes.find_recipes_in_text.
+    # Each entry is a DatasetRecipe.__dict__ snapshot (plain dict, JSON-safe).
+    # implement_baseline binds Sonnet to use these loaders verbatim — prevents
+    # regressions like load_dataset('imdb') vs load_dataset('stanfordnlp/imdb').
+    # Default empty list → backward compat: runs without data_recipes are
+    # unaffected; the existing _RUNTIME_DETECTION_BLOCK static guidance applies.
+    data_recipes: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Canonical loader recipes for paper-mentioned datasets. Populated by "
+            "plan_reproduction via dataset_recipes.find_recipes_in_text(paper_text). "
+            "Each entry is a DatasetRecipe.__dict__ snapshot. implement_baseline binds "
+            "Sonnet to use these loaders verbatim — prevents regressions like "
+            "load_dataset('imdb') vs load_dataset('stanfordnlp/imdb')."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -910,6 +910,26 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             )
         data["metrics_shape"] = parsed_shape
 
+        # λ: scan method_spec + env_spec text for dataset mentions and populate
+        # data_recipes with canonical loader recipes from the static registry.
+        # This runs after the LLM response is validated so it never depends on
+        # the LLM naming datasets correctly. find_recipes_in_text is a pure
+        # string scan over the combined spec text — no additional LLM call.
+        try:
+            from dataclasses import asdict as _asdict
+            from backend.agents.dataset_recipes import find_recipes_in_text as _find_recipes
+            import json as _json
+            _spec_text = (
+                _json.dumps(method_spec, default=str)
+                + " "
+                + _json.dumps(env_spec, default=str)
+            )
+            _found = _find_recipes(_spec_text)
+            data["data_recipes"] = [_asdict(r) for r in _found]
+        except Exception as _dr_exc:  # noqa: BLE001 — never block on recipe scan
+            logger.warning("plan_reproduction: data_recipes scan failed (%s) — empty list", _dr_exc)
+            data["data_recipes"] = []
+
         result = _with_outcome(ReproductionContract(**data).model_dump(), PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
         return result
@@ -1109,6 +1129,17 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             if mp is not None
         ]
 
+    # λ: extract data_recipes from the contract so implement_baseline binds
+    # Sonnet to use canonical dataset loaders verbatim. Plain dicts only.
+    _data_recipes: list[dict] = []
+    if contract is not None:
+        _raw_dr = getattr(contract, "data_recipes", None) or []
+        _data_recipes = [
+            (r.model_dump() if hasattr(r, "model_dump") else dict(r))
+            for r in _raw_dr
+            if r is not None
+        ]
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -1134,6 +1165,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # θ: pass declared metric paths so the Sonnet agent is bound to emit
             # exactly these paths in metrics.json.
             metrics_shape=_metrics_shape or None,
+            # λ: pass canonical dataset loader recipes so the Sonnet agent uses
+            # the correct loader verbatim (e.g. stanfordnlp/imdb not bare 'imdb').
+            data_recipes=_data_recipes or None,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
