@@ -1437,9 +1437,11 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
         loader = str(r.get("canonical_loader", "")).strip()
         if not name:
             continue
-        # Truncate import/loader for table readability (full values in notes).
+        # Truncate import for table readability (full values in notes). Loaders are
+        # shown fuller because truncating a URL mid-path turns a working recipe into
+        # a footgun — the agent inlines whatever it sees.
         imp_short = (imp[:42] + "…") if len(imp) > 43 else imp
-        loader_short = (loader[:60] + "…") if len(loader) > 61 else loader
+        loader_short = (loader[:200] + "…") if len(loader) > 201 else loader
         rows.append(f"  {name:<22} {imp_short:<44} {loader_short}")
 
         # Per-recipe supplementary notes.
@@ -1456,6 +1458,13 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
         note = str(r.get("notes", "") or "").strip()
         if note:
             notes_lines.append(f"  {name}: {note}")
+        # PR-ν.1: surface fallback_mirrors so the agent has an actionable URL list
+        # to try on 403/404/network errors — the canonical_loader already names the
+        # primary, but without the alternates the agent can't recover gracefully.
+        mirrors = r.get("fallback_mirrors") or ()
+        if mirrors:
+            mirror_list = ", ".join(str(m) for m in mirrors)
+            notes_lines.append(f"  {name} fallback mirrors: {mirror_list}")
 
     if not rows:
         return ""

@@ -204,6 +204,59 @@ def _mark_demo_status_stopped(
         return
 
 
+def _mark_demo_status_failed(
+    runs_root: Path,
+    project_id: str,
+    *,
+    reason: str = "Pipeline crashed",
+) -> None:
+    """PR-ν.3 / P3 — flip demo_status.json to status=failed on uncaught exception.
+
+    Distinct from ``_mark_demo_status_stopped`` (which fires on graceful
+    KeyboardInterrupt / Ctrl-C and writes ``status=stopped``). This is for
+    the crash path: an Exception escaped ``run_pipeline_rlm`` (or any
+    setup-phase or post-finalize cleanup) before the terminal status was
+    written. Without it the dashboard shows the run as ``running`` forever.
+
+    Defensive against double-write: if the file is already in a terminal
+    state (``completed`` / ``failed`` / ``stopped``), leave it alone. The
+    happy path's ``_finalize`` already wrote the correct terminal status;
+    we only fire when that path was never reached.
+
+    Silent on failure — best-effort status bookkeeping must never mask the
+    original exception that triggered it.
+    """
+    try:
+        path = runs_root / project_id / "demo_status.json"
+        # If the run never registered (no demo_status.json) skip — writing a
+        # fresh "failed" record would fabricate UI state for a run the lab
+        # never tracked. Diverges from `_mark_demo_status_stopped` which
+        # creates the file; that helper fires on Ctrl-C of an in-flight run,
+        # so the file usually exists. This one fires on an exception that may
+        # have happened before any pipeline state was written.
+        if not path.exists():
+            return
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(existing, dict):
+                existing = {}
+        except Exception:
+            existing = {}  # corrupt; overwrite with a fresh failed payload
+        if existing.get("status") in ("completed", "failed", "stopped"):
+            return  # something else (probably _finalize) already wrote terminal status
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        merged = {
+            **existing,
+            "status": "failed",
+            "updatedAt": now_iso,
+            "completedAt": now_iso,
+            "error": reason,
+        }
+        _atomic_write_json(path, merged)
+    except Exception:
+        return
+
+
 def _make_services(
     database_url: str, runs_root: Path
 ) -> tuple[
@@ -304,6 +357,42 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     json.dump(summary, sys.stdout, indent=2)
     sys.stdout.write("\n")
     store.close()
+    return 0
+
+
+def cmd_regenerate_report(args: argparse.Namespace) -> int:
+    """Regenerate ``final_report.md`` from existing ``final_report.json`` +
+    ``tokens_total.json`` + ``timing.json`` sidecars.
+
+    Use case: the renderer added a new section (e.g., PR-ν.2 added Token Usage
+    + Per-Step Timing) and you want to refresh existing runs without re-running
+    them. Idempotent — pure read+rewrite of the markdown; the JSON is untouched.
+    """
+    from backend.agents.rlm.report import (
+        RLMFinalReport,
+        _atomic_write,
+        _render_markdown,
+    )
+
+    runs_root = Path(args.runs_root)
+    project_dir = runs_root / args.project_id
+    fr_path = project_dir / "final_report.json"
+    md_path = project_dir / "final_report.md"
+
+    if not fr_path.exists():
+        sys.stderr.write(f"ERROR: {fr_path} does not exist\n")
+        return 1
+
+    try:
+        report_data = json.loads(fr_path.read_text(encoding="utf-8"))
+        report = RLMFinalReport(**report_data)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"ERROR: failed to load final_report.json: {exc}\n")
+        return 2
+
+    md = _render_markdown(report, project_dir=project_dir)
+    _atomic_write(md_path, md)
+    sys.stdout.write(f"Regenerated {md_path} ({len(md)} chars)\n")
     return 0
 
 
@@ -710,12 +799,28 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
             file=sys.stderr,
             flush=True,
         )
+        # Mirror the RLM/hybrid path: write status=stopped so the dashboard
+        # doesn't show this as "running" indefinitely.
+        _mark_demo_status_stopped(
+            runs_root, project_id,
+            reason=f"{_runner_label} pipeline interrupted (Ctrl-C)",
+        )
         return 130
     except Exception as exc:
         from backend.agents.resilience import BudgetExhausted
         if isinstance(exc, BudgetExhausted):
             print(f"[{_runner_label}] Pipeline budget exhausted: {exc}", file=sys.stderr)
+            _mark_demo_status_failed(
+                runs_root, project_id,
+                reason=f"{_runner_label} pipeline budget exhausted: {exc}",
+            )
             return 3
+        # PR-ν.3 / P3 — see RLM/hybrid path for rationale. Mirror the same
+        # guard so a PaperBench-mode crash also reaches a terminal status.
+        _mark_demo_status_failed(
+            runs_root, project_id,
+            reason=f"{_runner_label} pipeline crashed: {type(exc).__name__}: {exc}",
+        )
         raise
 
     result = {
@@ -1085,8 +1190,22 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         from backend.agents.resilience import BudgetExhausted
 
         if isinstance(exc, BudgetExhausted):
+            # Budget exhaustion already writes a terminal status inside the
+            # pipeline; just surface the message and return non-zero.
             print(f"Pipeline budget exhausted: {exc}", file=sys.stderr)
+            _mark_demo_status_failed(
+                runs_root, project_id,
+                reason=f"Pipeline budget exhausted: {exc}",
+            )
             return 3
+        # PR-ν.3 / P3 — uncaught exception escaped the pipeline; ensure
+        # demo_status.json is marked failed before we let it propagate.
+        # Without this the dashboard shows the run as "running" forever
+        # (audit pattern P3: 4 zombie-status runs in the 3-day window).
+        _mark_demo_status_failed(
+            runs_root, project_id,
+            reason=f"Pipeline crashed: {type(exc).__name__}: {exc}",
+        )
         raise
     finally:
         store.close()
@@ -1150,6 +1269,13 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--agent", default="default")
     inspect.add_argument("--variable", default=None, help="Print one variable's full payload.")
     inspect.set_defaults(func=cmd_inspect)
+
+    regen = sub.add_parser(
+        "regenerate-report",
+        help="Regenerate final_report.md from existing final_report.json + sidecars.",
+    )
+    regen.add_argument("project_id", help="Run project id (e.g., prj_03271ba130d423fe).")
+    regen.set_defaults(func=cmd_regenerate_report)
 
     reproduce = sub.add_parser("reproduce", help="Full pipeline: ingest + agent pipeline.")
     reproduce.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")

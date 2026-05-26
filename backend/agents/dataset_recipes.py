@@ -101,19 +101,23 @@ DATASET_RECIPES: tuple[DatasetRecipe, ...] = (
     DatasetRecipe(
         canonical_name="Frey Face",
         aliases=("frey face", "frey", "freyfaces", "frey_face"),
-        canonical_import="import urllib.request; from scipy.io import loadmat",
+        canonical_import="import urllib.request, pickle, io",
         canonical_loader=(
-            "loadmat(urllib.request.urlopen("
-            "'https://cs.nyu.edu/~roweis/data/frey_rawface.mat').read())"
-            "['ff'].T.reshape(-1, 28, 20)"
+            "pickle.loads(urllib.request.urlopen("
+            "'https://raw.githubusercontent.com/y0ast/Variational-Autoencoder/master/freyfaces.pkl'"
+            ", timeout=60).read()).reshape(-1, 28, 20)"
         ),
         fallback_mirrors=(
+            "https://raw.githubusercontent.com/y0ast/Variational-Autoencoder/master/freyfaces.pkl",
             "https://cs.nyu.edu/~roweis/data/frey_rawface.mat",
-            "https://github.com/y0ast/Variational-Autoencoder/raw/master/freyfaces.pkl",
         ),
         notes=(
-            "Primary mirror returns HTTP 403 intermittently. "
-            "Fall through to github mirror or skip Phase if all fail."
+            "The original cs.nyu.edu mirror returns HTTP 403 in many networks; the "
+            "github raw mirror above is the canonical replacement and serves a "
+            "pickled numpy array of shape (1965, 560). For maximum robustness, "
+            "wrap the load in: try: <primary>; except Exception: <fallback>. "
+            "If every mirror fails, declare 'frey_face' in data_load_failures and "
+            "skip the Frey Face experiment — do NOT substitute a synthetic dataset."
         ),
     ),
     DatasetRecipe(
