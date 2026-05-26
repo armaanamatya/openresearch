@@ -185,7 +185,12 @@ export function RlmHeader({
             )
           )}
 
-          {latestWarning !== null && (
+          {/* 2026-05-26: guard `message` undefined — a warning object can land
+              in the SSE stream without a message field (e.g. {code, reason}
+              only). Previous render did `.message.length` directly and threw
+              "Cannot read properties of undefined (reading 'length')" on
+              every saved-run open. */}
+          {latestWarning !== null && typeof latestWarning.message === "string" && latestWarning.message.length > 0 && (
             <span
               title={latestWarning.message}
               style={{
