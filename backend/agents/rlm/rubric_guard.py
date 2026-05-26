@@ -33,6 +33,30 @@ from pathlib import Path
 from typing import Any
 
 
+def _path_resolves(metrics: Any, json_path: str) -> bool:
+    """Walk ``metrics`` along ``json_path`` (dot-separated) defensively.
+
+    Returns True iff every segment exists and every intermediate node is a dict.
+    An empty ``json_path`` always returns False (a declared path must be non-empty).
+
+    Example::
+
+        _path_resolves({"a": {"b": 1}}, "a.b")  # True
+        _path_resolves({"a": 1}, "a.b")          # False — 1 is not a dict
+        _path_resolves({}, "a")                  # False — key missing
+    """
+    if not json_path or not isinstance(metrics, dict):
+        return False
+    node: Any = metrics
+    for segment in json_path.split("."):
+        if not isinstance(node, dict):
+            return False
+        if segment not in node:
+            return False
+        node = node[segment]
+    return True
+
+
 class RubricGuardFailure(AssertionError):
     """Raised when ``metrics.json`` is missing required keys / artifacts.
 
@@ -144,6 +168,7 @@ def assert_metrics_schema(
     required_keys: list[str],
     required_artifacts: list[str] | None = None,
     artifact_dir: str | Path | None = None,
+    metrics_shape: list[dict] | None = None,
 ) -> None:
     """Raise :class:`RubricGuardFailure` if metrics / artifacts are incomplete.
 
@@ -158,11 +183,21 @@ def assert_metrics_schema(
                             via dotted paths (e.g. ``"per_model.qwen3_1.7b.acc"``).
         required_keys:      Dotted-path keys the rubric grader will look for.
                             Each must exist in ``metrics`` or its nested children.
+                            When ``metrics_shape`` is non-empty, this argument is
+                            used only as the fingerprint fallback for any metric
+                            whose json_path is absent from ``metrics_shape``.
         required_artifacts: Filename literals or globs that must exist under
                             ``artifact_dir``.  Globs match flat (no recursion);
                             literals are exact-path.
         artifact_dir:       Directory containing the run's artifacts.  Defaults
                             to ``$OUTPUT_DIR`` (or ``/artifacts`` when unset).
+        metrics_shape:      Agent-declared metric paths from
+                            ``ReproductionContract.metrics_shape`` (θ PR).
+                            When non-empty, each entry's ``json_path`` is checked
+                            directly via dotted-path lookup — no fingerprint
+                            guesswork.  When empty or None, falls back to the
+                            existing fingerprint matcher against ``required_keys``
+                            (backward compat).
 
     Raises:
         RubricGuardFailure: When any required key is absent OR any required
@@ -196,8 +231,30 @@ def assert_metrics_schema(
             })
         )
 
-    present_keys = _walk_keys(metrics)
-    missing_keys = [k for k in required_keys if not _key_present(k, present_keys)]
+    missing_keys: list[str] = []
+
+    if metrics_shape:
+        # θ: authoritative path — check each declared json_path via dotted-path
+        # lookup.  No fingerprint guesswork: the agent declared exactly what it
+        # would emit; deviations are unambiguous contract violations.
+        for mp in metrics_shape:
+            json_path = (
+                mp.get("json_path") if isinstance(mp, dict)
+                else getattr(mp, "json_path", None)
+            ) or ""
+            if not json_path:
+                # A MetricPath with no json_path is malformed — skip silently.
+                continue
+            if not _path_resolves(metrics, json_path):
+                metric_id = (
+                    mp.get("metric_id") if isinstance(mp, dict)
+                    else getattr(mp, "metric_id", None)
+                ) or json_path
+                missing_keys.append(f"declared path {json_path!r} (id={metric_id!r})")
+    else:
+        # Fingerprint fallback (backward compat — commit befb51c).
+        present_keys = _walk_keys(metrics)
+        missing_keys = [k for k in required_keys if not _key_present(k, present_keys)]
 
     missing_artifacts: list[str] = []
     if required_artifacts:
@@ -209,12 +266,13 @@ def assert_metrics_schema(
     if not missing_keys and not missing_artifacts:
         return
 
+    present_keys_sample: list[str] = sorted(_walk_keys(metrics))[:20]
     detail: dict[str, Any] = {
         "rubric_guard": "schema_violation",
         "missing_keys": missing_keys,
         "missing_artifacts": missing_artifacts,
         "artifact_dir": str(_resolve_artifact_dir(artifact_dir)) if required_artifacts else None,
-        "present_keys_sample": sorted(list(present_keys))[:20],
+        "present_keys_sample": present_keys_sample,
         "hint": (
             "The rubric grader will lose points (or score 0) on the affected "
             "areas. Fix train.py so every required key is written to "
@@ -225,4 +283,4 @@ def assert_metrics_schema(
     raise RubricGuardFailure(json.dumps(detail))
 
 
-__all__ = ["RubricGuardFailure", "assert_metrics_schema"]
+__all__ = ["RubricGuardFailure", "assert_metrics_schema", "_path_resolves"]

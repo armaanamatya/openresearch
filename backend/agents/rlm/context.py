@@ -66,6 +66,12 @@ class RunContext:
                                     # implement_baseline prompt gets the substitution rules
                                     # (modern fast equivalents for slow paper schedules) and
                                     # the scope.declared_reductions contract.
+    # θ: agent-declared metric paths, set by plan_reproduction once the planning
+    # LLM responds with a metrics_shape list. run_experiment reads this to
+    # validate that the emitted metrics.json matches the declared contract.
+    # Typed as Any to avoid a top-level import cycle (schemas.ReproductionContract).
+    reproduction_contract: Any = None  # ReproductionContract | None
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so

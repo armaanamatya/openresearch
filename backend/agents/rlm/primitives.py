@@ -262,6 +262,35 @@ _PLAN_REPRODUCTION_SYSTEM = (
     "and nothing else. Do NOT write files; do NOT reference any filesystem path."
 )
 
+# θ: metrics_shape declaration — appended to the planning prompt so the agent
+# commits to the exact dotted paths it will emit in metrics.json.
+# This eliminates the nested-vs-flat ambiguity that caused 16 contract
+# violations in the Adam run (2026-05-25). The agent may choose any json_path
+# shape (flat or nested) — it just must commit here and stick to it in train.py.
+_METRICS_SHAPE_INSTRUCTION = """
+
+You MUST also declare metrics_shape — the exact dotted paths your train.py
+will write into metrics.json, one per rubric result_match leaf. The grader
+will check metrics.json for EXACTLY these paths; emitting different ones
+counts as a contract violation.
+
+You may choose ANY json_path shape (flat like "mnist_logistic_adam_final_nll"
+OR nested like "per_model.mnist_logistic.per_dataset.mnist.adam_final_nll") —
+but commit to it here and stick to it in train.py. The grader honors your
+declared path.
+
+Include "metrics_shape" as a JSON key in your response:
+"metrics_shape": [
+  {"metric_id": "<stable_id_for_rubric_leaf>",
+   "json_path": "<dotted.path.inside.metrics.json>",
+   "rubric_leaf_ids": []},
+  ...
+]
+
+One entry per metric the paper's rubric evaluates. When the paper has no
+numeric result_match leaves (e.g. a methods-only paper), emit an empty list.
+"""
+
 # β3: compute-adjusted rubric — appended to the planning prompt when clipping is active.
 _COMPUTE_SCOPE_INSTRUCTION = """
 
@@ -808,9 +837,12 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     # β3: extend the planning prompt when compute is clipped.
+    # θ: always append the metrics_shape instruction so the agent declares its
+    # exact metric paths at plan time.
     system_prompt = _PLAN_REPRODUCTION_SYSTEM
     if _is_clipping_active(ctx):
         system_prompt = system_prompt + _COMPUTE_SCOPE_INSTRUCTION
+    system_prompt = system_prompt + _METRICS_SHAPE_INSTRUCTION
 
     try:
         raw = ctx.llm_client.complete(system=system_prompt, user=user)
@@ -843,6 +875,40 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
         elif "compute_scope" not in data:
             # Not in the response (max mode or no instruction sent) — leave as None.
             data["compute_scope"] = None
+
+        # θ: parse metrics_shape from the LLM response. Malformed entries are
+        # skipped with a warning (not a crash) so a bad item doesn't abort the plan.
+        # Missing metrics_shape → empty list (backward compat: fingerprint fallback).
+        from pydantic import ValidationError as _PydanticValidationError
+        from backend.agents.schemas import MetricPath as _MetricPath
+        raw_shape = data.get("metrics_shape")
+        parsed_shape: list[dict] = []
+        if isinstance(raw_shape, list):
+            for i, item in enumerate(raw_shape):
+                if not isinstance(item, dict):
+                    logger.warning(
+                        "plan_reproduction: metrics_shape[%d] is not a dict (%s) — skipping",
+                        i, type(item).__name__,
+                    )
+                    continue
+                try:
+                    parsed_shape.append(_MetricPath(**item).model_dump())
+                except (_PydanticValidationError, TypeError) as _mp_err:
+                    logger.warning(
+                        "plan_reproduction: metrics_shape[%d] validation failed (%s) — skipping",
+                        i, _mp_err,
+                    )
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "metrics_shape_item_invalid",
+                        "index": i,
+                        "message": str(_mp_err)[:300],
+                    })
+        elif raw_shape is not None:
+            logger.warning(
+                "plan_reproduction: metrics_shape is not a list (%s) — treating as empty",
+                type(raw_shape).__name__,
+            )
+        data["metrics_shape"] = parsed_shape
 
         result = _with_outcome(ReproductionContract(**data).model_dump(), PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
@@ -940,6 +1006,18 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # Cached error dict (e.g. timeout) — return as-is.
             return _with_outcome(_value, PrimitiveOutcome.repairable)
 
+    # θ: extract metrics_shape from the contract so implement_baseline binds
+    # Sonnet's code-writing to the declared paths. Coerce MetricPath objects
+    # to plain dicts for JSON serialization across the SDK boundary.
+    _metrics_shape: list[dict] = []
+    if contract is not None:
+        _raw_shape = getattr(contract, "metrics_shape", None) or []
+        _metrics_shape = [
+            (mp.model_dump() if hasattr(mp, "model_dump") else dict(mp))
+            for mp in _raw_shape
+            if mp is not None
+        ]
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -962,6 +1040,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # profile. When True, the agent's prompt gets the substitution
             # rules + scope.declared_reductions contract.
             minimize_compute=getattr(ctx, "minimize_compute", False),
+            # θ: pass declared metric paths so the Sonnet agent is bound to emit
+            # exactly these paths in metrics.json.
+            metrics_shape=_metrics_shape or None,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
@@ -2223,6 +2304,56 @@ def run_experiment(
                 }
     except Exception:  # noqa: BLE001 — observability must never block the run
         logger.exception("run_experiment: rubric_contract.validate raised — skipping")
+
+    # θ: metrics_shape post-run check. When the planning contract declared an
+    # explicit metrics_shape, validate that every declared json_path actually
+    # exists in the emitted metrics.json. This is the authoritative guard that
+    # replaces fingerprint guesswork — the agent declared the paths, so any
+    # deviation is an unambiguous contract violation, not a shape mismatch.
+    # Runs even on failed experiments (partial results are still checked).
+    try:
+        _contract_obj = getattr(ctx, "reproduction_contract", None)
+        _ctx_metrics_shape = []
+        if _contract_obj is not None:
+            _ctx_metrics_shape = list(getattr(_contract_obj, "metrics_shape", None) or [])
+        if _ctx_metrics_shape:
+            from backend.agents.rlm.rubric_guard import (
+                RubricGuardFailure as _RGF,
+                assert_metrics_schema as _assert_ms,
+            )
+            _shape_dicts = [
+                (mp.model_dump() if hasattr(mp, "model_dump") else dict(mp))
+                for mp in _ctx_metrics_shape
+                if mp is not None
+            ]
+            try:
+                _assert_ms(
+                    result.get("metrics") or {},
+                    required_keys=[],       # metrics_shape takes priority
+                    metrics_shape=_shape_dicts,
+                )
+            except _RGF as _rg_err:
+                import json as _json_ms
+                _rg_detail = _json_ms.loads(str(_rg_err))
+                _ms_violations = _rg_detail.get("missing_keys", [])
+                if _ms_violations:
+                    _existing = list(result.get("contract_violations") or [])
+                    _existing += [
+                        {
+                            "area": "Result match and metric key compliance",
+                            "detail": f"metrics_shape contract violation: {v}",
+                            "hint": (
+                                "The plan_reproduction contract declared this metric path. "
+                                "Ensure train.py writes metrics.json with exactly this "
+                                "dotted path. Use the METRICS CONTRACT section in your "
+                                "guidance as the authoritative reference."
+                            ),
+                        }
+                        for v in _ms_violations
+                    ]
+                    result = {**result, "contract_violations": _existing}
+    except Exception:  # noqa: BLE001 — observability must never block the run
+        logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
 
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 

@@ -1,6 +1,6 @@
 import json
 
-from backend.agents.rlm.primitives import plan_reproduction, _PLAN_REPRODUCTION_SYSTEM
+from backend.agents.rlm.primitives import plan_reproduction, _PLAN_REPRODUCTION_SYSTEM, _METRICS_SHAPE_INSTRUCTION
 
 CONTRACT_JSON = json.dumps({
     "reproduction_definition": "Same algorithm, same dataset.",
@@ -17,7 +17,9 @@ def test_plan_reproduction_parses_llm_contract(make_context, tmp_path):
     assert result["reproduction_definition"] == "Same algorithm, same dataset."
     assert result["expected_outputs"] == ["metrics.json"]
     assert len(ctx.llm_client.calls) == 1
-    assert ctx.llm_client.calls[0]["system"] == _PLAN_REPRODUCTION_SYSTEM
+    # θ: the system prompt now always includes the metrics_shape instruction.
+    expected_system = _PLAN_REPRODUCTION_SYSTEM + _METRICS_SHAPE_INSTRUCTION
+    assert ctx.llm_client.calls[0]["system"] == expected_system
 
 
 def test_plan_reproduction_prompt_names_the_exact_contract_keys(make_context, tmp_path):

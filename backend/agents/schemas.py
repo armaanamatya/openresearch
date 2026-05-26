@@ -342,6 +342,31 @@ class EnvironmentSpec(BaseModel):
 # Reproduction Planner
 # ---------------------------------------------------------------------------
 
+class MetricPath(BaseModel):
+    """Single metric the agent commits to emitting in metrics.json.
+
+    Declared at plan_reproduction time. implement_baseline is bound to emit
+    EXACTLY this dotted path. rubric_guard validates against the declared
+    path, eliminating nested-vs-flat ambiguity at the source.
+
+    When metrics_shape is non-empty on ReproductionContract, rubric_guard
+    uses the declared json_path for authoritative path lookup; when empty,
+    it falls back to the fingerprint matcher (commit befb51c).
+    """
+    model_config = {"extra": "ignore"}
+
+    metric_id: str = Field(
+        description="Stable id used by rubric leaves (e.g. 'mnist_logistic_adam_final_nll')"
+    )
+    json_path: str = Field(
+        description="Dotted path inside metrics.json (e.g. 'per_model.mnist_logistic.per_dataset.mnist.adam_final_nll')"
+    )
+    rubric_leaf_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional: explicit rubric leaf ids this metric satisfies. When empty, fingerprint matching falls back.",
+    )
+
+
 class ReproductionContract(BaseModel):
     """Defines what counts as reproduction for this paper."""
     model_config = {"extra": "ignore"}
@@ -360,6 +385,19 @@ class ReproductionContract(BaseModel):
     # The planning agent fills this when execution_profile.mode == "efficient" or
     # minimize_compute=True (spec 2026-05-25-compute-adjusted-rubric-design.md).
     compute_scope: ComputeScope | None = None
+    # θ: agent-declared metric paths (Solution IV, spec 2026-05-26).
+    # When non-empty, rubric_guard validates against these declared json_paths
+    # (authoritative); when empty, falls back to the fingerprint matcher.
+    # Default empty list → backward compat: existing runs without metrics_shape
+    # use the tier-2 fingerprint matcher unchanged.
+    metrics_shape: list[MetricPath] = Field(
+        default_factory=list,
+        description=(
+            "Agent's declared metrics.json shape. When non-empty, rubric_guard "
+            "validates against MetricPath.json_path directly. When empty, falls "
+            "back to the existing fingerprint matcher."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

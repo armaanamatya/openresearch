@@ -1384,6 +1384,37 @@ _MINIMIZE_COMPUTE_BLOCK = (
 )
 
 
+def _metrics_shape_binding_block(metrics_shape: list[dict]) -> str:
+    """Return a prompt block binding the agent to its declared metrics_shape.
+
+    Only injected when plan_reproduction produced a non-empty metrics_shape.
+    The table format makes the path → id mapping unambiguous; the contract
+    sentence closes the loop with rubric_guard.
+    """
+    if not metrics_shape:
+        return ""
+    rows = []
+    for mp in metrics_shape:
+        metric_id = str(mp.get("metric_id", "")).strip()
+        json_path = str(mp.get("json_path", "")).strip()
+        if metric_id and json_path:
+            rows.append(f"  {metric_id:<44} {json_path}")
+    if not rows:
+        return ""
+    table = "\n".join(rows)
+    return (
+        "\n\nMETRICS CONTRACT — binding from plan_reproduction:\n"
+        "Your reproduction contract DECLARES these metric paths in metrics.json:\n\n"
+        "  metric_id                                    json_path\n"
+        "  " + "-" * 42 + " " + "-" * 45 + "\n"
+        + table + "\n\n"
+        "Your train.py MUST emit metrics.json with EXACTLY these dotted paths. "
+        "Any deviation will fail rubric_guard's contract check. Use these paths "
+        "verbatim — do not re-shape them. The eagerly-written metrics.json "
+        "(see EAGER METRICS EMISSION above) MUST also follow these paths.\n"
+    )
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
@@ -1391,6 +1422,7 @@ def _compute_constraint_guidance(
     arxiv_id: str | None = None,
     remaining_s: float | None = None,
     minimize_compute: bool = False,
+    metrics_shape: list[dict] | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1510,6 +1542,13 @@ def _compute_constraint_guidance(
     # failure signal before the grader runs.
     guidance += _RUBRIC_GUARD_BLOCK
 
+    # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
+    # metrics_shape, bind the agent to those exact paths. Injected after the
+    # rubric-guard block so the agent sees the contract in the context of the
+    # guard that enforces it.
+    if metrics_shape:
+        guidance += _metrics_shape_binding_block(metrics_shape)
+
     # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)
     if override:
@@ -1575,6 +1614,7 @@ async def run_with_sdk(
     arxiv_id: str | None = None,
     remaining_s: float | None = None,
     minimize_compute: bool = False,
+    metrics_shape: list[dict] | None = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1611,10 +1651,25 @@ async def run_with_sdk(
     # artifacts so direct callers of run_with_sdk without a RunContext still get
     # the override (belt-and-suspenders; the primary path is ctx.arxiv_id → kwarg).
     _resolved_arxiv_id = arxiv_id or _extract_arxiv_id(project_id) or _derive_arxiv_id_from_disk(project_dir)
+    # θ: extract metrics_shape from the reproduction_contract when not explicitly
+    # passed. This path handles calls where the contract is available but the
+    # caller hasn't extracted the shape separately (e.g. implement_baseline in
+    # primitives.py passes it through the kwarg when present).
+    _effective_metrics_shape: list[dict] | None = metrics_shape
+    if _effective_metrics_shape is None and reproduction_contract is not None:
+        _raw = getattr(reproduction_contract, "metrics_shape", None) or []
+        # Coerce MetricPath instances to plain dicts for the guidance block.
+        _effective_metrics_shape = [
+            (mp.model_dump() if hasattr(mp, "model_dump") else dict(mp))
+            for mp in _raw
+            if mp is not None
+        ] or None
+
     sandbox_guidance = _compute_constraint_guidance(
         sandbox_mode, gpu_mode, project_dir=project_dir,
         arxiv_id=_resolved_arxiv_id, remaining_s=remaining_s,
         minimize_compute=minimize_compute,
+        metrics_shape=_effective_metrics_shape or [],
     )
 
     if repair_context:
