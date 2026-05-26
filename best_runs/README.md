@@ -51,6 +51,19 @@ The pattern across both runs is the same: methodology and execution land high, a
 
 ---
 
+## Token usage
+
+Both runs used Claude Code OAuth (subscription billing), so per-token API spend is zero. The numbers below are useful as a *workload* signal — what an equivalent Anthropic-API or Azure-OpenAI deployment would meter.
+
+| | Calls | Input | Output | Cache write | Cache read |
+|---|---:|---:|---:|---:|---:|
+| Adam | 20 | 12 | 2,075 | 13,629 | 72,978 |
+| VAE | 34 | 32 | 4,867 | 63,858 | 217,338 |
+
+Heaviest primitives on Adam: `plan_reproduction` (1,104 output tokens) and `propose_improvements` (971). The remaining primitives are dispatch — they invoke sub-agents and tools rather than emitting tokens at the root. The bulk of cache reads come from the RLM root's iteration loop replaying its own scratchpad against a warm prompt cache; this is what makes 19-iteration runs affordable.
+
+---
+
 ## How the reproduction actually happens
 
 The orchestrator is a Recursive Language Model (RLM, arXiv 2512.24601). The paper is loaded into a Python REPL as a variable; the root model never carries the corpus in its context window. When it needs paper content it writes Python that slices the variable. That is what makes 100K-token papers tractable.
@@ -83,5 +96,6 @@ adam/
   code/                      the agent-written train.py + supporting files
 
 vae/
-  same shape (VAE pre-dates the cost_ledger / tokens / timing sidecars)
+  same shape; tokens_total.json + cost_ledger.jsonl included, timing.json absent
+  (VAE pre-dates the full sidecar emit, but token telemetry was backfilled).
 ```
