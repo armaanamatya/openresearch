@@ -2594,10 +2594,12 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         return []
 
     # Build a {leaf_id: score} map from the leaf_scores list for roll_up.
+    # Skip entries with score=None — these are data-unavailable leaves (PR-κ)
+    # that were explicitly not scored. float(None) raises TypeError.
     leaf_score_map: dict[str, float] = {
-        str(e["id"]): float(e.get("score", 0.0))
+        str(e["id"]): float(e["score"])
         for e in leaf_scores_list
-        if isinstance(e, dict) and e.get("id")
+        if isinstance(e, dict) and e.get("id") and e.get("score") is not None
     }
 
     areas: list[dict] = []
@@ -2868,9 +2870,10 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         meets_target = overall_score >= target
 
         leaf_scores = scored.get("leaf_scores", [])
-        # Up to 8 lowest-scoring leaves (conservative grader — 0.0 means no evidence)
+        # Up to 8 lowest-scoring leaves (conservative grader — 0.0 means no evidence).
+        # Exclude score=None entries (PR-κ data-unavailable leaves — not "weak", just absent).
         weak_leaves = sorted(
-            [e for e in leaf_scores if isinstance(e, dict)],
+            [e for e in leaf_scores if isinstance(e, dict) and e.get("score") is not None],
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
 

@@ -630,6 +630,8 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         sandbox_platform=getattr(args, "sandbox_platform", None),
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
+    # PR-μ.2: thread execution_mode for resolve_experiment_timeout_s (see other call site).
+    os.environ["REPROLAB_EXECUTION_MODE"] = execution_profile.mode.value
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None))
     _max_invocations = _max_invocations_from_arg(getattr(args, "max_invocations", None))
@@ -979,6 +981,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         gpu_mode=getattr(args, "gpu_mode", "auto"),
         minimize_compute=getattr(args, "minimize_compute", False),
     )
+    # PR-μ.2: thread execution_mode through to resolve_experiment_timeout_s.
+    # RunContext doesn't currently carry execution_mode, so the resolver in
+    # primitives.py falls back to this env var when ctx.execution_mode is None.
+    # Without this, max-mode capped at the 7200s default instead of the
+    # EXPERIMENT_TIMEOUT_BY_MODE["max"]=21600s the user requested.
+    os.environ["REPROLAB_EXECUTION_MODE"] = execution_profile.mode.value
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
     _max_run_gpu_usd = getattr(args, "max_run_gpu_usd", None)
