@@ -72,6 +72,12 @@ function fmtHours(h: number): string {
   return `${h.toFixed(1)}h`;
 }
 
+function fmtTokens(n: number): string {
+  if (n < 1000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 // ---------------------------------------------------------------------------
 // BudgetPanel — the blocking modal
 // ---------------------------------------------------------------------------
@@ -179,6 +185,32 @@ export function BudgetPanel({
         </span>
       </section>
 
+      {/* API token aggregate — sums across all candidate providers so the
+          operator sees how much LLM throughput the estimate is built on. */}
+      {(() => {
+        const totalIn = estimate.api.reduce((s, r) => s + r.input_tokens, 0);
+        const totalOut = estimate.api.reduce((s, r) => s + r.output_tokens, 0);
+        const cheapest = estimate.api.reduce(
+          (best, r) => (r.usd < best.usd ? r : best),
+          estimate.api[0],
+        );
+        return (
+          <section className="budget-panel-gpu" aria-label="API token summary">
+            <span className="budget-panel-gpu-label">API</span>
+            <span className="budget-panel-gpu-sku mono">
+              ~{fmtTokens(totalIn)} in&nbsp;/&nbsp;{fmtTokens(totalOut)} out
+            </span>
+            <span className="budget-panel-gpu-rate">
+              across {estimate.api.length} provider{estimate.api.length === 1 ? "" : "s"}
+            </span>
+            <span className="budget-panel-gpu-hours">
+              cheapest: <span className="mono">{cheapest.provider}.{cheapest.model_id}</span> =
+            </span>
+            <span className="budget-panel-gpu-total">{fmtUsd(cheapest.usd)}</span>
+          </section>
+        );
+      })()}
+
       <section className="budget-panel-recipes">
         {recipeKeys.map((key) => {
           const r = estimate.recipes[key];
@@ -246,6 +278,10 @@ export function BudgetPanel({
                     onChange={() => onSelectProvider(fullId)}
                   />
                   <span className="budget-panel-breakdown-provider mono">{fullId}</span>
+                  <span className="budget-panel-breakdown-tokens mono">
+                    {fmtTokens(row.input_tokens)}&nbsp;in&nbsp;/&nbsp;
+                    {fmtTokens(row.output_tokens)}&nbsp;out
+                  </span>
                   <span className="budget-panel-breakdown-usd">
                     {fmtUsd(row.usd)}
                     {row.is_subscription && (
