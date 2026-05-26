@@ -1,0 +1,33 @@
+{
+  "paper": "Auto-Encoding Variational Bayes (Kingma & Welling, 2013)",
+  "arxiv": "1312.6114",
+  "epochs_gpu": 500,
+  "epochs_cpu": 30,
+  "batch_size": 100,
+  "l_samples": 1,
+  "base_lr": 0.01,
+  "lr_search": [0.01, 0.02, 0.1],
+  "weight_decay": 1e-4,
+  "seed": 42,
+  "hidden_units_mnist": 500,
+  "hidden_units_freyface": 200,
+  "nz_list_mnist": [3, 5, 10, 20, 200],
+  "nz_list_freyface": [2, 5, 10, 20],
+  "ml_n_train_list": [1000, 50000],
+  "ml_importance_samples_gpu": 50,
+  "ml_importance_samples_cpu": 10,
+  "ml_epochs_gpu": 500,
+  "ml_epochs_cpu": 20,
+  "decoder_mnist": "bernoulli",
+  "decoder_freyface": "gaussian_sigmoid_bounded",
+  "encoder_arch": "single_hidden_tanh_mlp",
+  "optimizer": "adagrad",
+  "prior": "N(0,I)",
+  "hmc_leapfrog_steps": 10,
+  "mcem_weight_update_steps_per_sample": 5,
+  "datasets": {
+    "mnist": "torchvision.datasets.MNIST",
+    "frey_face": "https://cs.nyu.edu/~roweis/data/frey_rawface.mat"
+  },
+  "assumptions_applied": ["ENV001", "ENV002", "ENV003"]
+}

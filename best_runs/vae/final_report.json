@@ -1,0 +1,315 @@
+{
+  "paper": {
+    "id": "",
+    "title": "paper_text"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "Reproduced a Variational Autoencoder (VAE) paper (Auto-Encoding Variational Bayes, Kingma & Welling 2013). The paper introduces the SGVB estimator and reparameterization trick for learning deep latent variable models. Implemented encoder q(z|x) as a single-hidden-layer MLP outputting mu and log_sigma^2 of a diagonal Gaussian, Bernoulli MLP decoder for MNIST, reparameterization trick z = mu + sigma * eps, and SGVB ELBO loss with closed-form Gaussian KL term. Ran on MNIST with Nz=3,10,20 (AEVB) and Nz=3 (WakeSleep baseline). AEVB test ELBO (Nz=20): -123.19468688964844 (paper reports ~-98). Marginal log-likelihood (Nz=1000 IS): AEVB=-200.0067901611328, WakeSleep=-200.5636444091797, MCEM=-204.92733764648438. Frey Face dataset was unavailable (403/404 from source). Rubric scoring encountered errors. Overall rubric score: 0.000. Run succeeded: True.",
+  "baseline_metrics": {
+    "status": "complete",
+    "data_load_failures": [
+      {
+        "dataset": "frey_face",
+        "error": "HTTP Error 403: Forbidden"
+      }
+    ],
+    "per_model": {
+      "mnist_aevb_nz3": {
+        "train_elbo_final": -156.68093755086264,
+        "test_elbo_final": -156.03001403808594
+      },
+      "mnist_ws_nz3": {
+        "train_elbo_final": -169.89402770996094,
+        "test_elbo_final": -173.2631072998047
+      },
+      "mnist_aevb_nz10": {
+        "train_elbo_final": -127.84455745697022,
+        "test_elbo_final": -126.62580108642578
+      },
+      "mnist_aevb_nz20": {
+        "train_elbo_final": -124.4760018157959,
+        "test_elbo_final": -123.19468688964844
+      }
+    },
+    "mnist_aevb_beats_ws_nz3": 1.0,
+    "mnist_aevb_test_elbo_nz20": -123.19468688964844,
+    "fig3_ml": {
+      "AEVB": {
+        "1000": -200.0067901611328
+      },
+      "WakeSleep": {
+        "1000": -200.5636444091797
+      },
+      "MCEM": {
+        "1000": -204.92733764648438
+      }
+    },
+    "aevb_ml_ntr1000": -200.0067901611328,
+    "ws_ml_ntr1000": -200.5636444091797,
+    "mcem_ml_ntr1000": -204.92733764648438,
+    "wall_time_seconds": 1793.8,
+    "scope": {
+      "models_run": [
+        "mnist_aevb_nz3",
+        "mnist_ws_nz3",
+        "mnist_aevb_nz10",
+        "mnist_aevb_nz20"
+      ],
+      "datasets": [
+        "mnist"
+      ]
+    }
+  },
+  "paper_claims": {
+    "core_contribution": "Auto-Encoding Variational Bayes (VAE): introduces the SGVB estimator (Stochastic Gradient Variational Bayes) and reparameterization trick for efficient inference in deep latent variable models p(x,z) = p(z)p(x|z). The encoder q_phi(z|x) approximates the posterior; z = mu + sigma * eps with eps ~ N(0,I) enables gradient flow through the sampling operation. The ELBO L^B = -KL(q||p) + E[log p(x|z)] is optimized with Adagrad on minibatches (eq. 7-10, Appendix C).",
+    "claims": [
+      {
+        "method": "AEVB (VAE)",
+        "dataset": "MNIST",
+        "metric": "test_elbo",
+        "expected_result": "~-98 for Nz=20 (per paper Table 2 / Figure 3)"
+      },
+      {
+        "method": "AEVB vs WakeSleep",
+        "dataset": "MNIST",
+        "metric": "marginal_log_likelihood",
+        "expected_result": "AEVB log p(x) > WakeSleep log p(x) for same Nz"
+      },
+      {
+        "method": "AEVB",
+        "dataset": "Frey Face",
+        "metric": "qualitative_generation",
+        "expected_result": "Smooth latent space traversal (Figure 2)"
+      }
+    ]
+  },
+  "rubric": {
+    "overall_score": 0.6457339727475473,
+    "rubric_source": "generated",
+    "leaf_count": 23,
+    "graded": 18,
+    "target_score": null,
+    "meets_target": null,
+    "degraded": false,
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.6457339727475473,
+    "compute_scope": null,
+    "areas": [
+      {
+        "area": "Method and code fidelity to the paper",
+        "score": 0.7450000000000001,
+        "weight": 0.34188034188034194
+      },
+      {
+        "area": "Data and preprocessing fidelity",
+        "score": 0.5,
+        "weight": 0.12820512820512822
+      },
+      {
+        "area": "Experiment execution and reproducibility",
+        "score": 0.46499999999999997,
+        "weight": 0.15384615384615385
+      },
+      {
+        "area": "Evaluation protocol and metric correctness",
+        "score": 0.415,
+        "weight": 0.1452991452991453
+      },
+      {
+        "area": "Result match versus the paper's reported targets",
+        "score": 0.21499999999999997,
+        "weight": 0.17094017094017097
+      },
+      {
+        "area": "Artifact completeness and provenance",
+        "score": 0.265,
+        "weight": 0.05982905982905984
+      }
+    ],
+    "leaf_scores": [
+      {
+        "id": "98188981942b48c984f99d5086665fbe",
+        "score": 0.9,
+        "justification": "Summary explicitly states encoder is single-hidden-layer MLP outputting mu and log_sigma^2 of diagonal Gaussian; train.py docstring confirms tanh activation."
+      },
+      {
+        "id": "e876be7d07c04fa5ad3589cc1ba9f4aa",
+        "score": 0.9,
+        "justification": "Summary explicitly mentions reparameterization trick z = mu + sigma * eps consistent with the requirement."
+      },
+      {
+        "id": "8fa3a913966b4b0e9196be8d512671e6",
+        "score": 0.9,
+        "justification": "Summary states SGVB ELBO loss with closed-form Gaussian KL and L=1 sample per datapoint, matching eq. 7/10."
+      },
+      {
+        "id": "6f1d68898e82466eb9f75a73a97a61e1",
+        "score": 0.8,
+        "justification": "train.py sets BASE_LR=0.01 and WEIGHT_DECAY=1e-4 with comment referencing Adagrad and Gaussian prior; consistent with requirement."
+      },
+      {
+        "id": "d9b7e232db9d44f295689d4169c1fdc8",
+        "score": 1.0,
+        "justification": "load_mnist divides by 255.0 mapping pixels to [0,1] for Bernoulli decoder."
+      },
+      {
+        "id": "cd0fd20c6a7142f485016b792d8265ed",
+        "score": 0.4,
+        "justification": "Train/test split used and Ntrain=1000 evaluated, but only 1000 (not 50000) was run since GPU branch not taken; partial."
+      },
+      {
+        "id": "7efc207b60f244f5af0d8549c41c732e",
+        "score": 1.0,
+        "justification": "BATCH_SIZE=100 and L_SAMPLES=1 are set, matching Algorithm 1."
+      },
+      {
+        "id": "37998d711ada4aaabe399bdfaebf63da",
+        "score": 0.3,
+        "justification": "ML experiment for AEVB/WS/MCEM at Nz=3 Ntrain=1000 is run, but no evidence of 100 hidden units, N(0,0.01) init, or Adagrad stepsize search from {0.01,0.02,0.1}."
+      },
+      {
+        "id": "03636ddd723f4f458c7bc98d1f21dfaa",
+        "score": 0.7,
+        "justification": "SEED=42 is set and training_curves.json is produced; x-axis being training samples is plausible but not explicitly verified."
+      },
+      {
+        "id": "0a62817a07984d2fa20ed5a926923745",
+        "score": 0.8,
+        "justification": "train_elbo_final and test_elbo_final reported per model in nats consistent with Figure 2 quantity."
+      },
+      {
+        "id": "2b3b7424e1c347d8b5a532de031838d9",
+        "score": 0.1,
+        "justification": "No evidence of three-stage HMC + density-estimator importance sampling from Appendix D; report just mentions Nz=1000 IS estimate."
+      },
+      {
+        "id": "6050466659b54ea3bae0887ddae71f89",
+        "score": 0.2,
+        "justification": "MCEM result is reported but no visible evidence of 10 HMC leapfrog steps tuned to ~90% acceptance and 5 Adagrad updates per sample."
+      },
+      {
+        "id": "99838c613220455c8fb25ed6b0cc3650",
+        "score": 0.6,
+        "justification": "Wake-sleep baseline at Nz=3 is run and reported; same architecture/Adagrad schedule plausible but not explicitly shown."
+      },
+      {
+        "id": "493cc7819be44f7ca6500275568ae126",
+        "score": 0.4,
+        "justification": "AEVB beats WS at Nz=3 (-156 vs -173) and best AEVB reached -123 at Nz=20, but does not reach the [-110,-100] range expected for larger Nz."
+      },
+      {
+        "id": "baba073dd77d4643b78aaa6aae0cc401",
+        "score": 0.3,
+        "justification": "AEVB (-200.0) > WS (-200.6) > MCEM (-204.9) ordering matches qualitatively, but Ntrain=1000 was used not 50000 as required."
+      },
+      {
+        "id": "01c8f9e41ee34297a8afee130663c4f4",
+        "score": 0.4,
+        "justification": "train.py exists and a README.md is present in outputs, but there is no evidence the README lists exact commands to reproduce Figures 2, 3, and 4."
+      },
+      {
+        "id": "8343719967744edc8c220772f1e1ef1f",
+        "score": 0.3,
+        "justification": "fig_2_mnist.png and fig_3_marginal_loglik.png are present, but no Figure 4 (latent manifold) and no saved model checkpoints are evident."
+      },
+      {
+        "id": "5c5a5018657340b79f12236d8cb985cd",
+        "score": 0.0,
+        "justification": "No requirements.txt, environment.yml, or Dockerfile is shown in the code listing."
+      },
+      {
+        "id": "0bbe9694d7294f71bfba2d52fabb003f",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "1f2f6376079b4b31a160a608411d6dbc",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "553858f8b54e4b77ac72f645cd7ceff2",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "d6ac1cb0c908457c8873e910d12a58f0",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "e496d125a4db4a1b8a50bcf6853bf3e6",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      }
+    ]
+  },
+  "improvements": [
+    {
+      "title": "Fix Frey Face Download Fallback",
+      "outcome": "marginal",
+      "delta": 0.0
+    },
+    {
+      "title": "Extend Training & Tune LR for ELBO",
+      "outcome": "declined",
+      "delta": 0.0
+    },
+    {
+      "title": "Harden Metric Schema for Rubric Verifier",
+      "outcome": "failed",
+      "delta": 0.0
+    }
+  ],
+  "primitive_trace": {
+    "calls": 34,
+    "by_primitive": {
+      "check_user_messages": 1,
+      "heartbeat": 10,
+      "understand_section": 4,
+      "extract_hyperparameters": 1,
+      "detect_environment": 1,
+      "resolve_gpu_requirements": 1,
+      "build_environment": 1,
+      "plan_reproduction": 1,
+      "implement_baseline": 3,
+      "run_experiment": 3,
+      "verify_against_rubric": 4,
+      "propose_improvements": 1,
+      "record_candidate_outcome": 3
+    }
+  },
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 3,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": null,
+    "grader": null
+  },
+  "started_at": "2026-05-26T07:32:05.770145+00:00",
+  "completed_at": "2026-05-26T09:28:53.760699+00:00",
+  "scope": {
+    "requested": "Full paper reproduction: MNIST + Frey Face, AEVB + WakeSleep + MCEM baselines",
+    "ran": [
+      "MNIST AEVB Nz=3,10,20",
+      "MNIST WakeSleep Nz=3",
+      "MNIST MCEM Nz=3 (marginal log-likelihood only)"
+    ],
+    "gaps": [
+      "Frey Face dataset: source URL returns 403/404, dataset unavailable",
+      "Full Frey Face latent space visualizations (Figure 2): not run"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "paperId": "1412.6980",
+  "paperTitle": "paper_text",
+  "paper": {
+    "id": "1412.6980",
+    "title": "paper_text"
+  },
+  "projectId": "prj_6d41d2f09c026403",
+  "outputDir": "/home/abheekp/openresearch/runs/prj_6d41d2f09c026403",
+  "runMode": "rlm",
+  "status": "completed",
+  "updatedAt": "2026-05-26T15:43:24.687507+00:00",
+  "startedAt": "2026-05-26T15:27:06.640760+00:00",
+  "primitiveProvider": "real",
+  "cost_summary": {
+    "usd_total": 0.0,
+    "usd_this_iter": 0.0,
+    "iter_count": 18,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-05-26T15:42:56.459577+00:00"
+  },
+  "completedAt": "2026-05-26T15:43:24.687507+00:00"
+}

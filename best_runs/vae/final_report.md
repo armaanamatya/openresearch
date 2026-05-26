@@ -1,0 +1,105 @@
+# PARTIAL REPRODUCTION
+
+**Paper:** paper_text
+
+## Rubric Score
+
+**Overall score:** 0.646  (no target set)
+
+_18/23 rubric leaves graded · self-generated rubric — not PaperBench-official_
+
+| Area | Score | Notes |
+|---|---|---|
+| Method and code fidelity to the paper | 0.745 |  |
+| Data and preprocessing fidelity | 0.500 |  |
+| Experiment execution and reproducibility | 0.465 |  |
+| Evaluation protocol and metric correctness | 0.415 |  |
+| Result match versus the paper's reported targets | 0.215 |  |
+| Artifact completeness and provenance | 0.265 |  |
+
+## Reproduction Summary
+
+Reproduced a Variational Autoencoder (VAE) paper (Auto-Encoding Variational Bayes, Kingma & Welling 2013). The paper introduces the SGVB estimator and reparameterization trick for learning deep latent variable models. Implemented encoder q(z|x) as a single-hidden-layer MLP outputting mu and log_sigma^2 of a diagonal Gaussian, Bernoulli MLP decoder for MNIST, reparameterization trick z = mu + sigma * eps, and SGVB ELBO loss with closed-form Gaussian KL term. Ran on MNIST with Nz=3,10,20 (AEVB) and Nz=3 (WakeSleep baseline). AEVB test ELBO (Nz=20): -123.19468688964844 (paper reports ~-98). Marginal log-likelihood (Nz=1000 IS): AEVB=-200.0067901611328, WakeSleep=-200.5636444091797, MCEM=-204.92733764648438. Frey Face dataset was unavailable (403/404 from source). Rubric scoring encountered errors. Overall rubric score: 0.000. Run succeeded: True.
+
+## Scope
+
+**Requested:** Full paper reproduction: MNIST + Frey Face, AEVB + WakeSleep + MCEM baselines
+
+**Ran:**
+- MNIST AEVB Nz=3,10,20
+- MNIST WakeSleep Nz=3
+- MNIST MCEM Nz=3 (marginal log-likelihood only)
+
+**Gaps:**
+- Frey Face dataset: source URL returns 403/404, dataset unavailable
+- Full Frey Face latent space visualizations (Figure 2): not run
+
+## Baseline Metrics vs. Paper Claims
+
+| Metric | Reproduced | Paper Claim |
+|---|---|---|
+| aevb_ml_ntr1000 | -200.0067901611328 | — |
+| claims | — | [{'method': 'AEVB (VAE)', 'dataset': 'MNIST', 'metric': 'test_elbo', 'expected_result': '~-98 for Nz=20 (per paper Table 2 / Figure 3)'}, {'method': 'AEVB vs WakeSleep', 'dataset': 'MNIST', 'metric': 'marginal_log_likelihood', 'expected_result': 'AEVB log p(x) > WakeSleep log p(x) for same Nz'}, {'method': 'AEVB', 'dataset': 'Frey Face', 'metric': 'qualitative_generation', 'expected_result': 'Smooth latent space traversal (Figure 2)'}] |
+| core_contribution | — | Auto-Encoding Variational Bayes (VAE): introduces the SGVB estimator (Stochastic Gradient Variational Bayes) and reparameterization trick for efficient inference in deep latent variable models p(x,z) = p(z)p(x|z). The encoder q_phi(z|x) approximates the posterior; z = mu + sigma * eps with eps ~ N(0,I) enables gradient flow through the sampling operation. The ELBO L^B = -KL(q||p) + E[log p(x|z)] is optimized with Adagrad on minibatches (eq. 7-10, Appendix C). |
+| data_load_failures | [{'dataset': 'frey_face', 'error': 'HTTP Error 403: Forbidden'}] | — |
+| fig3_ml | {'AEVB': {'1000': -200.0067901611328}, 'WakeSleep': {'1000': -200.5636444091797}, 'MCEM': {'1000': -204.92733764648438}} | — |
+| mcem_ml_ntr1000 | -204.92733764648438 | — |
+| mnist_aevb_beats_ws_nz3 | 1.0 | — |
+| mnist_aevb_test_elbo_nz20 | -123.19468688964844 | — |
+| per_model | {'mnist_aevb_nz3': {'train_elbo_final': -156.68093755086264, 'test_elbo_final': -156.03001403808594}, 'mnist_ws_nz3': {'train_elbo_final': -169.89402770996094, 'test_elbo_final': -173.2631072998047}, 'mnist_aevb_nz10': {'train_elbo_final': -127.84455745697022, 'test_elbo_final': -126.62580108642578}, 'mnist_aevb_nz20': {'train_elbo_final': -124.4760018157959, 'test_elbo_final': -123.19468688964844}} | — |
+| scope | {'models_run': ['mnist_aevb_nz3', 'mnist_ws_nz3', 'mnist_aevb_nz10', 'mnist_aevb_nz20'], 'datasets': ['mnist']} | — |
+| status | complete | — |
+| wall_time_seconds | 1793.8 | — |
+| ws_ml_ntr1000 | -200.5636444091797 | — |
+
+## Improvement Candidates
+
+**1. Candidate 1** — marginal
+**2. Candidate 2** — declined
+**3. Candidate 3** — failed
+
+## Cost
+
+| Category | USD |
+|---|---|
+| Primitive-internal LLM | $0.000000 |
+| **Total LLM** | **$0.000000** |
+
+**Iterations:** 3
+
+## Token Usage
+
+| Metric | Value |
+|---|---|
+| Total LLM calls | 34 |
+| Input tokens | 32 |
+| Output tokens | 4,867 |
+| Cache creation (input) | 63,858 |
+| Cache read (input, prompt-cache-billed) | 217,338 |
+
+### Per-primitive token usage
+
+| Primitive | Calls | Input | Output |
+|---|---|---|---|
+| plan_reproduction | 1 | 6 | 2,549 |
+| propose_improvements | 1 | 6 | 1,186 |
+| verify_against_rubric | 4 | 20 | 1,132 |
+
+## Per-Step Timing
+
+**Total wall clock:** 7008.0s (1h 56m 48s)
+
+| Primitive | Calls | Total time (s) |
+|---|---|---|
+| run_experiment | 3 | 5973.51 |
+| implement_baseline | 3 | 405.84 |
+| verify_against_rubric | 4 | 112.77 |
+| plan_reproduction | 1 | 40.48 |
+| propose_improvements | 1 | 23.46 |
+| build_environment | 1 | 0.36 |
+| understand_section | 4 | 0.01 |
+
+**GPU hours:** 1.659h on `rtx4090` × 1
+
+---
+_Generated by ReproLab RLM orchestrator (Issue #60)._

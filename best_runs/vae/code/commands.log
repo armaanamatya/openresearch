@@ -1,0 +1,9 @@
+# Commands log — VAE (AEVB) reproduction
+# Paper: Auto-Encoding Variational Bayes, Kingma & Welling 2013
+
+# Install dependencies (handled by Dockerfile):
+#   pip install torch==2.2.0 torchvision==0.17.0 (CPU wheel)
+#   pip install scipy==1.12.0 matplotlib==3.8.0 numpy==1.26.4 tqdm==4.66.0
+
+# Run the reproduction:
+python train.py

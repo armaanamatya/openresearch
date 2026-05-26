@@ -1,0 +1,6 @@
+# Adam paper reproduction — requirements
+# NOTE: torch, torchvision are PRE-INSTALLED on RunPod pytorch images — NOT listed here
+matplotlib==3.8.0
+numpy==1.26.4
+tqdm==4.66.0
+datasets==2.18.0

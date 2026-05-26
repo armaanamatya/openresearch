@@ -1,0 +1,53 @@
+{
+  "adam":         {"lr": 0.001, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8},
+  "adamax":       {"lr": 0.002, "beta1": 0.9, "beta2": 0.999},
+  "sgd_nesterov": {"lr": 0.01,  "momentum": 0.9, "nesterov": true},
+  "adagrad":      {"lr": 0.01,  "eps": 1e-8},
+  "rmsprop":      {"lr": 0.001, "alpha": 0.99, "eps": 1e-8},
+  "adadelta":     {"lr": 1.0,   "rho": 0.95, "eps": 1e-6},
+
+  "mnist_logistic": {
+    "batch_size": 128,
+    "epochs_gpu": 200,
+    "epochs_cpu": 10,
+    "lr_decay": "alpha_t = alpha / sqrt(t)"
+  },
+  "imdb_logistic": {
+    "batch_size": 128,
+    "epochs_gpu": 100,
+    "epochs_cpu": 5,
+    "vocab_size": 10000,
+    "dropout": 0.5,
+    "lr_decay": "alpha_t = alpha / sqrt(t) for SGD+Nesterov and AdaGrad"
+  },
+  "mnist_mlp": {
+    "batch_size": 128,
+    "epochs_gpu": 200,
+    "epochs_cpu": 10,
+    "hidden_sizes": [1000, 1000],
+    "dropout": 0.5
+  },
+  "cifar10_cnn": {
+    "batch_size": 128,
+    "epochs_gpu": 45,
+    "epochs_cpu": 3,
+    "architecture": "c64-c64-c128-1000",
+    "conv_kernel": "5x5",
+    "pool": "3x3 stride 2",
+    "whitening": true,
+    "input_dropout": 0.2,
+    "fc_dropout": 0.5
+  },
+  "vae_sweep": {
+    "epochs_gpu": 100,
+    "epochs_cpu": 15,
+    "batch_size": 128,
+    "latent_dim": 50,
+    "hidden_dim": 500,
+    "hidden_activation": "softplus",
+    "beta1_values":   [0.0, 0.9],
+    "beta2_values":   [0.99, 0.999, 0.9999],
+    "log10_lr_values": [-5, -4, -3, -2, -1]
+  },
+  "seed": 42
+}

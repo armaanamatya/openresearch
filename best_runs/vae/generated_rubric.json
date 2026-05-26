@@ -1,0 +1,247 @@
+{
+  "id": "a26b4bded53d40f3a1eaff683e323901",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "1a787c8c2bfe468c820bc01099bf73bc",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.34188034188034194,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "98188981942b48c984f99d5086665fbe",
+          "requirements": "Code implements the encoder q\u03c6(z|x) as a single-hidden-layer MLP with tanh activation that outputs both \u03bc and log \u03c3\u00b2 of a diagonal Gaussian over z, as specified in Appendix C.2 / Section 3.",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e496d125a4db4a1b8a50bcf6853bf3e6",
+          "requirements": "Code implements the Bernoulli MLP decoder (Appendix C.1) with a single tanh hidden layer and sigmoid output for MNIST, and a Gaussian MLP decoder with sigmoid-bounded mean for the Frey Face dataset.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e876be7d07c04fa5ad3589cc1ba9f4aa",
+          "requirements": "The reparameterization trick is implemented as z = \u03bc + \u03c3 \u2299 \u03b5 with \u03b5 ~ N(0, I), with \u03c3 produced via exp(0.5\u00b7log \u03c3\u00b2) so gradients flow through \u03bc and \u03c3 (Section 2.4 / eq. 10).",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "8fa3a913966b4b0e9196be8d512671e6",
+          "requirements": "Training loss is the SGVB estimator L^B (eq. 7/10): the closed-form Gaussian KL term \u00bd \u03a3_j (1 + log \u03c3_j\u00b2 \u2212 \u03bc_j\u00b2 \u2212 \u03c3_j\u00b2) plus the Monte Carlo reconstruction term, with prior p\u03b8(z) = N(0, I) and L = 1 sample per datapoint.",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "6f1d68898e82466eb9f75a73a97a61e1",
+          "requirements": "Optimization uses Adagrad on the per-minibatch SGVB estimator (eq. 8) with a small weight-decay term corresponding to a Gaussian prior p(\u03b8) = N(0, I), as described in Section 5.",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "5af14d9ee34148aeb3b873d3d229fa00",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.12820512820512822,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "d9b7e232db9d44f295689d4169c1fdc8",
+          "requirements": "The MNIST dataset is loaded and pixel values are mapped to [0,1] for use with the Bernoulli decoder log-likelihood.",
+          "weight": 0.4,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "1f2f6376079b4b31a160a608411d6dbc",
+          "requirements": "The Frey Face dataset is loaded from the Roweis source (frey_rawface.mat) and values are scaled to [0,1] for use with the sigmoid-bounded Gaussian decoder.",
+          "weight": 0.35,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "cd0fd20c6a7142f485016b792d8265ed",
+          "requirements": "An i.i.d. train/test split is used for both datasets, and the marginal-likelihood experiment uses Ntrain \u2208 {1000, 50000} as in Figure 3.",
+          "weight": 0.25,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "61bb2d3750f94401aa8763ebec08392d",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.15384615384615385,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "7efc207b60f244f5af0d8549c41c732e",
+          "requirements": "Training script runs minibatch SGD with M = 100 and L = 1 sample per datapoint, matching Algorithm 1 settings.",
+          "weight": 0.3,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "553858f8b54e4b77ac72f645cd7ceff2",
+          "requirements": "Lower-bound experiment (Figure 2) is executed for MNIST with 500 hidden units across Nz \u2208 {3, 5, 10, 20, 200} and for Frey Face with 200 hidden units across Nz \u2208 {2, 5, 10, 20}.",
+          "weight": 0.35,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "37998d711ada4aaabe399bdfaebf63da",
+          "requirements": "Marginal-likelihood experiment is executed with 100 hidden units and Nz = 3 for AEVB, wake-sleep, and MCEM, with parameters initialized from N(0, 0.01) and Adagrad global stepsize selected from {0.01, 0.02, 0.1}.",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "03636ddd723f4f458c7bc98d1f21dfaa",
+          "requirements": "A random seed is set and training curves are logged as a function of number of training samples evaluated (matching the x-axis of Figures 2 and 3).",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "790f6ac22b724a499bef06e63fedaa18",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.1452991452991453,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "0a62817a07984d2fa20ed5a926923745",
+          "requirements": "Reported lower bound is the per-datapoint average variational lower bound L (in nats), evaluated on both train and test sets, as plotted in Figure 2.",
+          "weight": 0.35,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2b3b7424e1c347d8b5a532de031838d9",
+          "requirements": "Marginal log-likelihood is estimated using the three-stage importance-sampling estimator of Appendix D (HMC posterior samples \u2192 density estimator q(z) \u2192 importance ratio), with L=50 posterior samples per datapoint on the first 1000 train/test points.",
+          "weight": 0.35,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "6050466659b54ea3bae0887ddae71f89",
+          "requirements": "MCEM baseline is implemented as in Appendix E: 10 HMC leapfrog steps with stepsize tuned to ~90% acceptance, followed by 5 Adagrad weight-update steps per sample.",
+          "weight": 0.2,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "99838c613220455c8fb25ed6b0cc3650",
+          "requirements": "Wake-sleep baseline uses the same encoder/decoder architecture as AEVB and is trained with the same Adagrad schedule (Section 5).",
+          "weight": 0.1,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "b703be10384d4bb29296b53a9a031949",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.17094017094017097,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "493cc7819be44f7ca6500275568ae126",
+          "requirements": "On MNIST, the AEVB test lower bound converges faster and to a higher value than wake-sleep across all Nz settings (reproduces qualitative ordering of Figure 2, with final L in approximately the [-110, -100] nats range for larger Nz).",
+          "weight": 0.35,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "d6ac1cb0c908457c8873e910d12a58f0",
+          "requirements": "On Frey Face, AEVB attains a final test lower bound roughly in the 1300-1600 nats range and exceeds wake-sleep across Nz \u2208 {2,5,10,20} (Figure 2 bottom row).",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "baba073dd77d4643b78aaa6aae0cc401",
+          "requirements": "On the marginal-likelihood experiment (Nz=3, Ntrain=50000), AEVB achieves a higher estimated marginal log-likelihood than both wake-sleep and MCEM and matches the ordering shown in Figure 3.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "0bbe9694d7294f71bfba2d52fabb003f",
+          "requirements": "A 2D-latent model is trained and the learned manifold visualization (sweep over inverse-Gaussian-CDF grid on the unit square through the decoder) is produced for MNIST and Frey Face, qualitatively matching Figure 4.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "b9d5ec115f644fefb605531bf70525c1",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.05982905982905984,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "01c8f9e41ee34297a8afee130663c4f4",
+          "requirements": "Repository includes a runnable training entry point (e.g. train.py) plus a README that lists the exact commands to reproduce Figure 2, Figure 3, and Figure 4.",
+          "weight": 0.4,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "8343719967744edc8c220772f1e1ef1f",
+          "requirements": "Saved model checkpoints and the produced figures (lower-bound curves, marginal-likelihood curves, latent manifold) are committed alongside the code.",
+          "weight": 0.35,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5c5a5018657340b79f12236d8cb985cd",
+          "requirements": "An environment specification (requirements.txt / environment.yml / Dockerfile) pinning the deep-learning framework and numerical libraries is included.",
+          "weight": 0.25,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}
