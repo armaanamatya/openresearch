@@ -246,18 +246,46 @@ class SourcePdfArtifact(BaseModel):
     codePath: str
 
 
+def _coerce_to_float_or_none(v: Any) -> Any:
+    """Defensive coercion for BenchmarkSummary numeric fields.
+
+    History: the finalize_benchmark path in this file historically picked
+    `next(iter(baseline_metrics))` and used the resulting value as
+    `reproducedValue` — when the first key happened to be a dict (Adam's
+    `scope`) or non-scalar, pydantic 500'd on every GET /runs/<id>, breaking
+    the lab UI's "load saved run" flow. We've fixed the producer (line ~1820)
+    AND we defensively coerce here so any other producer's drift (or stale
+    on-disk demo_status.json) degrades to None rather than raising.
+    """
+    if v is None or isinstance(v, bool):  # bool is int — exclude explicitly
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return None
+    return None  # dict, list, anything else → None (don't 500 the GET)
+
+
 class BenchmarkSummary(BaseModel):
     benchmarkName: str
     paperbenchTaskId: str
     overallScore: float
     targetMetric: str
-    targetValue: float
-    reproducedValue: float
-    deltaValue: float
+    targetValue: float | None = None
+    reproducedValue: float | None = None
+    deltaValue: float | None = None
     verdict: str
     reportPath: str
     comparisonPath: str
     logPath: str
+
+    @field_validator("reproducedValue", "deltaValue", "targetValue", "ourRubricScore", "verificationDelta", mode="before")
+    @classmethod
+    def _defensive_numeric(cls, v: Any) -> Any:
+        return _coerce_to_float_or_none(v)
     # Track 3 — rubric-verifier comparison. All optional/defaulted so old
     # demo_status.json files (and offline-demo runs) still parse — and, crucially,
     # so these survive the LiveRunState(**status) round-trip instead of being
@@ -1820,8 +1848,26 @@ def finalize_benchmark():
             overall_score = rubric.get("overall_score") or 0.0
             baseline = fr.get("baseline_metrics") or {{}}
             # Derive a single representative metric value if any metrics exist.
-            first_metric_key = next(iter(baseline), None)
-            first_metric_val = baseline.get(first_metric_key) if first_metric_key else None
+            # 2026-05-26 fix: previously this picked next(iter(baseline)) which
+            # for Adam's nested metrics returned the `scope` dict — Pydantic
+            # rejected it because reproducedValue is typed `float`, the GET
+            # /runs/<id> endpoint 500'd, and the lab UI fell back to upload.
+            # Skip dicts/lists/None; coerce string-numerics to float; first
+            # SCALAR wins.
+            first_metric_key: str | None = None
+            first_metric_val: float | None = None
+            for _k, _v in baseline.items():
+                if isinstance(_v, bool):
+                    continue  # bool is int — skip to avoid e.g. aevb_beats_wake_sleep_mnist
+                if isinstance(_v, (int, float)):
+                    first_metric_key, first_metric_val = _k, float(_v)
+                    break
+                if isinstance(_v, str):
+                    try:
+                        first_metric_key, first_metric_val = _k, float(_v)
+                        break
+                    except ValueError:
+                        continue
             bench.update({{
                 "overallScore": round(overall_score * 100, 1),
                 "verdict": fr.get("verdict") or bench.get("verdict"),
