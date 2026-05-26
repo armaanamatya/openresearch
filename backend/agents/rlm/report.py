@@ -645,6 +645,15 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — marker is best-effort; never crash the run
         logger.exception("report: failed to write .preserved marker (non-fatal)")
 
+    # --- Token aggregate (PR-α.5) -----------------------------------------------
+    # Write tokens_total.json alongside the final report so the 3-source
+    # estimator (PR-ε) can read per-run token distributions without re-parsing
+    # cost_ledger.jsonl on every calibration pass.
+    try:
+        write_tokens_total(project_dir)
+    except Exception:  # noqa: BLE001 — aggregate is best-effort; never crash the run
+        logger.warning("report: tokens_total.json write failed (non-fatal)")
+
     # Update calibration priors from the new preserved run so the next estimate
     # is more accurate. Runs in a try/except so it never blocks report writing.
     if report.verdict != "failed":
@@ -698,6 +707,97 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _aggregate_tokens_total(project_dir: Path) -> dict:
+    """Aggregate cost_ledger.jsonl entries into the tokens_total summary schema.
+
+    Returns a dict with the shape documented in PR-α.5 spec:
+      - schema_version: 1
+      - by_primitive: {name: {input_tokens, output_tokens, calls}}
+      - by_model: {model: {input_tokens, output_tokens}}
+      - grand_total: {input_tokens, output_tokens, cache_read_input_tokens,
+                      cache_creation_input_tokens, calls}
+      - computed_at_utc: ISO timestamp
+    """
+    ledger_path = project_dir / "cost_ledger.jsonl"
+    by_primitive: dict[str, dict] = {}
+    by_model: dict[str, dict] = {}
+    grand_total_input = 0
+    grand_total_output = 0
+    grand_total_cache_read = 0
+    grand_total_cache_creation = 0
+    grand_total_calls = 0
+
+    if ledger_path.exists():
+        for line in ledger_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Support both field names: the canonical field and the alias written by to_json()
+            primitive = str(row.get("primitive") or row.get("agent_id") or "unknown")
+            model = str(row.get("model") or "unknown")
+            input_t = int(row.get("input_tokens") or row.get("tokens_in") or 0)
+            output_t = int(row.get("output_tokens") or row.get("tokens_out") or 0)
+            cache_read = int(row.get("cache_read_input_tokens") or 0)
+            cache_creation = int(row.get("cache_creation_input_tokens") or 0)
+
+            # by_primitive
+            prim_rec = by_primitive.setdefault(
+                primitive, {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+            )
+            prim_rec["input_tokens"] += input_t
+            prim_rec["output_tokens"] += output_t
+            prim_rec["calls"] += 1
+
+            # by_model
+            model_rec = by_model.setdefault(
+                model, {"input_tokens": 0, "output_tokens": 0}
+            )
+            model_rec["input_tokens"] += input_t
+            model_rec["output_tokens"] += output_t
+
+            # grand_total
+            grand_total_input += input_t
+            grand_total_output += output_t
+            grand_total_cache_read += cache_read
+            grand_total_cache_creation += cache_creation
+            grand_total_calls += 1
+
+    return {
+        "schema_version": 1,
+        "by_primitive": by_primitive,
+        "by_model": by_model,
+        "grand_total": {
+            "input_tokens": grand_total_input,
+            "output_tokens": grand_total_output,
+            "cache_read_input_tokens": grand_total_cache_read,
+            "cache_creation_input_tokens": grand_total_cache_creation,
+            "calls": grand_total_calls,
+        },
+        "computed_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def write_tokens_total(project_dir: Path) -> Path:
+    """Aggregate cost_ledger.jsonl and write runs/<id>/tokens_total.json.
+
+    Written atomically via tmp + os.replace. Safe to call concurrently with
+    cost_ledger appends — reads the file at a point in time; concurrent
+    writers may add rows after this read and before the next calibration
+    pass (that is acceptable; the file is regenerated at end-of-run).
+
+    Returns the path written.
+    """
+    path = project_dir / "tokens_total.json"
+    data = _aggregate_tokens_total(project_dir)
+    _atomic_write(path, json.dumps(data, indent=2, sort_keys=True))
+    return path
 
 
 def _render_markdown(report: RLMFinalReport) -> str:

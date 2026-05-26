@@ -475,11 +475,20 @@ class ClaudeLlmClient:
     Uses the ``query()`` function from claude-agent-sdk which spawns
     Claude Code as a subprocess. No ANTHROPIC_API_KEY needed — uses
     the user's Claude Code subscription.
+
+    Token usage is captured from ``ResultMessage.usage`` on every call and
+    stored on ``_last_usage`` (a dict in the CostLedgerEntry.from_usage shape).
+    Callers that need the token counts for cost-ledger recording can read
+    ``client._last_usage`` immediately after ``complete()`` returns.
     """
 
     def __init__(self, model: str | None = None, max_turns: int = 1) -> None:
         self._model = model
         self._max_turns = max_turns
+        # Last-call token usage — populated by _async_complete, consumed by
+        # callers (e.g. binding.py's _ledger) for cost-ledger recording.
+        # Defaults to all-zeros so callers can always read it safely.
+        self._last_usage: dict[str, int] = _ZERO_USAGE.copy()
 
     @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
@@ -495,6 +504,9 @@ class ClaudeLlmClient:
         loop, never the caller's, and an abandoned worker is left to GC at
         process exit. Mirrors the rdr ``_run_sdk_in_thread`` fix
         (commit 33c787d).
+
+        Token usage is captured from ``ResultMessage.usage`` and stored on
+        ``self._last_usage`` for the caller to retrieve.
         """
         import asyncio
         import concurrent.futures
@@ -506,16 +518,25 @@ class ClaudeLlmClient:
         )
         try:
             future = ex.submit(lambda: asyncio.run(coro_factory()))
-            return future.result()
+            text, usage = future.result()
+            self._last_usage = usage
+            return text
         finally:
             ex.shutdown(wait=False)
 
-    async def _async_complete(self, *, system: str, user: str) -> str:
+    async def _async_complete(self, *, system: str, user: str) -> tuple[str, dict[str, int]]:
+        """Return (result_text, usage_dict) from the SDK stream.
+
+        Usage dict has the CostLedgerEntry.from_usage shape:
+        input_tokens, output_tokens, cache_creation_input_tokens,
+        cache_read_input_tokens, reasoning_tokens.
+        """
         from claude_agent_sdk import (
             ClaudeAgentOptions,
             ResultMessage,
             query,
         )
+        from backend.services.pricing.token_accumulator import TokenAccumulator
 
         options = ClaudeAgentOptions(
             system_prompt=system,
@@ -526,12 +547,26 @@ class ClaudeLlmClient:
         )
 
         result_text = ""
+        acc = TokenAccumulator()
         async for event in query(prompt=user, options=options):
             if isinstance(event, ResultMessage):
                 result_text = event.result or ""
+                # Capture token usage from the ResultMessage
+                if event.usage is not None:
+                    acc.absorb_usage(event.usage)
                 break
 
-        return result_text
+        return result_text, acc.as_dict()
+
+
+# Zero-usage sentinel — used as the default for _last_usage before any call.
+_ZERO_USAGE: dict[str, int] = {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "reasoning_tokens": 0,
+}
 
 
 __all__ = ["ClaudeLlmClient", "LlmClient", "RlmQueryTool"]

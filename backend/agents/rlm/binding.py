@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import inspect
 import logging
-from datetime import datetime, timezone
 from typing import Any, Callable
 
-from backend.agents.resilience.cost import CostLedgerEntry
 from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
@@ -131,13 +129,28 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
     """
 
     def _ledger() -> None:
-        # Phase 2 (D7): a zero-usage call entry; real token usage lands with run.py (#60).
-        ctx.cost_ledger.append(CostLedgerEntry(
-            timestamp=datetime.now(timezone.utc),
+        """Append a cost-ledger row for this primitive invocation.
+
+        Reads ctx.llm_client._last_usage (populated by ClaudeLlmClient.complete)
+        to capture tokens for primitives that call the LLM via llm_client.
+        For primitives that don't call the LLM (heuristics) or that use the
+        agent engine path (implement_baseline — engine writes its own entry),
+        _last_usage stays at the zeroed value and the entry records 0 tokens,
+        which is correct.
+        """
+        usage: dict = {}
+        llm_client = getattr(ctx, "llm_client", None)
+        if llm_client is not None:
+            last_usage = getattr(llm_client, "_last_usage", None)
+            if isinstance(last_usage, dict):
+                usage = last_usage
+        from backend.agents.resilience.cost import CostLedgerEntry as _CLE
+        ctx.cost_ledger.append(_CLE.from_usage(
             agent_id=name,
             attempt_index=0,
             provider=ctx.provider,
             model=ctx.model,
+            usage=usage,
         ))
 
     def _emit_extra(event: dict) -> None:
@@ -160,6 +173,18 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         args, kwargs, coerced = _coerce_args(fn, args, kwargs)
         if coerced:
             logger.info("primitive %s: args auto-coerced", name)
+        # Zero out llm_client._last_usage at the boundary of every primitive call
+        # so we only capture tokens from THIS invocation, not carry over stale
+        # usage from a previous primitive's LLM call.
+        _llm_client = getattr(ctx, "llm_client", None)
+        if _llm_client is not None and hasattr(_llm_client, "_last_usage"):
+            _llm_client._last_usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "reasoning_tokens": 0,
+            }
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
 
         # Open a worker report for key primitives
