@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
@@ -51,25 +52,62 @@ def flatten_leaves(node: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def roll_up(node: dict[str, Any], leaf_scores: dict[str, float]) -> float:
+def roll_up(
+    node: dict[str, Any],
+    leaf_scores: dict[str, float],
+    skip_set: frozenset[str] = frozenset(),
+) -> float:
     """Recursive weighted roll-up.
 
-    Leaf: return leaf_scores.get(node["id"], 0.0).
-    Non-leaf: weighted average of children scores.
+    Leaf: return leaf_scores.get(node["id"], 0.0), or skip entirely when the
+    leaf id is in skip_set (data-unavailable leaves — excluded from BOTH
+    numerator AND denominator so they don't drag the parent score down).
+    Non-leaf: weighted average of children scores, excluding skipped leaves.
+
+    ``skip_set`` defaults to an empty frozenset so existing callers that pass
+    only ``node`` and ``leaf_scores`` are unaffected (backward compat).
     """
     children: list[dict[str, Any]] = [
         c for c in (node.get("sub_tasks") or []) if isinstance(c, dict)
     ]
     if not children:
-        return leaf_scores.get(str(node.get("id", "")), 0.0)
+        lid = str(node.get("id", ""))
+        if lid in skip_set:
+            # Signal to the parent that this leaf is ineligible.
+            # Callers must filter children by skip_set before computing the
+            # weighted average — see the non-leaf branch below.
+            return None  # type: ignore[return-value]
+        return leaf_scores.get(lid, 0.0)
 
-    total_weight = sum(float(c.get("weight", 0.0) or 0.0) for c in children)
+    # Non-leaf: exclude skipped children from both weight sum and weighted sum.
+    eligible_children = [
+        c for c in children
+        if str(c.get("id", "")) not in skip_set
+        # A child is skipped when it IS a leaf and its id is in skip_set.
+        # For non-leaf children we recurse and check below.
+    ]
+
+    # Build (child, subtree_score) pairs; drop children whose entire subtree
+    # is fully skipped (roll_up returns None for a skipped leaf, but for a
+    # non-leaf intermediate we need a sentinel — use a recursive helper).
+    scored_children: list[tuple[dict[str, Any], float]] = []
+    for child in children:
+        child_score = roll_up(child, leaf_scores, skip_set)
+        if child_score is None:
+            # Entire subtree is unavailable — exclude from this level too.
+            continue
+        scored_children.append((child, child_score))
+
+    if not scored_children:
+        return None  # type: ignore[return-value]  # entire subtree skipped
+
+    total_weight = sum(float(c.get("weight", 0.0) or 0.0) for c, _ in scored_children)
     if total_weight == 0.0:
         return 0.0
 
     weighted_sum = sum(
-        roll_up(c, leaf_scores) * float(c.get("weight", 0.0) or 0.0)
-        for c in children
+        score * float(c.get("weight", 0.0) or 0.0)
+        for c, score in scored_children
     )
     return weighted_sum / total_weight
 
@@ -194,6 +232,201 @@ def _gather_evidence(run_dir: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pre-filter: data-unavailable leaf detection (PR-κ)
+# ---------------------------------------------------------------------------
+
+
+def _normalise_dataset_name(name: str) -> frozenset[str]:
+    """Tokenise a dataset name into a set of lowercase, punctuation-stripped tokens.
+
+    "frey_face" → {"frey", "face"}; "Frey Face" → {"frey", "face"}.
+    Used for fuzzy matching between dataset names and leaf descriptions.
+    """
+    return frozenset(t.lower() for t in re.split(r"[^a-z0-9]+", name.lower()) if t)
+
+
+def _leaf_mentions_dataset(leaf: dict[str, Any], dataset_tokens: frozenset[str]) -> bool:
+    """Return True iff the leaf's id or requirements text contains every token.
+
+    A leaf is linked to a dataset when every token in the normalised dataset name
+    appears in the leaf's text (requirements + id).  The in-order subsequence
+    requirement from rubric_guard is NOT enforced here — we only need set
+    membership because token order is less constrained in leaf descriptions than
+    in metric key names.
+    """
+    text = " ".join([
+        str(leaf.get("id", "")),
+        str(leaf.get("requirements", "")),
+    ]).lower()
+    text_tokens = frozenset(t for t in re.split(r"[^a-z0-9]+", text) if t)
+    return dataset_tokens.issubset(text_tokens)
+
+
+def _detect_data_unavailable_leaves(
+    leaves: list[dict[str, Any]],
+    run_dir: Path,
+    metrics_shape: list[dict] | None = None,
+) -> set[str]:
+    """Return the set of leaf ids that depend on a dataset declared unavailable.
+
+    A leaf is marked unavailable when EITHER of the following runtime signals
+    reports a dataset the leaf depends on as unloadable:
+
+    1. ``metrics.json::data_load_failures[]`` — the agent's runtime record of
+       "I tried to load this dataset and failed (HTTP 403, licence gate, etc.)".
+    2. ``final_report.json::scope.gaps[]`` — the agent's structured declaration
+       of datasets that are out of scope for this run.
+
+    Matching strategy:
+
+    * When ``metrics_shape`` (from PR-θ) is present: each MetricPath entry that
+      declares a ``rubric_leaf_ids`` list is checked by json_path lookup in
+      metrics.json.  If the json_path is absent AND the metric_id or json_path
+      contains a failed-dataset token, all declared ``rubric_leaf_ids`` are
+      marked unavailable.  This is the authoritative path — no fuzzy guessing.
+
+    * When ``metrics_shape`` is absent or a leaf is not covered by it: fuzzy
+      token match between the leaf's id/requirements text and each
+      failed-dataset name.
+
+    Anti-gaming: declaring a dataset in scope.gaps without a corresponding
+    runtime failure record in data_load_failures does NOT automatically skip a
+    leaf — the agent must actually try AND fail (data_load_failures is written
+    only by the agent's own exception handler, not prompted by the LLM).
+    However, scope.gaps alone IS honoured when the leaf has no matching metric
+    in metrics.json — this covers the case where the agent never attempted the
+    dataset at all and honestly declared it out of scope.  The conservative
+    mode (both signals required) would be over-restrictive: an agent that
+    declared a dataset out of scope before even trying is being transparent.
+
+    Returns an empty set when neither signal file exists or is parseable —
+    backward-compatible with pre-κ behaviour.
+    """
+    if not leaves:
+        return set()
+
+    # --- Load signals ---
+    # Signal 1: data_load_failures from the most recent metrics.json
+    failed_datasets: list[str] = []
+    metrics_data: dict[str, Any] = {}
+    # Search for metrics.json under run_dir/code/outputs/ (agent output location)
+    for mpath in sorted((run_dir / "code" / "outputs").rglob("metrics.json")) if (run_dir / "code" / "outputs").exists() else []:
+        try:
+            metrics_data = json.loads(mpath.read_text(encoding="utf-8"))
+            for entry in metrics_data.get("data_load_failures") or []:
+                if isinstance(entry, dict) and entry.get("dataset"):
+                    failed_datasets.append(str(entry["dataset"]))
+                elif isinstance(entry, str) and entry:
+                    failed_datasets.append(entry)
+        except Exception:
+            pass
+        break  # use the first (lexicographically earliest) metrics.json only
+
+    # Signal 2: scope.gaps from final_report.json
+    gap_texts: list[str] = []
+    report_path = run_dir / "final_report.json"
+    if report_path.exists():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            scope = report.get("scope") or {}
+            for gap in scope.get("gaps") or []:
+                if isinstance(gap, str) and gap:
+                    gap_texts.append(gap)
+        except Exception:
+            pass
+
+    if not failed_datasets and not gap_texts:
+        return set()
+
+    # Normalised token sets for each compact dataset name from data_load_failures.
+    # These are short identifiers like "frey_face", "timit", "rcv1" — each
+    # tokenises to a small meaningful set.  The check is: do all tokens of the
+    # dataset name appear in the leaf description?  (leaf_tokens ⊇ ds_tokens)
+    failed_token_sets: list[frozenset[str]] = [
+        _normalise_dataset_name(d) for d in failed_datasets if d
+    ]
+
+    # For scope.gaps, the text is long prose ("Frey Face: HTTP 403 — licence gated"
+    # or "Frey Face dataset not downloaded — licence gated").
+    # Tokenising the whole phrase gives a large set; the leaf description is shorter
+    # and won't contain all prose tokens.  Instead: extract the leading "dataset name"
+    # portion from each gap text — the content words before the first delimiter
+    # (":", "—", "-", "http") that are not common English explanation words.
+    # "Frey Face: HTTP 403 ..." → "Frey Face" → {"frey", "face"}.
+    # "Frey Face dataset not downloaded — ..." → strip stop words → {"frey", "face"}.
+    _GAP_STOP = frozenset({
+        "dataset", "not", "downloaded", "unavailable", "missing", "data",
+        "file", "required", "needed", "access", "gated", "restricted",
+        "licence", "license", "institutional", "out", "of", "scope",
+        "http", "403", "error", "failed", "load", "loading", "available",
+    })
+    gap_name_token_sets: list[frozenset[str]] = []
+    for g in gap_texts:
+        if not g:
+            continue
+        # Strip everything after the first colon, em-dash, " - ", or " http"
+        leading = re.split(r"[:—]| - | http", g, maxsplit=1)[0].strip()
+        # Tokenise and drop stop words to isolate the dataset name tokens
+        raw_tokens = _normalise_dataset_name(leading)
+        name_tokens = raw_tokens - _GAP_STOP
+        if name_tokens:
+            gap_name_token_sets.append(name_tokens)
+
+    # Combined signal token sets — both signals use the same matching logic.
+    all_unavailable_token_sets = failed_token_sets + gap_name_token_sets
+
+    if not all_unavailable_token_sets:
+        return set()
+
+    # --- metrics_shape path (PR-θ authoritative) ---
+    unavailable_ids: set[str] = set()
+
+    if metrics_shape:
+        from backend.agents.rlm.rubric_guard import _path_resolves  # lazy import
+
+        for mp in metrics_shape:
+            if not isinstance(mp, dict):
+                continue
+            json_path = mp.get("json_path") or ""
+            metric_id = mp.get("metric_id") or json_path
+            leaf_ids = mp.get("rubric_leaf_ids") or []
+            if not json_path or not leaf_ids:
+                continue
+            # Check if this metric's path is absent from metrics
+            if _path_resolves(metrics_data, json_path):
+                continue  # metric is present — no skip
+            # Check if metric_id / json_path contains any unavailable-dataset token set
+            metric_tokens = frozenset(
+                t for t in re.split(r"[^a-z0-9]+", (metric_id + " " + json_path).lower()) if t
+            )
+            for ds_tokens in all_unavailable_token_sets:
+                if ds_tokens and ds_tokens.issubset(metric_tokens):
+                    for lid in leaf_ids:
+                        unavailable_ids.add(str(lid))
+                    break
+
+    # --- Fuzzy path: leaves not covered by metrics_shape ---
+    # Build the set of leaf ids already handled by metrics_shape
+    metrics_shape_covered: set[str] = set()
+    if metrics_shape:
+        for mp in metrics_shape:
+            if isinstance(mp, dict):
+                for lid in mp.get("rubric_leaf_ids") or []:
+                    metrics_shape_covered.add(str(lid))
+
+    for leaf in leaves:
+        lid = str(leaf.get("id", ""))
+        if lid in metrics_shape_covered or lid in unavailable_ids:
+            continue
+        for ds_tokens in all_unavailable_token_sets:
+            if ds_tokens and _leaf_mentions_dataset(leaf, ds_tokens):
+                unavailable_ids.add(lid)
+                break
+
+    return unavailable_ids
+
+
+# ---------------------------------------------------------------------------
 # 3. score_reproduction
 # ---------------------------------------------------------------------------
 
@@ -237,11 +470,13 @@ def score_reproduction(
     batch_size: int = 15,
     rubric_source: str = "paperbench_bundle",
     degraded: bool | None = None,
+    metrics_shape: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
-    leaf_scores, degraded, coverage_pct, target_score.
+    leaf_scores, degraded, coverage_pct, eligible_count, unavailable_count,
+    and target_score.
 
     ``rubric_source`` is passed through to the result dict unchanged — callers set
     it to "generated" when the rubric was derived at run-time rather than from a
@@ -255,10 +490,17 @@ def score_reproduction(
     ``degraded`` explicitly so the in-loop case (no final_report.json on disk
     yet) is also capped.
 
-    ``coverage_pct`` (β2): fraction of leaves that received a real LLM grade
-    (0.0–1.0). On degraded runs this is 0.0. Exposed as a separate signal so
-    callers can distinguish "4/6 leaves scored perfectly" from "6/6 leaves
-    scored perfectly" even when the renormalized overall_score is the same.
+    ``coverage_pct`` (β2 / κ): fraction of *eligible* leaves that received a
+    real LLM grade (0.0–1.0). "Eligible" means not marked data-unavailable by
+    :func:`_detect_data_unavailable_leaves`. On degraded runs this is 0.0.
+    When 3 of 4 leaves are graded and 1 is skipped as unavailable, eligible=3,
+    coverage_pct = 3/3 = 1.0 — not 3/4 = 0.75. This reflects real grading
+    fidelity rather than penalising the run for datasets it couldn't reach.
+
+    ``metrics_shape`` (PR-θ): agent-declared metric paths from
+    ``ReproductionContract.metrics_shape``. When provided, leaf unavailability
+    detection uses exact json_path lookup rather than fuzzy text matching —
+    more precise and less likely to false-positive.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -297,11 +539,28 @@ def score_reproduction(
             "leaf_scores": leaf_score_records,
             "degraded": True,
             "coverage_pct": 0.0,
+            "eligible_count": len(leaves),
+            "unavailable_count": 0,
             "target_score": target_score,
         }
 
-    for batch_num, start in enumerate(range(0, len(leaves), batch_size), 1):
-        batch = leaves[start : start + batch_size]
+    # PR-κ: pre-filter leaves that depend on unavailable datasets.
+    # These are excluded from LLM grading and from both numerator AND
+    # denominator of the roll-up — they don't drag the score down.
+    unavailable_ids: set[str] = _detect_data_unavailable_leaves(
+        leaves, run_dir, metrics_shape
+    )
+    skip_set: frozenset[str] = frozenset(unavailable_ids)
+
+    eligible_count = len(leaves) - len(unavailable_ids)
+
+    # Grade only the eligible leaves.
+    eligible_leaves = [l for l in leaves if str(l.get("id", "")) not in unavailable_ids]
+
+    for batch_num, start in enumerate(range(0, len(eligible_leaves), batch_size), 1):
+        batch = eligible_leaves[start : start + batch_size]
+        if not batch:
+            continue
         tasks_payload = [
             {"leaf_id": str(leaf.get("id", "")), "requirements": str(leaf.get("requirements", ""))}
             for leaf in batch
@@ -347,7 +606,22 @@ def score_reproduction(
             if rec.get("_graded", True):
                 graded_count += 1
 
-    overall_score = roll_up(rubric_tree, leaf_scores)
+    # PR-κ: append skipped-data-unavailable records.
+    # score=None signals "unscored" (not 0) so downstream consumers can
+    # distinguish missing data from failing data.  These records are NOT
+    # added to leaf_scores — that dict gates the roll_up computation.
+    for lid in sorted(unavailable_ids):  # sorted for deterministic output
+        leaf_score_records.append({
+            "id": lid,
+            "score": None,  # explicitly unscored — NOT 0
+            "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+            "state": "skipped_data_unavailable",
+        })
+
+    # PR-κ: pass skip_set to roll_up so skipped leaves are excluded from BOTH
+    # numerator AND denominator at every level of the rubric tree.
+    overall_score_raw = roll_up(rubric_tree, leaf_scores, skip_set)
+    overall_score = overall_score_raw if overall_score_raw is not None else 0.0
 
     # C2c: surface target_score so amend_final_report can compute meets_target
     # honestly. None when the rubric tree has no target — never fabricate.
@@ -359,10 +633,10 @@ def score_reproduction(
     except (TypeError, ValueError):
         target_score = None
 
-    # β2: coverage_pct = fraction of leaves that got a real LLM grade.
-    # On non-degraded runs graded_count counts leaves where the LLM actually
-    # returned a score; ungraded (batch_error) leaves count against coverage.
-    coverage_pct: float = (graded_count / len(leaves)) if len(leaves) > 0 else 1.0
+    # β2/κ: coverage_pct = fraction of *eligible* leaves that got a real LLM
+    # grade.  Eligible = total - unavailable.  Ungraded (batch_error) leaves
+    # count against coverage; skipped (data_unavailable) leaves do not.
+    coverage_pct: float = (graded_count / eligible_count) if eligible_count > 0 else 1.0
 
     return {
         "overall_score": overall_score,
@@ -372,6 +646,8 @@ def score_reproduction(
         "leaf_scores": leaf_score_records,
         "degraded": degraded,
         "coverage_pct": coverage_pct,
+        "eligible_count": eligible_count,
+        "unavailable_count": len(unavailable_ids),
         "target_score": target_score,
     }
 
