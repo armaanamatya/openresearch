@@ -177,14 +177,39 @@ def is_enabled() -> bool:
     return os.environ.get(_DISABLE_ENV_VAR, "enabled").lower() != "disabled"
 
 
-def make_key(primitive: str, *, payload: Any) -> str:
+_SURFACE_SALT_ENV_VAR: Final[str] = "REPROLAB_PRIMITIVE_CACHE_SURFACE_SALT"
+
+
+def _active_surface_salt() -> str | None:
+    """Return the GEPA-injected surface salt for this process, if any.
+
+    Set by the GEPA adapter's subprocess wrapper to
+    ``f"{candidate_hash}:{surface_id}"`` for any optimization eval. Outside an
+    optimization run the env var is unset and behavior is identical to today.
+    See ``docs/superpowers/specs/2026-05-26-gepa-phase0-audit.md`` §0.4.
+    """
+    val = os.environ.get(_SURFACE_SALT_ENV_VAR)
+    return val if val else None
+
+
+def make_key(primitive: str, *, payload: Any, surface_salt: str | None = None) -> str:
     """Compose a versioned content-addressed cache key.
 
     ``payload`` is the canonical input shape — anything JSON-serialisable.
     The hash is byte-identical for byte-identical inputs after canonical
     JSON encoding (sorted keys, default=str fallback for non-JSON types).
+
+    ``surface_salt`` (or the ``REPROLAB_PRIMITIVE_CACHE_SURFACE_SALT`` env
+    var) is appended to the payload before hashing when present. The GEPA
+    adapter uses this to namespace ``implement_baseline`` and other
+    prompt-dependent primitives by ``(candidate_hash, surface_id)`` so that
+    two candidates evaluating the same paper do NOT share each other's cache
+    entries. Outside an active GEPA run, both knobs are unset and cache keys
+    are byte-identical to pre-GEPA.
     """
-    blob = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    salt = surface_salt if surface_salt is not None else _active_surface_salt()
+    keyed_payload = {"_payload": payload, "_surface_salt": salt} if salt else payload
+    blob = json.dumps(keyed_payload, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
     digest = hashlib.sha256(blob).hexdigest()[:32]
     return f"{_CACHE_VERSION}:{primitive}:{digest}"
 

@@ -1,0 +1,73 @@
+name: GEPA Weekly (Lane B)
+
+# Spec: docs/superpowers/specs/2026-05-25-gepa-prompt-optimization-design.md §8 P5
+# Runs Lane B optimization Friday night UTC; mutations land as PRs Monday.
+# Lane A + C remain manual-trigger (cost-sensitive — see spec §5).
+
+on:
+  schedule:
+    # Friday 22:00 UTC
+    - cron: '0 22 * * 5'
+  workflow_dispatch:
+    inputs:
+      max_metric_calls:
+        description: 'Override max_metric_calls'
+        required: false
+        default: '50'
+      trainset:
+        description: 'Path to trainset JSON'
+        required: false
+        default: 'tests/fixtures/papers/gepa_trainset_b.json'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  optimize:
+    name: Lane B optimize
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      REPROLAB_RUNPOD_API_KEY: ${{ secrets.REPROLAB_RUNPOD_API_KEY }}
+      REPROLAB_GEPA_MAX_PARALLEL_PODS: '2'
+      REPROLAB_GEPA_MAX_USD_PER_EVAL: '0.50'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'  # matches Docker base image; avoids brew-3.14 pyexpat issue
+
+      - name: Install backend deps + gepa
+        run: |
+          pip install -r backend/requirements.txt
+          python -c "import gepa; print('gepa', gepa.__version__)"
+
+      - name: Run Lane B optimization
+        run: |
+          python scripts/optimize_prompts_gepa.py \
+            --lane B \
+            --trainset "${{ inputs.trainset || 'tests/fixtures/papers/gepa_trainset_b.json' }}" \
+            --valset tests/fixtures/papers/gepa_valset_b.json \
+            --held-out 2605.15155 \
+            --max-metric-calls "${{ inputs.max_metric_calls || '50' }}" \
+            --max-usd-per-eval 0.50 \
+            --cache-strategy scoped \
+            --seed "$GITHUB_RUN_ID"
+
+      - name: Open PRs for accepted mutations
+        run: |
+          shopt -s nullglob
+          for mut in runs/_gepa/*/proposed_mutations/*/; do
+            python scripts/promote_gepa_mutation.py "$mut" || echo "skip: $mut"
+          done
+
+      - name: Upload optimization artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gepa-run-${{ github.run_id }}
+          path: runs/_gepa/
+          retention-days: 30
