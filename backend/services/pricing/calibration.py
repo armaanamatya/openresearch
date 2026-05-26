@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CALIBRATION_SCHEMA_VERSION: int = 1
+CALIBRATION_SCHEMA_VERSION: int = 2
 
 _MIN_RUNS_FOR_CATEGORY: int = 5
 
@@ -102,6 +102,14 @@ def recompute_calibration(runs_root: Path) -> dict:
                 primitive = row.get("primitive") or row.get("primitive_name")
                 input_tok = row.get("input_tokens") or row.get("prompt_tokens") or 0
                 output_tok = row.get("output_tokens") or row.get("completion_tokens") or 0
+                # PR-ε.7: skip rows where both token counts are zero.  OAuth
+                # runs do not return token usage from the SDK; those rows have
+                # input_tokens=0 / output_tokens=0 and would poison the
+                # calibration averages (driving them toward zero, which in turn
+                # makes API-cost estimates trend to ~$0).  A row with zero
+                # tokens is "missing data", not "zero-cost data".
+                if int(input_tok) == 0 and int(output_tok) == 0:
+                    continue
                 if primitive and isinstance(input_tok, (int, float)) and isinstance(output_tok, (int, float)):
                     per_primitive.setdefault(primitive, []).append(
                         (int(input_tok), int(output_tok))
@@ -165,9 +173,19 @@ def get_primitive_priors(
     for primitive, defaults in _DEFAULT_PRIORS.items():
         if n_runs >= _MIN_RUNS_FOR_CATEGORY and primitive in per_primitive_cal:
             entry = per_primitive_cal[primitive]
+            # PR-ε.7: treat zero-valued calibration entries as missing data.
+            # Legacy calibration.json files (schema_version=1) may contain
+            # averages that were computed from OAuth runs with zero-token rows.
+            # `entry.get(k) or default` returns the stored value when it is a
+            # truthy non-zero float, and falls back to the static default when
+            # the stored value is 0 / 0.0 / None — exactly the right semantics.
             result[primitive] = {
-                "avg_input_tokens": float(entry.get("avg_input_tokens", defaults["avg_input_tokens"])),
-                "avg_output_tokens": float(entry.get("avg_output_tokens", defaults["avg_output_tokens"])),
+                "avg_input_tokens": float(
+                    entry.get("avg_input_tokens") or defaults["avg_input_tokens"]
+                ),
+                "avg_output_tokens": float(
+                    entry.get("avg_output_tokens") or defaults["avg_output_tokens"]
+                ),
             }
         else:
             result[primitive] = dict(defaults)

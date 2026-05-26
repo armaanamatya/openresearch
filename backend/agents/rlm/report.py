@@ -654,6 +654,18 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — aggregate is best-effort; never crash the run
         logger.warning("report: tokens_total.json write failed (non-fatal)")
 
+    # --- Timing capture (PR-ε.1) -------------------------------------------------
+    # Write timing.json so the k-NN estimator has empirical wall-clock data
+    # for future estimates.  Only written on non-failed verdicts (same gate
+    # as .preserved); always runs after the .preserved marker so backfill
+    # can detect the pair.
+    if report.verdict != "failed":
+        try:
+            from backend.services.pricing.timing import write_timing_json
+            write_timing_json(project_dir)
+        except Exception:  # noqa: BLE001 — timing capture is best-effort
+            logger.warning("report: timing.json write failed (non-fatal)")
+
     # Update calibration priors from the new preserved run so the next estimate
     # is more accurate. Runs in a try/except so it never blocks report writing.
     if report.verdict != "failed":

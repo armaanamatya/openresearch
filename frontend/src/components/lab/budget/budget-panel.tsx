@@ -35,6 +35,9 @@ export interface GpuEstimate {
   usd_per_hour: number;
   estimated_hours: { p50: number; p90: number };
   usd_total: { p50: number; p90: number };
+  // PR-ε.6: ensemble sigma fields (optional — absent on old cached estimates)
+  estimated_hours_sigma?: number;
+  low_confidence?: boolean;
 }
 
 export interface CalibrationMetadata {
@@ -45,6 +48,14 @@ export interface CalibrationMetadata {
   estimated_at_utc: string;
 }
 
+export interface SourceBreakdown {
+  source: "heuristic" | "knn" | "llm" | string;
+  mean: number;
+  sigma: number;       // Infinity when unavailable
+  weight: number;      // normalised inverse-variance weight (0 when unavailable)
+  n_samples: number;
+}
+
 export interface PaperBudgetEstimate {
   paper: { id?: string; title?: string; sha256?: string };
   gpu: GpuEstimate;
@@ -52,6 +63,8 @@ export interface PaperBudgetEstimate {
   recipes: Record<string, RecipeEstimate>;
   calibration_metadata: CalibrationMetadata;
   estimate_id: string;
+  // PR-ε.6: ensemble breakdown (optional — absent on old cached estimates)
+  estimate_breakdown?: SourceBreakdown[];
 }
 
 export type RecipeMode = "strict" | "compressed";
@@ -95,6 +108,22 @@ export interface BudgetPanelProps {
   busy: boolean;
 }
 
+function fmtSigma(sigma: number, mean: number): string {
+  if (!isFinite(sigma)) return "unavailable";
+  if (mean === 0) return "±0h";
+  const pct = Math.round((sigma / mean) * 100);
+  return `±${fmtHours(sigma)} (${pct}%)`;
+}
+
+function SourceLabel({ source }: { source: string }) {
+  switch (source) {
+    case "heuristic": return <span title="Category × model-size lookup table">Heuristic baseline</span>;
+    case "knn":       return <span title="k nearest preserved past runs">k-NN (past runs)</span>;
+    case "llm":       return <span title="LLM analysis of paper text">LLM analysis</span>;
+    default:          return <span>{source}</span>;
+  }
+}
+
 export function BudgetPanel({
   estimate,
   loading,
@@ -108,6 +137,7 @@ export function BudgetPanel({
   busy
 }: BudgetPanelProps) {
   const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [howOpen, setHowOpen] = useState(false);
 
   if (loading) {
     return (
@@ -299,6 +329,64 @@ export function BudgetPanel({
           </div>
         )}
       </section>
+
+      {/* PR-ε.8: "How this estimate was made" collapsible breakdown */}
+      {estimate.estimate_breakdown && estimate.estimate_breakdown.length > 0 && (() => {
+        const breakdown = estimate.estimate_breakdown!;
+        // Low-confidence badge: sigma/mean > 50% on available sources
+        const availSources = breakdown.filter(s => isFinite(s.sigma) && s.mean > 0);
+        const gpuSigma = estimate.gpu.estimated_hours_sigma ?? null;
+        const gpuMean = estimate.gpu.estimated_hours.p50;
+        const lowConf = estimate.gpu.low_confidence ?? (
+          gpuSigma !== null && gpuMean > 0 && gpuSigma / gpuMean > 0.5
+        );
+        return (
+          <section className="budget-panel-breakdown">
+            <button
+              type="button"
+              className="budget-panel-breakdown-toggle"
+              onClick={() => setHowOpen(v => !v)}
+              aria-expanded={howOpen}
+            >
+              {howOpen ? "▾" : "▸"} How this estimate was made
+              {lowConf && (
+                <span className="budget-panel-confidence-badge budget-panel-confidence-badge--low" title="High uncertainty — σ/μ > 50%">
+                  low confidence
+                </span>
+              )}
+            </button>
+            {howOpen && (
+              <div className="budget-panel-how-table">
+                {breakdown.map(src => {
+                  const unavailable = !isFinite(src.sigma);
+                  return (
+                    <div
+                      key={src.source}
+                      className={`budget-panel-how-row${unavailable ? " budget-panel-how-row--unavailable" : ""}`}
+                    >
+                      <span className="budget-panel-how-source">
+                        <SourceLabel source={src.source} />
+                        {src.n_samples > 0 && (
+                          <span className="budget-panel-how-samples"> ({src.n_samples} runs)</span>
+                        )}
+                      </span>
+                      {unavailable ? (
+                        <span className="budget-panel-how-unavail">no similar past runs yet</span>
+                      ) : (
+                        <>
+                          <span className="budget-panel-how-mean mono">{fmtHours(src.mean)}</span>
+                          <span className="budget-panel-how-sigma mono">{fmtSigma(src.sigma, src.mean)}</span>
+                          <span className="budget-panel-how-weight">weight {(src.weight * 100).toFixed(0)}%</span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       <div className="budget-panel-actions">
         <button

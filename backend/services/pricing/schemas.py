@@ -86,6 +86,9 @@ class GpuEstimate(BaseModel):
     usd_per_hour: float
     estimated_hours: dict[str, float]
     usd_total: dict[str, float]
+    # PR-ε.6: ensemble sigma and confidence badge (optional for backward compat)
+    estimated_hours_sigma: float | None = None
+    low_confidence: bool = False
 
 
 class CalibrationMetadata(BaseModel):
@@ -98,16 +101,30 @@ class CalibrationMetadata(BaseModel):
     estimated_at_utc: str
 
 
+class SourceBreakdown(BaseModel):
+    """One source's contribution to the ensemble estimate."""
+
+    source: str        # "heuristic" | "knn" | "llm"
+    mean: float        # mean wall-clock hours from this source
+    sigma: float       # std dev (inf = unavailable)
+    weight: float      # normalised inverse-variance weight
+    n_samples: int = 0 # 0 for model-based sources
+
+
 class PaperBudgetEstimate(BaseModel):
     """Full response body for POST /paper/estimate."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")  # forward-compat: ignore unknown keys
 
     paper: dict
     gpu: GpuEstimate
     api: list[ApiCostBreakdown]
     recipes: dict[str, RecipeEstimate]
     calibration_metadata: CalibrationMetadata
+
+    # PR-ε.6: source breakdown for the "How this estimate was made" UI section.
+    # Optional: old cached estimates return [] here.
+    estimate_breakdown: list[SourceBreakdown] = Field(default_factory=list)
 
     # Cache / coupling key passed back to the client so Begin can forward it.
     estimate_id: str

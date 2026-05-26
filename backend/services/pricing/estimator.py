@@ -32,8 +32,22 @@ logger = logging.getLogger(__name__)
 _OVERHEAD_MULTIPLIER: float = float(
     os.environ.get("REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER", "2.0")
 )
-_COMPRESSED_RATIO: float = 0.15
+# PR-ε.6: the hardcoded 0.15× compression multiplier is REMOVED.  When the
+# operator has declared explicit compute reductions (via the contract's
+# compute_scope.declared_reductions), we use those to derive the factor.
+# The fall-back (no declared reductions) is a conservative 0.7× — the paper's
+# training schedule can usually be compressed to ~70% with modern hardware
+# and mixed precision without losing the key claims.  0.15× was unrealistically
+# aggressive and caused 3-5× wall-clock under-estimation.
+_COMPRESSED_RATIO_DEFAULT: float = 0.7
 _P90_MULTIPLIER: float = 1.4  # p50 → p90 for GPU hours
+# σ for the LLM estimator's PointEstimate:
+#   confidence → σ mapping: σ = (1 - confidence) * mean
+_LLM_CONFIDENCE_TO_SIGMA: dict[str, float] = {
+    "high": 0.1,
+    "medium": 0.3,
+    "low": 0.6,
+}
 _MAX_PAPER_CHARS: int = 120_000  # ~30k tokens at 4 chars/token
 
 # Maps ROOT_MODELS keys to MODEL_PRICING keys for the cost table.
@@ -245,15 +259,29 @@ async def _llm_estimate_workload(
         }
 
 
-def _compute_wall_clock_seconds(
+def _compute_wall_clock_seconds_llm(
     experiment_count: int,
     total_epochs: int,
     avg_epoch_seconds: float,
     recipe_mode: str,
+    declared_reductions: list[str],
 ) -> float:
+    """Convert LLM workload estimate to wall-clock seconds.
+
+    PR-ε.6: Removes the hardcoded 0.15× compression multiplier.  When
+    declared_reductions are present, derive a compression factor from how
+    many reductions were declared (rough proxy).  Otherwise fall back to
+    _COMPRESSED_RATIO_DEFAULT (0.7).
+    """
     base = experiment_count * total_epochs * avg_epoch_seconds * _OVERHEAD_MULTIPLIER
     if recipe_mode == "compressed":
-        return base * _COMPRESSED_RATIO
+        if declared_reductions:
+            # Each declared reduction is assumed to contribute ~10% savings,
+            # floored at 0.3 (70% compression max without explicit numbers).
+            factor = max(0.3, 1.0 - 0.1 * len(declared_reductions))
+        else:
+            factor = _COMPRESSED_RATIO_DEFAULT
+        return base * factor
     return base
 
 
@@ -427,10 +455,29 @@ async def estimate_paper_budget(
     avg_epoch_seconds = workload["avg_epoch_seconds_on_target_gpu"]
     llm_confidence = workload["confidence"]
 
+    # --- PR-ε.4: extract paper features once (cheap regex + reshaping workload) ---
+    from backend.services.pricing.paper_features import extract_features
+    paper_features = extract_features(
+        paper_text,
+        sha8=sha256[:8],
+        estimated_vram_gb=estimated_vram_gb,
+        gpu_hints=(paper_gpu_string,) if paper_gpu_string else (),
+        num_experiments=experiment_count,
+        datasets=(),
+    )
+
+    # --- PR-ε.2: load preserved timings for k-NN ---
+    from backend.services.pricing.timing import load_preserved_timings
+    preserved_timings: list[dict] = []
+    try:
+        preserved_timings = load_preserved_timings(runs_root)
+    except Exception:  # noqa: BLE001
+        pass
+
     # --- 5 + 6 + 7 + 8. Compute for each recipe mode
     calibration_n = 0
     try:
-        from backend.services.pricing.calibration import _calibration_path, recompute_calibration
+        from backend.services.pricing.calibration import _calibration_path
         _cal_path = _calibration_path()
         if _cal_path.exists():
             import json as _json
@@ -439,10 +486,9 @@ async def estimate_paper_budget(
     except Exception:  # noqa: BLE001
         pass
 
-    # Codex C1 fix: was max(100, ...) which always returned 100, defeating the
-    # whole calibration feedback loop. The intent is "start at 100, shrink as
-    # runs accumulate, floor at 10". Each preserved run shaves 5 pts off the
-    # window; capped at the 10-100 range.
+    # PR-ε.6: precision_window is now derived from ensemble sigma, not a
+    # fixed formula.  Keep the field for backward compat with old UI reads;
+    # update it after the ensemble is built.
     precision_window = max(10, min(100, 100 - calibration_n * 5))
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -454,11 +500,101 @@ async def estimate_paper_budget(
             continue
 
         priors = get_primitive_priors(paper_category, mode)
-        wall_clock_seconds = _compute_wall_clock_seconds(
-            experiment_count, total_epochs, avg_epoch_seconds, mode
+
+        # --- Build the three independent wall-clock estimates ---
+        from backend.services.pricing.ensemble import PointEstimate, combine
+        from backend.services.pricing.estimators.heuristic import estimate_heuristic
+        from backend.services.pricing.estimators.knn import estimate_from_knn
+
+        if mode == "strict":
+            recipe_label = "Strict reproduction"
+            fidelity_label = "high"
+            declared_reductions: list[str] = []
+            recipe_description = "Paper's training recipe verbatim."
+        else:
+            # PR-ε.6: reductions listed as data, no hardcoded compression %
+            declared_reductions = [
+                "Replaced paper training schedule with a compressed equivalent.",
+                "~30% fewer epochs via modern mixed-precision training.",
+            ]
+            recipe_label = "Claim-match (minimize-compute)"
+            recipe_description = (
+                "Modern fast equivalent (~70% compute of paper recipe). "
+                "Validates claims, not full reproducibility."
+            )
+            fidelity_label = "claim-match"
+
+        # Heuristic estimate (always available)
+        heuristic_est = estimate_heuristic(paper_features)
+
+        # Scale heuristic for compressed mode using declared_reductions
+        if mode == "compressed":
+            ratio = max(0.3, 1.0 - 0.1 * len(declared_reductions))
+            heuristic_est = PointEstimate(
+                mean=heuristic_est.mean * ratio,
+                sigma=heuristic_est.sigma * ratio,
+                source="heuristic",
+                n_samples=0,
+                detail=heuristic_est.detail,
+            )
+
+        # k-NN estimate (None when insufficient data)
+        knn_est = estimate_from_knn(paper_features, preserved_timings)
+
+        # LLM estimate (existing _extract_workload call)
+        llm_wall_s = _compute_wall_clock_seconds_llm(
+            experiment_count, total_epochs, avg_epoch_seconds, mode, declared_reductions
         )
-        wall_clock_hours_p50 = wall_clock_seconds / 3600.0
+        llm_wall_h = llm_wall_s / 3600.0
+        llm_sigma_ratio = _LLM_CONFIDENCE_TO_SIGMA.get(llm_confidence, 0.6)
+        llm_est = PointEstimate(
+            mean=llm_wall_h,
+            sigma=llm_sigma_ratio * llm_wall_h,
+            source="llm",
+            n_samples=0,
+            detail={"confidence": llm_confidence},
+        )
+
+        # Ensemble: combine available sources
+        estimates_to_combine: list[PointEstimate] = [heuristic_est, llm_est]
+        if knn_est is not None:
+            estimates_to_combine.append(knn_est)
+        else:
+            # Placeholder with σ=∞ so the UI shows "k-NN: unavailable"
+            estimates_to_combine.append(
+                PointEstimate(
+                    mean=0.0,
+                    sigma=float("inf"),
+                    source="knn",
+                    n_samples=0,
+                    detail=None,
+                )
+            )
+
+        wall_clock_hours_mean, wall_clock_hours_sigma, breakdown = combine(estimates_to_combine)
+
+        # Fallback: if all sources unavailable (all σ=∞), use heuristic mean directly.
+        if wall_clock_hours_mean == 0.0 and wall_clock_hours_sigma == float("inf"):
+            wall_clock_hours_mean = heuristic_est.mean
+            wall_clock_hours_sigma = heuristic_est.sigma
+            breakdown = [
+                {"source": "heuristic", "mean": heuristic_est.mean,
+                 "sigma": heuristic_est.sigma, "weight": 1.0, "n_samples": 0}
+            ]
+
+        wall_clock_hours_p50 = wall_clock_hours_mean
         wall_clock_hours_p90 = wall_clock_hours_p50 * _P90_MULTIPLIER
+
+        # Update precision_window from ensemble sigma (relative %).
+        # σ_final / μ_final * 100 → precision window percentage.
+        if wall_clock_hours_mean > 0:
+            precision_window = min(100, max(10, round(
+                wall_clock_hours_sigma / wall_clock_hours_mean * 100
+            )))
+        low_confidence = (
+            wall_clock_hours_mean > 0
+            and wall_clock_hours_sigma / wall_clock_hours_mean > 0.5
+        )
 
         gpu_usd_p50 = wall_clock_hours_p50 * usd_per_hour
         gpu_usd_p90 = wall_clock_hours_p90 * usd_per_hour
@@ -467,23 +603,6 @@ async def estimate_paper_budget(
         api_usds = [r["usd"] for r in api_rows if not r["is_subscription"] or r["usd"] > 0]
         api_usd_best = min(api_usds, default=0.0)
         api_usd_worst = max(api_usds, default=0.0)
-
-        if mode == "strict":
-            recipe_label = "Strict reproduction"
-            recipe_description = "Paper's training recipe verbatim."
-            fidelity_label = "high"
-            declared_reductions: list[str] = []
-        else:
-            recipe_label = "Claim-match (minimize-compute)"
-            recipe_description = (
-                f"Modern fast equivalent (~{int(_COMPRESSED_RATIO * 100)}% compute "
-                "of paper recipe). Validates claims, not full reproducibility."
-            )
-            fidelity_label = "claim-match"
-            declared_reductions = [
-                "Replaced paper training schedule with a compressed equivalent.",
-                f"~{int((1 - _COMPRESSED_RATIO) * 100)}% fewer epochs.",
-            ]
 
         estimate_id = (
             f"{sha256[:8]}_{mode}_{CATALOG_SCHEMA_VERSION}_{CALIBRATION_SCHEMA_VERSION}"
@@ -496,6 +615,9 @@ async def estimate_paper_budget(
                 "usd_per_hour": usd_per_hour,
                 "estimated_hours": {"p50": round(wall_clock_hours_p50, 2), "p90": round(wall_clock_hours_p90, 2)},
                 "usd_total": {"p50": round(gpu_usd_p50, 2), "p90": round(gpu_usd_p90, 2)},
+                # PR-ε.6: ensemble sigma fields for the UI breakdown
+                "estimated_hours_sigma": round(wall_clock_hours_sigma, 3),
+                "low_confidence": low_confidence,
             },
             "api": api_rows,
             "recipes": {
@@ -510,6 +632,8 @@ async def estimate_paper_budget(
                     "declared_reductions": declared_reductions,
                 }
             },
+            # PR-ε.6: source breakdown for the "How this estimate was made" UI section
+            "estimate_breakdown": breakdown,
             "calibration_metadata": {
                 "based_on_n_preserved_runs": calibration_n,
                 "precision_window_pct": precision_window,

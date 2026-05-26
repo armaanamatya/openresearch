@@ -353,6 +353,84 @@
   border-color: var(--ink-muted);
 }
 
+/* ── PR-ε.8: "How this estimate was made" breakdown ───────────────────── */
+
+.budget-panel-how-table {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.budget-panel-how-row {
+  display: grid;
+  /* source · mean · sigma · weight */
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 5px 8px;
+  border-radius: var(--r-xs);
+  font-size: 11.5px;
+  border: 1px solid transparent;
+}
+
+.budget-panel-how-row--unavailable {
+  opacity: 0.55;
+}
+
+.budget-panel-how-source {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.budget-panel-how-samples {
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+
+.budget-panel-how-unavail {
+  grid-column: 2 / -1;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.budget-panel-how-mean {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.budget-panel-how-sigma {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.budget-panel-how-weight {
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  min-width: 60px;
+  text-align: right;
+}
+
+/* Low-confidence badge shown next to the "How" toggle */
+.budget-panel-confidence-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line-2);
+  vertical-align: middle;
+}
+
+.budget-panel-confidence-badge--low {
+  color: var(--warn-fg, #b85a00);
+  border-color: var(--warn, #d97706);
+  background: color-mix(in srgb, var(--warn, #d97706) 10%, transparent);
+}
+
 .budget-panel-error-msg {
   margin: 8px 0 0;
   font-size: 12px;
