@@ -85,8 +85,7 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
-_PRE_EMIT_PROGRESS_FILES = {"commands.json", "train.py", "_reprolab_curated.py"}
-_DEFAULT_PRE_EMIT_STALL_S = 120.0
+_DEFAULT_PRE_EMIT_STALL_S = 240.0
 
 
 class PreEmitStallError(RuntimeError):
@@ -1455,22 +1454,28 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # and no files have changed recently, the SDK is hung on cleanup.
             commands_json = code_dir / "commands.json"
             if not commands_json.exists():
-                progress_files = [
-                    f for f in code_dir.iterdir()
-                    if f.is_file() and f.name in _PRE_EMIT_PROGRESS_FILES
-                ]
-                if progress_files:
+                # Mtime-based progress: ANY file the sub-agent writes counts as
+                # progress (config.json / requirements.txt / rubric_guard.py /
+                # train.py / commands.json / etc.) — not a hardcoded name list.
+                # 2026-05-27 Adam+VAE regression: the prior name-list missed
+                # legitimate progress (sub-agent wrote rubric_guard.py + config.json
+                # but not yet commands.json) → false-positive escalation cascade.
+                latest_mtime = max(
+                    (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
+                    default=0.0,
+                )
+                if latest_mtime > _pre_emit_stall_start:
                     _pre_emit_stall_start = _time.time()
                     continue
                 pre_emit_elapsed = _time.time() - _pre_emit_stall_start
                 if pre_emit_elapsed > _PRE_EMIT_STALL_S:
                     message = (
-                        "implement_baseline: SDK pre-emit stall — no code written "
+                        "implement_baseline: SDK pre-emit stall — no file activity "
                         f"in {_PRE_EMIT_STALL_S:.0f}s. Likely SDK aclose deadlock pre-result."
                     )
                     logger.warning(
-                        "implement_baseline: SDK silent for %ds with no code emission. "
-                        "Escalating to repairable error.",
+                        "implement_baseline: code_dir idle for %ds. "
+                        "Escalating to repairable error (NOT cached — retry will be fresh).",
                         int(pre_emit_elapsed),
                     )
                     try:
@@ -1480,13 +1485,14 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                         })
                     except Exception:  # noqa: BLE001
                         logger.debug("implement_baseline: failed to emit pre-emit stall warning")
-                    _err = _with_outcome({
+                    # Deliberately NOT cached: the stall is transient — a retry
+                    # may succeed. Caching this guarantees a cascade where every
+                    # downstream run_experiment receives the same error dict.
+                    return _with_outcome({
                         "success": False,
                         "error": message,
                         "code": "sdk_pre_emit_stall",
                     }, PrimitiveOutcome.repairable)
-                    _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
-                    return _err
                 continue
 
             if commands_json.exists():
