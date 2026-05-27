@@ -388,11 +388,57 @@ def render_report(
 
     out.append("---")
     out.append("")
+    out.append(_HUMAN_SENTINEL)
+    out.append("")
     out.append("## 8. Narrative findings (appended by reviewer)")
     out.append("")
     out.append("_To be filled in after reviewing the stats above._")
     out.append("")
     return "\n".join(out)
+
+
+# Anything below this sentinel in an existing findings file is preserved
+# verbatim across miner re-runs. The narrative section is the highest-value
+# part of the doc and must never be clobbered by a stats refresh.
+_HUMAN_SENTINEL = "<!-- mine_traces.py: human-authored content below — preserved across re-runs -->"
+
+
+_NARRATIVE_HEADER = "## 8. Narrative findings"
+_EMPTY_NARRATIVE_MARKER = "_To be filled in after reviewing the stats above._"
+
+
+def _merge_with_existing(new_report: str, out_path: Path) -> str:
+    """Preserve any human-authored §8 narrative across miner re-runs.
+
+    Strategy: if the existing file contains the §8 narrative header AND that
+    section is non-empty (i.e. doesn't only contain the placeholder), splice
+    the existing narrative onto the freshly-generated stats. The sentinel
+    comment is added to mark the boundary explicitly for future runs.
+    """
+    if not out_path.exists():
+        return new_report
+    existing = out_path.read_text()
+    # Prefer the explicit sentinel if present.
+    if _HUMAN_SENTINEL in existing:
+        existing_narrative = existing.split(_HUMAN_SENTINEL, 1)[1]
+        new_stats = new_report.split(_HUMAN_SENTINEL, 1)[0]
+        return new_stats + _HUMAN_SENTINEL + existing_narrative
+    # Fallback: look for the §8 header and only preserve if non-default.
+    if _NARRATIVE_HEADER not in existing:
+        return new_report
+    existing_narrative_block = existing.split(_NARRATIVE_HEADER, 1)[1]
+    if _EMPTY_NARRATIVE_MARKER in existing_narrative_block:
+        return new_report  # nothing worth preserving
+    # Splice: keep new stats through (and including) the sentinel + header,
+    # then drop in the existing non-empty narrative body.
+    new_stats = new_report.split(_HUMAN_SENTINEL, 1)[0]
+    return (
+        new_stats
+        + _HUMAN_SENTINEL
+        + "\n\n"
+        + _NARRATIVE_HEADER
+        + existing_narrative_block
+    )
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -428,6 +474,7 @@ def main() -> int:
     clusters = cluster_errors(all_errors, threshold=args.cluster_threshold)
 
     report = render_report(runs, clusters, top_k=args.top_k)
+    report = _merge_with_existing(report, args.out)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(report)
