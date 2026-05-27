@@ -1329,11 +1329,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod"),
+        choices=("auto", "local", "docker", "runpod", "azure", "brev"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
-            "runpod uses a remote GPU Pod; docker is isolated local Docker; "
+            "runpod uses a remote GPU Pod; azure provisions an Azure VM; "
+            "brev uses an NVIDIA Brev instance; docker is isolated local Docker; "
             "local runs commands on the host; auto resolves to the configured default."
         ),
     )

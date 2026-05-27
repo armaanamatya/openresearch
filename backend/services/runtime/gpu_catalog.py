@@ -90,4 +90,61 @@ def find_by_alias(phrase: str) -> GpuSku | None:
     return best[1] if best else None
 
 
-__all__ = ["GpuSku", "CATALOG", "find_ladder", "find_by_alias"]
+# ---------------------------------------------------------------------------
+# Azure VM SKU catalog (--sandbox azure)
+#
+# Mirrors the RunPod ladder above so resolve() can produce a GpuPlan whose
+# short_name is translatable to either cloud.  The AzureBackend then maps
+# short_name -> Azure VM size at provisioning time via
+# azure_backend.AZURE_SKU_BY_SHORT_NAME.  Prices and SKU strings are
+# snapshots from Microsoft Learn `/azure/virtual-machines/sizes/gpu-accelerated`;
+# refresh quarterly.  Azure does not expose an exact RTX 4090 SKU — the
+# closest peer is the A10-class (NVadsA10v5), which we use for the 16-24 GB tier.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AzureVmSku:
+    """One row of the Azure VM SKU catalog."""
+
+    azure_id: str
+    short_name: str
+    gpu_model: str
+    gpu_count: int
+    vram_gb_per_gpu: int
+    approx_usd_per_hr: float
+
+
+AZURE_CATALOG: tuple[AzureVmSku, ...] = (
+    # 24 GB tier
+    AzureVmSku("Standard_NV6ads_A10_v5",       "rtx4090",   "A10",   1, 24, 0.91),
+    AzureVmSku("Standard_NV6ads_A10_v5",       "a5000",     "A10",   1, 24, 0.91),
+    AzureVmSku("Standard_NV12ads_A10_v5",      "a6000",     "A10",   1, 24, 1.82),
+    # 80 GB tier
+    AzureVmSku("Standard_NC24ads_A100_v4",     "a100_40",   "A100",  1, 80, 3.67),
+    AzureVmSku("Standard_NC24ads_A100_v4",     "a100_80",   "A100",  1, 80, 3.67),
+    AzureVmSku("Standard_NV36ads_A10_v5",      "l40s",      "A10",   1, 48, 5.45),
+    # H100 80 GB
+    AzureVmSku("Standard_NC40ads_H100_v5",     "h100_80",   "H100",  1, 80, 6.98),
+    # H200 141 GB
+    AzureVmSku("Standard_ND96isr_H200_v5",     "h200",      "H200",  8, 141, 84.0),
+)
+
+
+def find_azure_by_short_name(short_name: str) -> AzureVmSku | None:
+    """Return the first Azure SKU matching ``short_name`` (e.g. 'rtx4090')."""
+    for sku in AZURE_CATALOG:
+        if sku.short_name == short_name:
+            return sku
+    return None
+
+
+__all__ = [
+    "GpuSku",
+    "CATALOG",
+    "find_ladder",
+    "find_by_alias",
+    "AzureVmSku",
+    "AZURE_CATALOG",
+    "find_azure_by_short_name",
+]

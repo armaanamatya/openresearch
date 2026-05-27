@@ -110,5 +110,38 @@ else
     echo "[start.sh] Runpod preflight not required for sandbox=${REPROLAB_DEFAULT_SANDBOX}."
 fi
 
+# 2b. Azure preflight (when relevant, and skippable).
+azure_preflight_needed=0
+if [[ "${REPROLAB_DEFAULT_SANDBOX}" == "azure" ]]; then
+    azure_preflight_needed=1
+fi
+if [[ "${START_FORCE_AZURE_PREFLIGHT:-0}" == "1" ]]; then
+    azure_preflight_needed=1
+fi
+
+if [[ "${azure_preflight_needed}" == "1" ]]; then
+    if [[ "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+        AZURE_PREFLIGHT="scripts/azure_check.sh"
+        if [[ -x "${AZURE_PREFLIGHT}" ]]; then
+            azure_args=()
+            if [[ "${START_FULL_AZURE_SMOKE:-0}" == "1" ]]; then
+                echo "[start.sh] START_FULL_AZURE_SMOKE=1 — boots and destroys a CPU VM (~\$0.01)."
+                azure_args+=("--start-vm")
+            else
+                echo "[start.sh] Running Azure preflight (free)..."
+            fi
+            if ! "${AZURE_PREFLIGHT}" ${azure_args[@]+"${azure_args[@]}"}; then
+                echo "[start.sh] Azure preflight FAILED — refusing to start the dashboard."
+                echo "[start.sh] Fix the issue, or rerun with START_SKIP_PREFLIGHT=1 to bypass."
+                exit 1
+            fi
+        else
+            echo "[start.sh] Azure preflight script not found at ${AZURE_PREFLIGHT}; skipping."
+        fi
+    else
+        echo "[start.sh] START_SKIP_PREFLIGHT=1 — skipping Azure preflight."
+    fi
+fi
+
 # 3. Boot the API.
 exec .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000

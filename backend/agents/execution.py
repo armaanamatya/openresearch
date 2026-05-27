@@ -33,6 +33,7 @@ class SandboxMode(str, Enum):
     """Experiment execution backend policy."""
 
     auto = "auto"
+    azure = "azure"
     brev = "brev"
     docker = "docker"
     local = "local"
@@ -285,6 +286,10 @@ def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
         from backend.services.runtime import ensure_runpod_available
 
         ensure_runpod_available()
+    elif resolved is SandboxMode.azure:
+        from backend.services.runtime import ensure_azure_available
+
+        ensure_azure_available()
 
 
 def _gpu_environment(mode: GpuMode) -> dict[str, str]:

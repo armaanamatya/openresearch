@@ -127,14 +127,14 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "brev"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set REPROLAB_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "brev"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -184,6 +184,45 @@ class Settings(BaseSettings):
     # by the backend (the _owned_pod_ids allowlist enforces this even
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
+
+    # --- Azure compute sandbox (--sandbox azure) ---
+    # See .env.example for the full docs.  Credentials resolve via
+    # azure.identity.DefaultAzureCredential, so any of: `az login`,
+    # service-principal env vars (AZURE_CLIENT_ID/_SECRET/_TENANT_ID),
+    # or managed identity work.  The subscription id is the only ALWAYS-
+    # required value; the rest have safe defaults that work for most
+    # subscriptions in eastus.
+    azure_subscription_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_SUBSCRIPTION_ID",
+            "REPROLAB_AZURE_SUBSCRIPTION_ID",
+        ),
+    )
+    azure_region: str = "eastus"
+    azure_vm_size: str = "Standard_NC6s_v3"
+    azure_image: str = "microsoft-dsvm:ubuntu-hpc:2204:latest"
+    # Empty -> AzureBackend creates an ephemeral RG named reprolab-<run_id>
+    # and deletes it on destroy. Populated -> reuses; only VM + nested
+    # resources are deleted, the RG survives.
+    azure_resource_group: str = ""
+    azure_os_disk_gb: int = 100
+    azure_data_disk_gb: int = 0
+    # OS-disk storage tier.  StandardSSD_LRS is supported on every VM SKU
+    # (including B-series); Premium_LRS is ~3x more expensive and is
+    # rejected by B/Av2-series VMs.  Override per-deployment for production
+    # GPU runs where Premium IOPS matters.
+    azure_os_disk_tier: str = "StandardSSD_LRS"
+    azure_ssh_key_path: str = ""
+    azure_ssh_public_key: str = ""
+    azure_ssh_user: str = "azureuser"
+    azure_boot_diagnostics: bool = True
+    azure_delete_on_destroy: bool = True
+    azure_auto_fallback: bool = False
+    azure_bootstrap_command: str = ""
+    azure_max_boot_seconds: int = 600
+    # Comma-separated k=v pairs merged with reprolab defaults.
+    azure_tags: str = ""
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
     # When the root model calls FINAL_VAR but the latest rubric overall_score

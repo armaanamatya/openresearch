@@ -49,3 +49,6 @@ include = ["backend*", "reprolab*"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "azure_live: opt-in test that provisions a real Azure VM (costs money). Enable with REPROLAB_AZURE_LIVE_TESTS=1.",
+]

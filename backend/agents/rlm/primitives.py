@@ -1638,15 +1638,69 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.azure:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.azure_backend import (
+            AzureBackend,
+            resolve_azure_vm_size,
+        )
+        from backend.config import get_settings as _get_settings
+
+        _runtime.ensure_azure_available()
+        _settings = _get_settings()
+        # Resolve VM size: GpuPlan.short_name → Azure SKU, or fall back to env default.
+        _short_name = getattr(gpu_plan, "short_name", "") if gpu_plan is not None else ""
+        _vm_size = (
+            resolve_azure_vm_size(_short_name, fallback=_settings.azure_vm_size)
+            if _short_name
+            else _settings.azure_vm_size
+        )
+        return AzureBackend(
+            subscription_id=_settings.azure_subscription_id,
+            region=_settings.azure_region,
+            vm_size=_vm_size,
+            image=_settings.azure_image,
+            resource_group=_settings.azure_resource_group,
+            ssh_key_path=_settings.azure_ssh_key_path or None,
+            ssh_public_key=_settings.azure_ssh_public_key,
+            ssh_user=_settings.azure_ssh_user,
+            os_disk_gb=_settings.azure_os_disk_gb,
+            os_disk_tier=_settings.azure_os_disk_tier,
+            data_disk_gb=_settings.azure_data_disk_gb,
+            boot_diagnostics=_settings.azure_boot_diagnostics,
+            delete_on_destroy=_settings.azure_delete_on_destroy,
+            tags=_parse_kv_tags(_settings.azure_tags),
+            max_boot_seconds=_settings.azure_max_boot_seconds,
+            bootstrap_command=_settings.azure_bootstrap_command,
+            run_budget=run_budget,
+        )
+
     # All other modes (local, auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker or --sandbox runpod for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
+
+
+def _parse_kv_tags(raw: str) -> dict[str, str]:
+    """Parse comma-separated k=v tag pairs from the REPROLAB_AZURE_TAGS env."""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for pair in str(raw).split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        key, _, value = pair.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key:
+            out[key] = value
+    return out
 
 
 def _combine_command_output(results: list) -> str:
@@ -1712,7 +1766,7 @@ async def _execute_in_sandbox(
     _mode_value = (
         str(getattr(sandbox_mode, "value", sandbox_mode or "")).strip().lower()
     )
-    if _env_hint in {"local", "docker", "runpod"} and _env_hint != _mode_value:
+    if _env_hint in {"local", "docker", "runpod", "azure", "brev"} and _env_hint != _mode_value:
         logger.warning(
             "_execute_in_sandbox: env_id=%r looks like a backend hint; "
             "ignoring it for sandbox routing and using sandbox_mode=%r",
@@ -2601,17 +2655,23 @@ def run_experiment(
                         "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
                     }
                 # PR-ζ: opt-in sandbox fallback after transient retry exhaustion.
-                # When REPROLAB_RUNPOD_AUTO_FALLBACK=true and the exception carries
-                # _retry_attempts (set by _execute_in_sandbox after exhausting
-                # transient retries), check whether local docker + GPU is viable
-                # and if so mutate ctx.sandbox_mode for the rest of this run.
+                # When REPROLAB_RUNPOD_AUTO_FALLBACK / REPROLAB_AZURE_AUTO_FALLBACK is
+                # true and the exception carries _retry_attempts (set by
+                # _execute_in_sandbox after exhausting transient retries), check
+                # whether local docker + GPU is viable and if so mutate
+                # ctx.sandbox_mode for the rest of this run.
                 import os as _os_fallback
-                if _os_fallback.environ.get("REPROLAB_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
+                _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
+                _fb_flag = (
+                    _os_fallback.environ.get("REPROLAB_AZURE_AUTO_FALLBACK", "").lower() == "true"
+                    if "azure" in _mode_str_fb
+                    else _os_fallback.environ.get("REPROLAB_RUNPOD_AUTO_FALLBACK", "").lower() == "true"
+                )
+                if _fb_flag:
                     _retry_attempts_on_exc = getattr(exc, "_retry_attempts", None)
-                    _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
                     if (
                         _retry_attempts_on_exc
-                        and "runpod" in _mode_str_fb
+                        and ("runpod" in _mode_str_fb or "azure" in _mode_str_fb)
                     ):
                         try:
                             from backend.agents.execution import SandboxMode as _SandboxMode, _docker_reachable

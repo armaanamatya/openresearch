@@ -62,7 +62,8 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "runpod/pytorch base image already provides them",
         "network_flake":
             "transient — the next attempt should succeed; consider mounting a "
-            "persistent pip cache via REPROLAB_RUNPOD_NETWORK_VOLUME_ID",
+            "persistent pip cache via REPROLAB_RUNPOD_NETWORK_VOLUME_ID, "
+            "an Azure Files share, or a persistent docker volume",
         "cuda_oom":
             "reduce batch size in train.py or escalate to a larger-VRAM SKU "
             "(Lane gpu_escalation handles the latter automatically)",

@@ -14,20 +14,30 @@ import asyncio
 import logging
 import os
 
+from backend.services.runtime.azure_sweeper import sweep_stale_azure_vms
 from backend.services.runtime.pod_sweeper import sweep_stale_pods
 
 logger = logging.getLogger(__name__)
 
 
 class PodSweepScheduler:
-    """Background asyncio task that runs sweep_stale_pods periodically."""
+    """Background asyncio task that runs cloud sweeps periodically.
+
+    Runs ``sweep_stale_pods`` (RunPod) and ``sweep_stale_azure_vms`` (Azure)
+    on the same interval.  Each sweep is a no-op when its credentials are
+    absent, so this is safe to always start.
+    """
 
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
 
     def _enabled(self) -> bool:
-        if not os.environ.get("REPROLAB_RUNPOD_API_KEY"):
+        if not (
+            os.environ.get("REPROLAB_RUNPOD_API_KEY")
+            or os.environ.get("REPROLAB_AZURE_SUBSCRIPTION_ID")
+            or os.environ.get("AZURE_SUBSCRIPTION_ID")
+        ):
             return False
         val = os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower()
         if val in {"false", "0", "no", "off"}:
@@ -50,7 +60,8 @@ class PodSweepScheduler:
         if not self._enabled():
             logger.info(
                 "pod_sweep_scheduler: disabled "
-                "(no REPROLAB_RUNPOD_API_KEY or REPROLAB_POD_SWEEP_ENABLED=false)"
+                "(no REPROLAB_RUNPOD_API_KEY / REPROLAB_AZURE_SUBSCRIPTION_ID "
+                "or REPROLAB_POD_SWEEP_ENABLED=false)"
             )
             return
         self._stop_event = asyncio.Event()
@@ -68,9 +79,16 @@ class PodSweepScheduler:
         while not self._stop_event.is_set():
             try:
                 summary = sweep_stale_pods(max_age_seconds=max_age, dry_run=False)
-                logger.info("pod_sweep_scheduler: sweep complete: %s", summary)
+                logger.info("pod_sweep_scheduler: runpod sweep: %s", summary)
             except Exception as exc:
-                logger.warning("pod_sweep_scheduler: sweep failed: %s", exc)
+                logger.warning("pod_sweep_scheduler: runpod sweep failed: %s", exc)
+            try:
+                az_summary = sweep_stale_azure_vms(
+                    max_age_seconds=max_age, dry_run=False
+                )
+                logger.info("pod_sweep_scheduler: azure sweep: %s", az_summary)
+            except Exception as exc:
+                logger.warning("pod_sweep_scheduler: azure sweep failed: %s", exc)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

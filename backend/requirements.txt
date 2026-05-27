@@ -26,6 +26,15 @@ openai-agents>=0.17,<0.18
 docker>=7,<8
 asyncssh>=2.14,<3
 
+# --- Azure compute sandbox (--sandbox azure) --------------------------------
+# Imported lazily inside azure_backend.py when the Azure sandbox is selected.
+# Listed as runtime deps so unit tests can monkeypatch the SDK without an
+# ImportError. No `azure-cli` dependency — we do not shell out.
+azure-identity>=1.16,<2
+azure-mgmt-compute>=30,<32
+azure-mgmt-network>=25,<27
+azure-mgmt-resource>=23,<25
+
 # --- Evaluation: reproduction + innovation scoring --------------------------
 # Required by backend/evals/* — install if you use the `eval` CLI.
 deepeval>=2.0
