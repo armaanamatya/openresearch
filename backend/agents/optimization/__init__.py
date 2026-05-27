@@ -14,6 +14,15 @@ which is the original module-level prompt string. Production runs see exactly
 today's prompts.
 """
 
+from backend.agents.optimization.base_adapter import (
+    BaseOptimizationAdapter,
+    opt_run_dir,
+)
+from backend.agents.optimization.cost_tracker import (
+    CostSnapshot,
+    LMCostTracker,
+    wrap_callable,
+)
 from backend.agents.optimization.mutable_regions import (
     AGENT_TO_COMPONENT,
     REGIONS,
@@ -26,8 +35,13 @@ from backend.agents.optimization.prompt_overrides import (
 
 __all__ = [
     "AGENT_TO_COMPONENT",
+    "BaseOptimizationAdapter",
+    "CostSnapshot",
+    "LMCostTracker",
     "MutableRegion",
     "PROMPT_OVERRIDES",
     "PromptOverrideContext",
     "REGIONS",
+    "opt_run_dir",
+    "wrap_callable",
 ]

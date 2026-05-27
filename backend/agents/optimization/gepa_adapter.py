@@ -280,34 +280,42 @@ def _to_gepa_reflective_record(rec: dict, candidate_text: str) -> dict:
     """Map one §4.4-shape record into gepa's canonical 3-key reflective shape.
 
     The reflection LM consumes the dict literally — keys must match
-    ``{"Inputs", "Generated Outputs", "Feedback"}`` exactly. Values are
-    serialized to short natural-language strings so the LM can reason about
-    them without sifting through nested JSON.
+    ``{"Inputs", "Generated Outputs", "Feedback"}`` exactly. ``Inputs`` and
+    ``Generated Outputs`` are structured dicts (canonical pattern from
+    gepa adapter docs); ``Feedback`` is a natural-language instruction the
+    LM treats as the actionable signal.
+
+    Why dict-shape (Phase 2 hardening): the canonical gepa adapter pattern
+    (`gepa.adapters.default_adapter.DefaultAdapter`) returns dicts so the
+    reflection LM sees field names directly. String-flattening worked but
+    forced the LM to parse our prose; dicts let it operate on labelled
+    structure.
     """
     inp = rec.get("input") or {}
     trace = rec.get("execution_trace") or {}
     hermes = trace.get("hermes") or {}
 
-    inputs_str = (
-        f"Paper archetype: {rec.get('paper_archetype', 'unknown')}\n"
-        f"Rubric overall before: {inp.get('rubric_overall_before', 0.0):.3f}\n"
-        f"Rubric areas before: {json.dumps(inp.get('rubric_areas_before', {}), default=str)}\n"
-        f"Weak leaves the candidate aimed at: "
-        f"{json.dumps(inp.get('weak_leaves_before', []), default=str)[:600]}\n"
-        f"Prior results digest: {inp.get('current_results_digest', '')}"
-    )
-    outputs_str = (
-        f"Candidate prompt text (truncated): {candidate_text[:1500]}\n"
-        f"Candidate produced metrics: "
-        f"{json.dumps(rec.get('candidate_output', {}), default=str)[:400]}"
-    )
-    delta_areas = trace.get("rubric_delta_areas", {})
-    repair_summaries = trace.get("repair_summaries") or []
-    feedback_str = (
-        f"Hermes-clamped score: {rec.get('score', 0.0):.3f}\n"
-        f"Rubric overall after: {trace.get('rubric_overall_after', 0.0):.3f}\n"
-        f"Per-area deltas: {json.dumps(delta_areas, default=str)}\n"
-        f"Run experiment succeeded: {trace.get('run_experiment_success', False)}\n"
+    candidate_truncated = candidate_text[:1500]
+    weak_leaves = (inp.get("weak_leaves_before") or [])[:5]
+    repair_summaries = (trace.get("repair_summaries") or [])[:5]
+
+    inputs = {
+        "paper_archetype": rec.get("paper_archetype", "unknown"),
+        "rubric_overall_before": float(inp.get("rubric_overall_before", 0.0)),
+        "rubric_areas_before": inp.get("rubric_areas_before", {}),
+        "weak_leaves_before": weak_leaves,
+        "prior_results_digest": str(inp.get("current_results_digest", ""))[:400],
+    }
+    generated_outputs = {
+        "candidate_prompt_text": candidate_truncated,
+        "candidate_truncated": len(candidate_text) > 1500,
+        "candidate_metrics": rec.get("candidate_output", {}),
+        "rubric_overall_after": float(trace.get("rubric_overall_after", 0.0)),
+        "rubric_delta_areas": trace.get("rubric_delta_areas", {}),
+        "run_experiment_success": bool(trace.get("run_experiment_success", False)),
+    }
+    feedback = (
+        f"Hermes-clamped score: {float(rec.get('score', 0.0)):.3f}\n"
         f"Repair attempts: {len(repair_summaries)} ({'; '.join(repair_summaries)[:400]})\n"
         f"Forced-iteration warnings: {trace.get('forced_iteration_warnings', 0)}\n"
         f"Blanket declines: {trace.get('blanket_decline_count', 0)}\n"
@@ -318,9 +326,9 @@ def _to_gepa_reflective_record(rec: dict, candidate_text: str) -> dict:
     )
 
     return {
-        "Inputs": inputs_str,
-        "Generated Outputs": outputs_str,
-        "Feedback": feedback_str,
+        "Inputs": inputs,
+        "Generated Outputs": generated_outputs,
+        "Feedback": feedback,
     }
 
 

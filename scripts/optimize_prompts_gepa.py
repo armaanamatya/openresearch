@@ -24,12 +24,17 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from backend.agents.optimization.cost_tracker import LMCostTracker
 from backend.agents.optimization.eval_budget import EvalBudgetEnforcer
 from backend.agents.optimization.gepa_adapter import (
     SURFACES,
     ReproLabGEPAAdapter,
 )
 from backend.agents.optimization.mutable_regions import REGIONS
+from backend.agents.optimization.reflection_lms import (
+    make_api_key_reflection_lm,
+    make_claude_oauth_reflection_lm,
+)
 
 
 def _utc_ts() -> str:
@@ -88,6 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane", choices=["A", "B", "C"], required=True)
     parser.add_argument("--task-lm", default="openai/gpt-5")
     parser.add_argument("--reflection-lm", default="openai/gpt-5")
+    parser.add_argument(
+        "--reflection-backend",
+        choices=["api-key", "claude-oauth"],
+        default="api-key",
+        help="api-key: gepa.lm.LM(reflection_lm) for cost tracking. "
+             "claude-oauth: route reflection through Claude subscription (no API balance needed, $0).",
+    )
     parser.add_argument("--trainset", type=Path, required=True)
     parser.add_argument("--valset", type=Path, required=True)
     parser.add_argument("--held-out", required=True, help="arxiv id for §4.6 validation")
@@ -151,19 +163,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Reflection LM: a callable matching gepa's LanguageModel protocol.
+    # API-key backend threads each call through LMCostTracker so the
+    # final reflection_cost.json reflects actual reflection-LM spend.
+    cost_tracker = LMCostTracker(run_dir=run_dir)
+    if args.reflection_backend == "claude-oauth":
+        reflection_lm_obj = make_claude_oauth_reflection_lm(model_name=args.reflection_lm)
+    else:
+        reflection_lm_obj = make_api_key_reflection_lm(args.reflection_lm, tracker=cost_tracker)
+
     result = gepa.optimize(
         seed_candidate=_seed_candidate(surface),
         trainset=train,
         valset=val,
         adapter=adapter,
         task_lm=args.task_lm,
-        reflection_lm=args.reflection_lm,
+        reflection_lm=reflection_lm_obj,
         max_metric_calls=args.max_metric_calls,
         use_merge=True,
         max_merge_invocations=args.max_merge_invocations,
         run_dir=str(run_dir),
         cache_evaluation=False,  # we manage cache via surface_salt; gepa-level cache is a poison vector
         seed=args.seed,
+    )
+
+    # Persist final reflection-LM spend. Includes total_metric_calls from
+    # GEPAResult so callers can sanity-check call count against the tracker.
+    snapshot = cost_tracker.snapshot()
+    (run_dir / "reflection_cost.json").write_text(
+        json.dumps({
+            "total_cost_usd": snapshot.total_cost_usd,
+            "total_tokens_in": snapshot.total_tokens_in,
+            "total_tokens_out": snapshot.total_tokens_out,
+            "tracked_call_count": snapshot.call_count,
+            "gepa_total_metric_calls": getattr(result, "total_metric_calls", None),
+            "model": args.reflection_lm,
+            "backend": args.reflection_backend,
+        }, indent=2),
+        encoding="utf-8",
     )
 
     # Persist Pareto front: gepa.GEPAResult exposes val_aggregate_scores

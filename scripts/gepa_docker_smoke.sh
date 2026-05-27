@@ -44,6 +44,8 @@ docker run --rm -v "$PWD":/work -w /work "$IMAGE" bash -c '
         tests/test_gepa_phase2.py \
         tests/test_gepa_prompt_overrides.py \
         tests/test_gepa_reflective_shape.py \
+        tests/test_gepa_cost_tracker.py \
+        tests/test_gepa_reflection_lms.py \
         tests/test_worker_reports.py \
         tests/test_rubric_verifier.py \
         -q
