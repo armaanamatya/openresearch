@@ -2,3 +2,5 @@
 {"ts": "2026-05-27T21:39:17Z", "alive": "alive", "etime": "16:13", "rss_kb": "22992", "event_count": 302, "primitive_ok": 39, "aclose_retries": 2, "pods_active": "0", "status": "running", "kind": "idle", "error": ""}
 {"ts": "2026-05-27T21:41:18Z", "alive": "alive", "etime": "18:14", "rss_kb": "24640", "event_count": 351, "primitive_ok": 47, "aclose_retries": 2, "pods_active": "0", "status": "running", "kind": "stuck", "error": ""}
 {"ts": "2026-05-27T21:43:18Z", "alive": "alive", "etime": "20:14", "rss_kb": "12864", "event_count": 375, "primitive_ok": 47, "aclose_retries": 2, "pods_active": "0", "status": "running", "kind": "working", "error": ""}
+{"ts": "2026-05-27T21:45:19Z", "alive": "alive", "etime": "22:15", "rss_kb": "19552", "event_count": 399, "primitive_ok": 47, "aclose_retries": 2, "pods_active": "0", "status": "running", "kind": "idle", "error": ""}
+{"ts": "2026-05-27T21:47:19Z", "alive": "exited", "etime": "", "rss_kb": "", "event_count": 449, "primitive_ok": 64, "aclose_retries": 2, "pods_active": "0", "status": "completed", "kind": "failed", "error": ""}
