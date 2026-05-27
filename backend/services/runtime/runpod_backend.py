@@ -402,7 +402,20 @@ class RunpodBackend(RuntimeBackend):
                 exit_code = int(getattr(result, "returncode", 1))
                 stdout = _coerce_text(getattr(result, "stdout", ""))
                 stderr = _coerce_text(getattr(result, "stderr", ""))
-            await self._sync_artifacts_to_host(sandbox)
+            # 2026-05-27 Adam regression: when the SSH session dropped DURING
+            # artifact sync (after the command itself had finished and produced
+            # exit_code/stdout/stderr), the strict sync raised and the outer
+            # `except Exception` discarded the captured run result. Adam's
+            # 95-min pod run produced metrics.json on disk + locally-synced
+            # artifacts, then died with "Runpod SSH command failed: Connection
+            # closed" → orchestrator received SandboxRuntimeError → run_experiment
+            # marked failed → baseline_metrics={} → rubric=0.
+            # Fix: once the command has produced a result, sync best-effort.
+            # Whatever made it to the local artifact root is the source of truth;
+            # a partial sync still preserves what's there. The strict sync was
+            # masking the result without saving us from anything — the orchestrator
+            # already reads from the local artifact root, not from SSH state.
+            await self._sync_artifacts_to_host_quietly(sandbox)
         except TimeoutError:
             # Reachable only on the legacy fallback path (the streaming path
             # converts TimeoutError into the timed_out=True return above).
