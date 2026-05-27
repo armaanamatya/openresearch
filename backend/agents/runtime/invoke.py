@@ -58,7 +58,7 @@ async def collect_agent_text(
         return _inner_collected, _inner_tool_calls
 
     try:
-        collected, tool_calls = await run_isolated(_do_sdk_call())
+        collected, tool_calls = await run_isolated(_do_sdk_call)
     except Exception as exc:
         raw_text = "\n".join(collected)
         report = build_worker_report(

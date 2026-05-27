@@ -249,6 +249,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- PR-π Module E — parsed paper precondition gate (spec 2026-05-26) ---
+    # When True (default), the RLM loop proceeds even when parsed_full_text.txt
+    # is missing or smaller than 1 KB, logging a warning. When False, the run
+    # fails fast with a descriptive RuntimeError before the RLM loop starts.
+    # Default is True for backwards compatibility; flip to False in PR-ρ after
+    # observing production for a week.
+    allow_lossy_paper_text: bool = Field(
+        default=True,
+        description=(
+            "Allow the RLM loop to proceed when parsed_full_text.txt is missing "
+            "or <1 KB (lossy workspace fallback). When False, missing/small "
+            "parsed_full_text.txt raises RuntimeError before the loop starts."
+        ),
+    )
+
     # Apify ArXiv MCP server (https://github.com/apify/actor-arxiv-mcp-server).
     # When apify_api_token is set, the Claude agent runtime registers the
     # SSE endpoint as an MCP server named ``apify-arxiv`` and exposes its

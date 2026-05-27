@@ -489,6 +489,35 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
+def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> None:
+    """PR-π Module E — fail-fast gate for missing/degraded parsed_full_text.txt.
+
+    Raises ``RuntimeError`` when ``allow_lossy=False`` and the parsed paper
+    text is absent or suspiciously small (<1 KB), indicating that the ingestion
+    parser cascade failed. When ``allow_lossy=True`` (default) a WARNING is
+    logged and the run proceeds in degraded mode.
+
+    This guard runs at the START of ``run_pipeline_rlm`` — before any RLM
+    loop iteration — so the user gets an actionable failure message instead of
+    a silent lossy-workspace fallback that defeats paper-grounding.
+    """
+    parsed_path = project_dir / "parsed_full_text.txt"
+    degraded = not parsed_path.exists() or parsed_path.stat().st_size < 1024
+    if not degraded:
+        return
+    if not allow_lossy:
+        raise RuntimeError(
+            f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
+            f"Parser likely failed. Re-run ingestion or set "
+            f"REPROLAB_ALLOW_LOSSY_PAPER_TEXT=true."
+        )
+    logger.warning(
+        "paper text degraded — proceeding with lossy workspace fallback "
+        "(parsed_full_text.txt missing or <1KB at %s)",
+        parsed_path,
+    )
+
+
 def _write_demo_status(
     project_dir: Path,
     status: str,
@@ -970,6 +999,14 @@ async def run_pipeline_rlm(
     runs_root = Path(runs_root).resolve()
     project_dir = runs_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
+
+    # PR-π Module E — paper-text precondition gate.
+    # Check before archiving so a fresh ingest failure is caught immediately,
+    # not buried behind a new partial run. Uses the default from Settings
+    # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
+    _settings_for_gate = get_settings()
+    _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
+    _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -84,6 +85,13 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
+_PRE_EMIT_PROGRESS_FILES = {"commands.json", "train.py", "_reprolab_curated.py"}
+_DEFAULT_PRE_EMIT_STALL_S = 120.0
+
+
+class PreEmitStallError(RuntimeError):
+    """Repairable implement_baseline pre-emission stall marker for PR-π."""
+
 
 def _with_outcome(result: dict, outcome: PrimitiveOutcome) -> dict:
     """Attach primitive typestate to a result dict without disturbing payload shape."""
@@ -129,6 +137,25 @@ def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
         return cap_s
     # clamp to at least 1 s so we don't hand a zero/negative timeout to .result()
     return max(1.0, min(cap_s, remaining))
+
+
+def _pre_emit_stall_s() -> float:
+    """Resolve PR-π pre-emit stall threshold from env.
+
+    Pre: ``REPROLAB_PRE_EMIT_STALL_S`` may be unset or a positive number.
+    Post: returns a positive second threshold, defaulting to 120s.
+    Side effects: logs a warning for invalid environment values.
+    Exceptions raised: none.
+    """
+    raw = os.environ.get("REPROLAB_PRE_EMIT_STALL_S", "").strip()
+    if not raw:
+        return _DEFAULT_PRE_EMIT_STALL_S
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid REPROLAB_PRE_EMIT_STALL_S=%r; using default", raw)
+        return _DEFAULT_PRE_EMIT_STALL_S
+    return value if value > 0 else _DEFAULT_PRE_EMIT_STALL_S
 
 
 EXPERIMENT_TIMEOUT_BY_MODE: dict[str, int] = {
@@ -1384,6 +1411,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # with the code that was already written.
     _ACLOSE_STALL_S = 120  # 2 min of no file changes after code is written
     _POLL_S = 10
+    _PRE_EMIT_STALL_S = _pre_emit_stall_s()
 
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
@@ -1393,6 +1421,11 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
         import time as _time
         deadline_abs = _time.monotonic() + timeout
         _stall_start: float | None = None
+        _pre_emit_stall_start = _time.time()
+        logger.info(
+            "implement_baseline: pre-emit watchdog armed (%ds grace)",
+            int(_PRE_EMIT_STALL_S),
+        )
 
         while True:
             remaining_timeout = deadline_abs - _time.monotonic()
@@ -1421,6 +1454,41 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             # SDK aclose deadlock detection: if commands.json exists (code written)
             # and no files have changed recently, the SDK is hung on cleanup.
             commands_json = code_dir / "commands.json"
+            if not commands_json.exists():
+                progress_files = [
+                    f for f in code_dir.iterdir()
+                    if f.is_file() and f.name in _PRE_EMIT_PROGRESS_FILES
+                ]
+                if progress_files:
+                    _pre_emit_stall_start = _time.time()
+                    continue
+                pre_emit_elapsed = _time.time() - _pre_emit_stall_start
+                if pre_emit_elapsed > _PRE_EMIT_STALL_S:
+                    message = (
+                        "implement_baseline: SDK pre-emit stall — no code written "
+                        f"in {_PRE_EMIT_STALL_S:.0f}s. Likely SDK aclose deadlock pre-result."
+                    )
+                    logger.warning(
+                        "implement_baseline: SDK silent for %ds with no code emission. "
+                        "Escalating to repairable error.",
+                        int(pre_emit_elapsed),
+                    )
+                    try:
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "sdk_pre_emit_stall",
+                            "message": message,
+                        })
+                    except Exception:  # noqa: BLE001
+                        logger.debug("implement_baseline: failed to emit pre-emit stall warning")
+                    _err = _with_outcome({
+                        "success": False,
+                        "error": message,
+                        "code": "sdk_pre_emit_stall",
+                    }, PrimitiveOutcome.repairable)
+                    _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
+                    return _err
+                continue
+
             if commands_json.exists():
                 # Check if any file in code/ was modified in the last _POLL_S
                 now = _time.time()

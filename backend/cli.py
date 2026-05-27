@@ -947,13 +947,20 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     else:
+        # PR-π Module D — resume offer: check for a prior interrupted run BEFORE
+        # archiving so rlm_state/ is still readable for the iteration count.
+        _presumed_pid_early = getattr(args, "project_id", None) or project_id_for(source)
+        _prior_project_dir = runs_root / _presumed_pid_early
+        if not getattr(args, "resume", False) and _offer_resume(_prior_project_dir):
+            args.resume = True
+
         # Archive prior-attempt artifacts (final_report.*, experiment_runs.jsonl,
         # cost_ledger.jsonl, dashboard_events.jsonl, rlm_state/, etc.) under
         # runs/<id>/attempts/<ts>/ so the new attempt does not commingle with
         # an older one in the UI or the final report. The ingested paper is
         # preserved so this does NOT trigger a re-fetch / re-parse.
         from backend.services.runs.archive import archive_run_artifacts
-        presumed_pid = getattr(args, "project_id", None) or project_id_for(source)
+        presumed_pid = _presumed_pid_early
         archived = archive_run_artifacts(presumed_pid, runs_root)
         if archived:
             print(
@@ -1614,6 +1621,97 @@ def main(argv: list[str] | None = None) -> int:
     return int(args.func(args))
 
 
+# ---------------------------------------------------------------------------
+# PR-π Module D helpers — orphan sweep + resume offer
+# ---------------------------------------------------------------------------
+
+
+def _count_iterations(project_dir: Path) -> int:
+    """Count completed iterations from rlm_state/iterations.jsonl."""
+    iters_path = project_dir / "rlm_state" / "iterations.jsonl"
+    if not iters_path.exists():
+        return 0
+    count = 0
+    try:
+        for line in iters_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                count += 1
+    except OSError:
+        pass
+    return count
+
+
+def _read_last_rubric(project_dir: Path) -> float:
+    """Read the last rubric overall_score from rlm_state/ or final_report.json."""
+    # Try final_report.json first (may exist from a prior partial run).
+    for p in (project_dir / "final_report.json", project_dir / "final_report.json"):
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                score = (data.get("rubric") or {}).get("overall_score")
+                if score is not None:
+                    return float(score)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
+    # Try dashboard_events.jsonl for the last rubric_score event.
+    events_path = project_dir / "dashboard_events.jsonl"
+    if events_path.exists():
+        last_score: float | None = None
+        try:
+            for line in events_path.read_text(encoding="utf-8").splitlines():
+                if '"rubric_score"' not in line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("event") == "rubric_score":
+                        s = ev.get("overall_score")
+                        if s is not None:
+                            last_score = float(s)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+        except OSError:
+            pass
+        if last_score is not None:
+            return last_score
+    return 0.0
+
+
+def _offer_resume(project_dir: Path) -> bool:
+    """Check for an interrupted prior run and offer to resume.
+
+    Returns True if the user agreed to resume (or non-interactively the
+    run is skipped). Returns False if there is no prior interrupted run or
+    the user declined. Only prompts when stdin is a TTY.
+    """
+    import sys
+
+    status_path = project_dir / "demo_status.json"
+    if not status_path.exists():
+        return False
+    try:
+        prior = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if prior.get("status") != "interrupted":
+        return False
+
+    last_iter = _count_iterations(project_dir)
+    last_rubric = _read_last_rubric(project_dir)
+    print(
+        f"Detected interrupted prior run for {project_dir.name} "
+        f"(iter={last_iter}, last_rubric={last_rubric:.2f})."
+    )
+
+    if not sys.stdin.isatty():
+        return False
+
+    try:
+        answer = input("Resume from last checkpoint? [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in {"", "y", "yes"}
+
+
 def _module_main(argv: list[str] | None = None) -> None:
     """Entrypoint for ``python -m backend.cli``.
 
@@ -1621,8 +1719,26 @@ def _module_main(argv: list[str] | None = None) -> None:
     timeout. Once ``main`` has closed stores and printed its result, bypass
     interpreter atexit cleanup for that subcommand so the CLI itself remains
     bounded.
+
+    PR-π Module D: sweep orphaned runs at startup so stale status=running
+    entries are converted to status=interrupted before the new run starts.
     """
     selected_argv = list(sys.argv[1:] if argv is None else argv)
+
+    # Orphan sweep — best-effort; never crashes the CLI.
+    try:
+        from backend.services.events.run_liveness import sweep_orphaned_runs
+        _settings = get_settings()
+        _runs_root = Path(_settings.runs_root) if _settings.runs_root else Path("runs")
+        if _runs_root.exists():
+            orphans = sweep_orphaned_runs(_runs_root)
+            if orphans:
+                print(f"[orphan-sweep] marked {len(orphans)} interrupted run(s):")
+                for o in orphans:
+                    print(f"  {o.project_id}  ({o.reason})")
+    except Exception:  # noqa: BLE001 — never crash the CLI due to sweep failure
+        logger.debug("_module_main: orphan sweep failed (non-fatal)", exc_info=True)
+
     code = main(argv)
     if selected_argv and selected_argv[0] == "reproduce":
         sys.stdout.flush()
