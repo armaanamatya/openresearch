@@ -32,6 +32,7 @@ echo "==> running full GEPA test suite (including real gepa.optimize end-to-end)
     tests/test_gepa_end_to_end.py \
     tests/test_gepa_phase2.py \
     tests/test_gepa_prompt_overrides.py \
+    tests/test_gepa_reflective_shape.py \
     tests/test_worker_reports.py \
     tests/test_rubric_verifier.py \
     -q "$@"

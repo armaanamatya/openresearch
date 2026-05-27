@@ -149,21 +149,40 @@ class ReproLabGEPAAdapter:
         eval_batch: Any,
         components_to_update: list[str],
     ) -> dict[str, list[dict]]:
-        """Build per-component reflective examples from a prior ``evaluate`` call.
+        """Build per-component reflective examples in gepa's canonical shape.
 
-        ``eval_batch.trajectories`` already contains §4.4-shape records (built
-        by ``trace_minimizer.build_record`` in ``_run_one_eval``). Group them
-        by component.
+        Gepa's reflection LM expects each example as exactly three keys:
+        ``{"Inputs", "Generated Outputs", "Feedback"}`` — see
+        ``gepa.adapters.default_adapter.DefaultAdapter.make_reflective_dataset``.
+        Returning our raw §4.4 record would feed the reflection LM an
+        unstructured trace dump and produce nonsense mutations.
+
+        Mapping from our §4.4 record to gepa's canonical 3-key shape:
+        - ``Inputs`` ← rubric-before snapshot + weak-leaves the candidate
+          was meant to address (what was the situation).
+        - ``Generated Outputs`` ← the candidate prompt text that ran +
+          metrics digest (what did the candidate do).
+        - ``Feedback`` ← rubric delta, Hermes status, repair counts,
+          forced-iteration warnings (what to learn from).
+
+        Gepa updates ONE component per reflection cycle even when the
+        candidate has multiple components (its DefaultAdapter asserts
+        ``len(components_to_update) == 1``). We don't assert (defensive)
+        but the grouping naturally yields the same effect.
         """
         trajectories: list[dict] = list(getattr(eval_batch, "trajectories", None) or [])
         out: dict[str, list[dict]] = {cid: [] for cid in components_to_update}
+
         for rec in trajectories:
             cid = rec.get("component_id")
-            if cid in out:
-                out[cid].append(rec)
-        # Persist for human inspection (G6 audit trail).
+            if cid not in out:
+                continue
+            out[cid].append(_to_gepa_reflective_record(rec, candidate.get(cid, "")))
+
+        # Persist the raw §4.4 records for human inspection (G6 audit trail).
         for rec in trajectories:
             self._append_jsonl(self.opt_run_dir / "reflective_dataset.jsonl", rec)
+
         return out
 
     # ------------------------------------------------------------------
@@ -255,6 +274,54 @@ class ReproLabGEPAAdapter:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(obj, default=str) + "\n")
+
+
+def _to_gepa_reflective_record(rec: dict, candidate_text: str) -> dict:
+    """Map one §4.4-shape record into gepa's canonical 3-key reflective shape.
+
+    The reflection LM consumes the dict literally — keys must match
+    ``{"Inputs", "Generated Outputs", "Feedback"}`` exactly. Values are
+    serialized to short natural-language strings so the LM can reason about
+    them without sifting through nested JSON.
+    """
+    inp = rec.get("input") or {}
+    trace = rec.get("execution_trace") or {}
+    hermes = trace.get("hermes") or {}
+
+    inputs_str = (
+        f"Paper archetype: {rec.get('paper_archetype', 'unknown')}\n"
+        f"Rubric overall before: {inp.get('rubric_overall_before', 0.0):.3f}\n"
+        f"Rubric areas before: {json.dumps(inp.get('rubric_areas_before', {}), default=str)}\n"
+        f"Weak leaves the candidate aimed at: "
+        f"{json.dumps(inp.get('weak_leaves_before', []), default=str)[:600]}\n"
+        f"Prior results digest: {inp.get('current_results_digest', '')}"
+    )
+    outputs_str = (
+        f"Candidate prompt text (truncated): {candidate_text[:1500]}\n"
+        f"Candidate produced metrics: "
+        f"{json.dumps(rec.get('candidate_output', {}), default=str)[:400]}"
+    )
+    delta_areas = trace.get("rubric_delta_areas", {})
+    repair_summaries = trace.get("repair_summaries") or []
+    feedback_str = (
+        f"Hermes-clamped score: {rec.get('score', 0.0):.3f}\n"
+        f"Rubric overall after: {trace.get('rubric_overall_after', 0.0):.3f}\n"
+        f"Per-area deltas: {json.dumps(delta_areas, default=str)}\n"
+        f"Run experiment succeeded: {trace.get('run_experiment_success', False)}\n"
+        f"Repair attempts: {len(repair_summaries)} ({'; '.join(repair_summaries)[:400]})\n"
+        f"Forced-iteration warnings: {trace.get('forced_iteration_warnings', 0)}\n"
+        f"Blanket declines: {trace.get('blanket_decline_count', 0)}\n"
+        f"Hermes status: {hermes.get('status', 'unavailable')}\n"
+        f"Unsupported claims: {json.dumps(hermes.get('unsupported_claims', []), default=str)[:400]}\n"
+        "Improve the prompt so that weak leaves move toward pass, Hermes status "
+        "stays grounded, repair count drops, and the rubric overall climbs."
+    )
+
+    return {
+        "Inputs": inputs_str,
+        "Generated Outputs": outputs_str,
+        "Feedback": feedback_str,
+    }
 
 
 def _make_evaluation_batch(
