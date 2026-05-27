@@ -178,6 +178,14 @@ shows the hand-fixed cell C outperforms cells A and B.
 Only built if Phase 3 shows GEPA hits a ceiling AND we believe
 SkillOpt's "+24.8 agentic-loop bonus" transfers to reproduction.
 
+> **Phase-1 evidence update:** `findings/2026-05-27-stats-001.md` §8
+> Conclusion shows 7/8 runs in the current corpus never reach the
+> improvement loop (async-cleanup bug + OOM dominate). Until those
+> infra bugs are resolved, any prompt-class mutation (including
+> SkillOpt-style runtime skills) is invisible to the rubric. Phase 5
+> priority drops accordingly; revisit only after Phase 3 shows ≥ 3
+> consecutive completed runs with Hermes ≥ 0.3.
+
 Components:
 - `backend/agents/optimization/skill_adapter.py` — `ReproLabSkillOptAdapter`
   mirroring our GEPA adapter pattern
