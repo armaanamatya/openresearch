@@ -61,6 +61,11 @@ from backend.agents.rlm.sse_bridge import (
     make_on_subcall_start,
     redact_corpus,
 )
+from backend.agents.rlm.run_state import (
+    RunStateComputer,
+    RunStateKind,
+    start_periodic_ticker,
+)
 from backend.agents.rlm.stub_primitives import build_stub_custom_tools
 from backend.agents.rlm.system_prompt import build_system_prompt
 
@@ -524,6 +529,7 @@ def _write_demo_status(
     *,
     error: Any | None = None,
     primitive_provider: str = "real",  # T21 / review I8
+    stamp_pid: bool | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -536,6 +542,13 @@ def _write_demo_status(
     ``status`` must be a valid ``RunStatus`` (``running`` | ``completed`` |
     ``failed`` | ``stopped``) — the reproduction *verdict* (which may be
     ``partial``) is a separate axis and lives in ``final_report.json``.
+
+    Derived-run-state contract (spec 2026-05-27): when ``status == "running"``
+    we defensively stamp ``os.getpid()`` so the PR-π Module B orphan sweeper
+    can detect this run if it dies before the parent spawner gets a chance to
+    stamp pid. Closes the ``pid is None`` skip in ``run_liveness.py:266-272``.
+    Override via ``stamp_pid=False`` for tests that pre-fix pid to a sentinel;
+    ``stamp_pid=True`` forces a stamp on any status.
     """
     path = project_dir / "demo_status.json"
     now = datetime.now(timezone.utc).isoformat()
@@ -554,6 +567,12 @@ def _write_demo_status(
         "updatedAt": now,
     }
     payload.setdefault("startedAt", now)
+    # Defensive pid stamp — see docstring. The parent spawner in
+    # live_runs.py:839 may overwrite this with the subprocess pid; that's the
+    # canonical value. Until then, our self-stamp lets the sweeper see us.
+    _should_stamp = stamp_pid if stamp_pid is not None else (status == "running")
+    if _should_stamp:
+        payload["pid"] = os.getpid()
     if status in ("completed", "failed", "stopped"):
         payload["completedAt"] = now
     if error is not None:
@@ -1029,432 +1048,514 @@ async def run_pipeline_rlm(
     )
     dashboard = DashboardEmitter(project_id, runs_root)
     emit = make_emit(dashboard)
-    # wall_clock_s is intentionally Optional[float] — None means unbounded
-    # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
-    # the operator must opt-in to a ceiling via --max-wall-clock or
-    # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
-    # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
-    wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
-    if run_budget is not None and run_budget.max_wall_clock_seconds:
-        wall_clock_s = float(run_budget.max_wall_clock_seconds)
 
-    # 2. Root model (resolved before the primitive LLM client so the client
-    #    can mirror a custom endpoint when the root uses one).
-    root_model = resolve_root_model(model)
-    if not root_model.paper_validated:
-        logger.warning(
-            "run_pipeline_rlm: root model %r is NOT paper-validated as an RLM root "
-            "(root_model_unvalidated) — results may not match paper expectations",
-            root_model.key,
-        )
-
-    # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
-    llm_client, llm_model = _build_llm_client(provider, root_model)
-    bk = root_model.backend_kwargs
-    if root_model.rlm_backend == "openai" and bk.get("base_url"):
-        import urllib.parse
-        provider_label = urllib.parse.urlparse(bk["base_url"]).hostname or root_model.key
-    else:
-        provider_label = (provider or "").lower() or (
-            "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
-        )
-
-    # 4. RunContext. The sub-agent runtime + model are resolved here so
-    #    implement_baseline never falls through to a dead env-default key,
-    #    and runs Sonnet rather than the registry's Opus default.
-    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
-    logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
-    # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
-    # before Settings construction; consumed here so RunContext carries it and
-    # resolve_gpu_requirements can bypass the LLM VRAM estimate).
-    _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
-    _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
-
-    # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
-    # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
-    _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
-    if _scope_json:
-        from backend.agents.schemas import ScopeSpec as _ScopeSpec
-        _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
-    else:
-        _scope_spec = None
-
-    # Recover the arXiv ID from on-disk artifacts so docs/papers/<id>.yaml
-    # overrides fire even when project_id is a hashed `prj_<digest>` string.
-    # Falls back to the regex over project_id for legacy non-hashed IDs.
-    # See _extract_arxiv_id_from_project_dir for resolution order.
-    from backend.agents.baseline_implementation import _extract_arxiv_id as _regex_extract
-    _arxiv_id: str | None = (
-        _extract_arxiv_id_from_project_dir(project_dir)
-        or _regex_extract(project_id)
-    )
-    if _arxiv_id:
-        logger.info("run_pipeline_rlm[%s]: arxiv_id=%s", project_id, _arxiv_id)
-
-    ctx = RunContext(
+    # Derived-run-state contract (spec 2026-05-27): one authoritative computed
+    # field, emitted as a new `run_state` SSE event and mirrored into
+    # demo_status.json::run_state. Replaces the pill+chip+counter ambiguity in
+    # the lab UI with one signal. Wired below into ctx and the periodic ticker;
+    # binding.wrap_primitive calls on_primitive_start/end hooks.
+    run_state_computer = RunStateComputer(
         project_id=project_id,
         project_dir=project_dir,
-        runs_root=runs_root,
-        dashboard=dashboard,
-        emit=emit,           # thread-safe emit chokepoint from make_emit above
-        cost_ledger=cost_ledger,
-        llm_client=llm_client,
-        provider=provider_label,
-        model=llm_model,
-        runtime=agent_runtime,
-        agent_model=agent_model,
-        workspace_service=workspace_service,
-        workspace_id=workspace_id,
-        sandbox_mode=sandbox_mode,
-        # 2026-05-23: thread execution_profile.gpu_mode through so the
-        # baseline-implementation agent's _compute_constraint_guidance can
-        # decide CPU-vs-GPU baseline strategy dynamically. Without this,
-        # ctx.gpu_mode is always None and the helper falls back to its
-        # most-conservative branch regardless of what the user actually
-        # configured (--gpu-mode max on runpod should NOT trigger smoke-test).
-        gpu_mode=(
-            execution_profile.gpu_mode
-            if execution_profile is not None and hasattr(execution_profile, "gpu_mode")
-            else None
-        ),
-        run_budget=run_budget,
-        deadline_utc=(
-            datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s)
-            if wall_clock_s is not None
-            else None
-        ),  # M-DEADLINE — None when no wall-clock ceiling was requested.
-        vram_override=_vram_override,
-        scope_spec=_scope_spec,
-        arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
-                             # docs/papers/<id>.yaml even on hashed project IDs.
-        # Lane Q — --minimize-compute / lab UI checkbox. Threaded onto ctx so the
-        # implement_baseline primitive can pass it into run_with_sdk.
-        minimize_compute=(
-            bool(getattr(execution_profile, "minimize_compute", False))
-            if execution_profile is not None
-            else False
-        ),
+        emit=emit,
+    )
+    _run_state_stop = threading.Event()
+    _run_state_thread = start_periodic_ticker(
+        run_state_computer,
+        interval_s=5.0,
+        stop_event=_run_state_stop,
     )
 
-    # 5. Primitives — the real binding or the stub provider.
-    # repair_policy_holder is a late-binding 1-slot list: the tool wrappers
-    # close over it, and run.py populates slot 0 after the ForcedIterationPolicy
-    # is constructed below.  This lets _record_last_primitive_result_tools notify
-    # the policy of repairable run_experiment outcomes without circular deps.
-    repair_policy_holder: list = []
-    custom_tools, tools_label = _resolve_custom_tools(ctx)
-    custom_tools = _record_last_primitive_result_tools(custom_tools, ctx, repair_policy_holder)
-    logger.info(
-        "run_pipeline_rlm: project=%s root=%s primitives=%s",
-        project_id,
-        root_model.key,
-        tools_label,
-    )
-
-    # Hybrid-repair-only mode (set by backend.agents.hybrid.controller when
-    # run_pipeline_rlm is called as Phase 2 of a hybrid run).
-    # The RDR Phase 1 already produced a code_dir; we skip full reproduction
-    # and focus the root model on repairing the weak clusters identified by
-    # Phase 1 scoring.
-    # Explicit kwargs are preferred; legacy claim_map keys remain for
-    # back-compat with any external caller still using the old contract.
-    _hybrid_repair_only: bool = bool(
-        hybrid_repair_only or workspace_claim_map.get("_hybrid_repair_only", False)
-    )
-    _phase1_weak_clusters: list[Any] = (
-        phase1_weak_clusters
-        if phase1_weak_clusters is not None
-        else (workspace_claim_map.get("_phase1_weak_clusters") or [])
-    )
-
-    # 6. The offloaded corpus + 7. the system prompt.
-    context_dict = _build_context(workspace_claim_map)
-
-    # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
-    # from the paper so the run is scorable (bundle runs already carry one).
-    if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
-        from backend.agents.rlm.rubric_gen import generate_rubric_tree
-
-        generated = generate_rubric_tree(
-            context_dict["paper_text"],
-            llm_client,
-            paper_title=context_dict.get("paper_metadata", {}).get("title", ""),
-        )
-        if generated is not None:
-            context_dict["rubric_spec"] = generated
-            (project_dir / "generated_rubric.json").write_text(
-                json.dumps(generated, indent=2), encoding="utf-8"
+    # Derived-run-state contract (spec 2026-05-27) §9 — outer crash handler.
+    # Wraps the entire body so any uncaught exception (setup-phase or
+    # post-rlm-completion in _finalize) lands a terminal `failed` status and a
+    # terminal run_state event. Without this, a crash before `_finalize` runs
+    # leaves demo_status.json stuck at "running" forever — the orphan sweeper
+    # eventually catches it (~120s), but a fast, in-process write produces a
+    # crisper UX and a "failed" label rather than "interrupted".
+    try:
+        # wall_clock_s is intentionally Optional[float] — None means unbounded
+        # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
+        # the operator must opt-in to a ceiling via --max-wall-clock or
+        # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
+        # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
+        wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
+        if run_budget is not None and run_budget.max_wall_clock_seconds:
+            wall_clock_s = float(run_budget.max_wall_clock_seconds)
+    
+        # 2. Root model (resolved before the primitive LLM client so the client
+        #    can mirror a custom endpoint when the root uses one).
+        root_model = resolve_root_model(model)
+        if not root_model.paper_validated:
+            logger.warning(
+                "run_pipeline_rlm: root model %r is NOT paper-validated as an RLM root "
+                "(root_model_unvalidated) — results may not match paper expectations",
+                root_model.key,
             )
-            logger.info("run_pipeline_rlm: using a self-generated rubric (persisted to generated_rubric.json)")
+    
+        # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
+        llm_client, llm_model = _build_llm_client(provider, root_model)
+        bk = root_model.backend_kwargs
+        if root_model.rlm_backend == "openai" and bk.get("base_url"):
+            import urllib.parse
+            provider_label = urllib.parse.urlparse(bk["base_url"]).hostname or root_model.key
         else:
-            logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
-
-    # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
-    # so the root model repairs rather than reproduces from scratch.
-    active_prompt = _ROOT_PROMPT
-    if _hybrid_repair_only:
-        code_dir = project_dir / "code"
-        context_dict["_hybrid_repair_only"] = True
-        context_dict["_phase1_code_dir"] = str(code_dir)
-        context_dict["_phase1_weak_clusters"] = _phase1_weak_clusters
+            provider_label = (provider or "").lower() or (
+                "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
+            )
+    
+        # 4. RunContext. The sub-agent runtime + model are resolved here so
+        #    implement_baseline never falls through to a dead env-default key,
+        #    and runs Sonnet rather than the registry's Opus default.
+        agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
+        logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
+        # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
+        # before Settings construction; consumed here so RunContext carries it and
+        # resolve_gpu_requirements can bypass the LLM VRAM estimate).
+        _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
+        _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
+    
+        # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
+        # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
+        _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
+        if _scope_json:
+            from backend.agents.schemas import ScopeSpec as _ScopeSpec
+            _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
+        else:
+            _scope_spec = None
+    
+        # Recover the arXiv ID from on-disk artifacts so docs/papers/<id>.yaml
+        # overrides fire even when project_id is a hashed `prj_<digest>` string.
+        # Falls back to the regex over project_id for legacy non-hashed IDs.
+        # See _extract_arxiv_id_from_project_dir for resolution order.
+        from backend.agents.baseline_implementation import _extract_arxiv_id as _regex_extract
+        _arxiv_id: str | None = (
+            _extract_arxiv_id_from_project_dir(project_dir)
+            or _regex_extract(project_id)
+        )
+        if _arxiv_id:
+            logger.info("run_pipeline_rlm[%s]: arxiv_id=%s", project_id, _arxiv_id)
+    
+        ctx = RunContext(
+            project_id=project_id,
+            project_dir=project_dir,
+            runs_root=runs_root,
+            dashboard=dashboard,
+            emit=emit,           # thread-safe emit chokepoint from make_emit above
+            cost_ledger=cost_ledger,
+            llm_client=llm_client,
+            provider=provider_label,
+            model=llm_model,
+            runtime=agent_runtime,
+            agent_model=agent_model,
+            workspace_service=workspace_service,
+            workspace_id=workspace_id,
+            sandbox_mode=sandbox_mode,
+            # 2026-05-23: thread execution_profile.gpu_mode through so the
+            # baseline-implementation agent's _compute_constraint_guidance can
+            # decide CPU-vs-GPU baseline strategy dynamically. Without this,
+            # ctx.gpu_mode is always None and the helper falls back to its
+            # most-conservative branch regardless of what the user actually
+            # configured (--gpu-mode max on runpod should NOT trigger smoke-test).
+            gpu_mode=(
+                execution_profile.gpu_mode
+                if execution_profile is not None and hasattr(execution_profile, "gpu_mode")
+                else None
+            ),
+            run_budget=run_budget,
+            deadline_utc=(
+                datetime.now(timezone.utc) + timedelta(seconds=wall_clock_s)
+                if wall_clock_s is not None
+                else None
+            ),  # M-DEADLINE — None when no wall-clock ceiling was requested.
+            vram_override=_vram_override,
+            scope_spec=_scope_spec,
+            arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
+                                 # docs/papers/<id>.yaml even on hashed project IDs.
+            # Lane Q — --minimize-compute / lab UI checkbox. Threaded onto ctx so the
+            # implement_baseline primitive can pass it into run_with_sdk.
+            minimize_compute=(
+                bool(getattr(execution_profile, "minimize_compute", False))
+                if execution_profile is not None
+                else False
+            ),
+            run_state_computer=run_state_computer,
+        )
+    
+        # 5. Primitives — the real binding or the stub provider.
+        # repair_policy_holder is a late-binding 1-slot list: the tool wrappers
+        # close over it, and run.py populates slot 0 after the ForcedIterationPolicy
+        # is constructed below.  This lets _record_last_primitive_result_tools notify
+        # the policy of repairable run_experiment outcomes without circular deps.
+        repair_policy_holder: list = []
+        custom_tools, tools_label = _resolve_custom_tools(ctx)
+        custom_tools = _record_last_primitive_result_tools(custom_tools, ctx, repair_policy_holder)
         logger.info(
-            "run_pipeline_rlm[%s]: hybrid-repair-only mode — "
-            "%d weak cluster(s); code_dir=%s",
-            project_id, len(_phase1_weak_clusters), code_dir,
+            "run_pipeline_rlm: project=%s root=%s primitives=%s",
+            project_id,
+            root_model.key,
+            tools_label,
         )
-        active_prompt = (
-            "You are the repair agent for a hybrid RDR+RLM reproduction run. "
-            "Phase 1 (RDR) already produced a code directory at "
-            "`context['_phase1_code_dir']`. "
-            "The weak clusters that need repair are listed in "
-            "`context['_phase1_weak_clusters']` — each entry has "
-            "{'id', 'score', 'justification'}. "
-            "Your goal is to improve the reproduction for those specific clusters. "
-            "Inspect the existing code, understand what each weak cluster requires "
-            "(see the rubric in context['rubric_spec']), implement targeted fixes, "
-            "re-run the experiment with run_experiment, and re-score with "
-            "verify_against_rubric. Do NOT rewrite passing clusters. "
-            "When finished, call FINAL_VAR on the updated report dict — "
-            "exactly as the system prompt's termination contract describes."
+    
+        # Hybrid-repair-only mode (set by backend.agents.hybrid.controller when
+        # run_pipeline_rlm is called as Phase 2 of a hybrid run).
+        # The RDR Phase 1 already produced a code_dir; we skip full reproduction
+        # and focus the root model on repairing the weak clusters identified by
+        # Phase 1 scoring.
+        # Explicit kwargs are preferred; legacy claim_map keys remain for
+        # back-compat with any external caller still using the old contract.
+        _hybrid_repair_only: bool = bool(
+            hybrid_repair_only or workspace_claim_map.get("_hybrid_repair_only", False)
         )
-
-    # M-REDACT: build sentinels once; threaded into logger + _finalize (A1-M2, A1-C1).
-    corpus_sentinels = _corpus_sentinels(context_dict)
-    system_prompt = build_system_prompt(
-        context_metadata=_context_metadata(context_dict),
-        root_model=root_model,
-    )
-
-    # 8. Checkpoint + the streaming logger.
-    event_store = SqliteEventStore(get_settings().database_url)
-    checkpointer = IterationCheckpointer(
-        project_id=project_id,
-        event_store=event_store,
-        snapshot_dir=project_dir / "rlm_state",
-    )
-    snapshot_writer = ReplSnapshotWriter(
-        project_dir=project_dir,
-        sentinels=corpus_sentinels,
-    )
-    rlm_logger = _FatalBackendGateLogger(
-        emit=emit,
-        checkpointer=checkpointer,
-        sentinels=corpus_sentinels,
-        snapshot_writer=snapshot_writer,
-        ctx=ctx,
-    )
-
-    # Resolve cost cap — passed directly to RLM(max_budget=...) so the library
-    # itself raises BudgetExceededError between iterations (T2/M-BUDGET).
-    max_usd: float | None = None
-    if run_budget is not None and run_budget.max_usd:
-        max_usd = float(run_budget.max_usd)
-
-    # Featherless's plan caps input context far below the model's native window.
-    # Register that cap with rlm so compaction fires before the provider 400s
-    # the run on context_length_exceeded, and tighten the compaction threshold
-    # for extra margin against token-count drift on a non-tiktoken model.
-    is_featherless = root_model.rlm_backend == "openai" and "featherless" in str(
-        bk.get("base_url", "")
-    )
-    if is_featherless:
-        register_featherless_context_limits()
-    compaction_threshold_pct = 0.7 if is_featherless else 0.85
-
-    # 9. Construct the RLM engine.
-    rlm = RLM(
-        backend=root_model.rlm_backend,
-        backend_kwargs=root_model.backend_kwargs,
-        environment="local",                       # mandatory — DockerREPL drops custom_tools
-        max_depth=_MAX_DEPTH,
-        max_iterations=_MAX_ITERATIONS,
-        max_timeout=wall_clock_s,
-        max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
-        compaction=True,
-        compaction_threshold_pct=compaction_threshold_pct,
-        other_backends=[root_model.sub_backend],
-        other_backend_kwargs=[root_model.sub_backend_kwargs],
-        custom_tools=custom_tools,
-        custom_sub_tools={},                       # sub-calls navigate text, not primitives
-        custom_system_prompt=system_prompt,
-        logger=rlm_logger,
-        on_subcall_start=make_on_subcall_start(emit),
-        on_subcall_complete=make_on_subcall_complete(emit),
-    )
-
-    # 10. Arm the wall-clock backstop, then 11. run .completion() on a worker thread.
-    watchdog = _arm_watchdog(
-        wall_clock_s,
-        project_dir=project_dir,
-        emit=emit,
-        iteration_count=lambda: rlm_logger.iteration_count,
-    )
-
-    # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
-    # while the latest rubric score is below target AND the iteration floor
-    # has not been hit. The interceptor was installed at module load via
-    # apply_forced_iteration_patch(); here we push a per-run policy onto the
-    # thread-local stack so the patched _final_var consults this run's state.
-    settings = get_settings()
-    min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
-    # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
-    _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
-    _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
-
-    def _emit_forced_iteration_warning(message: str) -> None:
-        try:
-            emit(build_run_warning_event(
-                level="warn",
-                code="forced_iteration",
-                message=message,
-            ))
-        except Exception:  # noqa: BLE001 — emit must never block the policy
-            logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
-
-    def _emit_iteration_budget_exceeded(message: str) -> None:
-        try:
-            emit(build_run_warning_event(
-                level="warn",
-                code="iteration_budget_exceeded",
-                message=message,
-            ))
-        except Exception:  # noqa: BLE001 — emit must never block the policy
-            logger.exception("run_pipeline_rlm: iteration-budget-exceeded warning emit failed")
-
-    def _emit_forced_repair_warning(message: str) -> None:
-        try:
-            emit(build_run_warning_event(
-                level="warn",
-                code="forced_repair_iteration",
-                message=message,
-            ))
-        except Exception:  # noqa: BLE001 — emit must never block the policy
-            logger.exception("run_pipeline_rlm: forced-repair-iteration warning emit failed")
-
-    def _count_honest_candidate_outcomes() -> int:
-        """Count candidate_outcome events with truthful outcomes.
-
-        Lane O — "honest" means the agent actually ran the candidate's
-        experiment and reported the result. Declined / skipped don't count.
-        Reads dashboard_events.jsonl since the events flow through that
-        single egress chokepoint regardless of which primitive recorded them.
-        """
-        ev_path = ctx.project_dir / "dashboard_events.jsonl"
-        if not ev_path.exists():
-            return 0
-        honest = {"promoted", "failed", "marginal"}
-        count = 0
-        try:
-            with ev_path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or '"candidate_outcome"' not in line:
-                        continue
-                    try:
-                        import json as _json
-                        e = _json.loads(line)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if e.get("event") != "candidate_outcome":
-                        continue
-                    if str(e.get("outcome") or "").lower() in honest:
-                        count += 1
-        except OSError:
-            return 0
-        return count
-
-    iteration_policy = ForcedIterationPolicy(
-        min_iterations=min_iterations,
-        rubric_snapshot=lambda: (
-            ctx.latest_rubric_score,
-            ctx.latest_rubric_target,
-            ctx.latest_rubric_iteration,
-        ),
-        current_iteration=lambda: rlm_logger.iteration_count,
-        remaining_s=lambda: ctx.remaining_s(),
-        on_refusal=_emit_forced_iteration_warning,
-        honest_candidate_outcomes=_count_honest_candidate_outcomes,
-        on_repair_refusal=_emit_forced_repair_warning,
-        max_rlm_iterations=_max_rlm_iterations,
-        on_budget_exceeded=_emit_iteration_budget_exceeded,
-    )
-    # PR-α followup: populate the late-binding holder so the tool wrapper
-    # can call policy.record_repair_attempt() when run_experiment returns
-    # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
-    repair_policy_holder.append(iteration_policy)
-    # PR-μ Solution C: expose the policy on ctx so run_experiment can feed
-    # per-iteration outcomes via record_run_experiment(); the consumer side
-    # at primitives.py:_emit_iteration_boundary_warning is fail-soft when
-    # ctx._forced_iteration_policy is None.
-    ctx._forced_iteration_policy = iteration_policy
-
-    # PR-ι.3 — rolling cost surfacing.  A background daemon thread updates
-    # demo_status.json::cost_summary every 30 s while the RLM loop runs.
-    _cost_stop_event = threading.Event()
-    _cost_thread = threading.Thread(
-        target=_update_cost_summary_loop,
-        kwargs={
-            "project_dir": project_dir,
-            "stop_event": _cost_stop_event,
-            "iteration_count": lambda: rlm_logger.iteration_count,
-        },
-        daemon=True,
-        name=f"cost-summary-{project_id}",
-    )
-    _cost_thread.start()
-
-    result_obj: Any = None
-    run_failed = False
-    fatal_abort: _FatalPrimitiveAbort | None = None
-    try:
-        with forced_iteration_policy(iteration_policy):
-            result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
-    except _FatalPrimitiveAbort as exc:
-        fatal_abort = exc
-        run_failed = True
-        logger.error(
-            "run_pipeline_rlm: fatal primitive outcome from %s: %s",
-            exc.primitive_name,
-            exc.result.get("error") or exc.result,
+        _phase1_weak_clusters: list[Any] = (
+            phase1_weak_clusters
+            if phase1_weak_clusters is not None
+            else (workspace_claim_map.get("_phase1_weak_clusters") or [])
         )
-    except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
-        run_failed = True
-        logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
-    finally:
-        # Watchdog is None when no wall-clock ceiling was requested.
-        if watchdog is not None:
-            watchdog.cancel()
-        # Stop the cost-summary background thread.
-        _cost_stop_event.set()
-        _cost_thread.join(timeout=5.0)
-
-    # 12. Build, write, and report (close event_store in finally — A4-9).
-    try:
-        if fatal_abort is not None:
-            return _finalize_fatal_primitive_abort(
-                abort=fatal_abort,
+    
+        # 6. The offloaded corpus + 7. the system prompt.
+        context_dict = _build_context(workspace_claim_map)
+    
+        # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
+        # from the paper so the run is scorable (bundle runs already carry one).
+        if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+            from backend.agents.rlm.rubric_gen import generate_rubric_tree
+    
+            generated = generate_rubric_tree(
+                context_dict["paper_text"],
+                llm_client,
+                paper_title=context_dict.get("paper_metadata", {}).get("title", ""),
+            )
+            if generated is not None:
+                context_dict["rubric_spec"] = generated
+                (project_dir / "generated_rubric.json").write_text(
+                    json.dumps(generated, indent=2), encoding="utf-8"
+                )
+                logger.info("run_pipeline_rlm: using a self-generated rubric (persisted to generated_rubric.json)")
+            else:
+                logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
+    
+        # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
+        # so the root model repairs rather than reproduces from scratch.
+        active_prompt = _ROOT_PROMPT
+        if _hybrid_repair_only:
+            code_dir = project_dir / "code"
+            context_dict["_hybrid_repair_only"] = True
+            context_dict["_phase1_code_dir"] = str(code_dir)
+            context_dict["_phase1_weak_clusters"] = _phase1_weak_clusters
+            logger.info(
+                "run_pipeline_rlm[%s]: hybrid-repair-only mode — "
+                "%d weak cluster(s); code_dir=%s",
+                project_id, len(_phase1_weak_clusters), code_dir,
+            )
+            active_prompt = (
+                "You are the repair agent for a hybrid RDR+RLM reproduction run. "
+                "Phase 1 (RDR) already produced a code directory at "
+                "`context['_phase1_code_dir']`. "
+                "The weak clusters that need repair are listed in "
+                "`context['_phase1_weak_clusters']` — each entry has "
+                "{'id', 'score', 'justification'}. "
+                "Your goal is to improve the reproduction for those specific clusters. "
+                "Inspect the existing code, understand what each weak cluster requires "
+                "(see the rubric in context['rubric_spec']), implement targeted fixes, "
+                "re-run the experiment with run_experiment, and re-score with "
+                "verify_against_rubric. Do NOT rewrite passing clusters. "
+                "When finished, call FINAL_VAR on the updated report dict — "
+                "exactly as the system prompt's termination contract describes."
+            )
+    
+        # M-REDACT: build sentinels once; threaded into logger + _finalize (A1-M2, A1-C1).
+        corpus_sentinels = _corpus_sentinels(context_dict)
+        system_prompt = build_system_prompt(
+            context_metadata=_context_metadata(context_dict),
+            root_model=root_model,
+        )
+    
+        # 8. Checkpoint + the streaming logger.
+        event_store = SqliteEventStore(get_settings().database_url)
+        checkpointer = IterationCheckpointer(
+            project_id=project_id,
+            event_store=event_store,
+            snapshot_dir=project_dir / "rlm_state",
+        )
+        snapshot_writer = ReplSnapshotWriter(
+            project_dir=project_dir,
+            sentinels=corpus_sentinels,
+        )
+        rlm_logger = _FatalBackendGateLogger(
+            emit=emit,
+            checkpointer=checkpointer,
+            sentinels=corpus_sentinels,
+            snapshot_writer=snapshot_writer,
+            ctx=ctx,
+        )
+    
+        # Resolve cost cap — passed directly to RLM(max_budget=...) so the library
+        # itself raises BudgetExceededError between iterations (T2/M-BUDGET).
+        max_usd: float | None = None
+        if run_budget is not None and run_budget.max_usd:
+            max_usd = float(run_budget.max_usd)
+    
+        # Featherless's plan caps input context far below the model's native window.
+        # Register that cap with rlm so compaction fires before the provider 400s
+        # the run on context_length_exceeded, and tighten the compaction threshold
+        # for extra margin against token-count drift on a non-tiktoken model.
+        is_featherless = root_model.rlm_backend == "openai" and "featherless" in str(
+            bk.get("base_url", "")
+        )
+        if is_featherless:
+            register_featherless_context_limits()
+        compaction_threshold_pct = 0.7 if is_featherless else 0.85
+    
+        # 9. Construct the RLM engine.
+        rlm = RLM(
+            backend=root_model.rlm_backend,
+            backend_kwargs=root_model.backend_kwargs,
+            environment="local",                       # mandatory — DockerREPL drops custom_tools
+            max_depth=_MAX_DEPTH,
+            max_iterations=_MAX_ITERATIONS,
+            max_timeout=wall_clock_s,
+            max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
+            compaction=True,
+            compaction_threshold_pct=compaction_threshold_pct,
+            other_backends=[root_model.sub_backend],
+            other_backend_kwargs=[root_model.sub_backend_kwargs],
+            custom_tools=custom_tools,
+            custom_sub_tools={},                       # sub-calls navigate text, not primitives
+            custom_system_prompt=system_prompt,
+            logger=rlm_logger,
+            on_subcall_start=make_on_subcall_start(emit),
+            on_subcall_complete=make_on_subcall_complete(emit),
+        )
+    
+        # 10. Arm the wall-clock backstop, then 11. run .completion() on a worker thread.
+        watchdog = _arm_watchdog(
+            wall_clock_s,
+            project_dir=project_dir,
+            emit=emit,
+            iteration_count=lambda: rlm_logger.iteration_count,
+        )
+    
+        # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
+        # while the latest rubric score is below target AND the iteration floor
+        # has not been hit. The interceptor was installed at module load via
+        # apply_forced_iteration_patch(); here we push a per-run policy onto the
+        # thread-local stack so the patched _final_var consults this run's state.
+        settings = get_settings()
+        min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
+        # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
+        _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
+        _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
+    
+        def _emit_forced_iteration_warning(message: str) -> None:
+            try:
+                emit(build_run_warning_event(
+                    level="warn",
+                    code="forced_iteration",
+                    message=message,
+                ))
+            except Exception:  # noqa: BLE001 — emit must never block the policy
+                logger.exception("run_pipeline_rlm: forced-iteration warning emit failed")
+    
+        def _emit_iteration_budget_exceeded(message: str) -> None:
+            try:
+                emit(build_run_warning_event(
+                    level="warn",
+                    code="iteration_budget_exceeded",
+                    message=message,
+                ))
+            except Exception:  # noqa: BLE001 — emit must never block the policy
+                logger.exception("run_pipeline_rlm: iteration-budget-exceeded warning emit failed")
+    
+        def _emit_forced_repair_warning(message: str) -> None:
+            try:
+                emit(build_run_warning_event(
+                    level="warn",
+                    code="forced_repair_iteration",
+                    message=message,
+                ))
+            except Exception:  # noqa: BLE001 — emit must never block the policy
+                logger.exception("run_pipeline_rlm: forced-repair-iteration warning emit failed")
+    
+        def _count_honest_candidate_outcomes() -> int:
+            """Count candidate_outcome events with truthful outcomes.
+    
+            Lane O — "honest" means the agent actually ran the candidate's
+            experiment and reported the result. Declined / skipped don't count.
+            Reads dashboard_events.jsonl since the events flow through that
+            single egress chokepoint regardless of which primitive recorded them.
+            """
+            ev_path = ctx.project_dir / "dashboard_events.jsonl"
+            if not ev_path.exists():
+                return 0
+            honest = {"promoted", "failed", "marginal"}
+            count = 0
+            try:
+                with ev_path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line or '"candidate_outcome"' not in line:
+                            continue
+                        try:
+                            import json as _json
+                            e = _json.loads(line)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if e.get("event") != "candidate_outcome":
+                            continue
+                        if str(e.get("outcome") or "").lower() in honest:
+                            count += 1
+            except OSError:
+                return 0
+            return count
+    
+        iteration_policy = ForcedIterationPolicy(
+            min_iterations=min_iterations,
+            rubric_snapshot=lambda: (
+                ctx.latest_rubric_score,
+                ctx.latest_rubric_target,
+                ctx.latest_rubric_iteration,
+            ),
+            current_iteration=lambda: rlm_logger.iteration_count,
+            remaining_s=lambda: ctx.remaining_s(),
+            on_refusal=_emit_forced_iteration_warning,
+            honest_candidate_outcomes=_count_honest_candidate_outcomes,
+            on_repair_refusal=_emit_forced_repair_warning,
+            max_rlm_iterations=_max_rlm_iterations,
+            on_budget_exceeded=_emit_iteration_budget_exceeded,
+        )
+        # PR-α followup: populate the late-binding holder so the tool wrapper
+        # can call policy.record_repair_attempt() when run_experiment returns
+        # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
+        repair_policy_holder.append(iteration_policy)
+        # PR-μ Solution C: expose the policy on ctx so run_experiment can feed
+        # per-iteration outcomes via record_run_experiment(); the consumer side
+        # at primitives.py:_emit_iteration_boundary_warning is fail-soft when
+        # ctx._forced_iteration_policy is None.
+        ctx._forced_iteration_policy = iteration_policy
+    
+        # PR-ι.3 — rolling cost surfacing.  A background daemon thread updates
+        # demo_status.json::cost_summary every 30 s while the RLM loop runs.
+        _cost_stop_event = threading.Event()
+        _cost_thread = threading.Thread(
+            target=_update_cost_summary_loop,
+            kwargs={
+                "project_dir": project_dir,
+                "stop_event": _cost_stop_event,
+                "iteration_count": lambda: rlm_logger.iteration_count,
+            },
+            daemon=True,
+            name=f"cost-summary-{project_id}",
+        )
+        _cost_thread.start()
+    
+        result_obj: Any = None
+        run_failed = False
+        fatal_abort: _FatalPrimitiveAbort | None = None
+        try:
+            with forced_iteration_policy(iteration_policy):
+                result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
+        except _FatalPrimitiveAbort as exc:
+            fatal_abort = exc
+            run_failed = True
+            logger.error(
+                "run_pipeline_rlm: fatal primitive outcome from %s: %s",
+                exc.primitive_name,
+                exc.result.get("error") or exc.result,
+            )
+        except Exception as exc:  # noqa: BLE001 — an honest failure is data, not a crash
+            run_failed = True
+            logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
+        finally:
+            # Watchdog is None when no wall-clock ceiling was requested.
+            if watchdog is not None:
+                watchdog.cancel()
+            # Stop the cost-summary background thread.
+            _cost_stop_event.set()
+            _cost_thread.join(timeout=5.0)
+    
+        # 12. Build, write, and report (close event_store in finally — A4-9).
+        try:
+            if fatal_abort is not None:
+                return _finalize_fatal_primitive_abort(
+                    abort=fatal_abort,
+                    ctx=ctx,
+                    iterations=rlm_logger.iteration_count,
+                    project_dir=project_dir,
+                    emit=emit,
+                    tools_label=tools_label,
+                )
+            return _finalize(
+                result_obj=result_obj,
+                run_failed=run_failed,
                 ctx=ctx,
                 iterations=rlm_logger.iteration_count,
                 project_dir=project_dir,
                 emit=emit,
-                tools_label=tools_label,
+                corpus_sentinels=corpus_sentinels,
+                tools_label=tools_label,  # T21 / review I8
+                llm_model=llm_model,
             )
-        return _finalize(
-            result_obj=result_obj,
-            run_failed=run_failed,
-            ctx=ctx,
-            iterations=rlm_logger.iteration_count,
-            project_dir=project_dir,
-            emit=emit,
-            corpus_sentinels=corpus_sentinels,
-            tools_label=tools_label,  # T21 / review I8
-            llm_model=llm_model,
+        finally:
+            try:
+                event_store.close()
+            except Exception:  # noqa: BLE001
+                logger.exception("run_pipeline_rlm: could not close SqliteEventStore")
+            # Derived-run-state contract (spec 2026-05-27): stop the periodic
+            # ticker thread. The on_run_complete transition was already emitted
+            # by _finalize; stopping the ticker is the final cleanup. Fail-soft —
+            # a hung join must not block the run from returning.
+            try:
+                _run_state_stop.set()
+                _run_state_thread.join(timeout=5.0)
+            except Exception:  # noqa: BLE001
+                logger.exception("run_pipeline_rlm: could not stop run_state ticker")
+    except BaseException as _crash_exc:
+        # Outer crash handler — see comment above the matching `try:`.
+        # Log first so the traceback is preserved even if subsequent writes fail.
+        logger.exception(
+            "run_pipeline_rlm: uncaught %s — landing failed status",
+            type(_crash_exc).__name__,
+        )
+        try:
+            run_state_computer.on_crash(
+                f"{type(_crash_exc).__name__}: {str(_crash_exc)[:300]}"
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: on_crash hook failed")
+        try:
+            _write_demo_status(
+                project_dir,
+                "failed",
+                error=f"crash: {type(_crash_exc).__name__}: {str(_crash_exc)[:500]}",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("run_pipeline_rlm: terminal failed-status write failed")
+        # KeyboardInterrupt / SystemExit must propagate so the operator can
+        # actually stop the process. Regular Exception is converted into a
+        # failed RLMRunResult per the function's "never raises for in-run
+        # failure" contract.
+        if isinstance(_crash_exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        return RLMRunResult(
+            project_id=project_id,
+            status="failed",
+            iterations=0,
+            rubric_score=None,
+            cost_usd=None,
+            final_report_path=None,
         )
     finally:
+        # Belt-and-braces: idempotent ticker cleanup. The inner finally also
+        # stops the ticker, but only if the rlm.completion try-block was
+        # reached. A setup-phase BaseException skips that path; this catches it.
         try:
-            event_store.close()
+            _run_state_stop.set()
+            _run_state_thread.join(timeout=5.0)
         except Exception:  # noqa: BLE001
-            logger.exception("run_pipeline_rlm: could not close SqliteEventStore")
+            logger.exception(
+                "run_pipeline_rlm: outer-finally run_state ticker stop failed",
+            )
 
 
 def _finalize(
@@ -1543,6 +1644,15 @@ def _finalize(
             final_report_path=str(json_path),
         )
     )
+    # Derived-run-state contract (spec 2026-05-27): emit terminal run_state
+    # alongside run_complete so the UI can lock onto the final view without
+    # waiting for the next ticker pass. Fail-soft — never crash on finalize.
+    _rsc = getattr(ctx, "run_state_computer", None)
+    if _rsc is not None:
+        try:
+            _rsc.on_run_complete(status)
+        except Exception:  # noqa: BLE001
+            logger.exception("run_state_computer.on_run_complete failed")
     logger.info(
         "run_pipeline_rlm: %s — verdict=%s iterations=%d cost=$%.4f",
         ctx.project_id,

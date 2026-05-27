@@ -222,6 +222,24 @@ def _append_dashboard_events(run_dir: Path, report: OrphanReport, now_iso: str) 
     events = [
         {"event": "run_interrupted", **base},
         {"event": "run_warning", **base},
+        # Derived-run-state contract: emit one terminal run_state event so any
+        # downstream consumer reading dashboard_events.jsonl sees the same
+        # field shape the live process would have emitted.
+        {
+            "event": "run_state",
+            "timestamp": now_iso,
+            "run_id": report.project_id,
+            "kind": "interrupted",
+            "substate": {
+                "primitive": None,
+                "seconds_active": 0,
+                "seconds_since_event": 0,
+                "last_file_touched": None,
+                "iteration": 0,
+                "pre_emit_stalled": False,
+                "reason": report.reason,
+            },
+        },
     ]
     with path.open("a", encoding="utf-8") as fh:
         for event in events:
@@ -275,6 +293,10 @@ def sweep_orphaned_runs(
 
             run_dir = status_path.parent
             now_iso = _iso(now)
+            # Derived-run-state contract (spec 2026-05-27): the sweeper is one
+            # of three writers of the run_state field — write a terminal
+            # `interrupted` shape so the lab UI and leaderboard can render the
+            # same plain-language status as the live process would have.
             merged = {
                 **status,
                 "projectId": status.get("projectId") or run_dir.name,
@@ -285,6 +307,19 @@ def sweep_orphaned_runs(
                 "updatedAt": now_iso,
                 "completedAt": now_iso,
                 "completed_at": now_iso,
+                "run_state": {
+                    "kind": "interrupted",
+                    "substate": {
+                        "primitive": None,
+                        "seconds_active": 0,
+                        "seconds_since_event": 0,
+                        "last_file_touched": None,
+                        "iteration": 0,
+                        "pre_emit_stalled": False,
+                        "reason": _ORPHAN_REASON,
+                    },
+                    "updatedAt": now_iso,
+                },
             }
             _atomic_write_json(status_path, merged)
             _write_final_report_if_missing(run_dir, merged, now_iso)

@@ -689,6 +689,38 @@ def build_iteration_heartbeat_event(
     }
 
 
+def build_run_state_event(
+    *,
+    run_id: str,
+    kind: str,
+    substate: dict[str, Any],
+) -> dict:
+    """Build a ``run_state`` dashboard event.
+
+    Emitted by :class:`backend.agents.rlm.run_state.RunStateComputer` on every
+    derived-state transition (and on heartbeat/mtime ticks that cross a
+    threshold). The payload is corpus-free by construction — ``substate`` is
+    sourced from the dataclass :class:`RunStateSubstate`, which only carries
+    basenames, integer durations, and short enum-shaped strings.
+
+    Spec: ``docs/superpowers/specs/2026-05-27-derived-run-state-contract-design.md``.
+
+    Args:
+        run_id:   The project id this state applies to.
+        kind:     One of the ``RunStateKind`` string values
+                  (``initializing``/``working``/``idle``/``stuck``/
+                  ``interrupted``/``completed``/``failed``).
+        substate: The :class:`RunStateSubstate` rendered as a dict.
+    """
+    return {
+        "event": "run_state",
+        "timestamp": _now_iso(),
+        "run_id": run_id,
+        "kind": kind,
+        "substate": substate,
+    }
+
+
 def build_run_warning_event(
     *,
     level: str = "warn",
@@ -729,6 +761,7 @@ __all__ = [
     "build_repair_dispatched",
     "build_rubric_score_event",
     "build_run_complete_event",
+    "build_run_state_event",
     "build_run_warning_event",
     "build_sub_rlm_complete_event",
     "build_sub_rlm_spawned_event",

@@ -233,6 +233,15 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 "reasoning_tokens": 0,
             }
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
+        # Derived run-state contract (spec 2026-05-27): notify the computer that
+        # a primitive entered. The hook is fail-soft — a misbehaving computer
+        # MUST NOT interrupt the run.
+        _rsc = getattr(ctx, "run_state_computer", None)
+        if _rsc is not None:
+            try:
+                _rsc.on_primitive_start(name)
+            except Exception:  # noqa: BLE001 — observability never blocks
+                logger.exception("run_state_computer.on_primitive_start failed for %s", name)
 
         # Open a worker report for key primitives
         _wr_report = None
@@ -371,6 +380,18 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 result_summary=_result_summary(result),
                 coerced=coerced,
             )
+            # Derived run-state contract: clear the in-flight primitive so the
+            # next tick can collapse to IDLE / WORKING based on mtime.
+            _rsc_end = getattr(ctx, "run_state_computer", None)
+            if _rsc_end is not None:
+                try:
+                    _rsc_end.on_primitive_end(
+                        name, "error" if failed else "ok"
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "run_state_computer.on_primitive_end failed for %s", name,
+                    )
             _ledger()
             if failed:
                 logger.warning(

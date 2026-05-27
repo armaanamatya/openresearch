@@ -43,9 +43,25 @@ def test_sweep_marks_orphan_with_dead_pid(tmp_path: Path) -> None:
     assert status["status"] == "interrupted"
     assert status["error"] == "orphaned_stale_run"
     assert status["degraded"] is True
+    # Derived-run-state contract (spec 2026-05-27): sweeper writes a terminal
+    # `interrupted` run_state shape alongside the legacy fields.
+    assert "run_state" in status
+    assert status["run_state"]["kind"] == "interrupted"
+    assert status["run_state"]["substate"]["reason"]
     report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "interrupted"
     assert report["reason"] == "orphaned"
+    # Sweeper also emits a run_state event into the dashboard event log.
+    events_path = run_dir / "dashboard_events.jsonl"
+    assert events_path.exists()
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    run_state_events = [
+        json.loads(line) for line in lines if '"run_state"' in line
+    ]
+    assert any(e.get("event") == "run_state" for e in run_state_events)
+    rs_evt = next(e for e in run_state_events if e.get("event") == "run_state")
+    assert rs_evt["kind"] == "interrupted"
+    assert rs_evt["substate"]["reason"]
 
 
 def test_sweep_skips_orphan_with_live_pid(tmp_path: Path) -> None:
@@ -124,7 +140,9 @@ def test_sweep_appends_run_interrupted_and_warning_events(tmp_path: Path) -> Non
 
     lines = (run_dir / "dashboard_events.jsonl").read_text(encoding="utf-8").splitlines()
     events = [json.loads(line)["event"] for line in lines]
-    assert events == ["run_interrupted", "run_warning"]
+    # Derived-run-state contract (spec 2026-05-27): sweeper also emits a
+    # terminal run_state event alongside the existing pair.
+    assert events == ["run_interrupted", "run_warning", "run_state"]
 
 
 def test_sweep_uses_mtime_when_updated_at_missing(tmp_path: Path) -> None:

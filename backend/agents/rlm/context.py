@@ -54,6 +54,9 @@ class RunContext:
     current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
     emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
+    run_state_computer: Any = None  # RunStateComputer — derived-run-state contract (set by run.py).
+                                    # Fail-soft: wrap_primitive checks for None before hooking. Spec:
+                                    # docs/superpowers/specs/2026-05-27-derived-run-state-contract-design.md
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements
     scope_spec: Any = None  # ScopeSpec — typed via Any to avoid a top-level import cycle;
                             # set by run.py / rdr/run.py from REPROLAB_SCOPE_SPEC_JSON.

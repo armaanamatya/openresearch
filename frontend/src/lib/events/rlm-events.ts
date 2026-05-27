@@ -160,6 +160,38 @@ export interface GpuResolvedEvent {
   resolved_at: string;
 }
 
+// ─── §4.6 Derived run-state contract (spec 2026-05-27) ───────────────────────
+
+/** One of seven derived run-state kinds; see RunStateComputer in backend/agents/rlm/run_state.py. */
+export type RunStateKind =
+  | "initializing"
+  | "working"
+  | "idle"
+  | "stuck"
+  | "interrupted"
+  | "completed"
+  | "failed";
+
+/** Per-tick context emitted alongside the high-level kind. */
+export interface RunStateSubstate {
+  primitive: string | null;
+  seconds_active: number;
+  seconds_since_event: number;
+  last_file_touched: string | null;
+  iteration: number;
+  pre_emit_stalled: boolean;
+  reason: string | null;
+}
+
+/** Emitted by RunStateComputer on every derived-state transition. */
+export interface RunStateEvent {
+  event: "run_state";
+  timestamp: string;
+  run_id: string;
+  kind: RunStateKind;
+  substate: RunStateSubstate;
+}
+
 // ─── §4.4 Heartbeat event — liveness signal ────────────────────────────────────
 
 export interface IterationHeartbeatEvent {
@@ -285,6 +317,7 @@ export const RLM_EVENT_TYPES = [
   "worker_report_started",
   "worker_report_completed",
   "worker_report_failed",
+  "run_state",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -308,7 +341,8 @@ export type RlmDashboardEvent =
   | GpuResolvedEvent
   | WorkerReportStartedEvent
   | WorkerReportCompletedEvent
-  | WorkerReportFailedEvent;
+  | WorkerReportFailedEvent
+  | RunStateEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

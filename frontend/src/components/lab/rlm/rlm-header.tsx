@@ -3,6 +3,11 @@
 import { useMemo, useState } from "react";
 import type { DemoSandboxMode } from "../../../lib/demo/demo-run-types";
 import type { PrimitiveCallView, RunWarning } from "../../../hooks/use-rlm-run";
+import type {
+  RunStateKind,
+  RunStateSubstate,
+} from "../../../lib/events/rlm-events";
+import { RunStatePill } from "./run-state-pill";
 import { RunpodStatusChip } from "./runpod-status-chip";
 import styles from "./rlm-header.module.css";
 
@@ -39,6 +44,23 @@ interface RlmHeaderProps {
   inFlightPrimitive?: { name: string; startedAt: string } | null;
   sandboxMode?: DemoSandboxMode | null;
   primitiveCalls?: PrimitiveCallView[];
+  /**
+   * Derived-run-state contract (spec 2026-05-27): one authoritative computed
+   * field with a plain-language renderer. When provided, the header renders
+   * a `<RunStatePill>` beside the legacy status pill. The legacy "no signal"
+   * chip is suppressed for runs that emit `run_state` events; left intact for
+   * older runs to preserve backward compatibility.
+   */
+  runStateKind?: RunStateKind | null;
+  runStateSubstate?: RunStateSubstate | null;
+  /**
+   * Resume action — surfaced when `runStateKind === "interrupted"`. Wraps
+   * PR-π Module D's backend resume endpoint (POST /api/demo/resume). When
+   * undefined the button is omitted (current behavior for runs without a
+   * resumable checkpoint).
+   */
+  onResume?: () => Promise<void>;
+  resumeBusy?: boolean;
 }
 
 function statusTone(status: RlmRunStatus): { bg: string; fg: string; dot: string; pulse: boolean } {
@@ -73,6 +95,10 @@ export function RlmHeader({
   inFlightPrimitive = null,
   sandboxMode = null,
   primitiveCalls = [],
+  runStateKind = null,
+  runStateSubstate = null,
+  onResume,
+  resumeBusy = false,
 }: RlmHeaderProps) {
   const tone = statusTone(status);
   const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
@@ -108,6 +134,25 @@ export function RlmHeader({
 
   const showRerun = (status === "failed" || status === "completed") && handleRerun !== undefined;
   const rerunLabel = status === "completed" ? "Run again" : "Rerun";
+
+  // Derived-run-state contract §13: surface a Resume action when the orphan
+  // sweeper (or an in-process crash) marked the run interrupted. The button
+  // wraps the backend POST /runs/<id>/resume endpoint that PR-π Module D
+  // added; once successful, the existing SSE stream picks up new events
+  // emitted by the re-spawned subprocess.
+  const showResume =
+    runStateKind === "interrupted" && typeof onResume === "function";
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const handleResume = onResume
+    ? async () => {
+        setResumeError(null);
+        try {
+          await onResume();
+        } catch (err) {
+          setResumeError(err instanceof Error ? err.message : "Resume failed");
+        }
+      }
+    : undefined;
 
   return (
     <div>
@@ -145,7 +190,18 @@ export function RlmHeader({
             nowMs={heartbeatNowMs}
           />
 
-          {noSignalSecs !== null && (
+          {runStateKind !== null && (
+            <RunStatePill
+              kind={runStateKind}
+              substate={runStateSubstate}
+              compact
+            />
+          )}
+
+          {/* Legacy "no signal" chip — suppressed once run_state lands.
+              Kept as a fallback for older runs that pre-date the derived
+              contract (spec 2026-05-27). */}
+          {runStateKind === null && noSignalSecs !== null && (
             inFlightPrimitive !== null ? (
               // Informational: a primitive is still in flight. The heartbeat
               // gap is expected (implement_baseline at 5-15 min, build_environment
@@ -222,13 +278,44 @@ export function RlmHeader({
             <span className={styles.iterValue}>{iterationCount}</span>
           </span>
 
+          {/* Cost-honesty banner (spec 2026-05-27 §13): OAuth subscription
+              paths surface $0.00 in the cost ledger because the SDK does not
+              report per-message billing for Claude Code subscriptions. Show
+              "Subscription" plainly so a non-engineer doesn't mistake $0 for
+              "broken" or "still loading". A non-zero ledger value renders as
+              the normal dollar amount. */}
           {costUsd !== null && (
-            <span
-              className={styles.cost}
-              title="LLM cost reported by the run. OAuth subscription paths may report $0.00."
+            costUsd <= 0.0001 ? (
+              <span
+                className={styles.cost}
+                title="This run is billed against the Claude Code subscription — the SDK does not report per-message costs, so the cost ledger shows $0.00."
+                style={{ fontStyle: "italic" }}
+              >
+                Subscription
+              </span>
+            ) : (
+              <span
+                className={styles.cost}
+                title="Total LLM cost reported by the run (API-key path)."
+              >
+                ${costUsd.toFixed(2)}
+              </span>
+            )
+          )}
+
+          {showResume && (
+            <button
+              className={styles.rerunButton}
+              onClick={handleResume}
+              disabled={resumeBusy}
+              title={
+                resumeBusy
+                  ? "Resuming…"
+                  : "Resume this interrupted run from the last checkpoint"
+              }
             >
-              ${costUsd.toFixed(2)}
-            </span>
+              {resumeBusy ? "Resuming…" : "Resume"}
+            </button>
           )}
 
           {showRerun && (
@@ -244,6 +331,15 @@ export function RlmHeader({
         </div>
       </header>
 
+      {resumeError && (
+        <div className={styles.errorBanner} title={resumeError}>
+          <span className={styles.errorBannerText}>
+            Resume failed: {resumeError.length > ERROR_TRUNCATE
+              ? resumeError.slice(0, ERROR_TRUNCATE) + "…"
+              : resumeError}
+          </span>
+        </div>
+      )}
       {status === "failed" && error && (
         <div className={styles.errorBanner} title={error}>
           <span className={styles.errorBannerText}>

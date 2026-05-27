@@ -26,6 +26,7 @@ from backend.agents.rlm.sse_bridge import (
     build_candidate_proposed_event,
     build_rubric_score_event,
     build_run_complete_event,
+    build_run_state_event,
     build_sub_rlm_complete_event,
     build_sub_rlm_spawned_event,
     make_emit,
@@ -599,3 +600,45 @@ class TestNewEventBuilders:
         )
         statuses = {a["area"]: a["status"] for a in ev["areas"]}
         assert statuses == {"setup": "partial"}
+
+
+class TestBuildRunStateEvent:
+    """Derived-run-state contract (spec 2026-05-27-derived-run-state-contract)."""
+
+    def test_event_shape_is_corpus_free(self):
+        ev = build_run_state_event(
+            run_id="prj_test",
+            kind="working",
+            substate={
+                "primitive": "implement_baseline",
+                "seconds_active": 42,
+                "seconds_since_event": 5,
+                "last_file_touched": "train.py",
+                "iteration": 3,
+                "pre_emit_stalled": False,
+                "reason": None,
+            },
+        )
+        assert ev["event"] == "run_state"
+        assert ev["run_id"] == "prj_test"
+        assert ev["kind"] == "working"
+        assert ev["substate"]["primitive"] == "implement_baseline"
+        assert ev["substate"]["last_file_touched"] == "train.py"
+        assert "timestamp" in ev
+
+    def test_terminal_kind_carries_reason(self):
+        ev = build_run_state_event(
+            run_id="prj_test",
+            kind="failed",
+            substate={
+                "primitive": None,
+                "seconds_active": 0,
+                "seconds_since_event": 0,
+                "last_file_touched": None,
+                "iteration": 0,
+                "pre_emit_stalled": False,
+                "reason": "RuntimeError: aclose deadlock",
+            },
+        )
+        assert ev["kind"] == "failed"
+        assert ev["substate"]["reason"] == "RuntimeError: aclose deadlock"

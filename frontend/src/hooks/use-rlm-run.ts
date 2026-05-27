@@ -247,6 +247,19 @@ export interface RlmRunState {
    * Lane γ: per-model multi-model UI (2026-05-23).
    */
   perModelMetrics: Record<string, Record<string, number>> | null;
+
+  /**
+   * Derived-run-state contract (spec 2026-05-27): one authoritative computed
+   * field with a plain-language renderer. Replaces the status pill + no-signal
+   * chip + iteration counter ambiguity. Source: backend `run_state` SSE event
+   * emitted by `RunStateComputer`. Terminal kinds (completed/failed/interrupted)
+   * are sticky — once landed, subsequent non-terminal events are ignored by
+   * the renderer (the reducer still records them so the timeline is faithful).
+   */
+  runStateKind: import("@/lib/events/rlm-events").RunStateKind | null;
+  runStateSubstate:
+    | import("@/lib/events/rlm-events").RunStateSubstate
+    | null;
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -275,6 +288,8 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   lastHeartbeatAt: null,
   gpuPlan: null,
   perModelMetrics: null,
+  runStateKind: null,
+  runStateSubstate: null,
 };
 
 // ─── Tree helpers (pure) ──────────────────────────────────────────────────────
@@ -922,6 +937,21 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
       // Store the heartbeat timestamp so the UI can detect a wedged run
       // (status === "running" && Date.now() - new Date(lastHeartbeatAt) > 60_000).
       return { ...seeded, lastHeartbeatAt: (event as IterationHeartbeatEvent).timestamp };
+    case "run_state": {
+      // Derived-run-state contract: terminal kinds are absorbing — drop any
+      // later non-terminal payload that arrives after a terminal one.
+      const isTerminal = (k: string) =>
+        k === "completed" || k === "failed" || k === "interrupted";
+      const prior = seeded.runStateKind;
+      if (prior !== null && isTerminal(prior) && !isTerminal(event.kind)) {
+        return seeded;
+      }
+      return {
+        ...seeded,
+        runStateKind: event.kind,
+        runStateSubstate: event.substate,
+      };
+    }
     case "user_message":
     case "user_message_response":
       // Consumed by other hooks; tree reducer is a no-op.

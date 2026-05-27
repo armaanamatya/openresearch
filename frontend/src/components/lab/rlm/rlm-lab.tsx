@@ -8,6 +8,7 @@ import { useRlmRunBatched } from "../../../hooks/use-rlm-run";
 import { useSteeringChat } from "../../../hooks/use-steering-chat";
 import { useResizablePanels } from "../../../hooks/use-resizable-panels";
 import { useRerun } from "../../../hooks/use-rerun";
+import { useResume } from "../../../hooks/use-resume";
 import { useWorkerReports } from "../../../hooks/use-worker-reports";
 import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
@@ -93,6 +94,7 @@ export function RlmLab({
   // `events` prop do NOT re-run the initializer (React lazy init runs once).
   const { state, addEvent, reset } = useRlmRunBatched(events);
   const { rerun, busy: rerunBusy } = useRerun(runMeta.projectId);
+  const { resume, busy: resumeBusy } = useResume(runMeta.projectId);
 
   // Feed new events into the batched hook. We track how many events have been
   // fed so far via a ref; on each render where `events` has grown, we push
@@ -292,6 +294,10 @@ export function RlmLab({
         inFlightPrimitive={inFlightPrimitive}
         sandboxMode={sandboxMode}
         primitiveCalls={state.primitiveCalls}
+        runStateKind={state.runStateKind}
+        runStateSubstate={state.runStateSubstate}
+        onResume={resume}
+        resumeBusy={resumeBusy}
       />
 
       {/* Band 1.5 — always-visible live activity narration.
