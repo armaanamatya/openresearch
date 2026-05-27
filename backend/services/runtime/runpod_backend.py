@@ -936,6 +936,12 @@ class RunpodBackend(RuntimeBackend):
         # API issues the IP, and the pod runs our own image).
         pin_key = (host, port)
         pinned = self._pinned_host_keys.get(pin_key)
+        # 2026-05-27: keepalive prevents NAT/RunPod-gateway idle timeouts from
+        # silently killing the session during SFTP artifact-sync after a long
+        # command. asyncssh defaults to keepalive_interval=0 (disabled), which
+        # cost Adam's 95-min L40S pod its full metrics dump — sync started, NAT
+        # box reaped the "idle" session between SFTP bursts, "Connection closed".
+        # 30s interval × 10 attempts = 5min tolerance for transient packet loss.
         if pinned is None:
             # First connect: accept any key, then pin it.
             conn = await asyncssh.connect(
@@ -944,6 +950,8 @@ class RunpodBackend(RuntimeBackend):
                 username=self.ssh_user,
                 client_keys=[str(self.ssh_key_path)],
                 known_hosts=None,
+                keepalive_interval=30,
+                keepalive_count_max=10,
             )
             host_key = conn.get_server_host_key()
             if host_key is not None:
@@ -959,6 +967,8 @@ class RunpodBackend(RuntimeBackend):
             username=self.ssh_user,
             client_keys=[str(self.ssh_key_path)],
             known_hosts=([pinned], [], []),
+            keepalive_interval=30,
+            keepalive_count_max=10,
         )
 
     async def _request_json(

@@ -614,6 +614,7 @@ class BrevBackend(RuntimeBackend):
         # for the session to defend against IP-recycling MITM on reconnects.
         pin_key = (host, port)
         pinned = self._pinned_host_keys.get(pin_key)
+        # See runpod_backend.py for the rationale — same NAT-timeout class.
         if pinned is None:
             conn = await asyncssh.connect(
                 host,
@@ -621,6 +622,8 @@ class BrevBackend(RuntimeBackend):
                 username=self.ssh_user,
                 client_keys=[str(self.ssh_key_path)],
                 known_hosts=None,
+                keepalive_interval=30,
+                keepalive_count_max=10,
             )
             host_key = conn.get_server_host_key()
             if host_key is not None:
@@ -632,6 +635,8 @@ class BrevBackend(RuntimeBackend):
             username=self.ssh_user,
             client_keys=[str(self.ssh_key_path)],
             known_hosts=([pinned], [], []),
+            keepalive_interval=30,
+            keepalive_count_max=10,
         )
 
     async def _prepare_remote_workspace(
