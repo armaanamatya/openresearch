@@ -1,0 +1,22 @@
+# RLM paper reproduction requirements
+# Paper: Recursive Language Models (arXiv 2512.24601)
+# Zhang, Kraska, Khattab (MIT CSAIL)
+#
+# Note: torch + torchvision are pre-installed on RunPod. Do NOT list them here.
+
+# Core RLM package (the paper's implementation)
+rlms>=0.1.1
+
+# OpenAI API (for GPT-5 and GPT-5-mini)
+openai>=1.35.0
+
+# HuggingFace datasets (for benchmarks)
+datasets>=2.20.0
+
+# Numerical / plotting
+numpy>=1.26.0
+matplotlib>=3.8.0
+tqdm>=4.66.0
+
+# Python-dotenv for .env loading
+python-dotenv>=1.0.0

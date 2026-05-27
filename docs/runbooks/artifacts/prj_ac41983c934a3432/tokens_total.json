@@ -1,0 +1,79 @@
+{
+  "by_model": {
+    "claude-oauth": {
+      "input_tokens": 6,
+      "output_tokens": 2214
+    }
+  },
+  "by_primitive": {
+    "build_environment": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "check_user_messages": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "detect_environment": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "extract_hyperparameters": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "heartbeat": {
+      "calls": 17,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "implement_baseline": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "plan_reproduction": {
+      "calls": 1,
+      "input_tokens": 6,
+      "output_tokens": 2214
+    },
+    "propose_improvements": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "resolve_gpu_requirements": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "run_experiment": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "understand_section": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "verify_against_rubric": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  "computed_at_utc": "2026-05-27T21:45:24.845202+00:00",
+  "grand_total": {
+    "cache_creation_input_tokens": 8647,
+    "cache_read_input_tokens": 50628,
+    "calls": 32,
+    "input_tokens": 6,
+    "output_tokens": 2214
+  },
+  "schema_version": 1
+}

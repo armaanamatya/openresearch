@@ -1,0 +1,295 @@
+{
+  "id": "59ea6fc85946413bb64969a1d72764cd",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "2bbc39fbe0fe40efaff7bc14304c2cd2",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.34782608695652173,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "2a468abdee2e45648b4de07c2454728f",
+          "requirements": "The RLM scaffold implements Algorithm 1 exactly: initializes a Python REPL with the user prompt P bound to a variable, exposes a sub_RLM function, and runs an iteration loop in which the root LLM only ever sees constant-size metadata (length, short prefix) about P and about printed stdout \u2014 the full prompt text is never appended to the root model's history.",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f77d356fc32e484bbd9145522119c88e",
+          "requirements": "Termination is implemented via setting a `Final` variable inside the REPL (as specified in Algorithm 1), and the value bound to `Final` is returned as the response Y; there is no `Finish`/answer action that asks the model to verbalize the output directly.",
+          "weight": 0.1,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "afd1aa51b39848e99b77564e06e533b3",
+          "requirements": "Sub-call recursion is symbolic and programmatic: the REPL exposes the sub-RLM/sub-LM as a callable module so the root can launch sub-calls inside Python loops over slices of P (enabling \u03a9(|P|) and \u03a9(|P|^2) sub-call counts), not as a single verbalized tool action per turn.",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "eaa0c1a8dcdf4afaad22e9fb82f5d8dc",
+          "requirements": "A configurable max recursion depth parameter is implemented with the paper's semantics: depth=0 disables sub-calls, depth=1 enables sub-LM (non-recursive) sub-calls, and depth\u22652 enables sub-RLM calls \u2014 matching the RLM(model, depth=N) notation in \u00a73.2.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2dcb6ffc7c6c4a8ead3fb55199ef1508",
+          "requirements": "stdout from REPL execution is truncated/summarized to a short metadata prefix before being appended to the root model's history, as described in Algorithm 1 footnote 2, to prevent context overflow.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5b3640c6a02c4878b5cb8b986fa812bf",
+          "requirements": "The root model is driven by the system prompt described in Appendix C of the paper (or its fine-tuned equivalent for RLM-Qwen3-8B per Appendix A), instructing it to probe P, decompose, and call sub-RLMs over slices.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "d78402b72cf84fce9c7449297f82c69b",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.13043478260869562,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "e52bd51e0779442a83229d01d96c4876",
+          "requirements": "S-NIAH is constructed as 50 single-needle tasks from RULER with input lengths swept from 2^13 to 2^20 tokens, matching the protocol used in Figure 1.",
+          "weight": 0.2,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "b30a747b8515432a9ef9eb1792639e31",
+          "requirements": "BrowseComp-Plus (1K) uses 150 randomly sampled queries from BrowseComp-Plus with 1000 documents per instance (gold + evidence guaranteed present), following Sun et al. 2025 \u2014 not the full corpus and not a different sample size.",
+          "weight": 0.25,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "4778c1df7015409b960208db8bf77a61",
+          "requirements": "OOLONG uses the trec_coarse split with the 50-task evaluation set as specified in \u00a73.1, and OOLONG-Pairs uses the 20 paper-specified pairwise queries listed in Appendix D.1 over the same trec_coarse data.",
+          "weight": 0.3,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "7e7b72349998430f8f965efecbce7354",
+          "requirements": "LongBench-v2 CodeQA evaluation uses the CodeQA multi-choice split of LongBench-v2 with task lengths spanning the 23K\u20134.2M token range reported in Table 1.",
+          "weight": 0.15,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "4b726d0969214c0f8fb8c22ac037aac5",
+          "requirements": "For RLM-Qwen3-8B fine-tuning, the training set is exactly 1,000 filtered RLM(Qwen3-Coder-480B-A35B) trajectories on LongBenchPro tasks, with sub-calls made by Qwen3-8B, as described in \u00a73.2 and Appendix A.",
+          "weight": 0.1,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f701ad3633ba4494abfc5474360cf369",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.17391304347826086,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "30d28cdee91f45bcbf477a3c1ee2b701",
+          "requirements": "The GPT-5 RLM configuration is executed with GPT-5 (medium reasoning, default sampling) as the root and GPT-5-mini as the sub-call/recursive model, matching the split used in \u00a73.2.",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "52b3273eaeca4d6da0ad3bc666b1b327",
+          "requirements": "The Qwen3-Coder-480B-A35B RLM configuration runs end-to-end using the sampling parameters specified by Qwen Team 2025b, and costs are computed against the Fireworks provider pricing as in Table 1.",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f9dc5bca6e0c411494f0744bcca876ef",
+          "requirements": "Required baselines are implemented and executed against the same instances: CodeAct+BM25, CodeAct+sub-calls, the Compaction agent (with GPT-5-nano compactor + GPT-5 final answer for the GPT-5 row), OpenCode (with and without context offloading), and Claude Code v2.0.0 + Claude Opus 4.1 (with and without context offloading).",
+          "weight": 0.25,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "0cea383731d04ff4a0b31e8db5ca9bc4",
+          "requirements": "All four RLM recursion depths (0, 1, 2, 3) are run for at least one of GPT-5 or Qwen3-Coder-480B-A35B and reported in the results table, enabling the depth-ablation observations in \u00a74.",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "352b7541237a4acb97ff1fb1dc6b8c95",
+          "requirements": "The length-scaling sweep from 2^13 to 2^20 tokens is executed for both base GPT-5 and RLM(GPT-5, depth=1) on S-NIAH, OOLONG, and OOLONG-Pairs, as required to reproduce Figure 1.",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "d557e7a021f540ee9548397d2efeee92",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.13043478260869562,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "09d0c75e85644f6da1809e7bf6232efb",
+          "requirements": "OOLONG-Pairs is scored with F1 over the list-of-entries answer (not exact-match accuracy), as specified in \u00a73.1.",
+          "weight": 0.3,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9865c33a7e294909ae949c440df09985",
+          "requirements": "OOLONG, BrowseComp-Plus, and S-NIAH are scored as percent-correct over their respective evaluation sets (50/150/50 tasks); LongBench-v2 CodeQA is scored as multi-choice accuracy.",
+          "weight": 0.25,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "b03386c5a2504fdbb92c79e413d5b9de",
+          "requirements": "Per-method API cost is computed and reported as mean \u00b1 standard deviation per task using the provider-specific pricing (OpenAI for GPT-5 family, Fireworks for Qwen3, Anthropic for Claude Opus 4.1), matching the gray-text cost cells in Table 1.",
+          "weight": 0.2,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c93e7a9adc35483da52586b648016dd7",
+          "requirements": "Runs that hit input-context limits are marked with an asterisk (*) in the reported table, and methods for which cost is not applicable are reported as N/A, mirroring the paper's reporting convention.",
+          "weight": 0.15,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c48a5a7b68e54a518dc10e0325d0bcd0",
+          "requirements": "Syntax-error and first-decomposition categorization on RLM(depth=1) trajectories is computed for Figure 4(b), bucketed by correct vs. incorrect rollouts.",
+          "weight": 0.1,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f67cd52592874ffd9ae07ee77efadeae",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.17391304347826086,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "9cb15edd13f642bba667a50c4113dc46",
+          "requirements": "RLM(GPT-5, depth=1) reproduces the headline Table 1 numbers within a reasonable tolerance: CodeQA 62.0, BrowseComp+ (1K) 91.3, OOLONG 56.0, OOLONG-Pairs 58.0.",
+          "weight": 0.3,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "554ab0ba32554c89820fdcf5b2d3e5ef",
+          "requirements": "Base GPT-5 vs RLM(GPT-5) gap is reproduced on the two information-dense tasks: base GPT-5 \u2264 ~0.1 F1 on OOLONG-Pairs while RLM(GPT-5, depth=1) reaches ~58% F1, and OOLONG improves from ~44% to ~56%.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "74485b44706c429f9ae079ef6a6e689d",
+          "requirements": "Depth scaling on OOLONG-Pairs with GPT-5 shows monotonic improvement across depths (~43.9 \u2192 58.0 \u2192 65.5 \u2192 76.0 for depths 0\u21921\u21922\u21923), reproducing the trend in Table 1.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "6dbfefcef9a24516a396499297d7a8e2",
+          "requirements": "Figure 1 is reproduced: base GPT-5 shows steep degradation as length grows on OOLONG and OOLONG-Pairs while RLM(GPT-5, depth=1) maintains strong performance across 2^13 to 2^20 tokens, including handling lengths beyond GPT-5's 272K context window.",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e56ba17373f3447aab9fd27620c5619c",
+          "requirements": "RLM-Qwen3-8B outperforms the Qwen3-8B base-as-RLM on all four Table 1 benchmarks with a median improvement of approximately 28% (Figure 3a).",
+          "weight": 0.1,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "a297a30eb89f4d43a35c628070346581",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.043478260869565216,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "a0a487716fde4a0cb828601ab3cdc12b",
+          "requirements": "The repository contains a reproducible entry point that exposes the RLM as a string-in/string-out callable (matching the external interface described in \u00a72) and includes the system prompts used (Appendix C, including the LongCoT decomposition-hints variant from Appendix C.3 if Table 2 is targeted).",
+          "weight": 0.4,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "daa9760631944cdc9fbf90f6c46ae2ef",
+          "requirements": "Final report / results artifact records per-task scores, per-task mean and std cost, recursion depth, and the underlying root and sub-call model identifiers (e.g., GPT-5 + GPT-5-mini, or Qwen3-Coder-480B-A35B + Qwen3-Coder-480B-A35B), so each row of Table 1 is traceable to a concrete run.",
+          "weight": 0.4,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "0018722d33874d40b4ae7b65b5282456",
+          "requirements": "Released artifacts include either the fine-tuned RLM-Qwen3-8B checkpoint (or its training script + the 1,000 filtered LongBenchPro trajectories) sufficient to reproduce Figure 3(a).",
+          "weight": 0.2,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

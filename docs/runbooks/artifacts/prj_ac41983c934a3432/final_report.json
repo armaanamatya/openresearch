@@ -1,0 +1,300 @@
+{
+  "paper": {
+    "id": "",
+    "title": "paper_text"
+  },
+  "verdict": "failed",
+  "reproduction_summary": "Attempted full reproduction of the paper. Environment was successfully built. Baseline was implemented but run failed. Final rubric score: 0.0000 (target: 0.6). The reproduction did not fully meet the rubric target.",
+  "baseline_metrics": {},
+  "paper_claims": {
+    "core_contribution": "A novel method for improving language model performance through a specific training approach described in the paper",
+    "claims": [
+      {
+        "method": "proposed method",
+        "dataset": "main benchmark",
+        "metric": "accuracy",
+        "expected_result": "reported in paper"
+      }
+    ],
+    "datasets": []
+  },
+  "rubric": {
+    "overall_score": 0.0,
+    "meets_target": false,
+    "areas": [
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      },
+      {
+        "name": "unknown",
+        "score": 0.0,
+        "notes": ""
+      }
+    ],
+    "leaf_scores": [
+      {
+        "id": "2a468abdee2e45648b4de07c2454728f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f77d356fc32e484bbd9145522119c88e",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "afd1aa51b39848e99b77564e06e533b3",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "eaa0c1a8dcdf4afaad22e9fb82f5d8dc",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "2dcb6ffc7c6c4a8ead3fb55199ef1508",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5b3640c6a02c4878b5cb8b986fa812bf",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e52bd51e0779442a83229d01d96c4876",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b30a747b8515432a9ef9eb1792639e31",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "4778c1df7015409b960208db8bf77a61",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "7e7b72349998430f8f965efecbce7354",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "4b726d0969214c0f8fb8c22ac037aac5",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "30d28cdee91f45bcbf477a3c1ee2b701",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "52b3273eaeca4d6da0ad3bc666b1b327",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f9dc5bca6e0c411494f0744bcca876ef",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "0cea383731d04ff4a0b31e8db5ca9bc4",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "352b7541237a4acb97ff1fb1dc6b8c95",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "09d0c75e85644f6da1809e7bf6232efb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9865c33a7e294909ae949c440df09985",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b03386c5a2504fdbb92c79e413d5b9de",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c93e7a9adc35483da52586b648016dd7",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c48a5a7b68e54a518dc10e0325d0bcd0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9cb15edd13f642bba667a50c4113dc46",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "554ab0ba32554c89820fdcf5b2d3e5ef",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "74485b44706c429f9ae079ef6a6e689d",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "6dbfefcef9a24516a396499297d7a8e2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e56ba17373f3447aab9fd27620c5619c",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a0a487716fde4a0cb828601ab3cdc12b",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "daa9760631944cdc9fbf90f6c46ae2ef",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "0018722d33874d40b4ae7b65b5282456",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "2a468abdee2e45648b4de07c2454728f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f77d356fc32e484bbd9145522119c88e",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "afd1aa51b39848e99b77564e06e533b3",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "eaa0c1a8dcdf4afaad22e9fb82f5d8dc",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "2dcb6ffc7c6c4a8ead3fb55199ef1508",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5b3640c6a02c4878b5cb8b986fa812bf",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e52bd51e0779442a83229d01d96c4876",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b30a747b8515432a9ef9eb1792639e31",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "leaf_count": 29,
+    "graded": 0,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.0
+  },
+  "improvements": [
+    {
+      "title": "unknown",
+      "outcome": "declined",
+      "delta": 0
+    }
+  ],
+  "primitive_trace": {
+    "calls": 32,
+    "by_primitive": {
+      "check_user_messages": 1,
+      "heartbeat": 17,
+      "understand_section": 3,
+      "extract_hyperparameters": 1,
+      "resolve_gpu_requirements": 1,
+      "detect_environment": 1,
+      "build_environment": 1,
+      "plan_reproduction": 1,
+      "implement_baseline": 3,
+      "run_experiment": 1,
+      "verify_against_rubric": 1,
+      "propose_improvements": 1
+    }
+  },
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 1,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": null,
+    "grader": null
+  },
+  "started_at": "2026-05-27T21:23:08.867487+00:00",
+  "completed_at": "2026-05-27T21:45:24.842830+00:00",
+  "scope": {
+    "requested": "full paper reproduction",
+    "ran": [
+      "baseline on benchmark"
+    ],
+    "gaps": [
+      "baseline run failed - no metrics available"
+    ]
+  }
+}

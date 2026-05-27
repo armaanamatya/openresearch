@@ -1,0 +1,43 @@
+{
+  "paper": {
+    "arxiv_id": "2512.24601",
+    "title": "Recursive Language Models",
+    "authors": ["Alex L. Zhang", "Tim Kraska", "Omar Khattab"],
+    "institution": "MIT CSAIL",
+    "code_url": "https://github.com/alexzhang13/rlm"
+  },
+  "models": {
+    "root_model": "gpt-5",
+    "sub_model": "gpt-5-mini",
+    "backend": "openai"
+  },
+  "rlm_config": {
+    "max_depth": 1,
+    "max_iterations": 30,
+    "max_timeout": 300,
+    "max_errors": 5,
+    "environment": "local"
+  },
+  "evaluation": {
+    "benchmarks": ["oolong", "oolong_pairs", "browsecomp", "sniah", "codeqa"],
+    "oolong_num_tasks": 50,
+    "oolong_pairs_num_tasks": 20,
+    "browsecomp_num_tasks": 10,
+    "sniah_num_tasks": 10,
+    "codeqa_num_tasks": 10,
+    "oolong_dataset": "oolongbench/oolong-synth",
+    "oolong_split": "trec_coarse",
+    "seed": 42
+  },
+  "compute": {
+    "device": "auto",
+    "framework": "openai_api",
+    "gpu_type": "RTX4090_24GB"
+  },
+  "assumptions_applied": ["ENV001", "ENV002", "ENV003"],
+  "scope_reduction": {
+    "browsecomp_tasks": "10 instead of 150 (compute budget)",
+    "sniah_tasks": "10 instead of 50 (compute budget)",
+    "codeqa_tasks": "10 instead of ~50 (compute budget)"
+  }
+}
