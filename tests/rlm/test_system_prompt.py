@@ -381,6 +381,13 @@ class TestHeartbeatInstruction:
         """The prompt must mention run_experiment in the heartbeat section."""
         assert "run_experiment" in prompt_gpt5
 
+    def test_run_experiment_rejects_implement_baseline_error_dict_invariant(self, prompt_gpt5):
+        lower = prompt_gpt5.lower()
+        assert "implement_baseline" in lower
+        assert "error dict" in lower
+        assert "ok=true" in lower or "ok=true" in lower.replace(" ", "")
+        assert "code_path" in lower
+
     def test_heartbeat_liveness_rationale(self, prompt_gpt5):
         """The prompt must state WHY to call heartbeat (operator visibility)."""
         lower = prompt_gpt5.lower()

@@ -122,6 +122,24 @@ def test_implement_baseline_path_wrapper_valid_passes() -> None:
     assert pc._v_implement_baseline(r) is True
 
 
+def test_implement_baseline_ok_envelope_valid_passes() -> None:
+    r = {
+        "ok": True,
+        "code_path": "/tmp/code/dir",
+        "files": ["commands.json", "train.py"],
+    }
+    assert pc._v_implement_baseline(r) is True
+
+
+def test_implement_baseline_ok_envelope_without_manifest_fails() -> None:
+    r = {
+        "ok": True,
+        "code_path": "/tmp/code/dir",
+        "files": ["train.py"],
+    }
+    assert pc._v_implement_baseline(r) is False
+
+
 def test_implement_baseline_path_wrapper_empty_value_fails() -> None:
     assert pc._v_implement_baseline({"_kind": "path", "value": ""}) is False
     assert pc._v_implement_baseline({"_kind": "path", "value": None}) is False  # type: ignore[arg-type]

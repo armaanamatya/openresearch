@@ -643,6 +643,10 @@ def build_worker_report_failed_event(report: dict[str, Any]) -> dict[str, Any]:
         "worker_type": report.get("worker_type"),
         "agent_id": report.get("agent_id"),
         "error": report.get("error"),
+        "failure_class": report.get("failure_class"),
+        "contract_violations": report.get("contract_violations"),
+        "repairable": report.get("repairable"),
+        "source": report.get("source"),
         "blockers": report.get("blockers", [])[:5],
     }
 

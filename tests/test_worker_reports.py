@@ -9,6 +9,7 @@ import pytest
 from backend.agents.runtime.base import AgentRuntimeSpec, ProviderName, StreamEvent, StreamText, StreamToolCall
 from backend.agents.runtime.invoke import collect_agent_text
 from backend.agents.worker_reports import parse_worker_report_sections, worker_reports_path
+from backend.agents.worker_reports import build_worker_report_failed_event
 
 
 class FakeRuntime:
@@ -57,6 +58,26 @@ def test_parse_worker_report_sections_extracts_required_fields() -> None:
         {"command": "pytest tests/test_eval.py", "exit_code": 0, "source": "worker_report"}
     ]
     assert parsed["procedures_followed"] is True
+
+
+def test_worker_report_failed_event_includes_primitive_failure_fields() -> None:
+    event = build_worker_report_failed_event({
+        "worker_id": "w1",
+        "worker_type": "rlm_primitive",
+        "agent_id": "run_experiment",
+        "error": "code_path must be a non-empty string path",
+        "failure_class": "contract_guard",
+        "contract_violations": [{"detail": "code_path was dict"}],
+        "repairable": True,
+        "source": "contract_guard",
+        "blockers": [],
+    })
+
+    assert event["error"]
+    assert event["failure_class"] == "contract_guard"
+    assert event["contract_violations"][0]["detail"] == "code_path was dict"
+    assert event["repairable"] is True
+    assert event["source"] == "contract_guard"
 
 
 @pytest.mark.asyncio

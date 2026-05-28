@@ -498,6 +498,7 @@ _REPRODUCE_DEFAULTS = {
     "project_id": None,
     "paper_hint": None,
     "scope_spec": None,
+    "sanity": False,
     # Lane Q — defaults to False (strict reproduction). Set to True via
     # --minimize-compute or the lab UI "Minimize compute" checkbox.
     "minimize_compute": False,
@@ -837,6 +838,110 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
     return 0 if rlm_result.status in ("completed", "partial") else 3
 
 
+def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
+    """Run a bounded sandbox smoke without invoking RLM or code-writing agents."""
+    import hashlib
+
+    from backend.agents.dashboard_emitter import DashboardEmitter
+    from backend.agents.execution import ensure_sandbox_mode_available, resolve_sandbox_mode
+    from backend.agents.resilience import RunBudget
+    from backend.agents.resilience.cost import RunCostLedger
+    from backend.agents.rlm.context import RunContext
+    from backend.agents.rlm.primitives import run_experiment
+    from backend.agents.rlm.run import _write_demo_status
+    from backend.agents.rlm.sse_bridge import make_emit
+    from backend.services.runtime import SandboxRuntimeError
+
+    source = str(getattr(args, "source", "sanity"))
+    project_id = getattr(args, "project_id", None) or (
+        "prj_" + hashlib.sha256(
+            f"sanity:{source}:{datetime.now(timezone.utc).isoformat()}".encode("utf-8")
+        ).hexdigest()[:16]
+    )
+    project_dir = runs_root / project_id
+    code_dir = project_dir / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "cost_ledger.jsonl").touch(exist_ok=True)
+    (code_dir / "sanity.py").write_text(
+        "import json, os\n"
+        "out = os.environ.get('OUTPUT_DIR') or '.'\n"
+        "os.makedirs(out, exist_ok=True)\n"
+        "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
+        "    json.dump({'sanity_ok': 1.0}, fh)\n"
+        "print('reprolab sanity ok')\n",
+        encoding="utf-8",
+    )
+    (code_dir / "commands.json").write_text(json.dumps(["python sanity.py"]), encoding="utf-8")
+
+    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
+    try:
+        ensure_sandbox_mode_available(sandbox_mode)
+    except SandboxRuntimeError as exc:
+        print(f"Sandbox preflight failed: {exc}", file=sys.stderr)
+        _write_demo_status(
+            project_dir,
+            "failed",
+            error=str(exc),
+            process_status="completed",
+            verdict="failed",
+        )
+        return 2
+
+    run_budget = RunBudget(
+        max_usd=getattr(args, "max_usd", None),
+        max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+        max_pod_seconds=_resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None)),
+        max_run_gpu_usd=getattr(args, "max_run_gpu_usd", None),
+    )
+    dashboard = DashboardEmitter(project_id, runs_root)
+    ctx = RunContext(
+        project_id=project_id,
+        project_dir=project_dir,
+        runs_root=runs_root,
+        dashboard=dashboard,
+        emit=make_emit(dashboard),
+        cost_ledger=RunCostLedger.load_jsonl(
+            project_dir / "cost_ledger.jsonl",
+            project_id=project_id,
+            attach_path=True,
+        ),
+        llm_client=None,
+        provider="none",
+        model="sanity-template",
+        sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
+        arxiv_id=source,
+    )
+    _write_demo_status(
+        project_dir,
+        "running",
+        primitive_provider="sanity-template",
+        process_status="running",
+        verdict="unknown",
+    )
+    env_id = get_settings().runpod_image if sandbox_mode.value == "runpod" else "python:3.11-slim"
+    result = run_experiment(
+        {"ok": True, "code_path": str(code_dir), "files": ["commands.json", "sanity.py"]},
+        env_id,
+        model_id="sanity",
+        eval_env="smoke",
+        ctx=ctx,
+    )
+    success = bool(result.get("success")) and bool(result.get("metrics"))
+    _write_demo_status(
+        project_dir,
+        "completed" if success else "failed",
+        error=None if success else result.get("error", "sanity smoke failed"),
+        primitive_provider="sanity-template",
+        process_status="completed",
+        verdict="reproduced" if success else "failed",
+    )
+    ctx.cost_ledger.flush()
+    print(f"[sanity] project_id: {project_id}", file=sys.stderr)
+    print(f"[sanity] result    : {'ok' if success else 'failed'}", file=sys.stderr)
+    return 0 if success else 2
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     args = _with_reproduce_defaults(args)
@@ -913,6 +1018,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"seeds={_effective_scope.seeds or '∅'}.",
             file=sys.stderr,
         )
+
+    if getattr(args, "sanity", False):
+        return _cmd_reproduce_sanity(args, runs_root)
 
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
@@ -1335,6 +1443,14 @@ def _build_parser() -> argparse.ArgumentParser:
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
             "runpod uses a remote GPU Pod; docker is isolated local Docker; "
             "local runs commands on the host; auto resolves to the configured default."
+        ),
+    )
+    reproduce.add_argument(
+        "--sanity",
+        action="store_true",
+        help=(
+            "Run a cheap sandbox plumbing smoke: write a deterministic tiny "
+            "baseline, execute one command, and skip RLM/code-writing agents."
         ),
     )
     reproduce.add_argument(

@@ -33,6 +33,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "torch_redundancy",          # PyPI torch download failed; base image has it
     "network_flake",             # pip / hf / urllib download truncated
     "cuda_oom",                  # torch.cuda.OutOfMemoryError or similar
+    "oom_killed",                # process/container SIGKILL from memory pressure
     "runpod_capacity",           # RUNPOD_CAPACITY_EXHAUSTED / no instances
     "runpod_transient_500",      # Bare RunPod 500 (treated as escalation trigger)
     "runpod_ssh_timeout",        # Pod created but never reachable via SSH
@@ -66,6 +67,9 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "cuda_oom":
             "reduce batch size in train.py or escalate to a larger-VRAM SKU "
             "(Lane gpu_escalation handles the latter automatically)",
+        "oom_killed":
+            "process was killed by the host/container OOM killer; reduce memory use, "
+            "lower batch size, or raise the Docker/container memory floor",
         "runpod_capacity":
             "RunPod has no available instances of the requested SKU — escalator "
             "advances the ladder automatically; ensure REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS "
@@ -127,6 +131,7 @@ def classify_failure(result: dict) -> tuple[str, str]:
 
         err = str(result.get("error") or "")
         logs = str(result.get("logs") or "")
+        cause_kind = str(result.get("cause_kind") or "").lower()
         haystack = (err + " " + logs).lower()
 
         # Pre-flight + watchdog flag fast-paths
@@ -136,6 +141,19 @@ def classify_failure(result: dict) -> tuple[str, str]:
             return ("watchdog_killed", _suggest("watchdog_killed"))
         if result.get("scope_shape_violation"):
             return ("scope_shape_violation", _suggest("scope_shape_violation"))
+        try:
+            exit_code = int(result.get("exit_code"))
+        except (TypeError, ValueError):
+            exit_code = None
+        if (
+            cause_kind.endswith("oom_killed")
+            or exit_code in {-9, 137}
+            or "exit code -9" in haystack
+            or "exit_code=-9" in haystack
+            or "oom killed" in haystack
+            or "oom_killed" in haystack
+        ):
+            return ("oom_killed", _suggest("oom_killed"))
 
         # RunPod-specific sentinels (from runpod_backend exceptions)
         if "runpod_capacity_exhausted" in haystack:

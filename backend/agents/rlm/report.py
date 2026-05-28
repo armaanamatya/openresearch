@@ -692,9 +692,10 @@ def write_final_report_rlm(
         except Exception:  # noqa: BLE001 — timing capture is best-effort
             logger.warning("report: timing.json write failed (non-fatal)")
 
-    # Update calibration priors from the new preserved run so the next estimate
-    # is more accurate. Runs in a try/except so it never blocks report writing.
-    if report.verdict != "failed":
+    # Update calibration priors only when explicitly requested. A single
+    # smoke/pre-flight run can otherwise overwrite the historical calibration
+    # corpus and poison future estimates.
+    if report.verdict != "failed" and os.environ.get("REPROLAB_UPDATE_CALIBRATION", "").lower() == "true":
         try:
             from backend.services.pricing.calibration import recompute_calibration
             runs_root = project_dir.parent

@@ -49,6 +49,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "missing_module",
     "torch_redundancy",
     "cuda_oom",
+    "oom_killed",
     "requirements_not_found",
     "missing_dataset",
     "exec_timeout",
@@ -96,6 +97,101 @@ def _with_outcome(result: dict, outcome: PrimitiveOutcome) -> dict:
     """Attach primitive typestate to a result dict without disturbing payload shape."""
     result.setdefault("outcome", outcome.value)
     return result
+
+
+def _baseline_ok_envelope(code_dir: "Any") -> dict:
+    """Return the normalized successful implement_baseline envelope."""
+    from pathlib import Path
+
+    path = Path(code_dir)
+    files = sorted(
+        str(p.relative_to(path)).replace("\\", "/")
+        for p in path.rglob("*")
+        if p.is_file()
+    ) if path.exists() else []
+    return _with_outcome({
+        "ok": True,
+        "code_path": str(path),
+        "files": files,
+    }, PrimitiveOutcome.ok)
+
+
+def _baseline_error_envelope(
+    *,
+    error_code: str,
+    error: str,
+    repairable: bool = True,
+    code_dir: "Any | None" = None,
+    missing_files: list[str] | None = None,
+) -> dict:
+    """Return the normalized failed implement_baseline envelope."""
+    payload = {
+        "ok": False,
+        "success": False,
+        "error_code": error_code,
+        "error": error,
+        "repairable": repairable,
+    }
+    if code_dir is not None:
+        payload["code_path"] = str(code_dir)
+    if missing_files is not None:
+        payload["missing_files"] = missing_files
+    return _with_outcome(
+        payload,
+        PrimitiveOutcome.repairable if repairable else PrimitiveOutcome.fatal,
+    )
+
+
+def _harvest_baseline_artifacts(
+    code_dir: "Any",
+    *,
+    error_code: str = "incomplete_artifacts",
+    error_prefix: str = "implement_baseline artifacts incomplete",
+) -> dict:
+    """Validate and harvest baseline artifacts written by the SDK subprocess.
+
+    A usable baseline must at minimum expose a non-empty ``commands.json`` and
+    at least one runnable source/script artifact. This is deliberately small:
+    it accepts partial but executable projects after SDK cleanup failures while
+    refusing directories that would only cascade into run_experiment failures.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(code_dir)
+    missing: list[str] = []
+    commands_path = path / "commands.json"
+    if not commands_path.exists():
+        missing.append("commands.json")
+    else:
+        try:
+            commands = json.loads(commands_path.read_text(encoding="utf-8"))
+            if not isinstance(commands, list) or not commands:
+                missing.append("commands.json: non-empty list")
+        except (json.JSONDecodeError, OSError):
+            missing.append("commands.json: valid JSON list")
+
+    runnable_suffixes = {".py", ".sh", ".bash", ".ps1"}
+    has_runnable = False
+    if path.exists():
+        for file in path.rglob("*"):
+            if not file.is_file() or file.name == "commands.json":
+                continue
+            if file.suffix.lower() in runnable_suffixes or file.name in {"Dockerfile", "Makefile"}:
+                has_runnable = True
+                break
+    if not has_runnable:
+        missing.append("runnable source file")
+
+    if missing:
+        return _baseline_error_envelope(
+            error_code=error_code,
+            error=f"{error_prefix}: missing {', '.join(missing)}",
+            repairable=True,
+            code_dir=path,
+            missing_files=missing,
+        )
+    return _baseline_ok_envelope(path)
 
 
 def _failure_class_key(value: object) -> str:
@@ -318,11 +414,11 @@ def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
     """True when exit-code or stderr tail indicates a CUDA OOM (spec 2026-05-23 §OOM).
 
     `stderr_tail` should be the last ~4KB of combined stderr/stdout from the failed
-    experiment. Exit code 137 is SIGKILL (OOM killer); substring match covers the
-    documented PyTorch/cuBLAS variants. Pattern set is intentionally tight to avoid
-    false positives on unrelated CUDA errors.
+    experiment. Exit codes 137 and -9 are SIGKILL/OOM-killer shapes; substring
+    match covers the documented PyTorch/cuBLAS variants. Pattern set is
+    intentionally tight to avoid false positives on unrelated CUDA errors.
     """
-    if exit_code == 137:
+    if exit_code in {-9, 137}:
         return True
     if not stderr_tail:
         return False
@@ -1103,8 +1199,8 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
     return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
 
 
-def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
-    """Generate the baseline code from a reproduction plan; return the code path.
+def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
+    """Generate the baseline code from a reproduction plan; return a typed envelope.
 
     `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
     <understand_section output>, "environment_spec": <detect_environment
@@ -1112,7 +1208,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     optional `artifact_index`) — NOT a single producer's output. Wraps
     `baseline_implementation.run_with_sdk` (a code-writing agent) and writes
     `code/commands.json` so `run_experiment` can read the run commands without
-    a BaselineResult (design decision D2).
+    a BaselineResult (design decision D2). The return contract is always either
+    ``{"ok": True, "code_path": ..., "files": [...]}`` or
+    ``{"ok": False, "error_code": ..., "error": ..., "repairable": bool}``.
 
     Hardening (A2-C2): `pool.submit(...).result()` previously blocked the
     worker thread indefinitely; now bounded by `_timeout_for(ctx, 3600)`.
@@ -1322,26 +1420,43 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     }
     _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
     if _cached is not None:
-        # Recover the original return shape (str | dict).
+        # Recover old path cache entries and new envelope cache entries.
         _value: Any = _cached.get("value") if _cached.get("_kind") == "path" else _cached
         if isinstance(_value, str):
             # Verify the on-disk commands.json still exists — if attempt_isolation
             # archived the code between the cache write and now, treat as miss.
             _verify_dir = Path(_value)
-            if (_verify_dir / "commands.json").exists():
+            _harvested = _harvest_baseline_artifacts(_verify_dir)
+            if _harvested.get("ok") is True:
                 logger.info(
                     "implement_baseline: cache HIT (warm retry) for %s — "
                     "skipping ~5 min Sonnet sub-agent call",
                     ctx.project_id,
                 )
-                return _value
+                return _harvested
             logger.info(
                 "implement_baseline: cache HIT but code/ missing on disk "
                 "(probably archived) — recomputing from scratch",
             )
         elif isinstance(_value, dict):
-            # Cached error dict (e.g. timeout) — return as-is.
-            return _with_outcome(_value, PrimitiveOutcome.repairable)
+            if _value.get("ok") is True:
+                _verify_dir = Path(str(_value.get("code_path", "")))
+                _harvested = _harvest_baseline_artifacts(_verify_dir)
+                if _harvested.get("ok") is True:
+                    return _harvested
+                logger.info(
+                    "implement_baseline: cached envelope points at incomplete code/ — "
+                    "recomputing from scratch",
+                )
+            else:
+                # Cached error dict (e.g. timeout) — normalize before returning.
+                return _baseline_error_envelope(
+                    error_code=str(_value.get("error_code") or _value.get("code") or "cached_failure"),
+                    error=str(_value.get("error") or "cached implement_baseline failure"),
+                    repairable=bool(_value.get("repairable", True)),
+                    code_dir=_value.get("code_path"),
+                    missing_files=_value.get("missing_files"),
+                )
 
     # θ: extract metrics_shape from the contract so implement_baseline binds
     # Sonnet's code-writing to the declared paths. Coerce MetricPath objects
@@ -1429,10 +1544,11 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
         while True:
             remaining_timeout = deadline_abs - _time.monotonic()
             if remaining_timeout <= 0:
-                _err = _with_outcome({
-                    "success": False,
-                    "error": f"implement_baseline: timed out after {timeout:.0f} s",
-                }, PrimitiveOutcome.repairable)
+                _err = _baseline_error_envelope(
+                    error_code="timeout",
+                    error=f"implement_baseline: timed out after {timeout:.0f} s",
+                    code_dir=code_dir,
+                )
                 _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
                 return _err
             try:
@@ -1440,13 +1556,25 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                 break  # Normal return
             except concurrent.futures.TimeoutError:
                 pass  # Check watchdog conditions below
+            except Exception as exc:  # noqa: BLE001
+                harvested = _harvest_baseline_artifacts(
+                    code_dir,
+                    error_code="sdk_failure_incomplete_artifacts",
+                    error_prefix=f"implement_baseline SDK failed after artifact write ({type(exc).__name__}: {exc})",
+                )
+                if harvested.get("ok") is True:
+                    _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
+                    return harvested
+                harvested["sdk_error"] = f"{type(exc).__name__}: {exc}"
+                return harvested
 
             # Check overall timeout
             if deadline_abs - _time.monotonic() <= 0:
-                _err = _with_outcome({
-                    "success": False,
-                    "error": f"implement_baseline: timed out after {timeout:.0f} s",
-                }, PrimitiveOutcome.repairable)
+                _err = _baseline_error_envelope(
+                    error_code="timeout",
+                    error=f"implement_baseline: timed out after {timeout:.0f} s",
+                    code_dir=code_dir,
+                )
                 _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
                 return _err
 
@@ -1488,11 +1616,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                     # Deliberately NOT cached: the stall is transient — a retry
                     # may succeed. Caching this guarantees a cascade where every
                     # downstream run_experiment receives the same error dict.
-                    return _with_outcome({
-                        "success": False,
-                        "error": message,
-                        "code": "sdk_pre_emit_stall",
-                    }, PrimitiveOutcome.repairable)
+                    return _baseline_error_envelope(
+                        error_code="sdk_pre_emit_stall",
+                        error=message,
+                        code_dir=code_dir,
+                        missing_files=["commands.json", "runnable source file"],
+                    )
                 continue
 
             if commands_json.exists():
@@ -1517,29 +1646,23 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
                             "code is on disk but SDK hung for %ds. Breaking out.",
                             int(_time.time() - _stall_start),
                         )
-                        # Read commands.json that the agent already wrote
-                        try:
-                            commands = json.loads(commands_json.read_text(encoding="utf-8"))
-                            if not isinstance(commands, list):
-                                commands = []
-                        except (json.JSONDecodeError, OSError):
-                            commands = []
-                        _code_path = str(code_dir)
-                        _cache.put(
-                            ctx.project_dir,
-                            "implement_baseline",
-                            payload=_payload,
-                            result={"_kind": "path", "value": _code_path},
+                        harvested = _harvest_baseline_artifacts(
+                            code_dir,
+                            error_code="sdk_aclose_incomplete_artifacts",
+                            error_prefix="implement_baseline SDK cleanup stalled after artifact write",
                         )
-                        return _code_path
+                        if harvested.get("ok") is True:
+                            _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
+                        return harvested
                 else:
                     # Files still being written — reset stall timer
                     _stall_start = None
     except concurrent.futures.TimeoutError:
-        _err = _with_outcome({
-            "success": False,
-            "error": f"implement_baseline: timed out after {timeout:.0f} s",
-        }, PrimitiveOutcome.repairable)
+        _err = _baseline_error_envelope(
+            error_code="timeout",
+            error=f"implement_baseline: timed out after {timeout:.0f} s",
+            code_dir=code_dir,
+        )
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
         return _err
     finally:
@@ -1551,7 +1674,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
     # RunContext.project_dir was constructed.
     code_dir.mkdir(parents=True, exist_ok=True)
     commands = list(getattr(result, "commands_to_run", []) or [])
-    (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
+    if commands:
+        (code_dir / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
 
     # PR-ξ γ: surface knowledge-channel strict violations as a repairable envelope.
     # run_with_sdk encodes violations in diff_summary and assumptions_applied when
@@ -1573,23 +1697,19 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> str | dict:
             "message": _kc_summary,
             "violations": _kc_preflight,
         })
-        _err = _with_outcome({
-            "success": False,
-            "error": _kc_summary,
-            "preflight_violations": _kc_preflight,
-        }, PrimitiveOutcome.repairable)
+        _err = _baseline_error_envelope(
+            error_code="knowledge_channel_strict_violation",
+            error=_kc_summary,
+            code_dir=code_dir,
+        )
+        _err["preflight_violations"] = _kc_preflight
         # Do NOT cache a strict-violation result — force recompute on next attempt.
         return _err
 
-    _code_path = str(code_dir)
-    # Cache value wraps the str path so the dict-only cache contract is preserved.
-    _cache.put(
-        ctx.project_dir,
-        "implement_baseline",
-        payload=_payload,
-        result={"_kind": "path", "value": _code_path},
-    )
-    return _code_path
+    harvested = _harvest_baseline_artifacts(code_dir)
+    if harvested.get("ok") is True:
+        _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
+    return harvested
 
 
 def _backend_for_sandbox_mode(
@@ -1759,6 +1879,24 @@ async def _execute_in_sandbox(
             "PYTHONUNBUFFERED": "1",
         },
     )
+    resource_limits = {
+        "memory_limit": config.memory_limit,
+        "cpus": config.cpus,
+        "gpu_mode": config.gpu_mode,
+        "sandbox_mode": str(sandbox_mode or "docker"),
+    }
+    try:
+        _emit_dashboard_event_to_path(
+            code_dir.parent if code_dir.name == "code" else code_dir,
+            event_type="sandbox_resource_limits",
+            payload={
+                "project_id": project_id,
+                "run_id": run_id,
+                **resource_limits,
+            },
+        )
+    except Exception:  # noqa: BLE001 - resource observability must not block
+        logger.exception("_execute_in_sandbox: sandbox_resource_limits emit failed")
     # Auto-install requirements.txt on RunPod BEFORE commands.json runs. The
     # agent's prompt has repeatedly forgotten to wire `python -m pip install -r
     # requirements.txt` into commands.json on runpod (Dockerfile is doc-only;
@@ -2119,11 +2257,27 @@ async def _execute_in_sandbox(
                 exc,
             )
 
+    failed_exit_code = next(
+        (r.exit_code for r in reversed(results) if r.exit_code not in (None, 0)),
+        None,
+    )
+    last_exit_code = results[-1].exit_code if results else None
+    cause_kind = next(
+        (
+            getattr(r.cause_kind, "value", str(r.cause_kind))
+            for r in reversed(results)
+            if r.cause_kind is not None
+        ),
+        None,
+    )
     return {
         "success": all(r.succeeded for r in results),
         "metrics": metrics,
         "logs": _cap_logs(_combine_command_output(results)),
         "artifact_dir": str(artifact_root),
+        "exit_code": failed_exit_code if failed_exit_code is not None else last_exit_code,
+        "cause_kind": cause_kind,
+        "resource_limits": resource_limits,
     }
 
 
@@ -2350,7 +2504,7 @@ def _persist_escalation_count(state_dir: "Path", count: int) -> None:
 
 
 def run_experiment(
-    code_path: str,
+    code_path: str | dict,
     env_id: str,
     *,
     model_id: str = "default",
@@ -2394,15 +2548,18 @@ def run_experiment(
     import uuid
     from pathlib import Path
 
+    if isinstance(code_path, dict) and code_path.get("ok") is True:
+        code_path = str(code_path.get("code_path") or "")
+
     # Lane T — guard against `code_path` being the error dict that
-    # ``implement_baseline`` returns on failure. The 2026-05-25 Dropout
-    # regression: agent did `code_path2 = implement_baseline(plan); run_experiment(code_path2, env)`
-    # without checking whether implement_baseline succeeded; the error dict
-    # got passed to Path(...) which raised TypeError, killing the iteration
-    # mid-stream. Emit a clean fail-soft error instead.
+    # ``implement_baseline`` returns on failure. This direct primitive guard is
+    # deliberately non-persisting: invalid orchestration must not look like a
+    # completed experiment and must not emit experiment_completed.
     if not isinstance(code_path, str) or not code_path.strip():
-        return _persist_experiment_result(ctx, {
+        return _with_outcome({
             "success": False, "metrics": {},
+            "failure_class": "contract_guard",
+            "source": "contract_guard",
             "error": (
                 f"run_experiment: code_path must be a non-empty string path, "
                 f"got {type(code_path).__name__} ({str(code_path)[:200]}). "
@@ -2420,7 +2577,7 @@ def run_experiment(
                     "instead of forwarding the error dict downstream."
                 ),
             }],
-        }, model_id=model_id, eval_env=eval_env)
+        }, PrimitiveOutcome.repairable)
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
@@ -3242,6 +3399,16 @@ def propose_improvements(current_results: dict, rubric_scores: dict,
     out: list[dict] = []
     for item in items:
         try:
+            if not isinstance(item, dict):
+                continue
+            required_text = {
+                "path_id": item.get("path_id"),
+                "hypothesis": item.get("hypothesis"),
+                "rationale": item.get("rationale"),
+                "category": item.get("category"),
+            }
+            if any(not isinstance(value, str) or not value.strip() for value in required_text.values()):
+                continue
             # Ensure title is never empty — derive a fallback from hypothesis text
             # so candidate_proposed events always carry a human-readable label.
             if not item.get("title"):
@@ -3611,8 +3778,8 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "image_tag to run_experiment as env_id.",
     "plan_reproduction": "plan_reproduction(method_spec, env_spec) -> dict — a "
         "ReproductionContract (smoke test, full run, evaluation plan).",
-    "implement_baseline": "implement_baseline(plan) -> str — generate the "
-        "baseline code; returns the code dir path. `plan` is the aggregate "
+    "implement_baseline": "implement_baseline(plan) -> dict — generate the "
+        "baseline code; returns {ok, code_path, files} or {ok:false, error_code, error, repairable}. `plan` is the aggregate "
         "{paper_claim_map (from understand_section), environment_spec (from "
         "detect_environment), reproduction_contract (from plan_reproduction)}. "
         "paper_claim_map must include core_contribution (str), claims (list of "
