@@ -23,6 +23,54 @@ def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_pat
     assert result["metrics"]["mean_reward"] == 200.0
 
 
+def test_run_experiment_accepts_ok_code_envelope(make_context, tmp_path, monkeypatch):
+    ctx = make_context(tmp_path)
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
+
+    async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+        assert code_path == str(code_dir)
+        return {"metrics": {"mean_reward": 10.0}, "success": True, "logs": ""}
+
+    monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
+    result = run_experiment(
+        {"ok": True, "code_path": str(code_dir), "files": ["commands.json"]},
+        "reprolab/test:env-check",
+        ctx=ctx,
+    )
+    assert result["success"] is True
+    assert result["metrics"]["mean_reward"] == 10.0
+
+
+def test_run_experiment_invalid_code_path_does_not_emit_experiment_completed_or_spawn(
+    make_context, tmp_path, monkeypatch
+):
+    ctx = make_context(tmp_path)
+    called = {"execute": False}
+
+    async def fake_exec(*args, **kwargs):
+        called["execute"] = True
+        return {"metrics": {}, "success": True, "logs": ""}
+
+    monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
+    result = run_experiment(
+        {"ok": False, "error": "sdk_pre_emit_stall"},
+        "reprolab/test:env-check",
+        ctx=ctx,
+    )
+
+    assert result["success"] is False
+    assert result["failure_class"] == "contract_guard"
+    assert called["execute"] is False
+    events_path = tmp_path / "test_proj" / "dashboard_events.jsonl"
+    if events_path.exists():
+        events = [json.loads(line) for line in events_path.read_text().splitlines() if line]
+        assert not any(e.get("event") == "experiment_completed" for e in events)
+    assert not (tmp_path / "test_proj" / "experiment_runs.jsonl").exists()
+
+
 def test_run_experiment_missing_commands_json(make_context, tmp_path):
     ctx = make_context(tmp_path)
     code_dir = tmp_path / "nocode"

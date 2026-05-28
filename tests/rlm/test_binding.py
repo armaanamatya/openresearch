@@ -62,6 +62,24 @@ def test_wrapped_primitive_emits_event_and_ledger_row(make_context, tmp_path):
     assert ledger[-1]["agent_id"] == "echo"
 
 
+def test_wrapped_primitive_logs_resource_boundaries(make_context, tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.agents.rlm.binding._process_rss_bytes", lambda: 123456)
+    ctx = make_context(tmp_path)
+    registry = {"echo": lambda *, ctx: {"ok": True}}
+    tools = build_custom_tools(ctx, registry=registry, descriptions={"echo": "echo"})
+
+    tools["echo"]["tool"]()
+
+    resource_events = [
+        e for e in _read_events(ctx)
+        if e.get("event") == "dashboard_event"
+        and e.get("event_type") == "primitive_resource"
+    ]
+    assert [e["payload"]["boundary"] for e in resource_events] == ["start", "end"]
+    assert {e["payload"]["primitive"] for e in resource_events} == {"echo"}
+    assert all(e["payload"]["rss_bytes"] == 123456 for e in resource_events)
+
+
 def test_wrapped_primitive_records_failsoft_failure(make_context, tmp_path, caplog):
     # Most primitives are fail-soft — on failure they RETURN a failure-shaped
     # dict instead of raising. wrap_primitive must mark that as an `error`
@@ -162,6 +180,27 @@ def test_propose_improvements_emits_candidate_proposed_per_item(make_context, tm
     assert ctx.propose_round == 1
 
 
+def test_propose_improvements_does_not_emit_blank_candidate_cards(make_context, tmp_path):
+    ctx = make_context(tmp_path)
+
+    def propose_improvements(*, ctx):
+        return [
+            {"path_id": "", "title": "candidate", "category": "", "hypothesis": "", "rationale": ""},
+            {"path_id": "p1", "title": "Data Loader", "category": "data",
+             "hypothesis": "Fix loader.", "rationale": "Dataset path failed."},
+        ]
+
+    tools = build_custom_tools(
+        ctx,
+        registry={"propose_improvements": propose_improvements},
+        descriptions={"propose_improvements": "proposes"},
+    )
+    tools["propose_improvements"]["tool"]()
+    proposed = [e for e in _read_events(ctx) if e.get("event") == "candidate_proposed"]
+    assert len(proposed) == 1
+    assert proposed[0]["candidate"]["id"] == "p1"
+
+
 def test_verify_against_rubric_emits_rubric_score_on_success(make_context, tmp_path):
     """wrap_primitive emits rubric_score after a successful verify_against_rubric."""
     ctx = make_context(tmp_path, llm_responses=[_RUBRIC_SCORES])
@@ -246,6 +285,59 @@ def test_wrap_primitive_does_not_coerce_dict_to_str(make_context, tmp_path):
     assert completion[0].get("coerced") is False, (
         f"coerced must be False when dict passed where str expected, got: {completion[0]}"
     )
+
+
+def test_run_experiment_wrapper_blocks_error_dict_without_calling_primitive(make_context, tmp_path):
+    ctx = make_context(tmp_path)
+    called = {"value": False}
+
+    def run_experiment(code_path, env_id, *, ctx):
+        called["value"] = True
+        return {"success": True, "metrics": {"x": 1}}
+
+    tools = build_custom_tools(
+        ctx,
+        registry={"run_experiment": run_experiment},
+        descriptions={"run_experiment": "runs code"},
+    )
+
+    result = tools["run_experiment"]["tool"](
+        {"ok": False, "error": "sdk_pre_emit_stall"}, "image:tag"
+    )
+
+    assert called["value"] is False
+    assert result["success"] is False
+    assert result["failure_class"] == "contract_guard"
+    events = _read_events(ctx)
+    assert not any(e.get("event") == "experiment_completed" for e in events)
+    failed_reports = [e for e in events if e.get("event") == "worker_report_failed"]
+    assert failed_reports
+    assert failed_reports[-1]["error"]
+    assert failed_reports[-1]["failure_class"] == "contract_guard"
+    assert failed_reports[-1]["source"] == "contract_guard"
+
+
+def test_run_experiment_wrapper_unwraps_ok_envelope(make_context, tmp_path):
+    ctx = make_context(tmp_path)
+    seen = {}
+
+    def run_experiment(code_path, env_id, *, ctx):
+        seen["code_path"] = code_path
+        return {"success": True, "metrics": {"x": 1}}
+
+    tools = build_custom_tools(
+        ctx,
+        registry={"run_experiment": run_experiment},
+        descriptions={"run_experiment": "runs code"},
+    )
+
+    result = tools["run_experiment"]["tool"](
+        {"ok": True, "code_path": "runs/prj/code", "files": ["commands.json"]},
+        "image:tag",
+    )
+
+    assert result["success"] is True
+    assert seen["code_path"] == "runs/prj/code"
 
 
 # ---------------------------------------------------------------------------

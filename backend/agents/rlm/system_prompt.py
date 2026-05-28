@@ -228,6 +228,12 @@ FORCED-ITERATION POLICY:
 
 _ITERATION_DISCIPLINE = """\
 ITERATION DISCIPLINE — one run_experiment per iteration:
+  Never pass an `implement_baseline` error dict to `run_experiment`. Only call
+  `run_experiment` when the code path is either a non-empty string path or an
+  envelope with `ok=True` and a non-empty `code_path`. If `implement_baseline`
+  returns `ok=False`, call `propose_improvements` or retry `implement_baseline`
+  with repair_context; do not spend a run_experiment primitive on that failure.
+
   After every `run_experiment` call, *return from the current iteration*.
   Do not write a follow-up propose_improvements -> implement_baseline ->
   run_experiment -> verify_against_rubric chain in the same REPL turn -- let
