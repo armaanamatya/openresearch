@@ -17,6 +17,12 @@ def test_max_pod_seconds_defaults_to_none():
     assert args.max_pod_seconds is None
 
 
+def test_sanity_flag_is_recognized():
+    parser = _build_parser()
+    args = parser.parse_args(["reproduce", "2512.24601", "--sanity"])
+    assert args.sanity is True
+
+
 def test_resolve_max_pod_seconds_prefers_cli_over_env(monkeypatch):
     monkeypatch.setenv("REPROLAB_MAX_POD_SECONDS", "3600")
     assert _resolve_max_pod_seconds(1800.0) == 1800.0

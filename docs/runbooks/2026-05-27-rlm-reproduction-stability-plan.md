@@ -391,3 +391,142 @@ Expected result for the smoke is not a good rubric score. Expected result is:
 - UI can open the run,
 - worker-report errors are populated if anything fails.
 
+## 2026-05-27 Implementation Verification Notes
+
+Applied P0/P1 hardening in the working tree:
+
+- `claude-agent-sdk` dependency floor was raised from `>=0.1.80` to
+  `>=0.2.87`; the local venv had `0.2.82`, while PyPI lists `0.2.87` as a
+  newer release. Artifact harvesting remains as the local fallback if SDK
+  cleanup still fails.
+- `implement_baseline` now returns a normalized envelope:
+  `{"ok": true, "code_path": ..., "files": [...]}` or
+  `{"ok": false, "error_code": ..., "error": ..., "repairable": ...}`.
+- SDK failure paths harvest usable `code/` artifacts when `commands.json` and a
+  runnable source file exist; incomplete artifacts return precise
+  `missing_files`.
+- `run_experiment` accepts a valid `ok=true` envelope, but contract-guards
+  invalid code paths without emitting `experiment_completed` or spawning a pod.
+- The primitive wrapper blocks `run_experiment` before calling the primitive
+  body when the root passes an error dict.
+- `worker_report_failed` now includes primitive error details:
+  `failure_class`, `contract_violations`, `repairable`, and `source`.
+- `demo_status.json` now carries explicit `process_status` and `verdict` axes.
+- `/runs?include_unregistered=true` is explicit; filesystem-backed CLI runs
+  with `demo_status.json` appear in `/runs` and open via `/runs/{project_id}`.
+- `--sanity` now runs a deterministic tiny sandbox smoke and skips full RLM and
+  the code-writing sub-agent.
+- Final-report calibration recompute is now opt-in via
+  `REPROLAB_UPDATE_CALIBRATION=true`, preventing smoke/pre-flight-only runs from
+  overwriting `data/calibration.json`.
+- `propose_improvements` now rejects blank candidate records, and the wrapper
+  also filters blank candidate cards before emitting UI events.
+- Primitive wrappers now emit `primitive_resource` start/end events with
+  best-effort process RSS.
+- `run_experiment` sandbox execution now emits `sandbox_resource_limits` and
+  returns `resource_limits`, `exit_code`, and `cause_kind` for persistence and
+  diagnosis.
+- OOM-like exits and runtime causes now classify as `oom_killed`; exit `-9`
+  and `137` still trigger the GPU escalation detector.
+- Docker/local-container smoke runs should keep the memory floor at the
+  `SandboxConfig.memory_limit` default (`4g`) or explicitly pass
+  `--sandbox-memory` for papers with larger data/model footprints. Treat
+  `oom_killed` as a sizing failure first, not a generic code failure.
+
+Verification:
+
+```bash
+python -m pytest \
+  tests/test_worker_reports.py \
+  tests/rlm/test_sse_bridge.py \
+  tests/rlm/test_implement_baseline.py \
+  tests/rlm/test_run_experiment.py \
+  tests/rlm/test_binding.py \
+  tests/rlm/test_primitive_cache_validators.py \
+  tests/test_live_runs_listing.py \
+  tests/test_cli_sanity_mode.py \
+  tests/test_cli_budget_flags.py \
+  tests/rlm/test_run.py
+```
+
+Result after the calibration opt-in test was added: `200 passed`.
+
+Additional P2 hardening checks:
+
+```bash
+python -m pytest \
+  tests/rlm/test_failure_classifier.py \
+  tests/rlm/test_cuda_oom_detection.py \
+  tests/rlm/test_sandbox_retry.py \
+  tests/rlm/test_binding.py
+```
+
+Result: `63 passed`.
+
+Broad regression after P2 candidate/OOM/resource instrumentation:
+
+```bash
+python -m pytest \
+  tests/test_worker_reports.py \
+  tests/rlm/test_sse_bridge.py \
+  tests/rlm/test_implement_baseline.py \
+  tests/rlm/test_run_experiment.py \
+  tests/rlm/test_binding.py \
+  tests/rlm/test_primitive_cache_validators.py \
+  tests/test_live_runs_listing.py \
+  tests/test_cli_sanity_mode.py \
+  tests/test_cli_budget_flags.py \
+  tests/rlm/test_run.py \
+  tests/rlm/test_report.py \
+  tests/rlm/test_propose_improvements.py \
+  tests/rlm/test_failure_classifier.py \
+  tests/rlm/test_cuda_oom_detection.py \
+  tests/rlm/test_sandbox_retry.py
+```
+
+Result: `245 passed`.
+
+The original verification command could not run exactly because these files are
+not present on this branch:
+
+- `tests/rlm/test_run_state.py`
+- `tests/test_mine_traces.py`
+
+Cheap RunPod sanity smoke:
+
+```bash
+python -m backend.cli reproduce 2512.24601 \
+  --model claude-oauth \
+  --sandbox runpod \
+  --sanity \
+  --max-run-gpu-usd 1.0 \
+  --max-pod-seconds 900 \
+  --max-wall-clock 1800
+```
+
+First attempt failed before any sandbox or pod work because the new sanity
+helper incorrectly called `project_id_for()` with a raw string. Fixed by using a
+local hash-derived `prj_...` id.
+
+Second attempt succeeded:
+
+| Field | Value |
+|---|---|
+| Project | `prj_4c0368d9d5194b41` |
+| Status | `completed` |
+| Process status | `completed` |
+| Verdict | `reproduced` for the smoke template |
+| Metrics | `{"sanity_ok": 1.0}` |
+| Primitive provider | `sanity-template` |
+
+Observed issue: the sanity path initially did not create `cost_ledger.jsonl`
+because it makes no LLM calls. Fixed by touching an empty ledger file at run
+start so monitors have a stable file to tail.
+
+Pod cleanup check:
+
+- `runpodctl` is not installed on this machine.
+- Built-in dry-run sweeper command
+  `python -m backend.services.runtime.pod_sweeper --dry-run --max-age-seconds 0`
+  reported `0/0 swept`, so no active RunPod pods were visible to this account.
+

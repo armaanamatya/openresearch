@@ -348,15 +348,18 @@ class TestWriteDemoStatus:
         assert state.projectId == tmp_path.name
         assert state.outputDir == str(tmp_path)
         assert state.startedAt is not None
+        assert status["process_status"] == "running"
 
     def test_terminal_write_merges_and_preserves_started_at(self, tmp_path):
         from backend.services.events.live_runs import LiveRunState
 
         _write_demo_status(tmp_path, "running")
         started = self._load(tmp_path)["startedAt"]
-        _write_demo_status(tmp_path, "completed")
+        _write_demo_status(tmp_path, "completed", process_status="completed", verdict="failed")
         status = self._load(tmp_path)
         assert status["status"] == "completed"
+        assert status["process_status"] == "completed"
+        assert status["verdict"] == "failed"
         assert status["startedAt"] == started   # merged, not lost
         assert status["completedAt"] is not None
         LiveRunState(**status)  # still valid
@@ -365,6 +368,8 @@ class TestWriteDemoStatus:
         _write_demo_status(tmp_path, "failed", error="watchdog timeout")
         status = self._load(tmp_path)
         assert status["status"] == "failed"
+        assert status["process_status"] == "completed"
+        assert status["verdict"] == "failed"
         assert status["error"] == "watchdog timeout"
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import json as _json
 import logging
+import sys
 import threading
 from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable
@@ -164,6 +165,126 @@ def _result_summary(result: Any) -> str:
     return type(result).__name__
 
 
+def _process_rss_bytes() -> int | None:
+    """Best-effort current process RSS in bytes, without adding a dependency."""
+    try:
+        import resource
+        rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if rss <= 0:
+            return None
+        if sys.platform == "darwin":
+            return rss
+        return rss * 1024
+    except Exception:  # noqa: BLE001
+        pass
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+                handle, ctypes.byref(counters), counters.cb
+            )
+            if ok:
+                return int(counters.WorkingSetSize)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _emit_primitive_resource(ctx: RunContext, *, primitive: str, boundary: str) -> None:
+    """Emit RSS at a primitive boundary as a dashboard_event."""
+    try:
+        rss = _process_rss_bytes()
+        payload: dict[str, Any] = {
+            "primitive": primitive,
+            "boundary": boundary,
+        }
+        if rss is not None:
+            payload["rss_bytes"] = rss
+            payload["rss_mb"] = round(rss / (1024 * 1024), 2)
+        emit = getattr(getattr(ctx, "dashboard", None), "emit", None)
+        if callable(emit):
+            emit("primitive_resource", payload)
+    except Exception:  # noqa: BLE001
+        logger.exception("primitive %s: resource snapshot emit failed", primitive)
+
+
+def _run_experiment_contract_guard(args: tuple[Any, ...]) -> tuple[tuple[Any, ...], dict[str, Any] | None]:
+    """Unwrap valid implement_baseline envelopes and reject invalid code_path args."""
+    if not args:
+        return args, {
+            "success": False,
+            "metrics": {},
+            "failure_class": "contract_guard",
+            "source": "contract_guard",
+            "error": "run_experiment: missing code_path argument",
+            "contract_violations": [{
+                "area": "Experiment execution and reproducibility",
+                "detail": "code_path argument was omitted",
+                "hint": "Call run_experiment only with a string path or an implement_baseline ok=true envelope.",
+            }],
+        }
+    first = args[0]
+    if isinstance(first, dict) and first.get("ok") is True:
+        code_path = str(first.get("code_path") or "")
+        if code_path.strip():
+            return (code_path, *args[1:]), None
+    if isinstance(first, str) and first.strip():
+        return args, None
+    return args, {
+        "success": False,
+        "metrics": {},
+        "failure_class": "contract_guard",
+        "source": "contract_guard",
+        "error": (
+            "run_experiment: code_path must be a non-empty string path or an "
+            f"implement_baseline ok=true envelope, got {type(first).__name__}"
+        ),
+        "contract_violations": [{
+            "area": "Experiment execution and reproducibility",
+            "detail": f"code_path was {type(first).__name__!r}, not a usable baseline path",
+            "hint": (
+                "Never forward an implement_baseline ok=false/error dict to run_experiment. "
+                "Call propose_improvements or retry implement_baseline instead."
+            ),
+        }],
+    }
+
+
+def _primitive_failure_details(result: Any) -> tuple[str | None, dict[str, Any]]:
+    """Extract worker-report-safe failure fields from a primitive result."""
+    if not isinstance(result, dict):
+        return None, {}
+    error = result.get("error")
+    if error is None and result.get("error_code"):
+        error = result.get("error_code")
+    if error is None and result.get("success") is False:
+        error = "primitive returned success=false"
+    detail: dict[str, Any] = {}
+    for key in ("failure_class", "contract_violations", "repairable", "source", "error_code", "missing_files"):
+        if key in result:
+            detail[key] = result.get(key)
+    return (str(error) if error is not None else None), detail
+
+
 def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callable[..., Any]:
     """Close `fn` over `ctx`, adding primitive_call emission and a cost-ledger row.
 
@@ -232,6 +353,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 "cache_read_input_tokens": 0,
                 "reasoning_tokens": 0,
             }
+        _emit_primitive_resource(ctx, primitive=name, boundary="start")
         ctx.dashboard.primitive_call(name, "start", args_summary=_summarize(args, kwargs))
 
         # Open a worker report for key primitives
@@ -280,51 +402,58 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 # interrupt a thread mid-execution, but a daemon thread is
                 # silently abandoned when the main thread moves on — it won't
                 # hold up the interpreter or the test runner.
-                _prim_future: Future = Future()
+                guard_result = None
+                if name == "run_experiment":
+                    args, guard_result = _run_experiment_contract_guard(args)
 
-                def _runner() -> None:
-                    try:
-                        _prim_future.set_result(fn(*args, **{**kwargs, "ctx": ctx}))
-                    except Exception as _e:  # noqa: BLE001
-                        _prim_future.set_exception(_e)
+                if guard_result is not None:
+                    result = guard_result
+                else:
+                    _prim_future: Future = Future()
 
-                _t = threading.Thread(
-                    target=_runner,
-                    name=f"prim-{name}",
-                    daemon=True,
-                )
-                _t.start()
-                try:
-                    result = _prim_future.result(timeout=_timeout_s)
-                except FuturesTimeoutError:
-                    logger.warning(
-                        "primitive %s timed out after %ss — marking retryable",
-                        name, _timeout_s,
+                    def _runner() -> None:
+                        try:
+                            _prim_future.set_result(fn(*args, **{**kwargs, "ctx": ctx}))
+                        except Exception as _e:  # noqa: BLE001
+                            _prim_future.set_exception(_e)
+
+                    _t = threading.Thread(
+                        target=_runner,
+                        name=f"prim-{name}",
+                        daemon=True,
                     )
-                    # Emit a run_warning SSE event so the UI and cost-ledger
-                    # reflect the hung primitive.
+                    _t.start()
                     try:
-                        from backend.agents.rlm.primitives import (
-                            _emit_dashboard_event as _emit_evt,
+                        result = _prim_future.result(timeout=_timeout_s)
+                    except FuturesTimeoutError:
+                        logger.warning(
+                            "primitive %s timed out after %ss — marking retryable",
+                            name, _timeout_s,
                         )
-                        _emit_evt(ctx, event_type="run_warning", payload={
-                            "code": "primitive_timeout",
+                        # Emit a run_warning SSE event so the UI and cost-ledger
+                        # reflect the hung primitive.
+                        try:
+                            from backend.agents.rlm.primitives import (
+                                _emit_dashboard_event as _emit_evt,
+                            )
+                            _emit_evt(ctx, event_type="run_warning", payload={
+                                "code": "primitive_timeout",
+                                "primitive": name,
+                                "wall_clock_s": _timeout_s,
+                                "message": (
+                                    f"primitive `{name}` exceeded its wall-clock "
+                                    f"cap of {_timeout_s}s and was interrupted. "
+                                    f"The orchestrator can retry this primitive."
+                                ),
+                            })
+                        except Exception:  # noqa: BLE001 — emit MUST NOT break the run
+                            pass
+                        result = {
+                            "outcome": "retryable",
+                            "error": "primitive_hung",
                             "primitive": name,
                             "wall_clock_s": _timeout_s,
-                            "message": (
-                                f"primitive `{name}` exceeded its wall-clock "
-                                f"cap of {_timeout_s}s and was interrupted. "
-                                f"The orchestrator can retry this primitive."
-                            ),
-                        })
-                    except Exception:  # noqa: BLE001 — emit MUST NOT break the run
-                        pass
-                    result = {
-                        "outcome": "retryable",
-                        "error": "primitive_hung",
-                        "primitive": name,
-                        "wall_clock_s": _timeout_s,
-                    }
+                        }
             except Exception as exc:
                 # Value-free event: an exception MESSAGE can carry raw LLM output,
                 # paper text or paths, and result_summary is streamed to the UI.
@@ -355,6 +484,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 except Exception:  # noqa: BLE001 — defensive; pydantic import / .errors() must not break the wrapper
                     pass
                 ctx.dashboard.primitive_call(name, "error", result_summary=summary)
+                _emit_primitive_resource(ctx, primitive=name, boundary="end")
                 _ledger()
                 logger.warning("primitive %s raised %s", name, type(exc).__name__)
                 raise
@@ -371,6 +501,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 result_summary=_result_summary(result),
                 coerced=coerced,
             )
+            _emit_primitive_resource(ctx, primitive=name, boundary="end")
             _ledger()
             if failed:
                 logger.warning(
@@ -400,10 +531,27 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     except NameError:
                         is_failed = True
                     final_status = "failed" if is_failed else "completed"
+                    _wr_error = None
+                    _wr_details: dict[str, Any] = {}
+                    try:
+                        _wr_error, _wr_details = _primitive_failure_details(_wr_result)
+                    except NameError:
+                        _wr_error = "primitive raised before returning a result"
+                        _wr_details = {"source": "exception"}
+                    if _wr_details:
+                        _wr_report.update(_wr_details)
                     finalize_worker_report(
                         ctx.project_dir, _wr_report,
                         status=final_status,
                         duration_ms=elapsed,
+                        error=_wr_error if is_failed else None,
+                        errors=[{
+                            "message": _wr_error,
+                            "source": _wr_details.get("source") or "primitive_result",
+                            "recoverable": bool(_wr_details.get("repairable", False)),
+                            "failure_class": _wr_details.get("failure_class"),
+                            "contract_violations": _wr_details.get("contract_violations"),
+                        }] if is_failed and _wr_error else None,
                     )
                     if is_failed:
                         _emit_extra(build_worker_report_failed_event(_wr_report))
@@ -481,6 +629,11 @@ def _emit_supplemental(
                 "description": hyp.get("hypothesis", ""),
                 "reasoning": hyp.get("rationale", ""),
             }
+            if any(
+                not isinstance(candidate.get(key), str) or not candidate.get(key, "").strip()
+                for key in ("id", "category", "description", "reasoning")
+            ):
+                continue
             emit_extra(build_candidate_proposed_event(
                 iteration=ctx.current_iteration,
                 round=ctx.propose_round,

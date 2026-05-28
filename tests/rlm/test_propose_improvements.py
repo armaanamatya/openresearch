@@ -35,6 +35,20 @@ def test_propose_improvements_drops_malformed_items(make_context, tmp_path):
     assert result[0]["category"] == "optimizer"
 
 
+def test_propose_improvements_drops_blank_candidate_cards(make_context, tmp_path):
+    blank = json.dumps({"hypotheses": [
+        {"path_id": "", "hypothesis": "", "rationale": "", "expected_outcome": "", "category": "", "title": "candidate"},
+        {"path_id": "p1", "hypothesis": "Fix the data loader.",
+         "rationale": "The failed run shows the dataset path is wrong.",
+         "expected_outcome": "The smoke command reaches training.",
+         "category": "data"},
+    ]})
+    ctx = make_context(tmp_path, llm_responses=[blank])
+    result = propose_improvements({"success": False}, {"areas": []}, ctx=ctx)
+    assert len(result) == 1
+    assert result[0]["path_id"] == "p1"
+
+
 def test_propose_improvements_caps_result_at_k(make_context, tmp_path):
     three = json.dumps({"hypotheses": [
         {"path_id": f"p{i}", "hypothesis": "h", "rationale": "r",

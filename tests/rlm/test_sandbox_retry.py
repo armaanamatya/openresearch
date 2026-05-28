@@ -16,6 +16,7 @@ correct timing by inspecting the sleep arguments.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -139,9 +140,21 @@ def test_retry_succeeds_on_second_attempt(tmp_path, monkeypatch):
             ))
 
     assert result["success"] is True
+    assert result["resource_limits"]["memory_limit"] == "4g"
+    assert result["exit_code"] == 0
     # One sleep (after first failure, before second attempt).
     assert len(sleep_calls) == 1
     assert sleep_calls[0] == pytest.approx(_BACKOFF_BASE_S, rel=0.01)
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "dashboard_events.jsonl").read_text().splitlines()
+        if line
+    ]
+    resource_events = [
+        e for e in events
+        if e.get("event") == "sandbox_resource_limits"
+    ]
+    assert resource_events[-1]["data"]["memory_limit"] == "4g"
 
 
 # ---------------------------------------------------------------------------

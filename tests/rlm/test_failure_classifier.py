@@ -75,6 +75,17 @@ def test_cuda_oom() -> None:
     assert "batch" in fix.lower() or "vram" in fix.lower()
 
 
+def test_oom_killed_from_exit_code_minus_9() -> None:
+    klass, fix = classify_failure({"success": False, "exit_code": -9})
+    assert klass == "oom_killed"
+    assert "memory" in fix.lower()
+
+
+def test_oom_killed_from_runtime_cause_kind() -> None:
+    klass, _ = classify_failure({"success": False, "cause_kind": "oom_killed"})
+    assert klass == "oom_killed"
+
+
 def test_runpod_capacity() -> None:
     result = {
         "success": False,

@@ -82,9 +82,19 @@ class RootModel:
     non-standard key (e.g. Featherless uses ``FEATHERLESS_API_KEY`` rather
     than ``OPENAI_API_KEY`` even though the backend type is ``"openai"``).
 
-    Applies to BOTH the root and sub-call backends — correct only when both
-    run on the same host (true for every current entry). A model mixing
-    providers across root and sub-call would need a separate per-backend key.
+    Applies to the **root** backend, and also to the sub-call backend when
+    ``sub_api_key_env`` is left unset. A model mixing providers across root
+    and sub-call should set ``sub_api_key_env`` explicitly (see ``local-qwen``).
+    """
+
+    sub_api_key_env: str | None = None
+    """Optional override env var for the sub-call backend's API key.
+
+    When ``None``, sub-call credential resolution falls back to ``api_key_env``
+    (and then the backend-type default in ``_BACKEND_ENV_KEY``). Set this only
+    when root and sub-call use different providers — e.g. ``local-qwen`` runs
+    its root against Ollama (``OLLAMA_API_KEY``) but its sub-call through a
+    local Anthropic-shaped proxy (``ANTHROPIC_API_KEY``).
     """
 
 
@@ -137,6 +147,44 @@ def register_featherless_context_limits() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Local Ollama — OpenAI-compatible inference on the dev box for Qwen3-Coder
+# ---------------------------------------------------------------------------
+
+# Ollama's OpenAI-compatible endpoint defaults to localhost:11434/v1; override
+# with REPROLAB_OLLAMA_BASE_URL if Ollama is bound elsewhere (e.g. WSL bridge).
+OLLAMA_BASE_URL_DEFAULT = "http://localhost:11434/v1"
+OLLAMA_ROOT_MODEL_DEFAULT = "qwen3.5:9b"
+
+# Anthropic-shaped local proxy URL — a LiteLLM/claude-code-router instance that
+# translates Anthropic Messages → Ollama OpenAI completions. The
+# ``claude-agent-sdk`` honors ``ANTHROPIC_BASE_URL`` natively, so setting this
+# env var routes every sub-agent call through the proxy. Default points at a
+# local LiteLLM started with scripts/localqwen/litellm_config.yaml.
+LOCAL_QWEN_ANTHROPIC_PROXY_DEFAULT = "http://localhost:4000"
+
+# rlm's Qwen-native context window is 256K, but Ollama's effective input limit
+# is gated by num_ctx in the Modelfile (default 32768 for qwen3-coder:30b).
+# Surfaced here so registration can teach rlm the real cap and compaction
+# triggers in time. Override with REPROLAB_OLLAMA_CONTEXT_LIMIT if a custom
+# Modelfile raises num_ctx.
+OLLAMA_QWEN_CONTEXT_LIMIT_DEFAULT = 32_768
+
+
+def register_ollama_context_limits(model_name: str, ctx_limit: int) -> None:
+    """Teach the rlm library the Ollama num_ctx for a local-served model.
+
+    Same pattern as ``register_featherless_context_limits``: without this,
+    compaction never triggers, and the root's accumulated context eventually
+    400s ollama with ``context length exceeded`` mid-run.
+    """
+    try:
+        from rlm.utils.token_utils import MODEL_CONTEXT_LIMITS
+    except ImportError:  # pragma: no cover — rlm is always installed in practice
+        return
+    MODEL_CONTEXT_LIMITS[model_name] = ctx_limit
+
+
+# ---------------------------------------------------------------------------
 # Registry builder — deferred so env vars are read at call time, not import time
 # ---------------------------------------------------------------------------
 
@@ -152,6 +200,15 @@ def _build_registry() -> dict[str, RootModel]:
     qwen_sub_slug = os.environ.get(_ENV_SLUG_QWEN_SUB, _DEFAULT_QWEN_SUB_SLUG)
     kimi_root_slug = os.environ.get(_ENV_SLUG_KIMI_ROOT, _DEFAULT_KIMI_ROOT_SLUG)
     kimi_sub_slug = os.environ.get(_ENV_SLUG_KIMI_SUB, _DEFAULT_KIMI_SUB_SLUG)
+
+    # Ollama (local) — override base_url and model via env to support custom
+    # ports / Modelfile variants without code changes.
+    ollama_base_url = os.environ.get("REPROLAB_OLLAMA_BASE_URL", OLLAMA_BASE_URL_DEFAULT)
+    ollama_root_model = os.environ.get("REPROLAB_OLLAMA_ROOT_MODEL", OLLAMA_ROOT_MODEL_DEFAULT)
+    ollama_ctx_limit = int(
+        os.environ.get("REPROLAB_OLLAMA_CONTEXT_LIMIT", str(OLLAMA_QWEN_CONTEXT_LIMIT_DEFAULT))
+    )
+    register_ollama_context_limits(ollama_root_model, ollama_ctx_limit)
 
     return {
         "gpt-5": RootModel(
@@ -209,6 +266,41 @@ def _build_registry() -> dict[str, RootModel]:
             prompt_addendum=_QWEN_PROMPT_ADDENDUM,
             paper_validated=True,
             api_key_env="FEATHERLESS_API_KEY",
+        ),
+        "local-qwen": RootModel(
+            key="local-qwen",
+            # Root: OpenAI-compatible HTTP to local Ollama (Qwen3-Coder).
+            rlm_backend="openai",
+            backend_kwargs={
+                "model_name": ollama_root_model,
+                "base_url": ollama_base_url,
+            },
+            # Sub-call (depth-1 LLM calls and the claude-agent-sdk surface for
+            # implement_baseline) — routed through a local Anthropic-shaped
+            # proxy (LiteLLM with scripts/localqwen/litellm_config.yaml) that
+            # translates Messages API → Ollama. The proxy URL is injected
+            # directly into sub_backend_kwargs so it reaches the rlm
+            # AnthropicClient regardless of os.environ state. The SDK also
+            # honors ANTHROPIC_BASE_URL natively for the claude-agent-sdk path.
+            # ``model_name`` here is the *Anthropic* name the proxy keys on
+            # (the proxy config maps it to a Qwen model).
+            sub_backend="anthropic",
+            sub_backend_kwargs={
+                "model_name": "claude-haiku-4-5-20251001",
+                "base_url": os.environ.get(
+                    "REPROLAB_ANTHROPIC_PROXY_URL",
+                    os.environ.get("ANTHROPIC_BASE_URL", LOCAL_QWEN_ANTHROPIC_PROXY_DEFAULT),
+                ),
+            },
+            prompt_addendum=_QWEN_PROMPT_ADDENDUM,
+            paper_validated=False,
+            # OLLAMA_API_KEY is a dummy placeholder — Ollama accepts any
+            # non-empty Bearer; the user sets it to e.g. "ollama" in .env so
+            # _inject_api_key has something to forward. The Anthropic-proxy
+            # path reads ANTHROPIC_API_KEY (also a dummy unless the proxy
+            # enforces auth).
+            api_key_env="OLLAMA_API_KEY",
+            sub_api_key_env="ANTHROPIC_API_KEY",
         ),
         "azure-gpt-4o": RootModel(
             key="azure-gpt-4o",
@@ -268,6 +360,7 @@ _MODEL_LABELS: dict[str, str] = {
     "claude": "Claude API",
     "claude-oauth": "Claude OAuth",
     "qwen3-coder-featherless": "Qwen3-Coder (Featherless)",
+    "local-qwen": "Qwen3-Coder (local Ollama + Anthropic proxy)",
     "azure-gpt-4o": "Azure GPT-4o",
 }
 
@@ -373,7 +466,7 @@ def _model_missing_credentials(entry: RootModel) -> list[str]:
     required: list[str] = []
     for backend, env_var in (
         (entry.rlm_backend, _env_var_for(entry.rlm_backend, entry.api_key_env)),
-        (entry.sub_backend, _env_var_for(entry.sub_backend, entry.api_key_env)),
+        (entry.sub_backend, _env_var_for(entry.sub_backend, entry.sub_api_key_env or entry.api_key_env)),
     ):
         if env_var:
             required.append(env_var)
@@ -534,7 +627,7 @@ def resolve_root_model(name: str | None) -> RootModel:
     # api_key_env on the entry wins over the backend-type default (so
     # Featherless uses FEATHERLESS_API_KEY even though its backend is "openai").
     root_env = _env_var_for(entry.rlm_backend, entry.api_key_env)
-    sub_env = _env_var_for(entry.sub_backend, entry.api_key_env)
+    sub_env = _env_var_for(entry.sub_backend, entry.sub_api_key_env or entry.api_key_env)
 
     # Fail fast when a required API key is missing — catches both root and sub-call
     # backends.  A backend not in _BACKEND_ENV_KEY (and no explicit api_key_env)

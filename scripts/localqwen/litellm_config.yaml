@@ -1,0 +1,58 @@
+# LiteLLM proxy config — translates Anthropic Messages API → Ollama OpenAI API.
+#
+# Purpose: claude-agent-sdk (used by ReproLab's sub-agents) only speaks the
+# Anthropic Messages API. Pointing ANTHROPIC_BASE_URL at a LiteLLM proxy with
+# this config makes implement_baseline + every other claude-agent-sdk call run
+# against local Ollama (Qwen2.5-Coder-14B) with no SDK changes.
+#
+# Model choice: qwen3-coder:30b (18 GiB Q4_K_M MoE) cannot load on RTX 5060 Ti 16 GB —
+# the MoE architecture prevents partial GPU offload, and the full model exceeds
+# available VRAM. qwen3.5:9b (~8.6 GiB Q4_K_M, dense) fits comfortably
+# and is purpose-built for coding tasks.
+#
+# Start with:
+#   cd scripts/localqwen && docker compose up -d
+#
+# Smoke test:
+#   curl -s http://localhost:4000/v1/messages \
+#     -H 'x-api-key: sk-localqwen-proxy' \
+#     -H 'anthropic-version: 2023-06-01' \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"claude-haiku-4-5-20251001","max_tokens":64,"messages":[{"role":"user","content":"say pong"}]}'
+#
+# Pull the model with: `ollama pull qwen3.5:9b`
+
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: ollama_chat/qwen3.5:9b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 16384
+      think: false
+
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: ollama_chat/qwen3.5:9b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 16384
+      think: false
+
+  # Catch-all so any other claude-* name the SDK might request still resolves.
+  - model_name: claude-*
+    litellm_params:
+      model: ollama_chat/qwen3.5:9b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 16384
+      think: false
+
+litellm_settings:
+  # Drop unsupported Anthropic-only params silently rather than 400-ing.
+  drop_params: true
+  # Surface Ollama errors verbatim so debugging stays local.
+  set_verbose: false
+
+general_settings:
+  # If you want master-key auth on the proxy, uncomment and set the same value
+  # in .env as ANTHROPIC_API_KEY. With auth disabled, any Bearer works.
+  # master_key: sk-localqwen-proxy
+  telemetry: false

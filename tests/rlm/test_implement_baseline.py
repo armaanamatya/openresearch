@@ -8,22 +8,36 @@ class _FakeBaselineResult:
     commands_to_run = ["python train.py", "python eval.py"]
 
 
+def _write_minimal_code(project_id, runs_root):
+    code_dir = runs_root / project_id / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "train.py").write_text("print('ok')\n", encoding="utf-8")
+
+
+def _assert_ok_envelope(result, tmp_path):
+    assert result["ok"] is True
+    assert result["code_path"] == str(tmp_path / "test_proj" / "code")
+    assert "commands.json" in result["files"]
+    assert "train.py" in result["files"]
+
+
 def test_implement_baseline_writes_commands_manifest(make_context, tmp_path, monkeypatch):
     ctx = make_context(tmp_path)
     ctx.runtime = object()
 
     async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                 artifact_index, **kw):
+        _write_minimal_code(project_id, runs_root)
         return _FakeBaselineResult()
 
     monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
-    code_path = implement_baseline(
+    result = implement_baseline(
         {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
         ctx=ctx,
     )
     manifest = json.loads((tmp_path / "test_proj" / "code" / "commands.json").read_text())
     assert manifest == ["python train.py", "python eval.py"]
-    assert code_path.endswith("code")
+    _assert_ok_envelope(result, tmp_path)
 
 
 def test_implement_baseline_passes_agent_model_as_override(make_context, tmp_path, monkeypatch):
@@ -39,6 +53,7 @@ def test_implement_baseline_passes_agent_model_as_override(make_context, tmp_pat
     async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                 artifact_index, **kw):
         captured.update(kw)
+        _write_minimal_code(project_id, runs_root)
         return _FakeBaselineResult()
 
     monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -60,6 +75,7 @@ def test_implement_baseline_threads_repair_context(make_context, tmp_path, monke
     async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                 artifact_index, **kw):
         captured.update(kw)
+        _write_minimal_code(project_id, runs_root)
         return _FakeBaselineResult()
 
     monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -87,17 +103,100 @@ def test_implement_baseline_writes_manifest_beside_the_code(make_context, tmp_pa
 
     async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                 artifact_index, **kw):
+        _write_minimal_code(project_id, runs_root)
         return _FakeBaselineResult()
 
     monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
-    code_path = implement_baseline(
+    result = implement_baseline(
         {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
         ctx=ctx,
     )
     # ctx.project_id is "test_proj"; runs_root is tmp_path.
     assert (tmp_path / "test_proj" / "code" / "commands.json").exists()
     assert not (tmp_path / "elsewhere" / "code" / "commands.json").exists()
-    assert code_path == str(tmp_path / "test_proj" / "code")
+    _assert_ok_envelope(result, tmp_path)
+
+
+def test_implement_baseline_pre_emit_stall_returns_error_envelope(make_context, tmp_path, monkeypatch):
+    ctx = make_context(tmp_path)
+    ctx.runtime = object()
+
+    class _Future:
+        def result(self, timeout=None):
+            raise primitives.concurrent.futures.TimeoutError()
+
+    class _Pool:
+        def __init__(self, max_workers=1):
+            pass
+        def submit(self, *args, **kwargs):
+            if len(args) > 1 and hasattr(args[1], "close"):
+                args[1].close()
+            return _Future()
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(primitives.concurrent.futures, "ThreadPoolExecutor", _Pool)
+    monkeypatch.setattr(primitives, "_pre_emit_stall_s", lambda: -1.0)
+
+    result = implement_baseline(
+        {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
+        ctx=ctx,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "sdk_pre_emit_stall"
+    assert result["repairable"] is True
+    assert "commands.json" in result["missing_files"]
+
+
+def test_implement_baseline_harvests_usable_artifacts_after_sdk_failure(
+    make_context, tmp_path, monkeypatch
+):
+    ctx = make_context(tmp_path)
+    ctx.runtime = object()
+
+    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
+                                artifact_index, **kw):
+        code_dir = runs_root / project_id / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+        (code_dir / "train.py").write_text("print('ok')\n", encoding="utf-8")
+        (code_dir / "commands.json").write_text(json.dumps(["python train.py"]), encoding="utf-8")
+        raise RuntimeError("aclose(): asynchronous generator is already running")
+
+    monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
+
+    result = implement_baseline(
+        {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
+        ctx=ctx,
+    )
+
+    _assert_ok_envelope(result, tmp_path)
+
+
+def test_implement_baseline_reports_missing_artifacts_after_sdk_failure(
+    make_context, tmp_path, monkeypatch
+):
+    ctx = make_context(tmp_path)
+    ctx.runtime = object()
+
+    async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
+                                artifact_index, **kw):
+        code_dir = runs_root / project_id / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+        (code_dir / "train.py").write_text("print('ok')\n", encoding="utf-8")
+        raise RuntimeError("aclose(): asynchronous generator is already running")
+
+    monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
+
+    result = implement_baseline(
+        {"paper_claim_map": {}, "environment_spec": {}, "reproduction_contract": None},
+        ctx=ctx,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "sdk_failure_incomplete_artifacts"
+    assert "commands.json" in result["missing_files"]
+    assert "RuntimeError" in result["sdk_error"]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +227,7 @@ class TestImplementBaselineCache:
         async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                     artifact_index, **kw):
             call_count["n"] += 1
+            _write_minimal_code(project_id, runs_root)
             return _FakeBaselineResult()
 
         monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -143,7 +243,8 @@ class TestImplementBaselineCache:
         assert call_count["n"] == 1, (
             "Second identical call must hit cache, not invoke run_with_sdk"
         )
-        assert path1 == path2
+        assert path1["code_path"] == path2["code_path"]
+        assert path2["ok"] is True
 
     def test_cache_miss_when_code_dir_archived(self, make_context, tmp_path, monkeypatch):
         """Cache hit + missing code/commands.json → fall back to recompute.
@@ -159,6 +260,7 @@ class TestImplementBaselineCache:
         async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                     artifact_index, **kw):
             call_count["n"] += 1
+            _write_minimal_code(project_id, runs_root)
             return _FakeBaselineResult()
 
         monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -196,6 +298,7 @@ class TestImplementBaselineCache:
         async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                     artifact_index, **kw):
             call_count["n"] += 1
+            _write_minimal_code(project_id, runs_root)
             return _FakeBaselineResult()
 
         monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)
@@ -224,6 +327,7 @@ class TestImplementBaselineCache:
         async def fake_run_with_sdk(project_id, runs_root, pcm, env, contract,
                                     artifact_index, **kw):
             call_count["n"] += 1
+            _write_minimal_code(project_id, runs_root)
             return _FakeBaselineResult()
 
         monkeypatch.setattr(primitives, "_run_baseline_with_sdk", fake_run_with_sdk)

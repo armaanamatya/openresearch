@@ -1,0 +1,29 @@
+# Optional: run the LiteLLM proxy in a container instead of with `pip install`.
+#
+# Usage:
+#   cd scripts/localqwen
+#   docker compose up -d
+#   # ...point ReproLab at it:
+#   echo 'ANTHROPIC_BASE_URL=http://localhost:4000' >> ../../.env
+#   echo 'ANTHROPIC_API_KEY=sk-localqwen-proxy' >> ../../.env
+#
+# This expects Ollama running on the Windows host on port 11434.
+# host.docker.internal resolves to the host gateway on Docker Desktop.
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: localqwen-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health/liveness"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

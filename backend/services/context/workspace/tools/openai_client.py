@@ -29,6 +29,7 @@ class OpenAILlmClient:
         base_url: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 300.0,
+        extra_body: dict | None = None,
     ) -> None:
         from openai import OpenAI
 
@@ -43,6 +44,9 @@ class OpenAILlmClient:
         )
         self._model = model
         self._max_tokens = max_tokens
+        # extra_body is forwarded verbatim to chat.completions.create — used to
+        # pass provider-specific options (e.g. Ollama's {"options": {"num_ctx": N}}).
+        self._extra_body = extra_body or {}
 
     @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
@@ -54,6 +58,7 @@ class OpenAILlmClient:
             ],
             temperature=0,
             max_tokens=self._max_tokens,
+            extra_body=self._extra_body or None,
         )
         return resp.choices[0].message.content or ""
 

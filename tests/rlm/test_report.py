@@ -356,6 +356,22 @@ class TestWriteFinalReport:
         tmp_files = list(project_dir.glob("*.tmp"))
         assert tmp_files == [], f"Leftover tmp files: {tmp_files}"
 
+    def test_calibration_recompute_is_opt_in(self, tmp_path, monkeypatch):
+        """Writing a non-failed report must not rewrite global calibration by default."""
+        import backend.services.pricing.calibration as calibration
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        report = self._build_report()
+        monkeypatch.delenv("REPROLAB_UPDATE_CALIBRATION", raising=False)
+
+        def fail_recompute(*args, **kwargs):
+            raise AssertionError("calibration recompute should be opt-in")
+
+        monkeypatch.setattr(calibration, "recompute_calibration", fail_recompute)
+
+        write_final_report_rlm(report, project_dir)
+
     def test_failed_verdict_report_written(self, tmp_path):
         """A `failed` verdict report is written without error."""
         project_dir = tmp_path / "project"

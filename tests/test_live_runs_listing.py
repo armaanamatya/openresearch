@@ -91,6 +91,28 @@ def test_get_runs_skips_directories_without_demo_status(tmp_path: Path) -> None:
     assert [r["projectId"] for r in response.json()] == ["prj_with_status"]
 
 
+def test_get_runs_include_unregistered_returns_cli_filesystem_run(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    _write_status(runs_root, "prj_cli", {
+        "status": "completed",
+        "projectId": "prj_cli",
+        "outputDir": str(runs_root / "prj_cli"),
+        "runMode": "rlm",
+        "updatedAt": "2026-05-27T00:00:00Z",
+    })
+
+    service = FileLiveRunService(runs_root=runs_root)
+    client = TestClient(create_app(run_service=service))
+
+    response = client.get("/runs?include_unregistered=true")
+
+    assert response.status_code == 200
+    assert [r["projectId"] for r in response.json()] == ["prj_cli"]
+    detail = client.get("/runs/prj_cli")
+    assert detail.status_code == 200
+    assert detail.json()["projectId"] == "prj_cli"
+
+
 def test_get_runs_q_substring_match_on_source_label(tmp_path: Path) -> None:
     """q narrows results to runs whose sourceLabel contains the substring,
     case-insensitively. Runs without a sourceLabel are excluded."""

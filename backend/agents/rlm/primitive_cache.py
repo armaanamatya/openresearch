@@ -145,9 +145,18 @@ def _v_verify_against_rubric(r: dict) -> bool:
 
 
 def _v_implement_baseline(r: dict) -> bool:
-    """implement_baseline cache wraps str path as {_kind, value} OR stores an error dict."""
+    """implement_baseline cache stores an ok/error envelope or legacy path wrapper."""
     if not isinstance(r, dict):
         return False
+    if r.get("ok") is True:
+        return (
+            isinstance(r.get("code_path"), str)
+            and bool(r["code_path"].strip())
+            and isinstance(r.get("files"), list)
+            and "commands.json" in r["files"]
+        )
+    if r.get("ok") is False:
+        return bool(r.get("error")) and bool(r.get("error_code"))
     if r.get("_kind") == "path":
         return isinstance(r.get("value"), str) and len(r["value"]) > 0
     # Cached error dict (e.g. timeout). Reject empty/malformed errors so the

@@ -7,6 +7,10 @@ def test_detects_exit_code_137():
     assert _detect_cuda_oom(exit_code=137, stderr_tail="") is True
 
 
+def test_detects_exit_code_minus_9():
+    assert _detect_cuda_oom(exit_code=-9, stderr_tail="") is True
+
+
 def test_detects_pytorch_oom_substring():
     msg = "RuntimeError: CUDA out of memory. Tried to allocate 2.50 GiB ..."
     assert _detect_cuda_oom(exit_code=1, stderr_tail=msg) is True

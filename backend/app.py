@@ -671,7 +671,12 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         status: str | None = None,
         q: str | None = None,
         order_by: str = "updated_at",
+        include_unregistered: bool = True,
     ) -> list[dict]:
+        # FileLiveRunService is already filesystem-backed, so CLI-created runs
+        # with runs/<id>/demo_status.json are included by default. Keep the
+        # query flag explicit for callers/runbooks that ask for it.
+        _ = include_unregistered
         return await service.list_runs(
             limit=limit,
             status=status,

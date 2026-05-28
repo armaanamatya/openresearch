@@ -189,7 +189,24 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
             )
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         model = sub_bk.get("model_name") or bk.get("model_name", "")
-        return OpenAILlmClient(model=model, api_key=bk["api_key"], base_url=bk["base_url"]), model
+        # When the sub-backend has its own base_url (e.g. local-qwen routes root
+        # to Ollama but sub-calls to a LiteLLM proxy), use the sub-backend URL for
+        # primitive/rubric LLM calls. Falls back to the root endpoint (Featherless).
+        effective_base_url = sub_bk.get("base_url") or bk["base_url"]
+        effective_api_key = sub_bk.get("api_key") or bk["api_key"]
+        # Ollama (port 11434) ignores num_ctx unless explicitly passed via
+        # extra_body options — without it the model loads with its default
+        # context (often 2048), which truncates rubric-gen's 48k-char paper
+        # input and returns unparseable JSON every time.
+        ollama_extra_body: dict | None = None
+        if ":11434" in (effective_base_url or ""):
+            ollama_extra_body = {"options": {"num_ctx": 32768}}
+        return OpenAILlmClient(
+            model=model,
+            api_key=effective_api_key,
+            base_url=effective_base_url,
+            extra_body=ollama_extra_body,
+        ), model
 
     # 3. OpenRouter — also OpenAI-compatible; api_key from backend_kwargs (injected by resolve_root_model)
     if backend == "openrouter":
@@ -524,6 +541,8 @@ def _write_demo_status(
     *,
     error: Any | None = None,
     primitive_provider: str = "real",  # T21 / review I8
+    process_status: str | None = None,
+    verdict: str | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -551,6 +570,12 @@ def _write_demo_status(
         "outputDir": str(project_dir),
         "runMode": "rlm",
         "status": status,
+        "process_status": process_status or (
+            "completed" if status in {"completed", "failed", "stopped"} else status
+        ),
+        "verdict": verdict or existing.get("verdict") or (
+            "failed" if status == "failed" else None
+        ),
         "updatedAt": now,
     }
     payload.setdefault("startedAt", now)
@@ -1047,6 +1072,15 @@ async def run_pipeline_rlm(
             "(root_model_unvalidated) — results may not match paper expectations",
             root_model.key,
         )
+
+    # If the sub-backend is anthropic and carries an explicit base_url (e.g.
+    # local-qwen routes through a LiteLLM proxy), propagate it into os.environ
+    # so the Anthropic SDK picks it up for both rlm depth-1 sub-calls and the
+    # claude-agent-sdk surface (implement_baseline). pydantic-settings does not
+    # mutate os.environ, so this is the only place guaranteed to reach the SDK.
+    _sub_base_url = root_model.sub_backend_kwargs.get("base_url") if root_model.sub_backend == "anthropic" else None
+    if _sub_base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = str(_sub_base_url)
 
     # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
     llm_client, llm_model = _build_llm_client(provider, root_model)
@@ -1557,6 +1591,8 @@ def _finalize(
         project_dir,
         "failed" if run_failed else "completed",
         primitive_provider=report.primitive_provider,  # T21 / review I8
+        process_status="completed",
+        verdict=report.verdict,
     )
     return RLMRunResult(
         project_id=ctx.project_id,
