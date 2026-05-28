@@ -274,6 +274,10 @@ def _build_registry() -> dict[str, RootModel]:
             backend_kwargs={
                 "model_name": ollama_root_model,
                 "base_url": ollama_base_url,
+                # Ollama ignores num_ctx unless passed via extra_body — without
+                # it the model loads with its ~2048-token default and silently
+                # truncates rubric-gen's 48k-char paper input → malformed JSON.
+                "ollama_extra_body": {"options": {"num_ctx": 32768}},
             },
             # Sub-call (depth-1 LLM calls and the claude-agent-sdk surface for
             # implement_baseline) — routed through a local Anthropic-shaped
@@ -287,10 +291,13 @@ def _build_registry() -> dict[str, RootModel]:
             sub_backend="anthropic",
             sub_backend_kwargs={
                 "model_name": "claude-haiku-4-5-20251001",
-                "base_url": os.environ.get(
-                    "REPROLAB_ANTHROPIC_PROXY_URL",
-                    os.environ.get("ANTHROPIC_BASE_URL", LOCAL_QWEN_ANTHROPIC_PROXY_DEFAULT),
-                ),
+                # base_url is only populated when REPROLAB_ANTHROPIC_PROXY_URL is
+                # explicitly set (e.g. to route sub-agents through the local LiteLLM
+                # proxy). When absent, base_url stays None → run.py skips the
+                # ANTHROPIC_BASE_URL injection → claude-agent-sdk falls through to
+                # claude-oauth (subscription, $0). This is the default for local runs.
+                # To re-enable the proxy: REPROLAB_ANTHROPIC_PROXY_URL=http://localhost:4000
+                "base_url": os.environ.get("REPROLAB_ANTHROPIC_PROXY_URL") or None,
             },
             prompt_addendum=_QWEN_PROMPT_ADDENDUM,
             paper_validated=False,

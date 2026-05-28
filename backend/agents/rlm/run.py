@@ -194,13 +194,9 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
         # primitive/rubric LLM calls. Falls back to the root endpoint (Featherless).
         effective_base_url = sub_bk.get("base_url") or bk["base_url"]
         effective_api_key = sub_bk.get("api_key") or bk["api_key"]
-        # Ollama (port 11434) ignores num_ctx unless explicitly passed via
-        # extra_body options — without it the model loads with its default
-        # context (often 2048), which truncates rubric-gen's 48k-char paper
-        # input and returns unparseable JSON every time.
-        ollama_extra_body: dict | None = None
-        if ":11434" in (effective_base_url or ""):
-            ollama_extra_body = {"options": {"num_ctx": 32768}}
+        # Prefer explicit ollama_extra_body from backend_kwargs (data-driven,
+        # model-agnostic) over a port-number heuristic.
+        ollama_extra_body = sub_bk.get("ollama_extra_body") or bk.get("ollama_extra_body") or None
         return OpenAILlmClient(
             model=model,
             api_key=effective_api_key,

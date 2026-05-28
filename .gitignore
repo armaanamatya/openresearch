@@ -112,6 +112,13 @@ reprolab.db-wal
 .playwright-mcp
 .playwright-mcp/
 
+# local-qwen launcher logs and per-tick screenshots (ephemeral, not source)
+scripts/localqwen/*.log
+scripts/localqwen/screens/
+
+# findings/ run-log dumps (ephemeral; keep .md notes but drop raw log files)
+findings/*.log
+
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval
 .deepeval/
