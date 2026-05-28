@@ -218,6 +218,63 @@ class RunCostLedger:
         )
 
 
+def record_subagent_usage_to_path(
+    project_dir: "Path",
+    agent_id: str,
+    model: str,
+    provider: "ProviderName",
+    usage: "dict[str, int]",
+    *,
+    attempt_index: int = 0,
+) -> None:
+    """Append a sub-agent usage row to cost_ledger.jsonl and emit an SSE event.
+
+    Path-based (no RunCostLedger instance needed) — callable from invoke.py
+    which has no RunContext. Fail-soft: IO errors are logged, never raised.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+
+    entry = CostLedgerEntry.from_usage(
+        agent_id=agent_id,
+        attempt_index=attempt_index,
+        provider=provider,
+        model=model,
+        usage=usage,
+    )
+    ledger_path = Path(project_dir) / "cost_ledger.jsonl"
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(entry.to_json(), sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        logger.warning("record_subagent_usage_to_path: ledger write failed for %s", agent_id)
+
+    # SSE event — fail-soft
+    events_file = Path(project_dir) / "dashboard_events.jsonl"
+    payload: dict = {
+        "agent_id": agent_id,
+        "model": model,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+        "estimated_usd": entry.estimated_usd or 0.0,
+    }
+    line = _json.dumps({
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "event": "subagent_usage",
+        "data": payload,
+    }, default=str)
+    try:
+        with events_file.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        logger.warning("record_subagent_usage_to_path: SSE emit failed for %s", agent_id)
+
+
 def _int(value: Any) -> int:
     try:
         return int(value or 0)

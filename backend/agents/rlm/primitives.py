@@ -646,10 +646,13 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         }, PrimitiveOutcome.repairable)
 
     from backend.agents.rlm import primitive_cache as _cache
+    _sandbox_mode_val = getattr(ctx, "sandbox_mode", None)
+    _sandbox_key = getattr(_sandbox_mode_val, "value", str(_sandbox_mode_val) if _sandbox_mode_val is not None else None)
     _payload = {
         "method_spec": method_spec,
-        # gpu_mode affects the Dockerfile wheel selection, so it's part of the key.
+        # gpu_mode + sandbox_mode both affect Dockerfile shape, so both are cache keys.
         "gpu_mode": getattr(ctx, "gpu_mode", None),
+        "sandbox_mode": _sandbox_key,
     }
     _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
     if _cached is not None:
@@ -659,13 +662,13 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     from backend.agents.schemas import PaperClaimMap
 
     claim_map = PaperClaimMap(**{"core_contribution": "", **method_spec})
-    # Thread ctx.gpu_mode through so the Dockerfile picks the CUDA wheel
-    # when GPU passthrough is enabled. Without this, even --gpu-mode prefer
-    # runs end up with torch==2.x+cpu and torch.cuda.is_available() == False
-    # inside the container.
+    # Thread gpu_mode + sandbox_mode so the Dockerfile uses the right base image
+    # and wheel source. sandbox_mode="runpod" triggers the pre-built pytorch base,
+    # avoiding the ~2.5 GB CUDA wheel download that causes 1800s build timeouts.
     spec = run_offline(
         ctx.project_id, ctx.runs_root, claim_map, method_spec.get("artifact_index"),
         gpu_mode=getattr(ctx, "gpu_mode", None),
+        sandbox_mode=_sandbox_key,
     )
     result = _with_outcome(spec.model_dump(), PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)

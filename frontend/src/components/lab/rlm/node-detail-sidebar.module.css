@@ -556,6 +556,28 @@
   line-height: 1.5;
 }
 
+/* ── Primitive/llm_primitive node detail panel ───────────────────── */
+
+.primitiveDetail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.primitiveSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.primitiveSectionLabel {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 /* ── Baseline kind panel ─────────────────────────────────────────── */
 
 .baselineMeta {

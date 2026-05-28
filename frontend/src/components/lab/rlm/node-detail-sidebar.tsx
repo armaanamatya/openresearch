@@ -221,6 +221,129 @@ function PrimitiveList({
   );
 }
 
+/** Detailed breakdown for a single primitive/llm_primitive node. */
+function PrimitivePanelDetail({
+  call,
+  node,
+  relatedSubRlm,
+}: {
+  call: PrimitiveCallView | null;
+  node: TreeNode;
+  relatedSubRlm?: SubRlmView | null;
+}) {
+  if (!call) {
+    return <p className={styles.noDetail}>primitive call data unavailable</p>;
+  }
+
+  const argEntries = Object.entries(call.args_summary ?? {});
+
+  return (
+    <div className={styles.primitiveDetail}>
+      <dl className={styles.metaList}>
+        <div className={styles.metaRow}>
+          <dt className={styles.metaKey}>primitive</dt>
+          <dd className={styles.metaVal}>
+            <span className={styles.primitiveName}>{call.primitive}</span>
+          </dd>
+        </div>
+        <div className={styles.metaRow}>
+          <dt className={styles.metaKey}>status</dt>
+          <dd className={styles.metaVal}>
+            <span
+              className={
+                call.status === "error"
+                  ? styles.primitiveStatusError
+                  : styles.primitiveStatusOk
+              }
+            >
+              {call.status}
+            </span>
+          </dd>
+        </div>
+        {call.iteration != null && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>iteration</dt>
+            <dd className={styles.metaVal}>#{call.iteration}</dd>
+          </div>
+        )}
+        {call.timestamp && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>called at</dt>
+            <dd className={styles.metaVal}>{call.timestamp.replace("T", " ").slice(0, 19)}</dd>
+          </div>
+        )}
+        {call.rubric_delta != null && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>rubric Δ</dt>
+            <dd className={styles.metaVal}>
+              {call.rubric_delta >= 0 ? "+" : ""}
+              {call.rubric_delta.toFixed(3)}
+            </dd>
+          </div>
+        )}
+        {node.primitivePhase && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>phase</dt>
+            <dd className={styles.metaVal}>{node.primitivePhase}</dd>
+          </div>
+        )}
+        {node.kind === "llm_primitive" && (
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>type</dt>
+            <dd className={styles.metaVal}>LLM call</dd>
+          </div>
+        )}
+      </dl>
+
+      {argEntries.length > 0 && (
+        <div className={styles.primitiveSection}>
+          <span className={styles.primitiveSectionLabel}>args</span>
+          <dl className={styles.metaList}>
+            {argEntries.map(([k, v]) => (
+              <div key={k} className={styles.metaRow}>
+                <dt className={styles.metaKey}>{k}</dt>
+                <dd className={styles.metaVal}>{String(v)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
+      {call.result_summary && (
+        <div className={styles.primitiveSection}>
+          <span className={styles.primitiveSectionLabel}>result</span>
+          <span className={styles.primitiveResult}>{call.result_summary}</span>
+        </div>
+      )}
+
+      {relatedSubRlm && (
+        <div className={styles.primitiveSection}>
+          <span className={styles.primitiveSectionLabel}>sub-rlm query</span>
+          <dl className={styles.metaList}>
+            <div className={styles.metaRow}>
+              <dt className={styles.metaKey}>question</dt>
+              <dd className={styles.metaVal}>{relatedSubRlm.model}</dd>
+            </div>
+            <div className={styles.metaRow}>
+              <dt className={styles.metaKey}>duration</dt>
+              <dd className={styles.metaVal}>{formatDuration(relatedSubRlm.duration_ms)}</dd>
+            </div>
+            {relatedSubRlm.error && (
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>error</dt>
+                <dd className={styles.metaValError}>{relatedSubRlm.error}</dd>
+              </div>
+            )}
+          </dl>
+          {relatedSubRlm.prompt_preview && (
+            <pre className={styles.promptPreview}>{relatedSubRlm.prompt_preview}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PrimitiveErrorBlock({
   call,
   compact = false,
@@ -371,6 +494,34 @@ function SidebarBody({
         ) : (
           <p className={styles.noDetail}>no sub-RLM detail</p>
         )}
+        {nowBlock}
+      </div>
+    );
+  }
+
+  if (kind === "primitive" || kind === "llm_primitive") {
+    // Extract call index from node id: `prim-${primitive}-${N}` → callIdx = N - 1
+    // Primitive names use underscores so the last hyphen always precedes the suffix.
+    const lastDash = node.id.lastIndexOf("-");
+    const callIdx = lastDash !== -1 ? parseInt(node.id.slice(lastDash + 1), 10) - 1 : -1;
+    const specificCall = callIdx >= 0 ? primitiveCalls[callIdx] ?? null : null;
+
+    // For llm_primitive calls, find the first sub-RLM whose spawnedAt is within
+    // 2s of the call timestamp — these are the sub-RLMs spawned by understand_section
+    // and similar primitives to run sub-queries.
+    let relatedSubRlm: SubRlmView | null = null;
+    if (kind === "llm_primitive" && specificCall?.timestamp) {
+      const callMs = new Date(specificCall.timestamp).getTime();
+      relatedSubRlm =
+        subRlms.find((s) => {
+          const delta = Math.abs(new Date(s.spawnedAt).getTime() - callMs);
+          return delta < 2000;
+        }) ?? null;
+    }
+
+    return (
+      <div className={styles.body}>
+        <PrimitivePanelDetail call={specificCall} node={node} relatedSubRlm={relatedSubRlm} />
         {nowBlock}
       </div>
     );

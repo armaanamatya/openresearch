@@ -23,6 +23,12 @@ class ModelPricing:
 
 
 PRICING: dict[str, ModelPricing] = {
+    "claude-sonnet-4-5": ModelPricing(
+        input_per_1m=3.00,
+        output_per_1m=15.00,
+        cache_read_input_per_1m=0.30,
+        cache_creation_input_per_1m=3.75,
+    ),
     "claude-sonnet-4-6": ModelPricing(
         input_per_1m=3.00,
         output_per_1m=15.00,

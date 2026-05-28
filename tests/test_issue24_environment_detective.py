@@ -166,6 +166,31 @@ class TestDockerfileGeneration:
         assert "download.pytorch.org/whl/cpu" not in df
         assert "torch==2.2.0" in df
 
+    def test_runpod_sandbox_uses_pytorch_base_image(self):
+        packages = {"torch": "2.1.0", "transformers": "4.44.0", "numpy": "1.26.4"}
+        df = _generate_dockerfile("3.10", packages, sandbox_mode="runpod")
+        assert "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04" in df
+        assert "FROM runpod/pytorch" in df
+
+    def test_runpod_sandbox_skips_torch_install(self):
+        packages = {"torch": "2.1.0", "transformers": "4.44.0"}
+        df = _generate_dockerfile("3.10", packages, sandbox_mode="runpod")
+        # torch is pre-installed in the base image; must not reinstall
+        lines = [l.strip() for l in df.splitlines() if "pip install" in l and "torch==" in l]
+        assert lines == [], f"torch should not be pip-installed on runpod base; found: {lines}"
+
+    def test_runpod_sandbox_installs_other_packages(self):
+        packages = {"torch": "2.1.0", "transformers": "4.44.0", "numpy": "1.26.4"}
+        df = _generate_dockerfile("3.10", packages, sandbox_mode="runpod")
+        assert "transformers==4.44.0" in df
+        assert "numpy==1.26.4" in df
+
+    def test_non_runpod_sandbox_uses_slim_base(self):
+        packages = {"torch": "2.1.0"}
+        for mode in (None, "local", "docker", "auto"):
+            df = _generate_dockerfile("3.10", packages, sandbox_mode=mode)
+            assert "FROM python:3.10-slim" in df, f"expected slim base for sandbox_mode={mode!r}"
+
     def test_non_torch_packages_separate(self):
         packages = {"torch": "2.2.0", "gymnasium": "0.29.1"}
         df = _generate_dockerfile("3.11", packages)

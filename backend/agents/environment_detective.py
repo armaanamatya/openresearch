@@ -54,6 +54,7 @@ def run_offline(
     artifact_index: dict[str, Any] | None = None,
     *,
     gpu_mode: str | None = None,
+    sandbox_mode: str | None = None,
 ) -> EnvironmentSpec:
     """Deterministic environment inference without LLM.
 
@@ -64,6 +65,12 @@ def run_offline(
     drives the torch wheel selection: ``prefer``/``max`` picks the default
     CUDA-capable PyPI wheel so a GPU-bearing sandbox can actually use the
     card.  Other values keep the CPU-only wheel (smaller image, faster build).
+
+    ``sandbox_mode`` (``"runpod"``, ``"docker"``, ``"local"``, or ``None``)
+    affects the Dockerfile base image. When ``"runpod"``, the generated
+    Dockerfile uses ``runpod/pytorch`` as its base (torch pre-installed) and
+    skips reinstalling torch — avoids the 1800s build timeout caused by
+    downloading the ~2.5 GB CUDA wheel inside the Docker build step.
     """
     # Determine framework from training recipe
     framework, framework_version = _infer_framework(paper_claim_map)
@@ -80,9 +87,11 @@ def run_offline(
         paper_claim_map, framework, framework_version, python_version,
     )
 
-    # Generate Dockerfile — wheel selection follows gpu_mode so a
-    # --gpu-mode prefer / max run actually gets CUDA torch.
-    dockerfile = _generate_dockerfile(python_version, pip_packages, gpu_mode=gpu_mode)
+    # Generate Dockerfile — wheel selection follows gpu_mode; base image
+    # follows sandbox_mode (runpod uses pre-built pytorch image, others use slim).
+    dockerfile = _generate_dockerfile(
+        python_version, pip_packages, gpu_mode=gpu_mode, sandbox_mode=sandbox_mode,
+    )
 
     spec = EnvironmentSpec(
         dockerfile=dockerfile,
@@ -232,36 +241,62 @@ def _generate_assumptions(
     return assumptions
 
 
+_RUNPOD_PYTORCH_BASE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04"
+
+
 def _generate_dockerfile(
     python_version: str,
     pip_packages: dict[str, str],
     *,
     gpu_mode: str | None = None,
+    sandbox_mode: str | None = None,
 ) -> str:
     """Generate a working Dockerfile.
 
-    Wheel selection for ``torch``/``torchvision``/``torchaudio`` is delegated
-    to :func:`backend.services.runtime.gpu_resolution.select_torch_index_url`,
-    which is the single authority on "do we install CUDA torch?".  It honours
-    both the requested ``gpu_mode`` and the host's actual NVIDIA capability,
-    so ``--gpu-mode prefer`` on a GPU-less host still gets the CPU wheel
-    (the alternative — installing CUDA torch into a container that has no
-    GPU device — wastes ~2 GB of image and ~3 min of build time).
+    When ``sandbox_mode == "runpod"``, uses the pre-built RunPod PyTorch base
+    image which has torch 2.1 pre-installed — skipping the ~2.5 GB CUDA wheel
+    download that caused the 1800s build timeout (BUG-LR-009).
+
+    For all other sandbox modes, wheel selection for torch/torchvision/torchaudio
+    is delegated to select_torch_index_url, which honours both gpu_mode and the
+    host's actual NVIDIA capability.
     """
+    use_runpod_base = (
+        isinstance(sandbox_mode, str) and sandbox_mode.lower() == "runpod"
+    )
+
+    if use_runpod_base:
+        # RunPod base has torch 2.1 + CUDA 11.8 pre-installed; don't reinstall.
+        other_packages = []
+        for pkg, version in sorted(pip_packages.items()):
+            if pkg not in ("torch", "torchvision", "torchaudio"):
+                other_packages.append(f"{pkg}=={version}" if version else pkg)
+
+        lines = [
+            f"FROM {_RUNPOD_PYTORCH_BASE}",
+            "",
+            "RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*",
+        ]
+        if other_packages:
+            lines.append(f"RUN pip install --no-cache-dir {' '.join(other_packages)}")
+        lines.extend([
+            "WORKDIR /code",
+            "ENV PYTHONUNBUFFERED=1",
+            'CMD ["python", "train.py"]',
+        ])
+        return "\n".join(lines) + "\n"
+
     from backend.services.runtime.gpu_resolution import select_torch_index_url
 
     lines = [
         f"FROM python:{python_version}-slim",
         "",
-        "# System packages",
         "RUN apt-get update && apt-get install -y --no-install-recommends \\",
         "    git \\",
         "    && rm -rf /var/lib/apt/lists/*",
         "",
-        "# Python packages",
     ]
 
-    # Group torch install separately so we can apply the resolved index URL.
     torch_packages = []
     other_packages = []
     for pkg, version in sorted(pip_packages.items()):
@@ -273,7 +308,6 @@ def _generate_dockerfile(
     if torch_packages:
         index_url = select_torch_index_url(gpu_mode)
         if index_url is None:
-            # Default PyPI ships a CUDA-capable wheel on linux/x86_64.
             lines.append(
                 f"RUN pip install --no-cache-dir {' '.join(torch_packages)}"
             )
