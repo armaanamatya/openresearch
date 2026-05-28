@@ -95,9 +95,23 @@ def test_min_iterations_zero_disables_policy() -> None:
     assert refuse is False
 
 
-def test_no_rubric_data_yet_accepts() -> None:
-    """No verify_against_rubric call yet → accept honestly (rubric-less run)."""
+def test_no_rubric_data_yet_refuses_below_floor() -> None:
+    """BUG-LR-013: no verify_against_rubric call + below iteration floor → refuse.
+
+    A model that hasn't scored at all has done strictly less work than one that
+    scored 0.0 — so the floor should block it too.
+    """
     policy = _make_policy(score=None, target=None, iteration=1, min_iterations=2)
+    refuse, msg = policy.should_refuse()
+    assert refuse is True
+    assert msg is not None
+    # Message should guide the model to call verify_against_rubric.
+    assert "rubric" in msg.lower() or "verify" in msg.lower()
+
+
+def test_no_rubric_data_accepts_when_floor_met() -> None:
+    """score=None but floor already met → accept (policy can't force work retroactively)."""
+    policy = _make_policy(score=None, target=None, iteration=2, min_iterations=2)
     refuse, _msg = policy.should_refuse()
     assert refuse is False
 

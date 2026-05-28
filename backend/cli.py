@@ -75,6 +75,38 @@ import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
 
 
+def _warn_on_shell_env_override() -> None:
+    """BUG-LR-014: warn when shell-exported API keys differ from .env values.
+
+    Shell exports win over .env because pydantic-settings reads os.environ
+    first. A stale shell key (e.g. from another project's account) silently
+    causes 401 errors. This is advisory only — some workflows legitimately
+    override. Full key values are never printed.
+    """
+    try:
+        from dotenv import dotenv_values
+        dotenv_vals = dotenv_values(".env")
+    except Exception:
+        return
+    _SUSPECT_KEYS = (
+        "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
+        "AZURE_OPENAI_API_KEY", "REPROLAB_RUNPOD_API_KEY",
+    )
+    def _prefix(s: str) -> str:
+        return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
+    for k in _SUSPECT_KEYS:
+        env_val = os.environ.get(k, "")
+        file_val = dotenv_vals.get(k) or ""
+        if env_val and file_val and env_val != file_val:
+            print(
+                f"\n[warn] {k}: shell value ({_prefix(env_val)}) differs from "
+                f".env ({_prefix(file_val)}). Shell value will be used. "
+                f"To use the .env value: env -u {k} python -m backend.cli ...\n",
+                file=sys.stderr,
+            )
+
+
 _ARXIV_RE = re.compile(
     r"(?:arxiv:|arxiv\.org/(?:abs|pdf)/)?(?P<id>\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?$",
     re.IGNORECASE,
@@ -944,6 +976,9 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
 
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
+    # BUG-LR-014: warn early if shell API-key vars shadow .env — see
+    # docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md
+    _warn_on_shell_env_override()
     args = _with_reproduce_defaults(args)
     # Cross-platform path normalization — converts Windows paths to WSL mount
     # paths, strips surrounding quotes, expands tilde-home, etc.

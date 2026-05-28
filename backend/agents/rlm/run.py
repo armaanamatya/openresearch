@@ -77,6 +77,12 @@ from backend.agents.rlm.forced_iteration import (
     apply_forced_iteration_patch,
     forced_iteration_policy,
 )
+# BUG-LR-011: restore globals()/locals() inside rlm's LocalREPL sandbox
+# (upstream blacklists them alongside eval/exec/compile/input — incorrect).
+from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # noqa: F401
+# BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
+# root model can diagnose failures rather than concluding primitives unavailable.
+from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
@@ -1520,6 +1526,45 @@ def _finalize(
             started_at = None
     report.started_at = started_at
     report.completed_at = datetime.now(timezone.utc).isoformat()
+
+    # BUG-LR-015: diagnostic heuristic — detect "model gave up before doing work".
+    # Fires a run_warning with code="suspicious_partial" when a partial verdict is
+    # accompanied by two or more of: (a) no essential primitive executed,
+    # (b) very few iterations used, (c) rubric never scored.
+    # Suppressed under wall-clock pressure (≤60s remaining) — in that case a
+    # truncated partial is expected and correct.
+    if report.verdict == "partial" and not run_failed:
+        try:
+            _remaining = ctx.remaining_s() if ctx is not None else None
+            _wall_pressure = (_remaining is not None and _remaining <= 60)
+            if not _wall_pressure:
+                _by_prim = report.primitive_trace.get("by_primitive", {})
+                _essential = {"implement_baseline", "run_experiment", "verify_against_rubric"}
+                _called = set(_by_prim.keys())
+                _essential_missed = not bool(_essential & _called)
+                _iter_underutilized = iterations < max(1, int(_MAX_ITERATIONS * 0.25))
+                _rubric_never_scored = "verify_against_rubric" not in _called
+                _signal_count = sum([_essential_missed, _iter_underutilized, _rubric_never_scored])
+                if _signal_count >= 2:
+                    _missed_names = sorted(_essential - _called)
+                    _msg = (
+                        f"suspicious_partial: run completed with verdict='partial' after only "
+                        f"{iterations} iteration(s) without executing key primitives "
+                        f"({', '.join(_missed_names) if _missed_names else 'some'}). "
+                        f"Signals: essential_primitives_missed={_essential_missed}, "
+                        f"iteration_underutilization={_iter_underutilized} "
+                        f"(iterations={iterations}, floor={int(_MAX_ITERATIONS * 0.25)}), "
+                        f"rubric_never_scored={_rubric_never_scored}. "
+                        "This may indicate the model concluded primitives were unavailable "
+                        "(see BUG-LR-011/012 in rlm-stability-remediation-design.md)."
+                    )
+                    emit(build_run_warning_event(
+                        level="warn",
+                        code="suspicious_partial",
+                        message=_msg,
+                    ))
+        except Exception:  # noqa: BLE001 — diagnostic only; never block report write
+            logger.debug("_finalize: suspicious_partial check raised", exc_info=True)
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 

@@ -213,6 +213,18 @@ FORCED-ITERATION POLICY:
   The policy bypasses when wall-clock <= 60s remain (better to ship partial
   than time out), so a near-timeout `FINAL_VAR` always works.
 
+  No-rubric check: `FINAL_VAR` is ALSO refused if you have never called
+  `verify_against_rubric` and the iteration floor has not been reached.
+  A run that has not scored at all has done less work than one that scored 0.0.
+  Remedy: call `run_experiment` → `verify_against_rubric` → THEN `FINAL_VAR`.
+
+  REPL error diagnosis: if you see a bare ``TypeError`` or other exception
+  in REPL stderr, look at the full traceback above it for the file and line
+  that actually failed — do NOT conclude that primitives are unavailable based
+  on a bare error message alone. All 12+ domain primitives are injected before
+  your first iteration and remain callable for the entire run. Use
+  ``globals().get("primitive_name")`` to confirm availability if unsure.
+
   Lane O — blanket-decline check: `FINAL_VAR` is ALSO refused if the
   iteration floor has been reached BUT zero candidates have an "honest"
   outcome (`promoted`, `failed`, or `marginal`). The 2026-05-25 Adam

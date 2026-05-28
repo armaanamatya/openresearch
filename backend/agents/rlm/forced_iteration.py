@@ -222,10 +222,23 @@ class ForcedIterationPolicy:
         else:
             score, target, _score_iter = self.rubric_snapshot()
 
-        # 2. No rubric data — only repair floor can refuse.
+        # 2. No rubric data — repair floor OR iteration floor can refuse.
         if score is None or target is None:
             if _repair_refuse:
                 return self._build_repair_refusal(min_repair)
+            # BUG-LR-013: a model that has never called verify_against_rubric
+            # has done strictly less work than one that scored 0.0 — refuse if
+            # we haven't reached the iteration floor yet.
+            cur = self.current_iteration() if self.current_iteration is not None else 0
+            if cur < self.min_iterations:
+                msg = (
+                    f"FINAL_VAR refused at iteration {cur}: no rubric score recorded yet "
+                    f"(min_rubric_iterations={self.min_iterations}). "
+                    "Call verify_against_rubric on your latest run_experiment result, "
+                    "or call run_experiment if you have not run the baseline yet. "
+                    "Do NOT call FINAL_VAR until verify_against_rubric has returned a score."
+                )
+                return (True, msg)
             return (False, None)
 
         # 3. Score satisfies target — accept.
