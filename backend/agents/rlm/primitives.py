@@ -58,6 +58,8 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "permission_denied",
     "syntax_error",
     "scope_shape_violation",
+    "dockerfile_invalid",  # BUG-NEW-042: sub-agent wrote prose into Dockerfile
+    "commands_missing_file",  # P1 (2026-05-29): commands.json references unwritten files
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -86,7 +88,7 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
-_DEFAULT_PRE_EMIT_STALL_S = 240.0
+_DEFAULT_PRE_EMIT_STALL_S = 1800.0
 
 
 class PreEmitStallError(RuntimeError):
@@ -142,6 +144,81 @@ def _baseline_error_envelope(
     )
 
 
+_DOCKERFILE_FIRST_LINE_PREFIXES = ("FROM", "ARG", "# syntax=", "#syntax=")
+
+
+def _validate_dockerfile_shape(text: str) -> tuple[bool, str | None]:
+    """Return ``(is_valid, reason)`` for the first non-blank, non-comment line.
+
+    Docker's parser requires the first directive to be ``FROM`` (or ``ARG``
+    before ``FROM``, or a ``# syntax=`` parser directive comment). BUG-NEW-042:
+    the implement_baseline sub-agent occasionally responded with conversational
+    prose ("You've already…") instead of Dockerfile content; the Write tool
+    persisted it verbatim, replacing the good Dockerfile that build_environment
+    had produced. Docker then died with ``unknown instruction: You've``.
+    """
+    if not text or not text.strip():
+        return False, "empty or whitespace-only"
+    # # syntax= parser directives may appear before FROM; treat lines that
+    # start with "#" as comments to skip — except the syntax directive itself
+    # counts as valid first content.
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(_DOCKERFILE_FIRST_LINE_PREFIXES):
+            return True, None
+        if line.startswith("#"):
+            # plain comment — keep scanning for the first directive
+            continue
+        sample = (line[:120] + "…") if len(line) > 120 else line
+        return False, f"first directive not FROM/ARG/# syntax= — got: {sample!r}"
+    return False, "no non-comment lines"
+
+
+_COMMANDS_REFERENCED_SUFFIXES = {
+    ".py", ".sh", ".bash", ".ps1",
+    ".json", ".yaml", ".yml", ".txt",
+}
+
+
+def _commands_referenced_paths(commands: list) -> list[str]:
+    """Extract every file path referenced as an arg in a ``commands.json`` list.
+
+    Heuristic: any arg whose lowercased suffix is in
+    ``_COMMANDS_REFERENCED_SUFFIXES`` is treated as a path the run will
+    consume. We deliberately skip flag-like args (start with ``-``) and
+    env-style args (contain ``=`` but no path separator before it) — those
+    are options/env vars, not files. Args that look like URLs (start with
+    ``http://`` / ``https://``) are also skipped.
+
+    A command can be either a list of args (canonical) or a single string
+    (we tokenize on whitespace as a best-effort).
+    """
+    refs: list[str] = []
+    for entry in commands:
+        if isinstance(entry, str):
+            tokens = entry.split()
+        elif isinstance(entry, list):
+            tokens = [str(t) for t in entry]
+        else:
+            continue
+        for tok in tokens:
+            if not tok or tok.startswith("-"):
+                continue
+            if tok.startswith(("http://", "https://")):
+                continue
+            # env-style KEY=VAL where the value has no path-y suffix
+            if "=" in tok and "/" not in tok.split("=", 1)[0]:
+                continue
+            suffix = ""
+            if "." in tok.split("/")[-1]:
+                suffix = "." + tok.rsplit(".", 1)[-1].lower()
+            if suffix in _COMMANDS_REFERENCED_SUFFIXES:
+                refs.append(tok)
+    return refs
+
+
 def _harvest_baseline_artifacts(
     code_dir: "Any",
     *,
@@ -154,6 +231,11 @@ def _harvest_baseline_artifacts(
     at least one runnable source/script artifact. This is deliberately small:
     it accepts partial but executable projects after SDK cleanup failures while
     refusing directories that would only cascade into run_experiment failures.
+
+    P1 (2026-05-29): also verifies that every file path the agent referenced
+    in ``commands.json`` actually exists on disk. Catches the no-op retry
+    pattern where the sub-agent claims success but didn't write the files
+    its commands point at (observed adjacent to BUG-NEW-042).
     """
     import json
     from pathlib import Path
@@ -161,6 +243,7 @@ def _harvest_baseline_artifacts(
     path = Path(code_dir)
     missing: list[str] = []
     commands_path = path / "commands.json"
+    commands: list = []
     if not commands_path.exists():
         missing.append("commands.json")
     else:
@@ -168,8 +251,10 @@ def _harvest_baseline_artifacts(
             commands = json.loads(commands_path.read_text(encoding="utf-8"))
             if not isinstance(commands, list) or not commands:
                 missing.append("commands.json: non-empty list")
+                commands = []
         except (json.JSONDecodeError, OSError):
             missing.append("commands.json: valid JSON list")
+            commands = []
 
     runnable_suffixes = {".py", ".sh", ".bash", ".ps1"}
     has_runnable = False
@@ -182,6 +267,31 @@ def _harvest_baseline_artifacts(
                 break
     if not has_runnable:
         missing.append("runnable source file")
+
+    # P1: every path commands.json references must exist on disk (resolved
+    # relative to code_dir). Stop the bad envelope from reaching run_experiment.
+    referenced_missing: list[str] = []
+    if commands and path.exists():
+        for ref in _commands_referenced_paths(commands):
+            # Absolute paths are checked as-is; relative paths anchor to code_dir.
+            candidate = Path(ref)
+            if not candidate.is_absolute():
+                candidate = path / ref
+            if not candidate.is_file():
+                referenced_missing.append(ref)
+    if referenced_missing:
+        # Distinct error_code so the retry-rule discriminator can tell this
+        # apart from "no commands.json at all".
+        return _baseline_error_envelope(
+            error_code="commands_missing_file",
+            error=(
+                f"implement_baseline: commands.json references files that "
+                f"were not written: {referenced_missing}"
+            ),
+            repairable=True,
+            code_dir=path,
+            missing_files=referenced_missing,
+        )
 
     if missing:
         return _baseline_error_envelope(
@@ -238,7 +348,9 @@ def _pre_emit_stall_s() -> float:
     """Resolve PR-π pre-emit stall threshold from env.
 
     Pre: ``REPROLAB_PRE_EMIT_STALL_S`` may be unset or a positive number.
-    Post: returns a positive second threshold, defaulting to 120s.
+    Post: returns a positive second threshold, defaulting to 1800s (30 min) —
+    hard papers like SDAR genuinely need 25+ min of SDK think+write time
+    before the first file lands.
     Side effects: logs a warning for invalid environment values.
     Exceptions raised: none.
     """
@@ -568,7 +680,7 @@ def understand_section(text_slice: str, *, ctx: "RunContext") -> dict:
             "hint": (
                 "This slice is "
                 f"{len(text_slice):,} chars — for tighter extraction "
-                "consider `rlm_query(slice, specific_question)` "
+                "consider `rlm_query(f'{slice}\\n\\nQuestion: {q}')` "
                 "instead. A focused sub-RLM call typically returns a "
                 "more precise answer than this primitive's generic "
                 "schema."
@@ -607,7 +719,7 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
             "hint": (
                 "This slice is "
                 f"{len(text_slice):,} chars — for tighter extraction "
-                "consider `rlm_query(slice, specific_question)` "
+                "consider `rlm_query(f'{slice}\\n\\nQuestion: {q}')` "
                 "instead. A focused sub-RLM call typically returns a "
                 "more precise answer than this primitive's generic "
                 "schema."
@@ -1533,6 +1645,17 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
+    # BUG-NEW-042: snapshot the on-disk Dockerfile that build_environment
+    # produced so we can restore it if the sub-agent's Write tool stomps it
+    # with conversational prose. None when no prior file existed.
+    _project_dockerfile_path = ctx.project_dir / "Dockerfile"
+    _pre_dockerfile_text: str | None = None
+    if _project_dockerfile_path.exists():
+        try:
+            _pre_dockerfile_text = _project_dockerfile_path.read_text(encoding="utf-8")
+        except OSError:
+            _pre_dockerfile_text = None
+
     try:
         future = pool.submit(asyncio.run, _run())
         import time as _time
@@ -1669,7 +1792,56 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
         return _err
     finally:
+        # 2026-05-28 BUG-NEW-012 fix: pool.shutdown(wait=False) only cancels the
+        # Python future — the SDK child process (claude --stream-json) keeps
+        # running, owned by init. If the orchestrator retries implement_baseline
+        # we end up with two SDK children racing to write the same code/ dir,
+        # AND the watchdog declared a healthy SDK call dead because we never
+        # gave it long enough. Reap descendants explicitly so a retry starts
+        # from a clean process tree. Best-effort; never raise from finally.
+        try:
+            import os as _os
+            import signal as _signal
+            import subprocess as _subprocess
+            _own_pid = _os.getpid()
+            _out = _subprocess.run(
+                ["pgrep", "-P", str(_own_pid), "-f", "claude"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for _line in (_out.stdout or "").splitlines():
+                _pid_str = _line.strip()
+                if not _pid_str.isdigit():
+                    continue
+                try:
+                    _os.kill(int(_pid_str), _signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except Exception:  # noqa: BLE001 — pgrep missing/timeout/any reap error
+            pass
         pool.shutdown(wait=False, cancel_futures=True)
+        # 2026-05-28 BUG-NEW-023 fix (Option E.1): the SDK isolation layer
+        # (sdk_isolation.run_isolated) spawned a daemon thread with its own
+        # asyncio event loop. pool.shutdown(wait=False) leaves that thread
+        # alive, and on the NEXT primitive (run_experiment) the new asyncio.run
+        # call deadlocks against the leftover loop's mutex state — observed
+        # via `sample` showing every thread parked on _PyMutex_LockTimed.
+        # Force-close any leftover non-closed event loops + detach the
+        # default-loop binding so the next asyncio.run() gets a clean slate.
+        try:
+            import asyncio as _asyncio
+            import gc as _gc
+            for _obj in _gc.get_objects():
+                try:
+                    if isinstance(_obj, _asyncio.AbstractEventLoop) and not _obj.is_closed() and not _obj.is_running():
+                        _obj.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                _asyncio.set_event_loop(None)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001 — cleanup is best-effort
+            pass
 
     # run_with_sdk writes the generated code to runs_root/project_id/code;
     # derive commands.json's directory the same way (not ctx.project_dir/code)
@@ -1708,6 +1880,45 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
         _err["preflight_violations"] = _kc_preflight
         # Do NOT cache a strict-violation result — force recompute on next attempt.
         return _err
+
+    # BUG-NEW-042: post-write Dockerfile shape guard. If the sub-agent's Write
+    # tool replaced project_dir/Dockerfile with prose, restore from the pre-run
+    # snapshot when that snapshot was itself valid, otherwise emit a warning so
+    # the next iteration's repair_context knows to fix it.
+    if _project_dockerfile_path.exists():
+        try:
+            _post_text = _project_dockerfile_path.read_text(encoding="utf-8")
+        except OSError:
+            _post_text = ""
+        _post_ok, _post_reason = _validate_dockerfile_shape(_post_text)
+        if not _post_ok:
+            _restored = False
+            if _pre_dockerfile_text is not None:
+                _pre_ok, _ = _validate_dockerfile_shape(_pre_dockerfile_text)
+                if _pre_ok:
+                    try:
+                        _project_dockerfile_path.write_text(_pre_dockerfile_text, encoding="utf-8")
+                        _restored = True
+                    except OSError as _restore_exc:
+                        logger.warning(
+                            "implement_baseline[%s]: Dockerfile restore failed (%s)",
+                            ctx.project_id, _restore_exc,
+                        )
+            _msg = (
+                f"implement_baseline: sub-agent wrote an invalid Dockerfile "
+                f"({_post_reason}); "
+                + ("restored prior valid Dockerfile" if _restored
+                   else "no valid snapshot to restore — run_experiment will reject this")
+            )
+            logger.warning("implement_baseline[%s]: %s", ctx.project_id, _msg)
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "dockerfile_shape_guard",
+                    "message": _msg,
+                    "restored": _restored,
+                })
+            except Exception:  # noqa: BLE001
+                logger.debug("implement_baseline: failed to emit dockerfile_shape_guard warning")
 
     harvested = _harvest_baseline_artifacts(code_dir)
     if harvested.get("ok") is True:
@@ -2598,8 +2809,31 @@ def run_experiment(
     # Docker-cached, so an unchanged Dockerfile is a near-instant no-op.
     dockerfile_path = ctx.project_dir / "Dockerfile"
     if dockerfile_path.exists():
-        build = build_environment(
-            {"dockerfile": dockerfile_path.read_text(encoding="utf-8")}, ctx=ctx)
+        _df_text = dockerfile_path.read_text(encoding="utf-8")
+        # BUG-NEW-042: fail-fast on a malformed Dockerfile before paying the
+        # ~30s build cost (or surfacing a cryptic Docker parser error). The
+        # implement_baseline post-write guard normally restores a valid file,
+        # so reaching this branch implies BOTH the pre-snapshot and the
+        # sub-agent's write were invalid — a real repair the LLM must do.
+        _df_ok, _df_reason = _validate_dockerfile_shape(_df_text)
+        if not _df_ok:
+            _df_sample = _df_text.strip().splitlines()[0:5] if _df_text.strip() else []
+            return _persist_experiment_result(ctx, {
+                "success": False, "metrics": {},
+                "failure_class": "dockerfile_invalid",
+                "error": (
+                    f"run_experiment: Dockerfile at {dockerfile_path} is malformed "
+                    f"({_df_reason}). First 5 non-blank lines: {_df_sample!r}. "
+                    f"Next implement_baseline call must rewrite Dockerfile so the "
+                    f"first directive is FROM (or ARG/# syntax=)."
+                ),
+                "suggested_fix": (
+                    "Call implement_baseline again with repair_context "
+                    "carrying this failure_class — the sub-agent will rewrite "
+                    "Dockerfile from scratch."
+                ),
+            }, model_id=model_id, eval_env=eval_env)
+        build = build_environment({"dockerfile": _df_text}, ctx=ctx)
         if not build.get("ok"):
             return _persist_experiment_result(ctx, {
                 "success": False, "metrics": {},
@@ -3668,7 +3902,7 @@ def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
         "You are advising an RLM root model on which tool to use next.\n\n"
         f"CURRENT SITUATION:\n{situation}\n\n"
         "AVAILABLE TOOLS:\n"
-        "* rlm_query(slice, question) — spawn a sub-RLM to answer a focused question on a paper slice >8K chars\n"
+        "* rlm_query(prompt) — spawn a sub-RLM. Pass ONE composed prompt: rlm_query(f'{slice}\\n\\nQuestion: {q}'). DO NOT call rlm_query(slice, question) — the 2nd positional arg is `model` and a question there returns a CLI error as the answer.\n"
         "* llm_query(prompt) — single LLM call, no recursion, for simple summarization or transformation\n"
         "* understand_section(text_slice) — extract datasets/metrics/recipe/hardware/ambiguities from a slice (generic schema)\n"
         "* extract_hyperparameters(text_slice) — extract optimizer/lr/batch_size/epochs from a slice\n"

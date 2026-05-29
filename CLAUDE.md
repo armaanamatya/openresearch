@@ -198,6 +198,41 @@ Read whichever is relevant before non-trivial changes:
 - `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` — dynamic-GPU resolver + RunPod escalation (capacity + OOM) design + the per-run guidance hook.
 - `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` — five P0/P1 fixes (REPL safe-builtins, traceback surfacing, shell-env precedence warning, forced-iteration None-score, premature-exit detector) born from the 2026-05-28 `prj_09047604e591d969` 5-iteration death-spiral.
 - `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` — sub-agent token-burn measurement + retry-burst elimination; sibling track to the stability remediation above.
+- `docs/runbooks/2026-05-29-monitoring-loops.md` — the **six loops** (run-log monitor, CLI launch-log, backend health probe, Playwright UI loop, kill+restart, heartbeat) Claude Code uses to babysit a SDAR sprint without the human watching the terminal. Includes the doc-loop convention that turns every loop-emitted event into a `BUG-NEW-NNN` runbook entry + a memory file. Read this before driving any retry sprint.
+
+## Dockerfile shape guard (BUG-NEW-042, 2026-05-29)
+`backend/agents/rlm/primitives.py::_validate_dockerfile_shape` rejects any Dockerfile whose first non-blank, non-comment line is not `FROM` / `ARG` / `# syntax=`. Two enforcement sites:
+- **implement_baseline (auto-recover):** snapshots `ctx.project_dir/Dockerfile` BEFORE the sub-agent runs; if the post-write file fails validation AND the pre-snapshot was valid, restores the snapshot and emits a `dashboard_events.jsonl` warning (`code="dockerfile_shape_guard"`, `restored: bool`). Recovers silently from the failure mode where the sub-agent's `Write` tool dumps conversational prose into the Dockerfile.
+- **run_experiment (fail-fast):** rejects a malformed Dockerfile with `failure_class="dockerfile_invalid"` (added to `_RUN_EXPERIMENT_REPAIRABLE_FAILURES`) and a `suggested_fix` telling the root to call `implement_baseline` again. Reached only when both the pre-snapshot AND the sub-agent write were bad.
+
+The 2026-05-29 incident: SDAR attempt 6 (`prj_88ff0178a0e5b817`) failed at `run_experiment` with `dockerfile parse error on line 1: unknown instruction: You've` because the implement_baseline sub-agent wrote `"You've already built the environment so this is just documentation."` into the Dockerfile. Tests: `tests/agents/rlm/test_dockerfile_shape_guard.py`.
+
+## CLI signal handling (BUG-NEW-041, 2026-05-29)
+`backend/cli.py::_install_termination_handlers` registers SIGTERM/SIGHUP handlers in `cmd_reproduce` that:
+1. Atomically write `runs/<project>/demo_status.json::status="killed"` with `killReason="received signal <n>"`.
+2. `signal.raise_signal(SIGINT)` so the existing `except KeyboardInterrupt` graceful path runs (logger flush, `store.close()`).
+
+`_mark_demo_status_stopped` and `_mark_demo_status_failed` now treat `"killed"` as a terminal state and refuse to overwrite it — without this, the converted SIGINT would re-flip `killed` → `stopped` and lose the signal context.
+
+The module-level holder `_ACTIVE_PROJECT_ID` is updated via `_set_active_project_id(...)` at every code path that binds a project_id (main ingest path + `_cmd_reproduce_rdr` / `_cmd_reproduce_rlm_paperbench` / `_cmd_reproduce_sanity`). Without these updates the handler can't know which run to mark killed. Tests: `tests/cli/test_termination_handler.py`. SIGKILL (-9) is still unhandleable; `scripts/loops/kill_and_restart.sh` keeps the manual `demo_status.json` patch as defense in depth.
+
+## claude-agent-sdk isolation (BUG-NEW-038, 2026-05-29)
+Every `ClaudeAgentOptions(...)` ReproLab constructs MUST pass `setting_sources=[]`, an explicit `mcp_servers` dict (`{}` when no servers are needed), and a non-plan `permission_mode` — otherwise `claude-agent-sdk` loads the developer's `~/.claude/settings.json`, every MCP server they have configured (Sentry, Stripe, Playwright, …), and any plan-mode they have on. The inner root/sub-agent model then receives that contamination as its own environment and behaves accordingly. On SDAR attempt 5 the `claude-oauth` root spent two iterations refusing to do any work because it thought its tool inventory was the user's outer MCP servers and "plan mode is active". **All three construction sites are now patched** (2026-05-29):
+- `backend/services/context/workspace/tools/rlm_query.py:550` (`ClaudeLlmClient._async_complete`) — root model text completions.
+- `backend/agents/runtime/claude_runtime.py:93` (`ClaudeAgentRuntime.run_agent`) — sub-agent code-writing runtime used by `implement_baseline` and every RDR/RLM sub-agent.
+- `backend/hermes_audit/providers.py:394` — hermes audit LLM call.
+
+When you add a new `ClaudeAgentOptions(...)` call site, always include `setting_sources=[]` and an explicit `mcp_servers` dict. The `permission_mode` defaults are correct (root = `bypassPermissions` for text completions, sub-agents = `agent.permission_mode` which itself defaults to `bypassPermissions` in `backend/agents/runtime/base.py:107`).
+
+## Universality posture — supporting "any ML paper"
+ReproLab is paper-agnostic by design. The per-paper customization surface, when reproducing a paper not previously tested, is:
+- **`--paper-hint <arxiv-id>`** → looks up `backend/agents/prompts/paper_hints.py::PAPER_HINTS`. Optional. Add an entry when a paper has algorithmic invariants you want the rubric to enforce (the SDAR entry is the reference shape). Missing entry = no hint applied, system runs with defaults.
+- **`--scope-spec`** → operator-side narrowing/expansion of the hint's `default_scope` (models / datasets / seeds).
+- **`REPROLAB_BASELINE_EXTRA_GUIDANCE`** → free-text appended to the implementer's prompt. Use for one-off per-run scoping (e.g. "use only the two smallest model variants"). The CLI auto-merges `--paper-hint` guidance under this env var (`backend/cli.py:1032`).
+- **`paper_invariants.py`** → registry of deterministic invariants (model-name canonicalization, environment-name normalization). Best-effort, falls back to no enforcement if a paper isn't registered.
+- **`--vram-gb <n>`** → manual VRAM override that bypasses the LLM estimate, still applies the `REPROLAB_DYNAMIC_GPU_HEADROOM` multiplier.
+
+Out-of-the-box, an arbitrary arXiv ID or PDF runs end-to-end with: ingest → auto-generated rubric (no PaperBench bundle) → 12 primitives → Docker/RunPod sandbox → `verify_against_rubric` produces a score. **Quality limits:** the auto-generated rubric is only as good as the LLM that writes it (no code fix can change this) — strict rubrics catch fake reproductions but reject some good ones; loose rubrics give easy passes but no signal. For papers where reproduction fidelity matters, add a `PAPER_HINTS` entry with explicit `invariants` (regex-based code checks).
 
 ## Context-mode routing
 This project inherits the context-mode MCP routing rules from `C:\Users\Armaan\Desktop\CLAUDE.md` (parent). In short: use `ctx_batch_execute` / `ctx_execute` / `ctx_execute_file` for any command or file read producing >20 lines, and `ctx_fetch_and_index` instead of `WebFetch` / `curl` / `wget`. The parent file has the full table of blocked vs. redirected tools.

@@ -136,6 +136,41 @@ No new architectural concepts. The three guards extend existing patterns:
 
 `RunContext.bundle_mode` is the only new public field. It's a boolean — easy to thread through, no compatibility surface.
 
+## Advisor reconciliation (2026-05-29, post-commit)
+
+An advisor pass after committing this spec surfaced one blocking semantic regression in P2 and prompted a fact-check that dissolved two unrelated concerns. Below records what changed and why; the original sections above are preserved so future readers see both the initial reasoning and the corrected plan.
+
+### Fact-check findings
+- **`HF_TOKEN` is not configured** in `.env` or `backend/config.py` (`grep` returned nothing).
+- **Llama2 is OUT OF SCOPE per the bundle's own addendum** (`third_party/paperbench/mechanistic-understanding/addendum.md`): *"Results related to Llama2 have been deemed out of scope because access to get the llama2 model depends on getting permission."* The entire in-scope reproduction is GPT2-medium DPO + dataset creation + toxicity probe + SVD analysis. GPT2-medium is ~350 MB (actor + reference = 700 MB, fits 4090 trivially).
+- **No paper hint** for `mechanistic-understanding` in `paper_hints.py`.
+
+### Changes from the original spec
+
+| Change | Rationale |
+|---|---|
+| **DROP P2 (bundle-mode Dockerfile lock)** | P2 always restores the pre-snapshot Dockerfile in bundle mode. The pre-snapshot is `detect_environment`'s initial output, which is known to under-specify deps — CLAUDE.md and `primitives.py:2585-2589` both document that the code agent's job is to keep `project_dir/Dockerfile` in step with the baseline's real imports. The original `transformers`/`datasets` dep-detection bug that motivated those comments was found *on this exact paper*. P2 silently reverts that legitimate dep addition; attempt 1 would have died at `run_experiment` with `ModuleNotFoundError: transformers` and the auto-recover would have rolled back the fix on every retry. The BUG-NEW-042 shape guard already prevents prose-stomp; P2 is redundant and harmful. |
+| **REFINE P3** | Pre-flight sanity now fires only when `--sandbox` is `local` or `docker`. For `--sandbox runpod`, a transient capacity exhaustion would trip the preflight and abort a real run that would otherwise have waited it out (transient → terminal anti-pattern). The existing `scripts/runpod_check.sh` is the right preflight for RunPod. |
+| **ADD P4 — `root_cause_signature` helper** | The same-failure-twice rule as originally written keys on `failure_class`, which is a `run_experiment` result field. SDAR's 7-attempt sweep died from things WITHOUT `failure_class` (REPL safe-builtins, SDK pre-emit stall, OAuth refusal, ingest failure). New helper `backend/agents/diagnostics/root_cause.py::root_cause_signature(attempt_info: dict) -> str` returns: `failure_class` if present; else `<primitive>:<error_code>`; else `<exception_class>:<first_line_of_message>`. The runbook author records this signature on each attempt; the rule compares signatures across attempts. |
+| **GPT2-medium-only scope** | The bundle defines "entire paper" as excluding Llama2. The user's "entire paper" directive is now satisfied by GPT2-medium only. Pass to the agent via `REPROLAB_BASELINE_EXTRA_GUIDANCE`: *"Llama2 is out of scope per bundle addendum. Reproduce GPT2-medium DPO only (~350 MB model, fits any GPU)."* Removes the `HF_TOKEN`/`HUGGINGFACE` gating concern entirely. |
+| **Drop `--vram-gb` override; tighten `--max-usd` to $5** | GPT2-medium × 2 (actor + reference) = 700 MB. RTX 4090 community ($0.34/hr) is the right SKU. Actual cost for ~1.5 h attempt should be well under $1; the $5 ceiling is a safety net. |
+
+### Revised run command
+
+```bash
+env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  REPROLAB_BASELINE_EXTRA_GUIDANCE="Llama2 is out of scope per bundle addendum (third_party/paperbench/mechanistic-understanding/addendum.md). Reproduce GPT2-medium DPO only (~350MB model, fits any GPU). Use unitary/unbiased-toxic-roberta for toxicity scoring and thesofakillers/jigsaw-toxic-comment-classification-challenge for the Jigsaw dataset, per the addendum's Useful details section." \
+  nohup .venv/bin/python -m backend.cli reproduce mechanistic-understanding \
+    --mode rlm --model claude-oauth --sandbox runpod --provider anthropic \
+    --max-wall-clock 7200 --max-pod-seconds 7200 --max-usd 5 \
+    > /tmp/mech-understanding-attempt1.log 2>&1 &
+```
+
+(`--preflight-sanity` removed from the command — it's a no-op against runpod after the P3 refinement.)
+
+### Revised totals
+~130 LOC + 7 tests (down from 210 + 11). Implementation order: P1 → P3-refined → P4 → tests → spec commit → run launch.
+
 ## Out of scope (intentional)
 
 - Run-result classifier telemetry / structured postmortems (deferred — bigger design, separate spec)

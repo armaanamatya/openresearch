@@ -223,6 +223,12 @@ def _mark_demo_status_stopped(
                 existing = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 existing = {}
+        # BUG-NEW-041: preserve a SIGTERM-set killed status so signal handlers
+        # remain the authoritative source for the kill reason; without this,
+        # the KeyboardInterrupt path that follows a converted SIGTERM would
+        # overwrite "killed" → "stopped" and lose the signal context.
+        if existing.get("status") in ("killed", "completed", "failed"):
+            return
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -274,8 +280,8 @@ def _mark_demo_status_failed(
                 existing = {}
         except Exception:
             existing = {}  # corrupt; overwrite with a fresh failed payload
-        if existing.get("status") in ("completed", "failed", "stopped"):
-            return  # something else (probably _finalize) already wrote terminal status
+        if existing.get("status") in ("completed", "failed", "stopped", "killed"):
+            return  # something else (probably _finalize or SIGTERM handler) already wrote terminal status
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -287,6 +293,86 @@ def _mark_demo_status_failed(
         _atomic_write_json(path, merged)
     except Exception:
         return
+
+
+# BUG-NEW-041: module-level holder for the currently active run's project_id.
+# The signal handler closure reads from this; every code path that binds a
+# project_id (cmd_reproduce + every _cmd_reproduce_* branch) MUST update it
+# via _set_active_project_id() so SIGTERM/SIGHUP can flip the right run's
+# demo_status.json to status="killed".
+_ACTIVE_PROJECT_ID: list[str | None] = [None]
+
+
+def _set_active_project_id(project_id: str | None) -> None:
+    """Update the active project_id seen by the SIGTERM/SIGHUP handler."""
+    _ACTIVE_PROJECT_ID[0] = project_id
+
+
+def _install_termination_handlers(
+    runs_root: Path,
+    project_id_holder: list[str | None] = _ACTIVE_PROJECT_ID,
+) -> None:
+    """BUG-NEW-041: convert SIGTERM/SIGHUP to a graceful kill + KeyboardInterrupt.
+
+    Without this, the default `kill <pid>` Python takes (SIGTERM raises
+    SystemExit only when no handler is installed, and then exits with no
+    chance to flip demo_status.json) leaves the lab UI showing the run as
+    ``running`` forever — the BUG-NEW-041 "phantom running" failure mode.
+
+    The handler:
+      1. Reads the current project_id from ``project_id_holder[0]``
+         (which the caller updates as soon as ``register_project`` returns).
+      2. Atomically writes ``status="killed"`` with the signal number.
+      3. Re-raises as SIGINT so the existing ``except KeyboardInterrupt``
+         path runs (logger flush, store.close(), etc.).
+
+    project_id_holder is a single-element list so the handler closure can
+    see updates without needing a class. SIGHUP is included so the run also
+    dies cleanly when its controlling terminal disappears (common with
+    ``nohup``-launched background CLI runs).
+    """
+    import signal as _signal
+
+    def _handler(signum: int, _frame: object) -> None:
+        pid = project_id_holder[0]
+        if pid is not None:
+            try:
+                path = runs_root / pid / "demo_status.json"
+                if path.exists():
+                    try:
+                        existing = json.loads(path.read_text(encoding="utf-8"))
+                        if not isinstance(existing, dict):
+                            existing = {}
+                    except Exception:
+                        existing = {}
+                    if existing.get("status") not in ("completed", "failed", "killed"):
+                        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                        merged = {
+                            **existing,
+                            "status": "killed",
+                            "killedAt": now_iso,
+                            "updatedAt": now_iso,
+                            "completedAt": now_iso,
+                            "killReason": f"received signal {signum}",
+                            "error": f"Run killed by signal {signum}",
+                        }
+                        _atomic_write_json(path, merged)
+            except Exception:
+                pass
+        try:
+            _signal.raise_signal(_signal.SIGINT)
+        except Exception:
+            os._exit(128 + signum)
+
+    for _sig_name in ("SIGTERM", "SIGHUP"):
+        _sig = getattr(_signal, _sig_name, None)
+        if _sig is None:
+            continue
+        try:
+            _signal.signal(_sig, _handler)
+        except (OSError, ValueError):
+            # Not the main thread, or signal unsupported on this platform.
+            pass
 
 
 def _make_services(
@@ -531,6 +617,9 @@ _REPRODUCE_DEFAULTS = {
     "paper_hint": None,
     "scope_spec": None,
     "sanity": False,
+    # P3 (2026-05-29) — opt-in preflight that runs --sanity inline before the
+    # real run. Sandbox-gated to local/docker (see cmd_reproduce).
+    "preflight_sanity": False,
     # Lane Q — defaults to False (strict reproduction). Set to True via
     # --minimize-compute or the lab UI "Minimize compute" checkbox.
     "minimize_compute": False,
@@ -605,6 +694,8 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
         else:
             raw_id = f"pb_{_safe_dir_name(paper_id)}_{int(time.time())}"
             project_id = raw_id[:80]
+
+    _set_active_project_id(project_id)  # BUG-NEW-041
 
     max_repair_iterations: int = getattr(args, "max_repair_iterations", 2)
     repair_target: float = getattr(args, "repair_target", 0.6)
@@ -714,6 +805,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         project_id = project_id_override
     else:
         project_id = f"pb_{_safe(paper_id)}_{int(time.time())}"[:80]
+    _set_active_project_id(project_id)  # BUG-NEW-041
 
     # Load bundle from the canonical third_party location.
     repo_root = Path(__file__).resolve().parent.parent
@@ -870,8 +962,28 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
     return 0 if rlm_result.status in ("completed", "partial") else 3
 
 
-def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
-    """Run a bounded sandbox smoke without invoking RLM or code-writing agents."""
+def _run_sanity_check(
+    args: argparse.Namespace,
+    runs_root: Path,
+    *,
+    project_id: str | None = None,
+    write_demo_status: bool = True,
+) -> tuple[bool, str, str]:
+    """Execute the bounded sandbox smoke check; return ``(success, message, project_id)``.
+
+    Factored out of ``_cmd_reproduce_sanity`` so the same logic can run as
+    an inline preflight (``--preflight-sanity``) without the UI-facing
+    ``demo_status.json`` transitions that only make sense when the run is
+    the user's primary intent.
+
+    When ``write_demo_status`` is True, writes the running → completed/failed
+    transitions exactly as the standalone ``--sanity`` subcommand does.
+    When False, leaves ``demo_status.json`` alone so the preflight project
+    does not pollute the lab UI.
+
+    Returns ``(success, message, project_id)`` — caller decides what to do
+    with each (print, set exit code, etc.).
+    """
     import hashlib
 
     from backend.agents.dashboard_emitter import DashboardEmitter
@@ -885,11 +997,13 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     from backend.services.runtime import SandboxRuntimeError
 
     source = str(getattr(args, "source", "sanity"))
-    project_id = getattr(args, "project_id", None) or (
-        "prj_" + hashlib.sha256(
-            f"sanity:{source}:{datetime.now(timezone.utc).isoformat()}".encode("utf-8")
-        ).hexdigest()[:16]
-    )
+    if project_id is None:
+        project_id = getattr(args, "project_id", None) or (
+            "prj_" + hashlib.sha256(
+                f"sanity:{source}:{datetime.now(timezone.utc).isoformat()}".encode("utf-8")
+            ).hexdigest()[:16]
+        )
+    _set_active_project_id(project_id)  # BUG-NEW-041
     project_dir = runs_root / project_id
     code_dir = project_dir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
@@ -909,15 +1023,16 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     try:
         ensure_sandbox_mode_available(sandbox_mode)
     except SandboxRuntimeError as exc:
-        print(f"Sandbox preflight failed: {exc}", file=sys.stderr)
-        _write_demo_status(
-            project_dir,
-            "failed",
-            error=str(exc),
-            process_status="completed",
-            verdict="failed",
-        )
-        return 2
+        msg = f"Sandbox preflight failed: {exc}"
+        if write_demo_status:
+            _write_demo_status(
+                project_dir,
+                "failed",
+                error=str(exc),
+                process_status="completed",
+                verdict="failed",
+            )
+        return False, msg, project_id
 
     run_budget = RunBudget(
         max_usd=getattr(args, "max_usd", None),
@@ -944,13 +1059,14 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         run_budget=run_budget,
         arxiv_id=source,
     )
-    _write_demo_status(
-        project_dir,
-        "running",
-        primitive_provider="sanity-template",
-        process_status="running",
-        verdict="unknown",
-    )
+    if write_demo_status:
+        _write_demo_status(
+            project_dir,
+            "running",
+            primitive_provider="sanity-template",
+            process_status="running",
+            verdict="unknown",
+        )
     env_id = get_settings().runpod_image if sandbox_mode.value == "runpod" else "python:3.11-slim"
     result = run_experiment(
         {"ok": True, "code_path": str(code_dir), "files": ["commands.json", "sanity.py"]},
@@ -960,17 +1076,27 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         ctx=ctx,
     )
     success = bool(result.get("success")) and bool(result.get("metrics"))
-    _write_demo_status(
-        project_dir,
-        "completed" if success else "failed",
-        error=None if success else result.get("error", "sanity smoke failed"),
-        primitive_provider="sanity-template",
-        process_status="completed",
-        verdict="reproduced" if success else "failed",
-    )
+    if write_demo_status:
+        _write_demo_status(
+            project_dir,
+            "completed" if success else "failed",
+            error=None if success else result.get("error", "sanity smoke failed"),
+            primitive_provider="sanity-template",
+            process_status="completed",
+            verdict="reproduced" if success else "failed",
+        )
     ctx.cost_ledger.flush()
+    msg = "sanity ok" if success else str(result.get("error", "sanity smoke failed"))
+    return success, msg, project_id
+
+
+def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
+    """Run a bounded sandbox smoke without invoking RLM or code-writing agents."""
+    success, msg, project_id = _run_sanity_check(args, runs_root, write_demo_status=True)
     print(f"[sanity] project_id: {project_id}", file=sys.stderr)
     print(f"[sanity] result    : {'ok' if success else 'failed'}", file=sys.stderr)
+    if not success:
+        print(f"[sanity] reason    : {msg}", file=sys.stderr)
     return 0 if success else 2
 
 
@@ -993,6 +1119,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
     runs_root = Path(args.runs_root)
+
+    # BUG-NEW-041: install SIGTERM/SIGHUP handlers so a `kill <pid>` flips
+    # demo_status.json to status="killed" before exit. The module-level
+    # _ACTIVE_PROJECT_ID holder is updated below as soon as the route's
+    # project_id is known (cmd_reproduce direct path and the rdr / paperbench /
+    # sanity sub-commands all call _set_active_project_id).
+    _set_active_project_id(None)
+    _install_termination_handlers(runs_root)
 
     # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
@@ -1057,6 +1191,43 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     if getattr(args, "sanity", False):
         return _cmd_reproduce_sanity(args, runs_root)
 
+    # P3 (2026-05-29) — opt-in preflight sanity dispatch. Validates the
+    # sandbox layer (docker daemon up, local interpreter present, env vars
+    # reachable) BEFORE paying for a 20+ min real run. Sandbox-gated:
+    # only fires for local/docker. RunPod is excluded because transient
+    # capacity exhaustion would convert a temporary issue into a terminal
+    # one — runpod_check.sh / runpod_check is the right preflight for that.
+    if getattr(args, "preflight_sanity", False):
+        _sandbox_str = str(getattr(args, "sandbox", "auto")).lower()
+        if _sandbox_str in ("local", "docker"):
+            print(
+                f"[preflight-sanity] running sandbox=({_sandbox_str}) smoke before real run…",
+                file=sys.stderr,
+            )
+            _ok, _msg, _preflight_pid = _run_sanity_check(
+                args, runs_root, write_demo_status=False,
+            )
+            if not _ok:
+                print(
+                    f"[preflight-sanity] FAILED ({_preflight_pid}): {_msg}",
+                    file=sys.stderr,
+                )
+                print(
+                    "[preflight-sanity] real run NOT launched. Fix the sandbox and retry.",
+                    file=sys.stderr,
+                )
+                return 4
+            print(
+                f"[preflight-sanity] ok ({_preflight_pid}) — proceeding to real run",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[preflight-sanity] skipped (--sandbox={_sandbox_str}; preflight "
+                f"only fires for local/docker per P3 design)",
+                file=sys.stderr,
+            )
+
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
@@ -1120,6 +1291,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # store aggregate (keyed by the source-derived id) is still created correctly.
     if getattr(args, "project_id", None):
         project_id = args.project_id
+    _set_active_project_id(project_id)  # BUG-NEW-041
     print(f"             project_id={project_id}", file=sys.stderr)
 
     print("[ingest 2/6] Fetching paper", file=sys.stderr)
@@ -1183,18 +1355,37 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         # parser may have extracted the real title into the first section).
         _entries = (workspace_claim_map or {}).get("entries") or []
         _first_title = (_entries[0].get("title") if _entries else "") or ""
-        # Reject the noise titles the bundle path produces ("Abstract",
-        # "Introduction", "1 Introduction"). Anything else is probably real.
-        _is_noise = (not _first_title) or _first_title.strip().lower() in {
+        # Reject:
+        #  - section noise ("Abstract", "Introduction", ...)
+        #  - workspace VARIABLE-KEY names ("paper_text", "paper_metadata",
+        #    "supplementary_text", "repo_files", "prior_work_refs",
+        #    "rubric_spec") which the bundle path uses as entry titles when
+        #    no real section title was extracted (BUG-NEW-001 root cause).
+        _NOISE_TITLES = {
             "abstract", "introduction", "1 introduction", "1. introduction",
             "summary", "overview",
+            "paper_text", "paper_metadata", "supplementary_text",
+            "repo_files", "prior_work_refs", "rubric_spec",
         }
+        _is_noise = (not _first_title) or _first_title.strip().lower() in _NOISE_TITLES
         if not _is_noise:
             _paper_title = _first_title.strip()
+        # Also populate sourceLabel/sourceNote/sourceKind so the lab-shell's
+        # `run.sourceLabel` fallback can read the real title for CLI-spawned
+        # runs (only the upload path wrote these before — BUG-NEW-001).
+        _source_kind = (
+            "arxiv" if isinstance(source, ArxivId)
+            else "uploaded_pdf" if isinstance(source, PdfPath)
+            else "doi" if isinstance(source, DoiRef)
+            else "other"
+        )
         _existing.update({
             "paperId": _paper_id,
             "paperTitle": _paper_title,
             "paper": {"id": _paper_id, "title": _paper_title},
+            "sourceKind": _source_kind,
+            "sourceLabel": _paper_title,
+            "sourceNote": _paper_id,
         })
         # Atomic write so a crash mid-write leaves either old or new JSON.
         _tmp = _ds_path.with_suffix(_ds_path.suffix + ".tmp")
@@ -1486,6 +1677,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Run a cheap sandbox plumbing smoke: write a deterministic tiny "
             "baseline, execute one command, and skip RLM/code-writing agents."
+        ),
+    )
+    reproduce.add_argument(
+        "--preflight-sanity",
+        action="store_true",
+        help=(
+            "P3 (2026-05-29): before the real run, dispatch the --sanity check "
+            "to validate the sandbox layer. Catches dead docker daemon / missing "
+            "local interpreter etc. before paying for a 20+ min real run. "
+            "ONLY fires when --sandbox is local or docker — for runpod, transient "
+            "capacity exhaustion would otherwise trip the preflight and abort a "
+            "real run that would have waited it out. Exits with code 4 on failure."
         ),
     )
     reproduce.add_argument(
