@@ -146,6 +146,89 @@ class TestResolveLocal:
         assert ep is not None
         assert "Qwen" in ep.model
 
+    def test_api_key_from_env_passed_to_probe_and_endpoint(self, monkeypatch):
+        """FIX 2: REPROLAB_ACCELERATOR_API_KEY is forwarded to probe_endpoint and the endpoint."""
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "my-secret-key")
+        captured = {}
+
+        def _capture(url, *, api_key=None, **kw):
+            captured["api_key"] = api_key
+            return True
+
+        with patch(
+            "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_capture
+        ), patch(
+            "backend.agents.rlm.accelerator._check_served_model"
+        ):
+            ep = resolve_accelerator("local")
+
+        assert captured.get("api_key") == "my-secret-key"
+        assert ep is not None
+        assert ep.api_key == "my-secret-key"
+
+    def test_default_api_key_is_local_when_env_absent(self, monkeypatch):
+        """FIX 2: api_key defaults to 'local' when REPROLAB_ACCELERATOR_API_KEY is unset."""
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_API_KEY", raising=False)
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+
+        with patch(
+            "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
+        ), patch(
+            "backend.agents.rlm.accelerator._check_served_model"
+        ):
+            ep = resolve_accelerator("local")
+
+        assert ep is not None
+        assert ep.api_key == "local"
+
+    def test_model_mismatch_logs_warning(self, monkeypatch):
+        """FIX 3: a WARNING is logged when the requested model is not in the served list."""
+        import logging
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "local")
+
+        # Served list contains a different model
+        import json
+        served_resp_body = json.dumps({"data": [{"id": "other-model/7B"}]}).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = served_resp_body
+        mock_resp.status = 200
+
+        with patch(
+            "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
+        ), patch(
+            "urllib.request.urlopen", return_value=mock_resp
+        ):
+            with patch("backend.agents.rlm.accelerator._log") as mock_log:
+                from backend.agents.rlm.accelerator import _check_served_model
+                _check_served_model(
+                    "http://127.0.0.1:8001/v1",
+                    "Qwen/Qwen2.5-Coder-32B-Instruct",
+                    api_key="local",
+                )
+        # warning must have been called with text containing the model names
+        warning_calls = [c for c in mock_log.warning.call_args_list]
+        assert warning_calls, "expected a warning for model mismatch"
+        msg = str(warning_calls[0])
+        assert "Qwen/Qwen2.5-Coder-32B-Instruct" in msg
+        assert "other-model/7B" in msg
+
+    def test_model_mismatch_check_skips_on_network_error(self, monkeypatch):
+        """FIX 3: network errors in model check are silently swallowed."""
+        import urllib.error
+        from backend.agents.rlm.accelerator import _check_served_model
+
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+            # must not raise
+            _check_served_model("http://127.0.0.1:8001/v1", "any-model", api_key="local")
+
 
 # ---------------------------------------------------------------------------
 # resolve_accelerator("runpod")

@@ -165,11 +165,44 @@ def probe_endpoint(base_url: str, *, api_key: str | None = None, timeout: float 
 # ---------------------------------------------------------------------------
 
 
+def _check_served_model(base_url: str, requested_model: str, *, api_key: str) -> None:
+    """Best-effort check that *requested_model* is in the served model list.
+
+    Performs a GET /v1/models with the auth header and logs a WARNING when the
+    requested model id is not found.  Silently no-ops on any network/parse
+    error so callers are never interrupted.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = base_url.rstrip("/")
+    if not url.endswith("/models"):
+        url = url + "/models" if url.endswith("/v1") else url + "/models"
+
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            import json as _json
+            data = _json.loads(resp.read())
+        served_ids = [m.get("id", "") for m in data.get("data", [])]
+        if served_ids and requested_model not in served_ids:
+            _log.warning(
+                "accelerator[local]: requested model %r is NOT in the served model list %r — "
+                "completions will likely return 404; set REPROLAB_ACCELERATOR_MODEL to one of "
+                "the served ids or restart the server with the correct model",
+                requested_model,
+                served_ids,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("accelerator[local]: model-check skipped (%s)", exc)
+
+
 def _resolve_local(*, explicit: bool) -> AcceleratorEndpoint | None:
     """Resolve the on-device vLLM provider.
 
-    Reads ``REPROLAB_ACCELERATOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``)
-    and ``REPROLAB_ACCELERATOR_MODEL`` (default Qwen2.5-Coder-32B-Instruct).
+    Reads ``REPROLAB_ACCELERATOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
+    ``REPROLAB_ACCELERATOR_MODEL`` (default Qwen2.5-Coder-32B-Instruct), and
+    ``REPROLAB_ACCELERATOR_API_KEY`` (default ``"local"``).
 
     Probes the endpoint; returns ``None`` when the probe fails regardless of
     whether the call was explicit or from ``"auto"`` — the server simply may
@@ -178,12 +211,14 @@ def _resolve_local(*, explicit: bool) -> AcceleratorEndpoint | None:
     """
     base_url = os.environ.get("REPROLAB_ACCELERATOR_BASE_URL", _DEFAULT_LOCAL_BASE_URL)
     model = os.environ.get("REPROLAB_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
+    api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
 
-    if probe_endpoint(base_url):
+    if probe_endpoint(base_url, api_key=api_key):
+        _check_served_model(base_url, model, api_key=api_key)
         return AcceleratorEndpoint(
             base_url=base_url,
             model=model,
-            api_key="local",
+            api_key=api_key,
             kind="local",
         )
 
