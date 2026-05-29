@@ -22,6 +22,7 @@ import { readUserPrefs, writeUserPref, readProviderPrefs, writeProviderPrefs } f
 import { RlmLab } from "./rlm/rlm-lab";
 import { isRlmEvent } from "@/lib/events/rlm-events";
 import { replayFixture } from "./rlm/replay";
+import { RlmReplayContent } from "./rlm/replay-surface";
 
 import "./lab-shell.css";
 
@@ -219,6 +220,7 @@ export function LabShell({
           When rlmFixture=1, the normal run/upload content is replaced. */}
       <Suspense fallback={null}>
         <RlmFixtureContent>
+          <RlmReplayContent>
           {run ? (
             <WorkflowView
               run={run}
@@ -337,6 +339,7 @@ export function LabShell({
               onProviderCredentialsChange={setProviderCredentials}
             />
           )}
+          </RlmReplayContent>
         </RlmFixtureContent>
       </Suspense>
     </main>
