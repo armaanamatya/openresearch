@@ -15,6 +15,21 @@ from backend.routes.leaderboard import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_leaderboard_cache():
+    # leaderboard_cache._cache is a process-global keyed by project_id with
+    # mtime-based invalidation. These tests reuse project_ids ("a"/"b") across
+    # different tmp_paths; with coarse filesystem mtime the staleness check can
+    # collide and return a STALE cross-test row, so a different test fails on
+    # each run (timing-dependent flakiness). clear() before+after each test —
+    # using the cache's own test-isolation hook — makes the suite deterministic.
+    from backend.services.events import leaderboard_cache
+
+    leaderboard_cache.clear()
+    yield
+    leaderboard_cache.clear()
+
+
 def _write_run(
     runs_root: Path,
     project_id: str,
