@@ -109,25 +109,48 @@ def _check_vllm() -> bool:
 
 
 def _terminate_child(proc: subprocess.Popen[bytes], label: str = "vLLM") -> None:
-    """Gracefully terminate *proc*: SIGTERM then SIGKILL after _SIGTERM_GRACE_S."""
+    """Terminate *proc* AND its whole process group: SIGTERM, then SIGKILL after grace.
+
+    vLLM's tensor-parallel workers are 'spawn' multiprocessing subprocesses. Signalling
+    only the parent Popen leaves those workers orphaned (reparented to init) and spinning
+    at 100% CPU, which then starves the next serve attempt (observed 2026-05-29: a
+    timed-out 32B boot left 3 orphans that crippled the following boot). vLLM is launched
+    with start_new_session=True (see _launch_vllm) so the parent leads its own process
+    group; we signal the whole group here so no worker survives.
+    """
     if proc.poll() is not None:
         # Already exited.
         return
-    logger.info("serve_local_llm: sending SIGTERM to %s (pid %d)", label, proc.pid)
     try:
-        proc.terminate()
+        pgid: int | None = os.getpgid(proc.pid)
     except OSError:
-        pass
+        pgid = None
+
+    def _signal_group(sig: int) -> None:
+        if pgid is not None:
+            try:
+                os.killpg(pgid, sig)
+                return
+            except OSError:
+                pass
+        try:  # fallback: at least signal the direct child
+            proc.send_signal(sig)
+        except OSError:
+            pass
+
+    logger.info("serve_local_llm: SIGTERM %s process group (pid %d)", label, proc.pid)
+    _signal_group(signal.SIGTERM)
     try:
         proc.wait(timeout=_SIGTERM_GRACE_S)
     except subprocess.TimeoutExpired:
         logger.warning(
-            "serve_local_llm: %s pid %d did not exit after %ds — SIGKILL",
+            "serve_local_llm: %s pid %d did not exit after %ds — SIGKILL group",
             label, proc.pid, _SIGTERM_GRACE_S,
         )
+        _signal_group(signal.SIGKILL)
         try:
-            proc.kill()
-        except OSError:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
             pass
 
 
@@ -220,6 +243,11 @@ def _launch_vllm(
         env=child_env,
         stdout=None,   # inherit — let logs flow to this process's stdout
         stderr=None,
+        # New session → the parent leads its own process group, so _terminate_child
+        # can killpg the whole tree (parent + all tensor-parallel spawn workers).
+        # Without this, a SIGKILLed parent orphans its workers (100%-CPU zombies that
+        # starve the next boot — the 2026-05-29 32B failure).
+        start_new_session=True,
     )
 
 
