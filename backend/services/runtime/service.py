@@ -19,7 +19,7 @@ from backend.messaging.envelope import (
     new_correlation_id,
 )
 from backend.messaging.event import DomainEvent, resolve_event_class
-from backend.services.runtime.aggregate import SandboxAggregate
+from backend.services.runtime.aggregate import SandboxAggregate, SandboxState
 from backend.services.runtime.interface import (
     ExecResult,
     RuntimeBackend,
@@ -127,6 +127,16 @@ class RuntimeAppService:
     def _load_aggregate(self, project_id: str, run_id: str) -> SandboxAggregate:
         agg = SandboxAggregate.empty(project_id, run_id)
         if self._store is None:
+            # 2026-05-28 BUG-NEW-018 fix: a cached FAILED aggregate causes the
+            # next create_sandbox call to raise InvalidSandboxTransition('request',
+            # 'failed'). The state machine has no reset path, so on retry we
+            # MUST swap in a fresh aggregate. This restored the run_experiment
+            # path after a prior create_sandbox failure inside the same service
+            # instance — without it, every paper that hits one transient pod
+            # provisioning error dies forever instead of retrying cleanly.
+            cached = self._memory.get((project_id, run_id))
+            if cached is not None and cached.state is SandboxState.FAILED:
+                self._memory.pop((project_id, run_id), None)
             return self._memory.setdefault((project_id, run_id), agg)
         for stored in self._store.load(_runtime_aggregate_id(project_id, run_id)):
             cls = resolve_event_class(stored.event_type, stored.schema_version)

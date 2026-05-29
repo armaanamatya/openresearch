@@ -384,9 +384,18 @@ class ClaudeCodeSdkProvider:
         ResultMessage = sdk.ResultMessage
         query = sdk.query
 
+        # BUG-NEW-038 companion (2026-05-29): hermes audit is a single short
+        # LLM call with no tool use. Without setting_sources=[] / mcp_servers={}
+        # the SDK loads the developer's outer ~/.claude/settings.json + MCP
+        # servers and the auditor model sees them in its tool inventory. Even
+        # though it doesn't call them, the contamination changes the model's
+        # response shape ("I have these tools available, here's what I'd do…").
+        # Pin the environment.
         options = ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             max_turns=self.max_turns,
+            mcp_servers={},
+            setting_sources=[],
         )
 
         async def _collect() -> str:

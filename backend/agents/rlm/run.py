@@ -83,6 +83,10 @@ from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # no
 # BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
 # root model can diagnose failures rather than concluding primitives unavailable.
 from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
+# BUG-NEW-033: auto-recover from (slice, question) misuse of rlm_query/llm_query —
+# library API is single-prompt; the misuse routed the question as a model name
+# and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
+from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch  # noqa: F401
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are

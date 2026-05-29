@@ -860,12 +860,18 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     async def get_rdr_leaf_scores(project_id: str) -> dict:
         """Per-leaf scores from the rdr run's ``final_report.json``.
 
-        Returns 404 when the run dir or final_report.json do not exist yet.
+        Returns an empty leaf-score list with HTTP 200 when scoring is not
+        complete yet (live runs poll this endpoint every few seconds — a 404
+        per poll spammed the browser console and looked broken). Returns 404
+        only when the run dir itself is missing.
         Justification strings are capped at 1000 characters to bound payload size.
         """
         result = await asyncio.to_thread(_read_rdr_leaf_scores, project_id)
         if result is None:
-            raise HTTPException(status_code=404, detail="Run not found or scoring not complete")
+            run_dir = _runs_root() / project_id
+            if not run_dir.is_dir():
+                raise HTTPException(status_code=404, detail="Run not found")
+            return {"project_id": project_id, "overall_score": None, "leaf_scores": []}
         return result
 
     # ------------------------------------------------------------------ #

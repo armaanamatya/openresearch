@@ -79,6 +79,17 @@ class ClaudeAgentRuntime:
             for sub_agent in agent.sub_agents
         }
 
+        # BUG-NEW-038 companion (2026-05-29): the sub-agent code-writing surface
+        # used by implement_baseline (and every other RLM/RDR sub-agent) MUST be
+        # isolated from the developer's outer ~/.claude/settings.json and MCP
+        # servers, for the same reason ClaudeLlmClient must be (rlm_query.py:550).
+        # Previously `mcp_servers` was passed only when ReproLab supplied one of
+        # its own — which meant in the default no-MCP path, the SDK silently
+        # loaded the developer's outer config (Stripe, Sentry, Playwright, …) and
+        # the code-writing agent would see those tools in its inventory. Pin the
+        # environment: always pass mcp_servers explicitly, always strip
+        # setting_sources. permission_mode is per-AgentRuntimeSpec (defaults to
+        # "bypassPermissions" — see runtime/base.py:107) so we leave that alone.
         options = ClaudeAgentOptions(
             model=agent.model or None,
             permission_mode=agent.permission_mode,
@@ -87,7 +98,8 @@ class ClaudeAgentRuntime:
             cwd=str(agent.working_directory) if agent.working_directory else None,
             system_prompt=_with_guard_prompt(agent.instructions, agent),
             max_thinking_tokens=agent.thinking_budget_tokens,
-            **({"mcp_servers": mcp_servers} if mcp_servers else {}),
+            mcp_servers=mcp_servers if mcp_servers else {},
+            setting_sources=[],
         )
 
         async for message in query(prompt=user_input, options=options):

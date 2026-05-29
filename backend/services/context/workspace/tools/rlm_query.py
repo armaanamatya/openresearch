@@ -538,12 +538,23 @@ class ClaudeLlmClient:
         )
         from backend.services.pricing.token_accumulator import TokenAccumulator
 
+        # BUG-NEW-038 (2026-05-29): isolate from the user's outer claude-agent-sdk
+        # config. Without `setting_sources=[]` and `mcp_servers={}`, the SDK
+        # inherits ~/.claude/settings.json, the user's MCP servers, and any plan
+        # mode they have on. The inner root model then sees those tools in its
+        # inventory and refuses to write REPL code ("I have no execution surface,
+        # only Google Drive / Sentry / Context7 / etc."). `permission_mode="plan"`
+        # also leaked through and told the model "plan mode active — block all
+        # execution," which is the wrong signal for a max_turns=1 text generation
+        # call. Pin to a clean, isolated, no-tools text completion.
         options = ClaudeAgentOptions(
             system_prompt=system,
             model=self._model,
             max_turns=self._max_turns,
-            permission_mode="plan",
+            permission_mode="bypassPermissions",
             tools=[],
+            mcp_servers={},
+            setting_sources=[],
         )
 
         result_text = ""
