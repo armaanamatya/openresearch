@@ -11,6 +11,20 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-29 — Every local SDAR algorithm reported `env_load_failed` with zero reward because the dataset root was the RunPod-only `/workspace`
+
+**Symptom.** A local 8×A5000 SDAR run trained nothing: `metrics.json` showed `qwen3_1.7b/alfworld` failing all six algorithms with `status: "env_load_failed"` (reward 0.0) and `webshop/sdar` `training_failed`, the GPUs assigned to the experiment sat at 1 MiB, and `data_load_failures` carried **empty error strings**. A fresh `.heartbeat` (a `while true` keepalive the agent's code spawned) masked the stall from the watchdog.
+
+**Root cause.** The baseline DATASET-SETUP guidance (`baseline_implementation._DATASET_SETUP_BLOCK`) and `config.runpod_volume_mount_path` both hardcode `/workspace` as the data root. `/workspace` is a RunPod *volume* — it does not exist on a local host and is not creatable without root. So the agent's generated `os.makedirs('/workspace/data/alfworld')` raised `PermissionError`; the env loader caught it but recorded only the *status*, discarding the message → an unrecoverable, undiagnosable `env_load_failed`. The guidance was RunPod-specific yet applied to **every** sandbox.
+
+**Fix.** Make the data root sandbox-aware. `run._ensure_local_data_root` repoints `REPROLAB_RUNPOD_VOLUME_MOUNT_PATH` at a writable, **shared** (download-once) cache (`runs/.cache/data`) for local sandboxes, before any primitive reads it; runpod/docker keep the real `/workspace`, and an explicit operator override wins. `_DATASET_SETUP_BLOCK` became `_dataset_setup_block(data_root)` + `_resolve_data_root()`, so the guidance interpolates the active sandbox's writable root (and respects a pre-set `HF_HOME`) instead of hardcoding `/workspace/data/<env>`.
+
+**Lesson.** Cloud-shaped path conventions (`/workspace`, container WORKDIRs) must never leak into a local sandbox as if writable — resolve the writable root *per sandbox* at one seam and thread it everywhere the agent is told where data lives. And an env loader that swallows the exception text turns a one-line `PermissionError` into a silent death-spiral: **always surface `str(e)` into the failure record**, never just a status enum.
+
+**Guardrail.** `tests/agents/rlm/test_local_data_root.py` (local sets a writable root under runs_root; bare `/workspace` is replaced; explicit override respected; runpod untouched; enum `.value` handled) + `test_baseline_implementation_sandbox_aware.py::TestDatasetSetupBlock::test_dataset_setup_uses_writable_root_for_local` (the prompt uses the writable root and `/workspace/data` does NOT leak into a local run).
+
+---
+
 ## 2026-05-29 — A timed-out vLLM boot left orphaned tensor-parallel workers at 100% CPU, starving every later boot
 
 **Symptom.** The 32B accelerator boot (`serve_local_llm.py --tp 4`) timed out at the 600 s `--max-wait`; the retry was pathologically slow — weights never became GPU-resident after 8+ min, the leased GPUs sat idle while CPU was saturated.
