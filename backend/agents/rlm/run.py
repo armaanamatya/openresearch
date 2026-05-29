@@ -143,6 +143,19 @@ class RLMRunResult:
 # ---------------------------------------------------------------------------
 
 
+def _accelerator_grader_offloaded(scope: str | None) -> bool:
+    """Whether ``REPROLAB_ACCELERATOR_SCOPE`` routes the rubric grader to the accelerator.
+
+    The grader is ``ctx.llm_client`` (used by ``verify_against_rubric`` and
+    ``propose_improvements`` — quality-critical judgment/generation). Default
+    ``"navigation"`` keeps it on the strong root model (e.g. Sonnet) so a small
+    accelerator never decides the score; only ``"all"`` offloads it (sensible only with a
+    strong accelerator). Context navigation (``rlm_query``/``llm_query``) always uses the
+    accelerator when one is active, independent of this setting.
+    """
+    return (scope or "navigation").strip().lower() == "all"
+
+
 def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any, str]:
     """Build the ``LlmClient`` for ``RunContext.llm_client`` and its model label.
 
@@ -1125,11 +1138,24 @@ async def run_pipeline_rlm(
             )
             _accel_ep = None
         if _accel_ep is not None:
-            llm_client = build_accelerator_client(_accel_ep)   # override the cheap-call client
-            llm_model = _accel_ep.model  # reflect actual model in final_report.models["planner"]
+            # REPROLAB_ACCELERATOR_SCOPE — which call tiers the accelerator serves:
+            #   "navigation" (default): only the rlms rlm_query/llm_query context-navigation
+            #     calls (high-volume, low-judgment) route to the accelerator (see
+            #     other_backends below). The quality-critical GRADER + improvement calls
+            #     (ctx.llm_client → verify_against_rubric / propose_improvements) stay on the
+            #     strong root model (e.g. Sonnet), so a small accelerator never decides the
+            #     rubric score — it only speeds up paper navigation.
+            #   "all": also route ctx.llm_client to the accelerator (max offload). Only
+            #     sensible when the accelerator is itself strong (e.g. a 32B), else grading
+            #     quality drops.
+            _accel_scope = (_os.environ.get("REPROLAB_ACCELERATOR_SCOPE") or "navigation").strip().lower()
+            if _accelerator_grader_offloaded(_accel_scope):
+                llm_client = build_accelerator_client(_accel_ep)   # grader + nav both on accel
+                llm_model = _accel_ep.model
             logger.info(
-                "accelerator: routing cheap calls to %s (%s, model=%s)",
-                _accel_ep.base_url, _accel_ep.kind, _accel_ep.model,
+                "accelerator: %s (%s, model=%s); scope=%s — navigation routes to the "
+                "accelerator; grader/improvements use %s",
+                _accel_ep.base_url, _accel_ep.kind, _accel_ep.model, _accel_scope, llm_model,
             )
         elif _accel_mode != "auto":
             logger.warning(
@@ -1611,11 +1637,14 @@ def _finalize(
     # Lifts started_at from demo_status.json (written at run start); stamps
     # completed_at at write time; records per-role models for leaderboard ranking.
     report.mode = "rlm"
+    # verifier == grader: both are the rubric-scoring client (ctx.llm_client), whose model
+    # is llm_model. Under the default accelerator scope="navigation" this stays the strong
+    # root model (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
     report.models = {
         "planner": llm_model,
         "executor": getattr(ctx, "agent_model", None),
-        "verifier": None,
-        "grader": None,
+        "verifier": llm_model,
+        "grader": llm_model,
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"
