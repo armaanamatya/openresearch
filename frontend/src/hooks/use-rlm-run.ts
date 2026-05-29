@@ -897,7 +897,17 @@ function foldRunComplete(
 export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState {
   // Every event ensures the paper root exists before its own handling.
   const tree = ensurePaper(state.tree);
-  const seeded: RlmRunState = tree === state.tree ? state : { ...state, tree };
+  let seeded: RlmRunState = tree === state.tree ? state : { ...state, tree };
+
+  // BUG-NEW-004 fix: flip status "queued" → "running" on the FIRST event of
+  // any kind, not only repl_iteration. The backend is plainly running once
+  // dashboard events are landing; the badge being stuck at "queued" for
+  // multiple minutes (and through hundreds of primitive/heartbeat events)
+  // before the first repl_iteration is purely a UI lag. run_complete will
+  // still set its own terminal status below.
+  if (seeded.status === "queued" && event.event !== "run_complete") {
+    seeded = { ...seeded, status: "running" };
+  }
 
   switch (event.event) {
     case "repl_iteration":

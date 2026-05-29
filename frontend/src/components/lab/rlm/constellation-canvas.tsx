@@ -307,14 +307,23 @@ const NodeCircle = memo(function NodeCircle({
   const { kind, title } = node;
   const r = nodeRadius(kind);
 
+  // 2026-05-28 BUG-NEW-022 (cont.): plain primitives previously used the
+  // theme's lowest-contrast pair (--chip/--line), which read as "disabled" or
+  // "muted" even though every node is clickable. Bump the stroke so the
+  // affordance is visible without overshadowing the LLM-primitive accent.
   let fill = "var(--chip)";
-  let stroke = "var(--line)";
+  let stroke = "var(--muted)";
   if (kind === "llm_primitive") { fill = "var(--hermes-soft)"; stroke = "var(--hermes)"; }
   if (kind === "subrlm") { fill = "var(--hermes-soft)"; stroke = "var(--hermes)"; }
   if (selected) stroke = "var(--accent)";
 
   const isPulsing = kind === "llm_primitive" || kind === "subrlm";
-  const showLabel = kind === "llm_primitive" || kind === "subrlm";
+  // 2026-05-28 BUG-NEW-022 fix: previously only "llm_primitive" + "subrlm" got
+  // labels, so non-LLM primitives (heartbeat, build_environment,
+  // run_experiment, implement_baseline, resolve_gpu_requirements, etc.) showed
+  // up as blank small circles — user has no clue what they're doing.
+  // Label everything so every clickable node tells you what it is at a glance.
+  const showLabel = true;
   const label = title.length > 12 ? title.slice(0, 11) + "…" : title;
 
   return (
@@ -483,17 +492,23 @@ export const ConstellationCanvas = memo(function ConstellationCanvas({
 
   const handlePointerDown = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
+    // BUG-NEW-027: pointer capture used to engage here on every press, which
+    // diverted click events away from child <g> nodes — every activity-node
+    // click silently no-op'd because the click target became the SVG. Capture
+    // is now lazy: engaged only once the pointer crosses the 3px drag
+    // threshold (handlePointerMove below). Clicks that don't drag fire on the
+    // child as the browser intended.
     dragState.current = { startX: e.clientX, startY: e.clientY, vbStart: viewBox, moved: false };
-    (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
   }, [viewBox]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (!dragState.current) return;
     const dx = e.clientX - dragState.current.startX;
     const dy = e.clientY - dragState.current.startY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+    if (!dragState.current.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
       dragState.current.moved = true;
       userInteractedRef.current = true;
+      (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
     }
     if (!dragState.current.moved) return;
     const svg = svgRef.current;

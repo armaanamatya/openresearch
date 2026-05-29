@@ -81,6 +81,43 @@
   opacity: 0.7;
 }
 
+/* Pending-reply hint — shown when the last message is a user message with no
+ * matching assistant response yet. Explains the iteration cadence so the user
+ * doesn't think chat is broken while the root model is parked in a sub-RLM. */
+.pendingHint {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-style: italic;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--chip);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-xs);
+  align-self: flex-start;
+  max-width: 90%;
+}
+
+.pendingDot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: 5px;
+  animation: chat-pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes chat-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pendingDot { animation: none; }
+}
+
 /* ── Input row ────────────────────────────────────────────────────── */
 
 .inputRow {

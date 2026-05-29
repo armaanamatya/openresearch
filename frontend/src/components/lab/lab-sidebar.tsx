@@ -91,12 +91,18 @@ export function LabSidebar({
               : run.status === "failed"
                 ? "var(--warn)"
                 : "var(--muted-2)";
-          const label = run.sourceLabel ?? run.projectId.slice(0, 14);
+          const fullLabel = run.sourceLabel ?? run.projectId;
+          // BUG-NEW-022 readability: prefer paper title; fall back to a
+          // longer prefix so prj_c52dd48df0 isn't truncated mid-string with
+          // no recovery. Full id + status always available in the title attr.
+          const label = run.sourceLabel ?? run.projectId.slice(0, 18);
           return (
             <a
               key={run.projectId}
               href={`/lab?projectId=${encodeURIComponent(run.projectId)}`}
               className="navitem navitem-small"
+              title={`${fullLabel} · ${run.status} · ${run.projectId}`}
+              aria-label={`Open run ${fullLabel} (${run.status})`}
             >
               <span className="nav-icon nav-status-dot" style={{ background: dotColor }} />
               <span className="nav-label">{label}</span>

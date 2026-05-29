@@ -83,8 +83,11 @@
 }
 
 @keyframes pulse-dot {
+  /* BUG-NEW-003 readability: 0.35 mid-pulse was so dim the dot looked
+     half-broken; bumped to 0.55 so the pulse reads as a heartbeat, not
+     a stutter. */
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  50% { opacity: 0.55; }
 }
 
 .pulse {

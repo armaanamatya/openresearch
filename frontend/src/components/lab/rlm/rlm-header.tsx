@@ -37,6 +37,11 @@ interface RlmHeaderProps {
    *  (e.g. implement_baseline at 5-15 min) and the old chip caused
    *  unnecessary panic. */
   inFlightPrimitive?: { name: string; startedAt: string } | null;
+  /** BUG-NEW-021 fix: when an active sub_rlm_spawned has no matching
+   *  sub_rlm_complete yet, the heartbeat gap is also expected (a sub-RLM
+   *  is a multi-LLM-call decomposition that can take minutes), so suppress
+   *  the "no signal Ns" alarm during this window. */
+  hasInFlightSubRlm?: boolean;
   sandboxMode?: DemoSandboxMode | null;
   primitiveCalls?: PrimitiveCallView[];
 }
@@ -71,6 +76,7 @@ export function RlmHeader({
   onRerun,
   rerunBusy = false,
   inFlightPrimitive = null,
+  hasInFlightSubRlm = false,
   sandboxMode = null,
   primitiveCalls = [],
 }: RlmHeaderProps) {
@@ -165,6 +171,34 @@ export function RlmHeader({
                 }}
               >
                 running {inFlightPrimitive.name} ({inFlightPrimitiveSecs ?? 0}s)
+              </span>
+            ) : hasInFlightSubRlm ? (
+              // BUG-NEW-021 fix: a sub-RLM decomposition is in flight. The
+              // root model is parked inside rlm_query while a sub-RLM
+              // multi-LLM-call decomposition runs — heartbeats pause for
+              // multiple minutes during this window. Show "running sub-RLM"
+              // instead of the alarming "no signal Ns" so the user doesn't
+              // panic and kill a healthy run.
+              <span
+                title={`A sub-RLM decomposition is in flight (sub_rlm_spawned with no matching sub_rlm_complete). Heartbeats pause during sub-RLM windows — this is normal.`}
+                style={{
+                  // BUG-NEW-040 (2026-05-29): --accent-ink is oklch(0.20 0.04 70) —
+                  // a dark amber meant for text on bright .btn-primary fills.
+                  // Used here on top of --accent-soft (translucent amber over a
+                  // dark surface) it produced dark-on-dark, ~3.5:1, AA fail.
+                  // Mirror the sibling "no signal" pill below — uses --warn on
+                  // --warn-soft, i.e. bright fg on dim bg.
+                  background: "var(--accent-soft)",
+                  color: "var(--accent)",
+                  borderRadius: "4px",
+                  padding: "2px 8px",
+                  fontSize: "0.72rem",
+                  fontWeight: 600,
+                  display: "inline-block",
+                  verticalAlign: "middle",
+                }}
+              >
+                running sub-RLM ({noSignalSecs}s)
               </span>
             ) : (
               <span

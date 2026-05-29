@@ -483,7 +483,39 @@ function SidebarBody({
             </pre>
           </>
         ) : (
-          <p className={styles.noDetail}>no sub-RLM detail</p>
+          // BUG-NEW-002 readability: a sub-RLM node whose lookup misses (id
+          // regex doesn't match OR array index out of bounds — common while
+          // the sub-RLM is still in flight and `sub_rlm_complete` hasn't
+          // landed) used to render a useless "no sub-RLM detail" line.
+          // Show what we DO know from the node payload instead so the user
+          // sees title + iteration + parent and isn't left staring at a
+          // blank panel during the most common case.
+          <div className={styles.body}>
+            <dl className={styles.metaList}>
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>title</dt>
+                <dd className={styles.metaVal}>{node.title || node.id}</dd>
+              </div>
+              <div className={styles.metaRow}>
+                <dt className={styles.metaKey}>iteration</dt>
+                <dd className={styles.metaVal}>
+                  {node.iterationRange[0] === node.iterationRange[1]
+                    ? `${node.iterationRange[0]}`
+                    : `${node.iterationRange[0]}–${node.iterationRange[1]}`}
+                </dd>
+              </div>
+              {node.parentId && (
+                <div className={styles.metaRow}>
+                  <dt className={styles.metaKey}>parent</dt>
+                  <dd className={styles.metaVal}>{node.parentId}</dd>
+                </div>
+              )}
+            </dl>
+            <p className={styles.noDetail}>
+              Sub-RLM still in flight — full prompt + model + duration appear when
+              <code> sub_rlm_complete</code> lands.
+            </p>
+          </div>
         )}
         {nowBlock}
       </div>
@@ -652,7 +684,9 @@ export const NodeDetailSidebar = memo(function NodeDetailSidebar({
           <span className={styles.counterLabel}>iterations</span>
         </div>
         <div className={styles.counterTile}>
-          <span className={styles.counterNum}>{primitiveCalls.length}</span>
+          <span className={styles.counterNum}>
+            {primitiveCalls.filter((c) => c.status !== "start").length}
+          </span>
           <span className={styles.counterLabel}>primitive calls</span>
         </div>
         <div className={styles.counterTile}>

@@ -68,12 +68,18 @@
 }
 .cmdk-item[data-selected="true"],
 .cmdk-item[aria-selected="true"] {
+  /* BUG-NEW-040 (2026-05-29): --accent-ink is a dark token designed as
+   * text on bright .btn-primary fills. On --accent-soft (translucent
+   * amber over a dark surface) it falls below WCAG AA. Use --accent. */
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
 }
 .cmdk-item:hover {
+  /* BUG-NEW-040 (2026-05-29): --accent-ink is a dark token designed as
+   * text on bright .btn-primary fills. On --accent-soft (translucent
+   * amber over a dark surface) it falls below WCAG AA. Use --accent. */
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
 }
 .cmdk-item-kind {
   margin-left: auto;

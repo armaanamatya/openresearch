@@ -137,7 +137,17 @@ export function RlmLab({
   // ── Lifted selection state ──────────────────────────────────────────────
   // The canvas notifies us via onSelectNode; we forward the id to both the
   // canvas (for highlight) and the sidebar (for detail).
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  //
+  // 2026-05-28 BUG-NEW-009 fix: auto-expand the sidebar when a node is
+  // selected. Without this the sidebar stays collapsed (default true) and the
+  // user clicks Plan / Understand / Sub-RLM / etc. and sees NOTHING change
+  // because the detail panel is hidden behind a 36px toggle rail. The
+  // selection state was updating fine — the sidebar just wasn't showing it.
+  const [selectedNodeId, _setSelectedNodeId] = useState<string | null>(null);
+  const setSelectedNodeId = useCallback((id: string | null) => {
+    _setSelectedNodeId(id);
+    if (id !== null) setSidebarCollapsed(false);
+  }, []);
 
   // Derive the unique primitive names for the ReplStateRail primitives list.
   const primitiveNames = useMemo(
@@ -223,6 +233,14 @@ export function RlmLab({
     () => state.tree.filter((n) => n.kind === "candidate" && n.outcome === "promoted").length,
     [state.tree]
   );
+  // BUG-NEW-031: `primitive_call` events fire twice per primitive (start then
+  // ok|error), so `primitiveCalls.length` doubled the user-visible "calls so
+  // far" — 25 events ≈ 13 actual primitives. Count terminal events only so the
+  // tile matches what the user counts on the canvas.
+  const primitiveCallsCompleted = useMemo(
+    () => state.primitiveCalls.filter((c) => c.status !== "start").length,
+    [state.primitiveCalls]
+  );
 
   const selectedIteration = useMemo(() => {
     if (!selectedNode) return null;
@@ -291,6 +309,7 @@ export function RlmLab({
         onRerun={rerun}
         rerunBusy={rerunBusy}
         inFlightPrimitive={inFlightPrimitive}
+        hasInFlightSubRlm={state.subRlms.some((s) => s.completedAt === null)}
         sandboxMode={sandboxMode}
         primitiveCalls={state.primitiveCalls}
       />
@@ -355,13 +374,62 @@ export function RlmLab({
             />
           </>
         )}
-        <div className={styles.canvas}>
+        <div className={styles.canvas} style={{ position: "relative" }}>
           <ConstellationCanvas
             tree={state.tree}
             iterations={state.iterations}
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
           />
+          {/* BUG-NEW-021 empty-state: when the tree has only the implicit
+              paper root (no work nodes, no primitives, no candidates), the
+              canvas reads as a dead/broken page. Show a friendly overlay
+              with what we're waiting on so the operator knows what's
+              coming next. Auto-hides as soon as any work lands. */}
+          {state.tree.filter((n) => n.kind !== "paper").length === 0 && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none",
+                padding: "var(--sp-4)",
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: 420,
+                  padding: "var(--sp-4) var(--sp-5)",
+                  borderRadius: "var(--r-md, 8px)",
+                  background: "var(--panel-2, rgba(255,255,255,0.04))",
+                  border: "1px solid var(--line)",
+                  color: "var(--ink-2)",
+                  fontSize: "var(--fs-sm, 0.85rem)",
+                  lineHeight: 1.5,
+                  textAlign: "center",
+                }}
+              >
+                <div
+                  style={{
+                    fontWeight: 600,
+                    color: "var(--ink)",
+                    marginBottom: "var(--sp-2)",
+                  }}
+                >
+                  Waiting for first iteration
+                </div>
+                <div style={{ color: "var(--muted)" }}>
+                  {state.status === "queued"
+                    ? "The CLI subprocess is starting and registering the project. The root model takes 10–60s to issue its first REPL turn."
+                    : "The root model is thinking. The constellation lights up the moment the first primitive (usually understand_section) completes."}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         {!collapsedByViewport.reportRail && (
           <>
@@ -377,6 +445,10 @@ export function RlmLab({
               workerReports={effectiveWorkerReports}
               primitiveCalls={state.primitiveCalls}
               reportsSummary={liveReportsSummary}
+              liveIterationCount={state.iterationCount}
+              liveProposedCount={candidatesProposed}
+              livePromotedCount={candidatesPromoted}
+              livePrimitiveCallsCount={primitiveCallsCompleted}
               style={reportRailStyle}
             />
           </>

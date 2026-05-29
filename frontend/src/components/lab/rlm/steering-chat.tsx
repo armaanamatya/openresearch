@@ -45,6 +45,14 @@ export function SteeringChat({
     }
   }
 
+  // BUG-NEW-028: when the last message is from the user, there is no reply
+  // yet — show a pending hint that explains *why*. The RLM root polls
+  // check_user_messages() at the start of each iteration (and is parked inside
+  // rlm_query during sub-RLM windows), so without this hint the chat appears
+  // silently broken.
+  const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+  const awaitingReply = lastMsg !== null && lastMsg.role === "user";
+
   return (
     <div className={styles.chat} data-testid="steering-chat">
       {/* Message log */}
@@ -67,6 +75,15 @@ export function SteeringChat({
               <span className={styles.msgContent}>{m.content}</span>
             </div>
           ))
+        )}
+        {awaitingReply && (
+          <div className={styles.pendingHint} data-testid="chat-pending-hint">
+            <span className={styles.pendingDot} aria-hidden="true" />
+            <span>
+              RLM responds at the start of each iteration. If a sub-RLM is in
+              flight, the reply waits until it returns.
+            </span>
+          </div>
         )}
       </div>
 

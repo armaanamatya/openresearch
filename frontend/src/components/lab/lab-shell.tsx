@@ -43,7 +43,13 @@ function WorkflowView({
   run: LiveDemoRunState;
 }) {
   const rlmEvents = dashboardEvents.filter(isRlmEvent);
-  const paperTitle = run.sourceLabel ?? "Untitled paper";
+  // BUG-NEW-001 fix: fall back through sourceLabel → projectId rather than
+  // showing the generic "Untitled paper" for the 30-60s while ingest writes
+  // the demo_status.json title. Backend also now rejects workspace-variable
+  // names like "paper_text" from leaking into paperTitle.
+  const paperTitle = (run.sourceLabel && run.sourceLabel.trim().length > 0)
+    ? run.sourceLabel
+    : `Parsing paper… (${run.projectId.slice(0, 14)})`;
   const paperMeta = run.sourceNote ?? "";
   const isActive = run.status === "queued" || run.status === "running";
   return (

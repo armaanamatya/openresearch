@@ -61,7 +61,9 @@ export function nodeRadius(kind: TreeNode["kind"]): number {
     case "llm_primitive":
       return 20;
     case "primitive":
-      return 14;
+      // 2026-05-28 BUG-NEW-022 fix: r=14 was too small to fit a label;
+      // bumped to 18 to match the new "always-labeled" rule.
+      return 18;
     default:
       return 16;
   }

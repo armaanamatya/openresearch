@@ -20,9 +20,13 @@ interface PrimitiveHistoryBarProps {
 export function PrimitiveHistoryBar({ calls }: PrimitiveHistoryBarProps) {
   const [collapsed, setCollapsed] = useState(true);
 
+  // BUG-NEW-031 (companion fix): every primitive emits a start AND a terminal
+  // event, so raw `calls.length` is 2× the real invocation count. Filter to
+  // terminal events (ok/error/coerced) — one row per invocation.
+  const terminalCalls = calls.filter((c) => c.status !== "start");
+
   // Reverse-chronological order: newest call first.
-  // Computed once per render; a shallow copy so the original is not mutated.
-  const reversedCalls = collapsed ? [] : [...calls].reverse();
+  const reversedCalls = collapsed ? [] : [...terminalCalls].reverse();
 
   return (
     <div className={styles.bar}>
@@ -34,7 +38,9 @@ export function PrimitiveHistoryBar({ calls }: PrimitiveHistoryBarProps) {
         title="Primitive calls are the tool invocations made by the root REPL. Long gaps are normal while a primitive is in flight."
       >
         {collapsed ? "▸" : "▾"} primitive call history —{" "}
-        {calls.length > 0 ? `${calls.length} calls` : "waiting for first primitive"}
+        {terminalCalls.length > 0
+          ? `${terminalCalls.length} calls`
+          : "waiting for first primitive"}
       </button>
 
       {!collapsed && calls.length === 0 && (

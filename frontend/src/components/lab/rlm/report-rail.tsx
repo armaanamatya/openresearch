@@ -14,6 +14,15 @@ export interface ReportRailProps {
   workerReports?: DemoWorkerReport[];
   primitiveCalls?: PrimitiveCallView[];
   reportsSummary?: DemoReportsSummary;
+  /** Live counts shown while final_report.json hasn't been written yet, so the
+   *  pre-completion view shows real numbers (matching the sidebar/header)
+   *  instead of "—" placeholders. */
+  liveIterationCount?: number;
+  liveProposedCount?: number;
+  livePromotedCount?: number;
+  /** Live primitive-calls count after filtering out duplicate start/ok pairs.
+   *  Falls back to primitiveCalls.length when omitted (legacy callers). */
+  livePrimitiveCallsCount?: number;
   style?: CSSProperties;
 }
 
@@ -99,8 +108,13 @@ export function ReportRail({
   workerReports = [],
   primitiveCalls = [],
   reportsSummary,
+  liveIterationCount = 0,
+  liveProposedCount = 0,
+  livePromotedCount = 0,
+  livePrimitiveCallsCount,
   style,
 }: ReportRailProps) {
+  const livePrimCount = livePrimitiveCallsCount ?? primitiveCalls.length;
   const hasCost = report?.costUsd != null;
   const isDegraded =
     rubric.current !== null && rubric.current <= 0.35;
@@ -145,62 +159,54 @@ export function ReportRail({
 
       {/* ── 6-tile stat grid ─────────────────────────────────── */}
       <div className={styles.grid}>
-        {/* Iterations */}
+        {/* Iterations — live count before final_report; finalized count after. */}
         <div
           className={styles.tile}
-          title="Root REPL turns completed. Count is finalized when final_report.json is written."
+          title={report !== null
+            ? "Root REPL turns completed (final)."
+            : "Root REPL turns completed so far. Count is finalized when final_report.json is written."}
         >
           <span className={styles.tileValue}>
-            {report !== null ? (
-              <span>{report.counts.iterations}</span>
-            ) : (
-              <span className={styles.tilePlaceholder}>—</span>
-            )}
+            <span>{report !== null ? report.counts.iterations : liveIterationCount}</span>
           </span>
           <span className={styles.tileLabel}>iterations</span>
         </div>
 
-        {/* Primitive calls */}
+        {/* Primitive calls — live count before final_report. */}
         <div
           className={styles.tile}
-          title="Primitive tool calls observed in the run. Count is finalized in the report."
+          title={report !== null
+            ? "Primitive tool calls observed (final)."
+            : "Primitive tool calls observed so far. Count is finalized in the report."}
         >
           <span className={styles.tileValue}>
-            {report !== null ? (
-              <span>{report.counts.primitiveCalls}</span>
-            ) : (
-              <span className={styles.tilePlaceholder}>—</span>
-            )}
+            <span>{report !== null ? report.counts.primitiveCalls : livePrimCount}</span>
           </span>
           <span className={styles.tileLabel}>primitive calls</span>
         </div>
 
-        {/* Proposed */}
+        {/* Proposed — live count before final_report. */}
         <div
           className={styles.tile}
-          title="Improvement candidates proposed by the RLM loop. Usually appears after baseline verification."
+          title={report !== null
+            ? "Improvement candidates proposed (final)."
+            : "Improvement candidates proposed so far. Usually appears after baseline verification."}
         >
           <span className={styles.tileValue}>
-            {report !== null ? (
-              <span>{report.counts.proposed}</span>
-            ) : (
-              <span className={styles.tilePlaceholder}>—</span>
-            )}
+            <span>{report !== null ? report.counts.proposed : liveProposedCount}</span>
           </span>
           <span className={styles.tileLabel}>proposed</span>
         </div>
 
-        {/* Promoted */}
+        {/* Promoted — live count before final_report. */}
         <div
           className={styles.tile}
-          title="Proposed candidates that improved or were accepted by the loop."
+          title={report !== null
+            ? "Proposed candidates that improved or were accepted (final)."
+            : "Proposed candidates that improved or were accepted by the loop so far."}
         >
           <span className={styles.tileValue}>
-            {report !== null ? (
-              <span>{report.counts.promoted}</span>
-            ) : (
-              <span className={styles.tilePlaceholder}>—</span>
-            )}
+            <span>{report !== null ? report.counts.promoted : livePromotedCount}</span>
           </span>
           <span className={styles.tileLabel}>promoted</span>
         </div>
@@ -229,7 +235,7 @@ export function ReportRail({
 
       {report === null && (
         <p className={styles.emptyNote}>
-          Final report counts appear when final_report.json is ready; live activity and phase state continue above while the run is active.
+          Live counts above; tiles freeze when final_report.json is written.
         </p>
       )}
 
@@ -418,71 +424,90 @@ function WorkerReportCard({ worker }: { worker: DemoWorkerReport }) {
         </div>
       )}
 
-      <dl className={styles.workerFacts}>
-        {/* Execution summary when available */}
-        {worker.execution_summary?.concise_summary && (
-          <div>
-            <dt>summary</dt>
-            <dd>{worker.execution_summary.concise_summary}</dd>
-          </div>
-        )}
-
-        <div>
-          <dt>implemented</dt>
-          <dd>{compactList(worker.implemented ?? worker.execution_summary?.implemented)}</dd>
-        </div>
-        <div>
-          <dt>undone</dt>
-          <dd>{compactList(worker.left_undone ?? worker.execution_summary?.not_implemented)}</dd>
-        </div>
-        <div>
-          <dt>commands</dt>
-          <dd>
-            {commands.length === 0
-              ? "None"
-              : commands.slice(0, 3).map((cmd, i) => (
-                  <span key={`${cmd.command}-${i}`} className={styles.commandLine}>
-                    {cmd.command.length > 60 ? cmd.command.slice(0, 57) + "..." : cmd.command}
-                    <span className={styles.exitCode} data-testid="command-exit-code">
-                      {cmd.exit_code == null ? "exit ?" : `exit ${cmd.exit_code}`}
+      {(() => {
+        // BUG-NEW-032: rlm_primitive workers don't populate implemented/undone/
+        // issues/procedures — hide rows that would render as "None"/"unconfirmed"
+        // to avoid useless filler.
+        const implemented = worker.implemented ?? worker.execution_summary?.implemented;
+        const undone = worker.left_undone ?? worker.execution_summary?.not_implemented;
+        const hasImplemented = Array.isArray(implemented) ? implemented.length > 0 : !!implemented;
+        const hasUndone = Array.isArray(undone) ? undone.length > 0 : !!undone;
+        const hasCommands = commands.length > 0;
+        const hasIssues = Array.isArray(worker.issues) ? worker.issues.length > 0 : !!worker.issues;
+        const hasProcedures = worker.procedures_followed != null;
+        const hasSummary = !!worker.execution_summary?.concise_summary;
+        const hasAnyFact =
+          hasSummary || hasImplemented || hasUndone || hasCommands || hasBlockers || artifacts.length > 0 || hasIssues || hasProcedures;
+        if (!hasAnyFact) return null;
+        return (
+          <dl className={styles.workerFacts}>
+            {hasSummary && (
+              <div>
+                <dt>summary</dt>
+                <dd>{worker.execution_summary!.concise_summary}</dd>
+              </div>
+            )}
+            {hasImplemented && (
+              <div>
+                <dt>implemented</dt>
+                <dd>{compactList(implemented)}</dd>
+              </div>
+            )}
+            {hasUndone && (
+              <div>
+                <dt>undone</dt>
+                <dd>{compactList(undone)}</dd>
+              </div>
+            )}
+            {hasCommands && (
+              <div>
+                <dt>commands</dt>
+                <dd>
+                  {commands.slice(0, 3).map((cmd, i) => (
+                    <span key={`${cmd.command}-${i}`} className={styles.commandLine}>
+                      {cmd.command.length > 60 ? cmd.command.slice(0, 57) + "..." : cmd.command}
+                      <span className={styles.exitCode} data-testid="command-exit-code">
+                        {cmd.exit_code == null ? "exit ?" : `exit ${cmd.exit_code}`}
+                      </span>
                     </span>
-                  </span>
-                ))}
-          </dd>
-        </div>
-
-        {/* Blockers */}
-        {hasBlockers && (
-          <div>
-            <dt>blockers</dt>
-            <dd>
-              {blockers.map((b, i) => (
-                <span key={`blocker-${i}`} className={styles.blockerText} data-testid="worker-blocker">
-                  <strong>[{b.severity}]</strong> {b.title}
-                  {b.source && <span className={styles.exitCode}> ({b.source})</span>}
-                </span>
-              ))}
-            </dd>
-          </div>
-        )}
-
-        {/* Artifacts */}
-        {artifacts.length > 0 && (
-          <div>
-            <dt>artifacts</dt>
-            <dd>{artifacts.slice(0, 3).map((a) => a.path).join(", ")}</dd>
-          </div>
-        )}
-
-        <div>
-          <dt>issues</dt>
-          <dd>{compactList(worker.issues)}</dd>
-        </div>
-        <div>
-          <dt>procedures</dt>
-          <dd>{proceduresLabel(worker.procedures_followed)}</dd>
-        </div>
-      </dl>
+                  ))}
+                </dd>
+              </div>
+            )}
+            {hasBlockers && (
+              <div>
+                <dt>blockers</dt>
+                <dd>
+                  {blockers.map((b, i) => (
+                    <span key={`blocker-${i}`} className={styles.blockerText} data-testid="worker-blocker">
+                      <strong>[{b.severity}]</strong> {b.title}
+                      {b.source && <span className={styles.exitCode}> ({b.source})</span>}
+                    </span>
+                  ))}
+                </dd>
+              </div>
+            )}
+            {artifacts.length > 0 && (
+              <div>
+                <dt>artifacts</dt>
+                <dd>{artifacts.slice(0, 3).map((a) => a.path).join(", ")}</dd>
+              </div>
+            )}
+            {hasIssues && (
+              <div>
+                <dt>issues</dt>
+                <dd>{compactList(worker.issues)}</dd>
+              </div>
+            )}
+            {hasProcedures && (
+              <div>
+                <dt>procedures</dt>
+                <dd>{proceduresLabel(worker.procedures_followed)}</dd>
+              </div>
+            )}
+          </dl>
+        );
+      })()}
 
       {/* Raw JSON disclosure */}
       <details
