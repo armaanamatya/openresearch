@@ -1513,6 +1513,20 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             if r is not None
         ]
 
+    # SDK-stream liveness signal for robust stall detection. The code-writing sub-agent
+    # runs in a worker thread (pool.submit below); the main thread polls code_dir for
+    # progress, but file mtimes only change when a Write COMPLETES — so a model that
+    # reasons for minutes or streams a large file looks "stalled" to a file-only
+    # watchdog (the 2026-05-29 false-stall). collect_agent_text calls _note_sdk_event()
+    # on EVERY streamed event, giving the poll loop a precise "SDK is alive and
+    # producing" signal. _sdk_activity["last"] is written by the worker thread and read
+    # by the main thread; a lone float write/read is atomic under the GIL.
+    import time as _time
+    _sdk_activity = {"last": _time.time()}
+
+    def _note_sdk_event() -> None:
+        _sdk_activity["last"] = _time.time()
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -1544,6 +1558,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
             gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
             gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
+            # stall watchdog distinguishes a working agent from a hung SDK.
+            on_event=_note_sdk_event,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
@@ -1627,7 +1644,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0.0,
                 )
-                if latest_mtime > _pre_emit_stall_start:
+                # Progress = a file write OR live SDK-stream activity. The latter is the
+                # robust signal: a sub-agent reasoning or generating a large file emits
+                # stream events continuously even before any file lands, so a healthy
+                # agent never trips the stall. Only TRUE silence (no file AND no stream
+                # event since the timer start) is treated as a genuine SDK hang.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if latest_progress > _pre_emit_stall_start:
                     _pre_emit_stall_start = _time.time()
                     continue
                 pre_emit_elapsed = _time.time() - _pre_emit_stall_start
@@ -1666,8 +1689,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0,
                 )
-                if now - latest_mtime > _POLL_S:
-                    # No file changes — start or continue the stall timer
+                # Same robust signal as the pre-emit path: live SDK-stream activity
+                # (e.g. the agent still streaming its worker-report) counts as progress,
+                # so a genuine aclose hang (stream ended, code on disk) is still caught
+                # while a still-streaming agent is not falsely declared hung.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if now - latest_progress > _POLL_S:
+                    # No file changes AND no SDK activity — start/continue the stall timer
                     if _stall_start is None:
                         _stall_start = _time.time()
                         logger.info(

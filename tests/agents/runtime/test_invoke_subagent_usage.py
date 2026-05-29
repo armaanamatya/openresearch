@@ -186,3 +186,43 @@ def test_subagent_usage_sse_event_emitted(monkeypatch, tmp_path: Path) -> None:
     data = usage_events[-1]["data"]
     assert data["agent_id"] == "baseline-implementation"
     assert data["input_tokens"] == 20
+
+
+# ---------------------------------------------------------------------------
+# T6 – on_event liveness hook fires once per streamed event
+# ---------------------------------------------------------------------------
+
+def test_on_event_fires_once_per_streamed_event(monkeypatch, tmp_path: Path) -> None:
+    """The stall watchdog relies on on_event firing for EVERY streamed event so a
+    working-but-fileless agent (reasoning / generating a large file) is never falsely
+    declared hung. Verify one call per event across text/usage events."""
+    monkeypatch.setattr("backend.agents.runtime.invoke.AGENT_REGISTRY",
+                        _fake_registry("baseline-implementation", tmp_path))
+
+    runtime = FakeRuntime([
+        StreamText("planning"),
+        StreamText("more reasoning"),
+        StreamUsage(input_tokens=10, output_tokens=2),
+        StreamText("writing code"),
+    ])
+    calls = {"n": 0}
+
+    from backend.agents.runtime.invoke import collect_agent_text
+    asyncio.run(collect_agent_text(
+        "baseline-implementation", "write code",
+        project_dir=tmp_path, runtime=runtime,
+        on_event=lambda: calls.__setitem__("n", calls["n"] + 1),
+    ))
+
+    assert calls["n"] == 4  # one per streamed event
+
+
+def test_on_event_none_is_safe(monkeypatch, tmp_path: Path) -> None:
+    """on_event=None (the default) must not break the stream."""
+    monkeypatch.setattr("backend.agents.runtime.invoke.AGENT_REGISTRY",
+                        _fake_registry("baseline-implementation", tmp_path))
+    runtime = FakeRuntime([StreamText("ok"), StreamUsage(input_tokens=1, output_tokens=1)])
+    from backend.agents.runtime.invoke import collect_agent_text
+    asyncio.run(collect_agent_text(  # must not raise
+        "baseline-implementation", "x", project_dir=tmp_path, runtime=runtime,
+    ))
