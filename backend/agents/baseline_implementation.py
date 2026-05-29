@@ -1773,6 +1773,7 @@ async def run_with_sdk(
     data_recipes: list[dict] | None = None,
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
+    on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook, forwarded to collect_agent_text
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1888,6 +1889,7 @@ async def run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
+        on_event=on_event,
     )
 
     # PR-ξ γ: post-emit knowledge-channel verification. After the sub-agent has
@@ -2063,6 +2065,7 @@ async def patch_mode_run_with_sdk(
     model: str | None = None,
     provider: ProviderName | str | None = None,
     runtime: AgentRuntime | None = None,
+    on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook
 ) -> tuple[bool, str]:
     """Attempt a MINIMAL DIFF repair of ``prior_train_py`` for the given violations.
 
@@ -2116,6 +2119,7 @@ async def patch_mode_run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
+        on_event=on_event,
     )
 
     response = "\n".join(_response_parts)
