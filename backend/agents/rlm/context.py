@@ -75,6 +75,13 @@ class RunContext:
     # Typed as Any to avoid a top-level import cycle (schemas.ReproductionContract).
     reproduction_contract: Any = None  # ReproductionContract | None
 
+    # Paper-hint invariants (2026-05-29): list[InvariantSpec] from
+    # PaperHint.invariants — loaded from REPROLAB_PAPER_HINT_INVARIANTS_JSON at
+    # run start by run.py (mirrors the scope_spec env-var pattern).  Typed as
+    # Any to avoid a top-level import cycle (schemas.InvariantSpec).
+    # None / [] means no paper-hint was supplied or the hint has no invariants.
+    paper_hint_invariants: list[Any] = field(default_factory=list)
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so
@@ -84,6 +91,34 @@ class RunContext:
     latest_rubric_score: float | None = None
     latest_rubric_target: float | None = None
     latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
+
+    def __post_init__(self) -> None:
+        """Auto-load paper_hint_invariants from REPROLAB_PAPER_HINT_INVARIANTS_JSON
+        when not already set by the caller.
+
+        This env-var path mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py
+        serialises PaperHint.invariants to JSON and sets the env var before the
+        subprocess is spawned, so every RunContext picks them up automatically
+        without requiring a change to run.py.
+        """
+        import os as _os
+        if self.paper_hint_invariants:
+            # Caller already set them (e.g. tests) — don't override.
+            return
+        _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
+        if not _inv_json:
+            return
+        try:
+            import json as _json
+            from backend.agents.schemas import InvariantSpec as _InvariantSpec
+            _raw = _json.loads(_inv_json)
+            if isinstance(_raw, list):
+                self.paper_hint_invariants = [
+                    _InvariantSpec.model_validate(item) if isinstance(item, dict) else item
+                    for item in _raw
+                ]
+        except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
+            pass
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

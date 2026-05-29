@@ -1050,6 +1050,21 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"[paper-hint] No built-in hint for {args.paper_hint!r}; continuing without one.",
             file=sys.stderr,
         )
+
+    # Paper-hint invariants → env var so the spawned subprocess's RunContext
+    # picks them up via __post_init__ without requiring run.py changes.
+    # Serialise as a JSON array of InvariantSpec dicts.  Empty/unset when the
+    # hint has no invariants — the env var being absent is safe (RunContext
+    # __post_init__ treats a missing/empty value as "no invariants").
+    if _paper_hint_obj is not None and _paper_hint_obj.invariants:
+        import json as _json_mod
+        _os.environ["REPROLAB_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
+            [inv.model_dump() for inv in _paper_hint_obj.invariants]
+        )
+    else:
+        # No hint (or hint with empty invariants list) — ensure any stale env var
+        # from a previous run in the same process is cleared.
+        _os.environ.pop("REPROLAB_PAPER_HINT_INVARIANTS_JSON", None)
     if getattr(args, "scope_spec", None):
         print(
             f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "

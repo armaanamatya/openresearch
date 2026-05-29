@@ -5,6 +5,19 @@ Grades a reproduction run against a PaperBench rubric.json tree by:
 2. LLM-grading leaves in batches against gathered run evidence.
 3. Rolling up leaf scores through the weighted tree.
 4. Amending final_report.json with the rubric block.
+
+Deterministic invariant gate (paper-hint invariants, 2026-05-29):
+When ``score_reproduction`` is called with a non-empty ``invariants`` list
+(a list of :class:`backend.agents.schemas.InvariantSpec`), the gate runs
+*before* the LLM-graded ``overall_score`` is returned:
+
+  * ``must_not_match`` violation  → ``overall_score`` is capped to 0.0 (hard gate)
+  * Any ``must_match`` miss        → ``overall_score`` is capped at 0.5 (soft cap)
+  * All invariants pass            → ``overall_score`` is unchanged
+
+Both cases surface a structured ``invariant_results`` list and an
+``invariant_gate_applied`` bool in the returned dict so the caller / final
+report can show exactly why the score was capped.
 """
 
 from __future__ import annotations
@@ -19,6 +32,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
+
+# Cap applied when a must_not_match invariant fires (hard gate — surrogate model, etc.)
+INVARIANT_HARD_CAP: float = 0.0
+# Cap applied when a must_match invariant is entirely missing (soft gate — missing
+# algorithm token).  Must be > INVARIANT_HARD_CAP so must_not_match always wins.
+INVARIANT_SOFT_CAP: float = 0.5
 
 # ---------------------------------------------------------------------------
 # Types
@@ -463,6 +482,169 @@ Grade EACH task based solely on what the evidence shows. Return a JSON array.
 """
 
 
+# ---------------------------------------------------------------------------
+# Deterministic invariant gate (paper-hint InvariantSpec checks, 2026-05-29)
+# ---------------------------------------------------------------------------
+
+
+def run_invariant_checks(
+    invariants: list[Any],
+    code_dir: Path,
+) -> list[dict[str, Any]]:
+    """Run each :class:`~backend.agents.schemas.InvariantSpec` against ``code_dir``.
+
+    Returns a list of per-invariant result dicts, each with the shape::
+
+        {
+            "name": str,
+            "passed": bool,
+            "hard_gate_tripped": bool,      # True iff a must_not_match fired
+            "soft_gate_tripped": bool,       # True iff a must_match was empty
+            "must_match_evidence": {pat: [<file:line: excerpt>, ...]},
+            "must_not_match_violations": {pat: [<file:line: excerpt>, ...]},
+            "files_scanned": int,
+            "rationale": str,
+        }
+
+    The gate logic (applied by the caller, not here):
+      * Any ``hard_gate_tripped=True`` → cap ``overall_score`` to 0.0.
+      * Any ``soft_gate_tripped=True``  → cap ``overall_score`` to 0.5 (unless
+        a hard gate already fires — hard gate wins).
+
+    Fail-soft: if ``code_dir`` does not exist or ``invariants`` is empty, returns [].
+    Pattern compilation errors are skipped per-invariant (the schema validator
+    already rejects malformed patterns, so this is a defensive last resort).
+    """
+    if not invariants or not code_dir.exists():
+        return []
+
+    # Collect Python source files matching each invariant's file_glob.
+    # We do this once per invariant because globs may differ, though in practice
+    # SDAR uses the default "**/*.py" for all invariants.
+    results: list[dict[str, Any]] = []
+
+    for inv in invariants:
+        name: str = getattr(inv, "name", str(inv))
+        rationale: str = getattr(inv, "rationale", "")
+        file_glob: str = getattr(inv, "file_glob", "**/*.py") or "**/*.py"
+        must_match_pats: list[str] = list(getattr(inv, "must_match", []) or [])
+        must_not_pats: list[str] = list(getattr(inv, "must_not_match", []) or [])
+
+        # Gather matching files.
+        try:
+            matched_files = list(code_dir.rglob(file_glob.lstrip("/")))
+        except Exception:
+            matched_files = []
+
+        # Only look at regular files; skip __pycache__ and compiled bytecode.
+        source_files = [
+            f for f in matched_files
+            if f.is_file()
+            and "__pycache__" not in f.parts
+            and not f.name.endswith(".pyc")
+        ]
+        files_scanned = len(source_files)
+
+        # Read all source texts upfront (bounded: skip files > 1 MB each).
+        _MAX_FILE_BYTES = 1024 * 1024
+        file_contents: list[tuple[Path, str]] = []
+        for fpath in source_files:
+            try:
+                raw = fpath.read_bytes()
+                if len(raw) > _MAX_FILE_BYTES:
+                    raw = raw[:_MAX_FILE_BYTES]
+                file_contents.append((fpath, raw.decode("utf-8", errors="replace")))
+            except OSError:
+                pass
+
+        # ---- must_match: at least ONE pattern must appear in at least one file
+        # (OR semantics across patterns — mirrors InvariantSpec docstring).
+        # Soft gate fires only when the ENTIRE must_match list has zero matches
+        # across ALL patterns.  A list with two alternatives (e.g. ".detach()"
+        # OR "torch.no_grad") is satisfied by finding either alternative.
+        must_match_evidence: dict[str, list[str]] = {}
+        _any_must_match_hit = False
+
+        for pat in must_match_pats:
+            evidence_lines: list[str] = []
+            try:
+                compiled = re.compile(pat, re.MULTILINE)
+            except re.error:
+                # Defensive: schema validator prevents this, but skip gracefully.
+                continue
+            for fpath, text in file_contents:
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    if compiled.search(line):
+                        rel = fpath.relative_to(code_dir)
+                        excerpt = line.strip()[:120]
+                        evidence_lines.append(f"{rel}:{lineno}: {excerpt}")
+            must_match_evidence[pat] = evidence_lines
+            if evidence_lines:
+                _any_must_match_hit = True
+
+        # Soft gate: fires when must_match is non-empty AND zero patterns matched.
+        soft_gate_tripped = bool(must_match_pats) and not _any_must_match_hit
+
+        # ---- must_not_match: no file may match any pattern. ----
+        must_not_violations: dict[str, list[str]] = {}
+        hard_gate_tripped = False
+
+        for pat in must_not_pats:
+            violation_lines: list[str] = []
+            try:
+                compiled = re.compile(pat, re.MULTILINE)
+            except re.error:
+                continue
+            for fpath, text in file_contents:
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    if compiled.search(line):
+                        rel = fpath.relative_to(code_dir)
+                        excerpt = line.strip()[:120]
+                        violation_lines.append(f"{rel}:{lineno}: {excerpt}")
+            if violation_lines:
+                must_not_violations[pat] = violation_lines
+                hard_gate_tripped = True
+
+        passed = (not hard_gate_tripped) and (not soft_gate_tripped)
+        results.append({
+            "name": name,
+            "passed": passed,
+            "hard_gate_tripped": hard_gate_tripped,
+            "soft_gate_tripped": soft_gate_tripped,
+            "must_match_evidence": must_match_evidence,
+            "must_not_match_violations": must_not_violations,
+            "files_scanned": files_scanned,
+            "rationale": rationale,
+        })
+
+    return results
+
+
+def _apply_invariant_gate(
+    overall_score: float,
+    invariant_results: list[dict[str, Any]],
+) -> tuple[float, bool]:
+    """Apply the deterministic invariant gate to ``overall_score``.
+
+    Returns ``(gated_score, gate_applied)`` where ``gate_applied`` is True iff
+    any invariant tripped (hard or soft).  The caller stores this in the score
+    dict as ``invariant_gate_applied``.
+
+    Gate precedence (hard wins over soft):
+      * Any ``hard_gate_tripped``  → 0.0
+      * Any ``soft_gate_tripped``  → min(overall_score, INVARIANT_SOFT_CAP)
+      * All pass                   → overall_score unchanged
+    """
+    has_hard = any(r.get("hard_gate_tripped") for r in invariant_results)
+    has_soft = any(r.get("soft_gate_tripped") for r in invariant_results)
+
+    if has_hard:
+        return INVARIANT_HARD_CAP, True
+    if has_soft:
+        return min(overall_score, INVARIANT_SOFT_CAP), True
+    return overall_score, False
+
+
 def score_reproduction(
     rubric_tree: dict[str, Any],
     run_dir: Path,
@@ -472,12 +654,13 @@ def score_reproduction(
     rubric_source: str = "paperbench_bundle",
     degraded: bool | None = None,
     metrics_shape: list[dict] | None = None,
+    invariants: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
     leaf_scores, degraded, coverage_pct, eligible_count, unavailable_count,
-    and target_score.
+    target_score, invariant_results, and invariant_gate_applied.
 
     ``rubric_source`` is passed through to the result dict unchanged — callers set
     it to "generated" when the rubric was derived at run-time rather than from a
@@ -502,11 +685,35 @@ def score_reproduction(
     ``ReproductionContract.metrics_shape``. When provided, leaf unavailability
     detection uses exact json_path lookup rather than fuzzy text matching —
     more precise and less likely to false-positive.
+
+    ``invariants`` (paper-hint gate, 2026-05-29): a list of
+    :class:`~backend.agents.schemas.InvariantSpec` objects from
+    ``PaperHint.invariants``.  When provided and non-empty, the invariant gate
+    runs *after* LLM grading and *before* the score dict is returned:
+
+      * A ``must_not_match`` violation (e.g. surrogate model detected) is a
+        hard gate — ``overall_score`` is forced to ``INVARIANT_HARD_CAP`` (0.0).
+      * A ``must_match`` miss (e.g. sigmoid gate absent) is a soft gate —
+        ``overall_score`` is capped at ``INVARIANT_SOFT_CAP`` (0.5).
+      * Hard gate always wins over soft.
+      * All pass → ``overall_score`` unchanged.
+
+    The structured ``invariant_results`` list and ``invariant_gate_applied``
+    bool are always present in the returned dict (empty / False when no
+    invariants are provided) so downstream consumers can surface the gate reason.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
     if degraded is None:
         degraded = _is_degraded_run(run_dir)
+
+    # Run invariant checks upfront so they apply on both the degraded and
+    # normal paths.  The code dir is run_dir/code/ (the implement_baseline
+    # output contract).  Fail-soft: if the dir doesn't exist, returns [].
+    code_dir = run_dir / "code"
+    invariant_results: list[dict[str, Any]] = run_invariant_checks(
+        invariants or [], code_dir
+    )
 
     leaf_scores: dict[str, float] = {}
     leaf_score_records: list[dict[str, Any]] = []
@@ -532,8 +739,17 @@ def score_reproduction(
         except (TypeError, ValueError):
             target_score = None
 
+        degraded_overall = roll_up(rubric_tree, leaf_scores)
+        # Apply invariant gate even on degraded runs so the hard gate (surrogate
+        # model) is visible in the result dict; score is already 0.0 on degraded
+        # so the gate is a no-op numerically, but invariant_results still carries
+        # the violation records.
+        _inv_score, _inv_gate = _apply_invariant_gate(
+            degraded_overall if degraded_overall is not None else 0.0,
+            invariant_results,
+        )
         return {
-            "overall_score": roll_up(rubric_tree, leaf_scores),
+            "overall_score": _inv_score,
             "leaf_count": len(leaves),
             "graded": graded_count,
             "rubric_source": rubric_source,
@@ -543,6 +759,8 @@ def score_reproduction(
             "eligible_count": len(leaves),
             "unavailable_count": 0,
             "target_score": target_score,
+            "invariant_results": invariant_results,
+            "invariant_gate_applied": _inv_gate,
         }
 
     # PR-κ: pre-filter leaves that depend on unavailable datasets.
@@ -657,8 +875,22 @@ def score_reproduction(
     # count against coverage; skipped (data_unavailable) leaves do not.
     coverage_pct: float = (graded_count / eligible_count) if eligible_count > 0 else 1.0
 
+    # Paper-hint invariant gate (2026-05-29): apply deterministic regex gate
+    # AFTER LLM grading, BEFORE returning.  This is the primary scoring gate —
+    # the LLM score stands only if all invariants pass.
+    gated_overall, inv_gate_applied = _apply_invariant_gate(overall_score, invariant_results)
+    if inv_gate_applied:
+        logger.info(
+            "score_reproduction: invariant gate applied — overall_score %.3f → %.3f "
+            "(%d hard, %d soft trips)",
+            overall_score,
+            gated_overall,
+            sum(1 for r in invariant_results if r.get("hard_gate_tripped")),
+            sum(1 for r in invariant_results if r.get("soft_gate_tripped")),
+        )
+
     return {
-        "overall_score": overall_score,
+        "overall_score": gated_overall,
         "leaf_count": len(leaves),
         "graded": graded_count,
         "rubric_source": rubric_source,
@@ -668,6 +900,8 @@ def score_reproduction(
         "eligible_count": eligible_count,
         "unavailable_count": len(unavailable_ids),
         "target_score": target_score,
+        "invariant_results": invariant_results,
+        "invariant_gate_applied": inv_gate_applied,
     }
 
 
@@ -762,6 +996,11 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         ),
         "compute_scope": previous_rubric.get("compute_scope"),
         "areas": previous_rubric.get("areas", []),
+        # Paper-hint invariant gate (2026-05-29): surface per-invariant
+        # pass/fail so the human reviewer can see exactly which algorithmic
+        # invariants tripped and why the score was capped.
+        "invariant_results": score.get("invariant_results", []),
+        "invariant_gate_applied": bool(score.get("invariant_gate_applied", False)),
     }
 
     # Reconcile the self-reported verdict against the authoritative leaf score.
