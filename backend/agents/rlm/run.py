@@ -87,6 +87,15 @@ from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback
 # library API is single-prompt; the misuse routed the question as a model name
 # and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
 from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch  # noqa: F401
+# BUG-NEW-043: surface real traceback when rlm._subcall's child completion raises;
+# upstream catches with `str(e)` and we get only "maximum recursion depth exceeded"
+# with no file/line. Mech-understanding 2026-05-29 lost two sub-RLMs to this.
+from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
+# BUG-NEW-043 (belt+braces): Python 3.14 default limit is 1000; the mech-understanding
+# paper's LaTeX-dense prompt blew it via some unknown deep recursion path in the
+# rlms stack. 10000 is defensive against the same kind of regex/templater walker.
+import sys as _sys_for_recursion
+_sys_for_recursion.setrecursionlimit(10000)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
