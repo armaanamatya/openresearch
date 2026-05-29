@@ -186,6 +186,8 @@ class StartRunRequest(BaseModel):
     # Advanced GPU options exposed via the "Advanced options" collapsible (D2).
     dynamic_gpu: bool | None = None
     force_single_gpu: bool | None = None
+    gpu_parallelism: str | None = None  # "auto" (default) | "single" | "multi" — controls multi-GPU vs single in generated train.py
+    accelerator: str | None = None  # off|auto|local|runpod|azure|endpoint
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
     # Lane Q — "reproduce the CLAIM, not the recipe" mode. When True the
@@ -518,6 +520,10 @@ class FileLiveRunService:
 
         # Thread run-specific vars
         env["REPROLAB_GPU_MODE"] = request.gpuMode
+        if request.gpu_parallelism:
+            env["REPROLAB_GPU_PARALLELISM"] = request.gpu_parallelism
+        if request.accelerator:
+            env["REPROLAB_ACCELERATOR"] = request.accelerator
         env["REPROLAB_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
             env["REPROLAB_VERIFICATION_PROVIDER"] = request.verificationProvider

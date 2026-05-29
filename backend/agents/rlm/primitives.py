@@ -883,6 +883,21 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     - A2-M1: the repair LLM call also uses a per-attempt timeout via the same
       pool (it's synchronous so we submit it and bound .result()).
     """
+    # Local sandbox is docker-free: dependencies are resolved on the host
+    # (per-run venv), so there is no image to build. Short-circuit BEFORE any
+    # docker client is touched — otherwise build_environment raises
+    # SandboxRuntimeError(backend_unavailable) on hosts without a daemon.
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    _sb_key = getattr(_sb_mode, "value", str(_sb_mode) if _sb_mode is not None else None)
+    if _sb_key == "local":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "local sandbox: dependencies resolved on host venv; no image built",
+        }, PrimitiveOutcome.ok)
+
     import asyncio
     import concurrent.futures
     import hashlib
@@ -1512,6 +1527,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # λ: pass canonical dataset loader recipes so the Sonnet agent uses
             # the correct loader verbatim (e.g. stanfordnlp/imdb not bare 'imdb').
             data_recipes=_data_recipes or None,
+            # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
+            gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
+            gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
@@ -1754,6 +1772,10 @@ def _backend_for_sandbox_mode(
     if mode is SandboxMode.docker:
         return LocalDockerBackend()
 
+    if mode is SandboxMode.local:
+        from backend.services.runtime.local_process import LocalProcessBackend
+        return LocalProcessBackend()
+
     if mode is SandboxMode.runpod:
         import backend.services.runtime as _runtime
         from backend.services.runtime.runpod_backend import RunpodBackend
@@ -1800,6 +1822,7 @@ async def _execute_in_sandbox(
     run_budget: object = None,
     gpu_plan: object = None,
     gpu_mode: object = None,
+    gpu_device_ids: tuple[str, ...] = (),
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -1860,6 +1883,17 @@ async def _execute_in_sandbox(
         if gpu_mode is not None
         else "auto"
     )
+    # A4(a): When running local with a per-run venv, inject the venv's bin
+    # directory at the front of PATH so the experiment subprocess uses that
+    # interpreter and its installed packages rather than the system Python.
+    import os as _os
+    _exp_env_extra: dict[str, str] = {}
+    _mode_str_local = str(getattr(sandbox_mode, "value", sandbox_mode) or "").lower()
+    _venv = (_os.environ.get("REPROLAB_EXPERIMENT_VENV") or "").strip()
+    if _mode_str_local == "local" and _venv:
+        _exp_env_extra["VIRTUAL_ENV"] = _venv
+        _exp_env_extra["PATH"] = f"{_venv}/bin:" + _os.environ.get("PATH", "")
+
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -1867,6 +1901,7 @@ async def _execute_in_sandbox(
         project_root=code_dir,
         artifact_root=artifact_root,
         gpu_mode=_gpu_mode_str,
+        gpu_device_ids=tuple(gpu_device_ids or ()),
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -1876,10 +1911,15 @@ async def _execute_in_sandbox(
         # corpus-leak vector. Scoped here; the global default stays disabled.
         network_disabled=False,
         environment={
-            "OUTPUT_DIR": "/artifacts",
-            "REPROLAB_ARTIFACT_DIR": "/artifacts",
-            "MPLCONFIGDIR": "/artifacts/.matplotlib",
+            # Local sandbox: /artifacts doesn't exist on most hosts and can't be
+            # created without root.  Point OUTPUT_DIR straight at artifact_root
+            # so train.py doesn't need to fall back via directory introspection.
+            # Docker/RunPod: /artifacts is the container-mounted volume — keep it.
+            "OUTPUT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "REPROLAB_ARTIFACT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "MPLCONFIGDIR": str(artifact_root / ".matplotlib") if _mode_str_local == "local" else "/artifacts/.matplotlib",
             "PYTHONUNBUFFERED": "1",
+            **_exp_env_extra,
         },
     )
     resource_limits = {
@@ -1918,7 +1958,10 @@ async def _execute_in_sandbox(
     try:
         from backend.agents.rlm.run_watchdog import heartbeat_daemon_command, is_enabled as _watchdog_enabled
         if _watchdog_enabled():
-            bootstrap_commands.append(heartbeat_daemon_command("/artifacts"))
+            # Local sandbox: /artifacts is not the real artifact dir — use the
+            # per-run artifact_root so the heartbeat file is actually writable.
+            _hb_dir = str(artifact_root) if _mode_str_local == "local" else "/artifacts"
+            bootstrap_commands.append(heartbeat_daemon_command(_hb_dir))
     except Exception:  # noqa: BLE001 — instrumentation MUST NOT block the run
         logger.exception("_execute_in_sandbox: heartbeat-daemon injection failed")
 
@@ -1971,6 +2014,26 @@ async def _execute_in_sandbox(
             bootstrap_commands.append(
                 "python -m pip install -r requirements.txt"
             )
+
+    # A4(b): Local sandbox — auto-install requirements.txt into the per-run
+    # venv (PATH already points there via _exp_env_extra). Mirrors the runpod
+    # block above: same command string, same position (prepended before the
+    # agent's commands via the (*bootstrap_commands, *commands) loop at line
+    # ~2183). Safe to run even if the venv is absent — pip will use the
+    # active Python. bootstrap_commands feeds into service.execute() for ALL
+    # backends through the unified loop, so this path is genuine for local.
+    #
+    # NOTE: On this host `python` is not in PATH (only `python3`), so we use
+    # `|| true` to prevent non-zero exit codes from causing `success=False`
+    # in the all(r.succeeded) check. The commands.json entry handles the
+    # actual package install via an explicit PATH-export bash -c command.
+    if "local" in _mode_str and requirements_path.exists():
+        bootstrap_commands.append(
+            "python -m pip install --upgrade pip wheel setuptools || true"
+        )
+        bootstrap_commands.append(
+            "python -m pip install -r requirements.txt || true"
+        )
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -2608,11 +2671,23 @@ def run_experiment(
                     f"failed: {build.get('error')}"
                 ),
             }, model_id=model_id, eval_env=eval_env)
-        env_id = build["image_tag"]
+        # Local-sandbox build returns image_tag="" (skipped=True) because there
+        # is no Docker daemon.  Use the sentinel "__local__" so downstream code
+        # has a non-empty value while _execute_in_sandbox (which routes on
+        # sandbox_mode, not env_id) ignores it safely.
+        env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from) before attempting any Docker work.
-    if not env_id or not str(env_id).strip():
+    # to rebuild from AND the build was not skipped for local-sandbox mode).
+    # We exempt the local-sandbox path: build_environment deliberately returns
+    # image_tag="" there (see build_environment local-short-circuit above), and
+    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
+    # env_id irrelevant.
+    _is_local_sb = (
+        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
+    )
+    if not _is_local_sb and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -2701,6 +2776,7 @@ def run_experiment(
                         run_budget=ctx.run_budget,
                         gpu_plan=gpu_plan,
                         gpu_mode=getattr(ctx, "gpu_mode", None),
+                        gpu_device_ids=tuple(getattr(ctx, "gpu_device_ids", ()) or ()),
                     ),
                 ).result(timeout=timeout)
             except concurrent.futures.TimeoutError:
