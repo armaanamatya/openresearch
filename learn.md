@@ -11,6 +11,48 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-29 — FSDP/multi-GPU training silently collapsed to one GPU because the launch was `python`, not `torchrun`
+
+**Symptom.** A run allocated 4 GPUs but trained on only GPU 0 (the other three idle); larger models then OOMed. The agent-generated `train.py` was full of correct FSDP code (`init_process_group`, `FullyShardedDataParallel`, gradient checkpointing in the right order).
+
+**Root cause.** `commands.json` was `["python train.py"]`. A plain `python` launch runs single-process — `WORLD_SIZE=1` — so `FSDP(...)` wraps with world size 1 and shards nothing; every layer stays on GPU 0. The multi-GPU guidance told the agent to "use torchrun" but never mandated that the *launch command* be `torchrun --nproc_per_node=N`, and `commands_to_run` was hardcoded to `python train.py`.
+
+**Fix.** Two layers. (1) The multi-GPU guidance now MANDATES the commands.json training entry be `torchrun --standalone --nproc_per_node=<N> train.py`. (2) A runtime safety net `primitives._maybe_torchrun_wrap` (in `_execute_in_sandbox`): when >1 GPU is allocated and the train script carries distributed markers but is launched as plain `python <script>.py`, it re-launches via torchrun — fixing even already-broken agent code.
+
+**Lesson.** Distributed *code* is inert without a distributed *launch*. Whenever the agent can write FSDP/DDP, the harness must guarantee the matching `torchrun`/`accelerate` entrypoint — guidance alone isn't enough, so enforce it at the execution layer too.
+
+**Guardrail.** `tests/agents/rlm/test_torchrun_wrap.py` (wraps FSDP scripts on multi-GPU; no-op for single-GPU / non-distributed / already-torchrun / missing-script).
+
+---
+
+## 2026-05-29 — A training run that OOMed every step exited 0 and was accepted as success
+
+**Symptom.** A reproduction ground for hours producing all-0-reward metrics. `training.log`: `Loss/backward OOM: CUDA out of memory` caught + a WARNING logged + the step skipped, ~20 min/step, for hours. The RLM loop treated it as `partial_evidence` (non-empty metrics) and never repaired.
+
+**Root cause.** The agent's `train.py` wrapped `loss.backward()` in `try/except RuntimeError: continue`. Each step's OOM was swallowed (no gradient update), the script exited 0, and `run_experiment` set `success = all(exit_code==0)` → success with all-zero metrics. RubricGuard checks key/artifact *presence* (zeros pass); the failure classifier's `cuda_oom`/`oom_killed` detectors need a propagated error or exit -9/137, neither of which a caught OOM produces.
+
+**Fix.** A postflight `_training_health_violation` in `run_experiment`: if a success-with-metrics result's logs carry a CUDA-OOM marker, flip it to a repairable `silent_oom` failure with a concrete fix hint (reduce memory / shard with torchrun+FSDP / don't catch+skip the backward). Plus an opt-in `insufficient_train_steps` check (`REPROLAB_MIN_TRAIN_STEPS`). New failure classes registered; guidance tells the agent never to try/except+continue a backward OOM.
+
+**Lesson.** Exit code 0 is not "it worked" for training — a caught OOM is indistinguishable from success unless you inspect the *logs and the metric values*. Swallowed exceptions (here and the `/workspace` env-load below) are the recurring villain: surface them, never accept silence as health.
+
+**Guardrail.** `tests/agents/rlm/test_training_health.py` (silent-OOM from logs; min-steps opt-in; classifier respects the preset class).
+
+---
+
+## 2026-05-29 — The local accelerator's tokens were logged as zero (OpenAI-compatible client never read `usage`)
+
+**Symptom.** `cost_ledger.jsonl` recorded every Qwen-via-vLLM accelerator call with 0 input/output tokens; only vLLM `/metrics` had the real counts, so per-run accelerator accounting was blind.
+
+**Root cause.** `OpenAILlmClient.complete()` (and the Azure variant) returned `resp.choices[0].message.content` but never read `resp.usage`, so `ctx.llm_client._last_usage` (what `binding._ledger` records) stayed at its zero default. `ClaudeLlmClient` captured usage correctly; the OpenAI-compatible clients — which the accelerator routes through — did not.
+
+**Fix.** A shared `_usage_from_response()` (prompt→input, completion→output, `prompt_tokens_details.cached_tokens`→cache_read; robust to omitted fields) stored into `_last_usage` on every `complete()` in both clients.
+
+**Lesson.** Every LLM client behind the same ledger seam must populate the same `_last_usage` shape — a silent zero in one client makes a whole cost tier invisible. When adding a provider, mirror the usage-capture, not just the completion call.
+
+**Guardrail.** `tests/services/test_openai_client_usage.py` (extracts tokens incl. cache; None→zero; tolerates missing details; client captures on complete).
+
+---
+
 ## 2026-05-29 — Every local SDAR algorithm reported `env_load_failed` with zero reward because the dataset root was the RunPod-only `/workspace`
 
 **Symptom.** A local 8×A5000 SDAR run trained nothing: `metrics.json` showed `qwen3_1.7b/alfworld` failing all six algorithms with `status: "env_load_failed"` (reward 0.0) and `webshop/sdar` `training_failed`, the GPUs assigned to the experiment sat at 1 MiB, and `data_load_failures` carried **empty error strings**. A fresh `.heartbeat` (a `while true` keepalive the agent's code spawned) masked the stall from the watchdog.
