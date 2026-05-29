@@ -2031,6 +2031,22 @@ async def _execute_in_sandbox(
         bootstrap_commands.append(
             "python -m pip install --upgrade pip wheel setuptools || true"
         )
+        # CUDA-build pin (local sandbox): the host driver caps the usable CUDA toolkit.
+        # e.g. driver 535 / CUDA 12.2 CANNOT run torch's DEFAULT cu130 wheels — torch
+        # imports but torch.cuda.is_available() is False ("driver too old"), so real
+        # training silently falls back to CPU (useless for Qwen). Install a
+        # driver-compatible torch FIRST from the matching PyTorch wheel index; the
+        # agent's requirements.txt (torch>=…) is then satisfied by it and won't pull an
+        # incompatible build. cu121 matches this 8×A5000 host (driver 12.2) and the vLLM
+        # stack. Override via REPROLAB_LOCAL_TORCH_INDEX_URL; set it empty to disable.
+        _torch_index = _os.environ.get(
+            "REPROLAB_LOCAL_TORCH_INDEX_URL",
+            "https://download.pytorch.org/whl/cu121",
+        ).strip()
+        if _torch_index:
+            bootstrap_commands.append(
+                f"python -m pip install torch --index-url {_torch_index} || true"
+            )
         bootstrap_commands.append(
             "python -m pip install -r requirements.txt || true"
         )
