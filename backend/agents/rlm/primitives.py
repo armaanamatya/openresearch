@@ -2544,6 +2544,15 @@ def _validate_scope_metrics(
     dataset_ids_fn = getattr(scope_spec, "dataset_ids", None)
     datasets = dataset_ids_fn() if callable(dataset_ids_fn) else []
 
+    # Compare scope entries to metrics keys on a separator-free canonical key, so a
+    # scope display name ("Qwen3-1.7B-Instruct", "Search-QA") matches the agent's
+    # sanitized metrics key ("qwen3_1_7b", "searchqa"). Without this a correctly-run
+    # model/dataset is falsely flagged per_model_incomplete (2026-05-29 SDAR run).
+    from backend.agents.rlm.paper_invariants import canonical_model_key
+
+    def _ck(name: object) -> str:
+        return canonical_model_key(str(name)).replace("_", "")
+
     if is_multi_model:
         per_model = metrics.get("per_model")
         if not isinstance(per_model, dict) or not per_model:
@@ -2553,7 +2562,8 @@ def _validate_scope_metrics(
                 f"id, e.g. {{'per_model': {{'qwen3-1.7b': {{...}}, "
                 f"'qwen2.5-3b': {{...}}}}}}."
             )
-        missing = [m for m in models if m not in per_model]
+        present_keys = {_ck(k) for k in per_model}
+        missing = [m for m in models if _ck(m) not in present_keys]
         if missing:
             return (
                 f"per_model_incomplete: scope requires entries for {models}; "
@@ -2563,12 +2573,19 @@ def _validate_scope_metrics(
             for model_id, model_metrics in per_model.items():
                 pd = (model_metrics or {}).get("per_dataset") if isinstance(model_metrics, dict) else None
                 if not isinstance(pd, dict) or not pd:
+                    # Accept env-keyed nesting too: agents commonly write
+                    # per_model[model][env] directly rather than wrapping it in a
+                    # "per_dataset" dict. Treat the model's own keys as the dataset
+                    # set so a correctly-structured run isn't flagged per_dataset_required.
+                    pd = model_metrics if isinstance(model_metrics, dict) else None
+                if not isinstance(pd, dict) or not pd:
                     return (
                         f"per_dataset_required: scope is multi-dataset {datasets}. "
-                        f"Each per_model entry MUST carry a per_dataset dict; "
+                        f"Each per_model entry MUST carry per-dataset metrics; "
                         f"model {model_id!r} has none."
                     )
-                missing_ds = [d for d in datasets if d not in pd]
+                present_ds = {_ck(x) for x in pd}
+                missing_ds = [d for d in datasets if _ck(d) not in present_ds]
                 if missing_ds:
                     return (
                         f"per_dataset_incomplete: model {model_id!r} missing "
