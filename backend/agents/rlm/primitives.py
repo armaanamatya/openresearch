@@ -86,7 +86,21 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
-_DEFAULT_PRE_EMIT_STALL_S = 240.0
+# Pre-emit stall threshold: how long implement_baseline tolerates NO new file in
+# code_dir before declaring an SDK hang. The signal is coarse — file mtimes only
+# update when the Write tool COMPLETES a file, so a sub-agent that plans for several
+# minutes or generates a large file (e.g. a 43 KB train.py) legitimately shows no
+# code_dir activity mid-work and looks "stalled".
+# Measured 2026-05-29 (SDAR + --paper-hint, sun.cs.txstate.edu, non-WSL): the agent's
+# FIRST file landed at ~+593 s and the gap while generating train.py was ~402 s, yet
+# it produced a complete, correct implementation. The old 240 s false-killed that
+# healthy, productive agent 3× (→ no experiment, verdict=failed). 900 s comfortably
+# covers large-file generation + planning on complex papers; a genuine SDK hang still
+# surfaces, just later — an acceptable trade for an unbounded reproduction where a
+# FALSE stall (which aborts the whole run) is far costlier than slow hang-detection.
+# Override with REPROLAB_PRE_EMIT_STALL_S. (Follow-up: make progress SDK-stream/liveness
+# aware rather than code_dir-mtime-only, so the threshold matters less.)
+_DEFAULT_PRE_EMIT_STALL_S = 900.0
 
 
 class PreEmitStallError(RuntimeError):
