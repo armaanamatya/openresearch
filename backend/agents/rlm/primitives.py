@@ -1853,6 +1853,64 @@ def _combine_command_output(results: list) -> str:
     return "\n".join(parts)
 
 
+_DISTRIBUTED_MARKERS = (
+    "FullyShardedDataParallel",
+    "DistributedDataParallel",
+    "init_process_group",
+    "torch.distributed",
+)
+
+
+def _maybe_torchrun_wrap(
+    commands: list[str], code_dir: "Path", ngpu: int, run_id: str = ""
+) -> list[str]:
+    """Re-launch a plain ``python <script>.py`` under ``torchrun`` when the script
+    carries distributed-training markers and >1 GPU is allocated.
+
+    The baseline agent frequently writes correct FSDP/DDP code but emits
+    ``commands.json`` as ``python train.py``, which runs single-process
+    (WORLD_SIZE=1), silently disabling sharding so only GPU 0 is used and large
+    models OOM (the 2026-05-29 SDAR failure). This rewrites the launch so the
+    sharding code it already wrote actually runs across all cards. No-op when
+    ngpu<=1, when the command is already a distributed launcher (torchrun/
+    accelerate/deepspeed do not match ``python <script>.py``), or when the script
+    has no distributed markers.
+    """
+    import re as _re
+
+    if ngpu <= 1:
+        return commands
+    out: list[str] = []
+    changed = False
+    for cmd in commands:
+        m = _re.match(r"^\s*python3?\s+(\S+\.py)(\s.*)?$", cmd)
+        if not m:
+            out.append(cmd)
+            continue
+        script, rest = m.group(1), (m.group(2) or "")
+        script_path = code_dir / script
+        try:
+            text = (
+                script_path.read_text(encoding="utf-8", errors="replace")
+                if script_path.exists()
+                else ""
+            )
+        except Exception:  # noqa: BLE001
+            text = ""
+        if any(marker in text for marker in _DISTRIBUTED_MARKERS):
+            out.append(f"torchrun --standalone --nproc_per_node={ngpu} {script}{rest}")
+            changed = True
+            logger.warning(
+                "_execute_in_sandbox[%s]: %s carries distributed markers but was "
+                "launched single-process (`%s`); re-launching via "
+                "`torchrun --standalone --nproc_per_node=%d` so FSDP/DDP shards.",
+                run_id, script, cmd.strip(), ngpu,
+            )
+        else:
+            out.append(cmd)
+    return out if changed else commands
+
+
 async def _execute_in_sandbox(
     code_path: str,
     env_id: str,
@@ -2267,6 +2325,15 @@ async def _execute_in_sandbox(
                     on_warn=_emit_warn_real,
                     on_kill=_emit_kill_real,
                 ))
+
+            # Distributed-launch safety net: if >1 GPU is allocated and the train
+            # script uses FSDP/DDP but is launched as plain `python`, re-launch it
+            # via torchrun so the sharding actually engages (else only GPU 0 is used
+            # → large models OOM). No-op otherwise.
+            if len(gpu_device_ids) > 1:
+                commands = _maybe_torchrun_wrap(
+                    list(commands), code_dir, len(gpu_device_ids), run_id
+                )
 
             for command in (*bootstrap_commands, *commands):
                 results.append(await service.execute(

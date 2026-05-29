@@ -1757,15 +1757,22 @@ def _compute_constraint_guidance(
             "  is scoped to one device. Keep the single-GPU/CPU path as the entrypoint.\n"
         )
     elif _par == "multi":
+        _np = str(_n) if _n else "<NUM_GPUS>"
         guidance += (
             f"\nPARALLELISM POLICY — multi GPU"
             f"{f' ({_n} visible)' if _n else ''}:\n"
-            "  Use ALL visible GPUs via data/model parallelism — torchrun + "
-            "  torch.nn.parallel.DistributedDataParallel for data-parallel training, "
-            "  FSDP for models too large for one card, and/or vLLM tensor-parallel for "
-            "  generation. Detect torch.cuda.device_count() at runtime and shard "
-            "  accordingly; verify scaling (throughput/effective batch size grows with "
-            "  GPU count). Keep a single-GPU fallback for portability/smoke.\n"
+            "  Use ALL visible GPUs. CRITICAL: distributed training (DDP/FSDP) ONLY\n"
+            "  shards when LAUNCHED with torchrun. A plain `python train.py` runs\n"
+            "  single-process (WORLD_SIZE=1) — it DISABLES sharding, uses only GPU 0,\n"
+            "  and OOMs models too large for one card. Therefore your commands.json\n"
+            "  training entry MUST be (NOT `python train.py`):\n"
+            f"      torchrun --standalone --nproc_per_node={_np} train.py\n"
+            "  In train.py: read RANK / WORLD_SIZE / LOCAL_RANK from the environment,\n"
+            "  call init_process_group('nccl'), and wrap the model with FSDP (for\n"
+            "  models too large for one card) or DistributedDataParallel (data-\n"
+            "  parallel). Enable gradient_checkpointing BEFORE the FSDP wrap. Detect\n"
+            "  torch.cuda.device_count() and shard accordingly; keep a single-GPU\n"
+            "  fallback for smoke. Use vLLM tensor-parallel for generation as needed.\n"
         )
     else:  # auto
         guidance += (
