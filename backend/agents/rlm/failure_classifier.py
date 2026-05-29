@@ -47,6 +47,8 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "syntax_error",              # train.py wouldn't parse
     "scope_shape_violation",     # metrics.json missing per_model when scope demands
     "contract_violation",        # RubricContract violations only (no other class fired)
+    "silent_oom",                # exited 0 but logged a caught backward OOM (no updates)
+    "insufficient_train_steps",  # trained below the convergence floor
     "unknown",                   # falls-through
 )
 
@@ -106,6 +108,14 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "agent's next iteration gets the precise hint",
         "contract_violation":
             "RubricContract found gaps vs paper_targets — see contract_violations field",
+        "silent_oom":
+            "train.py caught a CUDA OOM on the backward pass and skipped the step — no "
+            "gradients applied. Reduce per-step memory (batch / rollouts / "
+            "gradient_checkpointing), shard across GPUs with torchrun+FSDP, and let OOM "
+            "fail loudly (do not catch+skip the backward pass)",
+        "insufficient_train_steps":
+            "training ran fewer optimizer steps than REPROLAB_MIN_TRAIN_STEPS — increase "
+            "epochs/steps so the model actually converges",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -128,6 +138,12 @@ def classify_failure(result: dict) -> tuple[str, str]:
     try:
         if result.get("success"):
             return ("ok", "")
+
+        # Respect an explicit failure_class set by a postflight (the training-health
+        # check sets silent_oom / insufficient_train_steps) — it is authoritative.
+        _preset = str(result.get("failure_class") or "")
+        if _preset and _preset in FAILURE_CLASSES and _preset != "unknown":
+            return (_preset, _suggest(_preset))
 
         err = str(result.get("error") or "")
         logs = str(result.get("logs") or "")
