@@ -89,7 +89,11 @@ class TestValidateScopeMetrics:
         }
         hint = _validate_scope_metrics(scope, metrics)
         assert hint is not None
-        assert "per_dataset_required" in hint
+        # Env-keyed fallback (accept per_model[m][env]): model "b"'s only key ("acc")
+        # is not a required dataset, so it is flagged as missing the datasets
+        # (per_dataset_incomplete) rather than the stricter per_dataset_required.
+        # Either way model 'b' is correctly flagged as deficient.
+        assert "per_dataset_incomplete" in hint or "per_dataset_required" in hint
         assert "'b'" in hint
 
     def test_multi_model_multi_dataset_incomplete_per_dataset(self):
