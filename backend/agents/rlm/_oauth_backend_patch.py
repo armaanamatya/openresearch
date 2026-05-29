@@ -55,6 +55,28 @@ def apply_oauth_backend_patch() -> None:
         if backend == "anthropic-oauth":
             from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
             return ClaudeOauthClient(**backend_kwargs)
+        # When the anthropic backend has no api_key (e.g. local-qwen with
+        # ANTHROPIC_API_KEY intentionally empty), fall through to the oauth
+        # path if the claude CLI subscription is available — same as
+        # anthropic-oauth but triggered by absence of key rather than
+        # explicit backend name.
+        if backend == "anthropic" and not backend_kwargs.get("api_key"):
+            try:
+                from backend.agents.runtime.factory import has_provider_credentials
+                if has_provider_credentials("anthropic"):
+                    from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
+                    oauth_kwargs = {k: v for k, v in backend_kwargs.items() if k != "api_key"}
+                    logger.info(
+                        "_patched_get_client: anthropic backend has no api_key "
+                        "but oauth is available — using ClaudeOauthClient"
+                    )
+                    return ClaudeOauthClient(**oauth_kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_patched_get_client: oauth fallback failed (%s: %s); "
+                    "falling through to original get_client",
+                    type(exc).__name__, exc,
+                )
         return _original_get_client(backend, backend_kwargs)
 
     rlm.clients.get_client = _patched_get_client

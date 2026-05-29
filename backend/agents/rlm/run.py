@@ -188,11 +188,16 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
                 f"from resolve_root_model()."
             )
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
-        model = sub_bk.get("model_name") or bk.get("model_name", "")
-        # When the sub-backend has its own base_url (e.g. local-qwen routes root
-        # to Ollama but sub-calls to a LiteLLM proxy), use the sub-backend URL for
-        # primitive/rubric LLM calls. Falls back to the root endpoint (Featherless).
-        effective_base_url = sub_bk.get("base_url") or bk["base_url"]
+        # Model name and base_url must move together — mixing sub-backend model
+        # name with root backend URL sends e.g. "claude-haiku" to Ollama (404).
+        # When the sub-backend has its own base_url (e.g. LiteLLM proxy), use
+        # sub-backend model+URL. Otherwise fall back to root backend model+URL.
+        if sub_bk.get("base_url"):
+            model = sub_bk.get("model_name") or bk.get("model_name", "")
+            effective_base_url = sub_bk["base_url"]
+        else:
+            model = bk.get("model_name", "")
+            effective_base_url = bk["base_url"]
         effective_api_key = sub_bk.get("api_key") or bk["api_key"]
         # Prefer explicit ollama_extra_body from backend_kwargs (data-driven,
         # model-agnostic) over a port-number heuristic.

@@ -511,6 +511,16 @@ compute_scope JSON shape:
 """
 
 
+_COMPUTE_SCOPE_SUPPRESSION = """
+
+You are NOT operating under a clipped compute budget. Do NOT include a
+"compute_scope" field in your JSON response — the grader will evaluate
+against the paper's headline target. If you feel compelled to describe the
+scope of your reproduction, put that in the existing free-text fields
+(e.g. method_spec.notes), never as a "compute_scope" key.
+"""
+
+
 def _is_clipping_active(ctx: "RunContext") -> bool:
     """True iff the planning agent should emit ComputeScope.
 
@@ -1081,6 +1091,8 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     system_prompt = _PLAN_REPRODUCTION_SYSTEM
     if _is_clipping_active(ctx):
         system_prompt = system_prompt + _COMPUTE_SCOPE_INSTRUCTION
+    else:
+        system_prompt = system_prompt + _COMPUTE_SCOPE_SUPPRESSION
     system_prompt = system_prompt + _METRICS_SHAPE_INSTRUCTION
 
     try:

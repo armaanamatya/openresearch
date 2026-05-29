@@ -1,0 +1,41 @@
+kind,id,label,role,inputs,outputs,repo_anchor
+node,paper_source,Paper source,User-selected source,"arXiv URL; uploaded PDF; PaperBench bundle","raw_paper.html; paper.pdf; bundle paper.md","README.md"
+node,resolving_parser,ResolvingParser,Chooses best paper parse,"HTML; PDF; OCR candidates","parsed_full_text.txt","backend/services/ingestion/parser/resolving_parser.py"
+node,paper_sections,Paper sections,Semantic section inventory,"parsed paper text","claims; methods; datasets; metrics; limitations","system_overview.md"
+node,offloaded_context,Offloaded context,RLM prompt-as-environment state,"paper_text; paper_metadata; rubric_spec; artifacts","context dict inside RLM REPL","backend/agents/rlm/run.py"
+node,run_state,Run state,File-backed run source of truth,"run subprocess outputs","runs/<project_id>/ artifacts","system_overview.md"
+node,context_graph,Context graph,Section-to-evidence map,"paper sections; parsed artifacts","claim map; citations; artifact references","backend/services/context/graph/service.py"
+node,rubric_spine,Rubric spine,Turns paper requirements into obligations,"PaperBench rubric or generated rubric","rubric leaves; scoring targets","backend/agents/rlm/rubric_gen.py"
+node,rdr_controller,RDR controller,Deterministic rubric-first reproduction controller,"rubric tree; paper excerpts; dependency artifacts","work clusters; scoped agent contexts","backend/agents/rdr/controller.py"
+node,rlm_root,RLM root model,Adaptive REPL orchestrator and repair agent,"offloaded context metadata; primitives; weak clusters","Python REPL actions; primitive calls; final report variable","backend/agents/rlm/run.py"
+node,scoped_code_agents,Scoped code agents,Implement or repair reproduction code,"cluster context; leaf requirements; cited excerpts","code files; commands.json","backend/agents/rdr/agent.py"
+node,environment_builder,Environment builder,Detects and repairs execution environment,"method spec; package/framework clues","Docker image; runtime environment id","backend/agents/rlm/primitives.py"
+node,experiment_runtime,Experiment runtime,Runs produced code under a sandbox,"code path; env id; GPU plan","logs; metrics; experiment_runs.jsonl","backend/services/runtime/service.py"
+node,rubric_verifier,Rubric verifier,Scores reproduction against rubric,"metrics; artifacts; rubric leaves","overall score; leaf justifications; weak clusters","backend/evals/paperbench/score.py"
+node,improvement_loop,Improvement loop,Proposes and tests targeted candidates,"weak leaves; scores; run logs","candidate outcomes; repairs; new metrics","backend/agents/rlm/primitives.py"
+node,dashboard_events,dashboard_events.jsonl,Append-only event stream,"primitive calls; cluster events; scoring events","SSE replay for lab UI","system_overview.md"
+node,code_artifacts,code/ + commands.json,Reproduction implementation artifact,"code agent output","auditable code and command history","best_runs/README.md"
+node,experiment_artifacts,experiment_runs.jsonl,Experiment result ledger,"run_experiment outputs","metrics and run metadata","backend/agents/rlm/primitives.py"
+node,final_report,final_report.json/md,Benchmark report,"rubric score; metrics; cost ledger; model metadata","final verdict and reproduction summary","backend/agents/rlm/report.py"
+node,ui_views,Lab UI / library / leaderboard,User-facing run views,"dashboard events; reports; filesystem aggregation","live graph; report page; ranking","frontend/src/components/lab/rlm"
+edge,e01,source to parser,Ingests source,paper_source,resolving_parser,README.md
+edge,e02,parser to sections,Builds clean section text,resolving_parser,paper_sections,system_overview.md
+edge,e03,sections to context,Offloads corpus for RLM access,paper_sections,offloaded_context,docs/design/rlm-pivot-brief.md
+edge,e04,context to run state,Persists canonical run inputs,offloaded_context,run_state,system_overview.md
+edge,e05,context to graph,Indexes evidence,offloaded_context,context_graph,backend/services/context/graph/service.py
+edge,e06,sections to rubric,Maps paper requirements to scoring obligations,paper_sections,rubric_spine,backend/agents/rlm/rubric_gen.py
+edge,e07,rubric to RDR,Creates cluster spine,rubric_spine,rdr_controller,backend/agents/rdr/controller.py
+edge,e08,RDR to RLM,Hands weak clusters to hybrid repair,rdr_controller,rlm_root,backend/agents/hybrid/controller.py
+edge,e09,RDR to agents,Dispatches scoped implementation work,rdr_controller,scoped_code_agents,backend/agents/rdr/controller.py
+edge,e10,RLM to agents,Requests adaptive repairs or baseline implementation,rlm_root,scoped_code_agents,backend/agents/rlm/primitives.py
+edge,e11,agents to environment,Builds runnable workspace,scoped_code_agents,environment_builder,backend/agents/rlm/primitives.py
+edge,e12,environment to runtime,Executes inside selected sandbox,environment_builder,experiment_runtime,backend/services/runtime/interface.py
+edge,e13,runtime to verifier,Sends measured metrics,experiment_runtime,rubric_verifier,backend/evals/paperbench/score.py
+edge,e14,verifier to improvement,Sends weak leaves and justifications,rubric_verifier,improvement_loop,backend/agents/rlm/primitives.py
+edge,e15,improvement to runtime,Reruns repaired candidate,improvement_loop,experiment_runtime,backend/agents/rlm/primitives.py
+edge,e16,improvement to RLM,Root chooses next action,improvement_loop,rlm_root,backend/agents/rlm/run.py
+section,abstract_claims,Abstract and claims,Defines target claims and headline metrics,paper_sections,rubric_spine,system_overview.md
+section,method_equations,Method and equations,Drives implementation plan and model code,paper_sections,scoped_code_agents,README.md
+section,datasets_training,Datasets and training recipe,Drives data loaders and hyperparameters,paper_sections,environment_builder,README.md
+section,figures_tables,Figures tables and metrics,Defines comparison outputs and scoring evidence,paper_sections,rubric_verifier,README.md
+section,limitations_ablations,Limitations ablations and errors,Seeds improvement candidates,paper_sections,improvement_loop,backend/agents/rlm/primitives.py

@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReproLab Paper Reproduction Flow</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2937;
+      --muted: #64748b;
+      --line: #94a3b8;
+      --paper: #fff7ed;
+      --paper-stroke: #f59e0b;
+      --ingest: #ecfeff;
+      --ingest-stroke: #06b6d4;
+      --context: #eef2ff;
+      --context-stroke: #6366f1;
+      --agent: #f0fdf4;
+      --agent-stroke: #22c55e;
+      --runtime: #fef2f2;
+      --runtime-stroke: #ef4444;
+      --score: #fdf4ff;
+      --score-stroke: #c026d3;
+      --output: #f8fafc;
+      --output-stroke: #475569;
+      --bg: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.35;
+    }
+
+    main {
+      width: min(1680px, 100%);
+      margin: 0 auto;
+      padding: 28px 28px 36px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 3.2vw, 52px);
+      line-height: 1.05;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 960px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(140px, 1fr));
+      gap: 8px 14px;
+      padding-top: 4px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 2px solid;
+      display: inline-block;
+    }
+
+    .canvas {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background:
+        linear-gradient(#f8fafc 1px, transparent 1px),
+        linear-gradient(90deg, #f8fafc 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+
+    svg {
+      display: block;
+      min-width: 1500px;
+      width: 100%;
+      height: auto;
+    }
+
+    .lane {
+      fill: rgba(255, 255, 255, 0.68);
+      stroke: #d7dee8;
+      stroke-width: 1.2;
+      rx: 14;
+    }
+
+    .lane-title {
+      fill: #334155;
+      font-size: 18px;
+      font-weight: 650;
+    }
+
+    .node rect {
+      rx: 8;
+      stroke-width: 2;
+      filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.08));
+    }
+
+    .node text {
+      fill: #172033;
+      font-size: 16px;
+    }
+
+    .node .title {
+      font-weight: 700;
+      font-size: 17px;
+    }
+
+    .node .small {
+      fill: #475569;
+      font-size: 13px;
+    }
+
+    .paper rect { fill: var(--paper); stroke: var(--paper-stroke); }
+    .ingest rect { fill: var(--ingest); stroke: var(--ingest-stroke); }
+    .context rect { fill: var(--context); stroke: var(--context-stroke); }
+    .agent rect { fill: var(--agent); stroke: var(--agent-stroke); }
+    .runtime rect { fill: var(--runtime); stroke: var(--runtime-stroke); }
+    .score rect { fill: var(--score); stroke: var(--score-stroke); }
+    .output rect { fill: var(--output); stroke: var(--output-stroke); }
+
+    .edge {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 2.2;
+      marker-end: url(#arrow);
+    }
+
+    .edge.strong {
+      stroke: #334155;
+      stroke-width: 2.8;
+    }
+
+    .edge.loop {
+      stroke: #c026d3;
+      stroke-width: 2.5;
+      stroke-dasharray: 7 6;
+    }
+
+    .edge.thin {
+      stroke-width: 1.6;
+      stroke-dasharray: 4 5;
+    }
+
+    .edge-label {
+      fill: #475569;
+      font-size: 13px;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+
+    .pill {
+      fill: #ffffff;
+      stroke: #cbd5e1;
+      stroke-width: 1.5;
+      rx: 15;
+    }
+
+    .pill-text {
+      fill: #334155;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    footer {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      main {
+        padding: 18px;
+      }
+
+      header {
+        grid-template-columns: 1fr;
+      }
+
+      .legend {
+        grid-template-columns: repeat(3, minmax(120px, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>How ReproLab Processes, Reproduces, and Improves a Paper</h1>
+      <p class="subtitle">A graph-level view of the current system: paper sections become indexed context, rubric obligations, implementation clusters, measured experiments, repair targets, and final reports.</p>
+    </div>
+    <div class="legend" aria-label="Legend">
+      <span><i class="swatch" style="background: var(--paper); border-color: var(--paper-stroke)"></i>Paper inputs</span>
+      <span><i class="swatch" style="background: var(--ingest); border-color: var(--ingest-stroke)"></i>Ingestion</span>
+      <span><i class="swatch" style="background: var(--context); border-color: var(--context-stroke)"></i>Context state</span>
+      <span><i class="swatch" style="background: var(--agent); border-color: var(--agent-stroke)"></i>Agents</span>
+      <span><i class="swatch" style="background: var(--runtime); border-color: var(--runtime-stroke)"></i>Runtime</span>
+      <span><i class="swatch" style="background: var(--score); border-color: var(--score-stroke)"></i>Scoring</span>
+    </div>
+  </header>
+
+  <section class="canvas" aria-label="ReproLab paper reproduction graph diagram">
+    <svg viewBox="0 0 1580 1120" role="img" aria-labelledby="diagram-title diagram-desc">
+      <title id="diagram-title">ReproLab paper reproduction graph</title>
+      <desc id="diagram-desc">A graph showing paper intake, section parsing, context graph creation, RDR and RLM orchestration, runtime execution, scoring, improvement loops, and final artifacts.</desc>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"></path>
+        </marker>
+      </defs>
+
+      <rect class="lane" x="28" y="42" width="1508" height="210"></rect>
+      <rect class="lane" x="28" y="282" width="1508" height="300"></rect>
+      <rect class="lane" x="28" y="612" width="1508" height="300"></rect>
+      <rect class="lane" x="28" y="942" width="1508" height="130"></rect>
+      <text class="lane-title" x="54" y="78">1. Paper intake and section extraction</text>
+      <text class="lane-title" x="54" y="318">2. Section graph, rubric map, and reproduction planning</text>
+      <text class="lane-title" x="54" y="648">3. Implementation, execution, scoring, and improvement loop</text>
+      <text class="lane-title" x="54" y="978">4. Persisted artifacts and user-facing views</text>
+
+      <g class="node paper" transform="translate(70 110)">
+        <rect width="210" height="104"></rect>
+        <text x="18" y="30" class="title">Paper source</text>
+        <text x="18" y="57">arXiv URL, PDF, or</text>
+        <text x="18" y="78">PaperBench bundle</text>
+      </g>
+
+      <g class="node ingest" transform="translate(340 100)">
+        <rect width="240" height="124"></rect>
+        <text x="18" y="30" class="title">ResolvingParser</text>
+        <text x="18" y="56">HTML first, then PDF,</text>
+        <text x="18" y="77">then OCR fallback</text>
+        <text x="18" y="101" class="small">Writes parsed_full_text.txt</text>
+      </g>
+
+      <g class="node paper" transform="translate(645 86)">
+        <rect width="265" height="152"></rect>
+        <text x="18" y="30" class="title">Paper sections</text>
+        <text x="18" y="58">Abstract and claims</text>
+        <text x="18" y="80">Method and equations</text>
+        <text x="18" y="102">Datasets and training recipe</text>
+        <text x="18" y="124">Tables, figures, metrics</text>
+      </g>
+
+      <g class="node context" transform="translate(995 100)">
+        <rect width="260" height="124"></rect>
+        <text x="18" y="30" class="title">Offloaded context</text>
+        <text x="18" y="56">paper_text, metadata,</text>
+        <text x="18" y="77">rubric_spec, artifacts</text>
+        <text x="18" y="101" class="small">Root sees metadata, not corpus</text>
+      </g>
+
+      <g class="node output" transform="translate(1320 108)">
+        <rect width="160" height="104"></rect>
+        <text x="18" y="30" class="title">Run state</text>
+        <text x="18" y="57">runs/&lt;id&gt;/</text>
+        <text x="18" y="78">file-backed</text>
+      </g>
+
+      <g class="node context" transform="translate(80 370)">
+        <rect width="230" height="132"></rect>
+        <text x="18" y="30" class="title">Context graph</text>
+        <text x="18" y="57">claims, entities,</text>
+        <text x="18" y="78">artifacts, citations</text>
+        <text x="18" y="104" class="small">Section-to-evidence map</text>
+      </g>
+
+      <g class="node score" transform="translate(365 360)">
+        <rect width="250" height="152"></rect>
+        <text x="18" y="30" class="title">Rubric spine</text>
+        <text x="18" y="58">PaperBench rubric or</text>
+        <text x="18" y="80">generated rubric tree</text>
+        <text x="18" y="108">Leaves become testable</text>
+        <text x="18" y="130">obligations</text>
+      </g>
+
+      <g class="node agent" transform="translate(690 350)">
+        <rect width="275" height="174"></rect>
+        <text x="18" y="30" class="title">RDR controller</text>
+        <text x="18" y="58">Decomposes rubric into</text>
+        <text x="18" y="80">work clusters</text>
+        <text x="18" y="108">Builds scoped contexts:</text>
+        <text x="18" y="130" class="small">leaf requirements + excerpts</text>
+        <text x="18" y="151" class="small">+ dependency artifacts</text>
+      </g>
+
+      <g class="node agent" transform="translate(1040 350)">
+        <rect width="270" height="174"></rect>
+        <text x="18" y="30" class="title">RLM root model</text>
+        <text x="18" y="58">Writes Python in a</text>
+        <text x="18" y="80">persistent REPL</text>
+        <text x="18" y="108">Calls primitives and</text>
+        <text x="18" y="130">sub-LLM/RLM queries</text>
+        <text x="18" y="151" class="small">Adaptive repair in hybrid mode</text>
+      </g>
+
+      <g class="node agent" transform="translate(90 710)">
+        <rect width="235" height="132"></rect>
+        <text x="18" y="30" class="title">Scoped code agents</text>
+        <text x="18" y="57">One cluster at a time</text>
+        <text x="18" y="79">or parallel clusters</text>
+        <text x="18" y="105" class="small">Implement / repair code</text>
+      </g>
+
+      <g class="node runtime" transform="translate(385 702)">
+        <rect width="235" height="148"></rect>
+        <text x="18" y="30" class="title">Environment builder</text>
+        <text x="18" y="58">detect_environment</text>
+        <text x="18" y="80">build_environment</text>
+        <text x="18" y="108">Docker image and</text>
+        <text x="18" y="130">dependency repair</text>
+      </g>
+
+      <g class="node runtime" transform="translate(685 702)">
+        <rect width="230" height="148"></rect>
+        <text x="18" y="30" class="title">Experiment runtime</text>
+        <text x="18" y="58">run_experiment</text>
+        <text x="18" y="80">Local, Docker, or</text>
+        <text x="18" y="102">RunPod GPU</text>
+        <text x="18" y="130" class="small">Captures logs and metrics</text>
+      </g>
+
+      <g class="node score" transform="translate(985 702)">
+        <rect width="235" height="148"></rect>
+        <text x="18" y="30" class="title">Rubric verifier</text>
+        <text x="18" y="58">verify_against_rubric</text>
+        <text x="18" y="82">scores leaves and</text>
+        <text x="18" y="104">records justifications</text>
+        <text x="18" y="130" class="small">Finds weak clusters</text>
+      </g>
+
+      <g class="node agent" transform="translate(1280 702)">
+        <rect width="210" height="148"></rect>
+        <text x="18" y="30" class="title">Improvement loop</text>
+        <text x="18" y="58">propose_improvements</text>
+        <text x="18" y="82">triage candidates</text>
+        <text x="18" y="106">repair weak leaves</text>
+        <text x="18" y="130" class="small">repeat until target or budget</text>
+      </g>
+
+      <g class="node output" transform="translate(92 1000)">
+        <rect width="220" height="50"></rect>
+        <text x="18" y="31" class="title">dashboard_events.jsonl</text>
+      </g>
+
+      <g class="node output" transform="translate(358 1000)">
+        <rect width="210" height="50"></rect>
+        <text x="18" y="31" class="title">code/ + commands.json</text>
+      </g>
+
+      <g class="node output" transform="translate(614 1000)">
+        <rect width="220" height="50"></rect>
+        <text x="18" y="31" class="title">experiment_runs.jsonl</text>
+      </g>
+
+      <g class="node output" transform="translate(880 1000)">
+        <rect width="210" height="50"></rect>
+        <text x="18" y="31" class="title">final_report.json/md</text>
+      </g>
+
+      <g class="node output" transform="translate(1136 1000)">
+        <rect width="270" height="50"></rect>
+        <text x="18" y="31" class="title">Lab UI / library / leaderboard</text>
+      </g>
+
+      <path class="edge strong" d="M 280 162 L 340 162"></path>
+      <path class="edge strong" d="M 580 162 L 645 162"></path>
+      <path class="edge strong" d="M 910 162 L 995 162"></path>
+      <path class="edge strong" d="M 1255 162 L 1320 162"></path>
+      <path class="edge" d="M 1125 224 C 1110 270 250 292 195 370"></path>
+      <path class="edge" d="M 780 238 C 770 300 520 305 490 360"></path>
+      <path class="edge" d="M 615 436 L 690 436"></path>
+      <path class="edge" d="M 965 438 L 1040 438"></path>
+      <path class="edge" d="M 825 524 C 740 610 270 610 210 710"></path>
+      <path class="edge" d="M 1175 524 C 1125 610 270 615 220 710"></path>
+      <path class="edge" d="M 325 776 L 385 776"></path>
+      <path class="edge" d="M 620 776 L 685 776"></path>
+      <path class="edge" d="M 915 776 L 985 776"></path>
+      <path class="edge" d="M 1220 776 L 1280 776"></path>
+      <path class="edge loop" d="M 1280 718 C 1175 628 1010 612 910 688"></path>
+      <path class="edge loop" d="M 1390 702 C 1390 602 1200 580 1170 524"></path>
+      <path class="edge thin" d="M 207 842 L 202 1000"></path>
+      <path class="edge thin" d="M 505 850 L 463 1000"></path>
+      <path class="edge thin" d="M 800 850 L 724 1000"></path>
+      <path class="edge thin" d="M 1102 850 L 985 1000"></path>
+      <path class="edge thin" d="M 1365 850 L 1270 1000"></path>
+
+      <text class="edge-label" x="295" y="149">source</text>
+      <text class="edge-label" x="598" y="149">best parse</text>
+      <text class="edge-label" x="922" y="149">offload</text>
+      <text class="edge-label" x="1266" y="149">persist</text>
+      <text class="edge-label" x="272" y="333">section index</text>
+      <text class="edge-label" x="520" y="319">rubric evidence</text>
+      <text class="edge-label" x="628" y="421">obligations</text>
+      <text class="edge-label" x="973" y="421">hybrid repair handoff</text>
+      <text class="edge-label" x="330" y="694">scoped prompt</text>
+      <text class="edge-label" x="632" y="760">env id</text>
+      <text class="edge-label" x="922" y="760">metrics</text>
+      <text class="edge-label" x="1228" y="760">weak leaves</text>
+      <text class="edge-label" x="1038" y="636">rerun repaired candidate</text>
+      <text class="edge-label" x="1240" y="590">root chooses next action</text>
+
+      <rect class="pill" x="74" y="535" width="160" height="30"></rect>
+      <text class="pill-text" x="95" y="555">claims -> leaves</text>
+      <rect class="pill" x="252" y="535" width="176" height="30"></rect>
+      <text class="pill-text" x="274" y="555">methods -> code</text>
+      <rect class="pill" x="446" y="535" width="198" height="30"></rect>
+      <text class="pill-text" x="468" y="555">datasets -> loaders</text>
+      <rect class="pill" x="662" y="535" width="198" height="30"></rect>
+      <text class="pill-text" x="684" y="555">figures -> metrics</text>
+      <rect class="pill" x="878" y="535" width="222" height="30"></rect>
+      <text class="pill-text" x="900" y="555">limitations -> candidates</text>
+
+      <text class="edge-label" x="75" y="922">Every important transition emits events and writes run artifacts; the frontend replays the event log instead of holding hidden state.</text>
+    </svg>
+  </section>
+
+  <footer>
+    Based on README.md, system_overview.md, docs/design/rlm-pivot-brief.md, backend/agents/rdr/run.py, and backend/agents/rlm/run.py.
+  </footer>
+</main>
+</body>
+</html>

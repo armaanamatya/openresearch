@@ -1,0 +1,333 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1580" height="1120" viewBox="0 0 1580 1120" role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">ReproLab paper reproduction graph</title>
+  <desc id="diagram-desc">A graph showing paper intake, section parsing, context graph creation, RDR and RLM orchestration, runtime execution, scoring, improvement loops, and final artifacts.</desc>
+  <style>
+    svg {
+      --line: #94a3b8;
+      --paper: #fff7ed;
+      --paper-stroke: #f59e0b;
+      --ingest: #ecfeff;
+      --ingest-stroke: #06b6d4;
+      --context: #eef2ff;
+      --context-stroke: #6366f1;
+      --agent: #f0fdf4;
+      --agent-stroke: #22c55e;
+      --runtime: #fef2f2;
+      --runtime-stroke: #ef4444;
+      --score: #fdf4ff;
+      --score-stroke: #c026d3;
+      --output: #f8fafc;
+      --output-stroke: #475569;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .bg { fill: #ffffff; }
+    .grid {
+      fill: url(#grid);
+    }
+    .lane {
+      fill: rgba(255, 255, 255, 0.72);
+      stroke: #d7dee8;
+      stroke-width: 1.2;
+      rx: 14;
+    }
+    .lane-title {
+      fill: #334155;
+      font-size: 18px;
+      font-weight: 650;
+    }
+    .heading {
+      fill: #1f2937;
+      font-size: 42px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      fill: #64748b;
+      font-size: 17px;
+    }
+    .node rect {
+      rx: 8;
+      stroke-width: 2;
+    }
+    .node text {
+      fill: #172033;
+      font-size: 16px;
+    }
+    .node .title {
+      font-weight: 700;
+      font-size: 17px;
+    }
+    .node .small {
+      fill: #475569;
+      font-size: 13px;
+    }
+    .paper rect { fill: var(--paper); stroke: var(--paper-stroke); }
+    .ingest rect { fill: var(--ingest); stroke: var(--ingest-stroke); }
+    .context rect { fill: var(--context); stroke: var(--context-stroke); }
+    .agent rect { fill: var(--agent); stroke: var(--agent-stroke); }
+    .runtime rect { fill: var(--runtime); stroke: var(--runtime-stroke); }
+    .score rect { fill: var(--score); stroke: var(--score-stroke); }
+    .output rect { fill: var(--output); stroke: var(--output-stroke); }
+    .edge {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 2.2;
+      marker-end: url(#arrow);
+    }
+    .edge.strong {
+      stroke: #334155;
+      stroke-width: 2.8;
+    }
+    .edge.loop {
+      stroke: #c026d3;
+      stroke-width: 2.5;
+      stroke-dasharray: 7 6;
+    }
+    .edge.thin {
+      stroke-width: 1.6;
+      stroke-dasharray: 4 5;
+    }
+    .edge-label {
+      fill: #475569;
+      font-size: 13px;
+      paint-order: stroke;
+      stroke: #ffffff;
+      stroke-width: 5px;
+      stroke-linejoin: round;
+    }
+    .pill {
+      fill: #ffffff;
+      stroke: #cbd5e1;
+      stroke-width: 1.5;
+      rx: 15;
+    }
+    .pill-text {
+      fill: #334155;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .footer {
+      fill: #64748b;
+      font-size: 13px;
+    }
+  </style>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#f1f5f9" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1580" height="1120"/>
+  <rect class="grid" x="28" y="96" width="1508" height="976" rx="8"/>
+
+  <text class="heading" x="28" y="54">How ReproLab Processes, Reproduces, and Improves a Paper</text>
+  <text class="subtitle" x="30" y="84">Paper sections become indexed context, rubric obligations, implementation clusters, measured experiments, repair targets, and final reports.</text>
+
+  <rect class="lane" x="28" y="112" width="1508" height="182"/>
+  <rect class="lane" x="28" y="324" width="1508" height="280"/>
+  <rect class="lane" x="28" y="634" width="1508" height="278"/>
+  <rect class="lane" x="28" y="942" width="1508" height="130"/>
+  <text class="lane-title" x="54" y="146">1. Paper intake and section extraction</text>
+  <text class="lane-title" x="54" y="360">2. Section graph, rubric map, and reproduction planning</text>
+  <text class="lane-title" x="54" y="670">3. Implementation, execution, scoring, and improvement loop</text>
+  <text class="lane-title" x="54" y="978">4. Persisted artifacts and user-facing views</text>
+
+  <g class="node paper" transform="translate(70 178)">
+    <rect width="210" height="92"/>
+    <text x="18" y="30" class="title">Paper source</text>
+    <text x="18" y="57">arXiv URL, PDF, or</text>
+    <text x="18" y="78">PaperBench bundle</text>
+  </g>
+
+  <g class="node ingest" transform="translate(340 166)">
+    <rect width="240" height="116"/>
+    <text x="18" y="30" class="title">ResolvingParser</text>
+    <text x="18" y="56">HTML first, then PDF,</text>
+    <text x="18" y="77">then OCR fallback</text>
+    <text x="18" y="101" class="small">Writes parsed_full_text.txt</text>
+  </g>
+
+  <g class="node paper" transform="translate(645 152)">
+    <rect width="265" height="144"/>
+    <text x="18" y="30" class="title">Paper sections</text>
+    <text x="18" y="58">Abstract and claims</text>
+    <text x="18" y="80">Method and equations</text>
+    <text x="18" y="102">Datasets and training recipe</text>
+    <text x="18" y="124">Tables, figures, metrics</text>
+  </g>
+
+  <g class="node context" transform="translate(995 166)">
+    <rect width="260" height="116"/>
+    <text x="18" y="30" class="title">Offloaded context</text>
+    <text x="18" y="56">paper_text, metadata,</text>
+    <text x="18" y="77">rubric_spec, artifacts</text>
+    <text x="18" y="101" class="small">Root sees metadata, not corpus</text>
+  </g>
+
+  <g class="node output" transform="translate(1320 174)">
+    <rect width="160" height="96"/>
+    <text x="18" y="30" class="title">Run state</text>
+    <text x="18" y="57">runs/&lt;id&gt;/</text>
+    <text x="18" y="78">file-backed</text>
+  </g>
+
+  <g class="node context" transform="translate(80 410)">
+    <rect width="230" height="124"/>
+    <text x="18" y="30" class="title">Context graph</text>
+    <text x="18" y="57">claims, entities,</text>
+    <text x="18" y="78">artifacts, citations</text>
+    <text x="18" y="104" class="small">Section-to-evidence map</text>
+  </g>
+
+  <g class="node score" transform="translate(365 400)">
+    <rect width="250" height="144"/>
+    <text x="18" y="30" class="title">Rubric spine</text>
+    <text x="18" y="58">PaperBench rubric or</text>
+    <text x="18" y="80">generated rubric tree</text>
+    <text x="18" y="108">Leaves become testable</text>
+    <text x="18" y="130">obligations</text>
+  </g>
+
+  <g class="node agent" transform="translate(690 390)">
+    <rect width="275" height="166"/>
+    <text x="18" y="30" class="title">RDR controller</text>
+    <text x="18" y="58">Decomposes rubric into</text>
+    <text x="18" y="80">work clusters</text>
+    <text x="18" y="108">Builds scoped contexts:</text>
+    <text x="18" y="130" class="small">leaf requirements + excerpts</text>
+    <text x="18" y="151" class="small">+ dependency artifacts</text>
+  </g>
+
+  <g class="node agent" transform="translate(1040 390)">
+    <rect width="270" height="166"/>
+    <text x="18" y="30" class="title">RLM root model</text>
+    <text x="18" y="58">Writes Python in a</text>
+    <text x="18" y="80">persistent REPL</text>
+    <text x="18" y="108">Calls primitives and</text>
+    <text x="18" y="130">sub-LLM/RLM queries</text>
+    <text x="18" y="151" class="small">Adaptive repair in hybrid mode</text>
+  </g>
+
+  <g class="node agent" transform="translate(90 724)">
+    <rect width="235" height="124"/>
+    <text x="18" y="30" class="title">Scoped code agents</text>
+    <text x="18" y="57">One cluster at a time</text>
+    <text x="18" y="79">or parallel clusters</text>
+    <text x="18" y="105" class="small">Implement / repair code</text>
+  </g>
+
+  <g class="node runtime" transform="translate(385 716)">
+    <rect width="235" height="140"/>
+    <text x="18" y="30" class="title">Environment builder</text>
+    <text x="18" y="58">detect_environment</text>
+    <text x="18" y="80">build_environment</text>
+    <text x="18" y="108">Docker image and</text>
+    <text x="18" y="130">dependency repair</text>
+  </g>
+
+  <g class="node runtime" transform="translate(685 716)">
+    <rect width="230" height="140"/>
+    <text x="18" y="30" class="title">Experiment runtime</text>
+    <text x="18" y="58">run_experiment</text>
+    <text x="18" y="80">Local, Docker, or</text>
+    <text x="18" y="102">RunPod GPU</text>
+    <text x="18" y="130" class="small">Captures logs and metrics</text>
+  </g>
+
+  <g class="node score" transform="translate(985 716)">
+    <rect width="235" height="140"/>
+    <text x="18" y="30" class="title">Rubric verifier</text>
+    <text x="18" y="58">verify_against_rubric</text>
+    <text x="18" y="82">scores leaves and</text>
+    <text x="18" y="104">records justifications</text>
+    <text x="18" y="130" class="small">Finds weak clusters</text>
+  </g>
+
+  <g class="node agent" transform="translate(1280 716)">
+    <rect width="210" height="140"/>
+    <text x="18" y="30" class="title">Improvement loop</text>
+    <text x="18" y="58">propose_improvements</text>
+    <text x="18" y="82">triage candidates</text>
+    <text x="18" y="106">repair weak leaves</text>
+    <text x="18" y="130" class="small">repeat until target or budget</text>
+  </g>
+
+  <g class="node output" transform="translate(92 1000)">
+    <rect width="220" height="50"/>
+    <text x="18" y="31" class="title">dashboard_events.jsonl</text>
+  </g>
+
+  <g class="node output" transform="translate(358 1000)">
+    <rect width="210" height="50"/>
+    <text x="18" y="31" class="title">code/ + commands.json</text>
+  </g>
+
+  <g class="node output" transform="translate(614 1000)">
+    <rect width="220" height="50"/>
+    <text x="18" y="31" class="title">experiment_runs.jsonl</text>
+  </g>
+
+  <g class="node output" transform="translate(880 1000)">
+    <rect width="210" height="50"/>
+    <text x="18" y="31" class="title">final_report.json/md</text>
+  </g>
+
+  <g class="node output" transform="translate(1136 1000)">
+    <rect width="270" height="50"/>
+    <text x="18" y="31" class="title">Lab UI / library / leaderboard</text>
+  </g>
+
+  <path class="edge strong" d="M 280 224 L 340 224"/>
+  <path class="edge strong" d="M 580 224 L 645 224"/>
+  <path class="edge strong" d="M 910 224 L 995 224"/>
+  <path class="edge strong" d="M 1255 224 L 1320 224"/>
+  <path class="edge" d="M 1125 282 C 1110 334 250 334 195 410"/>
+  <path class="edge" d="M 780 296 C 770 348 520 346 490 400"/>
+  <path class="edge" d="M 615 472 L 690 472"/>
+  <path class="edge" d="M 965 473 L 1040 473"/>
+  <path class="edge" d="M 825 556 C 740 636 270 632 210 724"/>
+  <path class="edge" d="M 1175 556 C 1125 636 270 636 220 724"/>
+  <path class="edge" d="M 325 786 L 385 786"/>
+  <path class="edge" d="M 620 786 L 685 786"/>
+  <path class="edge" d="M 915 786 L 985 786"/>
+  <path class="edge" d="M 1220 786 L 1280 786"/>
+  <path class="edge loop" d="M 1280 732 C 1175 642 1010 628 910 702"/>
+  <path class="edge loop" d="M 1390 716 C 1390 616 1200 608 1170 556"/>
+  <path class="edge thin" d="M 207 848 L 202 1000"/>
+  <path class="edge thin" d="M 505 856 L 463 1000"/>
+  <path class="edge thin" d="M 800 856 L 724 1000"/>
+  <path class="edge thin" d="M 1102 856 L 985 1000"/>
+  <path class="edge thin" d="M 1365 856 L 1270 1000"/>
+
+  <text class="edge-label" x="295" y="211">source</text>
+  <text class="edge-label" x="598" y="211">best parse</text>
+  <text class="edge-label" x="922" y="211">offload</text>
+  <text class="edge-label" x="1266" y="211">persist</text>
+  <text class="edge-label" x="272" y="375">section index</text>
+  <text class="edge-label" x="520" y="361">rubric evidence</text>
+  <text class="edge-label" x="628" y="457">obligations</text>
+  <text class="edge-label" x="973" y="458">hybrid repair handoff</text>
+  <text class="edge-label" x="330" y="710">scoped prompt</text>
+  <text class="edge-label" x="632" y="772">env id</text>
+  <text class="edge-label" x="922" y="772">metrics</text>
+  <text class="edge-label" x="1228" y="772">weak leaves</text>
+  <text class="edge-label" x="1038" y="656">rerun repaired candidate</text>
+  <text class="edge-label" x="1240" y="612">root chooses next action</text>
+
+  <rect class="pill" x="74" y="572" width="160" height="30"/>
+  <text class="pill-text" x="95" y="592">claims -&gt; leaves</text>
+  <rect class="pill" x="252" y="572" width="176" height="30"/>
+  <text class="pill-text" x="274" y="592">methods -&gt; code</text>
+  <rect class="pill" x="446" y="572" width="198" height="30"/>
+  <text class="pill-text" x="468" y="592">datasets -&gt; loaders</text>
+  <rect class="pill" x="662" y="572" width="198" height="30"/>
+  <text class="pill-text" x="684" y="592">figures -&gt; metrics</text>
+  <rect class="pill" x="878" y="572" width="222" height="30"/>
+  <text class="pill-text" x="900" y="592">limitations -&gt; candidates</text>
+
+  <text class="edge-label" x="75" y="926">Every important transition emits events and writes run artifacts; the frontend replays the event log instead of holding hidden state.</text>
+  <text class="footer" x="30" y="1098">Based on README.md, system_overview.md, docs/design/rlm-pivot-brief.md, backend/agents/rdr/run.py, and backend/agents/rlm/run.py.</text>
+</svg>

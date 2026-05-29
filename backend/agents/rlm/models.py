@@ -277,7 +277,9 @@ def _build_registry() -> dict[str, RootModel]:
                 # Ollama ignores num_ctx unless passed via extra_body — without
                 # it the model loads with its ~2048-token default and silently
                 # truncates rubric-gen's 48k-char paper input → malformed JSON.
-                "ollama_extra_body": {"options": {"num_ctx": 32768}},
+                # think:false suppresses qwen3.5's <think>...</think> blocks,
+                # which otherwise corrupt rubric gen JSON output.
+                "ollama_extra_body": {"options": {"num_ctx": 32768}, "think": False},
             },
             # Sub-call (depth-1 LLM calls and the claude-agent-sdk surface for
             # implement_baseline) — routed through a local Anthropic-shaped
@@ -644,6 +646,16 @@ def resolve_root_model(name: str | None) -> RootModel:
         (entry.sub_backend, "sub-call", sub_env),
     ):
         if _env and not _credential_value(_env):
+            # For the anthropic backend, OAuth is a valid alternative to an API
+            # key — the claude-agent-sdk falls through to claude-oauth when
+            # ANTHROPIC_API_KEY is empty. Skip the hard fail if OAuth creds exist.
+            if _backend == "anthropic":
+                try:
+                    from backend.agents.runtime.factory import has_provider_credentials
+                    if has_provider_credentials("anthropic"):
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
             raise ValueError(
                 f"Root model {name!r} requires the {_backend!r} backend "
                 f"({_role}) but {_env} is not set. "
