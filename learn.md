@@ -11,6 +11,62 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-29 — A timed-out vLLM boot left orphaned tensor-parallel workers at 100% CPU, starving every later boot
+
+**Symptom.** The 32B accelerator boot (`serve_local_llm.py --tp 4`) timed out at the 600 s `--max-wait`; the retry was pathologically slow — weights never became GPU-resident after 8+ min, the leased GPUs sat idle while CPU was saturated.
+
+**Root cause.** vLLM's tensor-parallel workers are `spawn` multiprocessing subprocesses (grandchildren of the serve script). `_terminate_child` signalled only the direct child (the api_server) via `proc.terminate()/kill()`. On the first timeout the SIGKILLed parent left its 3 workers **orphaned (reparented to init), each spinning at 100% CPU**; the next boot's workers then fought them for starved cores. An earlier `ps | grep vllm` missed the orphans because spawn workers show as `python -c from multiprocessing.spawn import spawn_main`, not `vllm`.
+
+**Fix.** Launch vLLM with `start_new_session=True` (the parent becomes a process-group leader) and have `_terminate_child` `os.killpg(getpgid, SIGTERM→SIGKILL)` the **whole group**, so no worker survives. Also: `--max-wait` must scale with model size — 32B needs ≥ 2400 s on this contended disk; the 600 s default silently fails it.
+
+**Lesson.** When you SIGKILL a process that spawned its own subprocesses, signal the **process group**, not the PID — orphaned compute workers don't just leak memory, they steal CPU from everything after them. And audit by the *actual* worker cmdline (`spawn_main`), not the package name, or your "no stray procs" check lies.
+
+**Guardrail.** `tests/test_serve_local_llm.py::test_terminate_child_signals_process_group_not_just_pid` (mocks `os.killpg`, asserts the group is signalled and `proc.terminate` is not). Operational check after any restart: `ps -u $USER -o cmd | grep spawn_main` must be empty.
+
+---
+
+## 2026-05-29 — The local vLLM accelerator served fine but was never *detected* ready, and hung on a cached model's DNS
+
+**Symptom.** `serve_local_llm.py` waited the full `--max-wait` then gave up even though `curl -H "Authorization: Bearer local" :8001/v1/models` returned 200; separately, a boot looped on `NameResolutionError/MaxRetryError` for `huggingface.co` on a model already in the cache.
+
+**Root cause.** Two independent defects. (1) The readiness probe did a bare `urlopen(/v1/models)` with **no `Authorization` header**, but vLLM runs with `--api-key`, so every probe got 401 → "not ready" → the serve timed out and SIGKILLed a healthy server. (2) vLLM resolves `config.json` from huggingface.co on boot even when the snapshot is cached; a flaky DNS then blocked the engine indefinitely.
+
+**Fix.** (1) `_probe_server` sends `Authorization: Bearer <api_key>` and treats 401/403 as "up" (port bound ⇒ model loaded), threaded through `_wait_for_readiness` + the idempotent start-probe. (2) `_build_child_env` sets `HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1` when `try_to_load_from_cache(model, "config.json")` hits, so a cached model boots from disk with no network. Mirrors `backend/agents/rlm/accelerator.py::probe_endpoint`.
+
+**Lesson.** A health probe must speak the server's auth, and "reachable" for readiness means *any* HTTP response (even 401), not only 200. And a cached artifact must never depend on the network — detect the cache and force offline, or a DNS blip wedges the boot.
+
+**Guardrail.** `tests/test_serve_local_llm.py` — `test_probe_401_counts_as_up`, `test_probe_200_is_ready`, `test_probe_connection_refused_is_not_ready`, `test_cached_model_forces_offline_env`, `test_uncached_model_stays_online`.
+
+---
+
+## 2026-05-29 — The CLI passed `process_status`/`verdict` to a `_write_demo_status` that rejected them
+
+**Symptom.** `backend/cli.py`'s reproduce + sanity paths call `_write_demo_status(..., process_status=..., verdict=...)`, but the function only accepted `error`/`primitive_provider` — a latent `TypeError: unexpected keyword argument 'process_status'` on every CLI status write (and 4 red tests).
+
+**Root cause.** A caller (cli.py, commit e6248d0) grew kwargs the callee (run.py) never did. Tests + CLI both expected the richer schema; only the function lagged — and the function's own unit tests exercised the *old* signature, so the gap stayed invisible.
+
+**Fix.** `_write_demo_status` now accepts `process_status` + `verdict`, derived from `RunStatus` when omitted (`completed` for terminal states else `running`; `failed` for a failed status else `unknown`), and writes both into `demo_status.json`. `LiveRunState` ignores the extra keys (pydantic `extra='ignore'`).
+
+**Lesson.** When a function and its callers live in different modules, a new kwarg at a call site is a runtime bomb until the signature follows — and a callee-only unit test won't catch it. Test the *caller's* path, not just the function in isolation.
+
+**Guardrail.** `tests/rlm/test_run.py::TestWriteDemoStatus` (3) + `tests/test_cli_sanity_mode.py::test_cmd_reproduce_sanity_writes_stable_artifacts`.
+
+---
+
+## 2026-05-29 — Two non-deterministic test failures: a plugin's load_dotenv, and a process-global cache
+
+**Symptom.** `test_default_values_match_spec` failed asserting `dynamic_gpu_enabled is True`; and `test_leaderboard_aggregator` failed on a *different* test each run — flaky even with a fixed `PYTHONHASHSEED`.
+
+**Root cause.** (1) The `deepeval` pytest plugin calls `load_dotenv()` at session start, leaking the repo `.env` (`REPROLAB_DYNAMIC_GPU_ENABLED=false`) into `os.environ` — which beats both `.env` and `_env_file=None`, shadowing the code default. (2) `leaderboard_cache._cache` is a process-global keyed by `project_id` with mtime invalidation; the tests reuse project_ids `"a"/"b"` across different `tmp_path`s, and coarse filesystem mtime let a stale cross-test row survive — which test lost depended on timing.
+
+**Fix.** (1) The defaults test clears the asserted vars from `os.environ` *and* passes `_env_file=None`. (2) An autouse fixture calls `leaderboard_cache.clear()` (the cache's own test-isolation hook) before + after each test.
+
+**Lesson.** A pytest plugin can mutate `os.environ` for the whole session — a "hermetic" Settings test must clear env, not just disable `.env`. And any process-global cache needs a per-test reset, or a key collision across `tmp_path`s makes tests fail by timing, not logic.
+
+**Guardrail.** Both fixes are themselves the guardrails (hermetic construction + autouse `clear()`); the leaderboard file is now green 3× consecutively.
+
+---
+
 ## 2026-05-23 (late evening) — A run wrote `final_report.json` cleanly but `demo_status.json` was stuck on `running` forever because atexit hung
 
 **Symptom.** `prj_6b9acbfd8afcd789` ran 18 min, produced `final_report.json` with rubric 0.244, printed the success JSON to stdout — but `demo_status.json::status` stayed `"running"` indefinitely (12+ hours). UI showed the run as in-flight forever even though the work was done.
