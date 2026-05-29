@@ -995,6 +995,38 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         print(f"[rlm] Sandbox preflight failed: {exc}", file=sys.stderr)
         return 2
 
+    # 2026-05-29: write demo_status.json up front so the lab UI recognizes the
+    # run as a real one and stops redirecting to "lab main". Without this the
+    # frontend's project guard treats the run as orphan (it uses demo_status
+    # as the existence check). The normal ingest path writes this via Lane U
+    # in cmd_reproduce; the paperbench branch bypasses that, so we mirror
+    # the write here. Title comes from the bundle's config.yaml.
+    _ds_path = runs_root / project_id / "demo_status.json"
+    _ds_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _ds_path.exists():
+        from datetime import datetime, timezone
+        _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _ds_payload = {
+            "paperId": paper_id,
+            "paperTitle": getattr(bundle, "title", paper_id),
+            "paper": {
+                "id": paper_id,
+                "title": getattr(bundle, "title", paper_id),
+            },
+            "projectId": project_id,
+            "outputDir": str(runs_root / project_id),
+            "runMode": getattr(args, "mode", "rlm"),
+            "status": "running",
+            "startedAt": _now_iso,
+            "updatedAt": _now_iso,
+            "primitiveProvider": "real",
+            # Liveness prereq (audit 2026-06-09): without a pid the orphan
+            # sweep skips this run; the pipeline runs in this same process.
+            "pid": os.getpid(),
+        }
+        _ds_path.write_text(json.dumps(_ds_payload, indent=2), encoding="utf-8")
+        print(f"[rlm] wrote demo_status.json (status=running)", file=sys.stderr)
+
     # Route by mode: default 'rlm' → hybrid; 'rlm-pure' → pure RLM.
     mode = getattr(args, "mode", "rlm")
     if mode == "rlm-pure":
