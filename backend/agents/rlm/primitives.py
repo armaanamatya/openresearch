@@ -3303,6 +3303,9 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
+            # Paper-hint invariant gate (2026-05-29): thread invariants from
+            # RunContext so the deterministic regex gate fires in-loop.
+            invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
         )
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable
@@ -3350,6 +3353,11 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
+            # Paper-hint invariant gate (2026-05-29): surface per-invariant
+            # pass/fail so the root model can see which invariants tripped and
+            # target repairs on the next iteration.
+            "invariant_results": scored.get("invariant_results", []),
+            "invariant_gate_applied": bool(scored.get("invariant_gate_applied", False)),
         }
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},
