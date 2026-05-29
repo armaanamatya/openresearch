@@ -530,6 +530,8 @@ def _write_demo_status(
     *,
     error: Any | None = None,
     primitive_provider: str = "real",  # T21 / review I8
+    process_status: str | None = None,
+    verdict: str | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -540,11 +542,24 @@ def _write_demo_status(
     overwritten, so an earlier ``startedAt`` survives the terminal write.
 
     ``status`` must be a valid ``RunStatus`` (``running`` | ``completed`` |
-    ``failed`` | ``stopped``) — the reproduction *verdict* (which may be
-    ``partial``) is a separate axis and lives in ``final_report.json``.
+    ``failed`` | ``stopped``). Two related axes are recorded alongside it:
+    ``process_status`` — the run-subprocess lifecycle (``running`` while the
+    process is alive, ``completed`` once it has exited) — and ``verdict`` — the
+    reproduction outcome (``reproduced`` | ``partial`` | ``failed`` |
+    ``unknown``, also mirrored in ``final_report.json``). Both are derived from
+    ``status`` when not passed explicitly. ``LiveRunState`` ignores these extra
+    keys (pydantic ``extra='ignore'``); they exist for richer status consumers,
+    and the CLI sanity/reproduce paths pass them explicitly.
     """
     path = project_dir / "demo_status.json"
     now = datetime.now(timezone.utc).isoformat()
+    terminal = status in ("completed", "failed", "stopped")
+    # Derive the lifecycle/verdict axes from RunStatus when not supplied so the
+    # snapshot schema is consistent regardless of which caller wrote it.
+    if process_status is None:
+        process_status = "completed" if terminal else "running"
+    if verdict is None:
+        verdict = "failed" if status == "failed" else "unknown"
     existing: dict[str, Any] = {}
     if path.exists():
         try:
@@ -560,11 +575,13 @@ def _write_demo_status(
         "updatedAt": now,
     }
     payload.setdefault("startedAt", now)
-    if status in ("completed", "failed", "stopped"):
+    if terminal:
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
+    payload["process_status"] = process_status
+    payload["verdict"] = verdict
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
