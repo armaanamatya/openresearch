@@ -2,7 +2,7 @@
 
 Date: 2026-05-28
 Author: codex-session (assistant) + Aayush (user)
-Status: PROPOSED — no code changes landed yet; plan only
+Status: RESOLVED — all 5 fixes landed in commit `271df91` (2026-05-28)
 Companion: [`2026-05-28-subscription-cost-reduction-design.md`](2026-05-28-subscription-cost-reduction-design.md) (cost track), [`2026-05-27-rlm-reproduction-stability-plan.md`](../../runbooks/2026-05-27-rlm-reproduction-stability-plan.md) (prior stability plan)
 
 ## TL;DR

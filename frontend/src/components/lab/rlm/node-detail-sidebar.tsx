@@ -38,15 +38,6 @@ export interface NodeDetailSidebarProps {
   style?: CSSProperties;
 }
 
-const COMPREHENSION_PRIMITIVES = new Set([
-  "understand_section",
-  "extract_hyperparameters",
-]);
-const ENVIRONMENT_PRIMITIVES = new Set([
-  "detect_environment",
-  "build_environment",
-]);
-
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }

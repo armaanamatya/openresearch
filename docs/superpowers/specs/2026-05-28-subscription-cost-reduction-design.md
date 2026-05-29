@@ -73,7 +73,7 @@ prioritize the rest of the work by actual measured impact rather than suspicion.
 ### Pillar B: Eliminate retry-burst (Phase 1)
 
 The B-001 pre-emit stall (claude-agent-sdk aclose deadlock, documented in
-`docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md`) currently
+`docs/superpowers/specs/2026-05-26-runtime-resilience-design.md` §sdk_aclose) currently
 costs a full sub-agent rollout per hang. Two changes:
 
 1. **Checkpoint partial state.** `implement_baseline`'s sub-agent writes files

@@ -195,7 +195,7 @@ export function useRun(
   // Keep a ref so callbacks always see the latest providerOptions without
   // invalidating the useCallback memoization on every render.
   const providerOptionsRef = useRef<ProviderRunOptions>(providerOptions);
-  providerOptionsRef.current = providerOptions;
+  providerOptionsRef.current = providerOptions; // eslint-disable-line react-hooks/refs
 
   // Keep the URL in sync with the active run so a refresh or a shared
   // link restores it. `replace` (not `push`) avoids a history pile-up;

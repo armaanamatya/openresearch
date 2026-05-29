@@ -175,6 +175,7 @@ export function RlmLab({
     if (startedAtMs === null) return;
     // If the run already has a completedAt, freeze immediately — no interval.
     if (completedAtMs !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNowMs(completedAtMs);
       return;
     }
@@ -202,7 +203,7 @@ export function RlmLab({
     const first = new Date(firstTimestamp).getTime();
     const last = new Date(lastTimestamp).getTime();
     return Math.max(0, last - first);
-  }, [startedAtMs, nowMs, events]);
+  }, [startedAtMs, nowMs, completedAtMs, events]);
 
   // ── Selected node + iteration resolution ──────────────────────────────
   const selectedNode = useMemo(

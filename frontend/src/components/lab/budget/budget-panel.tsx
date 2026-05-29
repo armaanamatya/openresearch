@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import "./budget-panel.css";
 
@@ -334,7 +334,6 @@ export function BudgetPanel({
       {estimate.estimate_breakdown && estimate.estimate_breakdown.length > 0 && (() => {
         const breakdown = estimate.estimate_breakdown!;
         // Low-confidence badge: sigma/mean > 50% on available sources
-        const availSources = breakdown.filter(s => isFinite(s.sigma) && s.mean > 0);
         const gpuSigma = estimate.gpu.estimated_hours_sigma ?? null;
         const gpuMean = estimate.gpu.estimated_hours.p50;
         const lowConf = estimate.gpu.low_confidence ?? (
