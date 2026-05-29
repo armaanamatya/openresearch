@@ -115,6 +115,24 @@ is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 a shared link reopens it. A `localStorage` pointer auto-resumes an in-flight run
 when the user lands on a bare `/lab`.
 
+## REPL sandbox safety (spec 2026-05-28)
+
+The REPL the root model writes into is `rlm.environments.local_repl.LocalREPL`
+with a `_SAFE_BUILTINS` allow-list. `eval`, `exec`, `compile`, and `input` are
+intentionally **blocked** (the code-execution boundary). Upstream `rlm` also
+blocks `globals` and `locals`, but those are pure namespace getters with no
+risk surface — and blocking them by setting the entries to `None` means any
+model code that calls `globals().get("report_state", {...})` (a normal idiom
+for cross-iteration state) raises a bare
+`TypeError: 'NoneType' object is not callable`. ReproLab patches both at
+import time via `backend/agents/rlm/safe_builtins_patch.py` (restore
+`globals`/`locals` to the real builtins) and
+`backend/agents/rlm/safe_repl_traceback_patch.py` (extend
+`LocalREPL.execute_code` to emit `traceback.format_exc()` in stderr so the
+model can diagnose its own bugs). The eval/exec/compile/input blocks remain
+in place. Born from the 2026-05-28 `prj_09047604e591d969` death-spiral —
+see `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
+
 ## Dynamic GPU selection (spec 2026-05-23)
 
 When `REPROLAB_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`REPROLAB_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `REPROLAB_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `REPROLAB_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `REPROLAB_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
@@ -185,6 +203,12 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 - `docs/runbooks/e2e-testing.md` — canonical end-to-end testing and debug reference.
 - `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
   locked launch decisions, including the hybrid default and leaderboard surface.
+- `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` —
+  REPL safe-builtins patch, traceback surfacing, shell-env precedence warning,
+  forced-iteration None-rubric extension, premature-exit detector. P0 fixes
+  must land before the next SDAR attempt.
+- `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` —
+  sub-agent token-burn measurement + retry-burst elimination (sibling track).
 - `learn.md` — post-mortems: bugs shipped + the guardrail for each.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model

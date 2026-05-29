@@ -28,6 +28,11 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | 16 | Path normalization for Windows ↔ WSL ↔ macOS | gotcha | resolved (F3) | `backend/services/paths.py` |
 | 17 | `resolve_root_model` rejected `sonnet` / `claude-sonnet-4-6` UI aliases | blocker | resolved (F4) | `backend/agents/rlm/models.py::resolve_root_model` |
 | 18 | `use-rdr-artifacts` polled forever on non-RDR runs (proxy 502/404 spam) | UX | resolved (F2/F7) | `frontend/src/app/api/demo/runs/[projectId]/...` route + hook |
+| 19 | rlm `_SAFE_BUILTINS` shadows `globals`/`locals` as `None` → bare `NoneType` death-spiral (BUG-LR-011) | blocker | resolved (`271df91`) | `backend/agents/rlm/safe_builtins_patch.py`; spec: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` |
+| 20 | `LocalREPL.execute_code` swallows traceback → model can't diagnose its own bugs (BUG-LR-012) | high | resolved (`271df91`) | `backend/agents/rlm/safe_repl_traceback_patch.py`; same spec as #19 |
+| 21 | Forced-iteration (Lane H) accepts FINAL_VAR when `rubric_score is None` (BUG-LR-013) | high | resolved (`271df91`) | `backend/agents/rlm/forced_iteration.py` predicate; same spec |
+| 22 | Shell `OPENAI_API_KEY` silently overrides `.env` → 401 at iter 0 (BUG-LR-014) | blocker on stale shell vars | resolved (`271df91`) | Boot-time warning in `backend/cli.py`. Spec: same as #19 |
+| 23 | No detector for "model gave up before doing real work" — `partial` verdict ships with 0 primitives called (BUG-LR-015) | medium | resolved (`271df91`) | `_emit_suspicious_partial_warning` in `backend/agents/rlm/run.py`; same spec |
 
 §3 covers each open issue in depth. §4 is the family of fixes ("F1"-"F8") referenced in `e2e-testing.md`.
 
@@ -287,6 +292,90 @@ rm -f ~/Library/Caches/ms-playwright/mcp-chrome-*/SingletonLock
 ```
 
 This is why our `scripts/lab_screenshot_tail.mjs` (see §6.2) launches its own headless Chromium via `playwright-core` directly rather than going through the MCP — it sidesteps the singleton lock entirely.
+
+---
+
+### 3.9 rlm `_SAFE_BUILTINS` shadows `globals`/`locals` as `None` (BUG-LR-011) — **RESOLVED** `271df91`
+
+**Symptom:** the root model's iter-1 code crashes with stderr
+```
+TypeError: 'NoneType' object is not callable
+```
+with no traceback and no line number. Subsequent iterations show defensive "let me probe tool availability" code; the run terminates `partial` with `rubric.overall_score: 0.0` and `primitive_trace.calls: 2` (just `check_user_messages`).
+
+**Cause:** `.venv/lib/python3.14/site-packages/rlm/environments/local_repl.py:112-118` puts `"globals": None` and `"locals": None` in `_SAFE_BUILTINS` alongside `eval/exec/compile/input`. The latter four are real risks; `globals/locals` are namespace getters. Any model code that does `globals().get("report_state", {...})` to persist state across iterations crashes immediately.
+
+**Reproduction (deterministic):**
+```python
+from rlm.environments.local_repl import LocalREPL
+from backend.agents.rlm.binding import build_custom_tools
+# (build ctx ...)
+repl = LocalREPL(custom_tools=build_custom_tools(ctx))
+r = repl.execute_code('globals().get("x", 1)')
+print(r.stderr)  # \nTypeError: 'NoneType' object is not callable
+```
+
+**Remediation:** import-time monkey-patch via `backend/agents/rlm/safe_builtins_patch.py` restoring `globals`/`locals` to the real builtins. Genuine blocks on `eval/exec/compile/input` stay. Design + tests: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` (Fix 1).
+
+**Operator workaround until fix lands:** none — runs blocked.
+
+---
+
+### 3.10 `LocalREPL.execute_code` swallows traceback (BUG-LR-012) — **RESOLVED** `271df91`
+
+**Symptom:** any REPL exception surfaces to the model as `f"{type(e).__name__}: {e}"` — no file, no line, no chained context. For multi-thousand-line scripts the model cannot identify what broke.
+
+**Cause:** `rlm/environments/local_repl.py:506` builds stderr from the bare type+message. No `traceback.format_exc()`. This was tolerable when the only failure mode was a tool intentionally raising a user-friendly error; with BUG-LR-011 it produces unsolvable 45-char crash messages.
+
+**Remediation:** `backend/agents/rlm/safe_repl_traceback_patch.py` overrides `execute_code` to include `traceback.format_exc()` (capped at 2000 chars, last-frames-first). SSE bridge sanitization still applies on egress. Design + tests: same spec, Fix 2. Operator workaround: read `runs/<id>/rlm_state/iterations.jsonl` and look at the `stdout_meta`/`stderr_meta` of each iteration's code_blocks[0] — the local Python traceback (if any) is captured pre-rlm; for a true LocalREPL exception there's none until the patch lands.
+
+---
+
+### 3.11 Forced-iteration policy accepts FINAL_VAR when `rubric_score is None` (BUG-LR-013) — **RESOLVED** `271df91`
+
+**Symptom:** the root model calls FINAL_VAR after a few iterations without ever calling `verify_against_rubric`. The orchestrator accepts it, writes `final_report.json` with `verdict: "partial"` and `rubric.overall_score: 0.0`. No `forced_iteration` `run_warning` is emitted.
+
+**Cause:** `backend/agents/rlm/forced_iteration.py::ForcedIterationPolicy.should_refuse_final_var` only refuses when `latest_rubric_score is not None AND latest_rubric_score < target_score AND iteration_count < min_iterations`. A `None` score skips the predicate.
+
+**Remediation:** extend the predicate — `None` is strictly less work than a zero score, so refuse with a tailored "no rubric score yet; call verify_against_rubric or run_experiment" message. Wall-clock bypass (`ctx.remaining_s() <= 60s`) still wins. Design + tests: same spec, Fix 4.
+
+**Operator workaround:** set `REPROLAB_MIN_RUBRIC_ITERATIONS=3` (or higher) to force more iterations before FINAL_VAR is even considered; doesn't fix the `None`-score loophole but reduces the chance of a 1-iteration give-up.
+
+---
+
+### 3.12 Shell `OPENAI_API_KEY` silently overrides `.env` (BUG-LR-014) — **RESOLVED** `271df91`
+
+**Symptom:** CLI run fails immediately with `openai.AuthenticationError: 401 invalid_api_key` for a key prefix you didn't put in `.env` (e.g. `sk-svcacct-…` from a leftover shell export when `.env` has a `sk-proj-…` key).
+
+**Cause:** `os.environ` wins over `.env` in the runtime credential resolver. A stale shell variable from a previous project / different account / SSO refresh shadows the value the project intends to use.
+
+**Detection:**
+```bash
+# Compare:
+echo "shell key prefix: ${OPENAI_API_KEY:0:10}"
+grep -E "^OPENAI_API_KEY" .env | cut -c1-22
+```
+
+**Workaround (use this NOW):**
+```bash
+env -u OPENAI_API_KEY .venv/bin/python -m backend.cli reproduce <arxiv-id> --provider openai --sandbox runpod
+# Or for the session:
+unset OPENAI_API_KEY
+```
+
+**Remediation:** boot-time validator in `backend/cli.py` that diffs `os.environ` against `.env` for known credential keys and prints a one-line warning naming the shadowed key + the workaround. Does NOT abort — some flows intentionally override. Design + tests: same spec, Fix 3.
+
+---
+
+### 3.13 No detector for "model gave up before doing work" (BUG-LR-015) — **RESOLVED** `271df91`
+
+**Symptom:** a `partial` verdict with `primitive_trace.calls: 2` and `by_primitive: {check_user_messages: 2}` looks structurally fine but represents a failed run that produced zero science. Today's `prj_09047604e591d969` shipped exactly this and no event flagged it.
+
+**Cause:** the run-completion path has no heuristic for "did the root actually attempt work."
+
+**Remediation:** add `_emit_suspicious_partial_warning` to `backend/agents/rlm/run.py` near `_finalize`. Compute three signals (no essential primitive called, low iteration utilization, rubric never scored). If `verdict == "partial"` and ≥2 of 3 are true, emit `run_warning` with `code="suspicious_partial"` naming the missed primitives. Diagnostic only — does not change the report. Design + tests: same spec, Fix 5.
+
+**Operator workaround:** post-run grep — `grep -c '"primitive":' runs/<id>/cost_ledger.jsonl` should be ≫ 2 for any real run; treat ≤ 2 as a give-up.
 
 ---
 

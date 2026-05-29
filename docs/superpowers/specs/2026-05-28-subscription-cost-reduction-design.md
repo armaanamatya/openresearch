@@ -869,3 +869,21 @@ Before starting the next SDAR reproduction:
 - [ ] Watch for `detect_environment` in the run artifacts — Dockerfile should start with `FROM runpod/pytorch:...`
 - [ ] Watch for `implement_baseline` pre-flight PASS on attempt 1 (no more surrogate model blocks)
 - [ ] Watch `cost_ledger.jsonl` in run ROOT (not `code/`) for `subagent_usage` rows (BUG-LR-008 fix validation)
+
+---
+
+## Live Run Issues — SDAR `prj_09047604e591d969` (2026-05-28 22:01Z)
+
+Five additional bugs surfaced in the 2026-05-28 22:01Z attempt. Full design + fix diffs live in the sibling spec [`2026-05-28-rlm-stability-remediation-design.md`](2026-05-28-rlm-stability-remediation-design.md). One-line summaries:
+
+- **BUG-LR-011 (P0)** — rlm `_SAFE_BUILTINS` shadows `globals`/`locals` as `None`; iter-1 `globals().get("report_state", ...)` crashes with bare `NoneType`. **RESOLVED `271df91`**: `safe_builtins_patch.py`.
+- **BUG-LR-012 (P0)** — `LocalREPL.execute_code` swallows traceback; root model can't diagnose its own bugs. **RESOLVED `271df91`**: `safe_repl_traceback_patch.py`.
+- **BUG-LR-013 (P1)** — forced-iteration policy accepts FINAL_VAR when `rubric_score is None`. **RESOLVED `271df91`**: extended `forced_iteration.py` predicate.
+- **BUG-LR-014 (P0)** — shell `OPENAI_API_KEY` silently overrides `.env`. **RESOLVED `271df91`**: boot-time validator in `backend/cli.py`.
+- **BUG-LR-015 (P1)** — no detector for "model gave up before doing real work" (premature `partial`). **RESOLVED `271df91`**: `_emit_suspicious_partial_warning` in `run.py`.
+
+### BUG-LR-008 validation status
+
+DEFERRED. The 2026-05-28 run never reached `implement_baseline` (BUG-LR-011 fired in iter 1), so no `subagent_usage` rows could have been emitted regardless of whether the fix in `a09db5b` works. BUG-LR-011..015 are now resolved (`271df91`), unblocking the next SDAR attempt. Validation requires either:
+1. An end-to-end run that reaches `implement_baseline`, OR
+2. A direct unit/integration test of `invoke.py` with a stubbed StreamUsage stream — `tests/agents/runtime/test_invoke_subagent_usage.py` exists per the BUG-LR-008 commit; verify it asserts row emission and run it before the next E2E.

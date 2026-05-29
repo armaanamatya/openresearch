@@ -159,3 +159,22 @@ Process:
 - Frontend dev server on :3000, backend on :8000, both already up. Lab UI
   at http://localhost:3000/lab.
 ```
+
+---
+
+## 2026-05-28 attempt — blocked on REPL safe-builtins + auth precedence
+
+Project: `prj_09047604e591d969` (same arxiv 2605.15155).
+
+CLI: `python -m backend.cli reproduce 2605.15155 --provider openai --sandbox runpod --max-usd 15 --max-wall-clock 7200`
+
+Outcome: `verdict: "partial"`, `iterations: 5`, `rubric.overall_score: 0.0`, `cost_usd: 0.0`. Wall-clock 7 min. Zero domain primitives executed (only `check_user_messages` x2).
+
+Root cause: BUG-LR-011 — `rlm._SAFE_BUILTINS["globals"] = None` made `globals().get("report_state", {...})` crash with a bare `TypeError: 'NoneType' object is not callable` and no traceback. The model spiraled over iters 2-5, concluded "primitives unavailable" (false — all 15 were callable), and shipped a `partial`. See `runs/prj_09047604e591d969/rlm_state/iterations.jsonl` iter 0 `stderr_meta`.
+
+Secondary: BUG-LR-014 — the first CLI attempt died at iter 0 with a 401 because a stale shell `OPENAI_API_KEY=sk-svcacct-…` shadowed the valid `sk-proj-…` in `.env`. Resubmitted with `env -u OPENAI_API_KEY` prefix.
+
+Full forensics + fix designs: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
+
+**BUG-LR-011 + BUG-LR-012 + BUG-LR-013 + BUG-LR-014 + BUG-LR-015 resolved in `271df91`.** The rerun command above is now safe — same env vars, same flags. No `env -u` prefix needed (the boot-time validator will warn if a shadow is detected).
+

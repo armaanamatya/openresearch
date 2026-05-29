@@ -2,6 +2,15 @@
 
 Status: fix plan from the `2512.24601` sanity run and prior trace-mining audit.
 
+> **Continuation 2026-05-28**: today's SDAR rerun (`prj_09047604e591d969`) revealed
+> five further blockers that are upstream of the items in this doc — the root model
+> never even reached `build_environment` because of a REPL-sandbox bug
+> (`globals()` shadowed as `None`). The continuation plan with concrete code-level
+> diffs is in
+> [`docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`](../superpowers/specs/2026-05-28-rlm-stability-remediation-design.md).
+> Land that spec's P0 fixes first; the items in this doc remain valid for the
+> "after the root model can actually run" regime.
+
 This document summarizes what is blocking reliable reproduction, which issues are
 known to exist on `main`, what to fix first, and what to defer. It intentionally
 does not include GEPA implementation details except where they affect the
