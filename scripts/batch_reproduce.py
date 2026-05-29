@@ -324,6 +324,14 @@ def _run_one(
         gpu_uuid_csv = ",".join(lease.gpu_uuids)
         shared_hf = (runs_root / ".cache" / "hf").resolve()
         shared_hf.mkdir(parents=True, exist_ok=True)
+        # Shared pip wheel cache across ALL runs (NOT per-project): wheels are immutable
+        # and reusable, so a new paper cache-hits instead of re-downloading ~5.5 GB of
+        # torch/deps and recompiling flash-attn every time. The per-run venv stays
+        # isolated (deps); only the download/build cache is shared → dep install becomes
+        # fast + offline-resilient. PIP_CACHE_DIR overrides the per-run XDG-derived pip
+        # cache, so the per-run torch/triton/mpl runtime caches below are unaffected.
+        shared_pip = (runs_root / ".cache" / "pip").resolve()
+        shared_pip.mkdir(parents=True, exist_ok=True)
 
         for cache_subdir in ("torch", "triton", "xdg", "mpl"):
             (runs_root / ".cache" / project_id / cache_subdir).mkdir(parents=True, exist_ok=True)
@@ -333,6 +341,7 @@ def _run_one(
             "REPROLAB_GPU_DEVICE_IDS": gpu_uuid_csv,
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "HF_HOME": str(shared_hf),
+            "PIP_CACHE_DIR": str(shared_pip),  # shared wheel cache — fast, resilient re-installs (see above)
             # NOTE: HF_HUB_ENABLE_HF_TRANSFER is intentionally NOT set — modern
             # huggingface_hub raises at download time if the flag is on but the
             # `hf_transfer` package isn't installed, and the fresh per-run venv
