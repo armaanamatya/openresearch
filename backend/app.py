@@ -1049,6 +1049,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from backend.routes.estimate import router as estimate_router
     app.include_router(estimate_router)
 
+    # Replay route — GET /runs/{project_id}/replay-events (UI timeline replay).
+    from backend.routes.replay import router as replay_router
+    app.include_router(replay_router)
+
     # Codex I3 fix: audit freshness was defined but never invoked. Run at
     # startup so the operator sees a stale-pricing WARNING in logs the
     # moment the process boots. Non-blocking on failure.
