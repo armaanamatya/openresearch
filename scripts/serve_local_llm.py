@@ -125,10 +125,20 @@ def _build_child_env(lease: Any) -> dict[str, str]:
     ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` (mirrors batch_reproduce.py idiom).
     """
     env = dict(os.environ)
-    env["CUDA_VISIBLE_DEVICES"] = ",".join(lease.gpu_uuids)
+    # Use GPU *indices*, not UUIDs: vLLM 0.7.x parses CUDA_VISIBLE_DEVICES as
+    # integers (int(device)), so a UUID like "GPU-75757272-..." raises
+    # ValueError and the engine fails to start. CUDA_DEVICE_ORDER=PCI_BUS_ID
+    # (below) makes the index→physical-GPU mapping deterministic, so indices are
+    # safe here. (torch in the experiment sandbox accepts UUIDs; vLLM does not.)
     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in lease.gpu_indices)
     # Ensure vLLM sees unbuffered output so logs stream in real time.
     env["PYTHONUNBUFFERED"] = "1"
+    # Use 'spawn' for vLLM worker multiprocessing. The default 'fork' deadlocks
+    # when CUDA is already initialized in the parent — the engine starts but the
+    # model never loads onto the GPU (verified 2026-05-29: fork wedged >6min with
+    # the GPU idle; spawn loaded the engine in 3.6s). Caller-set value wins.
+    env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     return env
 
 
@@ -150,6 +160,10 @@ def _launch_vllm(
         "--port", str(port),
         "--api-key", api_key,
         "--served-model-name", model,
+        # Skip CUDA-graph capture: this accelerator serves short cheap-tier
+        # completions where graphs add little, and capture is slow/flaky on first
+        # boot. Fast, reliable startup; pair with the 'spawn' worker method above.
+        "--enforce-eager",
     ]
     logger.info("serve_local_llm: launching vLLM: %s", " ".join(cmd))
     return subprocess.Popen(

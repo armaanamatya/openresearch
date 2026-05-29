@@ -116,25 +116,21 @@ _DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8001/v1"
 _DEFAULT_LOCAL_MODEL = "Qwen/Qwen2.5-Coder-32B-Instruct"
 
 
-def probe_endpoint(base_url: str, *, timeout: float = 3.0) -> bool:
-    """Return ``True`` iff ``GET {base_url}/models`` returns a 2xx response.
+def probe_endpoint(base_url: str, *, api_key: str | None = None, timeout: float = 3.0) -> bool:
+    """Return ``True`` iff ``GET {base_url}/models`` indicates a live server.
 
-    Handles the common mis-specification where *base_url* already ends with
-    ``/models`` (passed through as-is) or ends with ``/v1`` (appends
-    ``/models``).  Any network error, timeout, or non-2xx status is treated as
-    ``False`` — strictly safe-by-default so callers can fall back cleanly.
+    Sends ``Authorization: Bearer <api_key>`` when *api_key* is given, because a
+    vLLM/OpenAI server started with an API key returns **401** to an
+    unauthenticated probe — which means the server is UP, not down. We therefore
+    treat 2xx as healthy AND treat **401/403 as healthy too** (the server
+    responded; it just wants auth): the health check answers "is something
+    serving here?", and an auth challenge proves it is. Any network error,
+    timeout, or other non-2xx status is ``False`` — safe-by-default so callers
+    fall back cleanly.
 
-    Uses only :mod:`urllib.request` from the stdlib to avoid importing
-    ``requests``/``httpx`` at module level and keep the import cost negligible.
-
-    Parameters
-    ----------
-    base_url:
-        The root of the OpenAI-compatible API, e.g.
-        ``"http://127.0.0.1:8001/v1"``.
-    timeout:
-        Connection + read timeout in seconds.  Defaults to ``3.0`` so the
-        probe does not stall startup for more than a few seconds.
+    Handles *base_url* ending in ``/models`` (kept), ``/v1`` (appends
+    ``/models``), or otherwise (appends ``/models``). Uses stdlib
+    :mod:`urllib.request` only, to keep import cost negligible.
     """
     import urllib.request
     import urllib.error
@@ -148,11 +144,18 @@ def probe_endpoint(base_url: str, *, timeout: float = 3.0) -> bool:
     else:
         probe_url = url + "/models"
 
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        req = urllib.request.Request(probe_url, method="GET")
+        req = urllib.request.Request(probe_url, method="GET", headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
-    except Exception as exc:  # noqa: BLE001 — catch-all: network, timeout, HTTP errors
+    except urllib.error.HTTPError as exc:
+        # 401/403 == the server is up but wants/refused auth → still "reachable".
+        if exc.code in (401, 403):
+            return True
+        _log.debug("accelerator: probe %s -> HTTP %s", probe_url, exc.code)
+        return False
+    except Exception as exc:  # noqa: BLE001 — network, timeout, etc.
         _log.debug("accelerator: probe %s failed: %s", probe_url, exc)
         return False
 
