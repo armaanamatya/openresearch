@@ -965,6 +965,41 @@ def _update_cost_summary_loop(
             logger.debug("cost_summary_loop: update failed (will retry)", exc_info=True)
 
 
+def _parse_gpu_device_ids() -> tuple[str, ...]:
+    """Parse REPROLAB_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
+
+    Empty / unset => () meaning "no explicit pin" (backend default). A batch
+    launcher exports this per run so the experiment subprocess is pinned to a
+    disjoint GPU subset; CUDA_VISIBLE_DEVICES is also set by the launcher, so
+    this is the explicit, testable companion that flows into SandboxConfig.
+    """
+    raw = (os.environ.get("REPROLAB_GPU_DEVICE_IDS") or "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_gpu_parallelism() -> str:
+    """REPROLAB_GPU_PARALLELISM -> one of {auto,single,multi}; default 'auto'."""
+    val = (os.environ.get("REPROLAB_GPU_PARALLELISM") or "auto").strip().lower()
+    return val if val in {"auto", "single", "multi"} else "auto"
+
+
+def _visible_gpu_count() -> int | None:
+    """Best-effort count of GPUs visible to this run, for the multi-GPU guidance
+    hint. Prefer the explicit lease (REPROLAB_GPU_DEVICE_IDS), then
+    CUDA_VISIBLE_DEVICES; None when neither is set (agent relies on runtime
+    torch.cuda.device_count() inside the sandbox)."""
+    ids = _parse_gpu_device_ids()
+    if ids:
+        return len(ids)
+    raw = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    if not raw:
+        return None
+    parts = [p for p in raw.split(",") if p.strip()]
+    return len(parts) or None
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -1056,6 +1091,34 @@ async def run_pipeline_rlm(
 
     # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
     llm_client, llm_model = _build_llm_client(provider, root_model)
+
+    # 3a. Accelerator override — route cheap calls to a fast endpoint when
+    # REPROLAB_ACCELERATOR is set to anything other than "off".
+    import os as _os
+    _accel_mode = (_os.environ.get("REPROLAB_ACCELERATOR") or "off").strip().lower()
+    _accel_ep = None
+    if _accel_mode != "off":
+        try:
+            from backend.agents.rlm.accelerator import resolve_accelerator, build_accelerator_client
+            _accel_ep = resolve_accelerator(_accel_mode, sandbox_mode=sandbox_mode, settings=get_settings())
+        except Exception as _exc:  # explicit-provider failure (AcceleratorError) etc.
+            logger.warning(
+                "accelerator %r could not be resolved (%s); using default Sonnet/OAuth for cheap calls",
+                _accel_mode, _exc,
+            )
+            _accel_ep = None
+        if _accel_ep is not None:
+            llm_client = build_accelerator_client(_accel_ep)   # override the cheap-call client
+            logger.info(
+                "accelerator: routing cheap calls to %s (%s, model=%s)",
+                _accel_ep.base_url, _accel_ep.kind, _accel_ep.model,
+            )
+        elif _accel_mode != "auto":
+            logger.warning(
+                "accelerator=%r requested but unavailable; cheap calls fall back to Sonnet/OAuth",
+                _accel_mode,
+            )
+
     bk = root_model.backend_kwargs
     if root_model.rlm_backend == "openai" and bk.get("base_url"):
         import urllib.parse
@@ -1140,6 +1203,9 @@ async def run_pipeline_rlm(
             if execution_profile is not None
             else False
         ),
+        gpu_device_ids=_parse_gpu_device_ids(),
+        gpu_parallelism=_parse_gpu_parallelism(),
+        gpu_visible_count=_visible_gpu_count(),
     )
 
     # 5. Primitives — the real binding or the stub provider.
@@ -1268,6 +1334,22 @@ async def run_pipeline_rlm(
     compaction_threshold_pct = 0.7 if is_featherless else 0.85
 
     # 9. Construct the RLM engine.
+    # Accelerator sub-backend override: when an accelerator endpoint is active and
+    # not Azure, redirect rlm_query/llm_query navigation to the same fast endpoint
+    # so context-navigation calls also benefit from the accelerator.  Azure endpoints
+    # require their own backend type and are left unchanged.
+    _other_backends = [root_model.sub_backend]
+    _other_backend_kwargs = [root_model.sub_backend_kwargs]
+    if _accel_ep is not None and not _accel_ep.is_azure:
+        _other_backends = ["openai"]
+        _other_backend_kwargs = [
+            {
+                "model_name": _accel_ep.model,
+                "base_url": _accel_ep.base_url,
+                "api_key": _accel_ep.api_key,
+            }
+        ]
+
     rlm = RLM(
         backend=root_model.rlm_backend,
         backend_kwargs=root_model.backend_kwargs,
@@ -1278,8 +1360,8 @@ async def run_pipeline_rlm(
         max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
         compaction=True,
         compaction_threshold_pct=compaction_threshold_pct,
-        other_backends=[root_model.sub_backend],
-        other_backend_kwargs=[root_model.sub_backend_kwargs],
+        other_backends=_other_backends,
+        other_backend_kwargs=_other_backend_kwargs,
         custom_tools=custom_tools,
         custom_sub_tools={},                       # sub-calls navigate text, not primitives
         custom_system_prompt=system_prompt,

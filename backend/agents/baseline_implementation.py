@@ -1534,6 +1534,8 @@ def _compute_constraint_guidance(
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
     data_recipes: list[dict] | None = None,
+    gpu_parallelism: str | None = None,
+    gpu_visible_count: int | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1712,6 +1714,41 @@ def _compute_constraint_guidance(
         )
     # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
 
+    # 9. Parallelism policy — controls whether generated train.py uses
+    #    DDP/FSDP/vLLM-TP (multi) or a single device (single/auto-single).
+    _par = (gpu_parallelism or "auto").lower()
+    _n = gpu_visible_count
+    if _par == "single" or (_n is not None and _n <= 1):
+        guidance += (
+            "\nPARALLELISM POLICY — single GPU:\n"
+            "  Use a SINGLE GPU (or the CPU fallback when none is present). Do NOT "
+            "  use DistributedDataParallel/FSDP/torchrun/tensor-parallel — this run "
+            "  is scoped to one device. Keep the single-GPU/CPU path as the entrypoint.\n"
+        )
+    elif _par == "multi":
+        guidance += (
+            f"\nPARALLELISM POLICY — multi GPU"
+            f"{f' ({_n} visible)' if _n else ''}:\n"
+            "  Use ALL visible GPUs via data/model parallelism — torchrun + "
+            "  torch.nn.parallel.DistributedDataParallel for data-parallel training, "
+            "  FSDP for models too large for one card, and/or vLLM tensor-parallel for "
+            "  generation. Detect torch.cuda.device_count() at runtime and shard "
+            "  accordingly; verify scaling (throughput/effective batch size grows with "
+            "  GPU count). Keep a single-GPU fallback for portability/smoke.\n"
+        )
+    else:  # auto
+        guidance += (
+            f"\nPARALLELISM POLICY — auto"
+            f"{f' ({_n} GPU(s) visible)' if _n else ''}:\n"
+            "  Detect torch.cuda.device_count() at runtime. If the paper's training or "
+            "  evaluation genuinely benefits from parallelism (large model, long "
+            "  training, many RL rollouts) AND more than one GPU is visible, scale "
+            "  across them (torchrun+DDP for training, FSDP for oversized models, vLLM "
+            "  tensor-parallel for generation). If the workload fits comfortably on one "
+            "  GPU, a single GPU is correct — do NOT add parallelism the paper does not "
+            "  need. Always keep a single-GPU/CPU fallback path.\n"
+        )
+
     return guidance
 
 
@@ -1734,6 +1771,8 @@ async def run_with_sdk(
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
     data_recipes: list[dict] | None = None,
+    gpu_parallelism: str | None = None,
+    gpu_visible_count: int | None = None,
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1811,6 +1850,8 @@ async def run_with_sdk(
         minimize_compute=minimize_compute,
         metrics_shape=_effective_metrics_shape or [],
         data_recipes=_effective_data_recipes or [],
+        gpu_parallelism=gpu_parallelism,
+        gpu_visible_count=gpu_visible_count,
     )
 
     if repair_context:

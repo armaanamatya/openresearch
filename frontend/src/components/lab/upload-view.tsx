@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 
-import type { AuthStatus, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode, DemoSandboxMode } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, RootProvider, SubagentAuth, DemoModelChoice, DemoRunMode, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 import { RUN_MODE_OPTIONS } from "@/lib/demo/demo-run-types";
 import type { ProviderCredentialsInput } from "@/hooks/use-run";
 import { BudgetPanel, type PaperBudgetEstimate, type RecipeMode } from "./budget/budget-panel";
@@ -81,6 +81,10 @@ export function UploadView({
   onSubagentAuthChange,
   onDynamicGpuChange,
   onForceSingleGpuChange,
+  gpuParallelism,
+  onGpuParallelismChange,
+  accelerator,
+  onAcceleratorChange,
   onMaxGpuUsdPerHourChange,
   onVramGbChange,
   onMinimizeComputeChange,
@@ -125,6 +129,10 @@ export function UploadView({
   onSubagentAuthChange: (value: SubagentAuth) => void;
   onDynamicGpuChange: (value: boolean) => void;
   onForceSingleGpuChange: (value: boolean) => void;
+  gpuParallelism: DemoGpuParallelism;
+  onGpuParallelismChange: (value: DemoGpuParallelism) => void;
+  accelerator: DemoAccelerator;
+  onAcceleratorChange: (value: DemoAccelerator) => void;
   onMaxGpuUsdPerHourChange: (value: number) => void;
   onVramGbChange: (value: number) => void;
   onMinimizeComputeChange: (value: boolean) => void;
@@ -608,6 +616,43 @@ export function UploadView({
               disabled={busy}
               onChange={(e) => onForceSingleGpuChange(e.target.checked)}
             />
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="gpu-parallelism-select">
+              GPU parallelism
+            </label>
+            <select
+              id="gpu-parallelism-select"
+              className="upload-config-select"
+              value={gpuParallelism}
+              disabled={busy}
+              onChange={(e) => onGpuParallelismChange(e.target.value as DemoGpuParallelism)}
+            >
+              <option value="auto">Auto</option>
+              <option value="single">Single</option>
+              <option value="multi">Multi</option>
+            </select>
+            <span className="upload-advanced-hint">Multi-GPU (DDP) when the paper benefits</span>
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="accelerator-select">
+              Accelerator (cheap calls)
+            </label>
+            <select
+              id="accelerator-select"
+              className="upload-config-select"
+              value={accelerator}
+              disabled={busy}
+              onChange={(e) => onAcceleratorChange(e.target.value as DemoAccelerator)}
+            >
+              <option value="off">Off</option>
+              <option value="auto">Auto</option>
+              <option value="local">Local (vLLM)</option>
+              <option value="runpod">RunPod</option>
+              <option value="azure">Azure</option>
+              <option value="endpoint">Endpoint</option>
+            </select>
+            <span className="upload-advanced-hint">Fast model for navigation/scoring; root stays Sonnet</span>
           </div>
           <div className="upload-advanced-row">
             <label className="upload-advanced-label" htmlFor="max-gpu-usd-input">

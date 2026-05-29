@@ -3,7 +3,7 @@
 import { useState, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
-import type { AuthStatus, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
@@ -157,6 +157,8 @@ export function LabShell({
   // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
   // prefs so the user's preferred reproduction style sticks across reloads.
   const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
+  const [gpuParallelism, setGpuParallelism] = useState<DemoGpuParallelism>(() => readProviderPrefs().gpu_parallelism ?? "auto");
+  const [accelerator, setAccelerator] = useState<DemoAccelerator>(() => readProviderPrefs().accelerator ?? "off");
   // Bring-your-own API keys. Kept in-memory only — never persisted to
   // localStorage by default, so a page reload requires the user to retype.
   // This is the safest default for credentials a user typed into a browser.
@@ -202,6 +204,8 @@ export function LabShell({
     providerCredentials,
     estimateId: budget.estimate?.estimate_id,
     recipeMode: selectedRecipe,
+    gpuParallelism: gpuParallelism || undefined,
+    accelerator: accelerator || undefined,
   });
 
   const palette = useCommandPalette();
@@ -306,6 +310,16 @@ export function LabShell({
               onForceSingleGpuChange={(value) => {
                 setForceSingleGpu(value);
                 writeProviderPrefs({ ...readProviderPrefs(), force_single_gpu: value });
+              }}
+              gpuParallelism={gpuParallelism}
+              onGpuParallelismChange={(value) => {
+                setGpuParallelism(value);
+                writeProviderPrefs({ ...readProviderPrefs(), gpu_parallelism: value });
+              }}
+              accelerator={accelerator}
+              onAcceleratorChange={(value) => {
+                setAccelerator(value);
+                writeProviderPrefs({ ...readProviderPrefs(), accelerator: value });
               }}
               onMaxGpuUsdPerHourChange={(value) => {
                 setMaxGpuUsdPerHour(value);
