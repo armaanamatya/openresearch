@@ -9,6 +9,7 @@ Grades a reproduction run against a PaperBench rubric.json tree by:
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -557,10 +558,16 @@ def score_reproduction(
     # Grade only the eligible leaves.
     eligible_leaves = [l for l in leaves if str(l.get("id", "")) not in unavailable_ids]
 
+    # Build the list of batches first (no LLM calls yet).
+    batches: list[tuple[int, list[dict[str, Any]]]] = []
     for batch_num, start in enumerate(range(0, len(eligible_leaves), batch_size), 1):
         batch = eligible_leaves[start : start + batch_size]
         if not batch:
             continue
+        batches.append((batch_num, batch))
+
+    def _grade_batch(batch_num: int, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Build prompt, call LLM, parse response for one batch. Thread-safe."""
         tasks_payload = [
             {"leaf_id": str(leaf.get("id", "")), "requirements": str(leaf.get("requirements", ""))}
             for leaf in batch
@@ -570,10 +577,9 @@ def score_reproduction(
             tasks_json=json.dumps(tasks_payload, indent=2),
             batch_num=batch_num,
         )
-
         try:
             raw = llm_client.complete(system=_SYSTEM_PROMPT, user=user_msg)
-            results = _parse_batch_response(raw, batch)
+            return _parse_batch_response(raw, batch)
         except Exception as exc:
             logger.warning(
                 "Batch %d LLM call failed (%s); defaulting all %d leaves to 0.0",
@@ -581,7 +587,7 @@ def score_reproduction(
                 exc,
                 len(batch),
             )
-            results = [
+            return [
                 {
                     "id": str(leaf.get("id", "")),
                     "score": 0.0,
@@ -591,20 +597,33 @@ def score_reproduction(
                 for leaf in batch
             ]
 
-        for rec in results:
-            lid = rec["id"]
-            score = rec["score"]
-            # C2b: clamp degraded leaves to the honesty ceiling before storing
-            # so the rolled-up overall_score, the returned leaf_score_records,
-            # and any "weak leaves" surface all reflect the cap consistently.
-            if degraded and score > DEGRADED_LEAF_CEILING:
-                score = DEGRADED_LEAF_CEILING
-            leaf_scores[lid] = score
-            leaf_score_records.append(
-                {"id": lid, "score": score, "justification": rec["justification"]}
-            )
-            if rec.get("_graded", True):
-                graded_count += 1
+    # Submit all batches concurrently; width ≤8 avoids rate-limit bursts.
+    # I12: explicit shutdown(wait=False) so a wedged batch cannot block cleanup.
+    max_workers = min(len(batches), 8) if batches else 1
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        future_to_batch: dict[concurrent.futures.Future[list[dict[str, Any]]], tuple[int, list[dict[str, Any]]]] = {
+            executor.submit(_grade_batch, batch_num, batch): (batch_num, batch)
+            for batch_num, batch in batches
+        }
+        for future in concurrent.futures.as_completed(future_to_batch):
+            results = future.result()  # exceptions already handled inside _grade_batch
+            for rec in results:
+                lid = rec["id"]
+                score = rec["score"]
+                # C2b: clamp degraded leaves to the honesty ceiling before storing
+                # so the rolled-up overall_score, the returned leaf_score_records,
+                # and any "weak leaves" surface all reflect the cap consistently.
+                if degraded and score > DEGRADED_LEAF_CEILING:
+                    score = DEGRADED_LEAF_CEILING
+                leaf_scores[lid] = score
+                leaf_score_records.append(
+                    {"id": lid, "score": score, "justification": rec["justification"]}
+                )
+                if rec.get("_graded", True):
+                    graded_count += 1
+    finally:
+        executor.shutdown(wait=False)
 
     # PR-κ: append skipped-data-unavailable records.
     # score=None signals "unscored" (not 0) so downstream consumers can
