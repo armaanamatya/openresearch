@@ -265,6 +265,24 @@ ITERATION DISCIPLINE — one run_experiment per iteration:
   iteration with the latter failing -- pack one experiment per iteration.
 """
 
+_TURN_EFFICIENCY = """\
+═══════════════════════════════════════════════════════════════
+  TURN EFFICIENCY — FOCUSED OUTPUT, LOWER LATENCY
+═══════════════════════════════════════════════════════════════
+
+Each iteration is generated at ~40 tokens/sec. Verbose turns waste wall-clock
+without improving results. Write FOCUSED turns:
+
+  • Emit the MINIMAL Python needed to advance the rubric by one concrete step.
+  • Prefer a SINGLE tight code block over many scattered blocks.
+  • Do NOT restate prior code, re-print large outputs, or duplicate work already
+    recorded in REPL variables — reference them by name instead.
+  • Call ONLY the primitives needed in this iteration; defer the rest.
+
+Conciseness ≠ less correct. Correctness invariants (real weights, rubric
+leaves, algorithm invariants) are never compromised for brevity.
+"""
+
 _DECOMPOSITION_EXAMPLE = """\
 ═══════════════════════════════════════════════════════════════
   IN-CONTEXT DECOMPOSITION EXAMPLE  (paper Fig 4a)
@@ -475,6 +493,7 @@ def build_system_prompt(
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
         _ITERATION_DISCIPLINE,
+        _TURN_EFFICIENCY,
         _DECOMPOSITION_EXAMPLE,
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
@@ -521,4 +540,5 @@ SYSTEM_PROMPT: str = "\n".join([
     _PRIMITIVES_SECTION,
     _TERMINATION_CONTRACT,
     _ITERATION_DISCIPLINE,
+    _TURN_EFFICIENCY,
 ])
