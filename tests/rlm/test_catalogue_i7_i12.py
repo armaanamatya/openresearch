@@ -95,11 +95,12 @@ def test_backend_for_sandbox_mode_none_returns_local_docker_backend():
 
 
 def test_backend_for_sandbox_mode_unsupported_falls_back_with_warning(caplog):
-    """I7: an unsupported mode (local) falls back to LocalDockerBackend with a WARNING.
+    """I7: an unsupported mode (simulate) falls back to LocalDockerBackend with a WARNING.
 
-    Note: SandboxMode.runpod is now fully wired and constructs a real RunpodBackend
-    (see test_runpod_wiring.py).  This test uses SandboxMode.local which remains
-    an unsupported / fallback-only mode in the RLM path.
+    Note: SandboxMode.runpod and SandboxMode.local are now fully wired (RunpodBackend
+    and LocalProcessBackend respectively; see test_runpod_wiring.py and
+    test_local_sandbox_routing.py).  This test uses SandboxMode.simulate, which
+    remains an unsupported / fallback-only mode in the RLM path.
     """
     import logging
     from backend.agents.execution import SandboxMode
@@ -107,7 +108,7 @@ def test_backend_for_sandbox_mode_unsupported_falls_back_with_warning(caplog):
     from backend.agents.rlm.primitives import _backend_for_sandbox_mode
 
     with caplog.at_level(logging.WARNING, logger="backend.agents.rlm.primitives"):
-        backend = _backend_for_sandbox_mode(SandboxMode.local)
+        backend = _backend_for_sandbox_mode(SandboxMode.simulate)
 
     assert isinstance(backend, LocalDockerBackend)
     assert any("not supported" in r.message for r in caplog.records)
@@ -129,7 +130,7 @@ def test_run_experiment_threads_sandbox_mode_to_execute_in_sandbox(
     captured = {}
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None, gpu_device_ids=()):
         captured["sandbox_mode"] = sandbox_mode
         return {"metrics": {}, "success": True, "logs": ""}
 
@@ -168,7 +169,7 @@ def test_run_experiment_does_not_block_on_shutdown_when_worker_wedges(
     unblock = threading.Event()
 
     async def wedging_exec(code_path, env_id, commands, *, project_id, run_id,
-                           sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+                           sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None, gpu_device_ids=()):
         # Block until the test releases us — simulates a wedged Docker call.
         unblock.wait()
         return {"metrics": {}, "success": True, "logs": ""}

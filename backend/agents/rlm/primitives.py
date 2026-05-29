@@ -1783,7 +1783,7 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
-    # All other modes (local, auto, brev, simulate) are not yet wired
+    # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
