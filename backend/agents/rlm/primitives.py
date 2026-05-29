@@ -1853,6 +1853,78 @@ def _combine_command_output(results: list) -> str:
     return "\n".join(parts)
 
 
+def _max_train_steps(metrics: dict) -> int | None:
+    """Largest ``train_steps`` value recorded anywhere in a metrics tree (or None)."""
+    best: int | None = None
+
+    def _walk(obj: object) -> None:
+        nonlocal best
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "train_steps" and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    best = int(v) if best is None else max(best, int(v))
+                else:
+                    _walk(v)
+        elif isinstance(obj, (list, tuple)):
+            for x in obj:
+                _walk(x)
+
+    _walk(metrics)
+    return best
+
+
+_OOM_LOG_MARKERS = (
+    "cuda out of memory",
+    "torch.cuda.outofmemoryerror",
+    "outofmemoryerror",
+    "backward oom",
+    "loss/backward oom",
+)
+
+
+def _training_health_violation(result: dict) -> tuple[str, str] | None:
+    """Detect an experiment that exited 0 but did not really train.
+
+    (1) ``silent_oom`` — the script logged a CUDA OOM yet exited 0: it caught the
+        backward OOM and skipped the step, so no gradients were applied and the
+        metrics are meaningless (the 2026-05-29 SDAR hours-of-grinding failure).
+    (2) ``insufficient_train_steps`` — fewer optimizer steps than
+        ``REPROLAB_MIN_TRAIN_STEPS`` (opt-in; default 0 = disabled).
+
+    Returns ``(failure_class, message)`` or None. The message becomes repair_context
+    so the next implement_baseline reduces memory / trains longer.
+    """
+    import os as _os
+
+    low = (result.get("logs") or "").lower()
+    if any(m in low for m in _OOM_LOG_MARKERS):
+        return (
+            "silent_oom",
+            "silent_oom: the training script logged a CUDA out-of-memory but exited 0 "
+            "(it caught the backward OOM and skipped the step), so NO gradient updates "
+            "happened and the metrics are meaningless. Reduce per-step memory (smaller "
+            "batch, fewer rollouts, gradient_checkpointing, shard across GPUs with "
+            "`torchrun --nproc_per_node=<N>` + FSDP) and do NOT catch+skip a backward "
+            "OOM — let it fail loudly so it can be repaired.",
+        )
+
+    try:
+        min_steps = int(_os.environ.get("REPROLAB_MIN_TRAIN_STEPS", "0") or "0")
+    except ValueError:
+        min_steps = 0
+    if min_steps > 0:
+        steps = _max_train_steps(result.get("metrics") or {})
+        if steps is not None and steps < min_steps:
+            return (
+                "insufficient_train_steps",
+                f"insufficient_train_steps: training ran only {steps} optimizer step(s) "
+                f"(< REPROLAB_MIN_TRAIN_STEPS={min_steps}). Sparse-reward tasks cannot "
+                f"learn in so few steps — increase epochs/steps so total updates "
+                f">= {min_steps}.",
+            )
+    return None
+
+
 _DISTRIBUTED_MARKERS = (
     "FullyShardedDataParallel",
     "DistributedDataParallel",
@@ -3073,6 +3145,17 @@ def run_experiment(
         # A2: persist the updated count so subsequent run_experiment calls in
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
+
+    # Training-health postflight (2026-05-29): a run that exited 0 but logged a
+    # caught CUDA OOM (backward skipped → no gradient updates) or trained far below
+    # the convergence floor produced metrics yet learned nothing. Flip it to a
+    # repairable failure so the next implement_baseline reduces memory / trains
+    # longer instead of the loop accepting 0-reward metrics as success.
+    if result.get("success"):
+        _health = _training_health_violation(result)
+        if _health is not None:
+            _hcls, _hmsg = _health
+            result = {**result, "success": False, "error": _hmsg, "failure_class": _hcls}
 
     # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
     # require metrics.json to carry the expected per_model / per_dataset
