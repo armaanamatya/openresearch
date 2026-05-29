@@ -274,7 +274,7 @@ def test_start_run_request_preserves_existing_defaults():
     req = StartRunRequest()
     assert req.mode == "rlm"
     assert req.provider == "anthropic"
-    assert req.executionMode == "efficient"
+    assert req.executionMode == "max"  # default flipped efficient→max in 738478a
     assert req.sandbox == "runpod"
     assert req.gpuMode == "auto"
     assert req.model == "sonnet"

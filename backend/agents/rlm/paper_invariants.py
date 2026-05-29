@@ -198,6 +198,28 @@ def _short_to_pyident(name: str) -> str:
     return out.strip("_")
 
 
+def canonical_model_key(name: str) -> str:
+    """Canonical comparison key for a model id, robust to display-vs-metrics drift.
+
+    Builds on :func:`_short_to_pyident` and additionally strips a trailing chat/
+    instruct variant suffix so a scope-spec display name and an agent's
+    ``metrics.json`` per_model key compare equal::
+
+        canonical_model_key("Qwen3-1.7B-Instruct")      == "qwen3_1_7b"
+        canonical_model_key("Qwen/Qwen2.5-3B-Instruct")  == "qwen2_5_3b"
+        canonical_model_key("qwen3_1_7b")                == "qwen3_1_7b"   # idempotent
+
+    Used by the scope-metrics validator so a correctly-run model is never flagged
+    ``per_model_incomplete`` purely because of name formatting.
+    """
+    s = _short_to_pyident(name.rsplit("/", 1)[-1])  # drop HF org prefix (Qwen/…)
+    for suffix in ("_instruct", "_chat", "_it", "_base"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)]
+            break
+    return s.strip("_")
+
+
 def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> PaperInvariants | None:
     """Load ``docs/papers/<arxiv_id>.yaml`` and extract invariants. Fail-soft.
 
@@ -302,6 +324,7 @@ __all__ = [
     "PaperInvariants",
     "load_paper_invariants",
     "_short_to_pyident",
+    "canonical_model_key",
     "_extract_loss_invariants",
     "_ALGORITHM_TOKEN_PATTERNS",
     "_DEFAULT_GATE_VARIABLE_NAMES",

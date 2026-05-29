@@ -88,7 +88,21 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
-_DEFAULT_PRE_EMIT_STALL_S = 1800.0
+# Pre-emit stall threshold: how long implement_baseline tolerates NO new file in
+# code_dir before declaring an SDK hang. The signal is coarse — file mtimes only
+# update when the Write tool COMPLETES a file, so a sub-agent that plans for several
+# minutes or generates a large file (e.g. a 43 KB train.py) legitimately shows no
+# code_dir activity mid-work and looks "stalled".
+# Measured 2026-05-29 (SDAR + --paper-hint, sun.cs.txstate.edu, non-WSL): the agent's
+# FIRST file landed at ~+593 s and the gap while generating train.py was ~402 s, yet
+# it produced a complete, correct implementation. The old 240 s false-killed that
+# healthy, productive agent 3× (→ no experiment, verdict=failed). 900 s comfortably
+# covers large-file generation + planning on complex papers; a genuine SDK hang still
+# surfaces, just later — an acceptable trade for an unbounded reproduction where a
+# FALSE stall (which aborts the whole run) is far costlier than slow hang-detection.
+# Override with REPROLAB_PRE_EMIT_STALL_S. (Follow-up: make progress SDK-stream/liveness
+# aware rather than code_dir-mtime-only, so the threshold matters less.)
+_DEFAULT_PRE_EMIT_STALL_S = 900.0
 
 
 class PreEmitStallError(RuntimeError):
@@ -995,6 +1009,21 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     - A2-M1: the repair LLM call also uses a per-attempt timeout via the same
       pool (it's synchronous so we submit it and bound .result()).
     """
+    # Local sandbox is docker-free: dependencies are resolved on the host
+    # (per-run venv), so there is no image to build. Short-circuit BEFORE any
+    # docker client is touched — otherwise build_environment raises
+    # SandboxRuntimeError(backend_unavailable) on hosts without a daemon.
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    _sb_key = getattr(_sb_mode, "value", str(_sb_mode) if _sb_mode is not None else None)
+    if _sb_key == "local":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "local sandbox: dependencies resolved on host venv; no image built",
+        }, PrimitiveOutcome.ok)
+
     import asyncio
     import concurrent.futures
     import hashlib
@@ -1596,6 +1625,20 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             if r is not None
         ]
 
+    # SDK-stream liveness signal for robust stall detection. The code-writing sub-agent
+    # runs in a worker thread (pool.submit below); the main thread polls code_dir for
+    # progress, but file mtimes only change when a Write COMPLETES — so a model that
+    # reasons for minutes or streams a large file looks "stalled" to a file-only
+    # watchdog (the 2026-05-29 false-stall). collect_agent_text calls _note_sdk_event()
+    # on EVERY streamed event, giving the poll loop a precise "SDK is alive and
+    # producing" signal. _sdk_activity["last"] is written by the worker thread and read
+    # by the main thread; a lone float write/read is atomic under the GIL.
+    import time as _time
+    _sdk_activity = {"last": _time.time()}
+
+    def _note_sdk_event() -> None:
+        _sdk_activity["last"] = _time.time()
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -1624,6 +1667,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # λ: pass canonical dataset loader recipes so the Sonnet agent uses
             # the correct loader verbatim (e.g. stanfordnlp/imdb not bare 'imdb').
             data_recipes=_data_recipes or None,
+            # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
+            gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
+            gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
+            # stall watchdog distinguishes a working agent from a hung SDK.
+            on_event=_note_sdk_event,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
@@ -1718,7 +1767,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0.0,
                 )
-                if latest_mtime > _pre_emit_stall_start:
+                # Progress = a file write OR live SDK-stream activity. The latter is the
+                # robust signal: a sub-agent reasoning or generating a large file emits
+                # stream events continuously even before any file lands, so a healthy
+                # agent never trips the stall. Only TRUE silence (no file AND no stream
+                # event since the timer start) is treated as a genuine SDK hang.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if latest_progress > _pre_emit_stall_start:
                     _pre_emit_stall_start = _time.time()
                     continue
                 pre_emit_elapsed = _time.time() - _pre_emit_stall_start
@@ -1757,8 +1812,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0,
                 )
-                if now - latest_mtime > _POLL_S:
-                    # No file changes — start or continue the stall timer
+                # Same robust signal as the pre-emit path: live SDK-stream activity
+                # (e.g. the agent still streaming its worker-report) counts as progress,
+                # so a genuine aclose hang (stream ended, code on disk) is still caught
+                # while a still-streaming agent is not falsely declared hung.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if now - latest_progress > _POLL_S:
+                    # No file changes AND no SDK activity — start/continue the stall timer
                     if _stall_start is None:
                         _stall_start = _time.time()
                         logger.info(
@@ -1965,6 +2025,10 @@ def _backend_for_sandbox_mode(
     if mode is SandboxMode.docker:
         return LocalDockerBackend()
 
+    if mode is SandboxMode.local:
+        from backend.services.runtime.local_process import LocalProcessBackend
+        return LocalProcessBackend()
+
     if mode is SandboxMode.runpod:
         import backend.services.runtime as _runtime
         from backend.services.runtime.runpod_backend import RunpodBackend
@@ -1972,7 +2036,7 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
-    # All other modes (local, auto, brev, simulate) are not yet wired
+    # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
@@ -2011,6 +2075,7 @@ async def _execute_in_sandbox(
     run_budget: object = None,
     gpu_plan: object = None,
     gpu_mode: object = None,
+    gpu_device_ids: tuple[str, ...] = (),
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -2071,6 +2136,17 @@ async def _execute_in_sandbox(
         if gpu_mode is not None
         else "auto"
     )
+    # A4(a): When running local with a per-run venv, inject the venv's bin
+    # directory at the front of PATH so the experiment subprocess uses that
+    # interpreter and its installed packages rather than the system Python.
+    import os as _os
+    _exp_env_extra: dict[str, str] = {}
+    _mode_str_local = str(getattr(sandbox_mode, "value", sandbox_mode) or "").lower()
+    _venv = (_os.environ.get("REPROLAB_EXPERIMENT_VENV") or "").strip()
+    if _mode_str_local == "local" and _venv:
+        _exp_env_extra["VIRTUAL_ENV"] = _venv
+        _exp_env_extra["PATH"] = f"{_venv}/bin:" + _os.environ.get("PATH", "")
+
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -2078,6 +2154,7 @@ async def _execute_in_sandbox(
         project_root=code_dir,
         artifact_root=artifact_root,
         gpu_mode=_gpu_mode_str,
+        gpu_device_ids=tuple(gpu_device_ids or ()),
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -2087,10 +2164,15 @@ async def _execute_in_sandbox(
         # corpus-leak vector. Scoped here; the global default stays disabled.
         network_disabled=False,
         environment={
-            "OUTPUT_DIR": "/artifacts",
-            "REPROLAB_ARTIFACT_DIR": "/artifacts",
-            "MPLCONFIGDIR": "/artifacts/.matplotlib",
+            # Local sandbox: /artifacts doesn't exist on most hosts and can't be
+            # created without root.  Point OUTPUT_DIR straight at artifact_root
+            # so train.py doesn't need to fall back via directory introspection.
+            # Docker/RunPod: /artifacts is the container-mounted volume — keep it.
+            "OUTPUT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "REPROLAB_ARTIFACT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "MPLCONFIGDIR": str(artifact_root / ".matplotlib") if _mode_str_local == "local" else "/artifacts/.matplotlib",
             "PYTHONUNBUFFERED": "1",
+            **_exp_env_extra,
         },
     )
     resource_limits = {
@@ -2129,7 +2211,10 @@ async def _execute_in_sandbox(
     try:
         from backend.agents.rlm.run_watchdog import heartbeat_daemon_command, is_enabled as _watchdog_enabled
         if _watchdog_enabled():
-            bootstrap_commands.append(heartbeat_daemon_command("/artifacts"))
+            # Local sandbox: /artifacts is not the real artifact dir — use the
+            # per-run artifact_root so the heartbeat file is actually writable.
+            _hb_dir = str(artifact_root) if _mode_str_local == "local" else "/artifacts"
+            bootstrap_commands.append(heartbeat_daemon_command(_hb_dir))
     except Exception:  # noqa: BLE001 — instrumentation MUST NOT block the run
         logger.exception("_execute_in_sandbox: heartbeat-daemon injection failed")
 
@@ -2182,6 +2267,42 @@ async def _execute_in_sandbox(
             bootstrap_commands.append(
                 "python -m pip install -r requirements.txt"
             )
+
+    # A4(b): Local sandbox — auto-install requirements.txt into the per-run
+    # venv (PATH already points there via _exp_env_extra). Mirrors the runpod
+    # block above: same command string, same position (prepended before the
+    # agent's commands via the (*bootstrap_commands, *commands) loop at line
+    # ~2183). Safe to run even if the venv is absent — pip will use the
+    # active Python. bootstrap_commands feeds into service.execute() for ALL
+    # backends through the unified loop, so this path is genuine for local.
+    #
+    # NOTE: On this host `python` is not in PATH (only `python3`), so we use
+    # `|| true` to prevent non-zero exit codes from causing `success=False`
+    # in the all(r.succeeded) check. The commands.json entry handles the
+    # actual package install via an explicit PATH-export bash -c command.
+    if "local" in _mode_str and requirements_path.exists():
+        bootstrap_commands.append(
+            "python -m pip install --upgrade pip wheel setuptools || true"
+        )
+        # CUDA-build pin (local sandbox): the host driver caps the usable CUDA toolkit.
+        # e.g. driver 535 / CUDA 12.2 CANNOT run torch's DEFAULT cu130 wheels — torch
+        # imports but torch.cuda.is_available() is False ("driver too old"), so real
+        # training silently falls back to CPU (useless for Qwen). Install a
+        # driver-compatible torch FIRST from the matching PyTorch wheel index; the
+        # agent's requirements.txt (torch>=…) is then satisfied by it and won't pull an
+        # incompatible build. cu121 matches this 8×A5000 host (driver 12.2) and the vLLM
+        # stack. Override via REPROLAB_LOCAL_TORCH_INDEX_URL; set it empty to disable.
+        _torch_index = _os.environ.get(
+            "REPROLAB_LOCAL_TORCH_INDEX_URL",
+            "https://download.pytorch.org/whl/cu121",
+        ).strip()
+        if _torch_index:
+            bootstrap_commands.append(
+                f"python -m pip install torch --index-url {_torch_index} || true"
+            )
+        bootstrap_commands.append(
+            "python -m pip install -r requirements.txt || true"
+        )
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -2634,6 +2755,15 @@ def _validate_scope_metrics(
     dataset_ids_fn = getattr(scope_spec, "dataset_ids", None)
     datasets = dataset_ids_fn() if callable(dataset_ids_fn) else []
 
+    # Compare scope entries to metrics keys on a separator-free canonical key, so a
+    # scope display name ("Qwen3-1.7B-Instruct", "Search-QA") matches the agent's
+    # sanitized metrics key ("qwen3_1_7b", "searchqa"). Without this a correctly-run
+    # model/dataset is falsely flagged per_model_incomplete (2026-05-29 SDAR run).
+    from backend.agents.rlm.paper_invariants import canonical_model_key
+
+    def _ck(name: object) -> str:
+        return canonical_model_key(str(name)).replace("_", "")
+
     if is_multi_model:
         per_model = metrics.get("per_model")
         if not isinstance(per_model, dict) or not per_model:
@@ -2643,7 +2773,8 @@ def _validate_scope_metrics(
                 f"id, e.g. {{'per_model': {{'qwen3-1.7b': {{...}}, "
                 f"'qwen2.5-3b': {{...}}}}}}."
             )
-        missing = [m for m in models if m not in per_model]
+        present_keys = {_ck(k) for k in per_model}
+        missing = [m for m in models if _ck(m) not in present_keys]
         if missing:
             return (
                 f"per_model_incomplete: scope requires entries for {models}; "
@@ -2653,12 +2784,19 @@ def _validate_scope_metrics(
             for model_id, model_metrics in per_model.items():
                 pd = (model_metrics or {}).get("per_dataset") if isinstance(model_metrics, dict) else None
                 if not isinstance(pd, dict) or not pd:
+                    # Accept env-keyed nesting too: agents commonly write
+                    # per_model[model][env] directly rather than wrapping it in a
+                    # "per_dataset" dict. Treat the model's own keys as the dataset
+                    # set so a correctly-structured run isn't flagged per_dataset_required.
+                    pd = model_metrics if isinstance(model_metrics, dict) else None
+                if not isinstance(pd, dict) or not pd:
                     return (
                         f"per_dataset_required: scope is multi-dataset {datasets}. "
-                        f"Each per_model entry MUST carry a per_dataset dict; "
+                        f"Each per_model entry MUST carry per-dataset metrics; "
                         f"model {model_id!r} has none."
                     )
-                missing_ds = [d for d in datasets if d not in pd]
+                present_ds = {_ck(x) for x in pd}
+                missing_ds = [d for d in datasets if _ck(d) not in present_ds]
                 if missing_ds:
                     return (
                         f"per_dataset_incomplete: model {model_id!r} missing "
@@ -2842,11 +2980,23 @@ def run_experiment(
                     f"failed: {build.get('error')}"
                 ),
             }, model_id=model_id, eval_env=eval_env)
-        env_id = build["image_tag"]
+        # Local-sandbox build returns image_tag="" (skipped=True) because there
+        # is no Docker daemon.  Use the sentinel "__local__" so downstream code
+        # has a non-empty value while _execute_in_sandbox (which routes on
+        # sandbox_mode, not env_id) ignores it safely.
+        env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from) before attempting any Docker work.
-    if not env_id or not str(env_id).strip():
+    # to rebuild from AND the build was not skipped for local-sandbox mode).
+    # We exempt the local-sandbox path: build_environment deliberately returns
+    # image_tag="" there (see build_environment local-short-circuit above), and
+    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
+    # env_id irrelevant.
+    _is_local_sb = (
+        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
+    )
+    if not _is_local_sb and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -2935,6 +3085,7 @@ def run_experiment(
                         run_budget=ctx.run_budget,
                         gpu_plan=gpu_plan,
                         gpu_mode=getattr(ctx, "gpu_mode", None),
+                        gpu_device_ids=tuple(getattr(ctx, "gpu_device_ids", ()) or ()),
                     ),
                 ).result(timeout=timeout)
             except concurrent.futures.TimeoutError:
@@ -3461,6 +3612,9 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
+            # Paper-hint invariant gate (2026-05-29): thread invariants from
+            # RunContext so the deterministic regex gate fires in-loop.
+            invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
         )
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable
@@ -3508,6 +3662,11 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
+            # Paper-hint invariant gate (2026-05-29): surface per-invariant
+            # pass/fail so the root model can see which invariants tripped and
+            # target repairs on the next iteration.
+            "invariant_results": scored.get("invariant_results", []),
+            "invariant_gate_applied": bool(scored.get("invariant_gate_applied", False)),
         }
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},

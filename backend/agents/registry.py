@@ -88,7 +88,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         description="Implements or adapts the paper baseline inside a Docker sandbox.",
         prompt=BASELINE_IMPLEMENTATION_PROMPT,
         tools=["Read", "Write", "Edit", "Bash"],
-        default_model_anthropic="claude-opus-4-7",
+        default_model_anthropic="claude-sonnet-4-6",
         default_model_openai="gpt-4o",
     ),
     # --- Verifier agents ---
@@ -116,7 +116,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         description="Executes one improvement hypothesis in an isolated branch and sandbox.",
         prompt=IMPROVEMENT_PATH_PROMPT,
         tools=["Read", "Write", "Edit", "Bash"],
-        default_model_anthropic="claude-opus-4-7",
+        default_model_anthropic="claude-sonnet-4-6",
         default_model_openai="gpt-4o",
     ),
 }

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 
 import { gateSecret } from "@/lib/auth/demo-gate";
 import type {
+  DemoAccelerator,
   DemoExecutionMode,
   DemoGpuMode,
+  DemoGpuParallelism,
   DemoModelChoice,
   DemoProvider,
   DemoRunMode,
@@ -111,6 +113,18 @@ function toVramGb(request: Request): number | undefined {
 function toMinimizeCompute(request: Request): boolean | undefined {
   const v = search(request).get("minimizeCompute");
   return v === "true" ? true : v === "false" ? false : undefined;
+}
+
+function toGpuParallelism(request: Request): DemoGpuParallelism | undefined {
+  const v = search(request).get("gpuParallelism");
+  return v === "auto" || v === "single" || v === "multi" ? v : undefined;
+}
+
+function toAccelerator(request: Request): DemoAccelerator | undefined {
+  const v = search(request).get("accelerator");
+  return v === "off" || v === "auto" || v === "local" || v === "runpod" || v === "azure" || v === "endpoint"
+    ? v
+    : undefined;
 }
 
 function backendQuery(request: Request): URLSearchParams {
@@ -225,6 +239,8 @@ export async function POST(request: Request) {
     const maxGpuUsdPerHour = toMaxGpuUsdPerHour(request);
     const vramGb = toVramGb(request);
     const minimizeCompute = toMinimizeCompute(request);
+    const gpuParallelism = toGpuParallelism(request);
+    const accelerator = toAccelerator(request);
     if (rootProvider != null) runBody.root_provider = rootProvider;
     if (subagentAuth != null) runBody.subagent_auth = subagentAuth;
     if (dynamicGpu != null) runBody.dynamic_gpu = dynamicGpu;
@@ -232,6 +248,8 @@ export async function POST(request: Request) {
     if (maxGpuUsdPerHour != null) runBody.max_gpu_usd_per_hour = maxGpuUsdPerHour;
     if (vramGb != null) runBody.vram_gb = vramGb;
     if (minimizeCompute != null) runBody.minimize_compute = minimizeCompute;
+    if (gpuParallelism != null) runBody.gpu_parallelism = gpuParallelism;
+    if (accelerator != null) runBody.accelerator = accelerator;
     return jsonFromBackend(
       await fetch(`${backendBaseUrl()}/runs`, {
         method: "POST",

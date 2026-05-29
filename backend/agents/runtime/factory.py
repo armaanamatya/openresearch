@@ -109,7 +109,12 @@ def _has_claude_subscription_oauth() -> bool:
         return result.returncode == 0
     # 4. WSL diagnostic — surface a helpful warning if creds exist on the Windows side
     #    but are not reachable by the SDK (which reads from $HOME, not /mnt/c).
-    if shutil.which("claude") is None and sys.platform != "win32":
+    #    Fires whether or not `claude` is on PATH: the problem is cred *location*,
+    #    not the binary's presence (a WSL user who installed claude in WSL but ran
+    #    `claude login` from Windows still needs the symlink hint). The real gate
+    #    is _scan_wsl_windows_credentials() returning non-None, which only happens
+    #    on a real WSL host with Windows-side creds.
+    if sys.platform != "win32":
         wsl_creds = _scan_wsl_windows_credentials()
         if wsl_creds is not None:
             logger.warning(

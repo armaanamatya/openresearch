@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import type { DemoModelChoice, DemoRunMode, LiveDemoRunState } from "@/lib/demo/demo-run-types";
+import type { DemoAccelerator, DemoGpuParallelism, DemoModelChoice, DemoRunMode, LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { isRlmEvent } from "@/lib/events/rlm-events";
 import { issueText } from "@/components/lab/shared-helpers";
@@ -161,6 +161,8 @@ export interface ProviderRunOptions {
   // numbers as default budget caps for this run.
   estimateId?: string;
   recipeMode?: "strict" | "compressed";
+  gpuParallelism?: DemoGpuParallelism;
+  accelerator?: DemoAccelerator;
 }
 
 export interface UseRunResult {
@@ -474,6 +476,8 @@ export function useRun(
       if (opts.maxGpuUsdPerHour != null) params.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) params.set("vramGb", String(opts.vramGb));
       if (opts.minimizeCompute != null) params.set("minimizeCompute", String(opts.minimizeCompute));
+      if (opts.gpuParallelism) params.set("gpuParallelism", opts.gpuParallelism);
+      if (opts.accelerator) params.set("accelerator", opts.accelerator);
       const response = await postRunRequest(
         `/api/demo?${params.toString()}`,
         { method: "POST" }
@@ -511,6 +515,8 @@ export function useRun(
       if (opts.maxGpuUsdPerHour != null) formData.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) formData.set("vramGb", String(opts.vramGb));
       if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
+      if (opts.gpuParallelism) formData.set("gpuParallelism", opts.gpuParallelism);
+      if (opts.accelerator) formData.set("accelerator", opts.accelerator);
       const creds = compactProviderCredentials(opts.providerCredentials);
       if (creds) formData.set("providerCredentials", JSON.stringify(creds));
       if (opts.estimateId) formData.set("estimateId", opts.estimateId);
@@ -566,6 +572,8 @@ export function useRun(
           ...(opts.maxGpuUsdPerHour != null ? { max_gpu_usd_per_hour: opts.maxGpuUsdPerHour } : {}),
           ...(opts.vramGb != null ? { vram_gb: opts.vramGb } : {}),
           ...(opts.minimizeCompute != null ? { minimize_compute: opts.minimizeCompute } : {}),
+          ...(opts.gpuParallelism ? { gpu_parallelism: opts.gpuParallelism } : {}),
+          ...(opts.accelerator ? { accelerator: opts.accelerator } : {}),
           ...(compactProviderCredentials(opts.providerCredentials)
             ? { provider_credentials: compactProviderCredentials(opts.providerCredentials) }
             : {}),
