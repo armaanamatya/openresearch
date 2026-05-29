@@ -80,12 +80,25 @@ _PROBE_TIMEOUT_S = 5            # urllib timeout for idempotent + health probes
 # ---------------------------------------------------------------------------
 
 
-def _probe_server(host: str, port: int) -> bool:
-    """Return True if GET http://{host}:{port}/v1/models returns HTTP 200."""
+def _probe_server(host: str, port: int, *, api_key: str | None = None) -> bool:
+    """Return True if GET http://{host}:{port}/v1/models indicates a live server.
+
+    Sends the bearer token when *api_key* is set (vLLM is launched with
+    ``--api-key``, so an unauthenticated probe gets 401 and the server would
+    never be seen as ready — observed 2026-05-29). HTTP 200 means ready; 401/403
+    means the server is up and enforcing auth, which still counts as reachable
+    for readiness because vLLM binds the port only after the model has loaded.
+    Mirrors the auth-aware probe in ``backend/agents/rlm/accelerator.py``.
+    """
     url = f"http://{host}:{port}/v1/models"
+    req = urllib.request.Request(url)
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(url, timeout=_PROBE_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_S) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as exc:
+        return exc.code in (401, 403)
     except (urllib.error.URLError, OSError):
         return False
 
@@ -118,11 +131,34 @@ def _terminate_child(proc: subprocess.Popen[bytes], label: str = "vLLM") -> None
             pass
 
 
-def _build_child_env(lease: Any) -> dict[str, str]:
+def _model_is_cached(model: str) -> bool:
+    """Return True if *model* is already present in the local HuggingFace cache.
+
+    Probes for ``config.json`` — the first file vLLM resolves on boot; if it is
+    cached the rest of the snapshot is too. A local directory path counts as
+    cached by definition. Used to decide whether to force HF offline mode for
+    the vLLM subprocess (see ``_build_child_env``).
+    """
+    if not model:
+        return False
+    if os.path.isdir(model):  # a local path, not a hub id
+        return True
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        path = try_to_load_from_cache(model, "config.json")
+        return isinstance(path, str) and os.path.isfile(path)
+    except Exception:  # noqa: BLE001 — any failure → treat as not cached (stay online)
+        return False
+
+
+def _build_child_env(lease: Any, *, model: str | None = None) -> dict[str, str]:
     """Build the environment dict for the vLLM subprocess.
 
-    Sets ``CUDA_VISIBLE_DEVICES`` to the lease UUIDs and
-    ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` (mirrors batch_reproduce.py idiom).
+    Sets ``CUDA_VISIBLE_DEVICES`` to the leased GPU indices and
+    ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` (mirrors batch_reproduce.py idiom). When
+    *model* is already in the local HF cache, forces HF offline mode so vLLM
+    boots from disk without any huggingface.co round-trip.
     """
     env = dict(os.environ)
     # Use GPU *indices*, not UUIDs: vLLM 0.7.x parses CUDA_VISIBLE_DEVICES as
@@ -139,6 +175,19 @@ def _build_child_env(lease: Any) -> dict[str, str]:
     # model never loads onto the GPU (verified 2026-05-29: fork wedged >6min with
     # the GPU idle; spawn loaded the engine in 3.6s). Caller-set value wins.
     env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    # If the model is already cached locally, force HF offline so vLLM never
+    # blocks on a huggingface.co lookup. Observed 2026-05-29: vLLM looped on
+    # NameResolutionError / MaxRetryError fetching config.json for an
+    # already-cached model when DNS to huggingface.co was intermittently down,
+    # so the engine never finished booting. If NOT cached, stay online so vLLM
+    # can fetch the weights.
+    if _model_is_cached(model or ""):
+        env.setdefault("HF_HUB_OFFLINE", "1")
+        env.setdefault("TRANSFORMERS_OFFLINE", "1")
+        logger.info(
+            "serve_local_llm: model %r found in local HF cache — forcing "
+            "HF_HUB_OFFLINE=1 (no network round-trip on boot)", model,
+        )
     return env
 
 
@@ -180,6 +229,7 @@ def _wait_for_readiness(
     host: str,
     port: int,
     max_wait: int,
+    api_key: str | None = None,
 ) -> bool:
     """Poll GET /v1/models until 200 or *max_wait* seconds elapse.
 
@@ -197,7 +247,7 @@ def _wait_for_readiness(
             )
             return False
 
-        if _probe_server(host, port):
+        if _probe_server(host, port, api_key=api_key):
             return True
 
         attempt += 1
@@ -329,7 +379,7 @@ def main() -> int:  # noqa: C901 (complexity is inherent to lifecycle management
     # ------------------------------------------------------------------
     # Step 1: Idempotent probe — exit 0 if already serving
     # ------------------------------------------------------------------
-    if _probe_server(host, port):
+    if _probe_server(host, port, api_key=api_key):
         logger.info(
             "serve_local_llm: server already serving at http://%s:%d/v1 — nothing to do",
             host, port,
@@ -383,7 +433,7 @@ def main() -> int:  # noqa: C901 (complexity is inherent to lifecycle management
     # ------------------------------------------------------------------
     # Step 4: Launch vLLM subprocess + lifecycle management
     # ------------------------------------------------------------------
-    child_env = _build_child_env(lease)
+    child_env = _build_child_env(lease, model=model)
     proc: subprocess.Popen[bytes] | None = None
 
     def _cleanup(release_lease: bool = True) -> None:
@@ -421,7 +471,7 @@ def main() -> int:  # noqa: C901 (complexity is inherent to lifecycle management
         # ------------------------------------------------------------------
         # Step 5: Health-wait
         # ------------------------------------------------------------------
-        ready = _wait_for_readiness(proc=proc, host=host, port=port, max_wait=max_wait)
+        ready = _wait_for_readiness(proc=proc, host=host, port=port, max_wait=max_wait, api_key=api_key)
 
         if not ready:
             logger.error(
