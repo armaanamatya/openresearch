@@ -11,7 +11,12 @@ class _FakeBaselineResult:
 def _write_minimal_code(project_id, runs_root):
     code_dir = runs_root / project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+    # BUG-NEW-040 P1 (2026-05-29): _harvest_baseline_artifacts now verifies
+    # that every file referenced in commands.json exists on disk, so the
+    # fake's "python train.py" + "python eval.py" commands need both files
+    # present or the harvest returns commands_missing_file → ok=False.
     (code_dir / "train.py").write_text("print('ok')\n", encoding="utf-8")
+    (code_dir / "eval.py").write_text("print('ok')\n", encoding="utf-8")
 
 
 def _assert_ok_envelope(result, tmp_path):

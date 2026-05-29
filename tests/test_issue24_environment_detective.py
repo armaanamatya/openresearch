@@ -153,14 +153,36 @@ class TestDockerfileGeneration:
         df = _generate_dockerfile("3.11", packages, gpu_mode="auto")
         assert "download.pytorch.org/whl/cpu" in df
 
-    def test_torch_uses_cuda_wheel_for_gpu_mode_prefer(self):
+    def test_torch_uses_cuda_wheel_for_gpu_mode_prefer(self, monkeypatch):
+        # effective_gpu_mode downgrades prefer/max → auto when the HOST has
+        # no NVIDIA GPU (correct: installing a CUDA wheel into a container
+        # that can't see CUDA is wasteful). Tests run on dev Macs (no NVIDIA),
+        # so force the host capability probe True to exercise the
+        # GPU-passthrough wheel-selection branch. Both _probe_nvidia_smi
+        # (cached) and host_supports_nvidia_gpu need to report True.
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution._probe_nvidia_smi",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution.host_supports_nvidia_gpu",
+            lambda: True,
+        )
         packages = {"torch": "2.2.0"}
         df = _generate_dockerfile("3.11", packages, gpu_mode="prefer")
         # No --index-url override → default PyPI ships CUDA wheel.
         assert "download.pytorch.org/whl/cpu" not in df
         assert "torch==2.2.0" in df
 
-    def test_torch_uses_cuda_wheel_for_gpu_mode_max(self):
+    def test_torch_uses_cuda_wheel_for_gpu_mode_max(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution._probe_nvidia_smi",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution.host_supports_nvidia_gpu",
+            lambda: True,
+        )
         packages = {"torch": "2.2.0"}
         df = _generate_dockerfile("3.11", packages, gpu_mode="max")
         assert "download.pytorch.org/whl/cpu" not in df

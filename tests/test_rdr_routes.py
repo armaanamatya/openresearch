@@ -274,8 +274,15 @@ def test_leaf_scores_404_no_run(client_with_run_dir: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_leaf_scores_404_no_report(tmp_path: Path, monkeypatch) -> None:
-    """Run dir exists but no final_report.json → 404."""
+def test_leaf_scores_empty_no_report(tmp_path: Path, monkeypatch) -> None:
+    """Run dir exists but no final_report.json → 200 with empty leaf_scores.
+
+    The route was changed to return ``{"project_id": ..., "overall_score":
+    None, "leaf_scores": []}`` for live runs that haven't scored yet — a 404
+    on every poll spammed the browser console and looked broken. Only a
+    completely missing run dir is a true 404 (tested above by
+    ``test_leaf_scores_404_no_run``).
+    """
     run_dir = tmp_path / "pb_no_report"
     run_dir.mkdir()
     monkeypatch.setattr("backend.app._runs_root", lambda: tmp_path)
@@ -283,7 +290,13 @@ def test_leaf_scores_404_no_report(tmp_path: Path, monkeypatch) -> None:
     app = create_app(run_service=service)
     client = TestClient(app)
     resp = client.get("/runs/pb_no_report/leaf-scores")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "project_id": "pb_no_report",
+        "overall_score": None,
+        "leaf_scores": [],
+    }
 
 
 # ---------------------------------------------------------------------------

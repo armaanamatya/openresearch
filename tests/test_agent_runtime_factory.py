@@ -45,6 +45,16 @@ def test_validate_provider_credentials_checks_matching_env(monkeypatch) -> None:
     # inherits subscription auth); pin it absent so this test deterministically
     # exercises the missing-credentials path regardless of the host environment.
     monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    # 2026-05-23 — modern Claude Code stores OAuth credentials in the macOS
+    # Keychain (not on PATH and not in ~/.claude/.credentials.json), so
+    # ``_has_claude_subscription_oauth`` returns True on every dev Mac with
+    # ``claude login`` active and rescues the credentials check before the
+    # ``shutil.which`` / settings path can fail. Force it absent so this test
+    # deterministically reaches the missing-credentials raise.
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory._has_claude_subscription_oauth",
+        lambda: False,
+    )
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: SimpleNamespace(
@@ -286,6 +296,14 @@ def test_has_provider_credentials_anthropic_returns_false_when_unset(monkeypatch
         lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
     )
     monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+    # 2026-05-23 — Keychain OAuth detection on macOS bypasses ``shutil.which`` /
+    # ``~/.claude/.credentials.json``. Force it absent so this test
+    # deterministically exercises the "no creds anywhere" path on a dev Mac
+    # with ``claude login`` active.
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory._has_claude_subscription_oauth",
+        lambda: False,
+    )
     assert has_provider_credentials("anthropic") is False
 
 

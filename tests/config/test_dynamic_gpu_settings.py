@@ -73,10 +73,18 @@ def test_empty_cost_caps_treated_as_no_cap(monkeypatch):
     assert s.max_run_gpu_usd == 0.0
 
 
-def test_default_runpod_image_has_cuda_dev_headers():
+def test_default_runpod_image_has_cuda_dev_headers(monkeypatch):
     # The earlier swap to -runtime- (Lane D) broke pip installs that need to
     # JIT-compile against CUDA dev headers (bitsandbytes, flash-attn, deepspeed).
     # Reverted to -devel- after the SDAR run silently failed on a chained
     # `pip install bitsandbytes && python train.py`. Override via the env var
     # when a paper genuinely doesn't need dev headers.
-    assert "devel" in Settings().runpod_image and "runtime" not in Settings().runpod_image
+    #
+    # Test must construct Settings hermetically: the repo `.env` and the
+    # ``deepeval`` pytest plugin both leak ``REPROLAB_RUNPOD_IMAGE`` (and
+    # similar) into ``os.environ``, where pydantic-Settings prefers them over
+    # the code default. ``_env_file=None`` + ``monkeypatch.delenv`` makes this
+    # test independent of the host environment.
+    monkeypatch.delenv("REPROLAB_RUNPOD_IMAGE", raising=False)
+    image = Settings(_env_file=None).runpod_image
+    assert "devel" in image and "runtime" not in image

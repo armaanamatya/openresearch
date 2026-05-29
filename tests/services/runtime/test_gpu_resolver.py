@@ -76,7 +76,10 @@ def test_resolve_low_confidence_triggers_fallback_sku():
         cloud_types=("COMMUNITY",),
     )
     assert plan.source == "fallback"
-    assert plan.short_name == "rtx4090"
+    # BUG-NEW-025 (2026-05-29): headroom multiplier is now applied to the
+    # fallback_vram_gb on the low-confidence branch — 24 × 1.25 = 30 GB
+    # needed, so rtx4090 (24 GB) no longer fits and a6000 (48 GB) is picked.
+    assert plan.short_name == "a6000"
     assert plan.gpu_count == 1
 
 
