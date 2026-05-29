@@ -1126,6 +1126,7 @@ async def run_pipeline_rlm(
             _accel_ep = None
         if _accel_ep is not None:
             llm_client = build_accelerator_client(_accel_ep)   # override the cheap-call client
+            llm_model = _accel_ep.model  # reflect actual model in final_report.models["planner"]
             logger.info(
                 "accelerator: routing cheap calls to %s (%s, model=%s)",
                 _accel_ep.base_url, _accel_ep.kind, _accel_ep.model,

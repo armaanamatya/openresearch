@@ -477,14 +477,26 @@ _ACCEL_POLL_INTERVAL_S = 5      # seconds between readiness probes
 
 
 def _probe_accelerator(host: str, port: int) -> bool:
-    """Return True if GET http://{host}:{port}/v1/models responds with HTTP 200."""
+    """Return True if GET http://{host}:{port}/v1/models indicates a live server.
+
+    Sends ``Authorization: Bearer <key>`` when ``REPROLAB_ACCELERATOR_API_KEY`` is
+    set (default ``"local"``), because a vLLM server started with ``--api-key``
+    returns 401 to an unauthenticated probe — which means the server IS up.
+    HTTP 401/403 are therefore treated as reachable (mirrors
+    ``serve_local_llm._probe_server`` and ``accelerator.probe_endpoint``).
+    """
     import urllib.error
     import urllib.request
 
     url = f"http://{host}:{port}/v1/models"
+    api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(url, timeout=_ACCEL_PROBE_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=_ACCEL_PROBE_TIMEOUT_S) as resp:
             return resp.status == 200
+    except urllib.error.HTTPError as exc:
+        return exc.code in (401, 403)
     except (urllib.error.URLError, OSError):
         return False
 
