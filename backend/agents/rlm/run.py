@@ -1035,6 +1035,37 @@ def _visible_gpu_count() -> int | None:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
+    """Point the volume-mount data root at a writable dir for LOCAL sandboxes.
+
+    Local hosts have no ``/workspace`` volume (that path is RunPod-only), yet
+    ``config.runpod_volume_mount_path`` defaults to ``/workspace`` and the baseline
+    DATASET-SETUP guidance defaults every dataset dir to ``/workspace/data/<env>``.
+    On a local box ``os.makedirs('/workspace/...')`` raises PermissionError, the
+    agent's env loader swallows it, and every algorithm reports ``env_load_failed``
+    with zero reward while the GPUs sit idle (the 2026-05-29 SDAR local failure).
+    Repoint ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable, SHARED (download-once)
+    cache dir so ALFWorld/WebShop/HF setup actually succeeds.  No-op for runpod/docker
+    (they keep the real ``/workspace`` volume); an explicit non-default operator
+    override always wins.
+    """
+    import os as _os
+
+    key = getattr(sandbox_mode, "value", str(sandbox_mode or "")).lower()
+    if "local" not in key:
+        return
+    current = (_os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "").strip()
+    if current and current != "/workspace":
+        return  # operator pinned an explicit writable root — respect it
+    data_root = (runs_root / ".cache" / "data").resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    _os.environ["REPROLAB_RUNPOD_VOLUME_MOUNT_PATH"] = str(data_root)
+    logger.info(
+        "local sandbox: volume-mount data root → %s (writable shared cache; "
+        "/workspace is RunPod-only)", data_root,
+    )
+
+
 async def run_pipeline_rlm(
     project_id: str,
     runs_root: Path,
@@ -1093,6 +1124,11 @@ async def run_pipeline_rlm(
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
     _write_demo_status(project_dir, "running")
+
+    # Local sandboxes have no /workspace volume — repoint the dataset root at a
+    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
+    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
+    _ensure_local_data_root(sandbox_mode, runs_root)
 
     # 1. Observability + budget.
     cost_ledger = RunCostLedger.load_jsonl(

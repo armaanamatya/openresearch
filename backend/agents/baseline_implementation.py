@@ -981,43 +981,70 @@ _EAGER_METRICS_BLOCK = (
     "Always write atomically (tempfile + os.replace) so a kill mid-write cannot corrupt the file.\n"
 )
 
-_DATASET_SETUP_BLOCK = (
-    "\n\nDATASET SETUP — required patterns by environment family:\n"
-    "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
-    "\n"
-    "EXAMPLES — apply ONLY when the listed environment/dataset is named verbatim in YOUR paper:\n"
-    "\n"
-    "ALFWorld:\n"
-    "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
-    "                                           #   does not exist until the package is installed\n"
-    "  alfworld-download                        # downloads ALFWorld env data\n"
-    "  assert os.path.exists('/workspace/data/alfworld'), 'ALFWorld data missing'\n"
-    "  Data dir: /workspace/data/alfworld (NOT ~/alfworld or ./data)\n"
-    "\n"
-    "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
-    "  from datasets import load_dataset\n"
-    "  ds = load_dataset('hotpot_qa', 'distractor', cache_dir='/workspace/data/hf')\n"
-    "  assert len(ds) > 0, 'HotpotQA load failed'\n"
-    "  Set HF_HOME=/workspace/data/hf and HF_DATASETS_CACHE=/workspace/data/hf/datasets\n"
-    "  so repeated runs reuse the cache without re-downloading.\n"
-    "\n"
-    "WebShop:\n"
-    "  python -m pip install webshop-text-env  # or the upstream package from\n"
-    "                                           #   https://github.com/princeton-nlp/WebShop\n"
-    "  import webshop_text_env; env = webshop_text_env.WebShopEnv()\n"
-    "  assert env is not None, 'WebShop env init failed'\n"
-    "  Data dir: /workspace/data/webshop\n"
-    "\n"
-    "General rules:\n"
-    "  - The pod filesystem is /workspace-rooted. Always default data dirs to\n"
-    "    /workspace/data/<env>, NEVER to ~ or relative paths.\n"
-    "  - Emit an explicit assert os.path.exists(...) after EVERY download step.\n"
-    "    A missing dataset dir that passes silently will produce zero/NaN metrics.\n"
-    "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
-    "    `pip install alfworld` must precede `alfworld-download`.\n"
-    "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
-    "    inherits them.\n"
-)
+def _resolve_data_root() -> str:
+    """Writable data root for the active sandbox.
+
+    ``run.py`` points ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable shared dir for
+    LOCAL sandboxes (where ``/workspace`` does not exist); RunPod/Docker keep
+    ``/workspace`` (the real pod/container volume). Reading the env var here keeps the
+    guidance the agent sees identical to where data actually lands at runtime.
+    """
+    import os
+    return (os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "/workspace").strip() or "/workspace"
+
+
+def _dataset_setup_block(data_root: str = "/workspace") -> str:
+    """DATASET SETUP guidance, rooted at the sandbox's writable ``data_root``.
+
+    ``data_root`` is the writable volume-mount root (``/workspace`` on RunPod/Docker, a
+    writable shared cache dir on local). NEVER hardcode ``/workspace`` here: on a local
+    host it is unwritable and every dataset download dies at ``os.makedirs``.
+    """
+    hf_default = f"{data_root}/data/hf"
+    return (
+        "\n\nDATASET SETUP — required patterns by environment family:\n"
+        "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
+        "\n"
+        "EXAMPLES — apply ONLY when the listed environment/dataset is named verbatim in YOUR paper:\n"
+        "\n"
+        "ALFWorld:\n"
+        "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
+        "                                           #   does not exist until the package is installed\n"
+        "  alfworld-download                        # downloads ALFWorld env data\n"
+        f"  assert os.path.exists('{data_root}/data/alfworld'), 'ALFWorld data missing'\n"
+        f"  Data dir: {data_root}/data/alfworld (NOT ~/alfworld or ./data)\n"
+        "\n"
+        "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
+        "  from datasets import load_dataset\n"
+        f"  ds = load_dataset('hotpot_qa', 'distractor', cache_dir=os.environ.get('HF_HOME', '{hf_default}'))\n"
+        "  assert len(ds) > 0, 'HotpotQA load failed'\n"
+        "  If HF_HOME is already exported in the environment, USE IT (do NOT override it);\n"
+        f"  otherwise default HF_HOME={hf_default} and HF_DATASETS_CACHE={hf_default}/datasets\n"
+        "  so repeated runs reuse the cache without re-downloading.\n"
+        "\n"
+        "WebShop:\n"
+        "  python -m pip install webshop-text-env  # or the upstream package from\n"
+        "                                           #   https://github.com/princeton-nlp/WebShop\n"
+        "  import webshop_text_env; env = webshop_text_env.WebShopEnv()\n"
+        "  assert env is not None, 'WebShop env init failed'\n"
+        f"  Data dir: {data_root}/data/webshop\n"
+        "\n"
+        "General rules:\n"
+        f"  - The writable data root for THIS sandbox is {data_root}. Default ALL data dirs to\n"
+        f"    {data_root}/data/<env>, NEVER to /workspace (RunPod-only), ~, or relative paths.\n"
+        "  - Emit an explicit assert os.path.exists(...) after EVERY download step.\n"
+        "    A missing dataset dir that passes silently will produce zero/NaN metrics.\n"
+        "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
+        "    `pip install alfworld` must precede `alfworld-download`.\n"
+        "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
+        "    inherits them.\n"
+    )
+
+
+# Back-compat module alias: the default (/workspace) rendering. Prefer
+# _dataset_setup_block(_resolve_data_root()) at prompt-build time so the guidance
+# tracks the active sandbox's writable root.
+_DATASET_SETUP_BLOCK = _dataset_setup_block()
 
 
 # Area-specific repair guidance — keys match the canonical PaperBench area
@@ -1626,8 +1653,10 @@ def _compute_constraint_guidance(
         # the agent size batches without probing or guessing.
         guidance += _hardware_specs_block(sandbox_mode)
 
-    # 4. DATASET SETUP — always-on; tells the agent how to download real data.
-    guidance += _DATASET_SETUP_BLOCK
+    # 4. DATASET SETUP — always-on; tells the agent how to download real data,
+    #    rooted at the sandbox's writable data root (/workspace only on RunPod/Docker;
+    #    a writable shared cache on local — see run._ensure_local_data_root).
+    guidance += _dataset_setup_block(_resolve_data_root())
 
     # 5. Rubric auto-checklist — when generated_rubric.json exists.
     if project_dir is not None:
