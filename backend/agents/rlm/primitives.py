@@ -1234,6 +1234,87 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
     return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
 
 
+def _baseline_subprocess_enabled() -> bool:
+    """Run the baseline SDK call in an isolated child process (default ON).
+
+    Isolation prevents the claude-agent-sdk ``aclose()`` async-gen race from
+    poisoning the whole reproduction process (the 2026-05-30 SDAR run failed 8/8
+    iterations this way). Set ``REPROLAB_BASELINE_SUBPROCESS=0`` to revert to the
+    in-process worker-thread path.
+    """
+    return os.environ.get("REPROLAB_BASELINE_SUBPROCESS", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _drive_baseline_child(
+    *,
+    heartbeat_path: str,
+    project_id: str,
+    runs_root: "Path",
+    pcm,
+    env,
+    contract,
+    artifact_index,
+    kwargs: dict,
+    sdk_activity: dict,
+    child_holder: dict,
+):
+    """Run the baseline SDK call in a fresh ``multiprocessing`` (spawn) process.
+
+    Runs on the implement_baseline worker thread. Spawns the child, parks its
+    handle in ``child_holder`` (so the caller's stall/timeout/finally path can
+    terminate it), and while it runs forwards the child's heartbeat-file mtime
+    into ``sdk_activity['last']`` so the EXISTING file+stream stall watchdog works
+    unchanged. Returns an object exposing ``commands_to_run`` / ``diff_summary`` /
+    ``assumptions_applied`` on success; raises on child failure so the caller's
+    ``except`` path harvests artifacts and marks the attempt repairable — and the
+    *next* attempt gets a brand-new, un-poisoned process.
+    """
+    import multiprocessing as _mp
+    from types import SimpleNamespace as _NS
+
+    from backend.agents.rlm.baseline_runner import run_baseline_in_child
+
+    hb = Path(heartbeat_path)
+    try:
+        hb.touch()
+    except Exception:  # noqa: BLE001
+        pass
+    ctxmp = _mp.get_context("spawn")
+    result_q = ctxmp.Queue()
+    proc = ctxmp.Process(
+        target=run_baseline_in_child,
+        args=(result_q, str(hb), project_id, str(runs_root), pcm, env, contract, artifact_index, kwargs),
+        daemon=False,
+    )
+    proc.start()
+    child_holder["p"] = proc
+    while proc.is_alive():
+        proc.join(timeout=2.0)
+        try:
+            if hb.exists():
+                sdk_activity["last"] = max(sdk_activity["last"], hb.stat().st_mtime)
+        except Exception:  # noqa: BLE001
+            pass
+    # Child exited — collect the result (empty queue ⇒ hard crash, e.g. the race).
+    payload = None
+    try:
+        payload = result_q.get_nowait()
+    except Exception:  # noqa: BLE001
+        payload = None
+    if payload is None:
+        raise RuntimeError(
+            f"baseline child exited (code={proc.exitcode}) without a result — "
+            "likely the claude-agent-sdk aclose race; a fresh child will retry"
+        )
+    if not payload.get("ok"):
+        raise RuntimeError(f"baseline child failed: {payload.get('error', 'unknown')}")
+    return _NS(
+        commands_to_run=payload.get("commands_to_run", []),
+        diff_summary=payload.get("diff_summary", ""),
+        assumptions_applied=payload.get("assumptions_applied", []),
+    )
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -1585,8 +1666,41 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
+    _child_holder: dict = {}
     try:
-        future = pool.submit(asyncio.run, _run())
+        if _baseline_subprocess_enabled():
+            _sub_kwargs = dict(
+                model=ctx.agent_model,
+                repair_context=repair_context,
+                sandbox_mode=ctx.sandbox_mode,
+                gpu_mode=getattr(ctx, "gpu_mode", None),
+                arxiv_id=getattr(ctx, "arxiv_id", None),
+                remaining_s=ctx.remaining_s(),
+                minimize_compute=getattr(ctx, "minimize_compute", False),
+                metrics_shape=_metrics_shape or None,
+                data_recipes=_data_recipes or None,
+                gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
+                gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            )
+            # Isolate the SDK call in a fresh process so its aclose() async-gen
+            # race can't poison this reproduction process. The driver runs on the
+            # worker thread and feeds the child's heartbeat into the existing
+            # stall watchdog; child_holder lets the finally terminate it.
+            future = pool.submit(
+                _drive_baseline_child,
+                heartbeat_path=str(code_dir / ".sdk_heartbeat"),
+                project_id=ctx.project_id,
+                runs_root=ctx.runs_root,
+                pcm=pcm,
+                env=env,
+                contract=contract,
+                artifact_index=artifact_index,
+                kwargs=_sub_kwargs,
+                sdk_activity=_sdk_activity,
+                child_holder=_child_holder,
+            )
+        else:
+            future = pool.submit(asyncio.run, _run())
         import time as _time
         deadline_abs = _time.monotonic() + timeout
         _stall_start: float | None = None
@@ -1732,6 +1846,14 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
         return _err
     finally:
+        # Terminate any still-running isolated baseline child (stall/timeout path).
+        _p = _child_holder.get("p")
+        if _p is not None:
+            try:
+                _p.terminate()
+                _p.join(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
         pool.shutdown(wait=False, cancel_futures=True)
 
     # run_with_sdk writes the generated code to runs_root/project_id/code;
