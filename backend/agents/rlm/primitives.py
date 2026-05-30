@@ -1996,10 +1996,13 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
             "silent_oom",
             "silent_oom: the training script logged a CUDA out-of-memory but exited 0 "
             "(it caught the backward OOM and skipped the step), so NO gradient updates "
-            "happened and the metrics are meaningless. Reduce per-step memory (smaller "
-            "batch, fewer rollouts, gradient_checkpointing, shard across GPUs with "
-            "`torchrun --nproc_per_node=<N>` + FSDP) and do NOT catch+skip a backward "
-            "OOM — let it fail loudly so it can be repaired.",
+            "happened and the metrics are meaningless. If multiple GPUs are leased this "
+            "means your training did NOT shard — wrap the model with HuggingFace "
+            "Accelerate (`accelerator.prepare(model, optimizer)`); the harness launches "
+            "you under `accelerate launch` with an FSDP2 config when >1 GPU is leased, so "
+            "params/grads/optimizer shard across the cards. Otherwise reduce per-step "
+            "memory (smaller batch, fewer rollouts, gradient_checkpointing). Do NOT "
+            "catch+skip a backward OOM — let it fail loudly so it can be repaired.",
         )
 
     try:
@@ -2035,40 +2038,111 @@ _DISTRIBUTED_MARKERS = (
     "DistributedDataParallel",
     "init_process_group",
     "torch.distributed",
+    "fully_shard",       # FSDP2 (torch.distributed.fsdp.fully_shard)
+    "from accelerate",   # HuggingFace Accelerate API
+    "import accelerate",
+    "Accelerator(",
 )
 
 
-def _maybe_torchrun_wrap(
+def _free_tcp_port() -> int:
+    """Return an OS-assigned free TCP port for the accelerate rendezvous.
+
+    Concurrent reproductions on the same host (``batch_reproduce`` over several
+    papers) each launch their own ``accelerate launch``; without a distinct
+    ``--main_process_port`` they collide on the default 29500 and the second run
+    hangs the rendezvous. Binding to port 0 and reading the assigned port back
+    guarantees disjoint endpoints.
+    """
+    import socket as _socket
+
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        s.bind(("", 0))
+        return int(s.getsockname()[1])
+    finally:
+        s.close()
+
+
+def _write_fsdp2_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
+    """Write a harness-owned FSDP2 ``accelerate`` config into the run's code dir.
+
+    The harness owns the sharding policy — full per-parameter shard (FSDP2),
+    bf16, transformer auto-wrap (Qwen exposes ``_no_split_modules`` so the layer
+    class is auto-detected), no CPU offload — so a *correct* shard engages
+    regardless of how the agent wired its loop; the agent only has to call
+    ``accelerator.prepare(model, optimizer)``. Returns the path; it is consumed
+    relative to ``code_dir`` (the execution cwd).
+    """
+    cfg = (
+        "compute_environment: LOCAL_MACHINE\n"
+        "distributed_type: FSDP\n"
+        "mixed_precision: bf16\n"
+        "use_cpu: false\n"
+        "machine_rank: 0\n"
+        "num_machines: 1\n"
+        f"num_processes: {nproc}\n"
+        "fsdp_config:\n"
+        "  fsdp_version: 2\n"
+        "  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP\n"
+        "  fsdp_reshard_after_forward: true\n"
+        "  fsdp_offload_params: false\n"
+        "  fsdp_state_dict_type: SHARDED_STATE_DICT\n"
+        "  fsdp_cpu_ram_efficient_loading: true\n"
+    )
+    path = code_dir / "_reprolab_fsdp2.yaml"
+    try:
+        path.write_text(cfg, encoding="utf-8")
+    except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
+        logger.exception("_write_fsdp2_accelerate_config: write failed")
+    return path
+
+
+def _resolve_distributed_launch(
     commands: list[str], code_dir: "Path", ngpu: int, run_id: str = ""
 ) -> list[str]:
-    """Re-launch a plain ``python <script>.py`` under ``torchrun`` when the script
-    carries distributed-training markers and >1 GPU is allocated.
+    """Dynamically re-launch a plain ``python <script>.py`` under
+    ``accelerate launch`` + a harness FSDP2 config when >1 GPU is allocated and
+    the script carries distributed/accelerate markers.
 
-    The baseline agent frequently writes correct FSDP/DDP code but emits
-    ``commands.json`` as ``python train.py``, which runs single-process
-    (WORLD_SIZE=1), silently disabling sharding so only GPU 0 is used and large
-    models OOM (the 2026-05-29 SDAR failure). This rewrites the launch so the
-    sharding code it already wrote actually runs across all cards. No-op when
-    ngpu<=1, when the command is already a distributed launcher (torchrun/
-    accelerate/deepspeed do not match ``python <script>.py``), or when the script
-    has no distributed markers.
+    Dynamic by design — the launch strategy is resolved at runtime from the
+    *actually-leased* GPU count, never hardcoded:
+
+    * ``ngpu <= 1`` → run verbatim (plain ``python`` / CPU). FSDP on a single
+      card is pure all-gather overhead with zero memory benefit, so we never pay
+      it; this is also the graceful fallback on a 1-GPU / no-GPU host.
+    * ``ngpu >= 2`` + the script uses FSDP/accelerate → rewrite to
+      ``accelerate launch --config_file <fsdp2.yaml> --num_processes <ngpu>`` so
+      params/grads/optimizer shard across the leased cards (the 3B/7B that OOM a
+      single 24 GB card fit comfortably sharded). ``accelerate launch`` is a
+      strict superset of ``torchrun`` for launching: a raw ``torch.distributed``
+      script still gets a correct process group; an accelerate-API script also
+      gets the harness FSDP2 policy.
+
+    No-op when the command is already a distributed launcher, when the script has
+    no distributed markers, or when disabled via the escape-hatch toggle. The
+    per-model fit choice (run the small model on one card, shard the big ones) is
+    expressed in the agent's training code + run guidance; this seam only
+    guarantees the *launch* is correct whenever the agent wrote shardable code.
     """
     import os as _os
     import re as _re
 
     if ngpu <= 1:
         return commands
-    # Disable toggle — keep the agent's own launch verbatim. Use it for models
-    # that fit one GPU (SDAR smallest-two: 1.7B/3B on a 24 GB card with Adafactor
-    # + grad-checkpointing), where re-launching the WHOLE script under torchrun
-    # duplicates un-rank-guarded setup (pip install, dataset download, env init)
-    # across every rank — the 2026-05-30 4-rank ALFWorld-setup hang.
+    # Escape hatch — keep the agent's launch verbatim (operator override).
     if _os.environ.get("REPROLAB_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
-        logger.info("_maybe_torchrun_wrap[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
+        logger.info("_resolve_distributed_launch[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
         return commands
+
     out: list[str] = []
     changed = False
+    cfg_rel: str | None = None
     for cmd in commands:
+        # Already a distributed launcher → leave alone.
+        if _re.match(r"^\s*(accelerate\s+launch|torchrun|deepspeed)\b", cmd):
+            out.append(cmd)
+            continue
         m = _re.match(r"^\s*python3?\s+(\S+\.py)(\s.*)?$", cmd)
         if not m:
             out.append(cmd)
@@ -2084,16 +2158,34 @@ def _maybe_torchrun_wrap(
         except Exception:  # noqa: BLE001
             text = ""
         if any(marker in text for marker in _DISTRIBUTED_MARKERS):
-            out.append(f"torchrun --standalone --nproc_per_node={ngpu} {script}{rest}")
+            if cfg_rel is None:
+                cfg_rel = _write_fsdp2_accelerate_config(code_dir, ngpu).name
+            port = _free_tcp_port()
+            out.append(
+                f"accelerate launch --config_file {cfg_rel} "
+                f"--num_processes {ngpu} --num_machines 1 "
+                f"--main_process_port {port} {script}{rest}"
+            )
             changed = True
             logger.warning(
-                "_execute_in_sandbox[%s]: %s carries distributed markers but was "
-                "launched single-process (`%s`); re-launching via "
-                "`torchrun --standalone --nproc_per_node=%d` so FSDP/DDP shards.",
-                run_id, script, cmd.strip(), ngpu,
+                "_resolve_distributed_launch[%s]: %s carries distributed/accelerate "
+                "markers but was launched single-process (`%s`); re-launching via "
+                "`accelerate launch --num_processes %d` (FSDP2) so params/grads/"
+                "optimizer shard across the %d leased GPUs.",
+                run_id, script, cmd.strip(), ngpu, ngpu,
             )
         else:
             out.append(cmd)
+            # Proactive guard: multi-GPU leased but the script has no FSDP/accelerate
+            # markers → it will run on one card and likely OOM a large model. The
+            # OOM postflight additionally steers the repair toward accelerate+FSDP.
+            logger.warning(
+                "_resolve_distributed_launch[%s]: %d GPUs leased but `%s` has no "
+                "FSDP/accelerate markers — it will use a single card and may OOM a "
+                "large model. The training script should call "
+                "`accelerator.prepare(model, optimizer)`.",
+                run_id, ngpu, script,
+            )
     return out if changed else commands
 
 
@@ -2300,6 +2392,12 @@ async def _execute_in_sandbox(
             bootstrap_commands.append(
                 "python -m pip install -r requirements.txt"
             )
+            # The harness launches multi-GPU training via `accelerate launch`
+            # (FSDP2); ensure a modern Accelerate is present regardless of the
+            # agent's requirements.txt.
+            bootstrap_commands.append(
+                "python -m pip install -U accelerate"
+            )
 
     # A4(b): Local sandbox — auto-install requirements.txt into the per-run
     # venv (PATH already points there via _exp_env_extra). Mirrors the runpod
@@ -2335,6 +2433,11 @@ async def _execute_in_sandbox(
             )
         bootstrap_commands.append(
             "python -m pip install -r requirements.txt || true"
+        )
+        # Harness owns the multi-GPU launcher (`accelerate launch` + FSDP2) —
+        # ensure Accelerate is in the per-run venv regardless of requirements.txt.
+        bootstrap_commands.append(
+            "python -m pip install -U accelerate || true"
         )
 
     # Lane E: spawn the stall watchdog alongside command execution.
@@ -2513,11 +2616,12 @@ async def _execute_in_sandbox(
                 ))
 
             # Distributed-launch safety net: if >1 GPU is allocated and the train
-            # script uses FSDP/DDP but is launched as plain `python`, re-launch it
-            # via torchrun so the sharding actually engages (else only GPU 0 is used
-            # → large models OOM). No-op otherwise.
+            # script uses FSDP/accelerate but is launched as plain `python`,
+            # re-launch it via `accelerate launch` + a harness FSDP2 config so
+            # params/grads/optimizer actually shard across the leased cards (else
+            # only one card is used → large models OOM). Dynamic + no-op otherwise.
             if len(gpu_device_ids) > 1:
-                commands = _maybe_torchrun_wrap(
+                commands = _resolve_distributed_launch(
                     list(commands), code_dir, len(gpu_device_ids), run_id
                 )
 
