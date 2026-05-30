@@ -517,10 +517,15 @@ class TestRunPipelineRlmIntegration:
         )
         # run_experiment never ran — the root's metrics are unbacked.
         assert report["baseline_metrics"] == {}
-        # A reproduction whose experiment never ran is not a full success.
-        assert report["verdict"] == "partial"
-        assert result.status == "partial"
+        # A reproduction whose experiment NEVER ran has no evidence at all:
+        # the honesty guard drops the metrics AND the evidence gate (FM-004,
+        # ported 2026-06-09) refuses any success-ish verdict — this exact
+        # scenario (success claim, zero run_experiment calls) is what the
+        # gate exists to stop.
+        assert report["verdict"] == "failed"
+        assert result.status == "failed"
         assert "honesty guard" in report["reproduction_summary"].lower()
+        assert "evidence_gap" in report["reproduction_summary"]
 
 
 class TestResolveAgentRuntime:

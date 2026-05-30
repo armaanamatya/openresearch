@@ -68,7 +68,13 @@ def test_fatal_outcome_terminates_before_history_append(make_context, tmp_path):
     checkpointer.record.assert_called_once()
 
 
-def test_fatal_finalize_writes_failed_status_and_partial_report(make_context, tmp_path):
+def test_fatal_finalize_writes_failed_status_and_failed_report(make_context, tmp_path):
+    # The only experiment on disk is a tri-state "partial evidence" row:
+    # success=False with metrics-like numbers from a balance_too_low abort (the
+    # run hit a credit wall, it never really executed). Per the evidence gate
+    # (FM-004, ported from feat/rlm-wedge-hardening 2026-06-09), success==False
+    # does NOT license a partial/reproduced VERDICT — the report verdict is
+    # "failed", though the partial numbers stay in baseline_metrics for the record.
     ctx = make_context(tmp_path)
     result = _fatal_result()
     abort = _FatalPrimitiveAbort(primitive_name="run_experiment", result=result)
@@ -100,8 +106,9 @@ def test_fatal_finalize_writes_failed_status_and_partial_report(make_context, tm
     assert status["status"] == "failed"
     assert status["error"]["outcome"] == "fatal"
     assert status["error"]["primitive"] == "run_experiment"
-    assert report["verdict"] == "partial"
-    assert report["baseline_metrics"] == {"accuracy": 0.42}
+    assert report["verdict"] == "failed"  # tri-state partial-evidence no longer earns a verdict
+    assert "evidence_gap" in report["reproduction_summary"]
+    assert report["baseline_metrics"] == {"accuracy": 0.42}  # numbers kept for the record
     assert any(event.get("event") == "run_fatal" for event in emitted)
 
 

@@ -1,0 +1,61 @@
+{
+  "_README": "Replay regression catalog for the final-report evidence gate (FM-004, report.py::_apply_evidence_gate). Each case is the MINIMAL sanitized shape of a real /runs leak (or a synthetic loophole we closed) — NO paper corpus, NO credentials, just the report inputs + experiment rows the gate reads. Add a new case whenever a real run ships a hollow verdict: drop its pre-gate verdict, baseline_metrics, and experiment_runs.jsonl rows here. The test in tests/agents/rlm/test_evidence_gate_replay.py feeds each case through write_final_report_rlm and asserts the corrected verdict. The `success+metrics` positive control must stay `partial` — it guards against the gate over-firing.",
+  "cases": [
+    {
+      "id": "pb_784_partial_no_evidence",
+      "source": "runs/pb_mechanistic-understanding_1780068784 (real, pre-gate)",
+      "note": "Shipped verdict=partial with empty baseline_metrics and no experiment_runs.jsonl — the FM-004 evidence leak the gate was built to catch.",
+      "pre_gate_verdict": "partial",
+      "baseline_metrics": {},
+      "experiment_rows": [],
+      "expected_verdict": "failed"
+    },
+    {
+      "id": "pb_083_partial_no_evidence",
+      "source": "runs/pb_mechanistic-understanding_1780068083 (real, pre-gate)",
+      "note": "Same FM-004 pattern as pb_784: partial verdict, no experiment evidence on disk.",
+      "pre_gate_verdict": "partial",
+      "baseline_metrics": {},
+      "experiment_rows": [],
+      "expected_verdict": "failed"
+    },
+    {
+      "id": "self_attest_escape_partial",
+      "source": "synthetic: self-attest escape closed 2026-05-30",
+      "note": "partial + non-empty baseline_metrics copied from a FAILED experiment (success=false). Survived all four layers via the now-removed `and not report.baseline_metrics` clause.",
+      "pre_gate_verdict": "partial",
+      "baseline_metrics": {"accuracy": 0.99},
+      "experiment_rows": [{"success": false, "metrics": {"accuracy": 0.99}, "failure_class": "balance_too_low"}],
+      "expected_verdict": "failed"
+    },
+    {
+      "id": "self_attest_escape_reproduced",
+      "source": "synthetic: self-attest escape closed 2026-05-30",
+      "note": "reproduced flavor of the escape — self-attested metrics, only a failed row on disk.",
+      "pre_gate_verdict": "reproduced",
+      "baseline_metrics": {"accuracy": 0.99},
+      "experiment_rows": [{"success": false, "metrics": {"accuracy": 0.99}}],
+      "expected_verdict": "failed"
+    },
+    {
+      "id": "forged_success_row_zero_run_experiment_calls",
+      "source": "synthetic: audit 2026-05-30 — REPL open() forges an experiment_runs.jsonl row",
+      "note": "The REPL's live open() appends a success+metrics row with no real run_experiment. The content-only predicate is satisfied (defeated by satisfaction, not skip), but the authoritative ledger shows 0 run_experiment calls (run_experiment_calls=0) → forged → failed.",
+      "pre_gate_verdict": "partial",
+      "baseline_metrics": {"accuracy": 0.95},
+      "experiment_rows": [{"success": true, "metrics": {"accuracy": 0.95}, "model_id": "qwen3-1.7b"}],
+      "run_experiment_calls": 0,
+      "expected_verdict": "failed"
+    },
+    {
+      "id": "positive_control_real_evidence",
+      "source": "synthetic positive control (guards against gate over-firing)",
+      "note": "An honestly-earned partial: a real success+metrics container row exists AND the authoritative ledger shows a backing run_experiment call (run_experiment_calls=1). The gate MUST leave this as partial — if a future change downgrades it, the gate is over-firing.",
+      "pre_gate_verdict": "partial",
+      "baseline_metrics": {"accuracy": 0.41},
+      "experiment_rows": [{"success": true, "metrics": {"accuracy": 0.41}}],
+      "run_experiment_calls": 1,
+      "expected_verdict": "partial"
+    }
+  ]
+}

@@ -51,6 +51,7 @@ from backend.agents.rlm.models import (
 from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
+    run_experiment_call_count,
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
@@ -875,7 +876,9 @@ def _finalize_fatal_primitive_abort(
         mode="rlm",
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
-    json_path, _md_path = write_final_report_rlm(report, project_dir)
+    json_path, _md_path = write_final_report_rlm(
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx)
+    )
 
     try:
         emit(
@@ -2035,7 +2038,9 @@ def _finalize(
         except Exception:  # noqa: BLE001 — diagnostic only; never block report write
             logger.debug("_finalize: suspicious_partial check raised", exc_info=True)
 
-    json_path, _md_path = write_final_report_rlm(report, project_dir)
+    json_path, _md_path = write_final_report_rlm(
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx)
+    )
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
     # agent-correctable failures from experiment_runs.jsonl into

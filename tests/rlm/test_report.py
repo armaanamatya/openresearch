@@ -326,6 +326,11 @@ class TestWriteFinalReport:
         """The Markdown file contains the verdict and rubric score."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
+        # Evidence gate (ported 2026-06-09): the reproduced verdict needs a real
+        # success+metrics row on disk or it downgrades to failed.
+        (project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "metrics": {"accuracy": 0.92}}) + "\n"
+        )
         report = self._build_report()
         _, md_path = write_final_report_rlm(report, project_dir)
 

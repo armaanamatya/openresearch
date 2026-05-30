@@ -403,6 +403,13 @@ async def test_verdict_reconciled_against_score(
     ctx = make_context(tmp_path)
     bundle = FakeBundle()
     _patch_primitives(monkeypatch)
+    # Evidence gate (ported 2026-06-09): run_experiment is mocked, so nothing
+    # writes experiment_runs.jsonl — seed a real success row or the gate
+    # downgrades every success-ish verdict before reconciliation is observable.
+    (ctx.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"accuracy": 0.9}}) + "\n",
+        encoding="utf-8",
+    )
     # Very low score → verdict should be "failed"
     _patch_score(monkeypatch, {**_FAKE_SCORES_LOW, "overall_score": 0.0})
 
@@ -421,6 +428,10 @@ async def test_verdict_reconciled_against_score(
     _patch_score(monkeypatch, {**_FAKE_SCORES_LOW, "overall_score": 0.20})
 
     ctx2 = make_context(tmp_path, project_id="rdr_test_v2")
+    (ctx2.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"accuracy": 0.9}}) + "\n",
+        encoding="utf-8",
+    )
     result2 = await run_rdr(
         FakeBundle(),
         ctx=ctx2,

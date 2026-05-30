@@ -302,6 +302,15 @@ def test_c4_calibration_auto_runs_at_finalize(tmp_path, monkeypatch):
     # Minimal ledger so tokens_total.json can be written.
     (project_dir / "cost_ledger.jsonl").write_text("", encoding="utf-8")
 
+    # Evidence gate (ported 2026-06-09): seed a success+metrics row so the
+    # partial verdict is legitimately earned (calibration only runs for
+    # non-failed verdicts, and an evidence-less partial now downgrades).
+    import json as _json
+    (project_dir / "experiment_runs.jsonl").write_text(
+        _json.dumps({"success": True, "metrics": {"accuracy": 0.9}}) + "\n",
+        encoding="utf-8",
+    )
+
     report = RLMFinalReport(verdict="partial", reproduction_summary="C4 test")
 
     # Patch recompute_calibration to verify it is called.
