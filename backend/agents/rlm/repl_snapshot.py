@@ -151,7 +151,26 @@ class ReplSnapshotWriter:
             "corpus_ref": _CORPUS_REF,
         }
 
-        blob = json.dumps(snapshot, default=str, indent=2)
+        try:
+            blob = json.dumps(snapshot, default=str, indent=2)
+        except ValueError:
+            # A REPL variable holds a circular reference (e.g. a dict/list that
+            # contains itself); json can't encode cycles even with default=str.
+            # Break cycles path-wise and retry — snapshotting is observability and
+            # must never raise (the 2026-05-30 SDAR run logged this 6×/run).
+            def _decycle(o, _seen=()):
+                if isinstance(o, dict):
+                    if id(o) in _seen:
+                        return "<circular ref>"
+                    seen = (*_seen, id(o))
+                    return {k: _decycle(v, seen) for k, v in o.items()}
+                if isinstance(o, (list, tuple)):
+                    if id(o) in _seen:
+                        return "<circular ref>"
+                    seen = (*_seen, id(o))
+                    return [_decycle(v, seen) for v in o]
+                return o
+            blob = json.dumps(_decycle(snapshot), default=str, indent=2)
         blob = redact_corpus(blob, self._sentinels)
 
         dest = self._iterations_dir / f"iteration_{index:04d}.json"
