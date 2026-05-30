@@ -47,6 +47,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -58,6 +60,66 @@ from backend.services.context.workspace.tools.interface import WorkspaceToolErro
 
 
 logger = logging.getLogger(__name__)
+
+
+def _bundled_claude_child_pids() -> set[int]:
+    """Return PIDs of bundled-claude subprocesses descended from this process.
+
+    BUG-NEW-044 helper: ``claude_agent_sdk`` spawns its bundled CLI via
+    ``asyncio.create_subprocess_exec``; the subprocess is internal to the SDK
+    and not exposed to callers. To kill a wedged child after a timeout we
+    discover it by walking child PIDs and matching the bundled-binary path.
+
+    Uses stdlib ``pgrep -P`` (recursive via two-pass walk) — no psutil
+    dependency. Fail-soft: returns an empty set on any error, since the
+    caller only uses this for best-effort cleanup.
+    """
+    try:
+        my_pid = os.getpid()
+        # Recursively walk descendants: BFS so we get every level (the SDK
+        # subprocess can itself spawn workers).
+        descendants: set[int] = set()
+        frontier = {my_pid}
+        for _ in range(8):  # bound depth to prevent runaway
+            if not frontier:
+                break
+            next_frontier: set[int] = set()
+            for parent in frontier:
+                try:
+                    out = subprocess.run(
+                        ["pgrep", "-P", str(parent)],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    continue
+                for line in out.stdout.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        child = int(line)
+                    except ValueError:
+                        continue
+                    if child in descendants or child == my_pid:
+                        continue
+                    descendants.add(child)
+                    next_frontier.add(child)
+            frontier = next_frontier
+        # Filter to bundled-claude only by checking COMM.
+        bundled: set[int] = set()
+        for pid in descendants:
+            try:
+                out = subprocess.run(
+                    ["ps", "-p", str(pid), "-o", "command="],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if "claude_agent_sdk/_bundled/claude" in out.stdout:
+                    bundled.add(pid)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+        return bundled
+    except Exception:  # noqa: BLE001 — best-effort discovery
+        return set()
 
 # Default budgets — chosen so a typical research-paper variable (~80k
 # chars after pymupdf extraction) lands in a single L1 chunk on a
@@ -510,17 +572,31 @@ class ClaudeLlmClient:
         """
         import asyncio
         import concurrent.futures
+        import os
+        import signal
+        import subprocess
+        import time
 
-        # Per-completion hard cap. A single text completion is seconds; even a
-        # large prompt plus 429 backoff stays well under this. The cap exists so
-        # a wedged SDK call (e.g. the transport.close() futex hang, Defect 2)
-        # returns empty and lets the RLM loop continue, instead of blocking the
-        # whole run forever — future.result() otherwise has NO timeout, so a
-        # single hung call would wedge the entire reproduction (observed
-        # 2026-05-29). The worker thread is abandoned via shutdown(wait=False).
-        _timeout_s = 1200.0
+        # BUG-NEW-044 (2026-05-29): The per-call cap.
+        #
+        # Successful sub-RLM calls in production were 1–7 min; 10 min is the
+        # generous-but-defensible cap. Lowered from 1200s (2026-05-22) after a
+        # 2026-05-29 SDAR run wedged for 70+ min on a half-open TCP socket to
+        # api.anthropic.com that ``claude_agent_sdk``'s bundled CLI never
+        # timed out on its own (macOS kernel TCP keepalive default is 2h,
+        # process state ``RN``, 0.07% CPU, ``kevent64`` blocked forever).
+        # Lowering the cap to 600s gets the run unstuck inside 10 min instead.
+        _timeout_s = 600.0
 
         coro_factory = lambda: self._async_complete(system=system, user=user)
+
+        # BUG-NEW-044: Snapshot bundled-claude children BEFORE the call so we
+        # can identify the wedged subprocess afterwards. ``ex.shutdown(wait=
+        # False)`` does NOT kill the asyncio.run worker thread or its spawned
+        # subprocess — and Python threads aren't killable from outside. So
+        # without explicit SIGKILL the wedged ``claude`` child sits in
+        # ``kevent64`` holding the OAuth slot for hours.
+        _pre_pids = _bundled_claude_child_pids()
 
         ex = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rlm-query-sdk-worker"
@@ -530,12 +606,30 @@ class ClaudeLlmClient:
             try:
                 text, usage = future.result(timeout=_timeout_s)
             except concurrent.futures.TimeoutError:
+                # BUG-NEW-044: kill the wedged subprocess BEFORE returning,
+                # so the next call gets a clean slot. Diff post-snapshot
+                # against pre to find NEW children spawned by this call.
+                _post_pids = _bundled_claude_child_pids()
+                _wedged = _post_pids - _pre_pids
+                _killed = []
+                for pid in _wedged:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        _killed.append(pid)
+                    except (OSError, ProcessLookupError):
+                        pass
                 logger.warning(
-                    "rlm_query: SDK completion exceeded %.0fs — abandoning the "
-                    "worker thread and returning empty so the run continues "
-                    "instead of wedging.",
+                    "rlm_query: SDK completion exceeded %.0fs — SIGKILL'd "
+                    "%d wedged bundled-claude subprocess(es) (pids=%s) and "
+                    "returning empty so the run continues instead of "
+                    "wedging.",
                     _timeout_s,
+                    len(_killed),
+                    _killed,
                 )
+                # Brief settle so the OS reaps the zombies before the next
+                # call snapshots children.
+                time.sleep(0.2)
                 return ""
             self._last_usage = usage
             return text

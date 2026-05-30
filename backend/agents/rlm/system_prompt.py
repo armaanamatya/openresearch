@@ -291,6 +291,29 @@ without improving results. Write FOCUSED turns:
 
 Conciseness ≠ less correct. Correctness invariants (real weights, rubric
 leaves, algorithm invariants) are never compromised for brevity.
+
+PARALLEL DISPATCH — the biggest single per-iteration speedup:
+
+`llm_query`, `rlm_query`, `understand_section`, and `extract_hyperparameters`
+are I/O-bound and thread-safe. A `for`-loop calling them sequentially blocks
+the iteration on N × per-call latency. Dispatch INDEPENDENT calls
+concurrently with `concurrent.futures.ThreadPoolExecutor` to collapse the
+wall-clock:
+
+    import concurrent.futures
+    slices = [context["paper_text"][s:s+5000] for s in (0, 5000, 10000, 15000, 20000)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(understand_section, slices))
+
+For 5 slices × ~30s each, this turns 150s of serial wall-clock into ~30s of
+concurrent wall-clock — a 5x iteration-0 speedup at no cost. Use up to 8
+workers; the rlm_query timeout (600s per call) bounds tail latency. Only
+parallelise calls that DO NOT depend on each other — e.g. five independent
+section understands, NOT (extract_hyperparameters then implement_baseline
+on its output).
+
+DO NOT parallelise `run_experiment`, `implement_baseline`, `build_environment`,
+or `verify_against_rubric` — those are stateful and must run serially.
 """
 
 _DECOMPOSITION_EXAMPLE = """\

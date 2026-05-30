@@ -313,7 +313,7 @@ class LiveRunState(BaseModel):
     gpuMode: GpuMode | None = None
     model: ModelChoice | None = None
     status: RunStatus
-    sourceKind: Literal["workspace_fixture", "uploaded_pdf"] | None = None
+    sourceKind: Literal["workspace_fixture", "uploaded_pdf", "arxiv", "doi", "other"] | None = None
     sourceLabel: str | None = None
     sourceNote: str | None = None
     sourcePdf: SourcePdfArtifact | None = None

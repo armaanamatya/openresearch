@@ -29,7 +29,12 @@ from rlm.core.types import ModelUsageSummary, UsageSummary
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_S = 1800.0  # 30 minutes per completion — bounded
+_DEFAULT_TIMEOUT_S = 600.0  # 10 min per completion — aligned with rlm_query.py
+# BUG-NEW-044 (2026-05-29): lowered from 1800s after a half-open-TCP wedge
+# on api.anthropic.com left a bundled-claude child in kevent64 for 70+ min.
+# 600s matches ClaudeLlmClient's per-call cap in rlm_query.py — the kill
+# path lives in rlm_query.py:_bundled_claude_child_pids; this ceiling
+# trips first only if a caller bypasses ClaudeLlmClient directly.
 
 
 class ClaudeOauthClient(BaseLM):
