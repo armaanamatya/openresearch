@@ -49,6 +49,15 @@ status snapshot (`demo_status.json`), per-iteration checkpoints (`rlm_state/`),
 `experiment_runs.jsonl`, the reproduced `code/`, and Hermes audit artifacts.
 SQLite (`REPROLAB_DATABASE_URL`) is the event/persistence store.
 
+**Sandbox prerequisite (non-obvious):** the `build_environment` primitive does a
+*local* `docker build` for every sandbox except `--sandbox local` — **including
+`--sandbox runpod`, the repo default**. So the local Docker daemon
+(OrbStack / Docker Desktop) must be up even when the experiment will execute on a
+remote RunPod GPU pod; if it is down, the run fails at `build_environment` with
+`backend_unavailable` before reaching the pod. The full sandbox×prerequisite
+matrix, the run-stage failure map, and troubleshooting live in
+`docs/runbooks/running-the-project.md`.
+
 ## Paper ingestion
 
 `ResolvingParser` (`backend/services/ingestion/parser/resolving_parser.py`)

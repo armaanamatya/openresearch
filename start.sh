@@ -110,6 +110,25 @@ else
     echo "[start.sh] Runpod preflight not required for sandbox=${REPROLAB_DEFAULT_SANDBOX}."
 fi
 
+# 2b. Docker daemon preflight. build_environment does a LOCAL `docker build` for
+# every sandbox except `local` (including the runpod default — the locally-built
+# image is unused on the pod, but the build still requires a live daemon). A down
+# daemon makes runs fail at build_environment with backend_unavailable, so surface
+# it at startup rather than mid-run. Warn (don't refuse): a per-run --sandbox local
+# override needs no Docker, and the dashboard can outlive a daemon restart.
+if [[ "${REPROLAB_DEFAULT_SANDBOX}" != "local" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[start.sh] WARNING: 'docker' CLI not found — runs with sandbox in {docker,runpod,auto} will fail at build_environment. Install OrbStack/Docker, or use --sandbox local."
+    elif ! docker info >/dev/null 2>&1; then
+        echo "[start.sh] WARNING: Docker daemon not reachable (sandbox=${REPROLAB_DEFAULT_SANDBOX})."
+        echo "[start.sh]          build_environment runs a LOCAL docker build for every sandbox except 'local' —"
+        echo "[start.sh]          INCLUDING runpod — so runs will fail with backend_unavailable until it is up."
+        echo "[start.sh]          Start OrbStack/Docker Desktop (verify: 'docker info'), or run with --sandbox local."
+    else
+        echo "[start.sh] Docker daemon reachable."
+    fi
+fi
+
 # 3. Boot the API.
 # --timeout-graceful-shutdown bounds how long a wedged in-flight SSE stream can
 # delay SIGTERM shutdown (uvicorn waits indefinitely with none set).

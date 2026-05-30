@@ -94,6 +94,12 @@ After installing, make sure Docker is running:
 docker run hello-world
 ```
 
+> **Docker is required even for RunPod runs.** The repo defaults to `--sandbox runpod`,
+> but `build_environment` still does a *local* `docker build` for every sandbox except
+> `--sandbox local`. If the Docker daemon is down, runs fail at `build_environment`
+> (`backend_unavailable`) before reaching the GPU pod. Keep OrbStack/Docker Desktop running,
+> or use `--sandbox local`. Details + the full sandbox matrix: `docs/runbooks/running-the-project.md`.
+
 Recommended Docker Desktop settings:
 - **Resources:** At least 4 CPUs, 8 GB RAM allocated to Docker
 - **Disk:** At least 30 GB available for images and containers
