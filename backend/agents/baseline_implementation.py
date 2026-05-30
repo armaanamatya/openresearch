@@ -1809,6 +1809,13 @@ def _compute_constraint_guidance(
             "  parallel). Enable gradient_checkpointing BEFORE the FSDP wrap. Detect\n"
             "  torch.cuda.device_count() and shard accordingly; keep a single-GPU\n"
             "  fallback for smoke. Use vLLM tensor-parallel for generation as needed.\n"
+            "  RANK-GUARD ALL ONE-TIME SETUP (critical — torchrun runs the WHOLE\n"
+            "  script in EVERY rank): pip installs, dataset/model downloads, env\n"
+            "  bootstrapping (e.g. `pip install alfworld`, `alfworld-download`,\n"
+            "  game-file loading) must run on LOCAL_RANK 0 ONLY, then `dist.barrier()`\n"
+            "  so other ranks wait and reuse the shared cache. Running these in all\n"
+            "  ranks concurrently deadlocks/thrashes on the pip lock + data dir and\n"
+            "  hangs the run before training (the 2026-05-30 4-rank ALFWorld hang).\n"
         )
     else:  # auto
         guidance += (
