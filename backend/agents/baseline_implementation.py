@@ -1035,6 +1035,15 @@ _EAGER_METRICS_BLOCK = (
     "  write_metrics(metrics)         # flush after BN finishes\n"
     "  ...\n"
     "Always write atomically (tempfile + os.replace) so a kill mid-write cannot corrupt the file.\n"
+    "TERMINAL FLUSH IS MANDATORY (2026-05-30): the incremental writes are for liveness, but the "
+    "metrics.json present AT RUN END is what the rubric grades. A final metrics.json with a "
+    "NON-TERMINAL status (`running`/`pending`/`started`/…) OR with empty `per_model[<model>]` "
+    "entries is treated as a FAILED run (failure_class=incomplete_metrics), NOT partial credit — "
+    "it measured nothing the grader can read, so eval/result/execution score ~0. Before the "
+    "script exits you MUST (a) set a TERMINAL status (e.g. `completed` / `ok`), and (b) populate "
+    "`per_model[<model>]` with the MEASURED eval metric (e.g. accuracy) plus reward/loss for "
+    "every model you actually ran. Never leave a `status:\"running\"` placeholder or an empty "
+    "`{}` per-model entry as the final state.\n"
 )
 
 def _resolve_data_root() -> str:
