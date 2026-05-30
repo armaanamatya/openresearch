@@ -602,9 +602,9 @@ def test_stamp_demo_status_advances_updatedat(tmp_path):
 Run: `.venv/bin/python -m pytest tests/agents/rlm/test_subcall_stall_detector.py tests/agents/rlm/test_demo_status_freshness.py tests/ -k "sse_bridge or run_watchdog" -q`
 Expected: PASS.
 
-- [ ] **Step 10: Wire Phase 1's stall sink to `emit` (defense in depth)**
+- [x] **Step 10: Wire Phase 1's stall sink to `emit` — DEFERRED (rationale recorded).**
 
-Thread `emit` into the sub-backend client so a Phase-1 kill also emits the event: in `claude_oauth_client.py`, accept an optional `stall_event_sink` and pass it to `ClaudeLlmClient(...)` (line 111); in `run.py`/`_oauth_backend_patch.py` where `ClaudeOauthClient` is built, pass `stall_event_sink=emit`. (If the construction site lacks `emit`, skip — the Phase-2 poller already covers the dashboard signal; note this in the commit.)
+Decision (2026-05-30): NOT wired in this commit. `ClaudeOauthClient`/`ClaudeLlmClient` are built by rlm's backend factory (`_oauth_backend_patch.get_client`) from `backend_kwargs` with no `emit` in scope; reaching it needs either a thread-local/contextvar emit (uncertain propagation across rlm's sub-call worker threads) or an invasive factory change. The **Phase-2 poller is the robust primary signal** and uniquely handles the case that matters most — when Phase 1's read-idle degrades to the 600s backstop (advisor concern #2), the poller still emits `sub_rlm_stalled` at ~120s. The only gap left open: a read-idle stall that Phase 1 resolves cleanly at ~120s shows on the dashboard as a normal `sub_rlm_complete` (the `stall_event_sink` hook remains available to close this later via a contextvar emit). Tracked as a follow-up, not blocking.
 
 - [ ] **Step 11: Commit**
 

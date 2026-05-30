@@ -50,6 +50,14 @@ export interface SubRlmCompleteEvent {
   error: string | null;
 }
 
+export interface SubRlmStalledEvent {
+  event: "sub_rlm_stalled";
+  timestamp: string;
+  depth: number;
+  model: string;
+  idle_seconds: number;
+}
+
 export interface RunCompleteEvent {
   event: "run_complete";
   timestamp: string;
@@ -268,6 +276,7 @@ export const RLM_EVENT_TYPES = [
   "primitive_call",
   "sub_rlm_spawned",
   "sub_rlm_complete",
+  "sub_rlm_stalled",
   "run_complete",
   "candidate_proposed",
   "candidate_outcome",
@@ -292,6 +301,7 @@ export type RlmDashboardEvent =
   | PrimitiveCallEvent
   | SubRlmSpawnedEvent
   | SubRlmCompleteEvent
+  | SubRlmStalledEvent
   | RunCompleteEvent
   | CandidateProposedEvent
   | CandidateOutcomeEvent

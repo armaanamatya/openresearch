@@ -1001,11 +1001,41 @@ def _update_cost_summary_loop(
                 except Exception:  # noqa: BLE001
                     existing = {}
             existing["cost_summary"] = summary
+            # FM-005: advance the top-level liveness stamp every interval so a
+            # content-based staleness check (UI / stale-run detectors) reads a
+            # live run as fresh instead of false-stale (it was previously written
+            # only at lifecycle transitions).
+            existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
             tmp = status_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             os.replace(tmp, status_path)
         except Exception:  # noqa: BLE001 — cost surfacing must never crash the run
             logger.debug("cost_summary_loop: update failed (will retry)", exc_info=True)
+
+
+def _stamp_demo_status_updated(project_dir: Path) -> None:
+    """Advance ``demo_status.json::updatedAt`` to now (FM-005 liveness stamp).
+
+    Used by the sub-call stall poller so ``updatedAt`` also moves the moment a
+    stall is detected, independent of the 30s cost-loop cadence. Fail-soft —
+    never raises into the run.
+    """
+    try:
+        status_path = project_dir / "demo_status.json"
+        if not status_path.exists():
+            return
+        try:
+            existing = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(existing, dict):
+            return
+        existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        tmp = status_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        os.replace(tmp, status_path)
+    except Exception:  # noqa: BLE001 — liveness stamp must never crash the run
+        logger.debug("_stamp_demo_status_updated: failed", exc_info=True)
 
 
 def _parse_gpu_device_ids() -> tuple[str, ...]:
@@ -1443,6 +1473,30 @@ async def run_pipeline_rlm(
             }
         ]
 
+    # Phase 2 (FM-003/006): track open depth>=1 sub-calls so a wedged sub-RLM
+    # (a sub_rlm_spawned with no matching sub_rlm_complete) surfaces as a
+    # sub_rlm_stalled event within the poll interval instead of silently for
+    # 70+ min. The tracker wraps the existing rlm subcall callbacks; a daemon
+    # poller (below) calls check_once(). REPROLAB_STALL_DETECT_S=0 disables it.
+    from backend.agents.rlm.sse_bridge import SubcallTracker
+
+    _stall_after_s = float(os.environ.get("REPROLAB_STALL_DETECT_S", "120") or "120")
+    _subcall_tracker = (
+        SubcallTracker(emit=emit, stall_after_s=_stall_after_s) if _stall_after_s > 0 else None
+    )
+    _base_on_subcall_start = make_on_subcall_start(emit)
+    _base_on_subcall_complete = make_on_subcall_complete(emit)
+
+    def _wrapped_on_subcall_start(depth: int, model: str, prompt_preview: str) -> None:
+        if _subcall_tracker is not None:
+            _subcall_tracker.on_start(depth, model, prompt_preview)
+        _base_on_subcall_start(depth, model, prompt_preview)
+
+    def _wrapped_on_subcall_complete(depth: int, model: str, duration: float, error: Any) -> None:
+        if _subcall_tracker is not None:
+            _subcall_tracker.on_complete(depth, model, duration, error)
+        _base_on_subcall_complete(depth, model, duration, error)
+
     rlm = RLM(
         backend=root_model.rlm_backend,
         backend_kwargs=root_model.backend_kwargs,
@@ -1459,8 +1513,8 @@ async def run_pipeline_rlm(
         custom_sub_tools={},                       # sub-calls navigate text, not primitives
         custom_system_prompt=system_prompt,
         logger=rlm_logger,
-        on_subcall_start=make_on_subcall_start(emit),
-        on_subcall_complete=make_on_subcall_complete(emit),
+        on_subcall_start=_wrapped_on_subcall_start,
+        on_subcall_complete=_wrapped_on_subcall_complete,
     )
 
     # 10. Arm the wall-clock backstop, then 11. run .completion() on a worker thread.
@@ -1470,6 +1524,21 @@ async def run_pipeline_rlm(
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
     )
+
+    # Phase 2: daemon poller drives the sub-call stall detector + advances the
+    # demo_status liveness stamp. Defined unconditionally so the finally can
+    # always .set() it; the thread only starts when the tracker is enabled.
+    _stall_poller_stop = threading.Event()
+    if _subcall_tracker is not None:
+        def _poll_subcall_stalls() -> None:
+            while not _stall_poller_stop.wait(min(_stall_after_s, 30.0)):
+                _subcall_tracker.check_once()
+                _stamp_demo_status_updated(project_dir)
+        threading.Thread(
+            target=_poll_subcall_stalls,
+            name=f"subcall-stall-{project_id}",
+            daemon=True,
+        ).start()
 
     # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
     # while the latest rubric score is below target AND the iteration floor
@@ -1605,6 +1674,8 @@ async def run_pipeline_rlm(
         # Watchdog is None when no wall-clock ceiling was requested.
         if watchdog is not None:
             watchdog.cancel()
+        # Stop the sub-call stall poller (Phase 2).
+        _stall_poller_stop.set()
         # Stop the cost-summary background thread.
         _cost_stop_event.set()
         _cost_thread.join(timeout=5.0)

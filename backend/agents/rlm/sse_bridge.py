@@ -14,9 +14,13 @@ All public functions and classes in this module enforce that invariant.
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from rlm.core.types import RLMIteration
 from rlm.logger.rlm_logger import RLMLogger
@@ -716,6 +720,72 @@ def build_run_warning_event(
     }
 
 
+def build_sub_rlm_stalled_event(*, depth: int, model: str, idle_seconds: float) -> dict:
+    """Build a ``sub_rlm_stalled`` dashboard event (Phase 2 / FM-003/006).
+
+    Emitted when a depth>=1 sub-call has been open (``sub_rlm_spawned`` with no
+    matching ``sub_rlm_complete``) for longer than the stall window — the exact
+    shape of the SDAR wedge. Carries no corpus data; passes the SSE egress like
+    any other dashboard event.
+    """
+    return {
+        "event": "sub_rlm_stalled",
+        "timestamp": _now_iso(),
+        "depth": depth,
+        "model": model,
+        "idle_seconds": float(idle_seconds),
+    }
+
+
+class SubcallTracker:
+    """Track open depth>=1 sub-calls; emit ``sub_rlm_stalled`` when one wedges.
+
+    Wraps the ``rlm`` ``on_subcall_start`` / ``on_subcall_complete`` callbacks. A
+    daemon poller (run.py) calls :meth:`check_once` every poll interval; any open
+    sub-call older than ``stall_after_s`` emits a single ``sub_rlm_stalled`` event
+    (deduplicated per open call so a long wedge does not spam). Thread-safe and
+    fail-soft — a failing ``emit`` never propagates into the run.
+
+    Keyed by ``depth`` because the rlm subcall callbacks identify a sub-call by its
+    recursion depth; ReproLab runs one depth>=1 sub-call at a time per worker, so a
+    depth collision (start before the prior same-depth call completed) simply
+    restarts that depth's clock, which is the desired behavior.
+    """
+
+    def __init__(self, emit: Callable[[dict], None], stall_after_s: float = 120.0) -> None:
+        self._emit = emit
+        self._stall_after_s = stall_after_s
+        self._open: dict[int, tuple[float, str]] = {}  # depth -> (start_monotonic, model)
+        self._flagged: set[int] = set()
+        self._lock = threading.Lock()
+
+    def on_start(self, depth: int, model: str, prompt_preview: str) -> None:
+        with self._lock:
+            self._open[depth] = (time.monotonic(), model)
+            self._flagged.discard(depth)
+
+    def on_complete(self, depth: int, model: str, duration: float, error: object) -> None:
+        with self._lock:
+            self._open.pop(depth, None)
+            self._flagged.discard(depth)
+
+    def check_once(self) -> None:
+        """Poll open sub-calls; emit one ``sub_rlm_stalled`` per newly-stale call."""
+        now = time.monotonic()
+        to_flag: list[tuple[int, str, float]] = []
+        with self._lock:
+            for depth, (start, model) in self._open.items():
+                idle = now - start
+                if idle >= self._stall_after_s and depth not in self._flagged:
+                    self._flagged.add(depth)
+                    to_flag.append((depth, model, idle))
+        for depth, model, idle in to_flag:
+            try:
+                self._emit(build_sub_rlm_stalled_event(depth=depth, model=model, idle_seconds=idle))
+            except Exception:  # noqa: BLE001 — observability never blocks
+                logger.debug("SubcallTracker: emit failed", exc_info=True)
+
+
 __all__ = [
     "RUBRIC_AREA_PARTIAL_THRESHOLD",
     "RUBRIC_AREA_PASS_THRESHOLD",
@@ -732,6 +802,8 @@ __all__ = [
     "build_run_warning_event",
     "build_sub_rlm_complete_event",
     "build_sub_rlm_spawned_event",
+    "build_sub_rlm_stalled_event",
+    "SubcallTracker",
     "make_emit",
     "make_on_subcall_complete",
     "make_on_subcall_start",
