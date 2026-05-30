@@ -265,7 +265,17 @@ def _reconcile_verdict_against_evidence(
 
 
 def _has_experiment_evidence(project_dir: Path) -> bool:
-    """True iff ``experiment_runs.jsonl`` has any entry with a non-empty metrics dict.
+    """True iff ``experiment_runs.jsonl`` has a row that BOTH succeeded AND
+    produced non-empty metrics.
+
+    Tightened 2026-05-30: a *failed* experiment that emitted metrics-like junk
+    (``success != True``) is NOT evidence — only a row with ``success == True``
+    AND a non-empty ``metrics`` dict counts. Without the success check, a crashed
+    experiment that wrote partial/garbage numbers could rescue a ``partial`` /
+    ``reproduced`` verdict. ``success`` here means the experiment *executed
+    cleanly* (``classify_failure`` returns ``"ok"`` for ``success``), not that it
+    hit the paper's targets — so a low-but-real result still counts; a crash does
+    not.
 
     Mirrors ``run.py:_partial_evidence_from_experiment_runs`` (kept local to avoid a
     circular import). Fail-soft: any I/O / parse error returns False.
@@ -282,7 +292,11 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            metrics = entry.get("metrics") if isinstance(entry, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("success") is not True:
+                continue
+            metrics = entry.get("metrics")
             if isinstance(metrics, dict) and metrics:
                 return True
     except OSError:
