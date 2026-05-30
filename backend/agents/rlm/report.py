@@ -268,14 +268,20 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     """True iff ``experiment_runs.jsonl`` has a row that BOTH succeeded AND
     produced non-empty metrics.
 
-    Tightened 2026-05-30: a *failed* experiment that emitted metrics-like junk
-    (``success != True``) is NOT evidence — only a row with ``success == True``
-    AND a non-empty ``metrics`` dict counts. Without the success check, a crashed
-    experiment that wrote partial/garbage numbers could rescue a ``partial`` /
-    ``reproduced`` verdict. ``success`` here means the experiment *executed
-    cleanly* (``classify_failure`` returns ``"ok"`` for ``success``), not that it
-    hit the paper's targets — so a low-but-real result still counts; a crash does
-    not.
+    Tightened 2026-05-30: a row only counts when ``success == True`` AND
+    ``metrics`` is a non-empty dict. ``success`` is ``run_experiment``'s own flag
+    in its tri-state outcome:
+      * ``success=True``                 → executed cleanly ("ok")  → COUNTS
+      * ``success=False`` + metrics      → tri-state "partial"      → does NOT count
+      * ``success=False`` + no metrics   → "failed"                 → does NOT count
+    NOTE the deliberate strictness: a ``success=False`` run that produced *real
+    partial* metrics is still graded by the leaf scorer (that "partial evidence"
+    is real for *scoring*), but it does NOT by itself license a ``partial`` /
+    ``reproduced`` VERDICT here — only a cleanly-executed run with real metrics
+    does. This is what the verdict gate was asked to enforce (a crashed run that
+    emitted metrics-like junk must not rescue a success-ish verdict). The gate
+    only fires when ``baseline_metrics`` is ALSO empty, so a run whose metrics the
+    root copied into ``baseline_metrics`` is unaffected.
 
     Mirrors ``run.py:_partial_evidence_from_experiment_runs`` (kept local to avoid a
     circular import). Fail-soft: any I/O / parse error returns False.
