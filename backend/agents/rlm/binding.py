@@ -512,6 +512,15 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             else:
                 # --- Phase 6 (Task 13): post-success supplemental event emission ---
                 _emit_supplemental(name, result, ctx, _emit_extra)
+                # --- Phase 8: union orientation outputs into the intra-run map ---
+                try:
+                    from backend.agents.rlm import context_map as _cmap
+                    _slice_hint = args[0] if args else None
+                    _cmap.record(ctx.project_dir, name, result,
+                                 slice_hint=_slice_hint,
+                                 iteration=getattr(ctx, "iteration", None))
+                except Exception:  # noqa: BLE001 — context map MUST NOT break the run
+                    pass
             return result
         finally:
             # Finalize the worker report if one was opened
