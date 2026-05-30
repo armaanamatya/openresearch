@@ -1867,6 +1867,14 @@ def _finalize(
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
+    # Phase 9: mine per-paper negative lessons from this run's experiment records
+    # (cross-run failure memory). Fail-soft, flag-gated (REPROLAB_NEGATIVE_LESSONS).
+    try:
+        from backend.agents.rlm import lesson_distiller as _ld
+        _ld.mine_lessons(project_dir, ctx.runs_root, ctx.arxiv_id, run_id=ctx.project_id)
+    except Exception:  # noqa: BLE001 — mining MUST NOT affect run teardown
+        logger.debug("run_pipeline_rlm: lesson mining failed", exc_info=True)
+
     # Write worker reports summary at run finalization
     try:
         from backend.agents.worker_reports import write_summary_report
