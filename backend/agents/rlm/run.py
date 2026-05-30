@@ -307,6 +307,19 @@ def _resolve_agent_runtime(
     """
     if runtime is not None:
         return runtime, None, "caller-supplied"
+
+    # Executor tier (REPROLAB_EXECUTOR): run the code-writing agent on a local Qwen
+    # (vLLM) instead of Sonnet to save Sonnet usage. Health-probed with graceful
+    # fallback to the default below when the endpoint is unset/unreachable.
+    try:
+        from backend.agents.rlm.executor import resolve_executor
+
+        _plan = resolve_executor()
+        if _plan is not None:
+            return _plan.runtime, _plan.model, f"executor:{_plan.label}"
+    except Exception as exc:  # noqa: BLE001 — never block on the optional tier
+        logger.warning("executor-tier resolution failed (%s); using default executor", exc)
+
     from backend.agents.runtime.factory import (
         has_provider_credentials,
         make_runtime,
