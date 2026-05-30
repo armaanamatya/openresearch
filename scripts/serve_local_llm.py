@@ -222,6 +222,7 @@ def _launch_vllm(
     port: int,
     api_key: str,
     child_env: dict[str, str],
+    enable_tools: bool = False,
 ) -> subprocess.Popen[bytes]:
     """Spawn the vLLM OpenAI-compatible API server and return the Popen handle."""
     cmd = [
@@ -237,6 +238,10 @@ def _launch_vllm(
         # boot. Fast, reliable startup; pair with the 'spawn' worker method above.
         "--enforce-eager",
     ]
+    if enable_tools:
+        # OpenAI-style function-calling — the executor tier drives an agentic
+        # Read/Write/Edit/Bash tool loop. Qwen2.5/3 use vLLM's hermes tool parser.
+        cmd += ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"]
     logger.info("serve_local_llm: launching vLLM: %s", " ".join(cmd))
     return subprocess.Popen(
         cmd,
@@ -382,6 +387,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "of THIS script, not when vLLM exits). Use for background/auto-start."
         ),
     )
+    parser.add_argument(
+        "--enable-tools",
+        action="store_true",
+        help=(
+            "Enable vLLM OpenAI function-calling (--enable-auto-tool-choice "
+            "--tool-call-parser hermes). Required when serving the model as the "
+            "agentic EXECUTOR (implement_baseline's Read/Write/Edit/Bash loop)."
+        ),
+    )
     return parser
 
 
@@ -489,6 +503,7 @@ def main() -> int:  # noqa: C901 (complexity is inherent to lifecycle management
         proc = _launch_vllm(
             model=model,
             tp=tp,
+            enable_tools=getattr(args, "enable_tools", False),
             host=host,
             port=port,
             api_key=api_key,
