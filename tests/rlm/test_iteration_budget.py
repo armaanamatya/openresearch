@@ -41,7 +41,7 @@ def _make_policy(
 ) -> ForcedIterationPolicy:
     captured: list[str] = refusals if refusals is not None else []
     budget_captured: list[str] = budget_msgs if budget_msgs is not None else []
-    return ForcedIterationPolicy(
+    _p = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
@@ -50,6 +50,13 @@ def _make_policy(
         max_rlm_iterations=max_rlm_iterations,
         on_budget_exceeded=lambda msg: budget_captured.append(msg),
     )
+    # BUG-NEW-046 (ported 2026-06-09): a policy with zero run_experiment calls
+    # now refuses FINAL_VAR unconditionally. These tests exercise OTHER policy
+    # dimensions, so mark one experiment as done (and advance the iteration so
+    # per-iteration repair state stays clean).
+    _p.record_run_experiment("ok")
+    _p.on_iteration_advance()
+    return _p
 
 
 # --- 1. Budget cap accepts at limit ---

@@ -1143,6 +1143,39 @@ _ENV_REPAIR_SYSTEM = (
 )
 
 
+def _normalize_runpod_from_line(dockerfile: str) -> str:
+    """Replace a hallucinated runpod/ base image tag with the configured one.
+
+    The root model sometimes constructs env_spec dicts with non-existent runpod
+    image tags (e.g. ``runpod/pytorch:1.12.1``).  When the FROM line references
+    any ``runpod/`` image that doesn't match the settings-configured
+    ``REPROLAB_RUNPOD_IMAGE``, swap it in.  Non-runpod FROM lines (e.g.
+    ``python:3.11-slim``) are left untouched — they're valid CPU images.
+    """
+    from backend.config import get_settings
+
+    configured = get_settings().runpod_image
+    lines = dockerfile.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.upper().startswith("ARG"):
+            continue
+        if stripped.upper().startswith("FROM "):
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[1].startswith("runpod/") and parts[1] != configured:
+                logger.warning(
+                    "build_environment: replacing hallucinated FROM %s "
+                    "with configured %s",
+                    parts[1],
+                    configured,
+                )
+                parts[1] = configured
+                lines[i] = " ".join(parts)
+                return "\n".join(lines)
+            break  # first FROM found and is fine (or non-runpod) — stop
+    return dockerfile
+
+
 def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     """Build the Docker image for `env_spec`, repairing the Dockerfile on failure.
 
@@ -1183,6 +1216,23 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
 
+    # RunPod sandbox: the pod pulls its base image from Docker Hub directly —
+    # a locally-built image is never pushed to a registry, so local Docker is
+    # unnecessary.  Short-circuit with the configured RunPod image so
+    # run_experiment can pass it to the RunPod backend (which uses
+    # self.image_name with higher priority anyway).  Dependencies from
+    # requirements.txt are installed on the pod via SSH bootstrap.
+    if _sb_key == "runpod":
+        from backend.config import get_settings as _get_settings
+        _runpod_image = _get_settings().runpod_image
+        return _with_outcome({
+            "ok": True,
+            "image_tag": _runpod_image,
+            "attempts": 0,
+            "skipped": True,
+            "note": f"runpod sandbox: pod pulls {_runpod_image} from Docker Hub; no local build needed",
+        }, PrimitiveOutcome.ok)
+
     import asyncio
     import concurrent.futures
     import hashlib
@@ -1220,6 +1270,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "failure_class": "dockerfile_invalid",
             "attempts": 0,
         }, PrimitiveOutcome.repairable)
+
+    # Normalize runpod/ FROM line (ported from feat/rlm-wedge-hardening
+    # 82e9806). The root model sometimes hallucinates a non-existent runpod
+    # image tag (e.g. runpod/pytorch:1.12.1). When sandbox_mode is "runpod",
+    # replace any runpod/ FROM reference with the settings-configured image
+    # to prevent manifest-not-found failures.
+    if _sb_key == "runpod":
+        dockerfile = _normalize_runpod_from_line(dockerfile)
 
     attempts, ok, tag, error = 0, False, "", ""
     try:
@@ -6464,6 +6522,9 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "optimizer, learning rate, batch size, epochs from a slice.",
     "detect_environment": "detect_environment(method_spec) -> dict — an "
         "EnvironmentSpec (dockerfile, python_version, framework, pip_packages). "
+        "The returned dockerfile already uses the correct base image for the "
+        "active sandbox (runpod/docker/local) — pass the result through to "
+        "build_environment unchanged; do NOT construct your own Dockerfile. "
         "`method_spec` is a (partial) PaperClaimMap dict with keys: "
         "core_contribution (str, required), claims (list of dicts — each with "
         "keys like method/dataset/metric/expected_result), metrics (list of "

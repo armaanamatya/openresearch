@@ -228,6 +228,13 @@ FORCED-ITERATION POLICY:
   A run that has not scored at all has done less work than one that scored 0.0.
   Remedy: call `run_experiment` → `verify_against_rubric` → THEN `FINAL_VAR`.
 
+  No-experiment check: `FINAL_VAR` is UNCONDITIONALLY refused (regardless of
+  iteration count) if `run_experiment` has never been called in this run.
+  Planning and implementing code is necessary but not sufficient — you MUST
+  actually execute the code via `run_experiment` at least once.
+  Remedy: `build_environment` → `run_experiment` → `verify_against_rubric` →
+  THEN `FINAL_VAR`.
+
   REPL error diagnosis: if you see a bare ``TypeError`` or other exception
   in REPL stderr, look at the full traceback above it for the file and line
   that actually failed — do NOT conclude that primitives are unavailable based

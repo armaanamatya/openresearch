@@ -207,6 +207,12 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
     with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
         # Simulate run_experiment call (records the repair attempt).
         wrapped["run_experiment"]["tool"]()
+        # In production the real run_experiment primitive also feeds the
+        # policy's experiment tracker (primitives.py: _fip.record_run_experiment)
+        # — the fake tool bypasses primitives, so mirror that here; without it
+        # the BUG-NEW-046 zero-experiments refusal (ported 2026-06-09) fires
+        # first and masks the repair refusal under test.
+        policy.record_run_experiment("repairable")
 
         # Simulate root calling FINAL_VAR immediately after the repairable outcome.
         with forced_iteration_policy(policy):

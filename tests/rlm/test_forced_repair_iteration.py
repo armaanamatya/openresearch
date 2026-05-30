@@ -45,7 +45,7 @@ def _make_policy(
     on_repair_refusal: Any = None,
 ) -> ForcedIterationPolicy:
     refusals: list[str] = []
-    return ForcedIterationPolicy(
+    _p = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
@@ -53,6 +53,13 @@ def _make_policy(
         on_refusal=lambda msg: refusals.append(msg),
         on_repair_refusal=on_repair_refusal,
     )
+    # BUG-NEW-046 (ported 2026-06-09): a policy with zero run_experiment calls
+    # now refuses FINAL_VAR unconditionally. These tests exercise OTHER policy
+    # dimensions, so mark one experiment as done (and advance the iteration so
+    # per-iteration repair state stays clean).
+    _p.record_run_experiment("ok")
+    _p.on_iteration_advance()
+    return _p
 
 
 # -----------------------------------------------------------------------

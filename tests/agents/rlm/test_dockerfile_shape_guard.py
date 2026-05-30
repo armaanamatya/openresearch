@@ -46,3 +46,62 @@ def test_build_environment_fails_fast_on_prose():
 
 def test_dockerfile_invalid_is_repairable():
     assert "dockerfile_invalid" in primitives._RUN_EXPERIMENT_REPAIRABLE_FAILURES
+
+
+# --- BUG-NEW-046: _normalize_runpod_from_line ---
+
+
+class TestNormalizeRunpodFromLine:
+    """Validate that hallucinated runpod/ image tags are replaced."""
+
+    def test_hallucinated_tag_is_replaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.agents.rlm.primitives import _normalize_runpod_from_line
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: type("S", (), {"runpod_image": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"})(),
+        )
+        dockerfile = "FROM runpod/pytorch:1.12.1\nRUN pip install numpy\n"
+        result = _normalize_runpod_from_line(dockerfile)
+        assert "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04" in result
+        assert "runpod/pytorch:1.12.1" not in result
+
+    def test_correct_tag_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.agents.rlm.primitives import _normalize_runpod_from_line
+        configured = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: type("S", (), {"runpod_image": configured})(),
+        )
+        dockerfile = f"FROM {configured}\nRUN pip install numpy\n"
+        result = _normalize_runpod_from_line(dockerfile)
+        assert result == dockerfile
+
+    def test_non_runpod_image_untouched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.agents.rlm.primitives import _normalize_runpod_from_line
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: type("S", (), {"runpod_image": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"})(),
+        )
+        dockerfile = "FROM python:3.11-slim\nRUN pip install numpy\n"
+        result = _normalize_runpod_from_line(dockerfile)
+        assert result == dockerfile
+
+    def test_from_with_as_stage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.agents.rlm.primitives import _normalize_runpod_from_line
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: type("S", (), {"runpod_image": "runpod/pytorch:2.1.0-correct"})(),
+        )
+        dockerfile = "FROM runpod/pytorch:wrong AS builder\nRUN pip install numpy\n"
+        result = _normalize_runpod_from_line(dockerfile)
+        assert "runpod/pytorch:2.1.0-correct AS builder" in result
+
+    def test_arg_before_from(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from backend.agents.rlm.primitives import _normalize_runpod_from_line
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: type("S", (), {"runpod_image": "runpod/pytorch:2.1.0-correct"})(),
+        )
+        dockerfile = "ARG BASE_TAG=latest\nFROM runpod/pytorch:bad-tag\nRUN echo hi\n"
+        result = _normalize_runpod_from_line(dockerfile)
+        assert "runpod/pytorch:2.1.0-correct" in result
