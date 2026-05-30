@@ -983,7 +983,11 @@ class RunpodBackend(RuntimeBackend):
             async with httpx.AsyncClient(
                 base_url=self.api_base_url,
                 headers=headers,
-                timeout=60,
+                # Phase 7e: granular timeout instead of a scalar 60s — a hung TCP
+                # connect now fails in 10s rather than consuming the full budget
+                # opaquely on a non-responding RunPod endpoint. Pod boot is bounded
+                # separately by _wait_for_pod_ssh's 900s deadline.
+                timeout=httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=5.0),
             ) as client:
                 response = await client.request(method, path, json=json)
                 response.raise_for_status()
@@ -1075,7 +1079,11 @@ class RunpodBackend(RuntimeBackend):
             async with httpx.AsyncClient(
                 base_url=self.api_base_url,
                 headers=headers,
-                timeout=60,
+                # Phase 7e: granular timeout instead of a scalar 60s — a hung TCP
+                # connect now fails in 10s rather than consuming the full budget
+                # opaquely on a non-responding RunPod endpoint. Pod boot is bounded
+                # separately by _wait_for_pod_ssh's 900s deadline.
+                timeout=httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=5.0),
             ) as client:
                 # Belt-and-suspenders: verify the pod's name still has our
                 # prefix (`reprolab-…`) before issuing the DELETE. If the
