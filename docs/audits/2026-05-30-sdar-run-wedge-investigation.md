@@ -8,6 +8,13 @@
 
 None of the three success criteria were met on any attempt this session.
 
+> **⚠️ CORRECTION (see §10).** Sections 1–7 below were written from a **single**
+> `sdk_multicall_smoke.py` observation and assert a *deterministic* "degrades after ~33
+> calls" wedge. Follow-up controlled experiments **disprove the determinism** (a re-run was
+> 60/60 OK; reaping found **0** orphaned children). The corrected diagnosis — a *recoverable,
+> non-deterministic* transient transport failure — and the shipped fix (bounded
+> retry-with-backoff) are in **§10–§11**. Read those first.
+
 ---
 
 ## 1. TL;DR — the causal chain
@@ -161,3 +168,104 @@ Run any with `env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY .venv/bin/python script
 - `scripts/diagnostics/sdk_heavy_smoke.py` — single heavy sonnet+thinking coding call, captures full `ResultMessage` (passes; `$0.08`).
 - `scripts/diagnostics/sdk_multicall_smoke.py` — **the reproduction**: N sequential `asyncio.run()` calls; degrades at call ~34. Adjust the loop bound to re-confirm.
 - `scripts/diagnostics/sdk_concurrent_smoke.py` — 5 concurrent children (passes).
+
+---
+
+## 10. ADDENDUM (2026-05-30, post-fix) — corrected diagnosis + shipped fix
+
+The §1–§7 conclusion ("the bundled-CLI transport **deterministically** degrades after
+~33 sequential calls") was based on a **single** observation of `sdk_multicall_smoke.py`.
+Follow-up controlled experiments **disprove the determinism**:
+
+| Experiment | Pacing | Reaped children | Result |
+|---|---|---|---|
+| `sdk_multicall_smoke.py` (run 1) | none | n/a | degraded at call **34** |
+| `sdk_reap_smoke.py` (reap-on-success) | ~1–4 s/call (pgrep walks) | **0 every call** | **50/50 OK** |
+| `sdk_multicall_smoke.py` (run 2) | none | n/a | **60/60 OK** |
+
+Two facts kill the original root cause:
+
+1. **`reaped == 0` on every call**, and **0 bundled children remain after** a 50-call run.
+   There is **no orphaned-child accumulation** on the success path — the
+   "orphaned-child wedge" framing for *this* failure is wrong. (`_kill_wedged_children`
+   on the stall path is still correct for genuine stalls; it just isn't this bug.)
+2. The unpaced control **did not reproduce** the degradation on re-run (60/60). A
+   call-count-deterministic resource limit would have re-fired at ~34. It didn't.
+
+**Corrected root cause:** the bundled-CLI OAuth transport returns a **recoverable**
+`API Error: Unable to connect to API (ConnectionRefused)`, which the SDK surfaces as a
+zero-text "success" `ResultMessage` and re-raises as
+`ProcessError("Claude Code returned an error result: success")`. What is **disproven** is
+the *deterministic post-N-calls* framing — the wedge is not a fixed call-count limit.
+
+**Caveat (do not over-harden):** all three experiments ran on a **clean, idle** box over
+~50–60 calls; the real failure was a **multi-hour** run under sustained bundled-CLI load
+across many iterations — a condition I have **not** reproduced. "Random blip" and "depends
+on pre-existing transport pressure" both fit the data, and the latter predicts a *worse*
+real-run outcome than these clean experiments. The `rlm_query.py` reaper comment notes a
+wedged bundled child once sat **"in kevent64 for 70+ min"**; if a wedge can last that long,
+a 56 s retry budget cannot ride it out. Treat the rerun as the real test (see §11).
+
+The real-run failures hurt because `implement_baseline` caught that exception and
+**harvested empty artifacts with no retry** → no `commands.json` → `run_experiment` never
+ran → `verdict=failed`. Bounded retry is the correct mitigation for the transient *class*
+regardless of which sub-hypothesis holds.
+
+### Shipped fix (durable, zero-API-cost, concurrency-safe)
+
+- **Bounded retry-with-backoff on the sub-agent surface** — `backend/agents/runtime/invoke.py`
+  `collect_agent_text` now retries the transient-transport signature
+  (`_is_transient_transport_error`: zero-text "success" / ConnectionRefused / `Unable to connect` /
+  `error_during_execution`) up to `REPROLAB_SUBAGENT_TRANSPORT_RETRIES` (default 2 → 3 attempts)
+  with exponential backoff `REPROLAB_SUBAGENT_TRANSPORT_BACKOFF_S * 2**(n-1)` (default 8→16→32 s).
+  Backoff sleeps in 5 s chunks pinging `on_event` so it never trips `implement_baseline`'s
+  900 s pre-emit stall watchdog. **Non-transient** errors (e.g. `error_max_turns`) propagate
+  immediately — no retry. Covers `implement_baseline`, `verify_against_rubric`,
+  `propose_improvements`. The high-concurrency **root navigation** path is deliberately
+  out of scope (it keeps its existing read-idle stall-sentinel; in-place reaping there
+  would kill concurrent siblings — see advisor note in the transcript).
+- **FIX-E observability** — `backend/agents/runtime/claude_runtime.py` now logs the SDK's
+  `is_error`/`api_error_status`/`subtype` on an error `ResultMessage`, so the HTTP status
+  (429/500/529) is visible in logs without spelunking `~/.claude` transcripts.
+- **ISSUE-1 guard** — `backend/cli.py` rejects a `--project-id` that does not match the
+  source-derived id (the only legitimate override mirrors it); an arbitrary value used to
+  break ingest three steps later with `UnknownProject`. The old runbook command
+  (`--project-id sdar_<ts>`) was the footgun; omit `--project-id` for arXiv runs.
+
+Tests: `tests/agents/runtime/test_invoke_transport_retry.py` (retry/raise/no-retry/disabled).
+
+**Fixes NOT shipped** (superseded by the corrected diagnosis): reap-on-success
+(proved useless — 0 children), FIX-A model swap (unnecessary — zero-cost retry suffices),
+FIX-C process-isolation (overkill for a transient blip), pacing/throttle (the control
+shows healthy runs don't need it).
+
+### Verified routing
+
+`backend/agents/baseline_implementation.py::run_with_sdk` (the real `implement_baseline`
+code-writing path) calls `collect_agent_text` at line 1937 and forwards `on_event`, so the
+retry-with-backoff is on the exact surface that failed — confirmed, not inferred.
+
+### Known minor gaps (non-blocking; tracked here, not fixed)
+
+- A failed attempt's partial token usage is **not** ledgered — cost accounting slightly
+  undercounts on retries.
+- `implement_baseline`'s finally-reaper runs after the primitive returns, **not between**
+  the in-loop retries. Acceptable under the transient diagnosis (the failed attempt's child
+  has already errored out); if lingering children ever reappear, this is the place to look.
+
+## 11. The rerun is the real test — failure signal
+
+The clean-box experiments cannot stand in for a multi-hour SDAR run. Define the signal:
+
+- **Pass:** the three criteria hold (`experiment_runs` row with `success==true` + non-empty
+  metrics, ≥1 `run_experiment` cost-ledger row, `final_report` verdict ≠ `failed`).
+- **Retry-budget-too-small:** the new log line
+  `collect_agent_text[baseline-implementation]: transient transport failure persisted across
+  N attempts — giving up` fires. That means the wedge outlasted the retry budget (default
+  8+16+32 ≈ 56 s). **Only then** does a much larger budget — or FIX-A (move the root off the
+  bundled CLI) — become necessary.
+
+**Hedge for this rerun without changing the shipped default:** the run env bumps
+`REPROLAB_SUBAGENT_TRANSPORT_RETRIES` / `REPROLAB_SUBAGENT_TRANSPORT_BACKOFF_S` so the retry
+can ride a longer wedge; the committed default stays modest (2 retries / 8 s base). Still
+zero-API-cost.
