@@ -101,14 +101,30 @@ def test_value_cap_refuses_new_keeps_existing(tmp_path, monkeypatch):
     assert [v["value"] for v in entry["values"]] == list(range(8))  # earliest kept
 
 
-def test_byte_ceiling_rolls_back_oversized_mutation(tmp_path, monkeypatch):
+def test_byte_ceiling_drops_overflow_keeps_prior(tmp_path, monkeypatch):
     _on(monkeypatch)
     cm.record(tmp_path, "extract_hyperparameters", {"batch_size": 8}, slice_hint="x")
     before = (tmp_path / "rlm_state" / "context_map.json").read_text()
-    huge = {"name": "x" * 5000}
+    # A single value larger than the whole budget — must be dropped, prior stands.
+    huge = {"name": "x" * (cm._MAX_BYTES + 1000)}
     cm.record(tmp_path, "understand_section", {"datasets": [huge]}, slice_hint="big")
     after = (tmp_path / "rlm_state" / "context_map.json").read_text()
-    assert before == after  # oversized mutation rolled back; prior object stands
+    assert before == after  # overflow value dropped; the small prior entry stays
+
+
+def test_byte_ceiling_keeps_early_values_drops_late_overflow(tmp_path, monkeypatch):
+    """Incremental ceiling: a small valuable value lands even when a later value
+    in the SAME call would overflow — not an all-or-nothing rollback."""
+    _on(monkeypatch)
+    big = {"name": "y" * (cm._MAX_BYTES + 1000)}
+    # datasets is recorded before hardware_clues (valuable-first order); put the
+    # small dataset first and an oversized hardware clue second.
+    cm.record(tmp_path, "understand_section",
+              {"datasets": [{"name": "ALFWorld"}], "hardware_clues": [big]}, slice_hint="s")
+    entries = cm.read(tmp_path)["entries"]
+    keys = {e["key"] for e in entries}
+    assert "understand_section:datasets" in keys           # small early value landed
+    assert "understand_section:hardware_clues" not in keys  # oversized late value dropped
 
 
 def test_concurrent_writes_do_not_lose_values(tmp_path, monkeypatch):

@@ -37,9 +37,16 @@ _FILENAME: Final[str] = "context_map.json"
 _ENABLE_ENV_VAR: Final[str] = "REPROLAB_CONTEXT_MAP"
 
 # Soft caps (deterministic, refuse-new-keep-existing) + hard byte ceiling.
+# _MAX_BYTES is 8 KB, NOT the ~1.5 KB a PEEK-style prompt-injected snapshot would
+# use: this map is a ``read_context_map()`` RETURN VALUE, never injected into the
+# prompt, so its size never touches the prompt cache. The only cost of a larger
+# cap is REPL tokens when the root reads it — far cheaper than the rlm_query
+# re-derivation it replaces. A measured full SDAR orientation pass (3 model sizes
+# × 3 environments) is ~3.6 KB; 8 KB holds it with >2× headroom so the union
+# accumulation isn't silently truncated at the byte layer.
 _MAX_ENTRIES: Final[int] = 40
 _MAX_VALUES_PER_ENTRY: Final[int] = 8
-_MAX_BYTES: Final[int] = 2048
+_MAX_BYTES: Final[int] = 8192
 
 _lock = threading.Lock()
 
@@ -158,9 +165,6 @@ def _union(obj: dict, primitive: str, key: str, field: str,
     if len(values) >= _MAX_VALUES_PER_ENTRY:
         logger.debug("context_map: value cap (%d) reached for %s, refusing value",
                      _MAX_VALUES_PER_ENTRY, key)
-        # drop the just-created empty entry so a full map never grows empties
-        if not values and entry in entries:
-            entries.remove(entry)
         return False
     values.append({"value": element, "dedup": dedup,
                    "slice_hash": slice_hash, "iteration": iteration, "ts": ts})

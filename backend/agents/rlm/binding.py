@@ -518,7 +518,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     _slice_hint = args[0] if args else None
                     _cmap.record(ctx.project_dir, name, result,
                                  slice_hint=_slice_hint,
-                                 iteration=getattr(ctx, "iteration", None))
+                                 iteration=getattr(ctx, "current_iteration", None))
                 except Exception:  # noqa: BLE001 — context map MUST NOT break the run
                     pass
             return result
