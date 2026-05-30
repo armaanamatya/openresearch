@@ -99,6 +99,19 @@ class Settings(BaseSettings):
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 
+    # Optional Codex repo-editing subagent route. This is deliberately NOT a
+    # general LLM provider and is default-off; the RLM root can only reach it
+    # through the gated codex_repair primitive.
+    codex_subagent: bool = False
+    codex_timeout_s: int = Field(default=900, ge=1)
+    codex_max_calls_per_run: int = Field(default=3, ge=0)
+    codex_max_output_chars: int = Field(default=12000, ge=100)
+    codex_profile: str = "reprolab-readwrite"
+    codex_allowed_tasks: str = (
+        "implementation_repair,test_debugging,dockerfile_repair,"
+        "requirements_repair"
+    )
+
     # Paper extraction mode. "hybrid" uses vision (Claude) to enrich scanned
     # pages and figure descriptions; falls back to text-only when no API key
     # is set, so the default is safe. "text" forces the text-only path.
