@@ -20,6 +20,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -44,6 +45,8 @@ class PrimitiveOutcome(str, Enum):
 
 _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
+    "degenerate_training",
+    "disk_exhausted",
     "contract_violation",
     # Existing classifier labels that require agent-side repair.
     "missing_module",
@@ -1853,15 +1856,27 @@ def _combine_command_output(results: list) -> str:
     return "\n".join(parts)
 
 
+# Scalar fields that unambiguously mean "completed optimizer steps" (NOT a target
+# and NOT a per-step list — those are handled separately by the curve extractor).
+_STEP_COUNT_KEYS = frozenset({
+    "train_steps", "global_step", "optimizer_steps", "steps_completed", "completed_steps",
+})
+
+
 def _max_train_steps(metrics: dict) -> int | None:
-    """Largest ``train_steps`` value recorded anywhere in a metrics tree (or None)."""
+    """Largest completed-step count recorded anywhere in a metrics tree (or None).
+
+    Keys on any of :data:`_STEP_COUNT_KEYS` (agents name the field freely) so the
+    convergence-floor and degeneracy checks don't silently no-op on a paper that
+    emits ``global_step`` instead of ``train_steps``.
+    """
     best: int | None = None
 
     def _walk(obj: object) -> None:
         nonlocal best
         if isinstance(obj, dict):
             for k, v in obj.items():
-                if k == "train_steps" and isinstance(v, (int, float)) and not isinstance(v, bool):
+                if k in _STEP_COUNT_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool):
                     best = int(v) if best is None else max(best, int(v))
                 else:
                     _walk(v)
@@ -1880,6 +1895,85 @@ _OOM_LOG_MARKERS = (
     "backward oom",
     "loss/backward oom",
 )
+
+# A per-model status the agent uses to claim the model trained successfully.
+_OK_STATUSES = frozenset({"ok", "success", "completed", "complete", "done"})
+
+
+def _reward_curve(mv: dict) -> list[float]:
+    """The reward time-series from a per-model metrics dict (for variance checks)."""
+    tc = mv.get("training_curves") if isinstance(mv, dict) else None
+    raw: object = []
+    if isinstance(tc, dict):
+        raw = tc.get("reward") or tc.get("rewards") or tc.get("mean_reward") or []
+    elif isinstance(tc, list):
+        raw = [d.get("reward") for d in tc if isinstance(d, dict)]
+    if not raw and isinstance(mv, dict) and isinstance(mv.get("reward_history"), list):
+        raw = mv["reward_history"]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [float(x) for x in raw if isinstance(x, (int, float)) and not isinstance(x, bool)]
+
+
+def _scalar_rewards(mv: dict) -> list[float]:
+    """Scalar OUTCOME reward values in a per-model subtree — keys ENDING in 'reward'
+    (searchqa_reward / mean_reward / final_reward …), excluding stat/config fields
+    (reward_std / reward_scale / reward_clip / baseline_reward, which don't end in
+    'reward' or carry a 'baseline' marker) so config constants can't fake a signal."""
+    out: list[float] = []
+
+    def _w(o: object) -> None:
+        if isinstance(o, dict):
+            for k, v in o.items():
+                kl = str(k).lower()
+                if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and kl.endswith("reward") and "baseline" not in kl):
+                    out.append(float(v))
+                else:
+                    _w(v)
+        elif isinstance(o, (list, tuple)):
+            for x in o:
+                _w(x)
+
+    _w(mv)
+    return out
+
+
+def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> tuple[str, str] | None:
+    """Flag a model the agent marked succeeded that shows NO learning signal.
+
+    Conservative (a false-positive wrongly FAILS a healthy run, so only the
+    unambiguous cases fire), per-model so a mixed run names the offender:
+      (1) status=ok but an EXPLICIT 0 optimizer steps — 'completed' without training;
+      (2) status=ok but EVERY recorded reward MAGNITUDE is ~0 (|reward| <= epsilon
+          across the whole curve + scalar reward fields) — broken matching / no signal.
+    Uses ``abs`` so a legitimately NEGATIVE reward (step/length/KL penalties are
+    normal in RL) is NOT mistaken for "no reward"; and does NOT flag a constant but
+    non-zero curve (that can be a converged plateau, not degeneracy). Only judges
+    models whose status is in :data:`_OK_STATUSES`.
+    """
+    per_model = metrics.get("per_model")
+    if not isinstance(per_model, dict):
+        return None
+    for m, mv in per_model.items():
+        if not isinstance(mv, dict) or str(mv.get("status", "")).lower() not in _OK_STATUSES:
+            continue
+        # (1) claimed success but explicitly zero optimizer steps.
+        if _max_train_steps(mv) == 0:
+            return ("degenerate_training",
+                    f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
+                    "— it 'completed' without training. Ensure the loop runs optimizer.step() "
+                    "and records steps/reward.")
+        # (2) every recorded reward magnitude ~0 — no signal at all.
+        rewards = _reward_curve(mv) + _scalar_rewards(mv)
+        if rewards and max(abs(x) for x in rewards) <= epsilon:
+            return ("degenerate_training",
+                    f"degenerate_training: model {m!r} status=ok but EVERY recorded reward "
+                    f"is ~0 ({len(rewards)} value(s)) — training produced no signal. Fix the "
+                    "reward/answer-matching so it is non-zero BEFORE the RL loop (extract the "
+                    "answer span; token-F1 over the full gold-alias list; print zero-shot "
+                    "accuracy first), and confirm optimizer.step() actually runs.")
+    return None
 
 
 def _training_health_violation(result: dict) -> tuple[str, str] | None:
@@ -1922,6 +2016,17 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
                 f"learn in so few steps — increase epochs/steps so total updates "
                 f">= {min_steps}.",
             )
+
+    # (3) degenerate_training — exited 0, status=ok, but no learning signal (constant
+    # / all-zero reward or 0 steps). Opt-in (default on); disable with =0.
+    if _os.environ.get("REPROLAB_DEGENERATE_TRAINING_CHECK", "1").strip().lower() not in ("0", "false", "no"):
+        try:
+            _deg_eps = float(_os.environ.get("REPROLAB_DEGENERATE_REWARD_EPSILON", "1e-6") or "1e-6")
+        except ValueError:
+            _deg_eps = 1e-6
+        _deg = _degenerate_training_violation(result.get("metrics") or {}, epsilon=_deg_eps)
+        if _deg is not None:
+            return _deg
     return None
 
 
@@ -2672,6 +2777,108 @@ def _scope_violation_key(hint: str) -> str:
     return (hint or "").strip().lower()[:120]
 
 
+# A named Python exception in a recorded error string means the agent CAUGHT a code
+# bug and masked it as a data failure. DatasetNotFoundError is deliberately excluded
+# (ambiguous: a typo'd id vs a genuinely-removed dataset → default to data-unavailable).
+# Only UNAMBIGUOUS exception names — ones that essentially never appear in a genuine
+# data-unavailability message. ValueError/RuntimeError/KeyError/IndexError are
+# DELIBERATELY excluded (HF datasets raises ValueError/RuntimeError for real
+# unavailability — "Unknown split", config-not-found, connection); those are caught
+# instead via the specific phrases below so a 404/config error isn't mis-flagged.
+_CODE_BUG_RE = re.compile(
+    r"\b(TypeError|AttributeError|ImportError|ModuleNotFoundError|NameError|"
+    r"UnboundLocalError|AssertionError|FileNotFoundError|HfUriError|HFValidationError)\b"
+)
+# Phrases that are code/config bugs even without an unambiguous exception class name.
+_CODE_BUG_PHRASES = (
+    "cannot re-initialize cuda",
+    "broken pipe",
+    "is not a valid model identifier",
+    "invalid hf uri",
+    "returned 0 rows",
+    "must be a string or a real number",   # float(tuple) family
+    "repository id must be",
+    "no such file or directory",           # FileNotFoundError without the class name
+    "errno 2",
+    "has no attribute",
+)
+
+
+def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
+    """Return a repairable ``disk_exhausted`` violation if free disk on ANY of
+    ``paths`` is below ``REPROLAB_DISK_FLOOR_GB`` (default 15; 0 disables). Never
+    raises. Used as a pre-check (don't start a doomed run) and a post-check (the
+    experiment ate the shared disk → tell the next iteration to stream/slice).
+    """
+    import shutil
+
+    try:
+        floor_gb = float(os.environ.get("REPROLAB_DISK_FLOOR_GB", "15") or "15")
+    except ValueError:
+        floor_gb = 15.0
+    if floor_gb <= 0:
+        return None
+    seen: set[str] = set()
+    for p in paths:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        try:
+            free_gb = shutil.disk_usage(p).free / 1e9
+        except Exception:  # noqa: BLE001 — a bad path must not break the run
+            continue
+        if free_gb < floor_gb:
+            return (
+                "disk_exhausted",
+                f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} "
+                "GB). A dataset/model download has ballooned the shared disk. Stream + slice "
+                "datasets (NEVER a full natural_questions-style download), use lighter "
+                "variants (e.g. nq_open not natural_questions), or lower REPROLAB_DISK_FLOOR_GB "
+                "if the footprint is legitimately large.",
+            )
+    return None
+
+
+def _data_load_failure_is_code_bug(err: str) -> bool:
+    """True when a recorded ``data_load_failure`` error is actually a CODE bug (a
+    caught Python exception / bad id / parse error) rather than genuine
+    data-unavailability (404/403/licence/removed dataset).
+
+    Default for ambiguous cases is data-unavailable (safe: a false-repairable wastes
+    one iteration, a false-exclude is the existing behaviour). DatasetNotFoundError is
+    NOT in the exception regex, so a bare "dataset doesn't exist on the Hub" stays
+    data-unavailable unless a bad-id/URI phrase co-occurs.
+    """
+    low = (err or "").lower()
+    if any(p in low for p in _CODE_BUG_PHRASES):
+        return True
+    return bool(_CODE_BUG_RE.search(err or ""))
+
+
+def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
+    """Scan ``metrics.data_load_failures`` for code bugs the agent caught and masked
+    as data-unavailability. Returns ``("code_bug", [summaries])`` if any, else None.
+
+    Genuine data-unavailability entries are LEFT in place (the leaf scorer still
+    excludes their leaves); only code-bug entries force the experiment back into the
+    repair loop, so a real bug can't silently ship a degenerate, leaf-excluded run.
+    """
+    _metrics = result.get("metrics") or {}
+    failures = list(_metrics.get("data_load_failures") or []) + list(_metrics.get("model_load_failures") or [])
+    masked: list[str] = []
+    for entry in failures:
+        if isinstance(entry, dict):
+            err = str(entry.get("error") or entry.get("reason") or "")
+            name = str(entry.get("dataset") or entry.get("env") or entry.get("model") or entry.get("name") or "?")
+        elif isinstance(entry, str):
+            err, name = entry, "?"
+        else:
+            continue
+        if err and _data_load_failure_is_code_bug(err):
+            masked.append(f"{name}: {err[:160]}")
+    return ("code_bug", masked) if masked else None
+
+
 def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
     """True when the scope element named in ``hint`` is covered by the agent's own
     ``metrics.data_load_failures`` — i.e. the agent tried to obtain it and failed.
@@ -2692,10 +2899,16 @@ def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
     for entry in (metrics or {}).get("data_load_failures") or []:
         if isinstance(entry, dict):
             name = str(entry.get("dataset") or entry.get("name") or "")
+            err = str(entry.get("error") or entry.get("reason") or "")
         elif isinstance(entry, str):
-            name = entry
+            name, err = entry, entry
         else:
-            name = ""
+            name, err = "", ""
+        # A code bug masquerading as a data failure must NOT force-reduce a scope gap
+        # (FIX-1 already flips those to repairable, but guard here too so a MISSED code
+        # bug can't be laundered into a tolerated 'unobtainable' scope reduction).
+        if err and _data_load_failure_is_code_bug(err):
+            continue
         failure_tokens |= {t for t in re.split(r"[^a-z0-9]+", name.lower()) if t}
     return bool(failure_tokens) and key_tokens <= failure_tokens
 
@@ -3063,6 +3276,17 @@ def run_experiment(
     # A2: load the cross-call persisted counter so the per-run cap is honoured
     # even when the RLM repair loop calls run_experiment multiple times.
     escalations = _load_escalation_count(ctx.project_dir / "rlm_state")
+
+    # Disk pre-check (2026-05-30): fail fast if the shared disk is already below the
+    # floor — starting a run that then exhausts it starves other users and crashes.
+    _disk_pre = _disk_floor_violation([
+        str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+    ])
+    if _disk_pre is not None:
+        return _persist_experiment_result(ctx, {
+            "success": False, "error": _disk_pre[1], "failure_class": _disk_pre[0],
+        }, model_id=model_id, eval_env=eval_env)
+
     result: dict = {}
 
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
@@ -3242,6 +3466,30 @@ def run_experiment(
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
+    # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
+    # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0
+    # rows') and records it in metrics.data_load_failures, which the leaf scorer would
+    # then EXCLUDE from the rubric — silently shipping a degenerate run as success. A
+    # code bug is repairable, not data-unavailability: flip it back into the repair
+    # loop. Runs BEFORE scope-reduce/training-health (which gate on success) so a code
+    # bug can't be tolerated as a scope gap. Genuine 404/licence entries are untouched.
+    if result.get("success"):
+        _masked = _reclassify_masked_code_bugs(result)
+        if _masked is not None:
+            _cls, _bugs = _masked
+            result = {
+                **result, "success": False, "failure_class": _cls,
+                "error": (
+                    "code_bug: a loader/parse error was caught and masked as a "
+                    "data_load_failure (it would be silently excluded from the rubric). "
+                    "These are CODE bugs to fix, not missing data — " + "; ".join(_bugs[:5])
+                ),
+            }
+            logger.warning(
+                "run_experiment[%s]: reclassified %d masked code bug(s) as repairable: %s",
+                getattr(ctx, "run_id", "?"), len(_bugs), _bugs[:3],
+            )
+
     # Training-health postflight (2026-05-29): a run that exited 0 but logged a
     # caught CUDA OOM (backward skipped → no gradient updates) or trained far below
     # the convergence floor produced metrics yet learned nothing. Flip it to a
@@ -3294,6 +3542,18 @@ def run_experiment(
                     getattr(ctx, "run_id", "?"), _k,
                     "recorded data_load_failure" if _forced else f"{_counts.get(_k, 0)} misses",
                 )
+
+    # Disk post-check (2026-05-30): the experiment may have ballooned the HF cache and
+    # left the shared disk below the floor even though it "succeeded". Surface it as
+    # repairable so the next iteration streams/slices instead of downloading again.
+    if result.get("success"):
+        _disk_post = _disk_floor_violation([
+            str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+        ])
+        if _disk_post is not None:
+            result = {**result, "success": False, "error": _disk_post[1], "failure_class": _disk_post[0]}
+            logger.warning("run_experiment[%s]: disk floor breached post-run — %s",
+                           getattr(ctx, "run_id", "?"), _disk_post[1][:120])
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
     # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
