@@ -1554,6 +1554,22 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
     )
 
 
+def _negative_lessons_block(arxiv_id: str | None, project_dir: Path | None) -> str:
+    """Phase 9 (cross-run): inject this paper's recurrence-promoted negative lessons.
+
+    Reads ``runs/_lessons/<arxiv_id>.json`` (runs_root = ``project_dir.parent``)
+    and returns the active-lessons guardrail block. Returns ``""`` when the flag
+    is off, there is no ``arxiv_id``, or no active lessons. Fail-soft.
+    """
+    if not arxiv_id or project_dir is None:
+        return ""
+    try:
+        from backend.agents.rlm import lesson_distiller as _ld
+        return _ld.render_block(project_dir.parent, arxiv_id)
+    except Exception:  # noqa: BLE001 — guidance assembly must never raise
+        return ""
+
+
 def _compute_constraint_guidance(
     sandbox_mode: object,
     gpu_mode: object,
@@ -1674,6 +1690,12 @@ def _compute_constraint_guidance(
         feedback = _prior_rubric_feedback_block(project_dir)
         if feedback:
             guidance += feedback
+
+    # 5.6. Negative lessons from prior runs of THIS paper (Phase 9, cross-run).
+    # Flag-gated (REPROLAB_NEGATIVE_LESSONS); empty unless active lessons exist.
+    _neg = _negative_lessons_block(arxiv_id, project_dir)
+    if _neg:
+        guidance += "\n" + _neg
 
     # 5.7. Artifact completeness — always-on. Low-weight rubric area but free
     # to nail. Asks for README, figures, config_used.json, per-step curves.
