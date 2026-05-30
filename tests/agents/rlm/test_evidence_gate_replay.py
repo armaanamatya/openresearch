@@ -45,7 +45,11 @@ def test_evidence_gate_replay(case: dict, tmp_path: Path, monkeypatch: pytest.Mo
         reproduction_summary=case.get("note", "replayed run"),
         baseline_metrics=case.get("baseline_metrics") or {},
     )
-    json_path, _ = write_final_report_rlm(report, tmp_path)
+    # ``run_experiment_calls`` (the authoritative in-memory ledger count) is the
+    # forged-evidence cross-check input. Absent in a case → None → content-only.
+    json_path, _ = write_final_report_rlm(
+        report, tmp_path, run_experiment_calls=case.get("run_experiment_calls")
+    )
     written = json.loads(json_path.read_text(encoding="utf-8"))
 
     assert written["verdict"] == case["expected_verdict"], (

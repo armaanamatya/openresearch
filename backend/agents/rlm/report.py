@@ -312,7 +312,12 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     return False
 
 
-def _apply_evidence_gate(report: RLMFinalReport, project_dir: Path) -> RLMFinalReport:
+def _apply_evidence_gate(
+    report: RLMFinalReport,
+    project_dir: Path,
+    *,
+    run_experiment_calls: int | None = None,
+) -> RLMFinalReport:
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
     ``_reconcile_verdict_against_evidence`` only catches over-claimed "reproduced";
@@ -338,30 +343,68 @@ def _apply_evidence_gate(report: RLMFinalReport, project_dir: Path) -> RLMFinalR
     *scoring* (the leaf scorer still grades the code), but they no longer license a
     success-ish VERDICT. This is the strictness #1 deliberately chose.
 
-    KNOWN RESIDUAL (not closed here): the predicate checks that *a* success+metrics
-    row exists, not that ``baseline_metrics`` is *tied to* that row. A report with a
-    legit success row for experiment A but ``baseline_metrics`` lifted from failed
-    experiment B still passes. Narrower and contrived; ``_verify_scope_evidence``
-    partially covers it via model/env tags. Left as a documented gap.
+    FORGED-EVIDENCE cross-check (2026-05-30, audit finding): ``_has_experiment_evidence``
+    reads ``experiment_runs.jsonl`` CONTENT only. The root model's REPL keeps ``open()``
+    live, so it can append a fabricated ``{"success": true, "metrics": {...}}`` row
+    directly to that file and *satisfy* the predicate without any container ever running
+    — defeating the gate by passing it, not skipping it. When the caller supplies the
+    authoritative ``run_experiment_calls`` (the in-memory cost-ledger count, which the
+    REPL cannot forge — see ``run_experiment_call_count``), the gate REQUIRES a real
+    ``run_experiment`` call to back the on-disk evidence: a success row with
+    ``run_experiment_calls == 0`` is forged and is downgraded to ``failed``. ``None``
+    (no ledger available — replay/postmortem) falls back to content-only, so this never
+    over-fires on a path that lacks the trace. Safe by construction: a legitimate run
+    that produced a success+metrics row MUST have called ``run_experiment`` ≥ 1 time
+    (``_persist_experiment_result`` only writes from inside ``run_experiment``), so the
+    cross-check never downgrades a real reproduction.
+
+    KNOWN RESIDUALS (not closed here): (1) the predicate checks that *a* success+metrics
+    row exists, not that ``baseline_metrics`` is *tied to* that row. (2) the count
+    cross-check catches a forge with ZERO ``run_experiment`` calls; a root that calls
+    ``run_experiment`` once (it runs a real container and *fails*) and then forges a
+    success row still passes the ``>= 1`` count (1 success row, 1 ledger call). Both are
+    narrower; ``_verify_scope_evidence`` partially covers model/env tags. Documented gaps;
+    the audit's nonce idea is defeated by the root copying a nonce out of an existing row,
+    so the ledger count is the robust primary defense.
 
     Disable with ``REPROLAB_EVIDENCE_GATE=0``.
     """
     if os.environ.get("REPROLAB_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
         return report
-    if (
-        report.verdict in {"reproduced", "partial"}
-        and not _has_experiment_evidence(project_dir)
-    ):
-        note = (
-            " [evidence_gap] Downgraded to 'failed': no run_experiment produced "
-            "metrics and baseline_metrics is empty — this run has no experiment "
-            "evidence to support a reproduction claim."
-        )
+    content_evidence = _has_experiment_evidence(project_dir)
+    # Forged iff there IS a success+metrics row on disk but the authoritative ledger
+    # count proves run_experiment never ran (the row was written by something other
+    # than the real primitive). None => unknown ledger => skip the cross-check.
+    forged_evidence = (
+        content_evidence
+        and run_experiment_calls is not None
+        and run_experiment_calls <= 0
+    )
+    has_real_evidence = content_evidence and not forged_evidence
+    if report.verdict in {"reproduced", "partial"} and not has_real_evidence:
+        if forged_evidence:
+            note = (
+                " [evidence_gap] Downgraded to 'failed': experiment_runs.jsonl has a "
+                "success+metrics row but the authoritative cost-ledger trace shows 0 "
+                "run_experiment calls — the row is not backed by a real experiment "
+                "(forged/unbacked evidence)."
+            )
+            logger.warning(
+                "report: evidence gate downgraded verdict to 'failed' — FORGED "
+                "experiment evidence (success row on disk but run_experiment ledger "
+                "count is 0)"
+            )
+        else:
+            note = (
+                " [evidence_gap] Downgraded to 'failed': no run_experiment produced "
+                "metrics and baseline_metrics is empty — this run has no experiment "
+                "evidence to support a reproduction claim."
+            )
+            logger.warning(
+                "report: evidence gate downgraded verdict to 'failed' (no experiment evidence)"
+            )
         report.verdict = "failed"
         report.reproduction_summary = (report.reproduction_summary or "").rstrip() + note
-        logger.warning(
-            "report: evidence gate downgraded verdict to 'failed' (no experiment evidence)"
-        )
     return report
 
 
@@ -558,6 +601,33 @@ def _authoritative_primitive_trace(ctx: RunContext) -> dict[str, Any]:
     return {"calls": sum(by_primitive.values()), "by_primitive": by_primitive}
 
 
+def run_experiment_call_count(ctx: RunContext) -> int | None:
+    """Authoritative count of ``run_experiment`` invocations from the **in-memory**
+    cost ledger — the one trusted signal the root model's REPL cannot forge.
+
+    ``ctx.cost_ledger.entries`` is a Python list mutated only by ``binding.wrap_primitive``
+    (the orchestrator), never re-read from the root-writable ``cost_ledger.jsonl``.
+    ``wrap_primitive`` appends exactly one row per primitive call on EVERY path —
+    success, fail-soft return, raise, and timeout (``binding._ledger()`` at both the
+    return site and the ``except`` site) — including zero-token primitives like
+    ``run_experiment``. So a count of 0 means ``run_experiment`` **genuinely never ran**,
+    and any ``success+metrics`` row in ``experiment_runs.jsonl`` was written by something
+    other than the real primitive (i.e. forged via the REPL's ``open()``).
+
+    Returns the count, or ``None`` if no ledger is available (the gate then falls back
+    to a content-only check — never over-fires on a missing-ledger path).
+    """
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        return sum(
+            1 for e in ledger.entries if getattr(e, "agent_id", None) == "run_experiment"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -701,6 +771,8 @@ def _safe_int(value: Any) -> int:
 def write_final_report_rlm(
     report: RLMFinalReport,
     project_dir: Path,
+    *,
+    run_experiment_calls: int | None = None,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -722,8 +794,13 @@ def write_final_report_rlm(
         ``(json_path, md_path)`` — the paths of the written files.
     """
     # Phase 3 (FM-004): path-agnostic evidence gate — no writer may ship a
-    # success-ish verdict with no experiment evidence. Runs before serialization.
-    report = _apply_evidence_gate(report, project_dir)
+    # success-ish verdict with no (or forged) experiment evidence. Runs before
+    # serialization. ``run_experiment_calls`` (the authoritative in-memory ledger
+    # count, threaded from callers that have ``ctx``) lets the gate reject a forged
+    # experiment_runs.jsonl row; ``None`` falls back to a content-only check.
+    report = _apply_evidence_gate(
+        report, project_dir, run_experiment_calls=run_experiment_calls
+    )
 
     project_dir.mkdir(parents=True, exist_ok=True)
 
