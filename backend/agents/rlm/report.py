@@ -540,6 +540,42 @@ def _authoritative_primitive_trace(ctx: RunContext) -> dict[str, Any]:
     return {"calls": sum(by_primitive.values()), "by_primitive": by_primitive}
 
 
+def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
+    """Max rubric ``overall_score`` recorded in this run's dashboard_events.jsonl.
+
+    The run emits a ``rubric_score`` event per ``verify_against_rubric`` call, so
+    the max is the run's true high-water mark. Reading from disk makes the
+    best-of-run floor in ``build_final_report`` salvage-capable: re-running the
+    builder on an already-degraded run dir recovers the best score. Returns None
+    when no rubric score was ever recorded.
+    """
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return None
+    best: float | None = None
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "rubric_score" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            s = payload.get("overall_score")
+            if s is None:
+                s = payload.get("score")
+            try:
+                val = float(s)
+            except (TypeError, ValueError):
+                continue
+            if best is None or val > best:
+                best = val
+    except OSError:
+        return None
+    return best
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -671,6 +707,25 @@ def build_final_report(
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
     }
+
+    # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
+    # final state and self-report a LOWER rubric than it actually achieved — the
+    # SDAR run reported 0.0 despite scoring ~0.18 mid-run. Surface the best
+    # overall_score the run recorded so a late regression can never bury a real
+    # result. Reads dashboard_events.jsonl, so re-running this builder also
+    # salvages an already-finalized degraded run.
+    _best = _best_recorded_rubric_score(ctx.project_dir)
+    if _best is not None:
+        _r = dict(kwargs.get("rubric") or {})
+        _cur = _r.get("overall_score")
+        try:
+            _cur_f = float(_cur) if _cur is not None else None
+        except (TypeError, ValueError):
+            _cur_f = None
+        if _cur_f is None or _best > _cur_f:
+            _r["overall_score"] = _best
+            _r["best_of_run"] = True
+            kwargs["rubric"] = _r
 
     return RLMFinalReport(**kwargs)
 
