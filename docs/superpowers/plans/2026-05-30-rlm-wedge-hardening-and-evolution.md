@@ -55,7 +55,8 @@ Phases 1→2→4 and 8→9 are ordered; 3, 5, 6, 7, 8 are otherwise independent.
 | Phase 7a frontend stale→"stalled" pill | ⏸ deferred | UI already shows a "no signal Ns" chip (`rlm-header.tsx:148-183`); pill-flip is polish; needs vitest/RTL + careful display-vs-backend status typing |
 | Phase 7d Docker OOM detection | ⏸ deferred | exec-vs-container `OOMKilled` ambiguity (exit 137 ≠ container OOMKilled for an exec); needs real Docker to verify |
 | Phase 7f provider request-id capture | ⏸ deferred | needs the real `ResultMessage` shape (which id field the bundled CLI exposes) |
-| Phase 9 MUSE negative-lessons | ⏸ not started | flag-gated prototype; requires a brainstorm first |
+| Phase 9 MUSE negative-lessons | ✅ done | flagged off (`REPROLAB_NEGATIVE_LESSONS`); deterministic miner from `experiment_runs.jsonl`, recurrence-gated + classifier-sourced + conservative opportunity-retirement — design `2026-05-30-negative-lessons-design.md`, plan `2026-05-30-negative-lessons.md` |
+| Evidence gate tightening (post-review) | ✅ done | `_has_experiment_evidence` now requires `success==true` + non-empty metrics |
 
 The four deferred 6.2/7a/7d/7f items share a theme: each needs a **real environment** (real SDK / browser / Docker) to verify, so they were held back rather than shipped unverified to a hot path. They remain fully specified above for a focused follow-up.
 
