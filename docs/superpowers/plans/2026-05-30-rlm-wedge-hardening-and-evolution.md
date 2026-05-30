@@ -36,6 +36,28 @@
 
 Phases 1→2→4 and 8→9 are ordered; 3, 5, 6, 7, 8 are otherwise independent. Land 1–3 first (they need no new spend), then 4, then the rest. **Phases 8–9 require a brainstorming pass before implementation** (see their headers) — they are prototypes, not locked designs.
 
+### Implementation status (2026-05-30, branch `feat/rlm-wedge-hardening`)
+
+| Item | Status | Commit / note |
+|--|--|--|
+| Phase 1 read-idle + sentinel + kill | ✅ done | `da7bdff` + `6da7545` (killpg fix) |
+| Phase 2 stall detector + freshness | ✅ done | `f7c0ba9` |
+| Phase 3 evidence gate | ✅ done | `7fa38d0` + `bef112d` (E2E contract) |
+| Phase 4 gpt-5-mini route | ✅ done | `b73e730` |
+| Phase 5 concurrency cap | ✅ done | committed |
+| Phase 6.1 cache-ratio measurement | ✅ done | committed |
+| Phase 7c uvicorn graceful-shutdown | ✅ done | committed |
+| Phase 7e RunPod granular timeout | ✅ done | committed |
+| Phase 7g run-replay harness | ✅ done | committed (verified on real runs) |
+| Phase 7b SSE disconnect | ✅ done | committed |
+| Phase 6.2 OAuth cache_control breakpoint | ⏸ deferred | needs probing whether `claude-agent-sdk` forwards a structured system block (real SDK) |
+| Phase 7a frontend stale→"stalled" pill | ⏸ deferred | UI already shows a "no signal Ns" chip (`rlm-header.tsx:148-183`); pill-flip is polish; needs vitest/RTL + careful display-vs-backend status typing |
+| Phase 7d Docker OOM detection | ⏸ deferred | exec-vs-container `OOMKilled` ambiguity (exit 137 ≠ container OOMKilled for an exec); needs real Docker to verify |
+| Phase 7f provider request-id capture | ⏸ deferred | needs the real `ResultMessage` shape (which id field the bundled CLI exposes) |
+| Phases 8–9 PEEK / MUSE | ⏸ not started | flag-gated prototypes; require a brainstorm first |
+
+The four deferred 6.2/7a/7d/7f items share a theme: each needs a **real environment** (real SDK / browser / Docker) to verify, so they were held back rather than shipped unverified to a hot path. They remain fully specified above for a focused follow-up.
+
 ---
 
 ## Phase 0: Branch + green baseline
