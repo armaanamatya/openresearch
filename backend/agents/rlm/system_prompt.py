@@ -157,6 +157,12 @@ yourself to avoid the warning.)
 a tight answer; `understand_section` returns a generic schema that you must then
 re-process.  For short slices, the primitives remain optimal.  The same applies
 to extracting numerical results, dataset details, or any cross-section synthesis.
+
+STALLED SUB-CALL (important): if an `rlm_query` / `llm_query` result contains the
+marker `[SUB_RLM_STALL]`, that sub-query stalled (a dead network stream) and was
+aborted — it is NOT an answer. Retry that ONE call with a smaller slice, or reduce
+how many sub-calls you dispatch concurrently. Never write the stall marker into any
+REPL variable you keep or into the final report.
 """
 
 _TERMINATION_CONTRACT = """\

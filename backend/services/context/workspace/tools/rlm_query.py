@@ -50,7 +50,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from backend.schemas.citations import Citation
 from backend.services.context.workspace.model import Cited
@@ -529,7 +529,44 @@ class RlmQueryTool:
         return json.dumps(value, default=str)
 
 
-# --- provider client (unchanged) --------------------------------------------
+# --- sub-RLM stall handling (Phase 1 / FM-001/002/007) ----------------------
+#
+# The bundled claude-agent-sdk stream has NO read-idle timeout (Context7:
+# `query()` "continues indefinitely if no ResultMessage"). The previous fix
+# bounded a sub-call only by a TOTAL wall-clock cap and returned "" on timeout —
+# indistinguishable from a real empty answer (FM-002). We add a per-event
+# read-idle timeout and surface a non-empty, self-describing sentinel so the
+# root can retry instead of treating a dead socket as the answer.
+
+SUB_RLM_STALL_SENTINEL = "[SUB_RLM_STALL]"
+
+
+def _stall_message(idle_s: float) -> str:
+    """Root-facing surface for a stalled sub-call (rlm's complete() contract is -> str)."""
+    return (
+        f"{SUB_RLM_STALL_SENTINEL} the sub-query stalled (no stream bytes for "
+        f"{idle_s:.0f}s) and was aborted. Retry with a smaller slice or fewer "
+        f"concurrent sub-calls; do NOT treat this as the answer."
+    )
+
+
+class _SubRlmReadIdleTimeout(Exception):
+    """Raised inside the worker when the SDK stream is idle past read_idle_s."""
+
+    def __init__(self, idle_s: float):
+        super().__init__(f"sub-RLM stream idle > {idle_s:.0f}s")
+        self.idle_s = idle_s
+
+
+def _read_idle_default() -> float:
+    """Default per-event read-idle bound; <=0 disables (env REPROLAB_SUBRLM_READ_IDLE_S)."""
+    try:
+        return float(os.environ.get("REPROLAB_SUBRLM_READ_IDLE_S", "120") or "120")
+    except (TypeError, ValueError):
+        return 120.0
+
+
+# --- provider client --------------------------------------------------------
 
 class ClaudeLlmClient:
     """LlmClient implementation using Claude Code via claude-agent-sdk.
@@ -544,17 +581,33 @@ class ClaudeLlmClient:
     ``client._last_usage`` immediately after ``complete()`` returns.
     """
 
-    def __init__(self, model: str | None = None, max_turns: int = 1) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        max_turns: int = 1,
+        stall_event_sink: Callable[[dict], None] | None = None,
+    ) -> None:
         self._model = model
         self._max_turns = max_turns
         # Last-call token usage — populated by _async_complete, consumed by
         # callers (e.g. binding.py's _ledger) for cost-ledger recording.
         # Defaults to all-zeros so callers can always read it safely.
         self._last_usage: dict[str, int] = _ZERO_USAGE.copy()
+        # Phase 2 wires this to the dashboard emit; default None = log only.
+        self._stall_event_sink = stall_event_sink
+        # Set by complete() before each scheduling so _async_complete can read it.
+        self._read_idle_s: float = _read_idle_default()
 
     @with_429_backoff
-    def complete(self, *, system: str, user: str) -> str:
+    def complete(self, *, system: str, user: str, read_idle_s: float | None = None) -> str:
         """Synchronous wrapper around the async claude-agent-sdk query.
+
+        ``read_idle_s`` (Phase 1) bounds the stream by *idle* time between events,
+        not total duration — a half-open/stalled socket is aborted after
+        ``read_idle_s`` seconds with no bytes (default ``REPROLAB_SUBRLM_READ_IDLE_S``
+        = 120; ``<=0`` disables). On a stall the wedged child is killed and a
+        non-empty ``SUB_RLM_STALL_SENTINEL`` string is returned (NOT ``""``) so the
+        root can distinguish a dead socket from a real empty answer (FM-002).
 
         Always thread-isolated: the bundled claude-agent-sdk has a reliable
         nested-generator ``aclose()`` race (Defect 1) and a separate futex
@@ -572,30 +625,21 @@ class ClaudeLlmClient:
         """
         import asyncio
         import concurrent.futures
-        import os
-        import signal
-        import subprocess
-        import time
 
-        # BUG-NEW-044 (2026-05-29): The per-call cap.
-        #
-        # Successful sub-RLM calls in production were 1–7 min; 10 min is the
-        # generous-but-defensible cap. Lowered from 1200s (2026-05-22) after a
-        # 2026-05-29 SDAR run wedged for 70+ min on a half-open TCP socket to
-        # api.anthropic.com that ``claude_agent_sdk``'s bundled CLI never
-        # timed out on its own (macOS kernel TCP keepalive default is 2h,
-        # process state ``RN``, 0.07% CPU, ``kevent64`` blocked forever).
-        # Lowering the cap to 600s gets the run unstuck inside 10 min instead.
+        # BUG-NEW-044 (2026-05-29): the TOTAL wall-clock backstop. Successful
+        # sub-RLM calls were 1–7 min; 600s is the generous ceiling. Phase 1 adds
+        # a per-event READ-IDLE bound (below) that fires first on a stalled stream
+        # — total-time alone cannot tell a dead socket from a slow-but-healthy one.
         _timeout_s = 600.0
+        self._read_idle_s = read_idle_s if read_idle_s is not None else _read_idle_default()
 
         coro_factory = lambda: self._async_complete(system=system, user=user)
 
-        # BUG-NEW-044: Snapshot bundled-claude children BEFORE the call so we
-        # can identify the wedged subprocess afterwards. ``ex.shutdown(wait=
-        # False)`` does NOT kill the asyncio.run worker thread or its spawned
-        # subprocess — and Python threads aren't killable from outside. So
-        # without explicit SIGKILL the wedged ``claude`` child sits in
-        # ``kevent64`` holding the OAuth slot for hours.
+        # Snapshot bundled-claude children BEFORE the call so we can SIGKILL the
+        # wedged one afterwards: ``ex.shutdown(wait=False)`` does NOT kill the
+        # asyncio.run worker thread or its spawned subprocess, and Python threads
+        # aren't killable from outside, so without an explicit kill a wedged
+        # ``claude`` child sits in ``kevent64`` holding the OAuth slot for hours.
         _pre_pids = _bundled_claude_child_pids()
 
         ex = concurrent.futures.ThreadPoolExecutor(
@@ -605,36 +649,74 @@ class ClaudeLlmClient:
             future = ex.submit(lambda: asyncio.run(coro_factory()))
             try:
                 text, usage = future.result(timeout=_timeout_s)
-            except concurrent.futures.TimeoutError:
-                # BUG-NEW-044: kill the wedged subprocess BEFORE returning,
-                # so the next call gets a clean slot. Diff post-snapshot
-                # against pre to find NEW children spawned by this call.
-                _post_pids = _bundled_claude_child_pids()
-                _wedged = _post_pids - _pre_pids
-                _killed = []
-                for pid in _wedged:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                        _killed.append(pid)
-                    except (OSError, ProcessLookupError):
-                        pass
+            except _SubRlmReadIdleTimeout as stall:
+                # Phase 1: a pure stall (no salvageable text) past the read-idle
+                # bound. Kill the wedged child, surface a typed sentinel.
+                self._kill_wedged_children(_pre_pids)
+                self._notify_stall(stall.idle_s)
                 logger.warning(
-                    "rlm_query: SDK completion exceeded %.0fs — SIGKILL'd "
-                    "%d wedged bundled-claude subprocess(es) (pids=%s) and "
-                    "returning empty so the run continues instead of "
-                    "wedging.",
-                    _timeout_s,
-                    len(_killed),
-                    _killed,
+                    "rlm_query: SUB_RLM_STALL read-idle %.0fs — killed wedged "
+                    "child(ren); returning sentinel so the root can retry.",
+                    stall.idle_s,
                 )
-                # Brief settle so the OS reaps the zombies before the next
-                # call snapshots children.
-                time.sleep(0.2)
-                return ""
+                return _stall_message(stall.idle_s)
+            except concurrent.futures.TimeoutError:
+                # Total-time backstop. Same handling — return the sentinel, not "".
+                self._kill_wedged_children(_pre_pids)
+                self._notify_stall(_timeout_s)
+                logger.warning(
+                    "rlm_query: SUB_RLM_STALL total %.0fs — killed wedged "
+                    "child(ren); returning sentinel.",
+                    _timeout_s,
+                )
+                return _stall_message(_timeout_s)
             self._last_usage = usage
             return text
         finally:
             ex.shutdown(wait=False)
+
+    def _kill_wedged_children(self, pre_pids: set[int]) -> None:
+        """SIGKILL bundled-claude children spawned by THIS call (fail-soft, cross-platform).
+
+        The SDK spawns the CLI outside our process group, so we can't ``killpg`` a
+        group we own; we diff post-vs-pre child PIDs and SIGKILL the new ones, with a
+        best-effort ``killpg`` for any grandchildren. Non-POSIX / pgrep-less hosts
+        no-op. Never raises (D3).
+        """
+        import os as _os
+        import signal as _signal
+        import time as _time
+
+        if not hasattr(_os, "kill"):
+            return
+        try:
+            wedged = _bundled_claude_child_pids() - pre_pids
+        except Exception:  # noqa: BLE001 — best-effort discovery
+            return
+        for pid in wedged:
+            try:
+                try:  # best-effort grandchildren via the child's own group
+                    _os.killpg(_os.getpgid(pid), _signal.SIGKILL)
+                except (OSError, ProcessLookupError, AttributeError):
+                    pass
+                _os.kill(pid, _signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+        if wedged:
+            _time.sleep(0.2)  # let the OS reap zombies before the next snapshot
+
+    def _notify_stall(self, idle_s: float) -> None:
+        """Best-effort: push a sub_rlm_stalled event dict to the sink (Phase 2 wires it)."""
+        if self._stall_event_sink is None:
+            return
+        try:
+            self._stall_event_sink({
+                "event": "sub_rlm_stalled",
+                "model": self._model or "unknown",
+                "idle_seconds": float(idle_s),
+            })
+        except Exception:  # noqa: BLE001 — observability never blocks
+            logger.debug("rlm_query: stall_event_sink raised", exc_info=True)
 
     async def _async_complete(self, *, system: str, user: str) -> tuple[str, dict[str, int]]:
         """Return (result_text, usage_dict) from the SDK stream.
@@ -695,8 +777,30 @@ class ClaudeLlmClient:
         # down only hits the benign Defect-1 "aclose(): already running" race,
         # which is logged and harmless. (Verified 2026-05-29: drain + explicit
         # aclose -> 20-min wedge, 0 iterations; break + no explicit aclose -> clean.)
+        # Phase 1: read-idle loop. We advance the async generator one event at a
+        # time, each bounded by ``read_idle_s`` of *idle* (no-bytes) time. A stalled
+        # / half-open stream raises ``_SubRlmReadIdleTimeout`` so complete() can kill
+        # the child and surface the sentinel. ``read_idle_s <= 0`` disables the bound
+        # (plain ``__anext__`` with no per-event timeout). We still do NOT drain to
+        # exhaustion or call aclose() (Defect 2 futex hang) — break on ResultMessage.
+        import asyncio
+
+        read_idle_s = self._read_idle_s
+        agen = query(prompt=user, options=options)
+        aiter = agen.__aiter__()
         try:
-            async for event in query(prompt=user, options=options):
+            while True:
+                try:
+                    if read_idle_s and read_idle_s > 0:
+                        event = await asyncio.wait_for(
+                            aiter.__anext__(), timeout=read_idle_s
+                        )
+                    else:
+                        event = await aiter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    raise _SubRlmReadIdleTimeout(read_idle_s) from exc
                 if isinstance(event, AssistantMessage):
                     # Salvage streamed assistant text + usage: the SDK RAISES on
                     # an error ResultMessage (commonly "Reached maximum number of
@@ -715,6 +819,15 @@ class ClaudeLlmClient:
                     if event.usage is not None:
                         result_usage = event.usage
                     break
+        except _SubRlmReadIdleTimeout:
+            # Pure stall with no salvageable text → propagate so complete() returns
+            # the sentinel. Partial text already streamed → keep it (partial > stall).
+            if not assistant_parts:
+                raise
+            logger.warning(
+                "rlm_query: read-idle %.0fs but %d assistant part(s) salvaged",
+                read_idle_s, len(assistant_parts),
+            )
         except Exception as exc:  # noqa: BLE001 — salvage over crash
             logger.warning(
                 "rlm_query: claude-agent-sdk stream raised (%s); salvaging "

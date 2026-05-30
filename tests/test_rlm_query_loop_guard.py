@@ -110,12 +110,13 @@ def test_complete_propagates_exceptions_from_sync_path():
 
 
 def test_complete_does_not_block_on_hung_worker_in_loop_path():
-    """A hung worker (future.result times out) returns empty — not blocks, not crashes.
+    """A hung worker (future.result times out) returns a stall sentinel — not blocks, not crashes.
 
-    Contract (2026-05-29): complete() now passes a timeout to future.result() and,
-    on TimeoutError, abandons the worker via shutdown(wait=False) and returns ""
-    so the RLM loop continues (an empty completion is a no-op iteration) rather
-    than the whole run wedging forever or crashing on a propagated TimeoutError.
+    Contract (2026-05-30, Phase 1): complete() passes a timeout to future.result()
+    and, on TimeoutError, abandons the worker via shutdown(wait=False) and returns
+    the non-empty SUB_RLM_STALL_SENTINEL (NOT "" — FM-002: the root must distinguish
+    a dead socket from a real empty answer) so the RLM loop continues rather than the
+    whole run wedging forever or crashing on a propagated TimeoutError.
     """
     client = _make_client()
 
@@ -145,7 +146,9 @@ def test_complete_does_not_block_on_hung_worker_in_loop_path():
             return client.complete(system="s", user="u")
 
     result = asyncio.run(_inner())
-    assert result == "", "hung worker (timeout) must return empty, not raise/block"
+    from backend.services.context.workspace.tools.rlm_query import SUB_RLM_STALL_SENTINEL
+    assert result != "", "hung worker must return a typed sentinel, not the old empty string"
+    assert SUB_RLM_STALL_SENTINEL in result, "hung worker (timeout) must return the stall sentinel"
 
     # The finally block must have called shutdown(wait=False).
     assert shutdown_calls, "shutdown() was never called"
