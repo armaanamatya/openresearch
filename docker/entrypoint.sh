@@ -34,7 +34,8 @@ fi
     --host 0.0.0.0 \
     --port 8000 \
     --proxy-headers \
-    --forwarded-allow-ips "*" &
+    --forwarded-allow-ips "*" \
+    --timeout-graceful-shutdown 30 &
 BACKEND_PID=$!
 
 # --- Frontend: Next.js production server ------------------------------------

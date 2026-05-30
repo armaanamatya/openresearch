@@ -111,4 +111,7 @@ else
 fi
 
 # 3. Boot the API.
-exec .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
+# --timeout-graceful-shutdown bounds how long a wedged in-flight SSE stream can
+# delay SIGTERM shutdown (uvicorn waits indefinitely with none set).
+exec .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000 \
+    --timeout-graceful-shutdown 30
