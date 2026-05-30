@@ -2647,6 +2647,93 @@ def _persist_experiment_result(
     return result
 
 
+def _scope_violation_key(hint: str) -> str:
+    """Stable signature of a scope-shape violation — the missing element(s).
+
+    The hint names ONE model + the missing datasets, e.g. "per_dataset_incomplete:
+    model 'qwen3_1_7b' missing datasets ['WebShop'] …". The model named varies across
+    experiments, but the missing piece (the last bracketed list) is the stable
+    "what is unobtainable" signature we count toward a tolerated scope reduction.
+    """
+    import re
+
+    brackets = re.findall(r"\[([^\]]*)\]", hint or "")
+    if brackets:
+        return brackets[-1].strip().lower()
+    return (hint or "").strip().lower()[:120]
+
+
+def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
+    """True when the scope element named in ``hint`` is covered by the agent's own
+    ``metrics.data_load_failures`` — i.e. the agent tried to obtain it and failed.
+
+    That is a PROVABLY-uncontrollable absence (per the soft-failure dataset
+    convention in baseline_implementation.py), so we tolerate the reduction on
+    first sight rather than waiting for K identical misses. Matching is by token
+    subset: every token of the missing-element key must appear among the recorded
+    failed-dataset names, so "webshop" matches a failure of dataset "webshop" but
+    a two-element gap is only force-reduced when BOTH are recorded failures.
+    """
+    import re
+
+    key_tokens = {t for t in re.split(r"[^a-z0-9]+", _scope_violation_key(hint)) if t}
+    if not key_tokens:
+        return False
+    failure_tokens: set[str] = set()
+    for entry in (metrics or {}).get("data_load_failures") or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("dataset") or entry.get("name") or "")
+        elif isinstance(entry, str):
+            name = entry
+        else:
+            name = ""
+        failure_tokens |= {t for t in re.split(r"[^a-z0-9]+", name.lower()) if t}
+    return bool(failure_tokens) and key_tokens <= failure_tokens
+
+
+def _scope_reduce_or_fail(
+    result: dict, hint: str, counts: dict, max_repeats: int, *, force_reduce: bool = False
+) -> tuple[dict, bool]:
+    """Decide whether a scope-shape violation is a repairable failure (first K-1
+    times) or a tolerated SCOPE REDUCTION (Kth+ time the SAME element is missing,
+    OR ``force_reduce`` — a provably-uncontrollable absence recorded in
+    data_load_failures, tolerated on first sight).
+
+    ``counts`` is the per-run {element_key: miss_count} map; it is mutated. Returns
+    ``(updated_result, tolerated)``. Tolerated → keep ``success`` and record the gap
+    in metrics.scope_gaps so the rubric downweights it (not 0) and the run converges.
+    Otherwise → flip to a repairable ``scope_shape_violation`` so the agent can add it.
+    """
+    key = _scope_violation_key(hint)
+    counts[key] = counts.get(key, 0) + 1
+    if force_reduce or (max_repeats > 0 and counts[key] >= max_repeats):
+        gaps = sorted({*((result.get("metrics") or {}).get("scope_gaps") or []), key})
+        return (
+            {**result, "scope_reduced": True,
+             "metrics": {**(result.get("metrics") or {}), "scope_gaps": gaps}},
+            True,
+        )
+    return ({**result, "success": False, "error": hint, "scope_shape_violation": True}, False)
+
+
+def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool:
+    """True when the rubric score has stopped meaningfully improving.
+
+    Looks at the last ``window`` recorded ``overall_score`` values; returns True
+    only when there are at least ``window`` samples AND their spread
+    (max − min) is ``<= epsilon`` — i.e. the score has flatlined. A genuinely
+    improving run (later scores rising above earlier ones by more than epsilon)
+    is never flagged: this detects *stuck*, not *slow*. The rubric score is the
+    one true objective, so keying convergence off it — not off experiment shape
+    — never false-positives on a run that is making real progress on some other
+    axis while a scope element stays permanently unobtainable.
+    """
+    if window <= 1 or epsilon < 0 or len(history) < window:
+        return False
+    recent = history[-window:]
+    return (max(recent) - min(recent)) <= epsilon
+
+
 def _validate_scope_metrics(
     scope_spec: object,
     metrics: dict,
@@ -3164,12 +3251,40 @@ def run_experiment(
     if result.get("success") and result.get("metrics"):
         hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
         if hint is not None:
-            result = {
-                **result,
-                "success": False,
-                "error": hint,
-                "scope_shape_violation": True,
-            }
+            # Self-healing scope reduction (2026-05-30): the first few times the
+            # metrics are shape-incomplete, treat it as a repairable failure so the
+            # agent can add the missing dataset/model. But if the SAME piece is
+            # missing K times running, it is demonstrably unobtainable (e.g. WebShop
+            # needs an external server) — TOLERATE the reduction: keep the partial,
+            # record the gap so the rubric downweights it (not 0), and let the run
+            # CONVERGE to its best achievable result instead of looping forever.
+            import os as _os
+
+            _counts = getattr(ctx, "_scope_violation_counts", None)
+            if not isinstance(_counts, dict):
+                _counts = {}
+                try:
+                    ctx._scope_violation_counts = _counts
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                _maxr = int(_os.environ.get("REPROLAB_MAX_SCOPE_FAILURE_REPEATS", "2") or "2")
+            except ValueError:
+                _maxr = 2
+            # A gap the agent recorded in data_load_failures is provably
+            # uncontrollable — tolerate on first sight, don't make it loop K times.
+            _forced = _gap_in_load_failures(hint, result.get("metrics") or {})
+            result, _tolerated = _scope_reduce_or_fail(
+                result, hint, _counts, _maxr, force_reduce=_forced
+            )
+            if _tolerated:
+                _k = _scope_violation_key(hint)
+                logger.warning(
+                    "run_experiment[%s]: scope element %r unobtainable (%s) — "
+                    "tolerating a SCOPE REDUCTION (partial credit) instead of looping.",
+                    getattr(ctx, "run_id", "?"), _k,
+                    "recorded data_load_failure" if _forced else f"{_counts.get(_k, 0)} misses",
+                )
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
     # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
@@ -3657,6 +3772,60 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             # Ensure always-emit fields are present even on failure.
             result.setdefault("compute_adjusted_score", result.get("overall_score", 0.0))
             result.setdefault("compute_scope", None)
+
+        # No-progress convergence detector. The rubric score is the one true
+        # objective, so we measure convergence off IT — never off experiment
+        # shape (which false-positives a run that is improving on some axis while
+        # a scope element stays permanently unobtainable). When the score has
+        # flatlined across the last `window` verifications AND the iteration
+        # floor is satisfied AND we are still below target, attach a
+        # `convergence_note` directing the root to ship its best partial instead
+        # of looping. Purely advisory — the hard ceiling is the iteration cap +
+        # wall-clock watchdog; this just lets a stuck run converge sooner.
+        try:
+            import os as _os
+            _hist = getattr(ctx, "_rubric_score_history", None)
+            if not isinstance(_hist, list):
+                _hist = []
+                try:
+                    ctx._rubric_score_history = _hist
+                except Exception:  # noqa: BLE001
+                    pass
+            _hist.append(float(overall_score))
+            try:
+                _win = int(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_WINDOW", "3") or "3")
+            except ValueError:
+                _win = 3
+            try:
+                _eps = float(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_EPSILON", "0.005") or "0.005")
+            except ValueError:
+                _eps = 0.005
+            try:
+                _floor = int(_os.environ.get("REPROLAB_MIN_RUBRIC_ITERATIONS", "2") or "2")
+            except ValueError:
+                _floor = 2
+            _cur_iter = int(getattr(ctx, "current_iteration", 0) or 0)
+            if (
+                not meets_target
+                and _cur_iter >= _floor
+                and _rubric_plateaued(_hist, _win, _eps)
+            ):
+                result["convergence_note"] = (
+                    f"NO-PROGRESS: rubric overall_score has held at ~{overall_score:.3f} "
+                    f"(< target {target:.3f}) across the last {_win} verifications. You have "
+                    "plateaued — re-running the same configuration will not move the score. "
+                    "If the remaining gap is unobtainable scope (see scope_gaps / "
+                    "data_load_failures), record it in the final report's scope.gaps and call "
+                    "FINAL_VAR now with this best partial; otherwise change the APPROACH "
+                    "(a materially different hypothesis), not the same experiment again."
+                )
+                logger.info(
+                    "verify_against_rubric[%s]: rubric plateaued at %.3f over %d iters — "
+                    "attached convergence_note.",
+                    getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), overall_score, _win,
+                )
+        except Exception:  # noqa: BLE001 — convergence hint is augmenting, never fatal
+            logger.exception("verify_against_rubric: plateau detection failed")
 
         result = _with_outcome(result, PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)

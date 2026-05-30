@@ -264,6 +264,67 @@ def _reconcile_verdict_against_evidence(
     return verdict, None
 
 
+def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
+    """Scan the run's emitted metrics for datasets the agent recorded as
+    unobtainable and return clear, deduped gap strings for ``scope.gaps``.
+
+    Two runtime signals (the same ones the data-unavailable-aware grader honours):
+      * ``metrics.json::data_load_failures[]`` — "I tried to load this and failed".
+      * ``metrics.json::experiments[*].status == 'data_unavailable'``.
+
+    These are surfaced so the report states plainly which datasets could not be
+    obtained — and, per the grader, were EXCLUDED from the rubric score rather
+    than scored zero. Best-effort: returns [] when no metrics file is present.
+    """
+    seen: dict[str, str] = {}  # dataset(lower) -> reason
+    outputs = project_dir / "code" / "outputs"
+    for mpath in (sorted(outputs.rglob("metrics.json")) if outputs.exists() else []):
+        try:
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a malformed metrics file must not break the report
+            continue
+        if not isinstance(data, dict):
+            continue
+        for entry in data.get("data_load_failures") or []:
+            if isinstance(entry, dict):
+                name = str(entry.get("dataset") or entry.get("name") or "").strip()
+                reason = str(entry.get("error") or entry.get("reason") or "").strip()
+            elif isinstance(entry, str):
+                name, reason = entry.strip(), ""
+            else:
+                continue
+            if name:
+                seen.setdefault(name.lower(), reason)
+        exps = data.get("experiments")
+        if isinstance(exps, dict):
+            for exp_id, meta in exps.items():
+                if isinstance(meta, dict) and str(meta.get("status", "")).lower() == "data_unavailable":
+                    name = str(exp_id).strip()
+                    if name:
+                        seen.setdefault(name.lower(), str(meta.get("reason") or "").strip())
+    gaps: list[str] = []
+    for name, reason in sorted(seen.items()):
+        tail = f" ({reason[:160]})" if reason else ""
+        gaps.append(f"{name}: dataset unobtainable{tail} — excluded from rubric score, not penalised")
+    return gaps
+
+
+def _merge_data_unavailable_gaps(scope: dict, project_dir: Path) -> dict:
+    """Merge auto-collected data-unavailable gaps into ``scope.gaps`` (deduped by
+    leading dataset token), so unobtainable datasets are reported even when the
+    root model did not declare them in scope.gaps itself."""
+    auto = _collect_data_unavailable_gaps(project_dir)
+    if not auto:
+        return scope
+    existing = list((scope or {}).get("gaps") or [])
+    existing_tokens = {str(g).split(":", 1)[0].strip().lower() for g in existing}
+    merged = list(existing)
+    for g in auto:
+        if g.split(":", 1)[0].strip().lower() not in existing_tokens:
+            merged.append(g)
+    return {**(scope or {}), "gaps": merged}
+
+
 def _verify_scope_evidence(
     scope: dict,
     run_dir: Path,
@@ -560,6 +621,14 @@ def build_final_report(
         logger.warning("report: scope-evidence cross-check — %s", scope_downgrade_reason)
         if verdict == "reproduced":
             verdict = "partial"
+
+    # Surface datasets the agent recorded as unobtainable as explicit scope.gaps,
+    # even if the root never declared them — they were EXCLUDED from the rubric
+    # score (data-unavailable-aware grader), so the report must say so plainly.
+    try:
+        verified_scope = _merge_data_unavailable_gaps(verified_scope, ctx.project_dir)
+    except Exception:  # noqa: BLE001 — gap surfacing augments the report, never fatal
+        logger.exception("report: data-unavailable gap merge failed")
 
     kwargs: dict[str, Any] = {
         "verdict": verdict,
@@ -976,7 +1045,8 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
                 lines.append(f"- {item}")
             lines.append("")
         if gaps:
-            lines.append("**Gaps:**")
+            lines.append("**Gaps:** _(items requested but not reproduced; datasets marked "
+                         "\"unobtainable\" were excluded from the rubric score, not penalised)_")
             for item in gaps:
                 lines.append(f"- {item}")
             lines.append("")

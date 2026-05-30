@@ -1,0 +1,56 @@
+"""final_report must clearly surface datasets the agent recorded as unobtainable
+(data_load_failures / status=data_unavailable) — they were excluded from the
+rubric score, so the report says so plainly (2026-05-30 user requirement)."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from backend.agents.rlm.report import (
+    _collect_data_unavailable_gaps,
+    _merge_data_unavailable_gaps,
+)
+
+
+def _write_metrics(project_dir: Path, payload: dict) -> None:
+    out = project_dir / "code" / "outputs" / "run1"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "metrics.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_collect_from_data_load_failures(tmp_path: Path):
+    _write_metrics(tmp_path, {"data_load_failures": [{"dataset": "WebShop", "error": "HTTP 404 timeout"}]})
+    gaps = _collect_data_unavailable_gaps(tmp_path)
+    assert len(gaps) == 1
+    assert gaps[0].startswith("webshop:")
+    assert "unobtainable" in gaps[0]
+    assert "excluded from rubric score" in gaps[0]
+    assert "HTTP 404" in gaps[0]
+
+
+def test_collect_from_experiment_status(tmp_path: Path):
+    _write_metrics(tmp_path, {"experiments": {"webshop_3b": {"status": "data_unavailable", "reason": "no server"}}})
+    gaps = _collect_data_unavailable_gaps(tmp_path)
+    assert any(g.startswith("webshop_3b:") and "no server" in g for g in gaps)
+
+
+def test_collect_empty_when_no_metrics(tmp_path: Path):
+    assert _collect_data_unavailable_gaps(tmp_path) == []
+
+
+def test_merge_preserves_existing_and_dedups(tmp_path: Path):
+    _write_metrics(tmp_path, {"data_load_failures": ["webshop"]})
+    scope = {"requested": "smallest-two", "ran": ["alfworld"], "gaps": ["search-qa: timed out"]}
+    merged = _merge_data_unavailable_gaps(scope, tmp_path)
+    # existing gap preserved
+    assert any("search-qa" in g for g in merged["gaps"])
+    # webshop added
+    assert any(g.startswith("webshop:") for g in merged["gaps"])
+    # idempotent: a second merge does not duplicate webshop
+    merged2 = _merge_data_unavailable_gaps(merged, tmp_path)
+    assert sum(g.startswith("webshop:") for g in merged2["gaps"]) == 1
+
+
+def test_merge_no_metrics_is_noop(tmp_path: Path):
+    scope = {"gaps": ["x"]}
+    assert _merge_data_unavailable_gaps(scope, tmp_path) == scope
