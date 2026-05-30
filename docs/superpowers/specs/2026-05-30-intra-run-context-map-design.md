@@ -55,7 +55,7 @@ This site is the single DRY chokepoint: it already fires on every non-failed pri
 `read_context_map(*, ctx: "RunContext") -> dict` — pure file I/O, mirrors `check_user_messages` one-for-one. Returns `context_map.read(ctx.project_dir)`. Registered in `PRIMITIVE_REGISTRY`, `PRIMITIVE_DESCRIPTIONS`, and given a `PRIMITIVE_TIMEOUT_S` entry of `30` (matching the other pure-I/O primitives). Fail-soft: never raises; returns the empty-map shape if anything goes wrong.
 
 ### 2.4 Prompt line (system_prompt.py)
-One instruction near the existing `understand_section` guidance (around line 145/303):
+A `_CONTEXT_MAP_SECTION` constant appended by `build_system_prompt` **only when `REPROLAB_CONTEXT_MAP` is enabled** (so the default path is never instructed to call an empty map — see §7). The instruction:
 
 > Before re-deriving a known fact via `rlm_query` / `llm_query`, call `read_context_map()` — it accumulates the datasets, metrics, hyperparameters, and environment facts already extracted this run (each with provenance). Treat its entries as heuristic hints, not ground truth; a field may list several observed values across paper sections.
 
@@ -63,18 +63,19 @@ One instruction near the existing `understand_section` guidance (around line 145
 
 `record(...)` reads only an allowlist of fields per primitive and ignores everything else (notably `_meta`, `outcome`, and the heavy `dockerfile` blob).
 
+Fields are listed (and recorded) **valuable-first** so the incremental byte ceiling (§4) keeps the high-value entries when a call is large.
+
 | Primitive | Field key | Source field | Element type | Union rule |
 |---|---|---|---|---|
 | `understand_section` | `understand_section:datasets` | `datasets` (list[dict]) | dict | union elements |
 | `understand_section` | `understand_section:metrics` | `metrics` (list[dict]) | dict | union elements |
-| `understand_section` | `understand_section:hardware_clues` | `hardware_clues` (list) | scalar/dict | union elements |
-| `understand_section` | `understand_section:open_questions` | `ambiguities` (list[dict]) | dict | union elements |
 | `understand_section` | `understand_section:training_recipe` | `training_recipe` (dict) | dict | union whole dict as one element |
+| `understand_section` | `understand_section:hardware_clues` | `hardware_clues` (list) | scalar/dict | union elements |
 | `extract_hyperparameters` | `extract_hyperparameters:<slot>` | `optimizer`, `learning_rate`, `batch_size`, `epochs_or_steps`, `scheduler` | scalar | union distinct non-null scalars |
 | `detect_environment` | `detect_environment:framework` | `framework` | scalar | union distinct non-null |
 | `detect_environment` | `detect_environment:python_version` | `python_version` | scalar | union distinct non-null |
 
-Skipped intentionally: `understand_section._meta`; `extract_hyperparameters.other_hparams` (free-form dict, unbounded — defer to a later version) and `_meta`; `detect_environment.dockerfile` (large, already on disk) and all other EnvironmentSpec fields.
+Skipped intentionally: `understand_section.ambiguities` (verbose — 7+ dicts per call — and the *least* fact-like field; it would consume the byte budget and crowd out real facts); `understand_section._meta`; `extract_hyperparameters.other_hparams` (free-form dict, unbounded — defer) and `_meta`; `detect_environment.dockerfile` (large, already on disk) and all other EnvironmentSpec fields.
 
 Null/empty values are never written (a heuristic that returns `batch_size: null` contributes nothing).
 
@@ -124,13 +125,13 @@ Null/empty values are never written (a heuristic that returns `batch_size: null`
 **Bounding (deterministic, refuse-new-keep-existing):**
 - Max **entries** (distinct fields): **40**. A *new* field key is refused once the map holds 40 entries (keeps the earlier, foundational orientation facts; the root orients first). Logged, never raised.
 - Max **values per entry**: **8**. A *new* element is refused once an entry holds 8 values. A dedup-hit on an existing element always succeeds (it does not grow the entry).
-- After every mutation the serialized `bytes` is recomputed; if it would exceed **2048 bytes**, the mutation is rolled back (the pre-mutation object is what gets written). This is the hard ceiling behind the soft entry/value caps.
+- **Byte ceiling, enforced incrementally: 2048 bytes.** Within a single `record()` call, observations are added valuable-first (per `_FIELD_SPEC` order); the serialized size is checked after each addition, and the *first* value that would exceed the ceiling is undone and the rest of that call skipped. This is deliberately **not** an all-or-nothing rollback: an all-or-nothing ceiling let one verbose field (e.g. a slice with many `datasets`) shut out the whole map, including the small high-value entries. Incremental enforcement keeps what fits, valuable-first.
 
 Writes are serialized by a module-level `threading.Lock` (the orientation primitives may run concurrently on threads in the run subprocess — system_prompt.py:312 encourages `ex.map(understand_section, slices)`), then persisted atomically via `tmp = path.with_suffix(".json.tmp"); tmp.write_text(...); os.replace(tmp, path)` (the established pattern, primitives.py:3994-3999).
 
 ## 5. Consumption
 
-The root reads the map by calling `read_context_map()` — a single cheap primitive call returning the entries. It is *not* injected as a live REPL variable (RLM has no refresh-per-iteration variable mechanism; a primitive matches the existing `check_user_messages` model and is lower-risk). The §2.4 prompt line tells the root to consult it before spending an `rlm_query` / `llm_query` on a fact it may already hold.
+The root reads the map by calling `read_context_map()` — a single cheap primitive call returning the entries. It is *not* injected as a live REPL variable (RLM has no refresh-per-iteration variable mechanism; a primitive matches the existing `check_user_messages` model and is lower-risk). The §2.4 prompt line tells the root to consult it before spending an `rlm_query` / `llm_query` on a fact it may already hold. **The prompt line is itself flag-gated** — `build_system_prompt` appends it only when `REPROLAB_CONTEXT_MAP` is on (§7), so the default path is not instructed to call an empty map.
 
 ## 6. Contamination safety
 
@@ -143,7 +144,7 @@ The central hazard of any context map is a wrong cached fact poisoning downstrea
 
 ## 7. Flag & rollback
 
-`REPROLAB_CONTEXT_MAP` — **default off**. A prototype behind a flag, consistent with the "every behavior change reversible" posture of this plan. `=on`/`=1`/`=true` opts in. When off: the write hook no-ops and `read_context_map()` returns the empty-map shape — zero behavior change. Rollback = unset the flag (no migration, the artifact is per-run and ephemeral).
+`REPROLAB_CONTEXT_MAP` — **default off**. A prototype behind a flag, consistent with the "every behavior change reversible" posture of this plan. `=on`/`=1`/`=true` opts in. When off: the write hook no-ops, `read_context_map()` returns the empty-map shape, **and the §2.4 prompt instruction is omitted** (`build_system_prompt` appends it only when the flag is on) — so the root is never *told* to call the primitive and won't burn a REPL action on an empty read. The only off-state residue is the `read_context_map` entry remaining in the auto-generated tool inventory (registered-but-unmentioned: callable, returns the empty shape, ~50 tokens in the cached prefix, no LLM cost, no instructed calls). Rollback = unset the flag (no migration; the artifact is per-run and ephemeral).
 
 ## 8. Measurement
 
@@ -159,7 +160,8 @@ Validate with an A/B mirroring the accelerator runbook: `REPROLAB_CONTEXT_MAP=on
 
 - **`context_map.py` unit** — union accumulates distinct values; dedup-hit is a no-op (idempotent); list fields flatten-and-union elements; scalar fields accumulate distinct scalars; entry cap refuses new keys but keeps existing; value cap refuses new values but keeps existing; byte ceiling rolls back an over-budget mutation; atomic write; concurrent writes (two threads, same field) serialize without loss; corrupt/missing file → empty-map read (fail-soft); null/empty source values are skipped.
 - **`read_context_map` primitive unit** — empty map → empty entries; populated map → entries; missing/corrupt file → empty shape (fail-soft); never raises.
-- **Write-hook unit (binding)** — an orientation primitive's success writes entries; a non-orientation primitive (e.g. `run_experiment`) writes nothing; a failed orientation result (carries `error`) writes nothing; flag off → no writes; the hook never propagates an exception.
+- **Write-hook unit (binding)** — an orientation primitive's success writes entries; a non-orientation primitive (e.g. `run_experiment`) writes nothing; a failed orientation result (carries `error`) writes nothing; flag off → no writes; the hook never propagates an exception. **Plus an end-to-end test:** the *real* `understand_section` heuristic (not a synthetic dict) flowing through `build_custom_tools` populates the map — guards against a silent empty-map regression if the primitive's output shape drifts.
+- **Prompt-gating unit (system_prompt)** — `build_system_prompt` *includes* the `read_context_map` instruction when the flag is on and *omits* it when off. This proves the default path stays inert rather than cementing an unconditional change.
 - **Integration (SDAR clobber regression)** — call `extract_hyperparameters` returning `batch_size=8` then `batch_size=16` on two different slices; assert the map holds **both** under `extract_hyperparameters:batch_size`. Call `understand_section` with `datasets=[ALFWorld]` then `datasets=[WebShop]`; assert the map holds **both**. This is the exact failure the union model exists to prevent.
 - **Egress contract** — `read_context_map`'s result flows through the normal `primitive_call` summary bounding in `wrap_primitive`; the artifact is a file, never an SSE payload, so no `sse_bridge` allowlist entry is needed.
 

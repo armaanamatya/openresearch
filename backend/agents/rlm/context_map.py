@@ -50,12 +50,16 @@ _SCALAR: Final[str] = "scalar"
 # everything else in a primitive's result (notably _meta, the dockerfile blob,
 # free-form other_hparams) is ignored.
 _FIELD_SPEC: Final[dict[str, dict[str, tuple[str, str]]]] = {
+    # NOTE: `ambiguities` is intentionally excluded — it is verbose (7+ dicts per
+    # call) and the LEAST fact-like field (open questions, not facts the root
+    # re-derives). Including it would consume the byte budget and crowd out the
+    # valuable datasets/metrics/recipe facts. Ordered valuable-first so the
+    # incremental byte ceiling keeps the high-value entries.
     "understand_section": {
         "datasets":        (_LIST, "datasets"),
         "metrics":         (_LIST, "metrics"),
-        "hardware_clues":  (_LIST, "hardware_clues"),
-        "ambiguities":     (_LIST, "open_questions"),
         "training_recipe": (_SCALAR, "training_recipe"),
+        "hardware_clues":  (_LIST, "hardware_clues"),
     },
     "extract_hyperparameters": {
         "optimizer":       (_SCALAR, "optimizer"),
@@ -163,27 +167,50 @@ def _union(obj: dict, primitive: str, key: str, field: str,
     return True
 
 
-def _persist(project_dir: Path, obj: dict) -> bool:
-    """Atomic write with a hard byte ceiling. Return False (rollback) if oversized."""
+def _serialized_bytes(obj: dict) -> int:
+    """Byte size of the map's persisted form, excluding the informational
+    ``bytes`` field itself (which adds a fixed ~15 bytes)."""
+    payload = {k: v for k, v in obj.items() if k != "bytes"}
+    return len(json.dumps(payload, default=str, ensure_ascii=False).encode("utf-8"))
+
+
+def _undo_last_value(obj: dict, key: str) -> None:
+    """Remove the value just appended to ``key`` (the last in its entry); drop
+    the entry if it became empty."""
+    entry = next((e for e in obj.get("entries", []) if e.get("key") == key), None)
+    if entry is None:
+        return
+    if entry.get("values"):
+        entry["values"].pop()
+    if not entry.get("values"):
+        obj["entries"].remove(entry)
+
+
+def _persist(project_dir: Path, obj: dict) -> None:
+    """Atomic write of the map (the byte ceiling is enforced incrementally in
+    ``record`` before this is called)."""
     obj["version"] = _VERSION
     obj.pop("bytes", None)
-    obj["bytes"] = len(json.dumps(obj, default=str, ensure_ascii=False).encode("utf-8"))
+    obj["bytes"] = _serialized_bytes(obj)
     final = json.dumps(obj, default=str, ensure_ascii=False)
-    if len(final.encode("utf-8")) > _MAX_BYTES:
-        logger.debug("context_map: byte ceiling (%d) exceeded, rolling back", _MAX_BYTES)
-        return False
     d = project_dir / "rlm_state"
     d.mkdir(parents=True, exist_ok=True)
     p = _path(project_dir)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(final, encoding="utf-8")
     os.replace(tmp, p)
-    return True
 
 
 def record(project_dir: Path, primitive: str, result: Any, *,
            slice_hint: Any = None, iteration: int | None = None) -> None:
-    """Union an orientation primitive's structured fields into the map. Fail-soft."""
+    """Union an orientation primitive's structured fields into the map. Fail-soft.
+
+    The byte ceiling is enforced INCREMENTALLY: observations are added
+    valuable-first (per ``_FIELD_SPEC`` order), and the first value that would
+    push the map over ``_MAX_BYTES`` is undone and the rest skipped. This keeps
+    the high-value early entries instead of an all-or-nothing rollback where one
+    verbose field shuts out the whole map.
+    """
     if not is_enabled():
         return
     spec = _FIELD_SPEC.get(primitive)
@@ -212,8 +239,14 @@ def record(project_dir: Path, primitive: str, result: Any, *,
             obj = _load(project_dir)
             changed = False
             for key, field, elem in observations:
-                if _union(obj, primitive, key, field, elem, sh, iteration, ts):
-                    changed = True
+                if not _union(obj, primitive, key, field, elem, sh, iteration, ts):
+                    continue
+                if _serialized_bytes(obj) > _MAX_BYTES:
+                    _undo_last_value(obj, key)
+                    logger.debug("context_map: byte ceiling (%d) reached, "
+                                 "skipping overflow value for %s", _MAX_BYTES, key)
+                    break
+                changed = True
             if changed:
                 _persist(project_dir, obj)
     except Exception:  # noqa: BLE001 — context map MUST NOT block the run

@@ -163,7 +163,14 @@ marker `[SUB_RLM_STALL]`, that sub-query stalled (a dead network stream) and was
 aborted — it is NOT an answer. Retry that ONE call with a smaller slice, or reduce
 how many sub-calls you dispatch concurrently. Never write the stall marker into any
 REPL variable you keep or into the final report.
+"""
 
+# Phase 8 (spec 2026-05-30): appended by build_system_prompt ONLY when
+# REPROLAB_CONTEXT_MAP is enabled, so the default (flag off) path never instructs
+# the root to call read_context_map (which would burn a REPL action on an empty
+# read every fact-derivation). The primitive stays registered-but-unmentioned
+# when off — callable, returns the empty-map shape, no instructed calls.
+_CONTEXT_MAP_SECTION = """\
 Before re-deriving a known fact via `rlm_query` / `llm_query`, call
 `read_context_map()` — it accumulates the datasets, metrics, hyperparameters,
 and environment facts already extracted this run, each with provenance. Treat
@@ -537,6 +544,14 @@ def build_system_prompt(
         _context_metadata_section(context_metadata),
         _CHAT_STEERING_SECTION,
         _PRIMITIVES_SECTION,
+    ]
+    # Phase 8: only instruct the root to consult the context map when it is
+    # enabled, so the default (flag off) path stays inert — no instructed no-op
+    # read_context_map() calls. The primitive remains registered either way.
+    from backend.agents.rlm import context_map as _cmap
+    if _cmap.is_enabled():
+        parts.append(_CONTEXT_MAP_SECTION)
+    parts += [
         _TERMINATION_CONTRACT,
         _ITERATION_DISCIPLINE,
         _TURN_EFFICIENCY,

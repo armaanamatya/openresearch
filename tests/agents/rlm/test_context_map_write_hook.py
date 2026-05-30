@@ -81,3 +81,22 @@ def test_hook_exception_does_not_break_primitive(tmp_path, monkeypatch):
     tool = _tool(ctx, "understand_section", lambda s, *, ctx: {"datasets": [{"name": "ALFWorld"}]})
     result = tool("slice")  # must still return the primitive's result
     assert result["datasets"][0]["name"] == "ALFWorld"
+
+
+def test_real_understand_section_populates_map_through_hook(tmp_path, monkeypatch):
+    """End-to-end: the REAL heuristic primitive (not a synthetic dict) flows
+    through build_custom_tools' wrapper and lands in the map. Guards against a
+    silent empty-map regression if the primitive's output shape ever drifts."""
+    monkeypatch.setenv("REPROLAB_CONTEXT_MAP", "1")
+    from backend.agents.rlm.binding import build_custom_tools
+    ctx = make_context(tmp_path)
+    tools = build_custom_tools(ctx)  # the real registry, real understand_section
+    # A slice naming a well-known benchmark the heuristic recognizes as a dataset.
+    out = tools["understand_section"]["tool"](
+        "We evaluate on the ImageNet dataset using the standard training split."
+    )
+    assert isinstance(out, dict) and "datasets" in out  # primitive ran
+    entries = cm.read(ctx.project_dir)["entries"]
+    # Whatever fields the heuristic populated for this slice must have landed.
+    assert entries, "real understand_section produced no context-map entries"
+    assert all(e["key"].startswith("understand_section:") for e in entries)
