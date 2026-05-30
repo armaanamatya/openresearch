@@ -163,6 +163,13 @@ marker `[SUB_RLM_STALL]`, that sub-query stalled (a dead network stream) and was
 aborted — it is NOT an answer. Retry that ONE call with a smaller slice, or reduce
 how many sub-calls you dispatch concurrently. Never write the stall marker into any
 REPL variable you keep or into the final report.
+
+Before re-deriving a known fact via `rlm_query` / `llm_query`, call
+`read_context_map()` — it accumulates the datasets, metrics, hyperparameters,
+and environment facts already extracted this run, each with provenance. Treat
+its entries as heuristic hints, not ground truth; a field may list several
+observed values across paper sections (e.g. a different batch size per model
+size). It is a free local read — no LLM call.
 """
 
 _TERMINATION_CONTRACT = """\
