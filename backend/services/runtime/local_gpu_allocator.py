@@ -97,6 +97,7 @@ class GpuDevice:
     memory_total_mb: int
     memory_used_mb: int
     ext_proc_count: int  # number of compute processes on this GPU (any = occupied)
+    proc_pids: tuple[int, ...] = ()  # PIDs of those compute processes (for own-holder discount)
 
 
 @dataclass(frozen=True)
@@ -202,8 +203,8 @@ def discover_gpus() -> list[GpuDevice]:
     if not devices_raw:
         return []
 
-    # --- Step 2: compute-app process counts per UUID ---
-    uuid_to_proc_count: dict[str, int] = {}
+    # --- Step 2: compute-app processes per UUID (count + PIDs) ---
+    uuid_to_pids: dict[str, set[int]] = {}
     app_output = _run_nvidia_smi(
         "--query-compute-apps=gpu_uuid,pid",
         "--format=csv,noheader,nounits",
@@ -217,7 +218,11 @@ def discover_gpus() -> list[GpuDevice]:
             if len(parts) != 2:
                 continue
             gpu_uuid = parts[0]
-            uuid_to_proc_count[gpu_uuid] = uuid_to_proc_count.get(gpu_uuid, 0) + 1
+            try:
+                pid = int(parts[1])
+            except ValueError:
+                continue
+            uuid_to_pids.setdefault(gpu_uuid, set()).add(pid)
 
     # --- Assemble GpuDevice list ---
     devices = [
@@ -226,7 +231,8 @@ def discover_gpus() -> list[GpuDevice]:
             uuid=uuid,
             memory_total_mb=mem_total,
             memory_used_mb=mem_used,
-            ext_proc_count=uuid_to_proc_count.get(uuid, 0),
+            ext_proc_count=len(uuid_to_pids.get(uuid, ())),
+            proc_pids=tuple(sorted(uuid_to_pids.get(uuid, ()))),
         )
         for idx, uuid, mem_total, mem_used in devices_raw
     ]
@@ -238,31 +244,45 @@ def free_devices(
     devices: list[GpuDevice] | None = None,
     *,
     free_mem_threshold_mb: int = 1024,
+    own_pids: "frozenset[int] | set[int] | tuple[int, ...]" = (),
 ) -> list[GpuDevice]:
-    """Filter ``devices`` to those that are unoccupied and have sufficient free memory.
+    """Filter ``devices`` to those usable by us right now.
 
-    A device is considered free iff **both** conditions hold:
+    A device is free iff it carries **no foreign compute process** and either has
+    only our own reservation holders on it, or is idle with low used-memory:
 
-    * ``memory_used_mb < free_mem_threshold_mb`` — the card has less used
-      memory than the threshold (default 1 GiB), indicating no heavyweight
-      workload is loaded.
-    * ``ext_proc_count == 0`` — no compute processes are currently running on
-      the card.
+    * idle card (no compute processes) → free iff
+      ``memory_used_mb < free_mem_threshold_mb``;
+    * card whose *only* compute processes are in ``own_pids`` → free **for us**
+      regardless of the tiny holder memory (see below);
+    * card with any process we cannot account for (a foreign PID, or an
+      ``ext_proc_count`` higher than the PIDs we captured) → excluded — we would
+      rather skip a card than evict another user.
 
-    If ``devices`` is ``None``, :func:`discover_gpus` is called to obtain a
-    fresh snapshot.
+    ``own_pids`` are the PIDs of *our own* GPU-reservation holder processes
+    (``gpu_reservation``): we deliberately park a tiny CUDA holder on a free card
+    to keep other users off it, so that card must remain leasable by our own
+    runs. Defaults to empty → identical to the historical "any process =
+    occupied" behavior.
 
-    This two-pronged check ensures that a card held by another user (high
-    used-memory *or* an active process) is excluded, even if one of the two
-    indicators temporarily lags the other.
+    If ``devices`` is ``None``, :func:`discover_gpus` is called for a fresh snapshot.
     """
     if devices is None:
         devices = discover_gpus()
-    return [
-        d
-        for d in devices
-        if d.memory_used_mb < free_mem_threshold_mb and d.ext_proc_count == 0
-    ]
+    own = frozenset(own_pids)
+    result: list[GpuDevice] = []
+    for d in devices:
+        proc = set(d.proc_pids)
+        # Foreign if any captured PID isn't ours, OR there are more processes
+        # than PIDs we could read (unattributable → treat as someone else's).
+        foreign = bool(proc - own) or d.ext_proc_count > len(proc)
+        if foreign:
+            continue
+        if proc:
+            result.append(d)  # only our reservation holders → free for us
+        elif d.memory_used_mb < free_mem_threshold_mb:
+            result.append(d)  # idle card
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +442,7 @@ class LocalGpuAllocator:
         *,
         count: int,
         free_mem_threshold_mb: int = 1024,
+        own_pids: "frozenset[int] | set[int] | tuple[int, ...]" = (),
     ) -> GpuLease | None:
         """Attempt to exclusively allocate ``count`` free GPUs for ``lease_id``.
 
@@ -468,7 +489,7 @@ class LocalGpuAllocator:
             all_devices = discover_gpus()  # module-global — monkeypatchable
             candidates = [
                 d
-                for d in free_devices(all_devices, free_mem_threshold_mb=free_mem_threshold_mb)
+                for d in free_devices(all_devices, free_mem_threshold_mb=free_mem_threshold_mb, own_pids=own_pids)
                 if d.uuid not in leased_uuids
             ]
             # candidates already sorted by index via discover_gpus
@@ -539,6 +560,7 @@ class LocalGpuAllocator:
         *,
         count: int,
         free_mem_threshold_mb: int = 1024,
+        own_pids: "frozenset[int] | set[int] | tuple[int, ...]" = (),
     ) -> int:
         """Return the number of non-overlapping ``count``-GPU allocations currently possible.
 
@@ -566,7 +588,7 @@ class LocalGpuAllocator:
             all_devices = discover_gpus()
             available = [
                 d
-                for d in free_devices(all_devices, free_mem_threshold_mb=free_mem_threshold_mb)
+                for d in free_devices(all_devices, free_mem_threshold_mb=free_mem_threshold_mb, own_pids=own_pids)
                 if d.uuid not in leased_uuids
             ]
         return max(0, len(available) // count)

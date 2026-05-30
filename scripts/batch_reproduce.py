@@ -246,6 +246,11 @@ def _run_one(
     score, log_path.
     """
     from backend.services.runtime.local_gpu_allocator import free_devices  # local import keeps startup fast
+    from backend.services.runtime.gpu_reservation import GpuReservationManager
+
+    # Reservation-aware: discount our own GPU-reservation holders so a reserved
+    # card (parked to keep other users off it) is still leasable by this run.
+    _res_mgr = GpuReservationManager(runs_root / ".gpu_reservations.json", repo_root=repo_root)
 
     lease_id = f"{_safe(paper)}-{idx}-{int(time.time())}"
     auto_mode = args.gpus_per_run == "auto"
@@ -258,8 +263,10 @@ def _run_one(
         if _shutting_down:
             raise RuntimeError("Shutting down — aborting acquire for paper %s" % paper)
 
+        own_pids = _res_mgr.holder_pids()
         if auto_mode:
-            count = max(1, len(free_devices(free_mem_threshold_mb=args.free_mem_threshold_mb)))
+            count = max(1, len(free_devices(
+                free_mem_threshold_mb=args.free_mem_threshold_mb, own_pids=own_pids)))
         else:
             count = args._gpus_per_run_int  # type: ignore[attr-defined]
 
@@ -268,6 +275,7 @@ def _run_one(
             os.getpid(),
             count=count,
             free_mem_threshold_mb=args.free_mem_threshold_mb,
+            own_pids=own_pids,
         )
         if attempt is not None:
             lease = attempt
