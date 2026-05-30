@@ -1059,6 +1059,41 @@ def _build_accel_sub_backend_kwargs(accel_ep: Any) -> dict:
     }
 
 
+def _cache_hit_ratio(project_dir: Path) -> float | None:
+    """Per-run prompt-cache hit ratio from cost_ledger.jsonl (Phase 6.1, opt #6).
+
+    ratio = sum(cache_read_input_tokens) / (sum(cache_read) + sum(input_tokens)),
+    over rows that carry LLM tokens. Returns None when there are no LLM tokens at
+    all (a run of pure file-IO primitives) or no ledger. Survey evidence shows this
+    is ~0.0 on real runs — the 32KB system prompt is re-billed every iteration.
+    Fail-soft.
+    """
+    path = project_dir / "cost_ledger.jsonl"
+    if not path.exists():
+        return None
+    total_read = 0
+    total_input = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            total_read += int(row.get("cache_read_input_tokens", 0) or 0)
+            total_input += int(row.get("input_tokens", 0) or 0)
+    except OSError:
+        return None
+    denom = total_read + total_input
+    if denom <= 0:
+        return None
+    return total_read / denom
+
+
 def _parse_gpu_device_ids() -> tuple[str, ...]:
     """Parse REPROLAB_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
 
@@ -1838,6 +1873,19 @@ def _finalize(
         write_summary_report(project_dir)
     except Exception:  # noqa: BLE001
         logger.debug("run_pipeline_rlm: could not write summary_report.json")
+
+    # Phase 6.1 (opt #6): surface the prompt-cache hit ratio. cache_read=0 across
+    # all sampled runs means the 32KB system prompt is re-billed every iteration;
+    # logging it here makes the leak observable per-run and gates the 6.2 fix.
+    if os.environ.get("REPROLAB_LOG_CACHE_TOKENS", "0").strip().lower() in {"1", "true", "on"}:
+        _ratio = _cache_hit_ratio(project_dir)
+        if _ratio is not None:
+            logger.warning(
+                "run_pipeline_rlm: prompt-cache hit ratio = %.3f (cache_read / "
+                "(cache_read + input_tokens)) — < 0.5 means the system prompt is "
+                "re-billed each iteration; consider the OAuth cache_control breakpoint (#6.2)",
+                _ratio,
+            )
 
     rubric_score = report.rubric.get("overall_score")
     cost_usd = report.cost.get("llm_usd")
