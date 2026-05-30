@@ -59,6 +59,27 @@ from backend.services.context.workspace.tools.interface import WorkspaceToolErro
 
 logger = logging.getLogger(__name__)
 
+
+def _root_sdk_max_retries() -> int:
+    """Retry budget for the RLM-root SDK completion's pre-result aclose race.
+
+    Defaults higher than the shared sub-agent budget (2) because an EMPTY root
+    completion ends the entire reproduction loop — paying one or two extra
+    retries is cheap insurance against a premature exit. Override with
+    ``REPROLAB_RLM_ROOT_SDK_MAX_RETRIES``.
+    """
+    import os
+
+    raw = os.environ.get("REPROLAB_RLM_ROOT_SDK_MAX_RETRIES", "").strip()
+    if not raw:
+        return 4
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("rlm_query: invalid REPROLAB_RLM_ROOT_SDK_MAX_RETRIES=%r", raw)
+        return 4
+
+
 # Default budgets — chosen so a typical research-paper variable (~80k
 # chars after pymupdf extraction) lands in a single L1 chunk on a
 # modern model, but a 1M-char dump triggers recursion.
@@ -520,13 +541,35 @@ class ClaudeLlmClient:
         # 2026-05-29). The worker thread is abandoned via shutdown(wait=False).
         _timeout_s = 1200.0
 
+        from backend.agents.runtime.sdk_isolation import (
+            IsolationFailure,
+            run_isolated,
+        )
+
         coro_factory = lambda: self._async_complete(system=system, user=user)
+
+        # Resilience: route the SDK coroutine through run_isolated so a
+        # PRE-result aclose race (the SDK's nested async-gen teardown bug,
+        # Defect 1) RETRIES with a fresh query instead of collapsing to an empty
+        # turn — the same protection sub-agent calls already get, now extended
+        # to the root + rubric-gen + leaf-scorer (all funnel through here). The
+        # outer ThreadPoolExecutor + future.result(timeout) stays as the
+        # Defect-2 (transport.close futex hang) wedge guard: run_isolated has no
+        # overall wall-clock cap of its own. (Root cause of the 2026-05-30
+        # prj_09047604e591d969 iteration-1 death: the root path had NO retry, so
+        # a pre-result aclose race returned "" and the rlm loop terminated.)
+        async def _isolated() -> tuple[str, dict[str, int]]:
+            return await run_isolated(
+                coro_factory,
+                name="rlm-root-sdk",
+                max_retries=_root_sdk_max_retries(),
+            )
 
         ex = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rlm-query-sdk-worker"
         )
         try:
-            future = ex.submit(lambda: asyncio.run(coro_factory()))
+            future = ex.submit(lambda: asyncio.run(_isolated()))
             try:
                 text, usage = future.result(timeout=_timeout_s)
             except concurrent.futures.TimeoutError:
@@ -535,6 +578,13 @@ class ClaudeLlmClient:
                     "worker thread and returning empty so the run continues "
                     "instead of wedging.",
                     _timeout_s,
+                )
+                return ""
+            except IsolationFailure as exc:
+                logger.warning(
+                    "rlm_query: SDK aclose retries exhausted (%s) — returning "
+                    "empty; the caller decides how to recover.",
+                    exc,
                 )
                 return ""
             self._last_usage = usage
@@ -611,6 +661,17 @@ class ClaudeLlmClient:
                         result_usage = event.usage
                     break
         except Exception as exc:  # noqa: BLE001 — salvage over crash
+            # A PRE-result aclose race (the SDK nested async-gen teardown bug)
+            # that fires before ANY assistant text streamed must PROPAGATE so
+            # the isolation layer (run_isolated, in complete()) can retry with a
+            # fresh query. Swallowing it here would return ("", usage) and the
+            # RLM root loop, seeing no action, would terminate the whole
+            # reproduction. When we DID salvage streamed text (post-result
+            # race), the result is usable — keep the salvage-over-crash path.
+            from backend.agents.runtime.sdk_isolation import is_aclose_race
+
+            if is_aclose_race(exc) and not assistant_parts and not result_text:
+                raise
             logger.warning(
                 "rlm_query: claude-agent-sdk stream raised (%s); salvaging "
                 "%d assistant text part(s)",
