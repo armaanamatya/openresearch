@@ -118,3 +118,55 @@ def test_partial_rescued_only_by_a_successful_experiment_row(tmp_path, monkeypat
     report2 = RLMFinalReport(verdict="partial", reproduction_summary="ran", baseline_metrics={})
     json_path2, _ = write_final_report_rlm(report2, tmp_path)
     assert json.loads(json_path2.read_text())["verdict"] == "partial"
+
+
+# --- Self-attest escape closure (2026-05-30) ------------------------------------
+# The gate used to be SKIPPED whenever `baseline_metrics` was non-empty. A root
+# could copy numbers out of a *failed* run_experiment into `baseline_metrics` and
+# ship `partial` with no clean success+metrics row to back it. The gate now
+# consults the strict evidence predicate regardless of self-attested metrics, so
+# the only thing that licenses a partial/reproduced verdict is a real
+# success+metrics experiment row on disk.
+
+
+def test_partial_with_self_attested_metrics_but_no_success_row_downgrades(tmp_path, monkeypatch):
+    """LOOPHOLE: self-attested baseline_metrics must not rescue a partial verdict
+    when the only experiment on disk failed. Was 'partial' (gate skipped); now 'failed'."""
+    monkeypatch.setenv("REPROLAB_EVIDENCE_GATE", "1")
+    # Only a FAILED experiment on disk — no success+metrics row.
+    _write_rows(tmp_path, {"success": False, "metrics": {"accuracy": 0.99}})
+    # ...yet the root self-attested those numbers into the report.
+    report = RLMFinalReport(
+        verdict="partial",
+        reproduction_summary="claimed numbers lifted from a failed run",
+        baseline_metrics={"accuracy": 0.99},
+    )
+    json_path, _ = write_final_report_rlm(report, tmp_path)
+    assert json.loads(json_path.read_text())["verdict"] == "failed"
+    assert "evidence_gap" in json.loads(json_path.read_text())["reproduction_summary"]
+
+
+def test_reproduced_with_self_attested_metrics_but_no_success_row_downgrades(tmp_path, monkeypatch):
+    """Same escape, 'reproduced' flavor: self-attested metrics + no success row → failed."""
+    monkeypatch.setenv("REPROLAB_EVIDENCE_GATE", "1")
+    _write_rows(tmp_path, {"success": False, "metrics": {"accuracy": 0.99}})
+    report = RLMFinalReport(
+        verdict="reproduced",
+        reproduction_summary="overclaimed on self-attested numbers",
+        baseline_metrics={"accuracy": 0.99},
+    )
+    json_path, _ = write_final_report_rlm(report, tmp_path)
+    assert json.loads(json_path.read_text())["verdict"] == "failed"
+
+
+def test_partial_with_self_attested_metrics_AND_success_row_is_kept(tmp_path, monkeypatch):
+    """Closure must NOT punish an honest run: self-attested metrics backed by a real
+    success+metrics row still ships as partial (the gate's evidence predicate passes)."""
+    monkeypatch.setenv("REPROLAB_EVIDENCE_GATE", "1")
+    _write_rows(tmp_path, {"success": True, "metrics": {"accuracy": 0.41}})
+    report = RLMFinalReport(
+        verdict="partial", reproduction_summary="ran cleanly",
+        baseline_metrics={"accuracy": 0.41},
+    )
+    json_path, _ = write_final_report_rlm(report, tmp_path)
+    assert json.loads(json_path.read_text())["verdict"] == "partial"

@@ -279,9 +279,11 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     is real for *scoring*), but it does NOT by itself license a ``partial`` /
     ``reproduced`` VERDICT here — only a cleanly-executed run with real metrics
     does. This is what the verdict gate was asked to enforce (a crashed run that
-    emitted metrics-like junk must not rescue a success-ish verdict). The gate
-    only fires when ``baseline_metrics`` is ALSO empty, so a run whose metrics the
-    root copied into ``baseline_metrics`` is unaffected.
+    emitted metrics-like junk must not rescue a success-ish verdict). Since the
+    self-attest escape was closed (2026-05-30, see ``_apply_evidence_gate``), this
+    predicate is the SOLE evidence test the gate consults — a run whose metrics the
+    root only copied into ``baseline_metrics`` (with no clean success+metrics row on
+    disk) no longer slips through.
 
     Mirrors ``run.py:_partial_evidence_from_experiment_runs`` (kept local to avoid a
     circular import). Fail-soft: any I/O / parse error returns False.
@@ -314,17 +316,40 @@ def _apply_evidence_gate(report: RLMFinalReport, project_dir: Path) -> RLMFinalR
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
     ``_reconcile_verdict_against_evidence`` only catches over-claimed "reproduced";
-    a "partial" with empty ``baseline_metrics`` and no successful ``run_experiment``
-    (the recurring /runs pattern, e.g. pb_…784) slips through. This write-time gate
-    is path-agnostic — it runs for the clean FINAL_VAR writer AND the watchdog /
-    fatal-abort writers — so no path can ship a success-ish verdict without evidence.
+    a "partial" with no successful ``run_experiment`` (the recurring /runs pattern,
+    e.g. pb_…784) slips through it. This write-time gate is path-agnostic — it runs
+    for the clean FINAL_VAR writer AND the watchdog / fatal-abort writers — so no
+    path can ship a success-ish verdict without evidence.
+
+    Self-attest escape closed 2026-05-30. The gate used to be SKIPPED whenever
+    ``report.baseline_metrics`` was non-empty (``and not report.baseline_metrics``).
+    That let a root copy numbers out of a *failed* ``run_experiment`` into
+    ``baseline_metrics`` and ship a hollow "partial"/"reproduced": Layer 0 keeps the
+    metrics (the primitive *was* called), ``_reconcile`` ignores "partial", and the
+    gate was bypassed precisely because the self-attested metrics were truthy. The
+    sole deciding condition is now the strict evidence predicate
+    (``_has_experiment_evidence`` = a row that BOTH ``success==True`` AND has
+    non-empty metrics), which is what the 2026-05-30 #1 instruction asked for — the
+    earlier code merely failed to enforce it on the self-attest path.
+
+    COST (intentional, stated): an *honest* tri-state run — ``success=False`` but
+    with real partial metrics the root copied into ``baseline_metrics`` — now
+    downgrades to "failed", not "partial". The partial numbers remain real for
+    *scoring* (the leaf scorer still grades the code), but they no longer license a
+    success-ish VERDICT. This is the strictness #1 deliberately chose.
+
+    KNOWN RESIDUAL (not closed here): the predicate checks that *a* success+metrics
+    row exists, not that ``baseline_metrics`` is *tied to* that row. A report with a
+    legit success row for experiment A but ``baseline_metrics`` lifted from failed
+    experiment B still passes. Narrower and contrived; ``_verify_scope_evidence``
+    partially covers it via model/env tags. Left as a documented gap.
+
     Disable with ``REPROLAB_EVIDENCE_GATE=0``.
     """
     if os.environ.get("REPROLAB_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
         return report
     if (
         report.verdict in {"reproduced", "partial"}
-        and not report.baseline_metrics
         and not _has_experiment_evidence(project_dir)
     ):
         note = (

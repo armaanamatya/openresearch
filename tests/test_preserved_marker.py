@@ -22,7 +22,18 @@ def _base_report(verdict: str = "partial", with_rubric: bool = True) -> RLMFinal
     )
 
 
+def _seed_evidence(d: Path) -> None:
+    """Evidence gate (2026-05-30): a partial/reproduced verdict needs a real
+    success+metrics experiment row on disk or it downgrades to 'failed'. Seed one
+    so the marker logic is exercised against a legitimately-earned verdict (the
+    self-attested ``baseline_metrics`` in ``_base_report`` no longer suffices)."""
+    (d / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"test_err_pct": 1.2}}) + "\n"
+    )
+
+
 def test_preserved_marker_written_on_partial(tmp_path: Path) -> None:
+    _seed_evidence(tmp_path)
     write_final_report_rlm(_base_report(verdict="partial"), tmp_path)
     marker = tmp_path / ".preserved"
     assert marker.exists()
@@ -37,6 +48,7 @@ def test_preserved_marker_written_on_partial(tmp_path: Path) -> None:
 
 
 def test_preserved_marker_written_on_reproduced(tmp_path: Path) -> None:
+    _seed_evidence(tmp_path)
     write_final_report_rlm(_base_report(verdict="reproduced"), tmp_path)
     assert (tmp_path / ".preserved").exists()
 
@@ -50,6 +62,7 @@ def test_preserved_marker_not_written_on_failed(tmp_path: Path) -> None:
 
 
 def test_preserved_marker_handles_missing_rubric(tmp_path: Path) -> None:
+    _seed_evidence(tmp_path)
     write_final_report_rlm(_base_report(verdict="partial", with_rubric=False), tmp_path)
     marker = tmp_path / ".preserved"
     payload = json.loads(marker.read_text())
@@ -59,6 +72,7 @@ def test_preserved_marker_handles_missing_rubric(tmp_path: Path) -> None:
 def test_preserved_marker_is_atomic(tmp_path: Path) -> None:
     # _atomic_write uses a sibling .tmp file then os.replace. Make sure the
     # marker doesn't leave a half-written .preserved.tmp behind on success.
+    _seed_evidence(tmp_path)
     write_final_report_rlm(_base_report(verdict="partial"), tmp_path)
     assert (tmp_path / ".preserved").exists()
     assert not (tmp_path / ".preserved.tmp").exists()

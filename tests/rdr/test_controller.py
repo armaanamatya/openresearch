@@ -156,9 +156,24 @@ def _patch_primitives(monkeypatch: Any, *, env_spec=None, build=None, exp=None) 
         "backend.agents.rdr.controller.build_environment",
         lambda spec, *, ctx: build or _FAKE_BUILD_OK,
     )
+    def _fake_run_experiment(code_path, env_id, *, ctx):
+        result = exp or _FAKE_EXP_OK
+        # Mirror the real run_experiment primitive's side effect: append the
+        # result to experiment_runs.jsonl. The report's evidence gate
+        # (report.py:_apply_evidence_gate, 2026-05-30) reads that file to decide
+        # whether a partial/reproduced verdict is earned; real RDR calls the same
+        # primitive, which writes it. Without this the fake silently strips the
+        # only evidence the gate can see.
+        try:
+            with (ctx.project_dir / "experiment_runs.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(result) + "\n")
+        except OSError:
+            pass
+        return result
+
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",
-        lambda code_path, env_id, *, ctx: exp or _FAKE_EXP_OK,
+        _fake_run_experiment,
     )
 
 
