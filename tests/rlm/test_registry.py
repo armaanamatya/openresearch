@@ -8,6 +8,7 @@ EXPECTED = {
     "record_candidate_outcome", "check_user_messages", "respond_to_user",
     "heartbeat", "recommend_next_tool",
     "resolve_gpu_requirements",  # dynamic-GPU spec 2026-05-23
+    "read_context_map",  # intra-run context map, spec 2026-05-30
 }
 
 
