@@ -809,9 +809,9 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         return state
 
     @app.get("/runs/{project_id}/events")
-    async def stream_run_events(project_id: str):
+    async def stream_run_events(project_id: str, request: Request):
         return StreamingResponse(
-            service.stream_events(project_id),
+            service.stream_events(project_id, request),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

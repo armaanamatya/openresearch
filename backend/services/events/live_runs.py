@@ -693,7 +693,14 @@ class FileLiveRunService:
         await asyncio.to_thread(self._write_status, project_id, status)
         return await self.get_run(project_id)
 
-    async def stream_events(self, project_id: str) -> AsyncIterator[str]:
+    async def stream_events(
+        self, project_id: str, request: Any = None
+    ) -> AsyncIterator[str]:
+        # Phase 7b: ``request`` is the Starlette Request (optional for back-compat /
+        # tests). When the viewer closes the tab, request.is_disconnected() flips
+        # True and we stop the per-viewer file-poll loop promptly instead of polling
+        # until the run itself ends. Duck-typed: any object with an async
+        # is_disconnected() works.
         last_log_len = 0
         last_status_json = ""
         last_dash_byte_offset = 0
@@ -730,6 +737,17 @@ class FileLiveRunService:
         # hammering the file system on long-running jobs.
         _running_secs: float = 0.0
         while state.status in {"queued", "running"}:
+            # Phase 7b: stop promptly if the SSE client has gone away.
+            if request is not None:
+                try:
+                    if await request.is_disconnected():
+                        logger.debug(
+                            "stream_events: client disconnected; stopping poll loop for %s",
+                            project_id,
+                        )
+                        return
+                except Exception:  # noqa: BLE001 — a flaky disconnect probe must not kill the stream
+                    pass
             _poll_interval = 1.0 if _running_secs < 60.0 else min(5.0, 1.0 + (_running_secs - 60.0) / 60.0)
             await asyncio.sleep(_poll_interval)
             if state.status == "running":

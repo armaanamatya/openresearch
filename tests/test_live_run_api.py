@@ -83,7 +83,7 @@ class FakeRunService:
         self.state.status = "stopped"
         return self.state
 
-    async def stream_events(self, project_id: str) -> AsyncIterator[str]:
+    async def stream_events(self, project_id: str, request: object = None) -> AsyncIterator[str]:
         yield sse_event("run_state", self.state.model_dump(mode="json"))
         yield sse_event("agent_log", {"projectId": project_id, "text": "hello"})
 
