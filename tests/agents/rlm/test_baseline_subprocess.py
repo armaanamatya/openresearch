@@ -16,9 +16,10 @@ from backend.agents.rlm.baseline_runner import run_baseline_in_child
 from backend.agents.rlm.primitives import _baseline_subprocess_enabled
 
 
-def test_toggle_default_on(monkeypatch):
+def test_toggle_default_off(monkeypatch):
+    # Default OFF (opt-in): the in-process path is the default the unit suite mocks.
     monkeypatch.delenv("REPROLAB_BASELINE_SUBPROCESS", raising=False)
-    assert _baseline_subprocess_enabled() is True
+    assert _baseline_subprocess_enabled() is False
 
 
 def test_toggle_off(monkeypatch):

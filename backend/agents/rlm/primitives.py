@@ -1235,14 +1235,17 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
 
 
 def _baseline_subprocess_enabled() -> bool:
-    """Run the baseline SDK call in an isolated child process (default ON).
+    """Run the baseline SDK call in an isolated child process (OPT-IN, default off).
 
-    Isolation prevents the claude-agent-sdk ``aclose()`` async-gen race from
-    poisoning the whole reproduction process (the 2026-05-30 SDAR run failed 8/8
-    iterations this way). Set ``REPROLAB_BASELINE_SUBPROCESS=0`` to revert to the
-    in-process worker-thread path.
+    Set ``REPROLAB_BASELINE_SUBPROCESS=1`` to isolate the claude-agent-sdk call in
+    a fresh process so its ``aclose()`` async-gen race crashes only that child and
+    can't poison the reproduction process. Default OFF: the in-process path is the
+    long-standing behavior the unit tests mock (``run_with_sdk`` patched in-process
+    is bypassed by the spawn child), and the isolation only covers
+    ``implement_baseline`` — the *root* model uses the same SDK, so this is a
+    partial mitigation, kept opt-in until a full root-level fix lands.
     """
-    return os.environ.get("REPROLAB_BASELINE_SUBPROCESS", "1").strip().lower() not in ("0", "false", "no")
+    return os.environ.get("REPROLAB_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _drive_baseline_child(
