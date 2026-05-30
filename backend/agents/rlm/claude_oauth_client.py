@@ -32,6 +32,38 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_S = 1800.0  # 30 minutes per completion — bounded
 
 
+def _empty_root_turn_fallback() -> str:
+    """A parseable no-op REPL turn for when the root SDK call returns empty.
+
+    An EMPTY root completion ends the rlm loop: the library parses no ```repl
+    block and no ``FINAL_VAR`` (``rlm/utils/parsing.py`` matches
+    ``r"```repl\\s*\\n(.*?)\\n```"``), so it treats the turn as terminal and
+    ships a partial report mid-reproduction — exactly the 2026-05-30
+    ``prj_09047604e591d969`` iteration-1 death after the SDK aclose race
+    exhausted ``complete()``'s retries. Returning a single no-op ```repl block
+    instead keeps the loop alive for another iteration; it is still bounded by
+    the max-iteration / wall-clock / forced-iteration policies. Opt out with
+    ``REPROLAB_RLM_EMPTY_TURN_FALLBACK=0`` (then a true empty string is
+    returned, restoring the pre-2026-05-30 behavior).
+    """
+    import os
+
+    if os.environ.get("REPROLAB_RLM_EMPTY_TURN_FALLBACK", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+    }:
+        return ""
+    return (
+        "```repl\n"
+        "# transient model-transport error — the previous turn was lost in the\n"
+        "# SDK teardown race and could not be recovered after retries. Continuing\n"
+        "# to the next iteration; re-issue your intended next step below.\n"
+        "pass\n"
+        "```"
+    )
+
+
 class ClaudeOauthClient(BaseLM):
     """rlm ``BaseLM`` that routes completions through Claude Agent SDK + OAuth.
 
@@ -118,6 +150,14 @@ class ClaudeOauthClient(BaseLM):
         # Update usage tracking (best-effort — no token counts from SDK).
         self.model_call_counts[resolved_model] += 1
         self._last_model = resolved_model
+
+        # Premature-exit guard: complete() already retries the SDK aclose race;
+        # if it STILL returns empty, emit a no-op REPL turn so the rlm root loop
+        # survives to the next iteration instead of terminating the whole
+        # reproduction on a transient transport error (see
+        # _empty_root_turn_fallback).
+        if not (text or "").strip():
+            return _empty_root_turn_fallback()
         return text
 
     async def acompletion(
