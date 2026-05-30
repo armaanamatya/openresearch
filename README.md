@@ -271,7 +271,8 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 | Document | Purpose |
 |---|---|
 | [system_overview.md](system_overview.md) | Architecture rationale and how the pieces fit together |
-| [running-the-project.md](docs/runbooks/running-the-project.md) | **Full run workflow, prerequisites, and the sandbox matrix (Docker requirements)** |
+| [starting-a-run.md](docs/runbooks/starting-a-run.md) | **Start here to run** — copy-paste readiness check, launch commands per sandbox, end-to-end verification |
+| [running-the-project.md](docs/runbooks/running-the-project.md) | Reference: full run workflow, prerequisites, and the sandbox matrix (Docker requirements) |
 | [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas |
 | [rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM architecture reference |
 | [setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions |

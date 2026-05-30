@@ -4,6 +4,9 @@
 > common cause is a missing prerequisite the system does not loudly check — usually
 > **the local Docker daemon being down**, which fails `build_environment` even for
 > RunPod runs. This doc is the end-to-end "what actually has to be running, and why."
+>
+> **Just want to launch a run?** → [starting-a-run.md](starting-a-run.md) is the copy-paste
+> recipe (readiness check → launch command → verify the workflow ran). This doc is the reference.
 
 ## TL;DR prerequisites by sandbox
 

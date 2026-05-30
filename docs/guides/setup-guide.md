@@ -78,19 +78,30 @@ python -c "import claude_agent_sdk; print('claude-agent-sdk OK')"
 python -c "import agents; print('openai-agents OK')"
 ```
 
-## 4. Docker Desktop
+## 4. A Docker engine (OrbStack **or** Docker Desktop — either works)
 
-### Install
+ReproLab only needs a working Docker-compatible engine that provides the `docker`
+CLI and daemon. **You do NOT need Docker Desktop specifically** — any of these works
+interchangeably (the code talks to the Docker socket, not a particular product):
 
-- **macOS:** [Download Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- **Windows:** [Download Docker Desktop](https://www.docker.com/products/docker-desktop/) — requires WSL 2 enabled
-- **Linux:** Install Docker Engine via your package manager
+### Install — pick one
+
+- **macOS (recommended): [OrbStack](https://orbstack.dev/)** — a lightweight, fast,
+  fully Docker-compatible engine for Apple Silicon. It provides `docker`/`docker build`/
+  `docker run` exactly like Docker Desktop, with lower memory use. Once OrbStack is
+  running, the project needs nothing else. (This is what the ReproLab author runs.)
+- **macOS / Windows:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+  (Windows requires WSL 2). Equally fine — cofounders on Docker Desktop and teammates on
+  OrbStack run the same project with no difference.
+- **Linux:** Docker Engine via your package manager.
 
 ### Configure
 
-After installing, make sure Docker is running:
+After installing, make sure the engine is running — the check is the same regardless of
+which one you chose (OrbStack and Docker Desktop both answer here):
 
 ```bash
+docker info        # must succeed — this is the daemon ReproLab uses
 docker run hello-world
 ```
 
@@ -100,8 +111,9 @@ docker run hello-world
 > (`backend_unavailable`) before reaching the GPU pod. Keep OrbStack/Docker Desktop running,
 > or use `--sandbox local`. Details + the full sandbox matrix: `docs/runbooks/running-the-project.md`.
 
-Recommended Docker Desktop settings:
-- **Resources:** At least 4 CPUs, 8 GB RAM allocated to Docker
+Recommended resources (Docker Desktop lets you set these explicitly; **OrbStack
+auto-manages them**, so no tuning needed there):
+- **Resources:** At least 4 CPUs, 8 GB RAM allocated to the engine
 - **Disk:** At least 30 GB available for images and containers
 
 ### GPU support (optional, for GPU papers)
