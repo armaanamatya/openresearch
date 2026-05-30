@@ -49,6 +49,9 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "contract_violation",        # RubricContract violations only (no other class fired)
     "silent_oom",                # exited 0 but logged a caught backward OOM (no updates)
     "insufficient_train_steps",  # trained below the convergence floor
+    "code_bug",                  # a Python exception masked as a data_load_failure
+    "degenerate_training",       # status=ok but 0 steps / zero-variance reward (no learning)
+    "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
     "unknown",                   # falls-through
 )
 
@@ -116,6 +119,23 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "insufficient_train_steps":
             "training ran fewer optimizer steps than REPROLAB_MIN_TRAIN_STEPS — increase "
             "epochs/steps so the model actually converges",
+        "code_bug":
+            "a dataset/env/model loader raised a Python exception (TypeError, "
+            "AttributeError, HfUriError, invalid model id, 'returned 0 rows', etc.) that "
+            "your code CAUGHT and recorded as a data_load_failure — masking a real bug as "
+            "data-unavailability. Fix the loader/parse bug named in data_load_failures; "
+            "only a genuine 404/403/licence/removed dataset is a true data failure",
+        "degenerate_training":
+            "training 'completed' but produced no learning signal — 0 optimizer steps "
+            "with status=ok, or reward with zero variance across the whole curve (so GRPO "
+            "has no advantage signal). Verify the reward is real and non-constant before "
+            "the RL loop (print zero-shot accuracy; fix answer extraction/matching), and "
+            "ensure optimizer.step() actually runs",
+        "disk_exhausted":
+            "free disk fell below REPROLAB_DISK_FLOOR_GB or an HF cache dir exceeded "
+            "REPROLAB_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
+            "+ slice datasets (never a full natural_questions-style download), use lighter "
+            "variants, or raise the floor/cap if the footprint is legitimately large",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
