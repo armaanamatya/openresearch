@@ -45,10 +45,12 @@ Backwards compatibility:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -566,6 +568,39 @@ def _read_idle_default() -> float:
         return 120.0
 
 
+# Phase 5 (FM-008): bound concurrent OAuth/bundled-CLI sub-RLM calls in CODE, not
+# just the system prompt. The root may dispatch up to 8 concurrent sub-calls; every
+# one crosses ClaudeLlmClient.complete, so a module-level bounded semaphore caps the
+# real OAuth-slot pressure regardless of what the root does.
+# NOTE: this bounds the OAuth/bundled-CLI path only. When the accelerator route
+# (Phase 4) is active, nav goes through rlm's OpenAIClient (its own httpx pool), so
+# this cap is a no-op there — by design (that path is not the wedge-prone one).
+_subrlm_semaphore: threading.BoundedSemaphore | None = None
+_subrlm_semaphore_limit: int = -1
+_subrlm_semaphore_lock = threading.Lock()
+
+
+def _subrlm_slot() -> Any:
+    """Return a context manager bounding concurrent sub-RLM calls.
+
+    Size from ``REPROLAB_SUBRLM_MAX_CONCURRENCY`` (default 4); ``<=0`` disables
+    (returns a no-op context). The semaphore is rebuilt only when the configured
+    limit changes — in production the env is fixed, so it is built once.
+    """
+    global _subrlm_semaphore, _subrlm_semaphore_limit
+    try:
+        limit = int(os.environ.get("REPROLAB_SUBRLM_MAX_CONCURRENCY", "4") or "4")
+    except (TypeError, ValueError):
+        limit = 4
+    if limit <= 0:
+        return contextlib.nullcontext()
+    with _subrlm_semaphore_lock:
+        if _subrlm_semaphore is None or _subrlm_semaphore_limit != limit:
+            _subrlm_semaphore = threading.BoundedSemaphore(limit)
+            _subrlm_semaphore_limit = limit
+        return _subrlm_semaphore
+
+
 # --- provider client --------------------------------------------------------
 
 class ClaudeLlmClient:
@@ -640,6 +675,9 @@ class ClaudeLlmClient:
         # asyncio.run worker thread or its spawned subprocess, and Python threads
         # aren't killable from outside, so without an explicit kill a wedged
         # ``claude`` child sits in ``kevent64`` holding the OAuth slot for hours.
+        # Phase 5: bound concurrent sub-RLM calls (held for the whole SDK round-trip).
+        _slot = _subrlm_slot()
+        _slot.__enter__()
         _pre_pids = _bundled_claude_child_pids()
 
         ex = concurrent.futures.ThreadPoolExecutor(
@@ -674,6 +712,7 @@ class ClaudeLlmClient:
             return text
         finally:
             ex.shutdown(wait=False)
+            _slot.__exit__(None, None, None)  # release the concurrency slot
 
     def _kill_wedged_children(self, pre_pids: set[int]) -> None:
         """SIGKILL bundled-claude children spawned by THIS call (fail-soft, cross-platform).
