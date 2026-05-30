@@ -265,18 +265,23 @@ def _reconcile_verdict_against_evidence(
 
 
 def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
-    """Scan the run's emitted metrics for datasets the agent recorded as
-    unobtainable and return clear, deduped gap strings for ``scope.gaps``.
+    """Scan the run's emitted metrics for datasets AND models the agent recorded
+    as unavailable, returning clear, deduped gap strings for ``scope.gaps``.
 
-    Two runtime signals (the same ones the data-unavailable-aware grader honours):
-      * ``metrics.json::data_load_failures[]`` — "I tried to load this and failed".
-      * ``metrics.json::experiments[*].status == 'data_unavailable'``.
+    Runtime signals (the same ones the unavailable-component-aware grader honours):
+      * ``data_load_failures[]`` / ``experiments[*].status=='data_unavailable'`` — datasets.
+      * ``per_model[*].status in {model_load_failed, failed, skipped, ...}``,
+        ``scope.models_skipped[]``, ``model_load_failures[]`` — models.
 
-    These are surfaced so the report states plainly which datasets could not be
-    obtained — and, per the grader, were EXCLUDED from the rubric score rather
-    than scored zero. Best-effort: returns [] when no metrics file is present.
+    These are surfaced so the report states plainly which datasets/models could
+    not be obtained — and, per the grader, were EXCLUDED from the rubric score
+    (numerator + denominator) rather than scored zero. So the run always reaches
+    a final summary + rubric and only the failed pieces drop out (2026-05-30
+    graceful-degradation mandate). Best-effort: [] when no metrics file is present.
     """
-    seen: dict[str, str] = {}  # dataset(lower) -> reason
+    datasets: dict[str, str] = {}   # name(lower) -> reason
+    models: dict[str, str] = {}     # name(lower) -> reason
+    _MODEL_FAIL = {"model_load_failed", "failed", "skipped", "data_unavailable", "unavailable"}
     outputs = project_dir / "code" / "outputs"
     for mpath in (sorted(outputs.rglob("metrics.json")) if outputs.exists() else []):
         try:
@@ -285,6 +290,7 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
             continue
         if not isinstance(data, dict):
             continue
+        # --- datasets ---
         for entry in data.get("data_load_failures") or []:
             if isinstance(entry, dict):
                 name = str(entry.get("dataset") or entry.get("name") or "").strip()
@@ -294,18 +300,34 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
             else:
                 continue
             if name:
-                seen.setdefault(name.lower(), reason)
+                datasets.setdefault(name.lower(), reason)
         exps = data.get("experiments")
         if isinstance(exps, dict):
             for exp_id, meta in exps.items():
                 if isinstance(meta, dict) and str(meta.get("status", "")).lower() == "data_unavailable":
                     name = str(exp_id).strip()
                     if name:
-                        seen.setdefault(name.lower(), str(meta.get("reason") or "").strip())
+                        datasets.setdefault(name.lower(), str(meta.get("reason") or "").strip())
+        # --- models ---
+        for m, mv in (data.get("per_model") or {}).items():
+            if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _MODEL_FAIL:
+                models.setdefault(str(m).strip().lower(), str(mv.get("reason") or mv.get("error") or "").strip())
+        for m in ((data.get("scope") or {}).get("models_skipped") or []):
+            if isinstance(m, str) and m.strip():
+                models.setdefault(m.strip().lower(), "scope reduction")
+        for entry in data.get("model_load_failures") or []:
+            if isinstance(entry, dict) and (entry.get("model") or entry.get("name")):
+                models.setdefault(str(entry.get("model") or entry.get("name")).strip().lower(),
+                                  str(entry.get("error") or entry.get("reason") or "").strip())
+            elif isinstance(entry, str) and entry.strip():
+                models.setdefault(entry.strip().lower(), "")
     gaps: list[str] = []
-    for name, reason in sorted(seen.items()):
+    for name, reason in sorted(datasets.items()):
         tail = f" ({reason[:160]})" if reason else ""
         gaps.append(f"{name}: dataset unobtainable{tail} — excluded from rubric score, not penalised")
+    for name, reason in sorted(models.items()):
+        tail = f" ({reason[:160]})" if reason else ""
+        gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
     return gaps
 
 
