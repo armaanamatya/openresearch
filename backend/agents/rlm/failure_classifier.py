@@ -61,6 +61,10 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "torch_redundancy":
             "remove torch / torchvision / torchaudio from requirements.txt — the "
             "runpod/pytorch base image already provides them",
+        "dockerfile_invalid":
+            "the Dockerfile's first non-blank line must be FROM / ARG / '# syntax='; "
+            "a prior run wrote conversational prose into it (BUG-NEW-042) — regenerate "
+            "a clean Dockerfile via implement_baseline, do not Write prose to it",
         "network_flake":
             "transient — the next attempt should succeed; consider mounting a "
             "persistent pip cache via REPROLAB_RUNPOD_NETWORK_VOLUME_ID",
@@ -113,6 +117,16 @@ def _suggest(klass: str, *, extra: str = "") -> str:
     if extra:
         msg = f"{msg} — {extra}" if msg else extra
     return msg
+
+
+def suggested_fix_for_class(klass: str) -> str:
+    """Public, deterministic class -> canonical suggested-fix string (or '').
+
+    Used by the negative-lessons distiller so an injected lesson's fix text is
+    ALWAYS classifier-generated, never an agent-authored ``suggested_fix`` field
+    that could carry arbitrary prose (spec 2026-05-30 §4).
+    """
+    return _suggest(klass)
 
 
 def classify_failure(result: dict) -> tuple[str, str]:
