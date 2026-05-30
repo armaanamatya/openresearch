@@ -53,6 +53,16 @@ PROPERTY 3 — SUB-CALLS ARE PROGRAMMATIC
   tool-use blocks in the API request; they are first-class REPL callables.  Write
   code that orchestrates them: iterate over sections, batch multiple slices,
   branch on results.
+
+OUTPUT DISCIPLINE — WRITE THE LEAST CODE THAT ADVANCES THE RUBRIC
+  Each turn, emit ONE focused, minimal code block that makes concrete progress —
+  not many redundant or speculative blocks.  Do NOT restate large code you already
+  wrote, re-print unchanged variables, or emit duplicate / near-duplicate blocks.
+  Your generated tokens are the slowest and most expensive part of every turn (and
+  output is never cached), so terseness is pure speed and budget at NO cost to
+  quality — concise code is usually more correct.  Prefer one tight block over a
+  verbose multi-block turn; let the REPL state carry context across iterations,
+  not re-emitted text.
 """
 
 _CONTEXT_METADATA_INTRO = """\
