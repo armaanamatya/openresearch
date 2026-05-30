@@ -4233,11 +4233,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "reply to the conversation and emit it to the live dashboard. Returns "
         "{sent: true} on success. Call after check_user_messages returns messages "
         "you want to acknowledge or answer.",
-    "read_context_map": "read_context_map() -> dict — the intra-run context "
-        "map: accumulated datasets, metrics, hyperparameters, and environment "
-        "facts already extracted this run, each with provenance. Call it before "
-        "re-deriving a known fact via rlm_query/llm_query. Entries are heuristic "
-        "hints; a field may list several observed values across paper sections.",
+    "read_context_map": "read_context_map() -> dict — returns the intra-run "
+        "context map: datasets, metrics, hyperparameters, and environment facts "
+        "accumulated this run, each with provenance (a field may list several "
+        "observed values across paper sections; entries are heuristic hints). "
+        "Returns an empty map unless REPROLAB_CONTEXT_MAP is enabled.",
     "heartbeat": "heartbeat(note='') -> dict — emit a liveness signal so the "
         "operator knows the root is still progressing. Returns {alive: True, "
         "counter: int, note: str}. Call this BEFORE any operation that may take "

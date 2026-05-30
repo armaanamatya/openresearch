@@ -36,3 +36,15 @@ def test_read_context_map_registered():
     from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY, PRIMITIVE_DESCRIPTIONS
     assert "read_context_map" in PRIMITIVE_REGISTRY
     assert "read_context_map" in PRIMITIVE_DESCRIPTIONS
+
+
+def test_description_is_declarative_not_imperative():
+    """Off-state must be genuinely inert: the tool description ships in the auto
+    inventory regardless of the flag, so it must NOT instruct the root to call
+    the primitive (that imperative lives only in the flag-gated prompt section).
+    """
+    from backend.agents.rlm.primitives import PRIMITIVE_DESCRIPTIONS
+    desc = PRIMITIVE_DESCRIPTIONS["read_context_map"]
+    assert "Call it" not in desc
+    assert "before re-deriving" not in desc
+    assert "empty" in desc and "REPROLAB_CONTEXT_MAP" in desc  # self-disclosing
