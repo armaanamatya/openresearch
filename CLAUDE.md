@@ -232,6 +232,9 @@ Read whichever is relevant before non-trivial changes:
 
 The 2026-05-29 incident: SDAR attempt 6 (`prj_88ff0178a0e5b817`) failed at `run_experiment` with `dockerfile parse error on line 1: unknown instruction: You've` because the implement_baseline sub-agent wrote `"You've already built the environment so this is just documentation."` into the Dockerfile. Tests: `tests/agents/rlm/test_dockerfile_shape_guard.py`.
 
+## Run-status enum drift (BUG-NEW-045, 2026-05-30)
+`RunStatus = Literal[...]` in `backend/services/events/live_runs.py:45` is the single source of truth for `LiveRunState.status`. It previously listed only `queued/running/stopped/completed/failed`, but two terminal states reach `demo_status.json` from other writers: `"killed"` (the BUG-NEW-041 CLI SIGTERM/SIGHUP handler) and `"interrupted"` (`run_liveness.sweep_orphaned_runs`). Because `_load_run` builds `LiveRunState(**status)`, any run dir carrying one of those values raised a pydantic `ValidationError` → **HTTP 500** on every endpoint that constructs `LiveRunState` (`GET /runs/latest`, `GET /runs/{id}`), which broke the lab UI's latest-run / auto-resume pointer. Fix: add both terminal states to the `RunStatus` Literal. The `{"queued","running"}` active-run guards in `_load_run`/`_latest_run` already exclude them (both are terminal), so the only effect is that they parse instead of 500-ing. Found during the 2026-05-30 live service-validation pass (run `prj_09047604e591d969` carried `status="killed"`). Tests: `tests/services/events/test_live_runs_terminal_status.py` (drives the real `/runs/latest`, `/runs/{id}`, `/runs` HTTP paths).
+
 ## CLI signal handling (BUG-NEW-041, 2026-05-29)
 `backend/cli.py::_install_termination_handlers` registers SIGTERM/SIGHUP handlers in `cmd_reproduce` that:
 1. Atomically write `runs/<project>/demo_status.json::status="killed"` with `killReason="received signal <n>"`.

@@ -42,7 +42,14 @@ ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
 ModelChoice = str
-RunStatus = Literal["queued", "running", "stopped", "completed", "failed"]
+# "killed" is written by the CLI SIGTERM/SIGHUP handler (BUG-NEW-041); "interrupted"
+# by the orphan-run liveness sweep (run_liveness.sweep_orphaned_runs). Both are terminal
+# states that reach demo_status.json, so LiveRunState must parse them — otherwise any
+# endpoint that builds LiveRunState (e.g. GET /runs/latest, /runs/{id}) 500s. The
+# {"queued","running"} active-run guards correctly exclude them (they are terminal).
+RunStatus = Literal[
+    "queued", "running", "stopped", "completed", "failed", "killed", "interrupted"
+]
 
 
 class ProviderCredentials(BaseModel):
