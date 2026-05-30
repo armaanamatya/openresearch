@@ -50,11 +50,12 @@ Phases 1→2→4 and 8→9 are ordered; 3, 5, 6, 7, 8 are otherwise independent.
 | Phase 7e RunPod granular timeout | ✅ done | committed |
 | Phase 7g run-replay harness | ✅ done | committed (verified on real runs) |
 | Phase 7b SSE disconnect | ✅ done | committed |
+| Phase 8 PEEK context-map | ✅ done | flagged off (`REPROLAB_CONTEXT_MAP`); **union-per-field** (not write-once) — design `2026-05-30-intra-run-context-map-design.md`, plan `2026-05-30-intra-run-context-map.md` |
 | Phase 6.2 OAuth cache_control breakpoint | ⏸ deferred | needs probing whether `claude-agent-sdk` forwards a structured system block (real SDK) |
 | Phase 7a frontend stale→"stalled" pill | ⏸ deferred | UI already shows a "no signal Ns" chip (`rlm-header.tsx:148-183`); pill-flip is polish; needs vitest/RTL + careful display-vs-backend status typing |
 | Phase 7d Docker OOM detection | ⏸ deferred | exec-vs-container `OOMKilled` ambiguity (exit 137 ≠ container OOMKilled for an exec); needs real Docker to verify |
 | Phase 7f provider request-id capture | ⏸ deferred | needs the real `ResultMessage` shape (which id field the bundled CLI exposes) |
-| Phases 8–9 PEEK / MUSE | ⏸ not started | flag-gated prototypes; require a brainstorm first |
+| Phase 9 MUSE negative-lessons | ⏸ not started | flag-gated prototype; requires a brainstorm first |
 
 The four deferred 6.2/7a/7d/7f items share a theme: each needs a **real environment** (real SDK / browser / Docker) to verify, so they were held back rather than shipped unverified to a hot path. They remain fully specified above for a focused follow-up.
 
@@ -973,9 +974,9 @@ Add a `"stalled"` arm to `RlmRunStatus` + `statusTone` (warn tone, `pulse:false`
 
 ---
 
-## Phase 8: PEEK context-map prototype (deterministic, write-once) — **REQUIRES BRAINSTORM**
+## Phase 8: PEEK context-map prototype — **✅ IMPLEMENTED (brainstorm superseded this sketch)**
 
-> **Before implementing:** run `superpowers:brainstorming` on the map schema, the reuse instruction, and the contamination-eviction policy. This is a prototype, not a locked design.
+> **SUPERSEDED (2026-05-30):** the brainstorm changed the keying from "write-once" to **union-per-field** — a deterministic heuristic called per paper section would clobber under write-once (SDAR's 3 model sizes / 3 environments collapse to the last one). Consumption is a `read_context_map()` primitive (not a REPL-injected dict); DELETE is dropped (the union model + the Phase 3 evidence gate cover contamination — see the design's §6). Locked design: `docs/superpowers/specs/2026-05-30-intra-run-context-map-design.md`; plan: `docs/superpowers/plans/2026-05-30-intra-run-context-map.md`. The sketch below is the pre-brainstorm version, kept for provenance.
 
 **Problem:** The root re-issues `rlm_query`/`llm_query` navigation calls to rediscover the same paper facts each iteration (redundant LLM cost + drift). PEEK (arXiv 2605.19932, evaluated *on* RLM) caches a bounded orientation map and reports 93–145 fewer iterations.
 
