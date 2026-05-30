@@ -1038,6 +1038,27 @@ def _stamp_demo_status_updated(project_dir: Path) -> None:
         logger.debug("_stamp_demo_status_updated: failed", exc_info=True)
 
 
+def _build_accel_sub_backend_kwargs(accel_ep: Any) -> dict:
+    """Sub-backend kwargs for an active (non-Azure) accelerator endpoint (Phase 4).
+
+    Adds a read timeout that flows to ``openai.OpenAI(timeout=...)`` via rlm's
+    ``OpenAIClient`` → ``BaseLM.timeout`` (verified ``rlm/clients/openai.py``,
+    ``base_lm.py``), so a stalled nav call on the openai/httpx transport raises
+    ``ReadTimeout`` instead of hanging. Default 120s via
+    ``REPROLAB_SUBRLM_OPENAI_TIMEOUT_S``.
+    """
+    try:
+        timeout_s = float(os.environ.get("REPROLAB_SUBRLM_OPENAI_TIMEOUT_S", "120") or "120")
+    except (TypeError, ValueError):
+        timeout_s = 120.0
+    return {
+        "model_name": accel_ep.model,
+        "base_url": accel_ep.base_url,
+        "api_key": accel_ep.api_key,
+        "timeout": timeout_s,
+    }
+
+
 def _parse_gpu_device_ids() -> tuple[str, ...]:
     """Parse REPROLAB_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
 
@@ -1465,13 +1486,7 @@ async def run_pipeline_rlm(
     _other_backend_kwargs = [root_model.sub_backend_kwargs]
     if _accel_ep is not None and not _accel_ep.is_azure:
         _other_backends = ["openai"]
-        _other_backend_kwargs = [
-            {
-                "model_name": _accel_ep.model,
-                "base_url": _accel_ep.base_url,
-                "api_key": _accel_ep.api_key,
-            }
-        ]
+        _other_backend_kwargs = [_build_accel_sub_backend_kwargs(_accel_ep)]
 
     # Phase 2 (FM-003/006): track open depth>=1 sub-calls so a wedged sub-RLM
     # (a sub_rlm_spawned with no matching sub_rlm_complete) surfaces as a

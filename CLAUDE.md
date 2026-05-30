@@ -74,6 +74,18 @@ The RLM path has **two distinct LLM auth surfaces** and they are NOT interchange
 ### Sandbox config gotcha
 `REPROLAB_FORCE_SANDBOX` **overrides per-run `--sandbox` flags** when non-empty — useful for forcing all runs to Docker or local, but it makes `--sandbox runpod` a no-op. Since 2026-05-23 the code default is empty, so a missing/commented `.env` line honors per-run sandbox requests. Set `REPROLAB_FORCE_SANDBOX=docker` or `REPROLAB_FORCE_SANDBOX=local` only when a deployment must hard-pin execution. `REPROLAB_RUNPOD_CLOUD_TYPE` chooses `COMMUNITY` (≈ $0.34/hr on RTX 4090) vs `SECURE` (≈ $0.69/hr); the `.env` shipped with the repo defaults to `COMMUNITY` since 2026-05-22 (was `SECURE` before).
 
+### gpt-5-mini navigation route (Phase 4, 2026-05-30)
+Route the hot-volume `rlm_query`/`llm_query` *navigation* sub-calls off the bundled-CLI transport (no read-idle timeout, orphaned-child wedge — FM-001) onto OpenAI **gpt-5-mini** via the openai/httpx transport (raises `ReadTimeout`, retries 2×, leaks no subprocess). The quality-critical grader (`verify_against_rubric`/`propose_improvements`) stays on **Sonnet-OAuth** — keep `REPROLAB_ACCELERATOR_SCOPE=navigation` (default); do NOT use `all`. Opt-in (the user has OpenAI credits):
+```
+REPROLAB_ACCELERATOR=endpoint
+REPROLAB_ACCELERATOR_BASE_URL=https://api.openai.com/v1
+REPROLAB_ACCELERATOR_MODEL=gpt-5-mini
+REPROLAB_ACCELERATOR_SCOPE=navigation
+REPROLAB_SUBRLM_OPENAI_TIMEOUT_S=120   # read-idle bound on the openai transport
+# OPENAI_API_KEY is used automatically for api.openai.com (no need to set REPROLAB_ACCELERATOR_API_KEY).
+```
+Mechanism: `backend/agents/rlm/accelerator.py::_resolve_endpoint` (OPENAI_API_KEY fallback + authenticated probe) + `run.py::_build_accel_sub_backend_kwargs` (threads `timeout` into rlm's `OpenAIClient`). A/B against the default Haiku-OAuth route before making it default: compare `final_report.json::rubric.overall_score`, wall-clock, and `sub_rlm_stalled` incidence across ≥3 paired SDAR runs. **Rollback:** `REPROLAB_ACCELERATOR=off`.
+
 ### Dynamic GPU selection (spec 2026-05-23)
 When `REPROLAB_DYNAMIC_GPU=true` (default), the RLM root calls `resolve_gpu_requirements(...)` once per run to map paper hardware clues to a RunPod SKU. The plan caches to `runs/<id>/rlm_state/gpu_plan.json` and is consumed by every subsequent `run_experiment`. On CUDA OOM, `run_experiment` auto-escalates up the catalog ladder (up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2` times), each escalation bounded by the per-GPU cap `REPROLAB_MAX_GPU_USD_PER_HOUR=10.0` (a `float`; `0` disables the cap). Total run-level pod spend is bounded by `REPROLAB_MAX_RUN_GPU_USD=10.0` (also a `float`; `0` disables) via `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=true` (default) hard-caps count=1; when false, count is `min(paper_count, floor(max_gpu_usd_per_hour / sku_rate))`. Manual override: `--vram-gb <n>` sets `REPROLAB_VRAM_OVERRIDE_GB` → `ctx.vram_override`, bypassing the LLM estimate but still applying the headroom multiplier (`REPROLAB_DYNAMIC_GPU_HEADROOM=1.25`). SKU catalog (8 SKUs, RTX 4090 through H200): `backend/services/runtime/gpu_catalog.py` — refresh quarterly. All three GPU events (`gpu_resolved`, `gpu_escalated`, `gpu_fallback`) flow through `dashboard_events.jsonl` generically; no SSE allowlist entry needed.
 

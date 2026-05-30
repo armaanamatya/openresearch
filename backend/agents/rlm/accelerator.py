@@ -374,8 +374,16 @@ def _resolve_endpoint(*, explicit: bool) -> AcceleratorEndpoint | None:
         return None
 
     api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
+    # Phase 4 convenience: targeting OpenAI's public endpoint with no explicit
+    # accelerator key falls back to OPENAI_API_KEY (the user's existing credits),
+    # so the gpt-5-mini nav route needs only base_url + model + ACCELERATOR=endpoint.
+    # Self-hosted hosts keep the "local" sentinel.
+    if api_key in ("", "local") and "api.openai.com" in base_url:
+        api_key = os.environ.get("OPENAI_API_KEY", api_key)
 
-    if not probe_endpoint(base_url):
+    # Authenticate the probe so an OpenAI-style endpoint returns 200 (not 401)
+    # on GET /v1/models with a real key.
+    if not probe_endpoint(base_url, api_key=api_key):
         if explicit:
             raise AcceleratorError(
                 f"Accelerator endpoint {base_url!r} did not respond to a health probe. "
