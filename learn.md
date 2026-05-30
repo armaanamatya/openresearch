@@ -11,6 +11,20 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-30 — Multi-GPU "shard" was really DDP *replication*; replaced the torchrun-wrap with a harness accelerate+FSDP2 launcher
+
+**Symptom.** The 3B SDAR model OOMed a 24 GB card every time, and the "fix" kept being single-GPU + gradient-checkpointing + tiny batches — a band-aid that re-OOMed under any memory pressure. The multi-GPU attempts that came before (`torchrun`) either stalled (per-rank setup duplication — the 4-rank ALFWorld hang) or still OOMed.
+
+**Root cause.** Two conflated mistakes. (1) The prior multi-GPU path *replicated* rather than *sharded*. `torchrun`/DDP puts a full copy of the model on every card, so a 3B student + frozen teacher + fp32 Adam (~36 GB of optimizer state alone) still doesn't fit one 24 GB card — replication does NOTHING for OOM. Only **sharding** (FSDP/ZeRO splits params+grads+optimizer across cards) fixes it. (2) The torchrun-wrap re-launched the *whole* agent script per rank, so un-rank-guarded setup (pip / dataset download / env init) ran on every rank → the hang. We retreated to single-GPU, which is exactly why we kept OOMing.
+
+**Fix.** The harness now OWNS a correct sharded launch. `primitives._resolve_distributed_launch` (replacing `_maybe_torchrun_wrap`) rewrites a plain `python train.py` to `accelerate launch --config_file <harness FSDP2 yaml> --num_processes <ngpu> --main_process_port <free>` whenever >1 GPU is leased and the script carries FSDP/accelerate markers. The harness writes the FSDP2 config (full-shard, bf16, transformer auto-wrap) and `pip install -U accelerate` in bootstrap. It is **dynamic**: ≤1 GPU → run verbatim (FSDP on one card is pure all-gather overhead, and this is the graceful 1-GPU/CPU fallback); a free rendezvous port avoids collisions across concurrent batch runs. The agent writes only the minimal Accelerate API (`accelerator.prepare(model, optimizer)` + `is_main_process`-guarded setup); the SDAR algorithm stays hand-written and legible to the rubric. Guidance (general `baseline_implementation._RUNTIME_DETECTION_BLOCK` + the SDAR file) now mandates Accelerate and forbids DDP/DataParallel for a model that doesn't fit one card.
+
+**Lesson.** "Use multiple GPUs" is ambiguous: replication (DDP) scales throughput but NOT memory; sharding (FSDP/ZeRO) is the only thing that fixes OOM. Make the harness own the *correct* distributed launch — don't hope the agent hand-writes FSDP, and never conflate the two parallelism kinds.
+
+**Guardrail.** `tests/agents/rlm/test_distributed_launch.py` (accelerate+FSDP2 rewrite on multi-GPU; FSDP2 config contents; free-port probe; no-op for ≤1 GPU / non-distributed / already-launched / missing-script / disable-toggle).
+
+---
+
 ## 2026-05-29 — FSDP/multi-GPU training silently collapsed to one GPU because the launch was `python`, not `torchrun`
 
 **Symptom.** A run allocated 4 GPUs but trained on only GPU 0 (the other three idle); larger models then OOMed. The agent-generated `train.py` was full of correct FSDP code (`init_process_group`, `FullyShardedDataParallel`, gradient checkpointing in the right order).
@@ -21,7 +35,9 @@ in **Cross-cutting principles** below.
 
 **Lesson.** Distributed *code* is inert without a distributed *launch*. Whenever the agent can write FSDP/DDP, the harness must guarantee the matching `torchrun`/`accelerate` entrypoint — guidance alone isn't enough, so enforce it at the execution layer too.
 
-**Guardrail.** `tests/agents/rlm/test_torchrun_wrap.py` (wraps FSDP scripts on multi-GPU; no-op for single-GPU / non-distributed / already-torchrun / missing-script).
+**Guardrail.** `tests/agents/rlm/test_distributed_launch.py` (the torchrun-era `test_torchrun_wrap.py` was replaced 2026-05-30).
+
+**Superseded 2026-05-30.** `_maybe_torchrun_wrap` → `_resolve_distributed_launch`, and bare `torchrun` → `accelerate launch` + FSDP2 (sharding, not DDP replication). See the entry above — replication was the deeper bug.
 
 ---
 
