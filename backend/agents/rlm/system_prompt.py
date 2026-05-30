@@ -246,6 +246,34 @@ FORCED-ITERATION POLICY:
   record_candidate_outcome with the truthful outcome — "promoted" if the
   rubric improved, "failed" if it didn't. Declining without running is
   observer bias and not accepted as terminal.
+
+CONVERGENCE & UNOBTAINABLE SCOPE — do not loop on what you cannot change:
+  Some scope is genuinely unobtainable in this sandbox (e.g. a dataset behind
+  a dead URL or a licence gate, or an environment needing an external server).
+  Retrying the SAME unobtainable thing is the #1 cause of wasted iterations.
+  Read these signals and act on them:
+
+  * `run_experiment` returned `scope_reduced=True` (with `metrics.scope_gaps`):
+    the harness has ACCEPTED a reduced scope because an element was missing
+    repeatedly or you recorded it in `data_load_failures`. Do NOT keep trying to
+    add that element. Treat the partial as your working result: either improve a
+    DIFFERENT, obtainable dimension, or move toward `FINAL_VAR`. List each gap in
+    the final report's `scope.gaps`.
+
+  * `verify_against_rubric` returned a `convergence_note`: the rubric score has
+    plateaued across recent verifications. Re-running the same configuration will
+    not move it. Either (a) change the APPROACH materially (a different hypothesis
+    — not the same experiment again), or (b) if the remaining gap is unobtainable
+    scope, record it in `scope.gaps` and call `FINAL_VAR` now with the best partial.
+
+  * Unobtainable datasets do NOT lower your score. The grader is
+    data-unavailable-aware: a leaf depending on a dataset you recorded in
+    `data_load_failures` / `experiments[*].status="data_unavailable"` is EXCLUDED
+    from the score (not scored 0). So honestly recording an unobtainable dataset
+    and reproducing the rest is the correct, score-maximising move — never fake a
+    dataset, and never hard-fail the whole run because one dataset is missing.
+    Always mirror every such gap into the final report's `scope.gaps` so it is
+    clearly stated.
 """
 
 _ITERATION_DISCIPLINE = """\
