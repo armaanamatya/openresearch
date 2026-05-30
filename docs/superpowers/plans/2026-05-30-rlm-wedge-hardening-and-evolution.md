@@ -395,7 +395,7 @@ git add backend/services/context/workspace/tools/rlm_query.py backend/agents/rlm
 git commit -m "feat(rlm): read-idle timeout + typed sub-RLM stall sentinel + hardened kill (FM-001/002/007)"
 ```
 
-**Acceptance:** a stalled stream is bounded at `read_idle_s` (≤120s default) not 600s; the root receives `[SUB_RLM_STALL]…` not `""`; partial text is preferred; descendants are killed fail-soft; no orphaned child after the call. **Rollback:** `REPROLAB_SUBRLM_READ_IDLE_S=0` disables the read-idle path (reverts to total-time-only).
+**Acceptance:** the root receives `[SUB_RLM_STALL]…` not `""` (FM-002, **guaranteed**); partial text is preferred; descendants are killed fail-soft **per-pid (never `killpg` — the SDK child shares our process group, so `killpg` would SIGKILL the backend)**; no orphaned child after the call. The **≤120s read-idle bound is best-effort**: `asyncio.wait_for` awaits the cancelled `__anext__`, which may hit the documented Defect-2 (`transport.close()` futex hang) cleanup path and degrade to the **600s hard backstop** (still bounded; the `future.result(600)` always fires). **Verification gate (do NOT claim "120s" until met):** run the E2E with an induced stall (a `tc`/proxy that half-opens the socket to api.anthropic.com against the *real* SDK) and confirm the run unsticks in ≈`read_idle_s`, not 600s. If it degrades, the fast bound needs a different mechanism (e.g. a separate idle-watchdog that abandons the worker), tracked as a follow-up. **Rollback:** `REPROLAB_SUBRLM_READ_IDLE_S=0` disables the read-idle path (reverts to total-time-only).
 
 ---
 

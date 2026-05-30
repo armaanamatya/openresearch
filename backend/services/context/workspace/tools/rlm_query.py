@@ -678,10 +678,13 @@ class ClaudeLlmClient:
     def _kill_wedged_children(self, pre_pids: set[int]) -> None:
         """SIGKILL bundled-claude children spawned by THIS call (fail-soft, cross-platform).
 
-        The SDK spawns the CLI outside our process group, so we can't ``killpg`` a
-        group we own; we diff post-vs-pre child PIDs and SIGKILL the new ones, with a
-        best-effort ``killpg`` for any grandchildren. Non-POSIX / pgrep-less hosts
-        no-op. Never raises (D3).
+        ``_bundled_claude_child_pids`` already BFS-walks the full descendant tree
+        (grandchildren included) and filters to the bundled binary, so we SIGKILL
+        each discovered pid INDIVIDUALLY. We deliberately do NOT ``killpg``: the SDK
+        spawns the CLI via ``anyio.open_process`` WITHOUT ``start_new_session``, so the
+        child usually shares OUR process group — ``killpg(getpgid(child))`` would
+        SIGKILL the backend itself. The per-pid walk reaps the same descendants safely.
+        Non-POSIX / pgrep-less hosts no-op. Never raises (D3).
         """
         import os as _os
         import signal as _signal
@@ -695,10 +698,6 @@ class ClaudeLlmClient:
             return
         for pid in wedged:
             try:
-                try:  # best-effort grandchildren via the child's own group
-                    _os.killpg(_os.getpgid(pid), _signal.SIGKILL)
-                except (OSError, ProcessLookupError, AttributeError):
-                    pass
                 _os.kill(pid, _signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 pass

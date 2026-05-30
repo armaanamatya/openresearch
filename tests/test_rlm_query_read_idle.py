@@ -134,3 +134,27 @@ def test_kill_helpers_are_fail_soft(monkeypatch):
     monkeypatch.setattr(rq, "_bundled_claude_child_pids", lambda: {999999})
     client._kill_wedged_children(set())  # must not raise
     client._notify_stall(1.0)  # sink None — must not raise
+
+
+def test_kill_never_uses_killpg(monkeypatch):
+    """REGRESSION: the bundled child shares OUR process group (SDK uses no setsid),
+    so killpg(getpgid(child)) would SIGKILL the backend. We must SIGKILL per-pid only.
+    """
+    import os
+    import signal
+    from backend.services.context.workspace.tools import rlm_query as rq
+
+    killed: list[tuple[int, int]] = []
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(
+        os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
+    )
+    # One "new" child appears after the call.
+    monkeypatch.setattr(rq, "_bundled_claude_child_pids", lambda: {424242})
+
+    client = rq.ClaudeLlmClient(model="m", max_turns=1)
+    client._kill_wedged_children(pre_pids=set())
+
+    assert (424242, signal.SIGKILL) in killed, "the wedged child must be SIGKILL'd individually"
+    assert killpg_calls == [], "killpg must NEVER be called (would kill the backend's own group)"
