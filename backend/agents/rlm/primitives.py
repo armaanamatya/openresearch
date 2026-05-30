@@ -4046,6 +4046,26 @@ def respond_to_user(message: str, *, ctx: "RunContext") -> dict:
     return _with_outcome({"sent": True}, PrimitiveOutcome.ok)
 
 
+def read_context_map(*, ctx: "RunContext") -> dict:
+    """Return the intra-run context map (PEEK-lite orientation cache).
+
+    Pure file I/O — no LLM call. Mirrors check_user_messages. Returns the
+    accumulated map ``{version, bytes, entries:[...]}`` where each entry unions a
+    primitive field's observed values across paper sections (datasets, metrics,
+    hyperparameters, environment facts), each with provenance. Returns the
+    empty-map shape when ``REPROLAB_CONTEXT_MAP`` is off or on any error.
+
+    Treat entries as heuristic hints, not ground truth: a field may list several
+    observed values across sections. See
+    docs/superpowers/specs/2026-05-30-intra-run-context-map-design.md.
+    """
+    from backend.agents.rlm import context_map as _cmap
+    try:
+        return _cmap.read(ctx.project_dir)
+    except Exception:  # noqa: BLE001 — fail-soft; a navigation aid must never raise
+        return {"version": "v1", "bytes": 0, "entries": []}
+
+
 # Module-level monotonic counter for heartbeat events (thread-safe via GIL for
 # int increment; each run process is single-worker so collisions are impossible).
 _heartbeat_counter: int = 0
@@ -4150,6 +4170,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "record_candidate_outcome": record_candidate_outcome,
     "check_user_messages": check_user_messages,
     "respond_to_user": respond_to_user,
+    "read_context_map": read_context_map,
     "heartbeat": heartbeat,
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
@@ -4212,6 +4233,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "reply to the conversation and emit it to the live dashboard. Returns "
         "{sent: true} on success. Call after check_user_messages returns messages "
         "you want to acknowledge or answer.",
+    "read_context_map": "read_context_map() -> dict — the intra-run context "
+        "map: accumulated datasets, metrics, hyperparameters, and environment "
+        "facts already extracted this run, each with provenance. Call it before "
+        "re-deriving a known fact via rlm_query/llm_query. Entries are heuristic "
+        "hints; a field may list several observed values across paper sections.",
     "heartbeat": "heartbeat(note='') -> dict — emit a liveness signal so the "
         "operator knows the root is still progressing. Returns {alive: True, "
         "counter: int, note: str}. Call this BEFORE any operation that may take "

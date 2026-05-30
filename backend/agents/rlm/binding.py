@@ -49,6 +49,7 @@ PRIMITIVE_TIMEOUT_S: dict[str, int] = {
     "propose_improvements": 300,
     "check_user_messages": 30,
     "respond_to_user": 30,
+    "read_context_map": 30,
     "record_candidate_outcome": 60,
     "heartbeat": 30,
     # implement_baseline + run_experiment have their own existing caps — NOT here.
