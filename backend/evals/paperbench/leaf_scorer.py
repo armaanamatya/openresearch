@@ -342,6 +342,28 @@ def _detect_data_unavailable_leaves(
             pass
         break  # use the first (lexicographically earliest) metrics.json only
 
+    # Signal 1b: failed / skipped MODELS. Graceful degradation (2026-05-30 user
+    # mandate) excludes a model's leaves from the rubric — numerator AND
+    # denominator — exactly like an unobtainable dataset, so a model that could
+    # not be loaded or run does not drag the score to zero. Honest runtime
+    # signals: per_model[m].status in {model_load_failed, failed, ...},
+    # scope.models_skipped (intentional or forced scope reduction, e.g. the SDAR
+    # 7B), and an optional model_load_failures list mirroring data_load_failures.
+    failed_models: list[str] = []
+    for _m, _mv in (metrics_data.get("per_model") or {}).items():
+        if isinstance(_mv, dict) and str(_mv.get("status", "")).lower() in {
+            "model_load_failed", "failed", "skipped", "data_unavailable", "unavailable",
+        }:
+            failed_models.append(str(_m))
+    for _m in ((metrics_data.get("scope") or {}).get("models_skipped") or []):
+        if isinstance(_m, str) and _m:
+            failed_models.append(_m)
+    for _entry in metrics_data.get("model_load_failures") or []:
+        if isinstance(_entry, dict) and (_entry.get("model") or _entry.get("name")):
+            failed_models.append(str(_entry.get("model") or _entry.get("name")))
+        elif isinstance(_entry, str) and _entry:
+            failed_models.append(_entry)
+
     # Signal 2: scope.gaps from final_report.json
     gap_texts: list[str] = []
     report_path = run_dir / "final_report.json"
@@ -355,7 +377,7 @@ def _detect_data_unavailable_leaves(
         except Exception:
             pass
 
-    if not failed_datasets and not gap_texts:
+    if not failed_datasets and not gap_texts and not failed_models:
         return set()
 
     # Normalised token sets for each compact dataset name from data_load_failures.
@@ -392,8 +414,19 @@ def _detect_data_unavailable_leaves(
         if name_tokens:
             gap_name_token_sets.append(name_tokens)
 
-    # Combined signal token sets — both signals use the same matching logic.
-    all_unavailable_token_sets = failed_token_sets + gap_name_token_sets
+    # Failed/skipped model names tokenise like compact dataset ids
+    # ("qwen2_5_7b" → {qwen2, 5, 7b}); a leaf is excluded only when it contains
+    # ALL of a failed component's tokens (leaf_tokens ⊇ component_tokens), so a
+    # 7B-specific leaf matches the failed 7B but a generic "Qwen2.5" leaf does not.
+    failed_model_token_sets: list[frozenset[str]] = [
+        _normalise_dataset_name(m) for m in failed_models if m
+    ]
+
+    # Combined signal token sets — datasets, scope.gaps prose, and models all use
+    # the same leaf-token-superset matching logic.
+    all_unavailable_token_sets = (
+        failed_token_sets + gap_name_token_sets + failed_model_token_sets
+    )
 
     if not all_unavailable_token_sets:
         return set()

@@ -54,3 +54,30 @@ def test_merge_preserves_existing_and_dedups(tmp_path: Path):
 def test_merge_no_metrics_is_noop(tmp_path: Path):
     scope = {"gaps": ["x"]}
     assert _merge_data_unavailable_gaps(scope, tmp_path) == scope
+
+
+# --- failed/skipped MODELS are surfaced too (2026-05-30 graceful degradation) ---
+
+
+def test_collect_model_load_failed_status(tmp_path: Path):
+    _write_metrics(tmp_path, {"per_model": {"qwen3_1_7b": {"status": "model_load_failed",
+                                                            "error": "invalid HF id"}}})
+    gaps = _collect_data_unavailable_gaps(tmp_path)
+    assert any(g.startswith("qwen3_1_7b:") and "model unavailable" in g and "invalid HF id" in g
+               for g in gaps)
+
+
+def test_collect_models_skipped_scope_reduction(tmp_path: Path):
+    _write_metrics(tmp_path, {"scope": {"models_skipped": ["qwen2_5_7b"]}})
+    gaps = _collect_data_unavailable_gaps(tmp_path)
+    assert any(g.startswith("qwen2_5_7b:") and "model unavailable" in g for g in gaps)
+
+
+def test_collect_mixed_dataset_and_model(tmp_path: Path):
+    _write_metrics(tmp_path, {
+        "data_load_failures": [{"dataset": "webshop", "error": "404"}],
+        "per_model": {"qwen2_5_7b": {"status": "model_load_failed"}},
+    })
+    gaps = _collect_data_unavailable_gaps(tmp_path)
+    assert any(g.startswith("webshop:") and "dataset unobtainable" in g for g in gaps)
+    assert any(g.startswith("qwen2_5_7b:") and "model unavailable" in g for g in gaps)
