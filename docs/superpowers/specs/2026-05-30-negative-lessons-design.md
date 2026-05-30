@@ -93,19 +93,19 @@ On each run, for every eligible class that **fired**: upsert the lesson → `occ
 
 A lesson should only age when its class **had a chance to fire**. Staleness is incremented only when the class's gating phase was reached this run and the class did not fire; the lesson is retired (dropped) at `staleness >= 3`.
 
-`_phases_reached(project_dir) -> set[str]` — derived deterministically from this run's artifacts:
-- `ENV_BUILT` — a Dockerfile was generated this run (`project_dir/Dockerfile` exists). *(Approximation: the run dir is reused across attempts of the same paper, so a stale Dockerfile can register the phase. Acceptable for a flag-gated prototype — worst case a lesson ages slightly faster than ideal.)*
-- `EXPERIMENT_RAN` — `experiment_runs.jsonl` has ≥1 record (execution was attempted).
-- `METRICS_PRODUCED` — ≥1 `experiment_runs.jsonl` record carries non-empty `metrics`/`per_model`, OR `final_report.json` has a `rubric` with non-empty `areas`.
+**Conservatism principle (2026-05-30):** `_phases_reached` is a heuristic, and a *false* opportunity ages a lesson too fast (drops a still-relevant lesson). So phases are derived **only from the reliable `experiment_runs.jsonl` signal** — the earlier draft's `Dockerfile-exists` signal is dropped because the run dir is reused across attempts, so a stale Dockerfile would falsely register `ENV_BUILT`. When in doubt, do **not** age the lesson.
+
+`_phases_reached(project_dir) -> set[str]` — derived deterministically from `experiment_runs.jsonl` only:
+- `EXPERIMENT_ATTEMPTED` — `experiment_runs.jsonl` has ≥1 record. A `run_experiment` builds the env then executes the script, so a record means the build/dependency/syntax classes all had a real chance to fire (a `dockerfile_invalid` build failure itself writes a record).
+- `EXPERIMENT_SUCCEEDED` — ≥1 record with `success == true` AND non-empty `metrics` (the **same predicate as the §1 evidence gate**, `report._has_experiment_evidence`). Only then were real metrics produced for the shape/contract classes to be checked against. (Deliberately strict: a metrics-producing-but-shape-wrong run that was marked `success=false` will NOT register this phase — the conservative direction, so we don't over-age.)
 
 `_OPPORTUNITY_PHASE: dict[str, str]` maps each eligible class to its gating phase:
 | Class | Gating phase |
 |---|---|
-| `dockerfile_invalid`, `torch_redundancy`, `requirements_not_found` | `ENV_BUILT` |
-| `missing_module`, `missing_dataset`, `syntax_error` | `EXPERIMENT_RAN` |
-| `scope_shape_violation`, `contract_violation` | `METRICS_PRODUCED` |
+| `dockerfile_invalid`, `torch_redundancy`, `requirements_not_found`, `missing_module`, `missing_dataset`, `syntax_error` | `EXPERIMENT_ATTEMPTED` |
+| `scope_shape_violation`, `contract_violation` | `EXPERIMENT_SUCCEEDED` |
 
-Retirement pass (after the promotion pass): for each active/candidate lesson whose class did **not** fire this run, increment `staleness` **iff** `_OPPORTUNITY_PHASE[class] in phases_reached`; reset to 0 on a fire (already done in §4); drop any lesson with `staleness >= 3`.
+Retirement pass (after the promotion pass): for each active/candidate lesson whose class did **not** fire this run, increment `staleness` **iff** `_OPPORTUNITY_PHASE[class] in phases_reached`; reset to 0 on a fire (already done in §4); drop any lesson with `staleness >= 3`. A run with no experiment records ages nothing.
 
 ## 6. Injection block (capped guardrail)
 
@@ -130,7 +130,7 @@ A bad lesson poisons *future runs of one paper* (cross-run blast radius — the 
 ## 8. Testing (TDD)
 
 - **Distiller unit:** an eligible class that fires → candidate lesson written (not injectable); same class fires again → `occurrences=2`, `status="active"`; `dockerfile_invalid` → `active` on first occurrence; an excluded class → ignored; `suggested_fix` always equals `suggested_fix_for_class(class)` regardless of the record's `suggested_fix` field; `suggested_fix_source=="classifier"`; non-firing on an opportunity run → `staleness++`; non-firing when the gating phase was NOT reached → `staleness` unchanged; `staleness>=3` → retired; `arxiv_id` None → no-op; flag off → no-op; corrupt file → fail-soft; concurrent-safe; atomic write.
-- **Phase-detection unit:** `_phases_reached` returns `ENV_BUILT` when a Dockerfile exists, `EXPERIMENT_RAN` when experiment_runs has records, `METRICS_PRODUCED` when metrics/rubric present.
+- **Phase-detection unit:** `_phases_reached` returns `EXPERIMENT_ATTEMPTED` when experiment_runs has ≥1 record (empty/missing → neither phase); `EXPERIMENT_SUCCEEDED` only when a `success==true`+non-empty-metrics row exists (a `success=false`+metrics row does NOT register it — conservatism); a stale `project_dir/Dockerfile` does NOT register any phase.
 - **Classifier accessor unit:** `suggested_fix_for_class("dockerfile_invalid")` returns the canonical non-empty string; unknown class → `""`.
 - **Injection unit:** empty/missing/flag-off → `""`; only `active` lessons render; capped at 5; class-tagged; length-bounded.
 - **Mining-hook unit:** runs once post-finalize; fail-soft (raises nothing into teardown); no-op when off.
