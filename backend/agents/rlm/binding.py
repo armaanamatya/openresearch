@@ -70,6 +70,7 @@ _DEFAULT_PRIMITIVE_TIMEOUT_S: int = 1800  # 30 min catch-all
 _LONG_RUNNING_PRIMITIVES: dict[str, int] = {
     "run_experiment": 28800,      # 8h — bracket above 6h max-mode inner cap
     "implement_baseline": 21600,  # 6h — generous bracket; inner ~4h watchdog
+    "codex_repair": 7200,         # bounded internally by REPROLAB_CODEX_TIMEOUT_S
 }
 
 

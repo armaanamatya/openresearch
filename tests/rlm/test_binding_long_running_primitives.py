@@ -33,9 +33,14 @@ def test_implement_baseline_is_not_capped_at_1800s_default():
 
 
 def test_long_running_table_covers_exactly_the_known_inner_capped_primitives():
-    """Only run_experiment and implement_baseline have internal caps; adding
-    another primitive here without its own internal cap is a footgun."""
-    assert set(_LONG_RUNNING_PRIMITIVES.keys()) == {"run_experiment", "implement_baseline"}
+    """Only run_experiment, implement_baseline, and codex_repair have internal
+    caps; adding another primitive here without its own internal cap is a footgun.
+    (codex_repair is bounded internally by REPROLAB_CODEX_TIMEOUT_S.)"""
+    assert set(_LONG_RUNNING_PRIMITIVES.keys()) == {
+        "run_experiment",
+        "implement_baseline",
+        "codex_repair",
+    }
 
 
 def test_resolution_order_long_running_wins_over_default():
