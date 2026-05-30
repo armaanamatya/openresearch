@@ -1055,6 +1055,18 @@ def _dataset_setup_block(data_root: str = "/workspace") -> str:
 _DATASET_SETUP_BLOCK = _dataset_setup_block()
 
 
+_OUTPUT_DISCIPLINE_BLOCK = (
+    "\n\nOUTPUT DISCIPLINE — write FOCUSED, minimal code:\n"
+    "  - Generate only the code needed to advance the rubric. Do NOT re-emit large\n"
+    "    files you already wrote, paste duplicate / near-duplicate blocks, or add\n"
+    "    verbose narration — terse, non-redundant code is faster, cheaper (output\n"
+    "    tokens are never cached) and usually MORE correct.\n"
+    "  - Comment only what is non-obvious (the paper's exact invariants); skip\n"
+    "    boilerplate. Edit in place rather than rewriting a whole file when a small\n"
+    "    change suffices.\n"
+)
+
+
 # Area-specific repair guidance — keys match the canonical PaperBench area
 # names emitted by score_reproduction.  Used by _prior_rubric_feedback_block.
 _AREA_REPAIR_HINTS: dict[str, str] = {
@@ -1683,6 +1695,7 @@ def _compute_constraint_guidance(
 
     # 5.7. Artifact completeness — always-on. Low-weight rubric area but free
     # to nail. Asks for README, figures, config_used.json, per-step curves.
+    guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
 
     # 5.8. Self-validating rubric guard — always-on. The agent's own train.py
