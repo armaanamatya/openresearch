@@ -478,11 +478,13 @@ class TestRunPipelineRlmIntegration:
         integration_db_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """End-to-end honesty guard: a scripted root reports baseline_metrics
-        but never calls run_experiment. The written final_report.json must have
-        the metrics dropped and a 'reproduced' verdict downgraded to 'partial'
-        — proving the guard fires through a full run_pipeline_rlm, not only in
-        unit tests (RLM run 5 fabricated metrics in production)."""
+        """End-to-end honesty guard + evidence gate: a scripted root reports
+        baseline_metrics but never calls run_experiment. The written
+        final_report.json must have the metrics dropped (honesty guard) AND the
+        verdict downgraded to 'failed' — Phase 3 evidence gate (FM-004): a run
+        with no run_experiment and no measured metrics has zero evidence and may
+        not claim even 'partial'. Proves both guards fire through a full
+        run_pipeline_rlm (RLM run 5 fabricated metrics in production)."""
         monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
         monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
@@ -517,9 +519,11 @@ class TestRunPipelineRlmIntegration:
         )
         # run_experiment never ran — the root's metrics are unbacked.
         assert report["baseline_metrics"] == {}
-        # A reproduction whose experiment never ran is not a full success.
-        assert report["verdict"] == "partial"
-        assert result.status == "partial"
+        # Phase 3 evidence gate (FM-004): no experiment + no metrics = no evidence,
+        # so the run cannot claim even 'partial' — it is 'failed'.
+        assert report["verdict"] == "failed"
+        assert "evidence_gap" in report["reproduction_summary"]
+        assert result.status == "failed"
         assert "honesty guard" in report["reproduction_summary"].lower()
 
 
