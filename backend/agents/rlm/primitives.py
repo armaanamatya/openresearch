@@ -2064,16 +2064,27 @@ def _free_tcp_port() -> int:
         s.close()
 
 
-def _write_fsdp2_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
-    """Write a harness-owned FSDP2 ``accelerate`` config into the run's code dir.
+def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
+    """Write a harness-owned FSDP ``accelerate`` config into the run's code dir.
 
-    The harness owns the sharding policy — full per-parameter shard (FSDP2),
-    bf16, transformer auto-wrap (Qwen exposes ``_no_split_modules`` so the layer
-    class is auto-detected), no CPU offload — so a *correct* shard engages
-    regardless of how the agent wired its loop; the agent only has to call
-    ``accelerator.prepare(model, optimizer)``. Returns the path; it is consumed
-    relative to ``code_dir`` (the execution cwd).
+    Defaults to **FSDP1** (FULL_SHARD): it shards params/grads/optimizer
+    identically to FSDP2 for our purpose and runs on torch >= 1.12, whereas
+    FSDP2 (``fsdp_version: 2``) requires **torch >= 2.6** — this host is pinned to
+    torch 2.5.1 by the cu121 wheel index (CUDA-12.2 driver), so FSDP2 errors at
+    launch (validated 2026-05-30). Set ``REPROLAB_FSDP_VERSION=2`` on a
+    torch>=2.6 environment (e.g. a newer RunPod image) to use the per-parameter
+    FSDP2 API. Either way the harness owns the sharding policy (full shard, bf16,
+    transformer auto-wrap — Qwen exposes ``_no_split_modules`` so the layer class
+    is auto-detected, no CPU offload) so a *correct* shard engages regardless of
+    how the agent wired its loop; the agent only calls
+    ``accelerator.prepare(model, optimizer)``. Consumed relative to ``code_dir``
+    (the execution cwd).
     """
+    import os as _os
+
+    version = (_os.environ.get("REPROLAB_FSDP_VERSION", "1") or "1").strip()
+    if version not in ("1", "2"):
+        version = "1"
     cfg = (
         "compute_environment: LOCAL_MACHINE\n"
         "distributed_type: FSDP\n"
@@ -2083,19 +2094,49 @@ def _write_fsdp2_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
         "num_machines: 1\n"
         f"num_processes: {nproc}\n"
         "fsdp_config:\n"
-        "  fsdp_version: 2\n"
+        f"  fsdp_version: {version}\n"
         "  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP\n"
-        "  fsdp_reshard_after_forward: true\n"
         "  fsdp_offload_params: false\n"
         "  fsdp_state_dict_type: SHARDED_STATE_DICT\n"
         "  fsdp_cpu_ram_efficient_loading: true\n"
     )
-    path = code_dir / "_reprolab_fsdp2.yaml"
+    if version == "2":
+        cfg += "  fsdp_reshard_after_forward: true\n"
+    else:
+        cfg += (
+            "  fsdp_sharding_strategy: FULL_SHARD\n"
+            "  fsdp_use_orig_params: true\n"
+        )
+    path = code_dir / "_reprolab_fsdp.yaml"
     try:
         path.write_text(cfg, encoding="utf-8")
     except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
-        logger.exception("_write_fsdp2_accelerate_config: write failed")
+        logger.exception("_write_fsdp_accelerate_config: write failed")
     return path
+
+
+def _nccl_env_prefix() -> str:
+    """Inline NCCL env that prevents the first-collective BROADCAST hang on
+    older-kernel multi-GPU hosts.
+
+    On this 8xA5000 box (kernel 5.4.0, below torch's recommended 5.5.0) the first
+    NCCL collective during FSDP setup hangs for the full 600s timeout at >2 GPUs
+    unless P2P is disabled (validated 2026-05-30 — likely the real cause of the
+    earlier "multi-GPU runs stall"). Defaults on; override per-var with
+    ``REPROLAB_NCCL_P2P_DISABLE=0`` / ``REPROLAB_NCCL_IB_DISABLE=0`` on a
+    well-connected box (e.g. NVLink RunPod) where P2P is fast and reliable.
+    """
+    import os as _os
+
+    def _on(name: str) -> bool:
+        return (_os.environ.get(name, "1") or "1").strip().lower() not in ("0", "false", "no")
+
+    parts: list[str] = []
+    if _on("REPROLAB_NCCL_P2P_DISABLE"):
+        parts.append("NCCL_P2P_DISABLE=1")
+    if _on("REPROLAB_NCCL_IB_DISABLE"):
+        parts.append("NCCL_IB_DISABLE=1")
+    return (" ".join(parts) + " ") if parts else ""
 
 
 def _resolve_distributed_launch(
@@ -2159,10 +2200,10 @@ def _resolve_distributed_launch(
             text = ""
         if any(marker in text for marker in _DISTRIBUTED_MARKERS):
             if cfg_rel is None:
-                cfg_rel = _write_fsdp2_accelerate_config(code_dir, ngpu).name
+                cfg_rel = _write_fsdp_accelerate_config(code_dir, ngpu).name
             port = _free_tcp_port()
             out.append(
-                f"accelerate launch --config_file {cfg_rel} "
+                f"{_nccl_env_prefix()}accelerate launch --config_file {cfg_rel} "
                 f"--num_processes {ngpu} --num_machines 1 "
                 f"--main_process_port {port} {script}{rest}"
             )
