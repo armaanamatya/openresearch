@@ -1948,9 +1948,18 @@ def _maybe_torchrun_wrap(
     accelerate/deepspeed do not match ``python <script>.py``), or when the script
     has no distributed markers.
     """
+    import os as _os
     import re as _re
 
     if ngpu <= 1:
+        return commands
+    # Disable toggle — keep the agent's own launch verbatim. Use it for models
+    # that fit one GPU (SDAR smallest-two: 1.7B/3B on a 24 GB card with Adafactor
+    # + grad-checkpointing), where re-launching the WHOLE script under torchrun
+    # duplicates un-rank-guarded setup (pip install, dataset download, env init)
+    # across every rank — the 2026-05-30 4-rank ALFWorld-setup hang.
+    if _os.environ.get("REPROLAB_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("_maybe_torchrun_wrap[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
         return commands
     out: list[str] = []
     changed = False
