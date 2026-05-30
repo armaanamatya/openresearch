@@ -47,6 +47,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
     "degenerate_training",
     "disk_exhausted",
+    "incomplete_metrics",
     "contract_violation",
     # Existing classifier labels that require agent-side repair.
     "missing_module",
@@ -2101,6 +2102,91 @@ def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> t
     return None
 
 
+_NON_TERMINAL_STATUSES = frozenset(
+    {"running", "in_progress", "in-progress", "pending", "started", "queued", "init", "initializing"}
+)
+
+
+def _per_model_has_measured_value(mv: dict) -> bool:
+    """True iff a per-model metrics entry carries ANY measured numeric value.
+
+    Reuses the reward value-walkers; also accepts any finite numeric leaf
+    (accuracy, loss, steps, return, …) nested anywhere in the entry. An empty
+    ``{}`` placeholder → False.
+    """
+    if not isinstance(mv, dict) or not mv:
+        return False
+    if _reward_curve(mv) or _scalar_rewards(mv):
+        return True
+
+    def _any_number(o) -> bool:
+        if isinstance(o, bool):
+            return False
+        if isinstance(o, (int, float)):
+            return True
+        if isinstance(o, dict):
+            return any(_any_number(v) for v in o.values())
+        if isinstance(o, (list, tuple)):
+            return any(_any_number(v) for v in o)
+        return False
+
+    return _any_number(mv)
+
+
+def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
+    """Detect a ``success=True`` run whose metrics are a placeholder / unpopulated.
+
+    Every other postflight guard keys on presence/shape/exit-code; this one keys
+    on whether measured VALUES exist. A ``train.py`` that writes
+    ``{status:"running", per_model:{m:{}}}`` and exits 0 otherwise sails through
+    (``success`` is exit-code-only; the placeholder is non-empty so ``degraded``
+    stays False) and the rubric grades a half-finished experiment ~0 on
+    eval/result/execution. Catching it here flips it to a repairable failure so
+    the loop must re-run to REAL measured numbers before it can score or finalize.
+    Opt out with ``REPROLAB_METRICS_COMPLETENESS_CHECK=0``. Returns
+    ``(failure_class, message)`` or ``None``. See
+    docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
+    """
+    import os as _os
+
+    if _os.environ.get("REPROLAB_METRICS_COMPLETENESS_CHECK", "1").strip().lower() in ("0", "false", "no"):
+        return None
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        return None  # genuinely-empty metrics → handled by the degraded/empty path
+
+    # (1) Non-terminal top-level status → a placeholder written before results landed.
+    status = str(metrics.get("status") or "").strip().lower()
+    if status in _NON_TERMINAL_STATUSES:
+        return (
+            "incomplete_metrics",
+            f"incomplete_metrics: metrics.json status={status!r} is non-terminal — the "
+            "training script wrote a placeholder and exited before measuring results, so "
+            "the rubric scores eval/result/execution ~0. Run training to completion and at "
+            "the END set a terminal status and populate per_model[<model>] with the "
+            "measured eval metric(s) for every model you ran.",
+        )
+
+    # (2) per_model present but EVERY entry is an empty placeholder (no measured value).
+    per_model = metrics.get("per_model")
+    if isinstance(per_model, dict) and per_model:
+        measured = [
+            m for m, mv in per_model.items()
+            if _per_model_has_measured_value(mv if isinstance(mv, dict) else {})
+        ]
+        if not measured:
+            keys = ", ".join(map(str, list(per_model.keys())[:4]))
+            return (
+                "incomplete_metrics",
+                f"incomplete_metrics: per_model has {len(per_model)} model key(s) ({keys}) "
+                "but NONE carry a measured value — the entries are empty placeholders. "
+                "Populate per_model[<model>] with the measured eval metric (e.g. accuracy) "
+                "and reward/loss for every model that actually ran; an empty {} entry is "
+                "treated as 'not measured'.",
+            )
+    return None
+
+
 def _training_health_violation(result: dict) -> tuple[str, str] | None:
     """Detect an experiment that exited 0 but did not really train.
 
@@ -3771,6 +3857,26 @@ def run_experiment(
             _hcls, _hmsg = _health
             result = {**result, "success": False, "error": _hmsg, "failure_class": _hcls}
 
+    # Metrics-completeness postflight (2026-05-30): a run that exited 0 but wrote a
+    # placeholder / unpopulated metrics.json (status:"running", empty per_model)
+    # measured NOTHING, yet every other guard keys on presence/shape/exit-code and
+    # lets it through — so the rubric grades a half-finished experiment and scores
+    # eval/result/execution ~0. Flip it to a repairable failure so the loop re-runs
+    # to REAL measured metrics before it can score/finalize, and emit a descriptive
+    # warning so the failure is never silent.
+    if result.get("success"):
+        _complete = _metrics_completeness_violation(result)
+        if _complete is not None:
+            _ccls, _cmsg = _complete
+            result = {**result, "success": False, "error": _cmsg, "failure_class": _ccls}
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "metrics_incomplete", "message": _cmsg,
+                })
+            except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                logger.debug("run_experiment: metrics_incomplete event emit failed")
+            logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _cmsg)
+
     # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
     # require metrics.json to carry the expected per_model / per_dataset
     # structure. A successful run with the wrong shape is a fail-soft error
@@ -4174,7 +4280,13 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         has_experiment_result = "success" in results or "metrics" in results
         metrics_present = bool(results.get("metrics") or {})
         degraded = has_experiment_result and (
-            (results.get("success") is False) and (not metrics_present)
+            ((results.get("success") is False) and (not metrics_present))
+            # Defense-in-depth (2026-05-30): placeholder/unpopulated metrics (a
+            # non-terminal status, or per_model entries all empty) measured nothing
+            # too — engage the honesty ceiling so a half-finished experiment can't
+            # score unbounded even if the run_experiment completeness guard was
+            # bypassed (e.g. near the wall-clock).
+            or (_metrics_completeness_violation(results) is not None)
         )
         scored = score_reproduction(
             rubric_tree=rubric,

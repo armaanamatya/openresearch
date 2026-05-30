@@ -52,6 +52,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "code_bug",                  # a Python exception masked as a data_load_failure
     "degenerate_training",       # status=ok but 0 steps / zero-variance reward (no learning)
     "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
+    "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "unknown",                   # falls-through
 )
 
@@ -136,6 +137,11 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "REPROLAB_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
             "+ slice datasets (never a full natural_questions-style download), use lighter "
             "variants, or raise the floor/cap if the footprint is legitimately large",
+        "incomplete_metrics":
+            "the run exited 0 but metrics.json is a placeholder (non-terminal status, or "
+            "per_model entries empty) — NO results were measured. Train to completion and, "
+            "at the END, set a terminal status and populate per_model[<model>] with the "
+            "measured eval metric(s) (e.g. accuracy) for every model you ran",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
