@@ -264,6 +264,62 @@ def _reconcile_verdict_against_evidence(
     return verdict, None
 
 
+def _has_experiment_evidence(project_dir: Path) -> bool:
+    """True iff ``experiment_runs.jsonl`` has any entry with a non-empty metrics dict.
+
+    Mirrors ``run.py:_partial_evidence_from_experiment_runs`` (kept local to avoid a
+    circular import). Fail-soft: any I/O / parse error returns False.
+    """
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return False
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            metrics = entry.get("metrics") if isinstance(entry, dict) else None
+            if isinstance(metrics, dict) and metrics:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _apply_evidence_gate(report: RLMFinalReport, project_dir: Path) -> RLMFinalReport:
+    """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
+
+    ``_reconcile_verdict_against_evidence`` only catches over-claimed "reproduced";
+    a "partial" with empty ``baseline_metrics`` and no successful ``run_experiment``
+    (the recurring /runs pattern, e.g. pb_…784) slips through. This write-time gate
+    is path-agnostic — it runs for the clean FINAL_VAR writer AND the watchdog /
+    fatal-abort writers — so no path can ship a success-ish verdict without evidence.
+    Disable with ``REPROLAB_EVIDENCE_GATE=0``.
+    """
+    if os.environ.get("REPROLAB_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
+        return report
+    if (
+        report.verdict in {"reproduced", "partial"}
+        and not report.baseline_metrics
+        and not _has_experiment_evidence(project_dir)
+    ):
+        note = (
+            " [evidence_gap] Downgraded to 'failed': no run_experiment produced "
+            "metrics and baseline_metrics is empty — this run has no experiment "
+            "evidence to support a reproduction claim."
+        )
+        report.verdict = "failed"
+        report.reproduction_summary = (report.reproduction_summary or "").rstrip() + note
+        logger.warning(
+            "report: evidence gate downgraded verdict to 'failed' (no experiment evidence)"
+        )
+    return report
+
+
 def _verify_scope_evidence(
     scope: dict,
     run_dir: Path,
@@ -620,6 +676,10 @@ def write_final_report_rlm(
     Returns:
         ``(json_path, md_path)`` — the paths of the written files.
     """
+    # Phase 3 (FM-004): path-agnostic evidence gate — no writer may ship a
+    # success-ish verdict with no experiment evidence. Runs before serialization.
+    report = _apply_evidence_gate(report, project_dir)
+
     project_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = project_dir / "final_report.json"
