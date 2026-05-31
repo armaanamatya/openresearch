@@ -88,6 +88,8 @@ def main() -> int:
     # 2. Launch the SDAR run leasing the reserved cards. batch_reproduce reads the
     #    reservation registry → own_pids, so it leases exactly these held cards.
     # Parameterizable for the full-paper reproduction (defaults = smallest-two).
+    # The smallest-two guidance is intentional: a 24GB A5000 fits Qwen3-1.7B +
+    # Qwen2.5-3B only, never the 7B (the full-7B-matrix file regressed the run).
     guidance_file = os.environ.get("SDAR_GUIDANCE_FILE", "runs/.cache/extra_guidance_sdar.txt")
     scope_spec = os.environ.get("SDAR_SCOPE_SPEC", "runs/.cache/scope_sdar_smallest_two.json")
     max_usd = os.environ.get("SDAR_MAX_USD", "25")
@@ -98,8 +100,12 @@ def main() -> int:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)   # force clean claude-oauth (CLAUDE.md pitfall)
     env.pop("OPENAI_API_KEY", None)
-    env["REPROLAB_DISABLE_TORCHRUN_WRAP"] = "1"
+    # The cell runner (gpu_cell_runner.py) now owns GPU placement — one process
+    # per cell pinned via CUDA_VISIBLE_DEVICES — so run_experiment skips the legacy
+    # torchrun re-launch entirely. No torchrun-wrap reconciliation flag is needed.
     env["REPROLAB_MIN_TRAIN_WALL_S"] = "120"
+    # GPU count is owned by the lease + cell runner (one GPU per cell,
+    # min(free_gpus, cells) in parallel); no force-single/multi flag needed.
     env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
 
     # Distinct-run identity (so each run is its own leaderboard row + readable
