@@ -3096,6 +3096,39 @@ async def _execute_in_sandbox(
     }
 
 
+def _manifest_enrichment(result: dict) -> None:
+    """P2 provenance manifest: enrich a run_experiment result IN PLACE with the
+    fields that bind a final metric to the artifact that produced it (invariant 2:
+    every final metric traces to a persisted artifact via a manifest).
+
+    Best-effort + fail-soft — observability must never break a run, so every
+    lookup degrades silently:
+      - ``sandbox_backend``: promoted from ``resource_limits`` so the manifest
+        names the backend without callers digging into nested limits.
+      - ``metrics_sha256``: sha256 of the canonical ``metrics.json`` artifact, so
+        a final-report metric can be tied to the exact bytes that produced it
+        (the trace that closes invariant 2 for the RLM path).
+    """
+    try:
+        _rl = result.get("resource_limits") or {}
+        _backend = _rl.get("sandbox_mode") or _rl.get("sandbox_backend")
+        if _backend:
+            result.setdefault("sandbox_backend", str(_backend))
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+    try:
+        _artifact_dir = result.get("artifact_dir")
+        if _artifact_dir and not result.get("metrics_sha256"):
+            import hashlib
+            from pathlib import Path as _Path
+
+            _mjson = _Path(str(_artifact_dir)) / "metrics.json"
+            if _mjson.exists():
+                result["metrics_sha256"] = hashlib.sha256(_mjson.read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3128,6 +3161,9 @@ def _persist_experiment_result(
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
     _with_outcome(result, _classify_run_experiment_outcome(result))
+
+    # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
+    _manifest_enrichment(result)
 
     if not result.get("success"):
         logger.warning(
