@@ -1065,6 +1065,31 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         # No hint (or hint with empty invariants list) — ensure any stale env var
         # from a previous run in the same process is cleared.
         _os.environ.pop("REPROLAB_PAPER_HINT_INVARIANTS_JSON", None)
+
+    # #7 benchmark integrity: paper-hint blocked_resources ∪ operator --blacklist
+    # → REPROLAB_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
+    # ctx.blocked_terms → every agent spec's RuntimeGuard (Unit A). Curated
+    # sources only (the regex auto-derivation was rejected — it would block
+    # framework deps like trl). The arXiv path loads no bundle, so the paper-hint
+    # list is what guards the canonical SDAR run.
+    _blocked_terms = _resolve_blocked_terms(getattr(args, "blacklist", None), _paper_hint_obj)
+    if _blocked_terms:
+        import json as _json_bl
+        _os.environ["REPROLAB_BLOCKED_TERMS_JSON"] = _json_bl.dumps(_blocked_terms)
+        print(
+            f"[benchmark-guard] {len(_blocked_terms)} blocked resource(s) active — "
+            "the RuntimeGuard refuses agent access to them.",
+            file=sys.stderr,
+        )
+    else:
+        _os.environ.pop("REPROLAB_BLOCKED_TERMS_JSON", None)
+        if getattr(args, "paper_hint", None) or getattr(args, "blacklist", None):
+            print(
+                "[benchmark-guard] WARNING: this benchmark/hint run resolved an "
+                "EMPTY blocklist — the paper's own repo is NOT guarded. Add a "
+                "paper_hints blocked_resources entry or pass --blacklist.",
+                file=sys.stderr,
+            )
     if getattr(args, "scope_spec", None):
         print(
             f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "
@@ -1237,7 +1262,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     # --- Phase 2: Agent Pipeline ---
     user_hints = [h.strip() for h in args.hints.split(",")] if args.hints else None
-    blacklist_terms = _blacklist_entries_from_arg(args.blacklist)
+    # (#7) The blacklist is resolved + published to REPROLAB_BLOCKED_TERMS_JSON in
+    # the paper-hint env block above (this was a dead `blacklist_terms` line that
+    # computed the value and discarded it — the benchmark-integrity bug #7 fixes).
     from backend.agents.execution import (
         ExecutionProfile,
         ensure_sandbox_mode_available,
@@ -1963,6 +1990,28 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _resolve_blocked_terms(blacklist_arg: str | None, paper_hint) -> list[str]:
+    """Union the #7 benchmark-integrity blocklist from its CURATED sources.
+
+    Two curated sources, deduped + order-preserving: the operator ``--blacklist``
+    (a file path or comma-list, via :func:`_blacklist_entries_from_arg`) and the
+    paper-hint's ``blocked_resources`` (the paper's own repo, etc.). The regex
+    auto-derivation from discovered github repos was rejected by design — it would
+    sweep up legitimate framework deps (``huggingface/trl``). ``paper_hint`` is
+    duck-typed (a :class:`PaperHint` or ``None``) to avoid an import cycle.
+    """
+    terms: list[str] = []
+    for term in _blacklist_entries_from_arg(blacklist_arg):
+        if term and term not in terms:
+            terms.append(term)
+    if paper_hint is not None:
+        for term in getattr(paper_hint, "blocked_resources", ()) or ():
+            term = (term or "").strip()
+            if term and term not in terms:
+                terms.append(term)
+    return terms
 
 
 def _load_scope_spec_arg(raw: str | None):
