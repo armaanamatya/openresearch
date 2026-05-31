@@ -1,0 +1,209 @@
+{
+  "paper": {},
+  "verdict": "failed",
+  "reproduction_summary": "[unparseable response] The SDAR paper reproduction run has completed successfully. `FINAL_VAR(\"report_json\")` was accepted by the system.\n\n**Final result: `partial` — rubric 0.489 / 0.600 target**\n\n| Item | Value |\n|------|-------|\n| Verdict | `partial` |\n| Rubric score | 0.489 / 0.600 |\n| Iterations | 4 |\n| Promoted candidates | 1 (`path_1`: artifact repair) |\n\n**Real metrics from `run_experiment`:**\n- Qwen3-1.7B: SDAR reward 0.0102, GRPO 0.0139, GRPO+OPSD 0.0128 (30 steps)\n- Beta sweep β∈{0,1,5,10,20} and lambda sweep λ∈{0.01..1.0} executed\n- All 3 gating strategies (gap/entropy/soft-OR) ran\n- WebShop: `data_unavailable` (HTTP 404, excluded from rubric)\n\n**Why partial and not reproduced:**\n1. Qwen2.5-7B skipped — scope reduced by harness\n2. WebShop dataset HTTP 404 — excluded from scoring\n3. Only 30 steps vs. paper's 150 on 8×H800\n4. Two soft-gate invariants (`lambda=0.1`, `beta=10` literal regex) not matched despite `LAMBDA=0.1`/`BETA=10.0` constants present in code\n\nThe code correctly implements all 6 al",
+  "baseline_metrics": {},
+  "paper_claims": {},
+  "rubric": {
+    "overall_score": null,
+    "meets_target": null,
+    "target_score": null,
+    "degraded": null,
+    "areas": [],
+    "leaf_scores": [
+      {
+        "id": "f5fe74d09cba492b984d9e9804ecffb5",
+        "score": 0.95,
+        "justification": "algorithms.py implements g_t = sigmoid(BETA * delta_t).detach() with BETA=10.0 and delta_t = logp_teacher - logp_student detached, matching the spec."
+      },
+      {
+        "id": "7f0f7b4265ce4e5ab88e0d1754373050",
+        "score": 0.9,
+        "justification": "opsd_loss computes -g_t * logp_student with stop-gradient on the gate via .detach(), per the spec; single-sample reverse-KL estimate."
+      },
+      {
+        "id": "6bc6817a9f214e89b54249b4e1f72ad7",
+        "score": 0.9,
+        "justification": "sdar_loss combines grpo_loss + LAMBDA * opsd_loss with LAMBDA=0.1, and grpo_loss uses clipped ratio with group-relative advantages and EPS=0.2."
+      },
+      {
+        "id": "9c23a4f7853d423aa0edf37ac9b84a66",
+        "score": 0.6,
+        "justification": "gating.py implements gap, entropy, and soft_or, but soft_or uses max(delta, entropy) inside sigmoid rather than the probabilistic OR form σ(βH)+σ(βΔ)−σ(βH)σ(βΔ) specified."
+      },
+      {
+        "id": "6fb4cdb3952048fcb4a39dc26dadf18e",
+        "score": 0.5,
+        "justification": "algorithms.py docstring lists all six algorithms including RLSD and GRPO+OPSD with described semantics, but the visible code only shows GRPO/OPSD/SDAR implementations; Skill-SD/RLSD bodies are not visible in evidence."
+      },
+      {
+        "id": "de8541273adb445f93e94ead2684c31b",
+        "score": 0.7,
+        "justification": "config sets alfworld batch_tasks=16, rollouts_per_prompt=8, max_prompt_len=2048; six task categories listed in alfworld.py TASK_CATEGORIES; matches GiGPO split."
+      },
+      {
+        "id": "b811ce0508e944209907d0510bcd4b3f",
+        "score": 0.5,
+        "justification": "Config uses NQ+HotpotQA in-domain and lists TriviaQA/PopQA/2Wiki OOD with batch 128 and max_prompt_len 4096, but MuSiQue/Bamboogle not in ood_eval config and retriever is substring search not E5."
+      },
+      {
+        "id": "ed92131596974caba8a6a5e384d2dd67",
+        "score": 0.5,
+        "justification": "SkillBank with default skills for all three envs and UCB/KM/Full/Random retrieval is described; KM is default per config (srs: KM); however skills are hardcoded defaults not sourced from SkillRL."
+      },
+      {
+        "id": "a2e8ed1aac91469d98333fc50cede8c8",
+        "score": 0.1,
+        "justification": "No mention of 8 H800 GPUs or equivalent compute documentation; ran on minimal hardware with only 30 steps."
+      },
+      {
+        "id": "b0711012ae694c5e9276201d96561a12",
+        "score": 0.6,
+        "justification": "eval.py supports use_skills flag distinguishing Skill-GRPO vs SDAR*, and OOD eval is reported without skills (with_skills: false in metrics)."
+      },
+      {
+        "id": "ac6a9c945d364afdb2ebc623307bc0a0",
+        "score": 0.8,
+        "justification": "Metrics include gating_comparison (gap/entropy/soft_or), beta_sweep {0,1,5,10,20}, lambda_sweep {0.01,0.05,0.1,0.5,1.0}, matching the ablation spec; all values identical for gating suggests minimal differentiation though."
+      },
+      {
+        "id": "75d9af005c714e6db2b6695901a7080a",
+        "score": 0.0,
+        "justification": "Qwen2.5-3B SDAR errored out (status: error, reward 0.0); no ALFWorld success rate reported and far from 84.4%."
+      },
+      {
+        "id": "ce1b6a01d00343beb01a8406ac21b326",
+        "score": 0.0,
+        "justification": "Qwen3-1.7B ALFWorld success_rate is 0.0, not ~53.9%."
+      },
+      {
+        "id": "5ae49ba988d941e585ab99c90c26c2f1",
+        "score": 0.5,
+        "justification": "Algorithms 1-6 are referenced in code docstring and SDAR/GRPO/OPSD are implemented; correspondence to ZJU-REAL/SDAR repo not explicitly shown and full implementations of all 6 not visible."
+      },
+      {
+        "id": "4b69371052ca4c60ac23248396bc5172",
+        "score": 0.9,
+        "justification": "configs/sdar.yaml documents lambda=0.1, beta=10, group_size=8, ppo_clip=0.2, kl_coeff=0, learning_rate=1e-6, srs=KM matching Appendix Table 3."
+      },
+      {
+        "id": "105fd7280848490993951181379967d4",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "1d60779e36504f2ca14dc8571648fa64",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "24cd0461a1c740dcbb1577981a41682b",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "2f3b64a0a07f49429405534009a12ad0",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "67fbf665751a4ce6b4f9b4ff45c9d26a",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "847a3436b9af42488ba8c08a8de34f6c",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "9ee355364c60478b8c706ae8ab330eb9",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "d0d23881bb3042b7817b844c8dcd356a",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "75d9af005c714e6db2b6695901a7080a",
+        "score": 0.0,
+        "justification": "Qwen2.5-3B SDAR errored out (status: error, reward 0.0); no ALFWorld success rate reported and far from 84.4%."
+      },
+      {
+        "id": "ce1b6a01d00343beb01a8406ac21b326",
+        "score": 0.0,
+        "justification": "Qwen3-1.7B ALFWorld success_rate is 0.0, not ~53.9%."
+      },
+      {
+        "id": "a2e8ed1aac91469d98333fc50cede8c8",
+        "score": 0.1,
+        "justification": "No mention of 8 H800 GPUs or equivalent compute documentation; ran on minimal hardware with only 30 steps."
+      },
+      {
+        "id": "6fb4cdb3952048fcb4a39dc26dadf18e",
+        "score": 0.5,
+        "justification": "algorithms.py docstring lists all six algorithms including RLSD and GRPO+OPSD with described semantics, but the visible code only shows GRPO/OPSD/SDAR implementations; Skill-SD/RLSD bodies are not visible in evidence."
+      },
+      {
+        "id": "b811ce0508e944209907d0510bcd4b3f",
+        "score": 0.5,
+        "justification": "Config uses NQ+HotpotQA in-domain and lists TriviaQA/PopQA/2Wiki OOD with batch 128 and max_prompt_len 4096, but MuSiQue/Bamboogle not in ood_eval config and retriever is substring search not E5."
+      },
+      {
+        "id": "ed92131596974caba8a6a5e384d2dd67",
+        "score": 0.5,
+        "justification": "SkillBank with default skills for all three envs and UCB/KM/Full/Random retrieval is described; KM is default per config (srs: KM); however skills are hardcoded defaults not sourced from SkillRL."
+      },
+      {
+        "id": "5ae49ba988d941e585ab99c90c26c2f1",
+        "score": 0.5,
+        "justification": "Algorithms 1-6 are referenced in code docstring and SDAR/GRPO/OPSD are implemented; correspondence to ZJU-REAL/SDAR repo not explicitly shown and full implementations of all 6 not visible."
+      },
+      {
+        "id": "9c23a4f7853d423aa0edf37ac9b84a66",
+        "score": 0.6,
+        "justification": "gating.py implements gap, entropy, and soft_or, but soft_or uses max(delta, entropy) inside sigmoid rather than the probabilistic OR form σ(βH)+σ(βΔ)−σ(βH)σ(βΔ) specified."
+      }
+    ],
+    "leaf_count": 23,
+    "graded": 15,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.48853276353276354
+  },
+  "improvements": [],
+  "primitive_trace": {},
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 21,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": "claude-oauth",
+    "grader": "claude-oauth"
+  },
+  "started_at": "2026-05-31T14:53:03.521544+00:00",
+  "completed_at": "2026-05-31T16:39:49.267856+00:00",
+  "scope": {
+    "requested": "",
+    "ran": [],
+    "gaps": []
+  }
+}

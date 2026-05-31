@@ -1,0 +1,36 @@
+/home/sww35/openresearch/.venv/lib/python3.12/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.63it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.26it/s]
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+Caching is incompatible with gradient checkpointing in Qwen2DecoderLayer. Setting `past_key_values=None`.
+/home/sww35/openresearch/.venv/lib/python3.12/site-packages/torch/utils/checkpoint.py:87: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 44.33it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 46.01it/s]
+/home/sww35/openresearch/.venv/lib/python3.12/site-packages/torch/utils/checkpoint.py:87: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 66.66it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 63.65it/s]
+Caching is incompatible with gradient checkpointing in Qwen3DecoderLayer. Setting `past_key_values=None`.
+[search_qa:opsd:qwen3_1b7] step 1/150 loss=0.0000 reward=0.000 gate=0.000 opsd=0.0000 wall=3.7s
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 67.88it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 52.66it/s]
+[search_qa:skill_sd:qwen3_1b7] step 1/150 loss=0.0000 reward=0.000 gate=0.000 opsd=0.0000 wall=4.2s
+[search_qa:skill_sd:qwen3_1b7] step 2/150 loss=-0.0000 reward=0.100 gate=0.000 opsd=-0.0000 wall=4.0s
+[search_qa:skill_sd:qwen3_1b7] step 3/150 loss=-0.0003 reward=0.000 gate=0.000 opsd=-0.0003 wall=3.9s
+[search_qa:skill_sd:qwen3_1b7] step 4/150 loss=-0.0010 reward=0.000 gate=0.000 opsd=-0.0010 wall=3.9s
+[search_qa:skill_sd:qwen3_1b7] step 5/150 loss=-0.0007 reward=0.000 gate=0.000 opsd=-0.0007 wall=4.2s
+[search_qa:skill_sd:qwen3_1b7] step 6/150 loss=-0.0008 reward=0.000 gate=0.000 opsd=-0.0008 wall=4.0s
+[search_qa:skill_sd:qwen3_1b7] step 7/150 loss=-0.0020 reward=0.000 gate=0.000 opsd=-0.0020 wall=4.2s
+[search_qa:skill_sd:qwen3_1b7] step 8/150 loss=-0.0002 reward=0.000 gate=0.000 opsd=-0.0002 wall=4.0s
+[search_qa:skill_sd:qwen3_1b7] step 9/150 loss=-0.0001 reward=0.000 gate=0.000 opsd=-0.0001 wall=4.1s
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 61.70it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 66.83it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 72.97it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 62.16it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 47.61it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 47.26it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 43.17it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 42.37it/s]
