@@ -364,20 +364,49 @@ def _detect_data_unavailable_leaves(
         elif isinstance(_entry, str) and _entry:
             failed_models.append(_entry)
 
-    # Signal 2: scope.gaps from final_report.json
-    gap_texts: list[str] = []
+    # Signal 1c: environments_skipped — the agent's structured declaration that an
+    # environment (e.g. ALFWorld / WebShop for a Search-QA-only run) is out of
+    # scope.  Mirrors models_skipped: its leaves are excluded from numerator AND
+    # denominator exactly like a skipped model (2026-05-31 fix — previously only
+    # models_skipped was honoured, so honestly de-scoped environments scored 0.0
+    # and dragged the overall score down).
+    failed_envs: list[str] = []
+    for _e in ((metrics_data.get("scope") or {}).get("environments_skipped") or []):
+        if isinstance(_e, str) and _e:
+            failed_envs.append(_e)
+
+    # Signal 2: scope.gaps — read from BOTH metrics.json::scope (where the agent
+    # writes structured scope, mirroring where models_skipped is already read) AND
+    # final_report.json::scope.  Entries may be plain prose strings ("ALFWorld —
+    # out of scope") OR structured dicts ({"item": "alfworld", "reason": "..."}).
+    # The agent emits the dict form, so both are honoured (2026-05-31 fix —
+    # previously only str entries from final_report.json were read, silently
+    # dropping every dict-form gap and ignoring metrics.json entirely).
+    gap_texts: list[str] = []      # prose form → leading-name extraction below
+    gap_items: list[str] = []      # structured form → clean short identifier
+
+    def _collect_gaps(scope_obj: dict | None) -> None:
+        for gap in (scope_obj or {}).get("gaps") or []:
+            if isinstance(gap, str) and gap:
+                gap_texts.append(gap)
+            elif isinstance(gap, dict):
+                item = gap.get("item") or gap.get("name") or gap.get("id")
+                if isinstance(item, str) and item:
+                    gap_items.append(item)
+                elif isinstance(gap.get("reason"), str) and gap["reason"]:
+                    gap_texts.append(gap["reason"])
+
+    _collect_gaps(metrics_data.get("scope"))
     report_path = run_dir / "final_report.json"
     if report_path.exists():
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            scope = report.get("scope") or {}
-            for gap in scope.get("gaps") or []:
-                if isinstance(gap, str) and gap:
-                    gap_texts.append(gap)
+            _collect_gaps(report.get("scope") or {})
         except Exception:
             pass
 
-    if not failed_datasets and not gap_texts and not failed_models:
+    if (not failed_datasets and not gap_texts and not gap_items
+            and not failed_models and not failed_envs):
         return set()
 
     # Normalised token sets for each compact dataset name from data_load_failures.
@@ -421,11 +450,25 @@ def _detect_data_unavailable_leaves(
     failed_model_token_sets: list[frozenset[str]] = [
         _normalise_dataset_name(m) for m in failed_models if m
     ]
+    # Skipped environments and structured gap items tokenise the same compact way
+    # ("alfworld" → {alfworld}, "grpo_baseline_run" → {grpo, baseline, run}); the
+    # leaf-token-superset rule means each excludes only leaves specifically about
+    # that component, never an in-scope SDAR leaf.
+    failed_env_token_sets: list[frozenset[str]] = [
+        _normalise_dataset_name(e) for e in failed_envs if e
+    ]
+    gap_item_token_sets: list[frozenset[str]] = [
+        _normalise_dataset_name(g) for g in gap_items if g
+    ]
 
-    # Combined signal token sets — datasets, scope.gaps prose, and models all use
-    # the same leaf-token-superset matching logic.
+    # Combined signal token sets — datasets, scope.gaps prose + structured items,
+    # models, and environments all use the same leaf-token-superset matching logic.
     all_unavailable_token_sets = (
-        failed_token_sets + gap_name_token_sets + failed_model_token_sets
+        failed_token_sets
+        + gap_name_token_sets
+        + gap_item_token_sets
+        + failed_model_token_sets
+        + failed_env_token_sets
     )
 
     if not all_unavailable_token_sets:
