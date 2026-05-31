@@ -542,6 +542,176 @@ def _check_local_import_from(
 
 
 # ---------------------------------------------------------------------------
+# SDAR teacher/student env interface contract
+# ---------------------------------------------------------------------------
+#
+# The 2026-05-31 failure (`prj_09047604e591d969`): every `alfworld` cell of the
+# SDAR matrix died mid-grid with::
+#
+#     AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'
+#
+# The agent's trainer called ``env.build_student_prompt(...)`` on an ``ALFWorldEnv``
+# that neither defined the method nor subclassed ``BaseEnv`` (the ABC in
+# ``sdar_env_base.py`` that would have turned this into a loud construction-time
+# ``TypeError``). The bug slipped past pre-flight because the SDAR envs live at
+# ``code/sdar/envs/*.py`` — two levels deep — and the other checks only glob one
+# level (``code_dir/*.py``). This check walks RECURSIVELY.
+#
+# Self-scoping (conservative — avoid false positives on unrelated ``*Env`` classes
+# in non-SDAR papers): the contract is only "in play" when the code actually uses
+# the teacher/student surface (imports ``sdar_env_base`` / names ``BaseEnv`` / calls
+# or accesses ``build_student_prompt`` / ``build_teacher_prompt`` somewhere). When no
+# such signal is present, the check returns immediately and flags nothing.
+
+_REQUIRED_ENV_METHODS = ("build_student_prompt", "build_teacher_prompt")
+_BASE_ENV_NAME = "BaseEnv"
+_BASE_ENV_MODULE = "sdar_env_base"
+
+
+def _file_uses_env_contract(tree: ast.AST) -> bool:
+    """Return True if this file imports/names the SDAR env contract surface.
+
+    Signals (any one is enough):
+      * ``import sdar_env_base`` / ``from sdar_env_base import ...``
+      * the bare name ``BaseEnv`` referenced anywhere (import, base class, …)
+      * a reference (call or attribute access) to ``build_student_prompt`` /
+        ``build_teacher_prompt``
+    """
+    for node in ast.walk(tree):
+        # ``import sdar_env_base`` (possibly dotted / aliased).
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == _BASE_ENV_MODULE:
+                    return True
+        # ``from sdar_env_base import BaseEnv`` (or relative ``from .sdar_env_base``).
+        if isinstance(node, ast.ImportFrom):
+            module_stem = (node.module or "").lstrip(".")
+            if module_stem.split(".")[0] == _BASE_ENV_MODULE:
+                return True
+            for alias in node.names:
+                if alias.name == _BASE_ENV_NAME:
+                    return True
+        # Bare name ``BaseEnv`` referenced anywhere.
+        if isinstance(node, ast.Name) and node.id == _BASE_ENV_NAME:
+            return True
+        # Attribute access of the form ``module.BaseEnv``.
+        if isinstance(node, ast.Attribute) and node.attr == _BASE_ENV_NAME:
+            return True
+        # Reference to one of the required methods — either ``obj.build_student_prompt``
+        # (attribute access / call) or the bare name (e.g. passed around).
+        if isinstance(node, ast.Attribute) and node.attr in _REQUIRED_ENV_METHODS:
+            return True
+        if isinstance(node, ast.Name) and node.id in _REQUIRED_ENV_METHODS:
+            return True
+    return False
+
+
+def _base_is_base_env(base: ast.expr) -> bool:
+    """Return True if an ``ast`` base-class expression names ``BaseEnv``.
+
+    Matches both ``class Foo(BaseEnv):`` (``ast.Name``) and
+    ``class Foo(mod.BaseEnv):`` (``ast.Attribute``).
+    """
+    if isinstance(base, ast.Name):
+        return base.id == _BASE_ENV_NAME
+    if isinstance(base, ast.Attribute):
+        return base.attr == _BASE_ENV_NAME
+    return False
+
+
+def _check_env_interface_contract(
+    code_dir: Path,
+    out: list[PreflightViolation],
+) -> None:
+    """Catch a ``*Env`` that will ``AttributeError`` on the SDAR teacher/student
+    contract BEFORE the training grid runs.
+
+    Walks ``code_dir`` RECURSIVELY (the existing per-file checks only glob one
+    level; the SDAR envs live at ``code/sdar/envs/*.py``).
+
+    Step 1 — self-scope: if no file in the tree uses the env contract (imports
+    ``sdar_env_base`` / names ``BaseEnv`` / references ``build_student_prompt`` /
+    ``build_teacher_prompt``), return immediately and flag nothing. This keeps
+    unrelated ``*Env`` classes in non-SDAR papers from being flagged.
+
+    Step 2 — flag: for every ``ClassDef`` whose name ends in ``"Env"`` (and is not
+    ``BaseEnv`` itself) that defines NEITHER required method AND does not directly
+    subclass ``BaseEnv``, emit a ``hard`` violation. A class that subclasses
+    ``BaseEnv`` is left alone: the ABC enforces the methods at construction (a
+    loud, named ``TypeError``), so the AST backstop only needs to catch the
+    non-subclassing escape hatch.
+
+    Fail-soft per file (try/except) — never raises from pre-flight.
+    """
+    py_files: list[Path] = sorted(
+        p for p in code_dir.rglob("*.py") if p.is_file()
+    )
+    if not py_files:
+        return
+
+    # Parse every file once (fail-soft per file), keeping the tree for re-use.
+    parsed: list[tuple[Path, ast.AST]] = []
+    for path in py_files:
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if not source.strip():
+                continue
+            tree = ast.parse(source, filename=str(path))
+        except Exception:  # noqa: BLE001 — syntax errors are caught elsewhere
+            continue
+        parsed.append((path, tree))
+
+    if not parsed:
+        return
+
+    # Step 1: self-scope — is the teacher/student contract actually in play?
+    if not any(_file_uses_env_contract(tree) for _path, tree in parsed):
+        return  # this paper does not use the contract — skip entirely.
+
+    # Step 2: flag non-subclassing, non-implementing ``*Env`` classes.
+    for path, tree in parsed:
+        try:
+            rel = path.relative_to(code_dir).as_posix()
+        except ValueError:
+            rel = path.name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            name = node.name
+            if not name.endswith("Env") or name == _BASE_ENV_NAME:
+                continue
+            # Does it directly subclass BaseEnv? If so, the ABC enforces the
+            # methods at construction — don't flag.
+            if any(_base_is_base_env(base) for base in node.bases):
+                continue
+            # Does it define the methods itself (incl. same-file inheritance)?
+            members = _collect_all_class_members_with_inheritance(tree, name)
+            if any(m in members for m in _REQUIRED_ENV_METHODS):
+                continue
+            lineno = getattr(node, "lineno", 0)
+            out.append(PreflightViolation(
+                file=rel,
+                line=lineno,
+                class_name=name,
+                missing_attr="build_student_prompt/build_teacher_prompt",
+                suggested_fix=(
+                    f"Make `{name}` subclass BaseEnv from sdar_env_base and "
+                    f"implement build_student_prompt + build_teacher_prompt: "
+                    f"`from sdar_env_base import BaseEnv` then "
+                    f"`class {name}(BaseEnv): ...`. The harness copies "
+                    f"sdar_env_base.py into code/."
+                ),
+                severity="hard",
+                detail=(
+                    f"{rel}:{lineno}: `{name}` neither subclasses BaseEnv nor "
+                    f"defines build_student_prompt/build_teacher_prompt — the SDAR "
+                    f"trainer calls build_student_prompt/build_teacher_prompt on "
+                    f"every env, so this AttributeErrors mid-grid."
+                ),
+            ))
+
+
+# ---------------------------------------------------------------------------
 # Syntax error (surfaced via parse)
 # ---------------------------------------------------------------------------
 
@@ -609,15 +779,19 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
     if not code_dir.is_dir():
         return []
 
+    violations: list[PreflightViolation] = []
+
     # Collect all .py files — we inspect agent-written code, not vendored libraries.
     # Walk one level deep: train.py, models.py, utils.py etc.
+    #
+    # NOTE: an empty one-level glob is NOT an early return. The SDAR envs live two
+    # levels deep (``code/sdar/envs/*.py``) with nothing at the top level, so a
+    # ``return []`` here would shadow the recursive env-contract check below — the
+    # exact blind spot that let the 2026-05-31 AttributeError slip past pre-flight.
     py_files: list[Path] = sorted(
         p for p in code_dir.glob("*.py") if p.is_file()
     )
-    if not py_files:
-        return []
 
-    violations: list[PreflightViolation] = []
     trees: dict[Path, ast.AST] = {}
 
     # Parse phase — collect syntax errors first.
@@ -652,6 +826,15 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
             _check_local_import_from(tree, path, code_dir, violations)
         except Exception:  # noqa: BLE001
             logger.debug("preflight_ast: _check_local_import_from failed on %s", path.name)
+
+    # SDAR teacher/student env interface contract — needs its OWN recursive walk
+    # (``rglob``), independent of ``py_files`` above which only globs one level.
+    # The SDAR envs live at ``code/sdar/envs/*.py``, which is how the 2026-05-31
+    # AttributeError slipped past pre-flight.
+    try:
+        _check_env_interface_contract(code_dir, violations)
+    except Exception:  # noqa: BLE001 — never raise from pre-flight
+        logger.debug("preflight_ast: _check_env_interface_contract failed")
 
     return violations
 
