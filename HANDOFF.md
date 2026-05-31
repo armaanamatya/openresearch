@@ -1,7 +1,7 @@
 # HANDOFF — root-harness hardening (harden/root-harness)
 
 Date: 2026-05-31 · Branch: `harden/root-harness` · Worktree: `/home/sww35/openresearch-harden`
-Status: **design locked + committed; P0 DONE (ar5iv fallback, commit `5df6d19`); P1 next; P2–P6 not started.**
+Status: **design locked; P0 + P1 DONE; P1.5 (preventive guard + exfil-taint) next; P2–P6 not started.** Borrow sweep complete + folded (ml-intern §8 + superpowers §8a + awesome-cc §8b); `tanbiralam/claude-code`=`lolout1/NOT_CLAUDECODE` REJECTED as leaked Anthropic IP (provenance gate §8). **P1** (commits `647ea37`/`83413f9`/`c2e527b`/`6d0695e`): #7 RuntimeGuard activation (A plumbing + B curated sources [`paper_hints.blocked_resources`, SDAR→BartekCupial repo] + C uniform env-seam in `collect_agent_text` — **detective** per grill) + Gap A (Claude root `allowed_tools` parity + hermetic `setting_sources=[]`/`strict_mcp_config` via `REPROLAB_SDK_HERMETIC`, keep `bypassPermissions`). Full suite **3346 passed / 0 regressions**. **P1.5** = preventive `can_use_tool` rework + parry-guard exfil-taint ruleset (C1, §8b).
 
 ## Read these first (in order)
 1. **`docs/superpowers/specs/2026-05-31-root-harness-hardening-design.md`** (committed `8ea804a`) — the authoritative plan. All decisions, phases P0–P6, per-phase tests, rollout/flag table, file:line anchors, HF contract (App A), honest rejection log (App B), SFT roadmap (App C), native-gap log (App D). **This is the source of truth — this HANDOFF only records live state + gotchas.**
