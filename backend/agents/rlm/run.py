@@ -73,6 +73,7 @@ from backend.agents.rlm._oauth_backend_patch import (
     apply_anthropic_caching_patch,
 )
 from backend.agents.rlm.forced_iteration import (
+    _TERMINAL_FAILURE_CLASSES,
     ForcedIterationPolicy,
     apply_forced_iteration_patch,
     forced_iteration_policy,
@@ -670,6 +671,37 @@ def _record_last_primitive_result_tools(
                         logger.exception(
                             "_record_last_primitive_result_tools: record_repair_attempt failed"
                         )
+                # comp 4b (2026-05-31): a terminal capacity/OOM stop is NOT repairable
+                # by re-running the same config — notify the policy so forced_iteration
+                # accepts the next FINAL_VAR (stop + report) instead of re-OOMing the
+                # same matrix. This is INDEPENDENT of the repairable branch above: a
+                # terminal cell-matrix result carries aggregated metrics, so it
+                # classifies as partial_evidence (not repairable), and the
+                # record_repair_attempt path would never fire for it.
+                if name == "run_experiment" and repair_policy_holder:
+                    _stop = result.get("stop_reason")
+                    _stop_kind = _stop.get("kind") if isinstance(_stop, dict) else None
+                    _terminal_class = _stop_kind or result.get("failure_class")
+                    if _terminal_class in _TERMINAL_FAILURE_CLASSES:
+                        policy = repair_policy_holder[0]
+                        # Stash for build_final_report so final_report.json carries
+                        # the structured stop_reason (done-criteria #3).
+                        setattr(
+                            ctx, "_terminal_stop_reason",
+                            _stop if isinstance(_stop, dict) and _stop.get("kind")
+                            else {"kind": str(_terminal_class)},
+                        )
+                        try:
+                            policy.note_terminal_failure(str(_terminal_class))
+                            logger.warning(
+                                "run_experiment returned terminal stop '%s' — accepting "
+                                "the next FINAL_VAR (stop + report, no re-OOM loop)",
+                                _terminal_class,
+                            )
+                        except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                            logger.exception(
+                                "_record_last_primitive_result_tools: note_terminal_failure failed"
+                            )
             return result
 
         _wrapped.__name__ = getattr(tool, "__name__", name)

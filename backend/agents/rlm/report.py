@@ -165,6 +165,16 @@ class RLMFinalReport(BaseModel):
             "items requested but not executed, with a short reason each."
         ),
     )
+    stop_reason: dict | None = Field(
+        default=None,
+        description=(
+            "Set when the run STOPPED on an un-recoverable capacity/OOM condition "
+            "rather than completing (2026-05-31): "
+            "{kind: 'oom_shrink_exhausted'|'capacity_exhausted', detail, "
+            "per_gpu_vram_gb, models_skipped, environments_skipped, gaps}. "
+            "None on a normally-completed run."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +659,34 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
+    """Recover the last terminal ``stop_reason`` from ``experiment_runs.jsonl``.
+
+    Fail-soft fallback for when ``ctx._terminal_stop_reason`` is unavailable (e.g.
+    re-running the builder on a finalized run). Scans in order so the LAST recorded
+    terminal stop wins; returns None on any error or when none was recorded.
+    """
+    path = Path(project_dir) / "experiment_runs.jsonl"
+    if not path.is_file():
+        return None
+    found: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "stop_reason" not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            for candidate in (entry, entry.get("result") if isinstance(entry, dict) else None):
+                if isinstance(candidate, dict) and isinstance(candidate.get("stop_reason"), dict):
+                    if candidate["stop_reason"].get("kind"):
+                        found = candidate["stop_reason"]
+    except OSError:
+        return None
+    return found
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -786,6 +824,16 @@ def build_final_report(
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
     }
+
+    # comp 4b (2026-05-31): surface a terminal capacity/OOM stop so the report
+    # explains WHY the run ended early. Prefer the in-process signal stashed on
+    # ctx by run.py's tool wrapper; fall back to experiment_runs.jsonl so
+    # re-running this builder on a finalized run still recovers it.
+    _stop = getattr(ctx, "_terminal_stop_reason", None)
+    if not (isinstance(_stop, dict) and _stop.get("kind")):
+        _stop = _terminal_stop_reason_from_disk(ctx.project_dir)
+    if isinstance(_stop, dict) and _stop.get("kind"):
+        kwargs["stop_reason"] = _stop
 
     # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
     # final state and self-report a LOWER rubric than it actually achieved — the
