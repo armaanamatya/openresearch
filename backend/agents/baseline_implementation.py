@@ -42,6 +42,32 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
     target_pdf.write_bytes(source_pdf.read_bytes())
 
 
+# Harness-owned, zero-non-stdlib-dep helper modules the agent's generated code
+# imports by name. Copied verbatim into code/ (2026-05-31 OOM/GPU remediation,
+# comp 2b) so the copy-and-paste import route always resolves inside any sandbox
+# — mirror of the rubric_guard.py "emit alongside train.py" pattern, but a real
+# file copy rather than a prompt instruction:
+#   * gpu_cell_runner.py — single-cell trainer references its env-var contract.
+#   * sdar_env_base.py   — every teacher/student *Env subclasses BaseEnv.
+_HARNESS_CODE_HELPERS: tuple[str, ...] = ("gpu_cell_runner.py", "sdar_env_base.py")
+
+
+def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
+    """Copy the stdlib-only harness helpers into ``code_dir`` (idempotent, fail-soft).
+
+    A failed copy must never abort code generation — the agent can still emit the
+    file itself from the prompt as a fallback, so we log and continue.
+    """
+    import shutil
+
+    src_dir = Path(__file__).parent / "rlm"
+    for helper in _HARNESS_CODE_HELPERS:
+        try:
+            shutil.copy2(src_dir / helper, code_dir / helper)
+        except OSError as exc:  # missing source / unwritable dest — non-fatal
+            logger.warning("could not copy harness helper %s into code/: %s", helper, exc)
+
+
 # ---------------------------------------------------------------------------
 # PPO CartPole-v1 implementation template
 # ---------------------------------------------------------------------------
@@ -1033,6 +1059,26 @@ _RUBRIC_GUARD_BLOCK = (
 )
 
 
+# Env interface contract (2026-05-31 OOM/GPU remediation, comp 2c). Self-gating:
+# only behaviourally relevant when the reproduction defines `*Env` classes.
+_SDAR_ENV_ABC_BLOCK = (
+    "\n\nINTERACTIVE ENVIRONMENT INTERFACE — when you define environment classes:\n"
+    "If your reproduction implements interactive RL environments (classes whose\n"
+    "names end in `Env`, e.g. ALFWorldEnv / WebShopEnv / SearchQAEnv), EACH ONE\n"
+    "MUST subclass the harness-provided BaseEnv:\n"
+    "  from sdar_env_base import BaseEnv\n"
+    "  class ALFWorldEnv(BaseEnv):\n"
+    "      def build_student_prompt(self, *args, **kwargs) -> str: ...\n"
+    "      def build_teacher_prompt(self, *args, **kwargs) -> str: ...\n"
+    "`sdar_env_base.py` is already copied into your code/ root (zero deps). BaseEnv\n"
+    "is an ABC: an env missing build_student_prompt / build_teacher_prompt raises\n"
+    "TypeError at CONSTRUCTION (cell start) instead of an AttributeError mid-grid —\n"
+    "the exact bug that zeroed the 2026-05-31 run's 18 ALFWorld cells. A pre-flight\n"
+    "AST check ALSO rejects any *Env defined without these methods and without the\n"
+    "BaseEnv base, so subclass it even if your trainer calls only one of the two.\n"
+)
+
+
 # ---------------------------------------------------------------------------
 # RL Scaffold guidance block (opt-in: REPROLAB_RL_SCAFFOLD=1)
 # ---------------------------------------------------------------------------
@@ -1908,6 +1954,11 @@ def _compute_constraint_guidance(
     # failure signal before the grader runs.
     guidance += _RUBRIC_GUARD_BLOCK
 
+    # 5.82. Env interface contract — always-on, self-gating (only matters when
+    # the agent defines *Env classes). Pairs with sdar_env_base.BaseEnv (copied
+    # into code/) + the preflight_ast env-contract backstop.
+    guidance += _SDAR_ENV_ABC_BLOCK
+
     # 5.85. RL scaffold guidance — opt-in (REPROLAB_RL_SCAFFOLD=1).
     # Tells the agent to copy rl_scaffold.py, write a thin train.py with
     # GRPOScaffold + the OPSD custom-loss term, emit rl_launch.py, and pin
@@ -2069,6 +2120,7 @@ async def run_with_sdk(
     code_dir = project_dir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     _copy_source_pdf_to_code_root(Path(runs_root), project_id, code_dir)
+    _copy_harness_helpers_to_code_root(code_dir)
 
     # P0: prefer the explicit arxiv_id (threaded from RunContext.arxiv_id, which
     # was resolved from artifact_index.json / demo_status.json by run_pipeline_rlm)
