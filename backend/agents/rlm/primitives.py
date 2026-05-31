@@ -3549,6 +3549,160 @@ def _persist_escalation_count(state_dir: "Path", count: int) -> None:
     tmp.replace(path)
 
 
+def _dynamic_gpu_headroom() -> float:
+    """REPROLAB_DYNAMIC_GPU_HEADROOM (default 1.25) — the VRAM safety multiplier the
+    capacity gate clamps against. Matches the dynamic-GPU resolver's headroom."""
+    try:
+        h = float(os.environ.get("REPROLAB_DYNAMIC_GPU_HEADROOM", "1.25") or "1.25")
+    except ValueError:
+        h = 1.25
+    return h if h > 0 else 1.25
+
+
+def _summarize_cell_logs(cells: list, matrix_result: dict, gpus: list) -> str:
+    """A clean per-cell status summary for ``result['logs']``.
+
+    Deliberately avoids the raw CUDA-OOM strings (``_OOM_LOG_MARKERS``) so a partial
+    cell run is NOT misread by ``_training_health_violation`` as a repairable
+    ``silent_oom`` — a shrink-exhausted cell OOM is terminal, surfaced via
+    ``stop_reason`` instead. Raw per-cell errors live in ``metrics`` (not scanned).
+    """
+    lines = [f"cell-matrix: {len(cells)} cell(s) across {len(gpus)} GPU(s)"]
+    for c in cells:
+        r = matrix_result.get(c.get("id", "")) or {}
+        st = r.get("status", "missing")
+        st_label = "oom-shrink-exhausted" if st == "oom_failed" else st
+        lines.append(
+            f"  {c.get('id','?')} -> {st_label} "
+            f"(gpu={r.get('gpu', '?')}, retries={r.get('retries', 0)})"
+        )
+    return "\n".join(lines)
+
+
+def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
+    """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
+
+    PREVENT → drop over-budget cells + dead datasets to honest ``scope.gaps``.
+    PLACEMENT → ``run_matrix`` pins one cell per GPU, ``min(free, cells)`` parallel,
+    per-cell OOM shrink-retry. AGGREGATE → the canonical
+    ``per_model[model_key][env][baseline]`` shape the scorer + postflight consume.
+    STOP → when every run cell OOM-fails after shrink-exhaustion (or all cells are
+    dropped) return a terminal ``stop_reason`` so the run reports instead of looping.
+
+    Returns a ``run_experiment``-shaped result dict. Never raises (fail-soft).
+    """
+    import json
+    import time as _time
+    from pathlib import Path
+
+    from backend.agents.rlm import cell_matrix, gpu_cell_runner
+
+    code = Path(code_path)
+    artifact_root = code / "outputs" / run_id
+
+    def _persist_metrics(m: dict) -> None:
+        """Write the aggregated metrics where the leaf scorer + final_report read
+        them (the per-cell metrics.json files are single-cell leaves; the scorer
+        needs the aggregated per_model shape)."""
+        try:
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            blob = json.dumps(m, indent=2, default=str)
+            (artifact_root / "metrics.json").write_text(blob, encoding="utf-8")
+            (code / "metrics.json").write_text(blob, encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001 — persistence failure must not crash the run
+            logger.warning("cell-matrix: failed to persist aggregated metrics.json: %s", exc)
+
+    try:
+        manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+        all_cells = [c for c in (manifest.get("cells") or []) if isinstance(c, dict) and c.get("id")]
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": f"cells.json unreadable: {type(exc).__name__}: {exc}",
+                "failure_class": "contract_guard"}
+    if not all_cells:
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": "cells.json present but enumerated no valid cells",
+                "failure_class": "contract_guard"}
+
+    # PREVENT — clamp to one-card budget, drop confirmed-dead datasets (fail-soft).
+    headroom = _dynamic_gpu_headroom()
+    kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
+        all_cells, caps.per_gpu_vram_gb, headroom=headroom)
+    kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
+
+    gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
+
+    def _terminal(kind: str, error: str, metrics: dict, logs: str) -> dict:
+        _persist_metrics(metrics)
+        try:
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": kind, "message": error,
+            })
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            logger.debug("run_experiment: cell-matrix stop event emit failed")
+        return {"success": False, "metrics": metrics, "logs": logs, "error": error,
+                "failure_class": kind,
+                "stop_reason": {"kind": kind, "detail": error,
+                                "per_gpu_vram_gb": caps.per_gpu_vram_gb,
+                                "models_skipped": models_skipped,
+                                "environments_skipped": envs_skipped,
+                                "gaps": (cap_gaps or []) + (ds_gaps or [])}}
+
+    # Everything dropped by the gates → nothing fits this backend → terminal.
+    if not kept:
+        metrics = cell_matrix.aggregate_cell_metrics(
+            {}, [], capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+            models_skipped=models_skipped, environments_skipped=envs_skipped)
+        return _terminal(
+            "capacity_exhausted",
+            f"every cell exceeds the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB "
+            f"(headroom {headroom}) or targets a dead dataset; nothing to run on this backend",
+            metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
+
+    _t0 = _time.monotonic()
+    matrix_result = gpu_cell_runner.run_matrix(
+        kept, str(code / "train_cell.py"),
+        output_root=str(artifact_root),
+        gpus=gpus or None,
+        per_cell_timeout_s=timeout_s,
+    )
+    wall = _time.monotonic() - _t0
+
+    metrics = cell_matrix.aggregate_cell_metrics(
+        matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+        models_skipped=models_skipped, environments_skipped=envs_skipped)
+    logs = _summarize_cell_logs(kept, matrix_result, gpus)
+
+    statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
+    n_ok = sum(s == "ok" for s in statuses)
+    n_oom = sum(s == "oom_failed" for s in statuses)
+    n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+
+    if n_ok > 0:
+        # At least one cell produced real metrics — partial or full success. Honest
+        # gaps (dropped/oom/err cells) are already in metrics.scope; flows to the
+        # SAME postflight guards + verify_against_rubric.
+        _persist_metrics(metrics)
+        return {"success": True, "metrics": metrics, "logs": logs, "wall_time_s": wall}
+
+    if n_err == 0:
+        # Every run cell OOM-failed after the shrink ladder — un-repairable by
+        # re-running the same config. STOP + report (do NOT reuse silent_oom).
+        return _terminal(
+            "oom_shrink_exhausted",
+            f"all {n_oom} run cell(s) OOM-failed after batch-scale shrink + grad-ckpt "
+            f"retries on the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB; the matrix "
+            f"cannot fit one card — reduce model size/scope or use a larger GPU",
+            metrics, logs)
+
+    # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
+    _persist_metrics(metrics)
+    return {"success": False, "metrics": metrics, "logs": logs,
+            "failure_class": "cell_execution_error",
+            "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs), "
+                      f"{n_oom} OOM-failed, 0 succeeded — fix the cell trainer and re-run")}
+
+
 def run_experiment(
     code_path: str | dict,
     env_id: str,
@@ -3627,7 +3781,10 @@ def run_experiment(
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
-    if not commands:
+    # comp 4: the harness-owned cell path runs code/train_cell.py via cells.json and
+    # needs no commands.json. Only fail when NEITHER manifest is present.
+    _cells_present = (Path(code_path) / "cells.json").is_file()
+    if not commands and not _cells_present:
         return _persist_experiment_result(ctx, {
             "success": False, "metrics": {},
             "error": f"no commands.json at {manifest}"}, model_id=model_id, eval_env=eval_env)
@@ -3746,12 +3903,41 @@ def run_experiment(
 
     result: dict = {}
 
+    # comp 4 (2026-05-31): harness-owned cell-runner route. When the backend exposes
+    # GPUs (local/docker) AND the agent emitted code/cells.json + train_cell.py, run
+    # the matrix one GPU per cell instead of the monolithic commands.json path — the
+    # fix for the cuda:0 matrix-stacking that OOM'd the 2026-05-31 run. Mutually
+    # exclusive with the legacy escalation loop below (and thus with
+    # _resolve_distributed_launch, which only fires inside _execute_in_sandbox).
+    # Fail-soft: any error here, or a missing manifest / no-GPU / cloud backend,
+    # falls through to the legacy monolithic path unchanged.
+    # Bound before the branch so the post-loop rubric-contract check (which reads
+    # outputs/<run_id>) is valid on BOTH paths; the legacy loop reassigns it per
+    # iteration, the cell route uses this value as its artifact root.
+    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    _cell_route_taken = False
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity
+        _caps = describe_capacity(ctx)
+        if (
+            _caps.backend_kind in ("local", "docker")
+            and not _caps.is_empty
+            and (Path(code_path) / "cells.json").is_file()
+            and (Path(code_path) / "train_cell.py").is_file()
+        ):
+            result = _execute_cell_matrix(ctx, code_path, _caps, timeout_s=timeout, run_id=run_id)
+            _cell_route_taken = True
+    except Exception:  # noqa: BLE001 — the cell route must never crash the run
+        logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
+        _cell_route_taken = False
+
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
     # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
     # persist the updated plan atomically, emit gpu_escalated, and retry.
     # Capped by max_escalations. Non-OOM/non-capacity failures and success exit
     # immediately. I12: explicit shutdown(wait=False) per iteration.
-    while True:
+    # comp 4: skipped entirely on the cell-runner route (`_cell_route_taken`).
+    while not _cell_route_taken:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
         infra_error_kind: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
