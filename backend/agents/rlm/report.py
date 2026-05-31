@@ -47,6 +47,12 @@ class RLMFinalReport(BaseModel):
         default_factory=dict,
         description="Measured metrics; may be {} until Phase 5.",
     )
+    # P2 provenance back-link (invariant 2): the canonical experiment record this
+    # report's metrics trace to, + the sha256 of that run's metrics.json artifact.
+    # None when no successful experiment ran. P3 projects baseline_metrics from
+    # this exact record (closing metric → experiment record → metrics.json hash).
+    experiment_run_id: str | None = None
+    metrics_sha256: str | None = None
     paper_claims: dict = Field(default_factory=dict)
     # ── paper_claims coercer ──
     # The root model occasionally returns paper_claims as a LIST of claim
@@ -806,6 +812,13 @@ def build_final_report(
             _r["best_of_run"] = True
             kwargs["rubric"] = _r
 
+    # P2 back-link (invariant 2): point the report at the canonical experiment
+    # record + its metrics.json hash so a final metric traces to the exact
+    # artifact bytes. P3 will project baseline_metrics from this same record.
+    _prov = _canonical_experiment_provenance(ctx.project_dir)
+    kwargs["experiment_run_id"] = _prov.get("experiment_run_id")
+    kwargs["metrics_sha256"] = _prov.get("metrics_sha256")
+
     return RLMFinalReport(**kwargs)
 
 
@@ -815,6 +828,41 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _canonical_experiment_provenance(project_dir: Path) -> dict:
+    """P2 back-link: return ``{experiment_run_id, metrics_sha256}`` for the
+    canonical ``experiment_runs.jsonl`` record so the final report points back to
+    the exact artifact behind its metrics (invariant 2). Canonical = the latest
+    SUCCESSFUL record (deterministic). ``{}`` when none / unreadable — a run with
+    no successful experiment has no metric to trace. P3 projects baseline_metrics
+    from this same record."""
+    import json
+
+    exp_log = project_dir / "experiment_runs.jsonl"
+    if not exp_log.exists():
+        return {}
+    successful: list[dict] = []
+    try:
+        for line in exp_log.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:  # noqa: BLE001 — tolerate a torn/partial line
+                continue
+            if isinstance(rec, dict) and rec.get("success") and rec.get("experiment_run_id"):
+                successful.append(rec)
+    except OSError:
+        return {}
+    if not successful:
+        return {}
+    chosen = successful[-1]
+    out: dict = {"experiment_run_id": chosen["experiment_run_id"]}
+    if chosen.get("metrics_sha256"):
+        out["metrics_sha256"] = chosen["metrics_sha256"]
+    return out
 
 
 # ---------------------------------------------------------------------------

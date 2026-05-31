@@ -106,3 +106,52 @@ def test_full_manifest_round_trip(tmp_path: Path):
     _manifest_enrichment(result)
     for key in ("experiment_run_id", "env_id", "commands", "sandbox_backend", "metrics_sha256"):
         assert key in result, key
+
+
+# --- Unit C: _canonical_experiment_provenance (final_report back-link) ---
+
+import json  # noqa: E402
+
+from backend.agents.rlm.report import _canonical_experiment_provenance  # noqa: E402
+
+
+def test_canonical_picks_latest_successful(tmp_path: Path):
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        "\n".join([
+            json.dumps({"success": True, "experiment_run_id": "r1", "metrics_sha256": "h1"}),
+            json.dumps({"success": False, "experiment_run_id": "r2", "metrics_sha256": "h2"}),
+            json.dumps({"success": True, "experiment_run_id": "r3", "metrics_sha256": "h3"}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    prov = _canonical_experiment_provenance(tmp_path)
+    assert prov == {"experiment_run_id": "r3", "metrics_sha256": "h3"}
+
+
+def test_canonical_empty_when_no_successful(tmp_path: Path):
+    """A run with no successful experiment has no metric to trace → {}."""
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": False, "experiment_run_id": "rX"}) + "\n", encoding="utf-8"
+    )
+    assert _canonical_experiment_provenance(tmp_path) == {}
+
+
+def test_canonical_empty_when_no_log(tmp_path: Path):
+    assert _canonical_experiment_provenance(tmp_path) == {}
+
+
+def test_canonical_tolerates_malformed_lines(tmp_path: Path):
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        "not json{\n" + json.dumps({"success": True, "experiment_run_id": "ok", "metrics_sha256": "h"}) + "\n",
+        encoding="utf-8",
+    )
+    assert _canonical_experiment_provenance(tmp_path)["experiment_run_id"] == "ok"
+
+
+def test_canonical_run_id_without_hash(tmp_path: Path):
+    """A successful record may lack metrics_sha256 (no metrics.json) — still return the id."""
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "experiment_run_id": "only-id"}) + "\n", encoding="utf-8"
+    )
+    prov = _canonical_experiment_provenance(tmp_path)
+    assert prov == {"experiment_run_id": "only-id"}
