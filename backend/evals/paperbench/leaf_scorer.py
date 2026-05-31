@@ -343,10 +343,23 @@ def _leaf_mentions_dataset(leaf: dict[str, Any], dataset_tokens: frozenset[str])
     return dataset_tokens.issubset(text_tokens)
 
 
+def _normalise_model_name(name: str) -> str:
+    """Lowercase + strip for case-insensitive model-name comparison."""
+    return name.strip().lower()
+
+
+def _operator_skip_set(operator_skip_models: list[str] | None) -> frozenset[str]:
+    """Return a normalised frozenset of operator-intended skip model names."""
+    if not operator_skip_models:
+        return frozenset()
+    return frozenset(_normalise_model_name(m) for m in operator_skip_models if m)
+
+
 def _detect_data_unavailable_leaves(
     leaves: list[dict[str, Any]],
     run_dir: Path,
     metrics_shape: list[dict] | None = None,
+    operator_skip_models: list[str] | None = None,
 ) -> set[str]:
     """Return the set of leaf ids that depend on a dataset declared unavailable.
 
@@ -380,11 +393,23 @@ def _detect_data_unavailable_leaves(
     mode (both signals required) would be over-restrictive: an agent that
     declared a dataset out of scope before even trying is being transparent.
 
+    ``operator_skip_models``: the operator-intended skip list from
+    ``ScopeSpec.skip_models``.  A model that appears in ``scope.models_skipped``
+    or ``model_load_failures`` (or ``per_model[m].status`` in the failure set)
+    BUT is NOT in ``operator_skip_models`` was REQUESTED yet failed to load —
+    the agent's code caught a load exception and silently laundered it into a
+    scope-reduction entry.  These are NOT silently excluded from the rubric;
+    only models that the operator explicitly de-scoped are excluded.  This
+    distinction prevents a broad ``except Exception`` block from masking real
+    code bugs as scope reductions (the root cause of the 0.188 SDAR score).
+
     Returns an empty set when neither signal file exists or is parseable —
     backward-compatible with pre-κ behaviour.
     """
     if not leaves:
         return set()
+
+    op_skip = _operator_skip_set(operator_skip_models)
 
     # --- Load signals ---
     # Signal 1: data_load_failures from the most recent metrics.json
@@ -405,27 +430,60 @@ def _detect_data_unavailable_leaves(
         except Exception:
             pass
 
-    # Signal 1b: failed / skipped MODELS. Graceful degradation (2026-05-30 user
-    # mandate) excludes a model's leaves from the rubric — numerator AND
-    # denominator — exactly like an unobtainable dataset, so a model that could
-    # not be loaded or run does not drag the score to zero. Honest runtime
-    # signals: per_model[m].status in {model_load_failed, failed, ...},
-    # scope.models_skipped (intentional or forced scope reduction, e.g. the SDAR
-    # 7B), and an optional model_load_failures list mirroring data_load_failures.
-    failed_models: list[str] = []
+    # Signal 1b: failed / skipped MODELS.
+    #
+    # INTENTIONAL operator de-scope (present in op_skip) → excluded from rubric
+    # (graceful-degradation mandate, 2026-05-30).
+    #
+    # REQUESTED model whose load failed in agent code (NOT in op_skip) → treat
+    # as a repairable code bug, NOT a scope reduction.  Silently excluding these
+    # models launders a broad ``except Exception`` block in the agent's train.py
+    # into a fake scope reduction and produces a degenerate 0.188 score (the
+    # 2026-05-31 SDAR root cause: transformers architecture error +
+    # ``__init__() got an unexpected keyword argument 'dtype'`` both caught,
+    # dumped into scope.models_skipped, every downstream leaf scored 0).
+    failed_models: list[str] = []     # excluded from rubric (intentional or ok)
+    repairable_models: list[str] = [] # code bugs — NOT excluded; stay in scoring
     for _m, _mv in (metrics_data.get("per_model") or {}).items():
         if isinstance(_mv, dict) and str(_mv.get("status", "")).lower() in {
             "model_load_failed", "failed", "skipped", "data_unavailable", "unavailable",
         }:
-            failed_models.append(str(_m))
+            key = _normalise_model_name(_m)
+            if key in op_skip:
+                failed_models.append(_m)
+            else:
+                repairable_models.append(_m)
     for _m in ((metrics_data.get("scope") or {}).get("models_skipped") or []):
         if isinstance(_m, str) and _m:
-            failed_models.append(_m)
+            key = _normalise_model_name(_m)
+            if key in op_skip:
+                failed_models.append(_m)
+            else:
+                # Requested model silently dumped into models_skipped by agent code
+                repairable_models.append(_m)
     for _entry in metrics_data.get("model_load_failures") or []:
         if isinstance(_entry, dict) and (_entry.get("model") or _entry.get("name")):
-            failed_models.append(str(_entry.get("model") or _entry.get("name")))
+            raw = str(_entry.get("model") or _entry.get("name"))
+            key = _normalise_model_name(raw)
+            if key in op_skip:
+                failed_models.append(raw)
+            else:
+                repairable_models.append(raw)
         elif isinstance(_entry, str) and _entry:
-            failed_models.append(_entry)
+            key = _normalise_model_name(_entry)
+            if key in op_skip:
+                failed_models.append(_entry)
+            else:
+                repairable_models.append(_entry)
+
+    if repairable_models:
+        logger.warning(
+            "_detect_data_unavailable_leaves: %d model(s) in metrics signals "
+            "were REQUESTED (not operator-skipped) but appeared as failed/skipped "
+            "— treating as repairable code bugs, NOT scope reductions: %s",
+            len(repairable_models),
+            repairable_models,
+        )
 
     # Signal 1c: environments_skipped — the agent's structured declaration that an
     # environment (e.g. ALFWorld / WebShop for a Search-QA-only run) is out of
@@ -794,6 +852,7 @@ def score_reproduction(
     degraded: bool | None = None,
     metrics_shape: list[dict] | None = None,
     invariants: list[Any] | None = None,
+    operator_skip_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
@@ -840,6 +899,16 @@ def score_reproduction(
     The structured ``invariant_results`` list and ``invariant_gate_applied``
     bool are always present in the returned dict (empty / False when no
     invariants are provided) so downstream consumers can surface the gate reason.
+
+    ``operator_skip_models`` (2026-05-31 model-load-bug fix): the
+    ``ScopeSpec.skip_models`` list from the operator / CLI invocation.  A model
+    present in ``scope.models_skipped`` or ``model_load_failures`` that is NOT
+    in this list was REQUESTED but failed to load — the agent's code caught the
+    exception and silently laundered it into a scope-reduction entry.  Those
+    models are NOT silently excluded from the rubric; only models the operator
+    explicitly de-scoped are excluded.  Omitting this parameter (or passing
+    ``None``) preserves the old behaviour — all models in the failure signals
+    are excluded — so callers that don't have the operator skip list are unaffected.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -905,8 +974,10 @@ def score_reproduction(
     # PR-κ: pre-filter leaves that depend on unavailable datasets.
     # These are excluded from LLM grading and from both numerator AND
     # denominator of the roll-up — they don't drag the score down.
+    # Pass operator_skip_models so requested-but-load-failed models are NOT
+    # silently excluded (they stay in scoring as code bugs, not scope gaps).
     unavailable_ids: set[str] = _detect_data_unavailable_leaves(
-        leaves, run_dir, metrics_shape
+        leaves, run_dir, metrics_shape, operator_skip_models=operator_skip_models
     )
     skip_set: frozenset[str] = frozenset(unavailable_ids)
 

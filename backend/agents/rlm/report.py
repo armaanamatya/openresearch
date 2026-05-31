@@ -264,7 +264,22 @@ def _reconcile_verdict_against_evidence(
     return verdict, None
 
 
-def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
+def _normalise_model_name(name: str) -> str:
+    """Lowercase + strip for case-insensitive model-name comparison."""
+    return name.strip().lower()
+
+
+def _operator_skip_set(operator_skip_models: list[str] | None) -> frozenset[str]:
+    """Return a normalised frozenset of operator-intended skip model names."""
+    if not operator_skip_models:
+        return frozenset()
+    return frozenset(_normalise_model_name(m) for m in operator_skip_models if m)
+
+
+def _collect_data_unavailable_gaps(
+    project_dir: Path,
+    operator_skip_models: list[str] | None = None,
+) -> list[str]:
     """Scan the run's emitted metrics for datasets AND models the agent recorded
     as unavailable, returning clear, deduped gap strings for ``scope.gaps``.
 
@@ -278,10 +293,26 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
     (numerator + denominator) rather than scored zero. So the run always reaches
     a final summary + rubric and only the failed pieces drop out (2026-05-30
     graceful-degradation mandate). Best-effort: [] when no metrics file is present.
+
+    ``operator_skip_models``: the operator-intended skip list from
+    ``ScopeSpec.skip_models``.  A model that appears in ``scope.models_skipped``
+    BUT is NOT in ``operator_skip_models`` was REQUESTED yet failed to load —
+    the agent's code caught a load exception (``TypeError``, architecture error,
+    ``unexpected keyword argument``, etc.) and silently laundered it into a
+    scope-reduction entry.  These are reported as "load failure (repairable code
+    bug)" and are NOT silently excluded from the rubric — they surface as
+    repair-context for the next iteration.  Only genuinely operator-intended
+    skips (present in ``operator_skip_models``) are tagged "scope reduction" and
+    excluded from scoring.
     """
     datasets: dict[str, str] = {}   # name(lower) -> reason
-    models: dict[str, str] = {}     # name(lower) -> reason
+    # models dict: name(lower) -> (reason, is_repairable_bug)
+    # is_repairable_bug=True  → requested model whose load failed (code bug)
+    # is_repairable_bug=False → operator-intended scope reduction (legitimate)
+    models: dict[str, tuple[str, bool]] = {}
     _MODEL_FAIL = {"model_load_failed", "failed", "skipped", "data_unavailable", "unavailable"}
+    op_skip = _operator_skip_set(operator_skip_models)
+
     outputs = project_dir / "code" / "outputs"
     for mpath in (sorted(outputs.rglob("metrics.json")) if outputs.exists() else []):
         try:
@@ -311,31 +342,64 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
         # --- models ---
         for m, mv in (data.get("per_model") or {}).items():
             if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _MODEL_FAIL:
-                models.setdefault(str(m).strip().lower(), str(mv.get("reason") or mv.get("error") or "").strip())
+                key = _normalise_model_name(m)
+                reason = str(mv.get("reason") or mv.get("error") or "").strip()
+                # A per_model status failure is always a runtime failure, not an
+                # operator-intended skip.  These are repairable code bugs unless the
+                # operator explicitly de-scoped the model.
+                is_bug = key not in op_skip
+                models.setdefault(key, (reason, is_bug))
         for m in ((data.get("scope") or {}).get("models_skipped") or []):
             if isinstance(m, str) and m.strip():
-                models.setdefault(m.strip().lower(), "scope reduction")
+                key = _normalise_model_name(m)
+                # Distinguish: is this an operator-intended skip, or did the agent
+                # quietly dump a load failure into models_skipped to avoid scoring?
+                is_bug = key not in op_skip
+                models.setdefault(key, ("scope reduction" if not is_bug else "", is_bug))
         for entry in data.get("model_load_failures") or []:
             if isinstance(entry, dict) and (entry.get("model") or entry.get("name")):
-                models.setdefault(str(entry.get("model") or entry.get("name")).strip().lower(),
-                                  str(entry.get("error") or entry.get("reason") or "").strip())
+                key = _normalise_model_name(str(entry.get("model") or entry.get("name")))
+                reason = str(entry.get("error") or entry.get("reason") or "").strip()
+                is_bug = key not in op_skip
+                models.setdefault(key, (reason, is_bug))
             elif isinstance(entry, str) and entry.strip():
-                models.setdefault(entry.strip().lower(), "")
+                key = _normalise_model_name(entry)
+                is_bug = key not in op_skip
+                models.setdefault(key, ("", is_bug))
     gaps: list[str] = []
     for name, reason in sorted(datasets.items()):
         tail = f" ({reason[:160]})" if reason else ""
         gaps.append(f"{name}: dataset unobtainable{tail} — excluded from rubric score, not penalised")
-    for name, reason in sorted(models.items()):
-        tail = f" ({reason[:160]})" if reason else ""
-        gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
+    for name, (reason, is_repairable_bug) in sorted(models.items()):
+        if is_repairable_bug:
+            # Requested model whose load failed in agent code — surface as a
+            # repairable failure so the repair loop sees it, NOT as a silent
+            # scope-exclusion that would launder the bug into a 0.188 score.
+            tail = f" ({reason[:160]})" if reason else ""
+            gaps.append(
+                f"{name}: model load failure (repairable code bug){tail}"
+                f" — NOT excluded from rubric; fix the loader and re-run"
+            )
+        else:
+            # Operator-intended scope reduction — legitimately excluded.
+            tail = f" ({reason[:160]})" if reason else ""
+            gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
     return gaps
 
 
-def _merge_data_unavailable_gaps(scope: dict, project_dir: Path) -> dict:
+def _merge_data_unavailable_gaps(
+    scope: dict,
+    project_dir: Path,
+    operator_skip_models: list[str] | None = None,
+) -> dict:
     """Merge auto-collected data-unavailable gaps into ``scope.gaps`` (deduped by
     leading dataset token), so unobtainable datasets are reported even when the
-    root model did not declare them in scope.gaps itself."""
-    auto = _collect_data_unavailable_gaps(project_dir)
+    root model did not declare them in scope.gaps itself.
+
+    ``operator_skip_models`` is forwarded to ``_collect_data_unavailable_gaps``
+    so the intentional-skip vs repairable-code-bug distinction is preserved.
+    """
+    auto = _collect_data_unavailable_gaps(project_dir, operator_skip_models=operator_skip_models)
     if not auto:
         return scope
     existing = list((scope or {}).get("gaps") or [])
@@ -683,8 +747,14 @@ def build_final_report(
     # Surface datasets the agent recorded as unobtainable as explicit scope.gaps,
     # even if the root never declared them — they were EXCLUDED from the rubric
     # score (data-unavailable-aware grader), so the report must say so plainly.
+    # Pass the operator's skip_models so we can distinguish intentional scope
+    # reductions from model load failures the agent silently laundered into
+    # scope.models_skipped (a code bug that must NOT be auto-excluded).
+    _op_skip = list(getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or [])
     try:
-        verified_scope = _merge_data_unavailable_gaps(verified_scope, ctx.project_dir)
+        verified_scope = _merge_data_unavailable_gaps(
+            verified_scope, ctx.project_dir, operator_skip_models=_op_skip
+        )
     except Exception:  # noqa: BLE001 — gap surfacing augments the report, never fatal
         logger.exception("report: data-unavailable gap merge failed")
 
