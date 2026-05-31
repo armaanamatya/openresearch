@@ -104,13 +104,21 @@ All claims below were confirmed by reading the working tree. File:line anchors a
 This is a **bug fix**, sequenced in P1 because it shares the runtime/registry surface with Gap A and is foundational to scoring truth.
 
 **Change:**
-- `to_runtime_spec` (`registry.py:59-76`): accept + set `guard=RuntimeGuard(blocked_terms=...)`.
-- Thread blocklist through `RunContext` (`context.py` — add `blocked_terms` field) → `invoke.py:42` (`collect_agent_text`) → the agent specs (esp. `baseline-implementation`).
+- `to_runtime_spec` (`registry.py:38-76`): accept + set `guard=RuntimeGuard(blocked_terms=...)`. Threaded uniformly so **ALL** registry agents (baseline-implementation, improvement-path, rubric-verifier, improvement-orchestrator) get the guard — no agent legitimately needs the paper's own repo.
+- Thread blocklist through `RunContext` (`context.py` — add `blocked_terms` field) → `invoke.py:42` (`collect_agent_text` `blocked_terms=` param) → `to_runtime_spec` → every agent spec. Callers: `baseline_implementation.py:2160`, `rdr/agent.py:155`.
 - `cli.py:1240`: stop discarding `blacklist_terms`; feed it into `ctx.blocked_terms`.
-- For arXiv runs with no bundle: derive the blocklist from the ingestion discovery adapter (`regex.py:73` already extracts `github:owner/repo` from the paper).
+
+**Blocklist sources — CURATED only (grill-resolved 2026-05-31; supersedes the regex-derivation below):** three precise sources, unioned:
+  1. `bundle.blacklist_entries()` (`evals/paperbench/bundle.py:62`) — paperbench-bundle runs.
+  2. cli `--blacklist` (`cli.py:1240`) — explicit override.
+  3. **NEW: arXiv-id-keyed `paper_hints` blocked-resources list** (`prompts/paper_hints.py`) — protects the canonical SDAR *arXiv* run (`reproduce --paper-hint 2605.15155`), which loads neither the ftrl bundle nor `--blacklist`. SDAR entry: `2605.15155 → github.com/BartekCupial/finetuning-RL-as-CL` (mirrors `third_party/paperbench/ftrl/blacklist.txt`, a single curated line).
+  - **DROPPED: regex auto-derivation from the discovery adapter** (`regex.py`). It sweeps up *all* cited `github:owner/repo` including legitimate framework deps (`huggingface/trl`) → would break the reproduction AND fail this section's own "trl stays allowed" test. Curated lists are precise; auto-derivation is not. A precise author-repo classifier could revisit this later.
+  - **Visibility:** emit a `run_warning` when a benchmark/paper-hint run resolves an **empty** active blocklist, so the integrity gap is never silent.
 - The URL canonicalizer (`base.py:188`) already matches `…/x/y.git` ≡ `github.com/x/y`.
 
-**Tests:** the paper's own repo (e.g. `github.com/BartekCupial/finetuning-RL-as-CL`, the PaperBench SDAR blacklist entry) raises `RuntimeGuardViolation` from the authoring agent; a non-blacklisted framework repo (e.g. `huggingface/trl`) does not.
+**Enforcement is DETECTIVE in P1 (grill-resolved):** the Claude guard check (`claude_runtime.py:101-107`) is post-hoc — it inspects `tool_input` *after* the model emits the call, but under `bypassPermissions` the CLI has already run the local Bash, so a blocked fetch touches host disk *before* the `RuntimeGuardViolation` raises and fails the run. Score-truth is preserved (a detected cheat yields no passing score), but the bytes transiently exist. True PREVENTION needs the SDK `can_use_tool` callback, which (verified in 0.2.87, `client.py:161`) requires **streaming-input mode + a non-`bypassPermissions` mode** — a larger rework. **Scheduled as an explicit follow-up phase (P1.5), not merely logged.** OpenAI is already preventive (we own its Bash tool; guard checked before `subprocess.run`).
+
+**Tests:** the paper's own repo (`github.com/BartekCupial/finetuning-RL-as-CL`, the SDAR blacklist entry) raises `RuntimeGuardViolation` from the authoring agent; a non-blacklisted framework repo (`huggingface/trl`) does not; the SDAR arXiv run (`2605.15155`) resolves a non-empty guard via `paper_hints`.
 
 **Escape hatch:** `REPROLAB_BENCHMARK_GUARD` (default true). Off only for non-benchmark exploratory runs.
 
@@ -181,7 +189,8 @@ ml-intern is **not** better than OpenResearch overall — OpenResearch leads on 
 ## 9. Phase plan (each phase ships its tests)
 
 - **P0 — Paper fidelity** (synergistic with committed `ec3fbc3`): ar5iv fallback (#2), arXiv `not_a_pdf` retry (M2).
-- **P1 — Provider-runtime hardening:** Gap A parity + hermetic (§3) **+ RuntimeGuard blacklist activation (#7, §4)** — same registry/runtime surface. Tests: parity, permission_mode, hermetic, blacklist-blocks-paper-repo.
+- **P1 — Provider-runtime hardening:** Gap A parity + hermetic (§3) **+ RuntimeGuard blacklist activation (#7, §4, DETECTIVE)** — same registry/runtime surface. Tests: parity, permission_mode, hermetic, fail-closed empty-tools, blacklist-blocks-paper-repo, SDAR-arxiv-nonempty-guard.
+- **P1.5 — Preventive guard (scheduled follow-up; grill-resolved 2026-05-31):** rework `claude_runtime` to streaming-input mode + a permission model where `can_use_tool` fires (deny-on-blocked instead of relying on `bypassPermissions`), so a blocked fetch is *prevented*, not just detected-after-the-fact. Bigger blast radius (every tool routes through the callback) ⇒ its own phase after P1's detective guard + tests land. Test: `can_use_tool` denies a Bash command referencing a blocked term before execution.
 - **P2 — Manifest (§5a):** revive `artifacts.py` + enrich `experiment_runs.jsonl` + persist `run_id` + back-link. Additive. Tests: manifest fields present, `commands.log` written, back-link round-trip.
 - **P3 — Scoring truth:** metric-projection (§5b) + invariant-7 citation observe-first (§5c). Tests: projection-from-artifact, model-injection-rejected, citation-clamp (mocked).
 - **P4 — Budget/runtime (§6):** template-method + watchdog unify + conformance test + #5,#3,#4,#10,M1,M3,M4. Tests: Brev/local budget inheritance, upfront gate, sweeper ownership+preserve, watchdog-on-RDR, conformance (all backends).
