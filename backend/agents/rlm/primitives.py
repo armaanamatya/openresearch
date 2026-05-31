@@ -1609,6 +1609,22 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     # on EVERY streamed event, giving the poll loop a precise "SDK is alive and
     # producing" signal. _sdk_activity["last"] is written by the worker thread and read
     # by the main thread; a lone float write/read is atomic under the GIL.
+    # comp 3 (2026-05-31 OOM/GPU remediation): hand the code-writing agent its
+    # per-GPU budget + the single-cell contract when the backend exposes GPUs
+    # (local/docker). describe_capacity is fail-soft; on a failure or a CPU/cloud
+    # backend the budget is None and the guidance is byte-identical to before.
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity as _describe_capacity
+        _caps = _describe_capacity(ctx)
+        _gpu_cell_budget: dict | None = {
+            "backend_kind": _caps.backend_kind,
+            "num_gpus": _caps.num_gpus,
+            "per_gpu_vram_gb": _caps.per_gpu_vram_gb,
+        }
+    except Exception:  # noqa: BLE001 — a capacity probe must never block code-writing
+        logger.debug("implement_baseline: describe_capacity failed; no cell budget", exc_info=True)
+        _gpu_cell_budget = None
+
     import time as _time
     _sdk_activity = {"last": _time.time()}
 
@@ -1646,6 +1662,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
             gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
             gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            # comp 3: per-GPU budget + single-cell contract for the cell path.
+            gpu_cell_budget=_gpu_cell_budget,
             # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
             # stall watchdog distinguishes a working agent from a hung SDK.
             on_event=_note_sdk_event,
@@ -1685,6 +1703,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                 data_recipes=_data_recipes or None,
                 gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
                 gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+                gpu_cell_budget=_gpu_cell_budget,
             )
             # Isolate the SDK call in a fresh process so its aclose() async-gen
             # race can't poison this reproduction process. The driver runs on the

@@ -1079,6 +1079,85 @@ _SDAR_ENV_ABC_BLOCK = (
 )
 
 
+# GPU memory discipline (2026-05-31 OOM/GPU remediation, comp 3c) — ALWAYS-ON.
+# The ~20 GB fp32 full-vocab log_softmax blowup OOM'd even Qwen3-1.7B on a 24 GB
+# card; this is the single highest-leverage fix for "even the smallest model OOMs".
+_MEMORY_DISCIPLINE_BLOCK = (
+    "\n\nGPU MEMORY DISCIPLINE — always-on (the 2026-05-31 ~20 GB blowup that OOM'd even Qwen3-1.7B):\n"
+    "FORBIDDEN: materializing a full-vocab fp32 log-prob tensor. NEVER write\n"
+    "  logp = F.log_softmax(logits.float(), dim=-1)   # [B, T, vocab] in fp32 ~= 20 GB, kept in the autograd graph\n"
+    "Compute token log-probs WITHOUT the [B, T, vocab] materialization:\n"
+    "  - F.cross_entropy(logits.view(-1, V), labels.view(-1), reduction='none')  (negate -> token logp), OR\n"
+    "  - torch.gather on logits for the taken tokens + a CHUNKED logsumexp over the vocab dim.\n"
+    "Always: bf16 autocast (do NOT upcast logits to fp32), model.config.use_cache=False,\n"
+    "model.gradient_checkpointing_enable(), and per-device mini_batch <= 2 for models >= 3B.\n"
+    "When the harness sets REPROLAB_CELL_BATCH_SCALE (a float in (0,1]) multiply your\n"
+    "per-device batch by it, and when it sets REPROLAB_CELL_GRAD_CHECKPOINT=1 enable\n"
+    "gradient checkpointing — these are the harness's per-cell OOM-shrink retries.\n"
+)
+
+
+# Single-cell trainer + matrix manifest contract (comp 3b) — injected only on the
+# harness-owned cell path (local/docker GPU). Tells the agent to STOP writing a
+# monolithic cuda:0 coordinator and instead emit train_cell.py + cells.json.
+_CELL_CONTRACT_BLOCK = (
+    "\n\nSINGLE-CELL TRAINER CONTRACT — the harness owns the training matrix:\n"
+    "Do NOT write a monolithic coordinator that loops over models/baselines/envs on\n"
+    "cuda:0 in one process — that stacks the whole matrix onto one card and OOMs (the\n"
+    "2026-05-31 collapse). Instead write ONE script `train_cell.py` that trains exactly\n"
+    "ONE cell, and a manifest `cells.json` enumerating the full matrix. The harness runs\n"
+    "each cell as its own subprocess pinned to a single GPU (CUDA_VISIBLE_DEVICES=<one id>;\n"
+    "the cell sees only cuda:0) and runs min(free_gpus, num_cells) cells in parallel.\n"
+    "\n"
+    "train_cell.py MUST:\n"
+    "  - read its cell from env REPROLAB_CELL_PARAMS (JSON of ONE cells.json entry) and\n"
+    "    REPROLAB_CELL_OUTPUT_DIR, plus argv --cell-id / --output-dir;\n"
+    "  - train on cuda:0 only — NO torchrun, NO DDP/FSDP, NO device loop, NO 'cuda:1';\n"
+    "  - honor REPROLAB_CELL_BATCH_SCALE / REPROLAB_CELL_GRAD_CHECKPOINT (see memory discipline);\n"
+    "  - write metrics.json into the output dir as a FLAT leaf dict for THIS cell:\n"
+    '      {"status": "ok", "metric": <float>, "steps_run": <int>, "reward_mean": <float>}\n'
+    "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
+    "    do NOT write the per_model nesting yourself in a cell — emit only this cell's leaf.\n"
+    "\n"
+    "cells.json (a top-level file in code/) enumerates EVERY cell — it is the ONLY place the\n"
+    "baseline axis is declared (the harness scope is model x dataset x seed, with no baseline\n"
+    "axis), so the matrix is invisible to the harness without it:\n"
+    '  {"cells": [{"id": "qwen3_1_7b__sdar__search_qa__s42", "model_id": "Qwen/Qwen3-1.7B",\n'
+    '     "model_key": "qwen3_1_7b", "baseline": "sdar", "env": "search_qa", "seed": 42,\n'
+    '     "dataset_url": "https://...", "est_vram_gb": 14.0}, ...]}\n'
+    "Give est_vram_gb your honest full-FT estimate per cell. Before launching the grid the\n"
+    "harness auto-drops any cell whose est_vram_gb exceeds the per-GPU budget (-> scope.gaps)\n"
+    "and HEAD-probes each dataset_url (a confirmed 404 -> scope.gaps), so a too-big model or a\n"
+    "dead dataset becomes an honest rubric gap instead of an OOM/crash. You do NOT need a\n"
+    "commands.json when you provide cells.json + train_cell.py — the harness runs the matrix.\n"
+)
+
+
+def _gpu_budget_brief_block(num_gpus: int, per_gpu_vram_gb: float) -> str:
+    """The 'you have N GPUs x M GB; per-cell budget = M GB' brief (comp 3a).
+
+    Emits a concrete numeric budget only when VRAM is known (>0); otherwise a
+    conservative note so the agent still scopes deliberately.
+    """
+    if per_gpu_vram_gb and per_gpu_vram_gb > 0:
+        return (
+            f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU, never shared/sharded):\n"
+            f"You have {num_gpus} GPU(s) x {per_gpu_vram_gb:.0f} GB. The per-cell budget is ONE GPU = "
+            f"{per_gpu_vram_gb:.0f} GB.\n"
+            f"A model that cannot FULL-fine-tune within {per_gpu_vram_gb:.0f} GB is OUT OF SCOPE: do not put\n"
+            f"it in cells.json; record it in scope.models_skipped + scope.gaps. On a ~24 GB card that\n"
+            f"means the smallest-two only (e.g. Qwen3-1.7B + Qwen2.5-3B) — NEVER the 7B (its optimizer\n"
+            f"state alone exceeds 24 GB). Scope it yourself so the rubric grades only what you intended;\n"
+            f"the harness's auto-drop is a backstop, not the plan.\n"
+        )
+    return (
+        f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU):\n"
+        f"You have {num_gpus} GPU(s) (per-card VRAM unknown). Size each cell to fit ONE card; prefer the\n"
+        f"smallest model variants the paper tests and record larger ones in scope.models_skipped +\n"
+        f"scope.gaps rather than risking an OOM that zeros the whole matrix.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # RL Scaffold guidance block (opt-in: REPROLAB_RL_SCAFFOLD=1)
 # ---------------------------------------------------------------------------
@@ -1832,6 +1911,7 @@ def _compute_constraint_guidance(
     data_recipes: list[dict] | None = None,
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
+    gpu_cell_budget: dict | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1874,6 +1954,20 @@ def _compute_constraint_guidance(
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
+    # Harness-owned cell path (2026-05-31 OOM/GPU remediation, comp 3): active on a
+    # local/docker backend that exposes >=1 GPU. On this path the agent writes a
+    # single-cell train_cell.py + cells.json and the harness runs the matrix one
+    # GPU per cell — so the GPU-budget brief + cell contract are injected and the
+    # multi-GPU torchrun parallelism guidance is SUPPRESSED (it would tell the
+    # agent to shard one big job across cards, the opposite of one-cell-per-card).
+    _cell_budget = gpu_cell_budget or {}
+    _cell_num_gpus = int(_cell_budget.get("num_gpus", 0) or 0)
+    _cell_per_gpu_gb = float(_cell_budget.get("per_gpu_vram_gb", 0.0) or 0.0)
+    _cell_path_active = (
+        str(_cell_budget.get("backend_kind", "")).lower() in ("local", "docker")
+        and _cell_num_gpus >= 1
+    )
+
     # 1. NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
     # before the runtime-detection nuance.
     # 2. RUNTIME COMPUTE DETECTION — always-on.
@@ -1904,6 +1998,13 @@ def _compute_constraint_guidance(
         _inject_budget = _is_cost_bearing
 
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
+    # comp 3c: memory discipline is always-on (the fp32 full-vocab logprob blowup
+    # OOMs regardless of backend). comp 3a/3b (budget brief + cell contract) ride
+    # the harness-owned cell path only.
+    guidance += _MEMORY_DISCIPLINE_BLOCK
+    if _cell_path_active:
+        guidance += _gpu_budget_brief_block(_cell_num_gpus, _cell_per_gpu_gb)
+        guidance += _CELL_CONTRACT_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
     # Lane AA — per-model block adapts to multi-env papers
@@ -2029,9 +2130,23 @@ def _compute_constraint_guidance(
 
     # 9. Parallelism policy — controls whether generated train.py uses
     #    DDP/FSDP/vLLM-TP (multi) or a single device (single/auto-single).
+    # comp 3: on the harness-owned cell path the matrix is parallelized BY THE
+    # HARNESS (one cell per GPU), so each cell is single-GPU and the torchrun /
+    # DDP / FSDP guidance below is actively wrong — emit the cell framing instead.
     _par = (gpu_parallelism or "auto").lower()
     _n = gpu_visible_count
-    if _par == "single" or (_n is not None and _n <= 1):
+    if _cell_path_active:
+        guidance += (
+            "\nPARALLELISM POLICY — harness-owned cell matrix (one GPU per cell):\n"
+            "  The harness runs your matrix as one subprocess PER CELL, each pinned to a single\n"
+            "  GPU (CUDA_VISIBLE_DEVICES=<one id>), min(free_gpus, num_cells) in parallel. So\n"
+            "  train_cell.py is SINGLE-GPU: train on cuda:0 only. Do NOT use torchrun / DDP /\n"
+            "  FSDP / tensor-parallel / a device loop / 'cuda:1' — cross-card sharding fights the\n"
+            "  per-cell pinning and re-creates the cuda:0 stacking that OOM'd the 2026-05-31 run.\n"
+            "  Multi-GPU throughput comes from many cells running concurrently, not from sharding\n"
+            "  one cell across cards.\n"
+        )
+    elif _par == "single" or (_n is not None and _n <= 1):
         guidance += (
             "\nPARALLELISM POLICY — single GPU:\n"
             "  Use a SINGLE GPU (or the CPU fallback when none is present). Do NOT "
@@ -2100,6 +2215,7 @@ async def run_with_sdk(
     data_recipes: list[dict] | None = None,
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
+    gpu_cell_budget: dict | None = None,
     on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook, forwarded to collect_agent_text
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
@@ -2181,6 +2297,7 @@ async def run_with_sdk(
         data_recipes=_effective_data_recipes or [],
         gpu_parallelism=gpu_parallelism,
         gpu_visible_count=gpu_visible_count,
+        gpu_cell_budget=gpu_cell_budget,
     )
 
     if repair_context:
