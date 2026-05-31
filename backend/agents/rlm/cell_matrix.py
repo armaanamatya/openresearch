@@ -268,6 +268,13 @@ def default_dataset_probe(url: str, *, timeout_s: float = 5.0) -> bool | None:
     """
     if not url or not isinstance(url, str):
         return None
+    # Dataset-hub URLs (HuggingFace, Kaggle, …) are resolved by a CLIENT LIBRARY
+    # (datasets.load_dataset), NOT a direct HTTP GET — a HEAD 404 on the
+    # human-facing page is NOT authoritative (the 2026-05-31 nq_open false-drop
+    # that de-scoped a loadable Search-QA env -> capacity_exhausted). Never
+    # confirm-dead these; the cell's own load surfaces a real data_load_failure.
+    if any(h in url.lower() for h in ("huggingface.co", "hf.co", "kaggle.com")):
+        return None
     req = urllib.request.Request(url, method="HEAD")
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
