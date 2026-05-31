@@ -57,27 +57,40 @@ def test_merge_no_metrics_is_noop(tmp_path: Path):
 
 
 # --- failed/skipped MODELS are surfaced too (2026-05-30 graceful degradation) ---
+# Updated 2026-05-31: tests pass operator_skip_models so the intentional-skip vs
+# code-bug phrasing distinction is correctly exercised.
 
 
 def test_collect_model_load_failed_status(tmp_path: Path):
+    # Operator intentionally de-scoped qwen3_1_7b → "model unavailable" phrasing.
     _write_metrics(tmp_path, {"per_model": {"qwen3_1_7b": {"status": "model_load_failed",
                                                             "error": "invalid HF id"}}})
-    gaps = _collect_data_unavailable_gaps(tmp_path)
+    gaps = _collect_data_unavailable_gaps(tmp_path, operator_skip_models=["qwen3_1_7b"])
     assert any(g.startswith("qwen3_1_7b:") and "model unavailable" in g and "invalid HF id" in g
                for g in gaps)
 
 
 def test_collect_models_skipped_scope_reduction(tmp_path: Path):
+    # Operator de-scoped 7B → "model unavailable, excluded" phrasing.
     _write_metrics(tmp_path, {"scope": {"models_skipped": ["qwen2_5_7b"]}})
-    gaps = _collect_data_unavailable_gaps(tmp_path)
+    gaps = _collect_data_unavailable_gaps(tmp_path, operator_skip_models=["qwen2_5_7b"])
     assert any(g.startswith("qwen2_5_7b:") and "model unavailable" in g for g in gaps)
 
 
+def test_collect_model_load_failed_code_bug_phrasing(tmp_path: Path):
+    # Requested model (not in operator skip) → "repairable code bug" phrasing.
+    _write_metrics(tmp_path, {"per_model": {"qwen3_1_7b": {"status": "model_load_failed",
+                                                            "error": "invalid HF id"}}})
+    gaps = _collect_data_unavailable_gaps(tmp_path, operator_skip_models=[])
+    assert any(g.startswith("qwen3_1_7b:") and "repairable code bug" in g for g in gaps)
+
+
 def test_collect_mixed_dataset_and_model(tmp_path: Path):
+    # Operator de-scoped 7B; webshop dataset also failed.
     _write_metrics(tmp_path, {
         "data_load_failures": [{"dataset": "webshop", "error": "404"}],
         "per_model": {"qwen2_5_7b": {"status": "model_load_failed"}},
     })
-    gaps = _collect_data_unavailable_gaps(tmp_path)
+    gaps = _collect_data_unavailable_gaps(tmp_path, operator_skip_models=["qwen2_5_7b"])
     assert any(g.startswith("webshop:") and "dataset unobtainable" in g for g in gaps)
     assert any(g.startswith("qwen2_5_7b:") and "model unavailable" in g for g in gaps)
