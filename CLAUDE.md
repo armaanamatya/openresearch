@@ -128,14 +128,14 @@ A `localStorage` pointer auto-resumes an in-flight run on a bare `/lab`.
 ### UI surfaces (chat steering, sidebar, leaderboard)
 - **Chat steering:** real-time panel docked in the right sidebar. `POST /runs/<id>/messages` (`backend/routes/messages.py`) appends to `user_messages.jsonl` + emits `user_message`; root polls `check_user_messages()`, replies via `respond_to_user`. Both pure file I/O. System prompt instructs the root to avoid quoting PII-looking message contents verbatim.
 - **Collapsible right sidebar:** 360px `NodeDetailSidebar` (`frontend/src/components/lab/rlm/node-detail-sidebar.tsx`); selection state lifted to `rlm-lab.tsx`; kind-specific content (paper/work/candidate/subrlm/baseline); `SteeringChat` docked at bottom; collapses to a 36px rail.
-- **Leaderboard:** read-only `/leaderboard` ranks completed runs. `GET /leaderboard?paper&mode&order_by&limit` (`backend/routes/leaderboard.py`) aggregates `final_report.json` + `demo_status.json` at request time (no SQLite projection, not demo-gated). Frontend `frontend/src/app/leaderboard/`. Live rubric climb panel = enriched `RubricStrip` derived from existing SSE events.
+- **Leaderboard + recent-runs panel:** read-only `/leaderboard` ranks runs; reachable from the left-sidebar nav and surfaced as a **recent-runs panel** atop the lab home (`frontend/src/components/lab/recent-runs-panel.tsx`, fed by `GET /leaderboard?order_by=finished_at&limit=`, then filtered to drop `interrupted` orphans + capped at 8). `GET /leaderboard?paper&mode&order_by&limit` (`backend/routes/leaderboard.py`) aggregates `final_report.json` + `demo_status.json` at request time (no SQLite projection, not demo-gated). Each project resolves its **best-scoring attempt** across top-level + `attempts/*` via `backend/services/runs/report_resolution.py` (`resolve_best_report`/`extract_scores` — normalizes nested `rubric.overall_score`/`compute_adjusted_score` + legacy flat top-level `rubric_score`; same extractor feeds run-detail `finalize_benchmark`); rows carry an honest `status` (stale `running`/`queued`→`completed` when a report exists) + `attempts` count, and `order_by=finished_at` is newest-first. Per-row **Replay** links reach the otherwise-orphaned replay surface (`?replay=<id>`). Frontend `frontend/src/app/leaderboard/`. Live rubric climb panel = enriched `RubricStrip` derived from existing SSE events.
 
 ### Where to look first
 - HTTP layer: `backend/app.py` · CLI: `backend/cli.py` · RLM run entry: `backend/agents/rlm/run.py`
 - Domain primitives: `backend/agents/rlm/primitives.py` · System prompt: `backend/agents/rlm/system_prompt.py`
 - SSE bridge (egress chokepoint): `backend/agents/rlm/sse_bridge.py` · Subprocess spawn: `backend/services/events/live_runs.py`
 - Paper ingestion: `backend/services/ingestion/parser/resolving_parser.py` (`ResolvingParser` — HTML > PDF > OCR cascade)
-- Leaderboard: `backend/routes/leaderboard.py` + `frontend/src/app/leaderboard/`
+- Leaderboard + recent-runs panel: `backend/routes/leaderboard.py` + `backend/services/runs/report_resolution.py` (best-attempt + score-schema resolution) + `frontend/src/app/leaderboard/` + `frontend/src/components/lab/recent-runs-panel.tsx`
 - `backend/{agents,services}/` is named by function — read it directly.
 
 ## Sandboxes
