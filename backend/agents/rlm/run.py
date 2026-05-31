@@ -117,6 +117,7 @@ _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query rec
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
+_WATCHDOG_POLL_S = 30.0       # wall-clock poll cadence (sleep-robust; see _arm_watchdog)
 
 _ROOT_PROMPT = (
     "Reproduce the research paper offloaded in the REPL variable `context`. "
@@ -841,9 +842,16 @@ def _arm_watchdog(
     worker thread.
 
     ``iteration_count`` is a zero-arg callable returning the iterations done so
-    far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
-    it on normal completion. Returns ``None`` when ``deadline_s`` is ``None``
-    (no ceiling): the watchdog is fully bypassed and there is nothing to cancel.
+    far.  Returns a handle exposing ``.cancel()`` — the caller must call it on
+    normal completion. Returns ``None`` when ``deadline_s`` is ``None`` (no
+    ceiling): the watchdog is fully bypassed and there is nothing to cancel.
+
+    Sleep-robust (2026-05-30): the prior ``threading.Timer`` waited on a
+    MONOTONIC clock that PAUSES during macOS system sleep, so a closed lid
+    stretched a 2h deadline to ~5h before the timer fired. This polls real
+    wall-clock ``time.time()`` (which counts sleep) against an absolute
+    deadline, so on wake it fires within one poll interval regardless of how
+    long the machine slept.
     """
     if deadline_s is None:
         return None
@@ -886,10 +894,31 @@ def _arm_watchdog(
         )
         os._exit(_WATCHDOG_EXIT_CODE)
 
-    timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
-    timer.daemon = True
-    timer.start()
-    return timer
+    import time as _time
+    fire_at = _time.time() + deadline_s + _WATCHDOG_GRACE_S
+    stop_event = threading.Event()
+
+    def _poll() -> None:
+        # stop_event.wait() also waits on a monotonic clock, but only for one
+        # poll interval at a time — on wake the in-flight wait finishes within
+        # <= _WATCHDOG_POLL_S of real post-wake time, then the time.time() check
+        # sees the full elapsed wall clock and fires.
+        while not stop_event.wait(_WATCHDOG_POLL_S):
+            if _time.time() >= fire_at:
+                _fire()
+                return
+
+    threading.Thread(
+        target=_poll, name="rlm-wallclock-watchdog", daemon=True
+    ).start()
+
+    class _WatchdogHandle:
+        __slots__ = ()
+
+        def cancel(self) -> None:
+            stop_event.set()
+
+    return _WatchdogHandle()
 
 
 # ---------------------------------------------------------------------------
