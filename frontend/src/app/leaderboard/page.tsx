@@ -1,6 +1,7 @@
 import Link from "next/link";
 
-import { LeaderboardTable, type LeaderboardRow } from "./leaderboard-table";
+import { LeaderboardTable } from "./leaderboard-table";
+import type { LeaderboardRow } from "@/lib/leaderboard/types";
 import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";

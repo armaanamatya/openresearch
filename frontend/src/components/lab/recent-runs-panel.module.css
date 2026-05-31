@@ -1,0 +1,223 @@
+/* recent-runs-panel — compact list of recent runs shown in the home/upload view.
+ * Dense, instrument-style: matches the upload-view and leaderboard-table tokens.
+ */
+
+/* Outer wrapper — replaces the inline style={{ maxWidth: 640 }} on the call site. */
+.panelWrap {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 8px 32px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 4px);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft, transparent);
+}
+
+.title {
+  font-size: var(--fs-xs, 11px);
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.viewAll {
+  font-size: var(--fs-xs, 11px);
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 0.12s ease;
+}
+
+.viewAll:hover {
+  color: var(--accent);
+}
+
+/* ── Empty / error states ─────────────────────────────────────────────────── */
+
+.empty {
+  padding: 24px 12px;
+  margin: 0;
+  text-align: center;
+  font-size: var(--fs-sm, 13px);
+  color: var(--muted);
+}
+
+/* ── Row list ─────────────────────────────────────────────────────────────── */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.1s ease;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row:hover {
+  background: var(--hover-bg, var(--panel-soft, rgba(0, 0, 0, 0.02)));
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.paperLink {
+  font-size: var(--fs-sm, 13px);
+  font-weight: 500;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.paperLink:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.modeBadge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.rowMeta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs, 11px);
+  color: var(--muted);
+}
+
+/* ── Status dot ─────────────────────────────────────────────────────────── */
+
+.dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* --accent is warm amber in this theme; use an explicit green for "completed" */
+.dotGreen  { background: oklch(0.72 0.17 142); }
+.dotRed    { background: var(--err, #ef4444); }
+.dotAmber  { background: var(--warn, #f59e0b); }
+
+/* ── Verdict / timestamp ─────────────────────────────────────────────────── */
+
+.verdict {
+  font-size: var(--fs-xs, 11px);
+  color: var(--muted);
+}
+
+.completedAt {
+  font-size: var(--fs-xs, 11px);
+  color: var(--muted-2, #b0b0b0);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Right side: score + replay ──────────────────────────────────────────── */
+
+.rowRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.score {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm, 13px);
+  color: var(--muted);
+  min-width: 2.8ch;
+  text-align: right;
+}
+
+.scoreMet {
+  color: oklch(0.72 0.17 142);
+  font-weight: 600;
+}
+
+.scoreDegraded {
+  color: var(--muted);
+}
+
+.attempts {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  color: var(--muted-2, #b0b0b0);
+  margin-left: 1px;
+  vertical-align: super;
+}
+
+.dash {
+  color: var(--muted-2, #b0b0b0);
+}
+
+.replayLink {
+  font-size: var(--fs-xs, 11px);
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs, 3px);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  white-space: nowrap;
+}
+
+.replayLink:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

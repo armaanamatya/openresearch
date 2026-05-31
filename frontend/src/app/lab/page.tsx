@@ -2,6 +2,8 @@ import { LabShell } from "@/components/lab/lab-shell";
 import { fetchRunById, backendBaseUrl } from "@/lib/demo/server-run";
 import { fetchRecentRunsResult } from "@/lib/runs/server-list";
 import { fetchModels } from "@/lib/models/server-fetch";
+import { fetchLeaderboardRows } from "@/lib/leaderboard/server-fetch";
+import { filterRecentRows } from "@/lib/leaderboard/filter-recent";
 import type { AuthStatus, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 
 // The current run is identified by the `?projectId=` query param — that
@@ -29,11 +31,12 @@ export default async function LabPage({
   const params = await searchParams;
   const raw = params.projectId;
   const projectId = Array.isArray(raw) ? raw[0] : raw;
-  const [initialRun, recentResult, models, authStatus] = await Promise.all([
+  const [initialRun, recentResult, models, authStatus, leaderboardResult] = await Promise.all([
     projectId ? fetchRunById(projectId) : Promise.resolve(null),
     fetchRecentRunsResult(8),
     fetchModels(),
     fetchAuthStatus(),
+    fetchLeaderboardRows({ orderBy: "finished_at", limit: 30 }),
   ]);
   const rawSandbox = process.env.REPROLAB_DEFAULT_SANDBOX;
   const serverDefaultSandbox: DemoSandboxMode | undefined =
@@ -50,6 +53,8 @@ export default async function LabPage({
       initialAuthStatus={authStatus}
       serverDefaultSandbox={serverDefaultSandbox}
       presentationMode="internal"
+      initialLeaderboardRows={filterRecentRows(leaderboardResult.rows)}
+      initialLeaderboardError={leaderboardResult.error}
     />
   );
 }
