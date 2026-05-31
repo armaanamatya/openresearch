@@ -86,20 +86,26 @@ def main() -> int:
 
     # 2. Launch the SDAR run leasing the reserved cards. batch_reproduce reads the
     #    reservation registry → own_pids, so it leases exactly these held cards.
+    # Parameterizable for the full-paper reproduction (defaults = smallest-two).
+    guidance_file = os.environ.get("SDAR_GUIDANCE_FILE", "runs/.cache/extra_guidance_sdar.txt")
+    scope_spec = os.environ.get("SDAR_SCOPE_SPEC", "runs/.cache/scope_sdar_smallest_two.json")
+    max_usd = os.environ.get("SDAR_MAX_USD", "25")
+    max_wall = os.environ.get("SDAR_MAX_WALL_CLOCK", "14400")
+
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)   # force clean claude-oauth (CLAUDE.md pitfall)
     env.pop("OPENAI_API_KEY", None)
     env["REPROLAB_DISABLE_TORCHRUN_WRAP"] = "1"
     env["REPROLAB_MIN_TRAIN_WALL_S"] = "120"
-    env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / "runs/.cache/extra_guidance_sdar.txt").read_text(encoding="utf-8")
+    env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
 
     cmd = [
         str(VENV_PY), str(REPO / "scripts/batch_reproduce.py"), "2605.15155",
         "--gpus-per-run", str(run_n), "--sandbox", "local", "--model", "claude-oauth",
         "--mode", "rlm", "--runs-root", str(REPO / "runs"),
         "--extra",
-        f"--paper-hint 2605.15155 --scope-spec {REPO}/runs/.cache/scope_sdar_smallest_two.json "
-        f"--max-wall-clock 14400 --max-usd 25 --seed 42",
+        f"--paper-hint 2605.15155 --scope-spec {REPO / scope_spec} "
+        f"--max-wall-clock {max_wall} --max-usd {max_usd} --seed 42",
     ]
     _log(f"run: launching batch_reproduce --gpus-per-run {run_n} (log → {LAUNCH_LOG})")
     rc = 1
