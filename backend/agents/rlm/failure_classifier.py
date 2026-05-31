@@ -53,6 +53,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "degenerate_training",       # status=ok but 0 steps / zero-variance reward (no learning)
     "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
+    "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
     "unknown",                   # falls-through
 )
 
@@ -142,6 +143,12 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "per_model entries empty) — NO results were measured. Train to completion and, "
             "at the END, set a terminal status and populate per_model[<model>] with the "
             "measured eval metric(s) (e.g. accuracy) for every model you ran",
+        "insufficient_training":
+            "the run exited 0 with metrics but finished in seconds — a SMOKE, not a real "
+            "training of the paper's models (loading real weights + the RL loop takes "
+            "minutes). A smoke must never be the scored reproduction. Run the FULL training "
+            "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
+            "completion and record the measured eval metric for every model before finalizing",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }

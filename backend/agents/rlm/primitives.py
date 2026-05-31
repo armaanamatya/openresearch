@@ -2231,6 +2231,54 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
                 f">= {min_steps}.",
             )
 
+    # (2b) insufficient_training (NO-SMOKES) — exited 0 with metrics but ran far too
+    # briefly to be REAL training. A seconds-long smoke (CPU stub / surrogate / no real
+    # weights) must never be the scored reproduction; loading the paper's real models and
+    # running the RL loop takes minutes, not seconds. Opt-in like the step floor above:
+    # REPROLAB_MIN_TRAIN_WALL_S (seconds; default 0 = disabled) is the minimum plausible
+    # wall-clock for a real training of THIS paper — a wall-time floor is inherently
+    # paper-specific (an inference-only paper legitimately finishes in seconds), so it is
+    # opt-in per run, never a global default. A run shorter than the floor BUT showing
+    # substantial optimizer progress (>= REPROLAB_MIN_REAL_TRAIN_STEPS, default 5) is
+    # exempted, so a genuinely fast-but-real run can never be false-flagged. Motivated by
+    # the 2026-05-29 SDAR failure that scored a 2 s smoke after real FSDP training crashed.
+    try:
+        wall_floor = float(_os.environ.get("REPROLAB_MIN_TRAIN_WALL_S", "0") or "0")
+    except ValueError:
+        wall_floor = 0.0
+    wall = result.get("wall_time_s")
+    health_metrics = result.get("metrics")
+    if (
+        wall_floor > 0
+        and isinstance(wall, (int, float))
+        and not isinstance(wall, bool)
+        and wall < wall_floor
+        and isinstance(health_metrics, dict)
+        and health_metrics
+    ):
+        try:
+            step_exempt = int(_os.environ.get("REPROLAB_MIN_REAL_TRAIN_STEPS", "5") or "5")
+        except ValueError:
+            step_exempt = 5
+        wall_steps = _max_train_steps(health_metrics)
+        if not (wall_steps is not None and wall_steps >= step_exempt):
+            _steps_phrase = (
+                f"{wall_steps} optimizer step(s)"
+                if wall_steps is not None
+                else "no recorded optimizer steps"
+            )
+            return (
+                "insufficient_training",
+                f"insufficient_training: the experiment exited 0 with metrics but ran only "
+                f"{wall:.1f}s wall-clock ({_steps_phrase}) — below the "
+                f"REPROLAB_MIN_TRAIN_WALL_S={wall_floor:.0f}s floor for a REAL training of this "
+                f"paper's models. That is a SMOKE / trivial run, not a faithful reproduction, and "
+                f"MUST NOT be scored. Run the FULL training — real pretrained weights, real "
+                f"episodes, optimizer.step() each iteration — to completion and record the measured "
+                f"eval metric for every model before finalizing. (A run with >= {step_exempt} "
+                f"optimizer steps is exempt from this floor.)",
+            )
+
     # (3) degenerate_training — exited 0, status=ok, but no learning signal (constant
     # / all-zero reward or 0 steps). Opt-in (default on); disable with =0.
     if _os.environ.get("REPROLAB_DEGENERATE_TRAINING_CHECK", "1").strip().lower() not in ("0", "false", "no"):
@@ -3011,6 +3059,13 @@ async def _execute_in_sandbox(
         "exit_code": failed_exit_code if failed_exit_code is not None else last_exit_code,
         "cause_kind": cause_kind,
         "resource_limits": resource_limits,
+        # Total wall-clock across every command in this experiment (weight download
+        # + training + eval). Consumed by the no-smokes postflight guard
+        # (_training_health_violation) so a seconds-long smoke cannot be the scored
+        # artifact, and surfaced in experiment_runs.jsonl as a diagnostic.
+        "wall_time_s": round(
+            sum(float(getattr(r, "duration_seconds", 0.0) or 0.0) for r in results), 3
+        ),
     }
 
 
