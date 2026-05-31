@@ -1118,6 +1118,23 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "local sandbox: dependencies resolved on host venv; no image built",
         }, PrimitiveOutcome.ok)
+    # RunPod boots REPROLAB_RUNPOD_IMAGE on the remote pod and runs over SSH in a
+    # per-run venv (runpod_backend.py) — the locally-built image is NEVER used on
+    # the pod. Building it locally is therefore wasted work that also HARD-FAILS
+    # whenever the run's base image isn't pullable from docker.io (observed
+    # 2026-05-30: `runpod/pytorch:2.1.0-...-runtime-...` -> "not found", so every
+    # runpod run died at build_environment with ok=False even though the pod
+    # would have booted that image fine). Short-circuit like `local` does — this
+    # is the change CLAUDE.md flagged as a future fix for the runpod rough edge.
+    # `docker`/`auto` still build a real local image below (they DO use it).
+    if _sb_key == "runpod":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "runpod sandbox: pod boots REPROLAB_RUNPOD_IMAGE over SSH; local build skipped (unused)",
+        }, PrimitiveOutcome.ok)
 
     import asyncio
     import concurrent.futures
