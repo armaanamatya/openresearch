@@ -1,0 +1,60 @@
+# SDAR Reproduction Commands Log
+# Paper: arxiv:2605.15155 (ZJU-REAL)
+# Environment: 4x A5000 (24GB), Python 3.12, PyTorch 2.5.1+cu121
+# Run date: 2026-05-31
+#
+# Key invariants verified:
+#   BETA=10.0, LAMBDA=0.1
+#   gate = sigmoid(BETA * delta_t).detach()   [stop-gradient]
+#   delta_t = logp_teacher(y_t) - logp_student(y_t)
+#   L = L_GRPO + LAMBDA * L_OPSD
+#   SDAR inference: empty skill context (NO skill at test time)
+
+# Full training run (Tier 1+2: all models, Search-QA + ALFWorld, all 6 baselines)
+HF_HOME=/home/sww35/openresearch/runs/.cache/hf \
+HF_DATASETS_CACHE=/home/sww35/openresearch/runs/.cache/hf/datasets \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+OUTPUT_DIR=/home/sww35/openresearch/runs/prj_09047604e591d969 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+/home/sww35/openresearch/.venv/bin/python train.py \
+  --models qwen3_1b7,qwen2_5_3b \
+  --envs search_qa,alfworld \
+  --baselines grpo,opsd,skill_sd,grpo_opsd,rlsd,sdar \
+  --steps 150 \
+  --seed 42
+
+# Smoke test (5 steps, minimal config)
+HF_HOME=/home/sww35/openresearch/runs/.cache/hf \
+HF_DATASETS_CACHE=/home/sww35/openresearch/runs/.cache/hf/datasets \
+OUTPUT_DIR=/home/sww35/openresearch/runs/prj_09047604e591d969 \
+/home/sww35/openresearch/.venv/bin/python train.py \
+  --smoke --models qwen3_1b7 --envs search_qa --baselines grpo,sdar --seed 42
+
+# Verify algorithmic invariants
+/home/sww35/openresearch/.venv/bin/python -c "
+from sdar.algorithms import BETA, LAMBDA; assert BETA==10.0; assert LAMBDA==0.1
+from sdar.gating import GapGating
+import torch; lp_s = torch.randn(4, requires_grad=True)
+gate = GapGating(beta=BETA)(torch.randn(4), lp_s)
+assert not gate.requires_grad  # stop-gradient
+print('Invariants: BETA=10 LAMBDA=0.1 stop-gradient OK')
+"
+
+# === Session history ===
+# 2026-05-31 17:20: Initial training started (PID 2557598)
+#   - search_qa:sdar:qwen3_1b7 completed (searchqa_accuracy=0.0 post-eval)
+#   - search_qa:grpo:qwen3_1b7 completed (searchqa_accuracy=0.04375 post-eval)
+#   - qwen2_5_3b cells → CUDA OOM (other process using 3.3 GB on 24 GB GPU)
+# 2026-05-31 17:40: Implement-baseline agent (this session):
+#   - ALFWorld _to_example BUG FIXED: plan is a dict not list; was falling back
+#     to "traj data" as reference for EVERY example → 0 token-overlap reward
+#   - Fixed: now extracts turk_annotations.anns[0].{task_desc,high_descs}
+#     so reference = natural language plan steps (e.g. "Turn right, pick up clock")
+#   - Fixed: _parse_game_dir reads one trial per game dir (not all 6374 files)
+#   - Fixed: compute_reward uses normalize() to strip punctuation before token-F1
+#   - config_used.json created (was missing from code/ dir)
+#   - Training restarted as PID 2574925
+# 2026-05-31 17:46: Training running (PID 2574925)
+#   - Resuming from 2 completed cells; qwen2_5_3b cells skip on OOM
+#   - All qwen3_1b7 cells (search_qa × 6 + alfworld × 6) expected to complete
+#   - alfworld_success_rate will be non-zero (token-overlap ~0.06-0.15 per step)
