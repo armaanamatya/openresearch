@@ -28,16 +28,10 @@ from backend.agents.rlm.cell_matrix import (
     default_dataset_probe,
 )
 
-# Path to the verified real-world sample whose shape the scorer consumes.
-REAL_SAMPLE = (
-    Path(__file__).resolve().parents[3]
-    / "runs"
-    / "prj_09047604e591d969"
-    / "code"
-    / "outputs"
-    / "prj_09047604e591d969-3b198541"
-    / "metrics.json"
-)
+# Vendored copy of a verified real-world leaf-shape sample whose nesting the leaf
+# scorer + postflight guards consume. Vendored (not read live from runs/) so the
+# test is stable when a live run mutates / preserves its output dirs.
+REAL_SAMPLE = Path(__file__).resolve().parent / "__fixtures__" / "sample_leaf_metrics.json"
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +300,24 @@ class TestDatasetUrlPreflight:
         assert result is None
         # An empty/None url is also None.
         assert default_dataset_probe("") is None
+
+    def test_huggingface_urls_are_never_confirmed_dead(self):
+        """HF/Kaggle dataset URLs resolve via a client library, not a raw GET — a
+        HEAD 404 on the page is not authoritative, so the probe must return None
+        (keep) WITHOUT any network call (the 2026-05-31 nq_open false-drop)."""
+        for url in (
+            "https://huggingface.co/datasets/nq_open",
+            "https://hf.co/datasets/google-research-datasets/nq_open",
+            "https://www.kaggle.com/datasets/whatever",
+        ):
+            assert default_dataset_probe(url, timeout_s=0.01) is None, url
+
+    def test_huggingface_cell_survives_preflight(self):
+        """A cell whose dataset_url is a HF page must NOT be dropped to a gap."""
+        cells = [{"id": "c1", "env": "search_qa", "model_key": "q", "baseline": "sdar",
+                  "dataset_url": "https://huggingface.co/datasets/nq_open"}]
+        kept, gaps, skipped = dataset_url_preflight(cells)  # default probe, no network
+        assert len(kept) == 1 and not gaps and not skipped
 
 
 # ===========================================================================
