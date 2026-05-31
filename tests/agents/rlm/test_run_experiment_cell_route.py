@@ -139,3 +139,68 @@ def test_missing_cells_json_returns_contract_guard(tmp_path, monkeypatch):
     res = primitives._execute_cell_matrix(_ctx(tmp_path), str(code), _caps(), timeout_s=60, run_id="rid5")
     assert res["success"] is False
     assert res["failure_class"] == "contract_guard"
+
+
+# --- run_experiment-level branch wiring (cell route vs. fail-soft to legacy) ---
+
+def _mock_ctx(tmp_path):
+    from unittest.mock import MagicMock
+    ctx = MagicMock()
+    ctx.project_id = "prj_branch"
+    ctx.project_dir = tmp_path
+    ctx.runs_root = tmp_path
+    ctx.sandbox_mode = "local"   # exempts the empty-env_id guard
+    ctx.run_budget = None
+    ctx.remaining_s = MagicMock(return_value=None)
+    ctx.gpu_device_ids = ()
+    return ctx
+
+
+def test_run_experiment_takes_cell_route_when_cells_present(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    code = tmp_path / "code"
+    _write_cells(code, [_SMALL])
+    (code / "commands.json").write_text('["echo hi"]', encoding="utf-8")  # present but ignored
+
+    spy = {"called": False}
+
+    def fake_cell_matrix(ctx, code_path, caps, *, timeout_s, run_id):
+        spy["called"] = True
+        spy["run_id"] = run_id
+        return {"success": False, "metrics": {}, "failure_class": "test_stub"}
+
+    monkeypatch.setattr(primitives, "_execute_cell_matrix", fake_cell_matrix)
+
+    with patch("backend.services.runtime.gpu_capacity.describe_capacity", return_value=_caps()):
+        primitives.run_experiment(str(code), env_id="", ctx=_mock_ctx(tmp_path))
+
+    assert spy["called"] is True            # the GPU cell route ran
+    assert spy["run_id"].startswith("prj_branch-")  # run_id bound before the branch
+
+
+def test_run_experiment_falls_to_legacy_when_no_cells(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    code = tmp_path / "code"
+    code.mkdir(parents=True)
+    (code / "commands.json").write_text('["echo hi"]', encoding="utf-8")  # no cells.json => legacy
+
+    spy = {"called": False}
+    monkeypatch.setattr(primitives, "_execute_cell_matrix",
+                        lambda *a, **k: spy.update(called=True))
+
+    class _StubFuture:
+        def result(self, timeout=None):
+            return {"success": False, "metrics": {}, "error": "legacy stub"}
+
+    class _StubExecutor:
+        def __init__(self, *a, **k): pass
+        def submit(self, *a, **k): return _StubFuture()
+        def shutdown(self, *a, **k): pass
+
+    # describe_capacity returns GPUs, so the ONLY reason the cell route is skipped
+    # is the missing cells.json — proving the manifest gate, not a no-GPU fallback.
+    with patch("backend.services.runtime.gpu_capacity.describe_capacity", return_value=_caps()), \
+         patch.object(primitives.concurrent.futures, "ThreadPoolExecutor", _StubExecutor):
+        primitives.run_experiment(str(code), env_id="", ctx=_mock_ctx(tmp_path))
+
+    assert spy["called"] is False           # fell through to the legacy monolithic path
