@@ -106,3 +106,10 @@
   margin-left: 4px;
   opacity: 0.6;
 }
+
+.runTitle {
+  margin-top: 2px;
+  font-size: var(--fs-xs, 11px);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}

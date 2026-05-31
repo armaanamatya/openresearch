@@ -136,6 +136,15 @@ class RLMFinalReport(BaseModel):
         default=None,
         description="ISO-8601 UTC timestamp when the report was written.",
     )
+    title: str | None = Field(
+        default_factory=lambda: (os.environ.get("REPROLAB_RUN_TITLE") or "").strip() or None,
+        description=(
+            "Human-readable run title (e.g. 'SDAR full · 2026-05-31 19:05'), "
+            "surfaced as the leaderboard row label so repeated runs of the same "
+            "paper are distinguishable. Sourced from REPROLAB_RUN_TITLE at "
+            "report-construction time."
+        ),
+    )
 
     # --- Scope section (spec 2026-05-23-sdar-baseline-handoff §Lane 4)
     # Distinguishes "what the user / operator scoped the run to" from "what the

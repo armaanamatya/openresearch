@@ -22,6 +22,7 @@ RESERVE_POLL_SECONDS (30), RESERVE_RELEASE_ON_EXIT (1).
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -91,6 +92,8 @@ def main() -> int:
     scope_spec = os.environ.get("SDAR_SCOPE_SPEC", "runs/.cache/scope_sdar_smallest_two.json")
     max_usd = os.environ.get("SDAR_MAX_USD", "25")
     max_wall = os.environ.get("SDAR_MAX_WALL_CLOCK", "14400")
+    max_iters = os.environ.get("SDAR_MAX_RLM_ITERATIONS", "20")
+    exec_mode = os.environ.get("SDAR_EXECUTION_MODE", "max")
 
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)   # force clean claude-oauth (CLAUDE.md pitfall)
@@ -99,13 +102,53 @@ def main() -> int:
     env["REPROLAB_MIN_TRAIN_WALL_S"] = "120"
     env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
 
+    # Distinct-run identity (so each run is its own leaderboard row + readable
+    # title). The leaderboard keys rows by run-dir NAME, but the project_id is
+    # locked to the paper by ingest (project_id_for(source); a mismatched
+    # --project-id raises UnknownProject). So before launching we preserve any
+    # PRIOR completed run as its own timestamped dir (the new run then starts
+    # fresh under the canonical id), and stamp REPROLAB_RUN_TITLE so the report
+    # carries a human label. A run still actively writing is never clobbered.
+    try:
+        from backend.cli import _source_from_cli
+        from backend.services.paths import normalize_path_input
+        from backend.services.ingestion.intake.service import project_id_for
+
+        _canonical = project_id_for(_source_from_cli(normalize_path_input("2605.15155"), "auto"))
+        _prior = REPO / "runs" / _canonical
+        if _prior.is_dir():
+            _live = False
+            _ds = _prior / "demo_status.json"
+            if _ds.is_file():
+                try:
+                    _st = json.loads(_ds.read_text(encoding="utf-8")).get("status")
+                    _live = (_st == "running") and (time.time() - _ds.stat().st_mtime < 180)
+                except Exception:
+                    _live = False
+            if _live:
+                _log(f"ABORT: runs/{_canonical} appears to be actively running — refusing to clobber it. Stop that run first.")
+                return 1
+            _stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+            _archived = REPO / "runs" / f"{_canonical}__{_stamp}"
+            _prior.rename(_archived)
+            _log(f"preserved prior run → runs/{_archived.name} (its own leaderboard row)")
+    except Exception as _e:  # never block a launch on the rename bookkeeping
+        _log(f"warn: prior-run preservation skipped ({_e!r})")
+
+    run_title = os.environ.get("SDAR_RUN_TITLE", "").strip() or (
+        f"SDAR full · {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')}"
+    )
+    env["REPROLAB_RUN_TITLE"] = run_title
+    _log(f"run title: {run_title}")
+
     cmd = [
         str(VENV_PY), str(REPO / "scripts/batch_reproduce.py"), "2605.15155",
         "--gpus-per-run", str(run_n), "--sandbox", "local", "--model", "claude-oauth",
         "--mode", "rlm", "--runs-root", str(REPO / "runs"),
         "--extra",
         f"--paper-hint 2605.15155 --scope-spec {REPO / scope_spec} "
-        f"--max-wall-clock {max_wall} --max-usd {max_usd} --seed 42",
+        f"--max-wall-clock {max_wall} --max-usd {max_usd} "
+        f"--max-rlm-iterations {max_iters} --execution-mode {exec_mode} --seed 42",
     ]
     _log(f"run: launching batch_reproduce --gpus-per-run {run_n} (log → {LAUNCH_LOG})")
     rc = 1
