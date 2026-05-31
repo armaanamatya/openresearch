@@ -109,7 +109,12 @@ def _has_claude_subscription_oauth() -> bool:
         return result.returncode == 0
     # 4. WSL diagnostic — surface a helpful warning if creds exist on the Windows side
     #    but are not reachable by the SDK (which reads from $HOME, not /mnt/c).
-    if shutil.which("claude") is None and sys.platform != "win32":
+    #    Fires whether or not `claude` is on PATH: the problem is cred *location*,
+    #    not the binary's presence (a WSL user who installed claude in WSL but ran
+    #    `claude login` from Windows still needs the symlink hint). The real gate
+    #    is _scan_wsl_windows_credentials() returning non-None, which only happens
+    #    on a real WSL host with Windows-side creds.
+    if sys.platform != "win32":
         wsl_creds = _scan_wsl_windows_credentials()
         if wsl_creds is not None:
             logger.warning(
@@ -330,6 +335,35 @@ def configure_openai_agents_sdk_credentials(
     ).strip()
     if admin_key:
         os.environ["OPENAI_ADMIN_KEY"] = admin_key
+
+
+def configure_openai_agents_sdk_for_endpoint(
+    base_url: str,
+    api_key: str,
+    *,
+    set_default_openai_client: Callable[..., Any] | None,
+    set_default_openai_api: Callable[..., Any] | None,
+    use_chat_completions: bool = True,
+) -> None:
+    """Point the OpenAI Agents SDK at a custom OpenAI-compatible endpoint.
+
+    Lets an Agents-SDK agent (e.g. the ``implement_baseline`` executor) run against
+    a local vLLM server (Qwen) instead of OpenAI. The SDK defaults to the Responses
+    API; vLLM serves ``/v1/chat/completions``, so we install a custom AsyncOpenAI
+    client (the vLLM ``base_url``) AND switch the SDK to chat-completions mode. This
+    is global SDK state — fine because the OpenAI runtime is only used for the
+    executor tier when this is configured.
+    """
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key or "local")
+    if set_default_openai_client is not None:
+        try:
+            set_default_openai_client(client, use_for_tracing=False)
+        except TypeError:
+            set_default_openai_client(client)
+    if use_chat_completions and set_default_openai_api is not None:
+        set_default_openai_api("chat_completions")
 
 
 def aggregate_auth_status() -> dict:

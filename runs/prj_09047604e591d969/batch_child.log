@@ -1,0 +1,39 @@
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct'], datasets=['Search-QA'], seeds=∅.
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+an error occurred during closing of asynchronous generator <async_generator object InternalClient._process_query_inner at 0x7f0a35191090>
+asyncgen: <async_generator object InternalClient._process_query_inner at 0x7f0a35191090>
+RuntimeError: aclose(): asynchronous generator is already running
+generate_rubric_tree: dropped placeholder leaf: 'Uses the ALFWorld dataset split from GiGPO (Feng et al. 2025) covering the six categories (Pick, Look, Clean, Heat, Cool'
+generate_rubric_tree: dropped placeholder leaf: 'Uses 1000 WebShop training tasks and 128 fixed validation tasks aligned with Feng et al. (2025), reporting Score/Acc (%)'
+generate_rubric_tree: dropped placeholder leaf: 'Reports ALFWorld success rate (%), Search-QA accuracy (%), and WebShop Score/Acc (%) on the 128-task validation set, mat'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2309454 is closed
+an error occurred during closing of asynchronous generator <async_generator object InternalClient._process_query_inner at 0x7f0a35192f60>
+asyncgen: <async_generator object InternalClient._process_query_inner at 0x7f0a35192f60>
+RuntimeError: aclose(): asynchronous generator is already running
+{
+  "project_id": "prj_09047604e591d969",
+  "status": "failed",
+  "output_dir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "iterations": 1,
+  "rubric_score": 0.18765133171912834,
+  "cost_usd": 0.0,
+  "final_report_path": "/home/sww35/openresearch/runs/prj_09047604e591d969/final_report.json",
+  "execution_mode": "max",
+  "sandbox": "local"
+}

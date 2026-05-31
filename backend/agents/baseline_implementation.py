@@ -605,13 +605,78 @@ _RUNTIME_DETECTION_BLOCK = (
     "    Inf, raise RuntimeError('train_loss=NaN at epoch=N, lr=X — abort').\n"
     "    Letting NaN training churn for 500 epochs wastes a pod and produces\n"
     "    no useful artifact.\n"
+    "  - Do NOT wrap the backward/optimizer step in a try/except that catches a\n"
+    "    CUDA OutOfMemoryError and `continue`s — that silently skips the update,\n"
+    "    so the run exits 0 having learned NOTHING (all-zero metrics). If a step\n"
+    "    OOMs the config is too big for VRAM: reduce batch_size / rollouts /\n"
+    "    seq-len, enable gradient_checkpointing, or — for a model that does not fit\n"
+    "    one card — SHARD it across the leased GPUs with Accelerate (see MULTI-GPU\n"
+    "    SHARDING below). Let an unexpected OOM RAISE so it is repairable, not buried.\n"
+    "\n"
+    "MULTI-GPU SHARDING — the harness shards big models FOR you (always-on):\n"
+    "  - When >1 GPU is leased AND your training script uses HuggingFace Accelerate,\n"
+    "    the harness automatically re-launches it under `accelerate launch` with an\n"
+    "    FSDP (full-shard) config — params, gradients AND optimizer state are split\n"
+    "    across the cards. A model that OOMs one 24 GB card (e.g. a 3B/7B with full\n"
+    "    Adam + a frozen teacher) fits comfortably sharded. You do NOT write the launch\n"
+    "    command or any torchrun/FSDP boilerplate — just use the Accelerate API:\n"
+    "        from accelerate import Accelerator\n"
+    "        accelerator = Accelerator()         # 1 proc on 1 GPU, N procs (FSDP) on N\n"
+    "        device = accelerator.device         # use THIS — never a hard-coded cuda:0/cuda:1\n"
+    "        model = AutoModelForCausalLM.from_pretrained(..., torch_dtype=torch.bfloat16)\n"
+    "        optimizer = torch.optim.AdamW(model.parameters(), lr=...)\n"
+    "        model, optimizer, loader = accelerator.prepare(model, optimizer, loader)\n"
+    "        loss = ...; accelerator.backward(loss); optimizer.step()   # not loss.backward()\n"
+    "  - Frozen teacher / reference model: load it the same way and pass it through\n"
+    "    `accelerator.prepare(teacher)` in eval()/no_grad — FSDP shards it too (no\n"
+    "    optimizer state → nearly free). `.generate()` runs through the sharded model\n"
+    "    directly (fine for short generations) — but ALL ranks must call it together\n"
+    "    (see COLLECTIVE DISCIPLINE next).\n"
+    "  - COLLECTIVE DISCIPLINE — the #1 multi-GPU footgun, and it is FATAL. After\n"
+    "    prepare(), the model is FSDP-SHARDED: every forward / backward / .generate()\n"
+    "    / eval pass is a COLLECTIVE that ALL ranks must execute together in lockstep.\n"
+    "    NEVER put a model call inside `if accelerator.is_main_process:` / `if rank==0:`\n"
+    "    — rank 0 enters the all-gather, the others skip it and block at the next\n"
+    "    barrier until the 600 s NCCL watchdog fires and the run SIGABRTs (exit -6).\n"
+    "    (This killed a real 4-GPU run on 2026-05-30: a rank-0-only zero-shot\n"
+    "    `generate()` before `wait_for_everyone()` deadlocked every rank.)\n"
+    "        WRONG: if accelerator.is_main_process: acc = eval_model(model)  # generate on rank 0 → DEADLOCK\n"
+    "               accelerator.wait_for_everyone()\n"
+    "        RIGHT: acc = eval_model(model)                      # ALL ranks run the forward/generate\n"
+    "               acc = accelerator.gather(torch.tensor([acc], device=accelerator.device)).mean().item()\n"
+    "               if accelerator.is_main_process: write_metrics({'accuracy': acc})  # I/O ONLY on rank 0\n"
+    "    Gate ONLY pure I/O behind is_main_process (print, logging, json.dump, file\n"
+    "    writes, wandb.log, tqdm, checkpoint save). Anything that runs the model = ALL\n"
+    "    ranks. Every `accelerator.wait_for_everyone()` must be reached by EVERY rank\n"
+    "    at the same point — never preceded by a collective that only some ranks run.\n"
+    "  - Setup ONCE, not per-rank: guard PURE-I/O one-time prep (dataset downloads,\n"
+    "    file extraction) with `if accelerator.is_main_process:` then\n"
+    "    `accelerator.wait_for_everyone()` — correct ONLY because downloads touch no\n"
+    "    GPU collective (NEVER gate a model call this way — see COLLECTIVE DISCIPLINE).\n"
+    "    The harness runs `pip install` before launch — do NOT install inside\n"
+    "    train.py, and do NOT re-download per rank.\n"
+    "  - The SAME script is correct on 1 GPU (single plain process), on N GPUs (FSDP-\n"
+    "    sharded), and on CPU — never branch on device count or hard-pin `cuda:K`.\n"
+    "  - Do NOT use `DistributedDataParallel`/`DataParallel` for a model that does not\n"
+    "    fit one card: DDP REPLICATES the full model per GPU and STILL OOMs. Accelerate\n"
+    "    (FSDP) SHARDS — that is what fixes the OOM.\n"
+    "  - A small model that fits one card comfortably (e.g. a 1.7B) can just train on a\n"
+    "    single card. If you train several such models sequentially, release each before\n"
+    "    the next: `del model, teacher, optimizer; import gc; gc.collect(); torch.cuda.empty_cache()`.\n"
     "  - Print progress metrics on EVERY meaningful step: epoch end\n"
     "    (supervised), rollout end (GRPO / PPO / REINFORCE), policy update\n"
     "    end, or eval batch end. Whichever your training loop uses, emit a\n"
-    "    flushed line per step — don't batch. For RL-rollout-based training,\n"
-    "    a single rollout group may legitimately take 10-30 min on a single\n"
-    "    Qwen-7B; call `heartbeat(\"rollout N/M\")` BEFORE each long rollout\n"
-    "    so the host sees forward progress even when stdout is quiet. With\n"
+    "    flushed line per step — don't batch the LOGGING. For RL-rollout-based\n"
+    "    training, KEEP EACH OPTIMIZER STEP FAST (target ≤2-3 min): the per-step\n"
+    "    cost is tasks_per_batch × rollouts_per_prompt × max_episode_steps ×\n"
+    "    max_new_tokens generated tokens — budget it small (e.g. 2 × 2 × 8 × 64),\n"
+    "    and BATCH the GENERATION across all (task×rollout) sequences in ONE\n"
+    "    model.generate() call per env turn (never a Python loop of single-sequence\n"
+    "    generates — that is the #1 cause of a step taking 45-80 min and a run that\n"
+    "    never completes step 1; prefer vLLM for rollout sampling if available).\n"
+    "    Print and check wall-seconds/step; if >3 min, cut rollouts/episode_steps.\n"
+    "    Call `heartbeat(\"rollout N/M\")` BEFORE each rollout so the host sees\n"
+    "    forward progress even when stdout is quiet. With\n"
     "    the watchdog's 25-min kill threshold the silence between sparse\n"
     "    prints CAN still trip the kill even for working pods. Per-epoch\n"
     "    prints are also what the live UI uses to render the training-curve\n"
@@ -649,6 +714,17 @@ _RUNTIME_DETECTION_BLOCK = (
     "    moved.\n"
     "\n"
     "DATASET-LOAD FAILURE = SOFT FAILURE — never cancel the whole run:\n"
+    "  - SOFT-FAIL ONLY GENUINE DATA-UNAVAILABILITY, NOT YOUR OWN CODE BUGS.\n"
+    "    Soft-fail (record + continue) when the DATA cannot be obtained: HTTP\n"
+    "    404/403, licence gate, S3/mirror timeout, dataset pulled from the Hub.\n"
+    "    Do NOT soft-fail a CODE/CONFIG/API error — a wrong file path, an invalid\n"
+    "    model identifier (e.g. a bad HF id), AttributeError/ImportError, a missing\n"
+    "    config you were supposed to build, or wrong API usage. Those are YOUR bugs:\n"
+    "    let them RAISE so the harness returns them as repair_context and you fix\n"
+    "    them next iteration. Masking a code bug as a data_load_failure hides it from\n"
+    "    the repair loop and silently drops scope you could have reproduced. Rule of\n"
+    "    thumb: 'the data isn't there' → soft-fail; 'my code/id/path/config is wrong'\n"
+    "    → raise and fix.\n"
     "  - When a single dataset fails to load (HF URI broken, torchvision\n"
     "    URL 404, S3 mirror timeout, etc.) catch the exception, do NOT let\n"
     "    it bubble up out of train.py. The other experiments in the run\n"
@@ -979,44 +1055,152 @@ _EAGER_METRICS_BLOCK = (
     "  write_metrics(metrics)         # flush after BN finishes\n"
     "  ...\n"
     "Always write atomically (tempfile + os.replace) so a kill mid-write cannot corrupt the file.\n"
+    "TERMINAL FLUSH IS MANDATORY (2026-05-30): the incremental writes are for liveness, but the "
+    "metrics.json present AT RUN END is what the rubric grades. A final metrics.json with a "
+    "NON-TERMINAL status (`running`/`pending`/`started`/…) OR with empty `per_model[<model>]` "
+    "entries is treated as a FAILED run (failure_class=incomplete_metrics), NOT partial credit — "
+    "it measured nothing the grader can read, so eval/result/execution score ~0. Before the "
+    "script exits you MUST (a) set a TERMINAL status (e.g. `completed` / `ok`), and (b) populate "
+    "`per_model[<model>]` with the MEASURED eval metric (e.g. accuracy) plus reward/loss for "
+    "every model you actually ran. Never leave a `status:\"running\"` placeholder or an empty "
+    "`{}` per-model entry as the final state.\n"
 )
 
-_DATASET_SETUP_BLOCK = (
-    "\n\nDATASET SETUP — required patterns by environment family:\n"
-    "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
-    "\n"
-    "EXAMPLES — apply ONLY when the listed environment/dataset is named verbatim in YOUR paper:\n"
-    "\n"
-    "ALFWorld:\n"
-    "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
-    "                                           #   does not exist until the package is installed\n"
-    "  alfworld-download                        # downloads ALFWorld env data\n"
-    "  assert os.path.exists('/workspace/data/alfworld'), 'ALFWorld data missing'\n"
-    "  Data dir: /workspace/data/alfworld (NOT ~/alfworld or ./data)\n"
-    "\n"
-    "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
-    "  from datasets import load_dataset\n"
-    "  ds = load_dataset('hotpot_qa', 'distractor', cache_dir='/workspace/data/hf')\n"
-    "  assert len(ds) > 0, 'HotpotQA load failed'\n"
-    "  Set HF_HOME=/workspace/data/hf and HF_DATASETS_CACHE=/workspace/data/hf/datasets\n"
-    "  so repeated runs reuse the cache without re-downloading.\n"
-    "\n"
-    "WebShop:\n"
-    "  python -m pip install webshop-text-env  # or the upstream package from\n"
-    "                                           #   https://github.com/princeton-nlp/WebShop\n"
-    "  import webshop_text_env; env = webshop_text_env.WebShopEnv()\n"
-    "  assert env is not None, 'WebShop env init failed'\n"
-    "  Data dir: /workspace/data/webshop\n"
-    "\n"
-    "General rules:\n"
-    "  - The pod filesystem is /workspace-rooted. Always default data dirs to\n"
-    "    /workspace/data/<env>, NEVER to ~ or relative paths.\n"
-    "  - Emit an explicit assert os.path.exists(...) after EVERY download step.\n"
-    "    A missing dataset dir that passes silently will produce zero/NaN metrics.\n"
-    "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
-    "    `pip install alfworld` must precede `alfworld-download`.\n"
-    "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
-    "    inherits them.\n"
+def _resolve_data_root() -> str:
+    """Writable data root for the active sandbox.
+
+    ``run.py`` points ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable shared dir for
+    LOCAL sandboxes (where ``/workspace`` does not exist); RunPod/Docker keep
+    ``/workspace`` (the real pod/container volume). Reading the env var here keeps the
+    guidance the agent sees identical to where data actually lands at runtime.
+    """
+    import os
+    return (os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "/workspace").strip() or "/workspace"
+
+
+def _dataset_setup_block(data_root: str = "/workspace") -> str:
+    """DATASET SETUP guidance, rooted at the sandbox's writable ``data_root``.
+
+    ``data_root`` is the writable volume-mount root (``/workspace`` on RunPod/Docker, a
+    writable shared cache dir on local). NEVER hardcode ``/workspace`` here: on a local
+    host it is unwritable and every dataset download dies at ``os.makedirs``.
+    """
+    hf_default = f"{data_root}/data/hf"
+    return (
+        "\n\nDATASET SETUP — required patterns by environment family:\n"
+        "Download and verify datasets BEFORE training. Use the canonical tool for each env:\n"
+        "\n"
+        "EXAMPLES — apply ONLY when the listed environment/dataset is named verbatim in YOUR paper:\n"
+        "\n"
+        "ALFWorld:\n"
+        "  python -m pip install alfworld          # MUST come first — alfworld-download\n"
+        "                                           #   does not exist until the package is installed\n"
+        "  alfworld-download                        # downloads ALFWorld env data\n"
+        f"  assert os.path.exists('{data_root}/data/alfworld'), 'ALFWorld data missing'\n"
+        f"  Data dir: {data_root}/data/alfworld (NOT ~/alfworld or ./data)\n"
+        "  ENV INIT — use the get_environment FACTORY (modern alfworld removed the\n"
+        "  direct AlfredTWEnv class; `alfworld.agents.environment.AlfredTWEnv` no longer\n"
+        "  exists and raises AttributeError). The installed package may NOT ship\n"
+        "  agents/config/base_config.yaml — do NOT assume that path exists. Resolve the\n"
+        "  config robustly: search the package for any base_config.yaml; if none, fetch\n"
+        "  the canonical one. Load it into a DICT (not a path) and pass it to the factory:\n"
+        "      import os, glob, yaml, urllib.request\n"
+        "      from alfworld.agents.environment import get_environment\n"
+        "      os.environ['ALFWORLD_DATA'] = f'{data_root}/data/alfworld'\n"
+        "      pkg = os.path.dirname(__import__('alfworld').__file__)\n"
+        "      hits = glob.glob(os.path.join(pkg, '**', 'base_config.yaml'), recursive=True)\n"
+        "      cfg_path = hits[0] if hits else f'{data_root}/data/alfworld/base_config.yaml'\n"
+        "      if not os.path.exists(cfg_path):\n"
+        "          urllib.request.urlretrieve('https://raw.githubusercontent.com/alfworld/alfworld/master/configs/base_config.yaml', cfg_path)\n"
+        "      with open(cfg_path) as fh: config = yaml.safe_load(fh)\n"
+        "      config['dataset']['data_path'] = f'{data_root}/data/alfworld/json_2.1.1/train'\n"
+        "      # CRITICAL: cap the game count. AlfredTWEnv.init_env() scans EVERY game in\n"
+        "      # the train set (~3500 .tw-pddl files) at init — with the default\n"
+        "      # num_train_games=-1 that is 20-60 MIN of 100% CPU BEFORE a single rollout\n"
+        "      # (the run looks hung at step 0). Cap it small for a budget run:\n"
+        "      config['dataset']['num_train_games'] = 24\n"
+        "      config['dataset']['num_eval_games'] = 8\n"
+        "      env = get_environment('AlfredTWEnv')(config, train_eval='train').init_env(batch_size=1)\n"
+        "  Verify env.reset() returns a real observation before counting ALFWorld as\n"
+        "  loaded. This is a CODE/API fix — ALFWorld data being present means it is NOT a\n"
+        "  data_load_failure; do not soft-skip it on an AttributeError or a missing\n"
+        "  config — obtain the config and fix the API call.\n"
+        "\n"
+        "HuggingFace datasets (NQ, HotpotQA, TriviaQA, PopQA, 2WikiMultiHop, MuSiQue …):\n"
+        "  from datasets import load_dataset\n"
+        f"  ds = load_dataset('hotpotqa/hotpot_qa', 'distractor', split='validation', streaming=True, cache_dir=os.environ.get('HF_HOME', '{hf_default}'))\n"
+        "  rows = list(itertools.islice(ds, 64))   # take ONLY your eval slice\n"
+        "  DISK IS SHARED AND LIMITED — never trigger a full-source dataset download:\n"
+        "    - Use streaming=True + itertools.islice(ds, N), OR a split slice like\n"
+        "      split='validation[:64]'. Cap each env to 32-64 eval tasks.\n"
+        "    - NEVER load the full `natural_questions` config — it downloads ~140 GB of\n"
+        "      Wikipedia HTML and WILL exhaust the disk and crash the run. For the NQ\n"
+        "      in-domain eval use the lightweight 'nq_open' (a few MB) instead, or\n"
+        "      stream a small slice. Prefer the lightest variant of EVERY dataset.\n"
+        "    - If a dataset only exists as a huge full download, record it in\n"
+        "      data_load_failures and skip it (soft failure) rather than downloading it.\n"
+        "  If HF_HOME is already exported in the environment, USE IT (do NOT override it);\n"
+        f"  otherwise default HF_HOME={hf_default} and HF_DATASETS_CACHE={hf_default}/datasets\n"
+        "  so repeated runs reuse the cache without re-downloading.\n"
+        "\n"
+        "WebShop (needs DATA, not just the package — TRY to download the lightweight\n"
+        "catalog; if the download genuinely fails, treat it as a SOFT failure per the\n"
+        "rule above: record it in data_load_failures + scope.gaps and CONTINUE with the\n"
+        "other envs. Do NOT silently skip it (record the gap) and do NOT hard-assert /\n"
+        "abort the run over it):\n"
+        "  python -m pip install webshop-text-env  # or upstream princeton-nlp/WebShop\n"
+        "  import os, urllib.request\n"
+        f"  ws = os.path.join('{data_root}', 'data', 'webshop'); os.makedirs(ws, exist_ok=True)\n"
+        "  f = os.path.join(ws, 'items_human_ins.json')\n"
+        "  try:\n"
+        "    if not os.path.exists(f) or os.path.getsize(f) <= 1000:\n"
+        "      urllib.request.urlretrieve('https://raw.githubusercontent.com/princeton-nlp/WebShop/master/data/items_human_ins.json', f)\n"
+        "    assert os.path.getsize(f) > 1000  # obtained — WebShop is in scope\n"
+        "    webshop_ok = True\n"
+        "  except Exception as e:\n"
+        "    webshop_ok = False  # SOFT failure — keep ALFWorld/Search-QA, drop only WebShop\n"
+        "    data_load_failures.append({'dataset': 'webshop', 'loader': 'http',\n"
+        "      'error': f'{type(e).__name__}: {str(e)[:200]}'})\n"
+        f"  Data dir: {data_root}/data/webshop  (the few-MB items_human_ins.json catalog)\n"
+        "\n"
+        "General rules:\n"
+        f"  - The writable data root for THIS sandbox is {data_root}. Default ALL data dirs to\n"
+        f"    {data_root}/data/<env>, NEVER to /workspace (RunPod-only), ~, or relative paths.\n"
+        "  - Use the CANONICAL HuggingFace owner/name for every dataset (e.g. 'hotpotqa/hotpot_qa',\n"
+        "    'mandarjoshi/trivia_qa') — the modern Hub REJECTS bare short names with HfUriError.\n"
+        "  - MODEL IDS: use the EXACT HuggingFace id, which is NOT always the paper's display\n"
+        "    name. Qwen3 base models have NO '-Instruct' suffix → 'Qwen/Qwen3-1.7B' (NOT\n"
+        "    'Qwen/Qwen3-1.7B-Instruct', which 404s). Qwen2.5 instruct models DO → 'Qwen/Qwen2.5-3B-Instruct'.\n"
+        "    If a scope/paper name like 'Qwen3-1.7B-Instruct' does not resolve, strip/adjust the\n"
+        "    suffix to the real Hub id. An invalid model id is a CODE bug — fix it, do NOT soft-skip it.\n"
+        "  - Assert os.path.exists(...) after a download you EXPECT to succeed, so a\n"
+        "    silent path typo surfaces (a missing dir → zero/NaN metrics). But when a\n"
+        "    dataset is genuinely unobtainable in this sandbox (404/403/timeout after a\n"
+        "    real attempt), do NOT let the assert abort the run: catch it, append to\n"
+        "    data_load_failures + scope.gaps, and continue — the grader excludes those\n"
+        "    leaves from the score rather than zeroing them.\n"
+        "  - Install the package BEFORE invoking any CLI tool it provides — e.g.\n"
+        "    `pip install alfworld` must precede `alfworld-download`.\n"
+        "  - Export HF_HOME and HF_DATASETS_CACHE in commands.json so the train script\n"
+        "    inherits them.\n"
+    )
+
+
+# Back-compat module alias: the default (/workspace) rendering. Prefer
+# _dataset_setup_block(_resolve_data_root()) at prompt-build time so the guidance
+# tracks the active sandbox's writable root.
+_DATASET_SETUP_BLOCK = _dataset_setup_block()
+
+
+_OUTPUT_DISCIPLINE_BLOCK = (
+    "\n\nOUTPUT DISCIPLINE — write FOCUSED, minimal code:\n"
+    "  - Generate only the code needed to advance the rubric. Do NOT re-emit large\n"
+    "    files you already wrote, paste duplicate / near-duplicate blocks, or add\n"
+    "    verbose narration — terse, non-redundant code is faster, cheaper (output\n"
+    "    tokens are never cached) and usually MORE correct.\n"
+    "  - Comment only what is non-obvious (the paper's exact invariants); skip\n"
+    "    boilerplate. Edit in place rather than rewriting a whole file when a small\n"
+    "    change suffices.\n"
 )
 
 
@@ -1534,6 +1718,8 @@ def _compute_constraint_guidance(
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
     data_recipes: list[dict] | None = None,
+    gpu_parallelism: str | None = None,
+    gpu_visible_count: int | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1624,8 +1810,10 @@ def _compute_constraint_guidance(
         # the agent size batches without probing or guessing.
         guidance += _hardware_specs_block(sandbox_mode)
 
-    # 4. DATASET SETUP — always-on; tells the agent how to download real data.
-    guidance += _DATASET_SETUP_BLOCK
+    # 4. DATASET SETUP — always-on; tells the agent how to download real data,
+    #    rooted at the sandbox's writable data root (/workspace only on RunPod/Docker;
+    #    a writable shared cache on local — see run._ensure_local_data_root).
+    guidance += _dataset_setup_block(_resolve_data_root())
 
     # 5. Rubric auto-checklist — when generated_rubric.json exists.
     if project_dir is not None:
@@ -1644,6 +1832,7 @@ def _compute_constraint_guidance(
 
     # 5.7. Artifact completeness — always-on. Low-weight rubric area but free
     # to nail. Asks for README, figures, config_used.json, per-step curves.
+    guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
 
     # 5.8. Self-validating rubric guard — always-on. The agent's own train.py
@@ -1712,6 +1901,55 @@ def _compute_constraint_guidance(
         )
     # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
 
+    # 9. Parallelism policy — controls whether generated train.py uses
+    #    DDP/FSDP/vLLM-TP (multi) or a single device (single/auto-single).
+    _par = (gpu_parallelism or "auto").lower()
+    _n = gpu_visible_count
+    if _par == "single" or (_n is not None and _n <= 1):
+        guidance += (
+            "\nPARALLELISM POLICY — single GPU:\n"
+            "  Use a SINGLE GPU (or the CPU fallback when none is present). Do NOT "
+            "  use DistributedDataParallel/FSDP/torchrun/tensor-parallel — this run "
+            "  is scoped to one device. Keep the single-GPU/CPU path as the entrypoint.\n"
+        )
+    elif _par == "multi":
+        _np = str(_n) if _n else "<NUM_GPUS>"
+        guidance += (
+            f"\nPARALLELISM POLICY — multi GPU"
+            f"{f' ({_n} visible)' if _n else ''}:\n"
+            "  Use ALL visible GPUs. CRITICAL: distributed training (DDP/FSDP) ONLY\n"
+            "  shards when LAUNCHED with torchrun. A plain `python train.py` runs\n"
+            "  single-process (WORLD_SIZE=1) — it DISABLES sharding, uses only GPU 0,\n"
+            "  and OOMs models too large for one card. Therefore your commands.json\n"
+            "  training entry MUST be (NOT `python train.py`):\n"
+            f"      torchrun --standalone --nproc_per_node={_np} train.py\n"
+            "  In train.py: read RANK / WORLD_SIZE / LOCAL_RANK from the environment,\n"
+            "  call init_process_group('nccl'), and wrap the model with FSDP (for\n"
+            "  models too large for one card) or DistributedDataParallel (data-\n"
+            "  parallel). Enable gradient_checkpointing BEFORE the FSDP wrap. Detect\n"
+            "  torch.cuda.device_count() and shard accordingly; keep a single-GPU\n"
+            "  fallback for smoke. Use vLLM tensor-parallel for generation as needed.\n"
+            "  RANK-GUARD ALL ONE-TIME SETUP (critical — torchrun runs the WHOLE\n"
+            "  script in EVERY rank): pip installs, dataset/model downloads, env\n"
+            "  bootstrapping (e.g. `pip install alfworld`, `alfworld-download`,\n"
+            "  game-file loading) must run on LOCAL_RANK 0 ONLY, then `dist.barrier()`\n"
+            "  so other ranks wait and reuse the shared cache. Running these in all\n"
+            "  ranks concurrently deadlocks/thrashes on the pip lock + data dir and\n"
+            "  hangs the run before training (the 2026-05-30 4-rank ALFWorld hang).\n"
+        )
+    else:  # auto
+        guidance += (
+            f"\nPARALLELISM POLICY — auto"
+            f"{f' ({_n} GPU(s) visible)' if _n else ''}:\n"
+            "  Detect torch.cuda.device_count() at runtime. If the paper's training or "
+            "  evaluation genuinely benefits from parallelism (large model, long "
+            "  training, many RL rollouts) AND more than one GPU is visible, scale "
+            "  across them (torchrun+DDP for training, FSDP for oversized models, vLLM "
+            "  tensor-parallel for generation). If the workload fits comfortably on one "
+            "  GPU, a single GPU is correct — do NOT add parallelism the paper does not "
+            "  need. Always keep a single-GPU/CPU fallback path.\n"
+        )
+
     return guidance
 
 
@@ -1734,6 +1972,9 @@ async def run_with_sdk(
     minimize_compute: bool = False,
     metrics_shape: list[dict] | None = None,
     data_recipes: list[dict] | None = None,
+    gpu_parallelism: str | None = None,
+    gpu_visible_count: int | None = None,
+    on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook, forwarded to collect_agent_text
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1811,6 +2052,8 @@ async def run_with_sdk(
         minimize_compute=minimize_compute,
         metrics_shape=_effective_metrics_shape or [],
         data_recipes=_effective_data_recipes or [],
+        gpu_parallelism=gpu_parallelism,
+        gpu_visible_count=gpu_visible_count,
     )
 
     if repair_context:
@@ -1847,6 +2090,7 @@ async def run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
+        on_event=on_event,
     )
 
     # PR-ξ γ: post-emit knowledge-channel verification. After the sub-agent has
@@ -2022,6 +2266,7 @@ async def patch_mode_run_with_sdk(
     model: str | None = None,
     provider: ProviderName | str | None = None,
     runtime: AgentRuntime | None = None,
+    on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook
 ) -> tuple[bool, str]:
     """Attempt a MINIMAL DIFF repair of ``prior_train_py`` for the given violations.
 
@@ -2075,6 +2320,7 @@ async def patch_mode_run_with_sdk(
         model=model,
         provider=provider,
         runtime=runtime,
+        on_event=on_event,
     )
 
     response = "\n".join(_response_parts)

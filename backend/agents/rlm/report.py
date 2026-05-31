@@ -264,6 +264,89 @@ def _reconcile_verdict_against_evidence(
     return verdict, None
 
 
+def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
+    """Scan the run's emitted metrics for datasets AND models the agent recorded
+    as unavailable, returning clear, deduped gap strings for ``scope.gaps``.
+
+    Runtime signals (the same ones the unavailable-component-aware grader honours):
+      * ``data_load_failures[]`` / ``experiments[*].status=='data_unavailable'`` — datasets.
+      * ``per_model[*].status in {model_load_failed, failed, skipped, ...}``,
+        ``scope.models_skipped[]``, ``model_load_failures[]`` — models.
+
+    These are surfaced so the report states plainly which datasets/models could
+    not be obtained — and, per the grader, were EXCLUDED from the rubric score
+    (numerator + denominator) rather than scored zero. So the run always reaches
+    a final summary + rubric and only the failed pieces drop out (2026-05-30
+    graceful-degradation mandate). Best-effort: [] when no metrics file is present.
+    """
+    datasets: dict[str, str] = {}   # name(lower) -> reason
+    models: dict[str, str] = {}     # name(lower) -> reason
+    _MODEL_FAIL = {"model_load_failed", "failed", "skipped", "data_unavailable", "unavailable"}
+    outputs = project_dir / "code" / "outputs"
+    for mpath in (sorted(outputs.rglob("metrics.json")) if outputs.exists() else []):
+        try:
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a malformed metrics file must not break the report
+            continue
+        if not isinstance(data, dict):
+            continue
+        # --- datasets ---
+        for entry in data.get("data_load_failures") or []:
+            if isinstance(entry, dict):
+                name = str(entry.get("dataset") or entry.get("name") or "").strip()
+                reason = str(entry.get("error") or entry.get("reason") or "").strip()
+            elif isinstance(entry, str):
+                name, reason = entry.strip(), ""
+            else:
+                continue
+            if name:
+                datasets.setdefault(name.lower(), reason)
+        exps = data.get("experiments")
+        if isinstance(exps, dict):
+            for exp_id, meta in exps.items():
+                if isinstance(meta, dict) and str(meta.get("status", "")).lower() == "data_unavailable":
+                    name = str(exp_id).strip()
+                    if name:
+                        datasets.setdefault(name.lower(), str(meta.get("reason") or "").strip())
+        # --- models ---
+        for m, mv in (data.get("per_model") or {}).items():
+            if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _MODEL_FAIL:
+                models.setdefault(str(m).strip().lower(), str(mv.get("reason") or mv.get("error") or "").strip())
+        for m in ((data.get("scope") or {}).get("models_skipped") or []):
+            if isinstance(m, str) and m.strip():
+                models.setdefault(m.strip().lower(), "scope reduction")
+        for entry in data.get("model_load_failures") or []:
+            if isinstance(entry, dict) and (entry.get("model") or entry.get("name")):
+                models.setdefault(str(entry.get("model") or entry.get("name")).strip().lower(),
+                                  str(entry.get("error") or entry.get("reason") or "").strip())
+            elif isinstance(entry, str) and entry.strip():
+                models.setdefault(entry.strip().lower(), "")
+    gaps: list[str] = []
+    for name, reason in sorted(datasets.items()):
+        tail = f" ({reason[:160]})" if reason else ""
+        gaps.append(f"{name}: dataset unobtainable{tail} — excluded from rubric score, not penalised")
+    for name, reason in sorted(models.items()):
+        tail = f" ({reason[:160]})" if reason else ""
+        gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
+    return gaps
+
+
+def _merge_data_unavailable_gaps(scope: dict, project_dir: Path) -> dict:
+    """Merge auto-collected data-unavailable gaps into ``scope.gaps`` (deduped by
+    leading dataset token), so unobtainable datasets are reported even when the
+    root model did not declare them in scope.gaps itself."""
+    auto = _collect_data_unavailable_gaps(project_dir)
+    if not auto:
+        return scope
+    existing = list((scope or {}).get("gaps") or [])
+    existing_tokens = {str(g).split(":", 1)[0].strip().lower() for g in existing}
+    merged = list(existing)
+    for g in auto:
+        if g.split(":", 1)[0].strip().lower() not in existing_tokens:
+            merged.append(g)
+    return {**(scope or {}), "gaps": merged}
+
+
 def _verify_scope_evidence(
     scope: dict,
     run_dir: Path,
@@ -457,6 +540,42 @@ def _authoritative_primitive_trace(ctx: RunContext) -> dict[str, Any]:
     return {"calls": sum(by_primitive.values()), "by_primitive": by_primitive}
 
 
+def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
+    """Max rubric ``overall_score`` recorded in this run's dashboard_events.jsonl.
+
+    The run emits a ``rubric_score`` event per ``verify_against_rubric`` call, so
+    the max is the run's true high-water mark. Reading from disk makes the
+    best-of-run floor in ``build_final_report`` salvage-capable: re-running the
+    builder on an already-degraded run dir recovers the best score. Returns None
+    when no rubric score was ever recorded.
+    """
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return None
+    best: float | None = None
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "rubric_score" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            s = payload.get("overall_score")
+            if s is None:
+                s = payload.get("score")
+            try:
+                val = float(s)
+            except (TypeError, ValueError):
+                continue
+            if best is None or val > best:
+                best = val
+    except OSError:
+        return None
+    return best
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -561,6 +680,14 @@ def build_final_report(
         if verdict == "reproduced":
             verdict = "partial"
 
+    # Surface datasets the agent recorded as unobtainable as explicit scope.gaps,
+    # even if the root never declared them — they were EXCLUDED from the rubric
+    # score (data-unavailable-aware grader), so the report must say so plainly.
+    try:
+        verified_scope = _merge_data_unavailable_gaps(verified_scope, ctx.project_dir)
+    except Exception:  # noqa: BLE001 — gap surfacing augments the report, never fatal
+        logger.exception("report: data-unavailable gap merge failed")
+
     kwargs: dict[str, Any] = {
         "verdict": verdict,
         "paper": parsed.get("paper") or {},
@@ -580,6 +707,25 @@ def build_final_report(
         "cost": _cost_dict(result, ctx),
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
     }
+
+    # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
+    # final state and self-report a LOWER rubric than it actually achieved — the
+    # SDAR run reported 0.0 despite scoring ~0.18 mid-run. Surface the best
+    # overall_score the run recorded so a late regression can never bury a real
+    # result. Reads dashboard_events.jsonl, so re-running this builder also
+    # salvages an already-finalized degraded run.
+    _best = _best_recorded_rubric_score(ctx.project_dir)
+    if _best is not None:
+        _r = dict(kwargs.get("rubric") or {})
+        _cur = _r.get("overall_score")
+        try:
+            _cur_f = float(_cur) if _cur is not None else None
+        except (TypeError, ValueError):
+            _cur_f = None
+        if _cur_f is None or _best > _cur_f:
+            _r["overall_score"] = _best
+            _r["best_of_run"] = True
+            kwargs["rubric"] = _r
 
     return RLMFinalReport(**kwargs)
 
@@ -976,7 +1122,8 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
                 lines.append(f"- {item}")
             lines.append("")
         if gaps:
-            lines.append("**Gaps:**")
+            lines.append("**Gaps:** _(items requested but not reproduced; datasets marked "
+                         "\"unobtainable\" were excluded from the rubric score, not penalised)_")
             for item in gaps:
                 lines.append(f"- {item}")
             lines.append("")

@@ -81,6 +81,15 @@ def _is_aclose_race(exc: BaseException) -> bool:
     return any(marker in msg for marker in _ACLOSE_MARKERS)
 
 
+def is_aclose_race(exc: BaseException) -> bool:
+    """Public predicate — True when ``exc`` is the SDK's aclose teardown race.
+
+    Other SDK call sites (e.g. the RLM-root client in ``rlm_query.py``) reuse
+    this so the definition of "an aclose race" lives in exactly one place.
+    """
+    return _is_aclose_race(exc)
+
+
 def _max_retries_from_env() -> int:
     raw = os.environ.get("REPROLAB_SDK_MAX_RETRIES", "").strip()
     if not raw:
@@ -325,6 +334,7 @@ __all__ = [
     "IsolationFailureKind",
     "IsolationOutcome",
     "RunIsolated",
+    "is_aclose_race",
     "make_run_isolated",
     "run_isolated",
 ]

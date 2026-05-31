@@ -53,6 +53,16 @@ PROPERTY 3 — SUB-CALLS ARE PROGRAMMATIC
   tool-use blocks in the API request; they are first-class REPL callables.  Write
   code that orchestrates them: iterate over sections, batch multiple slices,
   branch on results.
+
+OUTPUT DISCIPLINE — WRITE THE LEAST CODE THAT ADVANCES THE RUBRIC
+  Each turn, emit ONE focused, minimal code block that makes concrete progress —
+  not many redundant or speculative blocks.  Do NOT restate large code you already
+  wrote, re-print unchanged variables, or emit duplicate / near-duplicate blocks.
+  Your generated tokens are the slowest and most expensive part of every turn (and
+  output is never cached), so terseness is pure speed and budget at NO cost to
+  quality — concise code is usually more correct.  Prefer one tight block over a
+  verbose multi-block turn; let the REPL state carry context across iterations,
+  not re-emitted text.
 """
 
 _CONTEXT_METADATA_INTRO = """\
@@ -236,6 +246,34 @@ FORCED-ITERATION POLICY:
   record_candidate_outcome with the truthful outcome — "promoted" if the
   rubric improved, "failed" if it didn't. Declining without running is
   observer bias and not accepted as terminal.
+
+CONVERGENCE & UNOBTAINABLE SCOPE — do not loop on what you cannot change:
+  Some scope is genuinely unobtainable in this sandbox (e.g. a dataset behind
+  a dead URL or a licence gate, or an environment needing an external server).
+  Retrying the SAME unobtainable thing is the #1 cause of wasted iterations.
+  Read these signals and act on them:
+
+  * `run_experiment` returned `scope_reduced=True` (with `metrics.scope_gaps`):
+    the harness has ACCEPTED a reduced scope because an element was missing
+    repeatedly or you recorded it in `data_load_failures`. Do NOT keep trying to
+    add that element. Treat the partial as your working result: either improve a
+    DIFFERENT, obtainable dimension, or move toward `FINAL_VAR`. List each gap in
+    the final report's `scope.gaps`.
+
+  * `verify_against_rubric` returned a `convergence_note`: the rubric score has
+    plateaued across recent verifications. Re-running the same configuration will
+    not move it. Either (a) change the APPROACH materially (a different hypothesis
+    — not the same experiment again), or (b) if the remaining gap is unobtainable
+    scope, record it in `scope.gaps` and call `FINAL_VAR` now with the best partial.
+
+  * Unobtainable datasets do NOT lower your score. The grader is
+    data-unavailable-aware: a leaf depending on a dataset you recorded in
+    `data_load_failures` / `experiments[*].status="data_unavailable"` is EXCLUDED
+    from the score (not scored 0). So honestly recording an unobtainable dataset
+    and reproducing the rest is the correct, score-maximising move — never fake a
+    dataset, and never hard-fail the whole run because one dataset is missing.
+    Always mirror every such gap into the final report's `scope.gaps` so it is
+    clearly stated.
 """
 
 _ITERATION_DISCIPLINE = """\
@@ -263,6 +301,24 @@ ITERATION DISCIPLINE — one run_experiment per iteration:
   cleanly surface the failure to the next root-turn's context window. The
   policy will REFUSE FINAL_VAR if you call run_experiment twice in one
   iteration with the latter failing -- pack one experiment per iteration.
+"""
+
+_TURN_EFFICIENCY = """\
+═══════════════════════════════════════════════════════════════
+  TURN EFFICIENCY — FOCUSED OUTPUT, LOWER LATENCY
+═══════════════════════════════════════════════════════════════
+
+Each iteration is generated at ~40 tokens/sec. Verbose turns waste wall-clock
+without improving results. Write FOCUSED turns:
+
+  • Emit the MINIMAL Python needed to advance the rubric by one concrete step.
+  • Prefer a SINGLE tight code block over many scattered blocks.
+  • Do NOT restate prior code, re-print large outputs, or duplicate work already
+    recorded in REPL variables — reference them by name instead.
+  • Call ONLY the primitives needed in this iteration; defer the rest.
+
+Conciseness ≠ less correct. Correctness invariants (real weights, rubric
+leaves, algorithm invariants) are never compromised for brevity.
 """
 
 _DECOMPOSITION_EXAMPLE = """\
@@ -475,6 +531,7 @@ def build_system_prompt(
         _PRIMITIVES_SECTION,
         _TERMINATION_CONTRACT,
         _ITERATION_DISCIPLINE,
+        _TURN_EFFICIENCY,
         _DECOMPOSITION_EXAMPLE,
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
@@ -521,4 +578,5 @@ SYSTEM_PROMPT: str = "\n".join([
     _PRIMITIVES_SECTION,
     _TERMINATION_CONTRACT,
     _ITERATION_DISCIPLINE,
+    _TURN_EFFICIENCY,
 ])

@@ -443,3 +443,47 @@ def test_lane_o_score_above_target_skips_check() -> None:
     )
     refuse, _msg = policy.should_refuse()
     assert refuse is False
+
+
+# --- thread-locality regression (2026-05-31) ---------------------------------
+# The policy stack is thread-local and the FINAL_VAR interceptor runs on the
+# thread that runs rlm.completion. run.py dispatches completion via
+# asyncio.to_thread (a SEPARATE worker thread), so the policy MUST be entered
+# INSIDE the to_thread callable. Entering it on the asyncio loop thread (as
+# run.py did until 2026-05-31) left _current_policy() empty on the worker
+# thread → the entire premature-exit guard silently no-op'd.
+
+
+def test_policy_invisible_across_to_thread_when_entered_on_loop_thread() -> None:
+    """ROOT-CAUSE DOC: a policy pushed on the loop thread is NOT visible to a
+    function dispatched via asyncio.to_thread (worker thread)."""
+    import asyncio
+
+    from backend.agents.rlm.forced_iteration import _current_policy
+
+    policy = _make_policy(score=0.0, target=0.6, iteration=1)
+
+    async def _run() -> Any:
+        with forced_iteration_policy(policy):
+            return await asyncio.to_thread(_current_policy)
+
+    assert asyncio.run(_run()) is None  # the bug: worker sees no policy
+
+
+def test_policy_visible_across_to_thread_when_entered_inside_worker() -> None:
+    """THE FIX: entering the context manager INSIDE the to_thread callable makes
+    the policy visible on the worker thread (where LocalREPL._final_var runs)."""
+    import asyncio
+
+    from backend.agents.rlm.forced_iteration import _current_policy
+
+    policy = _make_policy(score=0.0, target=0.6, iteration=1)
+
+    def _worker() -> Any:
+        with forced_iteration_policy(policy):
+            return _current_policy()
+
+    async def _run() -> Any:
+        return await asyncio.to_thread(_worker)
+
+    assert asyncio.run(_run()) is policy

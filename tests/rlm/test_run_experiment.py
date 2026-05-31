@@ -11,7 +11,7 @@ def test_run_experiment_reads_commands_and_returns_metrics(make_context, tmp_pat
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None, gpu_device_ids=()):
         assert env_id == "reprolab/test:env-check"
         assert commands == ["python train.py"]
         assert project_id  # run_experiment threads ctx.project_id through
@@ -30,7 +30,7 @@ def test_run_experiment_accepts_ok_code_envelope(make_context, tmp_path, monkeyp
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None, gpu_device_ids=()):
         assert code_path == str(code_dir)
         return {"metrics": {"mean_reward": 10.0}, "success": True, "logs": ""}
 
@@ -100,7 +100,7 @@ def test_run_experiment_persists_result_to_disk(make_context, tmp_path, monkeypa
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
-                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None):
+                        sandbox_mode=None, run_budget=None, gpu_plan=None, gpu_mode=None, gpu_device_ids=()):
         return {"metrics": {}, "success": False, "logs": "boom: traceback here"}
 
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
