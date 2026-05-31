@@ -20,7 +20,11 @@ hyperparameters:
   seeds: [42, 43, 44]
 
 models_in_paper:
-  qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct
+  # Qwen3 post-trained models have NO "-Instruct" suffix on HuggingFace
+  # (Qwen/Qwen3-1.7B exists; Qwen/Qwen3-1.7B-Instruct 401s — does not exist).
+  # This value is the canonical path the pre-flight guard enforces verbatim, so a
+  # wrong id makes every run pass preflight then 401 at runtime (hollow success).
+  qwen3_1_7b: Qwen/Qwen3-1.7B
   qwen2_5_3b: Qwen/Qwen2.5-3B-Instruct
   qwen2_5_7b: Qwen/Qwen2.5-7B-Instruct
 
