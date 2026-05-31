@@ -112,6 +112,113 @@ _ARXIV_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Claim-map titles that are placeholders/section headers, NOT the paper's real
+# title. A title equal (case-insensitively, trimmed) to any of these is rejected
+# so demo_status.json never renders junk. "paper_text" is the big one: the
+# workspace claim map hardcodes it as the first-entry title (see
+# `_build_workspace_claim_map._one_entry`), so the lossy-parse fallback would
+# otherwise surface "paper_text" as the paper title in the UI.
+_NOISE_TITLES = frozenset({
+    "abstract", "introduction", "1 introduction", "1. introduction",
+    "summary", "overview",
+    "paper_text", "paper text", "untitled", "untitled paper", "title",
+})
+
+
+def _is_noise_title(title: str) -> bool:
+    """True when ``title`` is a placeholder/section header, not a real title."""
+    return (not title) or title.strip().lower() in _NOISE_TITLES
+
+
+def _first_meaningful_line(text: str) -> str:
+    """Return the first title-like line of pre-extracted paper text.
+
+    Skips blank lines and obvious non-title lines (bare arXiv ids, "arXiv:…"
+    lines, and lines that are entirely digits/punctuation/whitespace), then
+    returns the first remaining line stripped — but only if it looks like a
+    title (3–200 chars and contains at least one letter). Returns "" otherwise.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        # Skip "arXiv:2605.15155" style provenance headers and bare arXiv ids.
+        if low.startswith("arxiv:") or _ARXIV_RE.fullmatch(line):
+            continue
+        # Skip lines with no letters at all (page numbers, rule lines, etc.).
+        if not any(ch.isalpha() for ch in line):
+            continue
+        if 3 <= len(line) <= 200:
+            return line
+        # A first line that has letters but is out-of-range (e.g. a giant
+        # wrapped paragraph) is not a title — stop looking, fall through.
+        return ""
+    return ""
+
+
+def _derive_paper_title(
+    source_kind: str,
+    paper_id: str,
+    claim_map_first_title: str = "",
+    paper_text_first_line: str = "",
+) -> str:
+    """Derive a human-readable paper title for demo_status.json.
+
+    Precedence:
+      1. ``paper_text_first_line`` (the first meaningful line of the
+         pre-extracted full paper text, via ``REPROLAB_PAPER_TEXT_PATH``) when
+         it looks like a title — this is the most authoritative real title.
+      2. ``claim_map_first_title`` when it is NOT a placeholder/section header
+         (see ``_is_noise_title``).
+      3. A readable fallback from ``paper_id`` keyed on ``source_kind``:
+         ``arxiv`` → ``arXiv:<id>``; ``doi`` → ``doi:<id>``; ``pdf`` → the
+         filename stem with separators normalized to spaces.
+
+    Pure / side-effect-free so it can be unit-tested in isolation. It never
+    returns the "paper_text" placeholder.
+    """
+    candidate = (paper_text_first_line or "").strip()
+    if candidate and not _is_noise_title(candidate) and any(
+        ch.isalpha() for ch in candidate
+    ) and 3 <= len(candidate) <= 200:
+        return candidate
+
+    claim = (claim_map_first_title or "").strip()
+    if claim and not _is_noise_title(claim):
+        return claim
+
+    pid = (paper_id or "").strip()
+    if source_kind == "arxiv":
+        return f"arXiv:{pid}" if pid else "arXiv paper"
+    if source_kind == "doi":
+        return f"doi:{pid}" if pid else "doi paper"
+    if source_kind == "pdf":
+        return pid.replace("_", " ").replace("-", " ").strip() or pid or "paper"
+    return pid or "paper"
+
+
+def _read_paper_text_first_line(path_str: str | None) -> str:
+    """Fail-soft read of the first meaningful line from a paper-text file.
+
+    ``path_str`` is typically ``os.environ["REPROLAB_PAPER_TEXT_PATH"]``. Reads
+    only a bounded prefix (the title lives in the first lines). Any error —
+    missing file, permission, decode — yields "" so ingest never crashes.
+    """
+    if not path_str:
+        return ""
+    try:
+        p = Path(path_str)
+        if not p.is_file():
+            return ""
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(8192)
+        return _first_meaningful_line(head)
+    except OSError:
+        return ""
+    except Exception:  # noqa: BLE001 — title rendering must not block the run
+        return ""
+
 
 def _build_workspace_claim_map(
     variables: dict, project_id: str, runs_root: Path | None = None
@@ -1187,29 +1294,33 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             except (json.JSONDecodeError, OSError):
                 _existing = {}
         _paper_id = ""
-        _paper_title = ""
+        _source_kind = ""
         if isinstance(source, ArxivId):
             _paper_id = source.arxiv_id
-            _paper_title = f"arXiv:{source.arxiv_id}"
+            _source_kind = "arxiv"
         elif isinstance(source, PdfPath):
-            _stem = Path(source.path).stem
-            _paper_id = _stem
-            _paper_title = _stem.replace("_", " ").replace("-", " ").strip() or _stem
+            _paper_id = Path(source.path).stem
+            _source_kind = "pdf"
         elif isinstance(source, DoiRef):
             _paper_id = source.doi
-            _paper_title = f"doi:{source.doi}"
-        # Try to upgrade _paper_title from the workspace claim map (the
-        # parser may have extracted the real title into the first section).
+            _source_kind = "doi"
+        # First-entry title from the workspace claim map (the parser may have
+        # extracted the real title there). Note this is "paper_text" whenever
+        # the claim map resolved via the full-text/paper_text tiers, so it is
+        # rejected as noise inside _derive_paper_title.
         _entries = (workspace_claim_map or {}).get("entries") or []
         _first_title = (_entries[0].get("title") if _entries else "") or ""
-        # Reject the noise titles the bundle path produces ("Abstract",
-        # "Introduction", "1 Introduction"). Anything else is probably real.
-        _is_noise = (not _first_title) or _first_title.strip().lower() in {
-            "abstract", "introduction", "1 introduction", "1. introduction",
-            "summary", "overview",
-        }
-        if not _is_noise:
-            _paper_title = _first_title.strip()
+        # Highest-priority real title: the first meaningful line of the
+        # pre-extracted full paper text (REPROLAB_PAPER_TEXT_PATH). Fail-soft.
+        _text_first_line = _read_paper_text_first_line(
+            os.environ.get("REPROLAB_PAPER_TEXT_PATH")
+        )
+        _paper_title = _derive_paper_title(
+            _source_kind,
+            _paper_id,
+            claim_map_first_title=_first_title,
+            paper_text_first_line=_text_first_line,
+        )
         _existing.update({
             "paperId": _paper_id,
             "paperTitle": _paper_title,
