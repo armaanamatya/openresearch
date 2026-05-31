@@ -756,7 +756,21 @@ def main() -> int:
 
     # ---- 5. Determine parallelism -------------------------------------------
     papers: list[str] = args.papers
-    free_now = free_devices(free_mem_threshold_mb=args.free_mem_threshold_mb)
+    # Reservation-aware pre-flight: discount our own GPU-reservation holders (the
+    # ~256 MiB processes parked on reserved cards to keep other users off) so a run
+    # launched onto pre-reserved cards still sees them as schedulable. Without this
+    # the pre-flight counts our own holders as foreign occupants and aborts with
+    # "no free GPUs" — even though the reservation-aware per-paper acquire below
+    # (which already passes own_pids) would happily lease them. This only bit when
+    # the ONLY free cards were the reserved ones (a fully-free box masked the bug).
+    from backend.services.runtime.gpu_reservation import GpuReservationManager
+    _preflight_own_pids = GpuReservationManager(
+        runs_root / ".gpu_reservations.json", repo_root=repo_root
+    ).holder_pids()
+    free_now = free_devices(
+        free_mem_threshold_mb=args.free_mem_threshold_mb,
+        own_pids=_preflight_own_pids,
+    )
 
     if len(free_now) == 0:
         logger.error(
