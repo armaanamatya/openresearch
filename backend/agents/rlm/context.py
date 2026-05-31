@@ -130,18 +130,11 @@ class RunContext:
                 except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
                     pass
 
-        # blocked_terms ← REPROLAB_BLOCKED_TERMS_JSON (#7 benchmark-integrity blocklist)
+        # blocked_terms ← REPROLAB_BLOCKED_TERMS_JSON (#7) via the shared parser,
+        # so RunContext and collect_agent_text seed the RuntimeGuard identically.
         if not self.blocked_terms:
-            _bt_json = _os.environ.get("REPROLAB_BLOCKED_TERMS_JSON", "").strip()
-            if _bt_json:
-                try:
-                    _raw_bt = _json.loads(_bt_json)
-                    if isinstance(_raw_bt, list):
-                        self.blocked_terms = tuple(
-                            str(t).strip() for t in _raw_bt if str(t).strip()
-                        )
-                except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
-                    pass
+            from backend.agents.runtime.base import blocked_terms_from_env
+            self.blocked_terms = blocked_terms_from_env()
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.
