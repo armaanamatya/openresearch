@@ -47,11 +47,55 @@ PRICING: dict[str, ModelPricing] = {
         output_per_1m=4.40,
         reasoning_per_1m=4.40,
     ),
+    # Claude subscription (OAuth) — actual billed cost is $0.
+    # Use equivalent_cost_usd() to compute the hypothetical API cost.
+    "claude-oauth": ModelPricing(
+        input_per_1m=0.00,
+        output_per_1m=0.00,
+        cache_read_input_per_1m=0.00,
+        cache_creation_input_per_1m=0.00,
+    ),
 }
 
 
+def _resolve_pricing(model: str) -> ModelPricing | None:
+    """Resolve a ModelPricing entry for *model*.
+
+    Lookup order:
+    1. Exact match in PRICING (bare names like ``claude-sonnet-4-6``).
+    2. Strip a ``provider.`` prefix from any PRICING key and match the suffix
+       (e.g. key ``anthropic.claude-sonnet-4-6`` → suffix ``claude-sonnet-4-6``
+       matches ``model == "claude-sonnet-4-6"``).
+    3. Strip a ``provider.`` prefix from *model* and match the remainder against
+       PRICING keys directly (e.g. ``model == "anthropic.claude-sonnet-4-6"``
+       resolves to the bare key ``claude-sonnet-4-6`` if that is in PRICING).
+
+    This makes the bare ledger model names (``claude-oauth``,
+    ``claude-sonnet-4-6``) resolve correctly even when PRICING keys are stored
+    with provider prefixes, and vice-versa — without requiring callers to
+    normalise the key.
+    """
+    # 1. Exact match.
+    entry = PRICING.get(model)
+    if entry is not None:
+        return entry
+    # 2. Match model against suffixes of PRICING keys (strip ``provider.`` prefix).
+    for key, entry in PRICING.items():
+        dot = key.find(".")
+        if dot != -1 and key[dot + 1:] == model:
+            return entry
+    # 3. Strip provider prefix from model, look up the remainder in PRICING.
+    dot = model.find(".")
+    if dot != -1:
+        bare = model[dot + 1:]
+        entry = PRICING.get(bare)
+        if entry is not None:
+            return entry
+    return None
+
+
 def estimate_cost_usd(model: str, usage: dict[str, Any]) -> float | None:
-    pricing = PRICING.get(model)
+    pricing = _resolve_pricing(model)
     if pricing is None:
         return None
     input_tokens = _int(usage.get("input_tokens"))
@@ -79,6 +123,44 @@ def estimate_cost_usd(model: str, usage: dict[str, Any]) -> float | None:
     return round(total, 8)
 
 
+# ---------------------------------------------------------------------------
+# OAuth equivalent-cost mapping (C2)
+# ---------------------------------------------------------------------------
+
+# Maps zero-cost subscription model keys to the paid API model whose price
+# represents the "equivalent API cost" — useful for budget estimation and
+# operator visibility even though the actual charge is $0.
+# Keys are bare model names (matching PRICING keys or the bare suffix of a
+# provider-prefixed key).  Values are also bare names resolved via _resolve_pricing.
+OAUTH_EQUIVALENT_MODEL: dict[str, str] = {
+    "claude-oauth": "claude-sonnet-4-6",
+}
+
+
+def equivalent_cost_usd(model: str, usage: dict[str, Any]) -> float | None:
+    """Return the hypothetical API cost if *model* were billed at its equivalent rate.
+
+    For subscription models (e.g. ``claude-oauth``) this returns what the same
+    token counts would cost under the equivalent paid-API model (``claude-sonnet-4-6``).
+    For non-subscription models the return value is identical to
+    ``estimate_cost_usd(model, usage)`` — the real cost is already the API cost.
+
+    Returns ``None`` when no pricing data is available for the resolved model.
+    The actual billed cost (always $0 for OAuth) is unchanged — this helper
+    is ONLY for visibility/estimation; never use it as the cost field in a
+    ledger entry.
+    """
+    bare = model
+    dot = model.find(".")
+    if dot != -1:
+        bare = model[dot + 1:]
+    equivalent_model = OAUTH_EQUIVALENT_MODEL.get(bare)
+    if equivalent_model is not None:
+        return estimate_cost_usd(equivalent_model, usage)
+    # Not an OAuth model — real cost is already the API cost.
+    return estimate_cost_usd(model, usage)
+
+
 def _int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -86,4 +168,11 @@ def _int(value: Any) -> int:
         return 0
 
 
-__all__ = ["ModelPricing", "PRICING", "PRICING_UPDATED_AT", "estimate_cost_usd"]
+__all__ = [
+    "ModelPricing",
+    "PRICING",
+    "PRICING_UPDATED_AT",
+    "_resolve_pricing",
+    "estimate_cost_usd",
+    "equivalent_cost_usd",
+]

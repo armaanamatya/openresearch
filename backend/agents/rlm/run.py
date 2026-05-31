@@ -1602,6 +1602,60 @@ async def run_pipeline_rlm(
                 return rlm.completion(context_dict, active_prompt)
 
         result_obj = await asyncio.to_thread(_run_completion_on_worker)
+
+        # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
+        # ledger cache tokens for the root reasoning turns.
+        #
+        # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
+        #
+        #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
+        #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
+        #   - final_report.cost.llm_usd is sourced from result.usage_summary
+        #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
+        #   - Therefore: adding a rlm_root row to the ledger with the full
+        #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
+        #     It does add these tokens to tokens_total.json, which is the desired
+        #     behaviour — the root's tokens were previously absent from tokens_total.
+        #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
+        #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
+        if root_model.rlm_backend == "anthropic-oauth":
+            try:
+                from backend.agents.rlm.claude_oauth_client import drain_root_usage
+                from backend.agents.resilience.cost import CostLedgerEntry
+
+                root_usage_by_model = drain_root_usage()
+                for _model, _u in root_usage_by_model.items():
+                    if _u.get("calls", 0) == 0:
+                        continue
+                    _entry = CostLedgerEntry.from_usage(
+                        agent_id="rlm_root",
+                        attempt_index=0,
+                        provider="anthropic",  # type: ignore[arg-type]
+                        model=_model,
+                        usage={
+                            "input_tokens": _u.get("input_tokens", 0),
+                            "output_tokens": _u.get("output_tokens", 0),
+                            "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
+                            "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
+                            "reasoning_tokens": 0,
+                        },
+                    )
+                    if ctx.cost_ledger is not None:
+                        ctx.cost_ledger.append(_entry)
+                    # Also write directly to the ledger file (mirrors
+                    # record_subagent_usage_to_path for resilience when
+                    # ctx.cost_ledger has no path attached).
+                    _ledger_path = project_dir / "cost_ledger.jsonl"
+                    if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                        import json as _json_ledger
+                        _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                        with _ledger_path.open("a", encoding="utf-8") as _fh:
+                            _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+                    else:
+                        ctx.cost_ledger.flush()
+            except Exception:  # noqa: BLE001 — ledgering is best-effort
+                logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc
         run_failed = True
