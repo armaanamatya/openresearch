@@ -3129,6 +3129,19 @@ def _manifest_enrichment(result: dict) -> None:
         pass
 
 
+def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: list) -> None:
+    """P2 manifest: record the identifiers that bind a run_experiment result to
+    its run — ``experiment_run_id`` (the ``run_id`` used for this attempt's
+    artifacts, previously minted in the escalation loop and discarded),
+    ``env_id``, and the structured ``commands`` list. ``setdefault`` so a value an
+    earlier path already set is never clobbered; a non-dict result is a no-op."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault("experiment_run_id", run_id)
+    result.setdefault("env_id", env_id)
+    result.setdefault("commands", list(commands) if commands else [])
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3939,6 +3952,11 @@ def run_experiment(
         # A2: persist the updated count so subsequent run_experiment calls in
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
+
+    # P2 manifest: the escalation loop has produced its final result — stamp the
+    # identifiers the persist chokepoint records. run_id/env_id/commands are in
+    # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
+    _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
 
     # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
     # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0
