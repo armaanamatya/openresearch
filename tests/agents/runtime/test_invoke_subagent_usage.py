@@ -49,7 +49,7 @@ def _fake_registry(agent_id: str, tmp_path: Path) -> dict:
     )
 
     class FakeEntry:
-        def to_runtime_spec(self, provider, *, model_override=None, working_directory=None, max_turns=None):
+        def to_runtime_spec(self, provider, *, model_override=None, working_directory=None, max_turns=None, blocked_terms=()):
             return spec
 
     return {agent_id: FakeEntry()}

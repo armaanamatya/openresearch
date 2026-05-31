@@ -29,6 +29,7 @@ async def collect_agent_text(
     runtime: AgentRuntime | None = None,
     max_turns: int | None = None,
     on_event: Callable[[], None] | None = None,
+    blocked_terms: tuple[str, ...] = (),
 ) -> str:
     """Run one agent and return concatenated text output.
 
@@ -44,6 +45,7 @@ async def collect_agent_text(
         model_override=model,
         working_directory=project_dir,
         max_turns=max_turns,
+        blocked_terms=blocked_terms,
     )
     collected: list[str] = []
     tool_calls: list[dict[str, object]] = []
