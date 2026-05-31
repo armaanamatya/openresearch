@@ -1588,8 +1588,20 @@ async def run_pipeline_rlm(
     run_failed = False
     fatal_abort: _FatalPrimitiveAbort | None = None
     try:
-        with forced_iteration_policy(iteration_policy):
-            result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
+        def _run_completion_on_worker() -> Any:
+            # The forced-iteration policy stack is THREAD-LOCAL (forced_iteration._LOCAL),
+            # and the FINAL_VAR interceptor (LocalREPL._final_var) executes on whatever
+            # thread runs rlm.completion. asyncio.to_thread dispatches completion to a
+            # SEPARATE worker thread, so the policy MUST be pushed on THAT thread — entering
+            # the context manager on the asyncio loop thread (as this code did until
+            # 2026-05-31) leaves the interceptor's _current_policy() empty on the worker
+            # thread, silently disabling the entire premature-exit guard (Lane H /
+            # BUG-LR-013): the root could FINAL_VAR after one sub-target iteration and
+            # nothing refused it. Enter the policy INSIDE the worker callable.
+            with forced_iteration_policy(iteration_policy):
+                return rlm.completion(context_dict, active_prompt)
+
+        result_obj = await asyncio.to_thread(_run_completion_on_worker)
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc
         run_failed = True
