@@ -141,6 +141,17 @@ def main() -> int:
     env["REPROLAB_RUN_TITLE"] = run_title
     _log(f"run title: {run_title}")
 
+    # Robust paper-text fidelity: point ingest at a pre-extracted full-text blob
+    # so the RLM root gets the WHOLE paper even if the live arXiv fetch/parse
+    # transiently degrades to lossy chunk-reassembly. parser/service.py honors
+    # REPROLAB_PAPER_TEXT_PATH (>=1KB) with precedence over a degraded cascade.
+    _paper_text = REPO / "runs" / ".cache" / "paper_text" / "2605.15155.txt"
+    if _paper_text.is_file() and _paper_text.stat().st_size >= 1024:
+        env["REPROLAB_PAPER_TEXT_PATH"] = str(_paper_text)
+        _log(f"paper-text override → {_paper_text.name} ({_paper_text.stat().st_size} bytes)")
+    else:
+        _log(f"warn: no paper-text override at {_paper_text}; relying on live parse")
+
     cmd = [
         str(VENV_PY), str(REPO / "scripts/batch_reproduce.py"), "2605.15155",
         "--gpus-per-run", str(run_n), "--sandbox", "local", "--model", "claude-oauth",
