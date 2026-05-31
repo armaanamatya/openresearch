@@ -186,6 +186,16 @@ ml-intern is **not** better than OpenResearch overall — OpenResearch leads on 
 
 **Rejected (recorded in Appendix B):** `finish_reason=length` repair, dangling-tool-call repair, malformed-args guard, named-section lookup, figcaption (we're better), S2 enrichment, `_owns_space` (we're better), reconnect-during-stream (→ HF contract note), `redact`-as-`sse_bridge`-replacement, ml-intern `approval_policy`, effort-probe/model-switching, prompt-caching (already done), telemetry kind-tagging, context-compaction, `plan_tool`, research-tool, session-resume mechanism, mongo doc-size guard, KPI scheduler.
 
+### 8a. superpowers-derived refinements (2026-05-31 sweep — `obra/superpowers`, MIT, provenance-verified clean)
+
+superpowers (Jesse Vincent, MIT — verified canonical, NOT a leak) is a dev-workflow skill methodology; as a *harness-integrity* source it is ~90% subsumed — OpenResearch already mechanically enforces what superpowers asks an agent to do by prompt (verification-before-completion ⇒ metric-projection §5b; systematic-debugging ⇒ 26-class `failure_classifier` + `repair_context`; condition-based-waiting ⇒ 3-signal `run_watchdog`; iterate-until-bar ⇒ `forced_iteration`). A "borrow" that downgrades an enforced gate to a prompt instruction is a regression. Three narrow refinements survive — they tighten EXISTING seams, import nothing, and do NOT belong in the ml-intern table:
+
+| # | Refinement | superpowers source | OpenResearch target | Phase |
+|---|-----------|--------------------|--------------------|-------|
+| B1 | Adversarial-grader STANCE for the citation-clamp: instruct the grader to treat `reproduction_summary` as an optimistic claim by a party that wants to pass; score only from independently-read code/`metrics.json`; cite the line/key relied on | `subagent-driven-development/spec-reviewer-prompt.md` | §5c grader prompt in `leaf_scorer.py:845` (evidence assembled `:238`) — rides the already-planned clamp + its mocked test | **P3** (observe-first with §5c) |
+| B2 | Spec-gate-BEFORE-quality-grade ordering: a hard invariant-gate fail short-circuits before the LLM grader runs (saves grader tokens; stops a forgiving LLM pass papering over a failed SDAR invariant like missing `g_t=σ(β·Δ_t)`/stop-grad) | `subagent-driven-development/SKILL.md` ("only dispatch quality review after spec passes") | reorder + early-return in `score_reproduction` (`leaf_scorer.py:845`) gating on `run_invariant_checks` (`:687`) | **P3** |
+| B3 | Distinct-attempt repair counter: ≥3 cosmetically-different-but-failed attempts on the SAME rubric leaf → inject "change approach materially or record as unobtainable scope" into `repair_context` (fills the gap between doom-loop's identical-repetition kill and forced_iteration's premature-exit refusal) | `systematic-debugging/SKILL.md` Phase 4.5 | `forced_iteration.py` + the #1 doom-loop seam (`sse_bridge.py:353`) | **P5 — VERIFY-FIRST**: may be redundant with the `convergence_note` plateau detector (`system_prompt.py:263-267`); confirm it keys on score-plateau vs distinct-attempt-count before building, else DROP |
+
 ---
 
 ## 9. Phase plan (each phase ships its tests)
