@@ -207,3 +207,68 @@ def test_fetch_result_unchanged_when_html_fails(tmp_path: Path):
     assert result.raw_paper_path.endswith("raw_paper.pdf")
     html_path = tmp_path / project_id / "raw_paper.html"
     assert not html_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# ar5iv fallback (P0 / borrow #2) — native-then-ar5iv source order.
+# Native and ar5iv are distinguished by "ar5iv" in the request URL.
+# ---------------------------------------------------------------------------
+
+def test_html_falls_back_to_ar5iv_when_native_unavailable(tmp_path: Path):
+    """When arxiv.org/html 404s, the ar5iv mirror is tried and its body is used.
+
+    Freshly-posted papers often lack a native arxiv.org/html rendering for hours
+    but are already on ar5iv — the fallback recovers those.
+    """
+    project_id = "prj_html_ar5iv_fallback"
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_404 = _FakeResponse(b"not found", status=404, content_type="text/html")
+    ar5iv_good = _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "ar5iv" in url:
+            return ar5iv_good
+        if "html" in url:
+            return native_404
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists(), "raw_paper.html should be written from the ar5iv fallback"
+    assert html_path.read_bytes() == _GOOD_HTML
+
+
+def test_html_prefers_native_arxiv_and_skips_ar5iv(tmp_path: Path):
+    """A valid native arxiv.org/html body short-circuits — ar5iv is never queried."""
+    project_id = "prj_html_prefer_native"
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_good = _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    requested_html_urls: list[str] = []
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "html" in url:
+            requested_html_urls.append(url)
+            return native_good
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists()
+    assert html_path.read_bytes() == _GOOD_HTML
+    # Exactly one HTML fetch — the native endpoint — and ar5iv was never queried.
+    assert len(requested_html_urls) == 1, f"expected 1 HTML fetch, got {requested_html_urls}"
+    assert "ar5iv" not in requested_html_urls[0]
+    assert "arxiv.org/html" in requested_html_urls[0]
