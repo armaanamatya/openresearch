@@ -105,11 +105,12 @@ docker info        # must succeed — this is the daemon ReproLab uses
 docker run hello-world
 ```
 
-> **Docker is required even for RunPod runs.** The repo defaults to `--sandbox runpod`,
-> but `build_environment` still does a *local* `docker build` for every sandbox except
-> `--sandbox local`. If the Docker daemon is down, runs fail at `build_environment`
-> (`backend_unavailable`) before reaching the GPU pod. Keep OrbStack/Docker Desktop running,
-> or use `--sandbox local`. Details + the full sandbox matrix: `docs/runbooks/running-the-project.md`.
+> **Docker is required only for `--sandbox docker`/`auto`, NOT for `runpod` or `local`.**
+> Since `875995c`, `build_environment` short-circuits to a no-op under both `local` and
+> `runpod` (the repo default) — a runpod run boots its own pod image over SSH and never does
+> a local `docker build`. A down Docker daemon only breaks `docker`/`auto` runs
+> (`backend_unavailable` at `build_environment`). Keep OrbStack/Docker Desktop running for
+> those modes. Details + the full sandbox matrix: `docs/runbooks/running-the-project.md`.
 
 Recommended resources (Docker Desktop lets you set these explicitly; **OrbStack
 auto-manages them**, so no tuning needed there):

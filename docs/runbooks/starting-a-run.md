@@ -17,10 +17,10 @@ the source of truth for **either** engine. One teammate on Docker Desktop and
 one on OrbStack are fully interchangeable. Anywhere this doc says "engine up,"
 it means `docker info` returns 0; it does **not** mean a particular product.
 
-> The default sandbox is `runpod`, and `build_environment` does a **local**
-> `docker build` for every sandbox **except `local`** — including `runpod`.
-> So the engine must be up for `docker` **and** `runpod` runs. Only
-> `--sandbox local` skips it.
+> The default sandbox is `runpod`. Since `875995c`, `build_environment`
+> short-circuits to a no-op for **both `local` and `runpod`** — only `docker`
+> and `auto`/unknown do a **local** `docker build`. So the engine must be up
+> only for `--sandbox docker`/`auto` runs; `local` and `runpod` need no daemon.
 
 Convention used below: credentials live in **`.env`** (or OAuth via
 `claude login`); your **shell stays empty** of `OPENAI_API_KEY` /
@@ -167,7 +167,7 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
     --max-usd 5 --max-wall-clock 7200
 ```
 
-### `--sandbox runpod` — GPU, needs the engine up **and** RunPod creds (API key + SSH key)
+### `--sandbox runpod` — GPU, needs RunPod creds (API key + SSH key); no local Docker engine (`875995c`)
 
 ```bash
 cd /Volumes/CS_Stuff/openresearch && \
@@ -181,14 +181,16 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u REPROLAB_RUNPOD_API_KEY \
 ```
 
 Notes:
-- The engine must be up for `docker` **and** `runpod` (local `docker build` in
-  `build_environment`); only `local` skips it.
+- The engine must be up only for `docker` and `auto`/unknown (local `docker build`
+  in `build_environment`); `local` **and** `runpod` short-circuit it (`875995c`).
 - `--preflight-sanity` runs a short sandbox smoke test before the real run for
   `local`/`docker` (skip is automatic for runpod transient-capacity reasons).
 - Pin a specific id with `--project-id <id>` if you want to know the run dir up
   front; otherwise the CLI prints `runs/<project_id>/` at startup.
-- Default RunPod image is `cuda-runtime` (~4 GB), correct for ~all papers. Only
-  if a paper compiles CUDA kernels: `REPROLAB_RUNPOD_IMAGE=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`.
+- Default RunPod image is `cuda-devel` (`runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`,
+  `runpod_backend.py::DEFAULT_RUNPOD_IMAGE`). The lighter `cuda-runtime` was reverted (`88c45b0`):
+  it lacks dev headers, so `bitsandbytes`/`flash-attn`/`deepspeed` installs failed silently. Override
+  with `REPROLAB_RUNPOD_IMAGE=...-runtime-...` only if all deps are pre-built wheels.
 
 ---
 
@@ -263,7 +265,7 @@ test -f "$ATT/.preserved" && echo "preserved (non-failed)" || echo "no marker (f
 
 | Symptom (where it surfaces) | Class | Discriminator (run this) | Fix |
 |---|---|---|---|
-| `SandboxRuntimeError(backend_unavailable)` at **build_environment**; "Docker daemon is not reachable" | **Engine / Docker down** | `docker info` exits non-zero | Start OrbStack **or** Docker Desktop; re-verify `docker info`. Engine-agnostic — do not look for "Docker Desktop" specifically. Needed even for `runpod`. |
+| `SandboxRuntimeError(backend_unavailable)` at **build_environment**; "Docker daemon is not reachable" | **Engine / Docker down** | `docker info` exits non-zero | Start OrbStack **or** Docker Desktop; re-verify `docker info`. Engine-agnostic — do not look for "Docker Desktop" specifically. Only reachable under `--sandbox docker`/`auto` (since `875995c`, `runpod` short-circuits build_environment — a runpod run can't hit this). |
 | Same error but `docker info` **works** | **Docker SDK missing** | `.venv/bin/python -c "import docker"` fails | `.venv/bin/pip install -r backend/requirements.txt` |
 | `implement_baseline` returns no `code_path`, empty files, `success` None/empty, **no error_code** | **claude-agent-sdk AUTH wedge ("success-with-no-text")** — subprocess ran, wrote nothing; NOT Docker | `claude --print ping` (OAuth) AND `test -w "$RUN/code"` (writable). If ping fails or `ANTHROPIC_API_KEY` is a no-credit key → auth. | `claude login` (or `claude login --reset`). Leave `ANTHROPIC_API_KEY` empty so OAuth is used; a no-credit key never falls back. Check quota if subscription-exhausted. |
 | Run dies at first Sonnet call: `cost_usd=0.0`, `400 credit balance too low` | **AUTH — no-credit API key** | `ANTHROPIC_API_KEY` is set but unfunded | Empty the key + `claude login`, or fund the Anthropic **API** account. |
@@ -290,12 +292,14 @@ but feels wrong:
   never the API key's balance. Safest: keep the key empty.
 - **Shell shadowing warns but does not block.** The CLI prints a warning yet
   runs; the `env -u …` prefix is the real guard.
-- **Engine required even for `runpod`.** The local `docker build` in
-  `build_environment` runs for every non-`local` sandbox; the pod itself uses its
-  own image, so the locally-built image is unused but the build still needs a
-  live daemon. (Tracked as a known rough edge.)
-- **RunPod default image is `cuda-runtime`.** A (rare) CUDA-compiling paper needs
-  the `-devel` image via `REPROLAB_RUNPOD_IMAGE`, else it fails at install time.
+- **Engine NOT required for `runpod` (since `875995c`).** `build_environment`
+  short-circuits to a no-op under `runpod` (the pod boots its own image over SSH),
+  so a down Docker daemon no longer breaks RunPod runs — the local daemon is needed
+  only for `--sandbox docker`/`auto`. (Was a rough edge; resolved in the merge.)
+- **RunPod default image is `cuda-devel`.** The lighter `cuda-runtime` was reverted
+  (`88c45b0`) — it lacks dev headers, so `bitsandbytes`/`flash-attn`/`deepspeed`
+  installs failed silently. Override to `-runtime-` via `REPROLAB_RUNPOD_IMAGE` only
+  if all deps are pre-built wheels.
 - **`local` sandbox depends entirely on the host venv/GPU.** No Docker isolation
   — missing paper deps or CUDA on the host fail the run; install paper deps into
   `.venv` (the batch scheduler does this per-run automatically).
