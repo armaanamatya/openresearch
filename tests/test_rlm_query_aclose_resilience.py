@@ -25,6 +25,16 @@ import pytest
 _ACLOSE = "aclose(): asynchronous generator is already running"
 
 
+@pytest.fixture(autouse=True)
+def _force_sdk_transport(monkeypatch):
+    """Section 3 (ClaudeOauthClient.completion empty→no-op) targets the
+    claude-agent-sdk fallback path; force it so the CLI primary transport does
+    not bypass the injected SDK mock. The CLI path's empty→fallback is covered by
+    tests/agents/rlm/test_claude_oauth_cli_transport.py. Harmless to the
+    ClaudeLlmClient-direct tests, which never read the transport env."""
+    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "sdk")
+
+
 def _make_client():
     from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
 

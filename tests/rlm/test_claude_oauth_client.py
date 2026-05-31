@@ -11,6 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _force_sdk_transport(monkeypatch):
+    """These tests target the claude-agent-sdk path (prompt rendering, per-model
+    client caching, exception propagation), which is now the *fallback*
+    transport. The reliable CLI primary path is covered by
+    tests/agents/rlm/test_claude_oauth_cli_transport.py."""
+    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "sdk")
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
