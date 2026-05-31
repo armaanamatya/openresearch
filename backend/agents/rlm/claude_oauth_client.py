@@ -144,13 +144,22 @@ class ClaudeOauthClient(BaseLM):
         self.model_name = model_name or "claude-sonnet-4-6"
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
-        # Per-model usage tracking — best-effort (SDK doesn't return token counts).
+        # Per-model usage tracking. The CLI transport (--output-format json)
+        # returns REAL token counts incl. cache tokens, so OAuth-root usage is no
+        # longer "best-effort" — capture all of input/output/cache so per-run
+        # token logging and the cost calibration loop see the true root cost.
         self.model_call_counts: dict[str, int] = defaultdict(int)
         self.model_input_tokens: dict[str, int] = defaultdict(int)
         self.model_output_tokens: dict[str, int] = defaultdict(int)
         self.model_total_tokens: dict[str, int] = defaultdict(int)
+        self.model_cache_creation_tokens: dict[str, int] = defaultdict(int)
+        self.model_cache_read_tokens: dict[str, int] = defaultdict(int)
         # For get_last_usage compatibility
         self._last_model: str = self.model_name
+        # CostLedgerEntry.from_usage-shaped dict for the MOST RECENT completion —
+        # mirrors the workspace LlmClient contract so a per-turn ledgering hook
+        # (see run.py) can record each root reasoning turn, not just primitives.
+        self._last_usage: dict[str, int] = {}
         # Cached per-model ClaudeLlmClient instances — avoids per-call
         # ThreadPoolExecutor overhead and reuses the same SDK session per model.
         self._claude_clients: dict[str, Any] = {}
@@ -187,13 +196,25 @@ class ClaudeOauthClient(BaseLM):
             )
             if cli is not None:
                 text, usage = cli
+                in_tok = usage.get("input_tokens", 0)
+                out_tok = usage.get("output_tokens", 0)
+                cc_tok = usage.get("cache_creation_input_tokens", 0)
+                cr_tok = usage.get("cache_read_input_tokens", 0)
                 self.model_call_counts[resolved_model] += 1
-                self.model_input_tokens[resolved_model] += usage.get("input_tokens", 0)
-                self.model_output_tokens[resolved_model] += usage.get("output_tokens", 0)
-                self.model_total_tokens[resolved_model] += (
-                    usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-                )
+                self.model_input_tokens[resolved_model] += in_tok
+                self.model_output_tokens[resolved_model] += out_tok
+                self.model_total_tokens[resolved_model] += in_tok + out_tok
+                self.model_cache_creation_tokens[resolved_model] += cc_tok
+                self.model_cache_read_tokens[resolved_model] += cr_tok
                 self._last_model = resolved_model
+                # CostLedgerEntry.from_usage-shaped — the per-turn ledger hook reads this.
+                self._last_usage = {
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_creation_input_tokens": cc_tok,
+                    "cache_read_input_tokens": cr_tok,
+                    "reasoning_tokens": 0,
+                }
                 if (text or "").strip():
                     return text
                 return _empty_root_turn_fallback()
