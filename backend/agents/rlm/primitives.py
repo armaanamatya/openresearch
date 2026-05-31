@@ -2434,6 +2434,33 @@ def _resolve_distributed_launch(
     if _os.environ.get("REPROLAB_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
         logger.info("_resolve_distributed_launch[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
         return commands
+    # RL-scaffold sentinel — the scaffold owns its own launch orchestration
+    # (vLLM server + accelerate trainer partition), so the harness rewriter
+    # must NOT wrap the launch command again.  Three detection surfaces:
+    #   1. Command-line marker: a command containing '# reprolab:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.reprolab_rl_scaffold exists
+    #   3. Environment var:     REPROLAB_RL_SCAFFOLD=1
+    if _os.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — REPROLAB_RL_SCAFFOLD=1 "
+            "(scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if (code_dir / ".reprolab_rl_scaffold").exists():
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — .reprolab_rl_scaffold "
+            "sentinel file present (scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if any("# reprolab:rl-scaffold-owns-launch" in cmd for cmd in commands):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — "
+            "'# reprolab:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            run_id,
+        )
+        return commands
 
     out: list[str] = []
     changed = False
@@ -4352,6 +4379,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             # Paper-hint invariant gate (2026-05-29): thread invariants from
             # RunContext so the deterministic regex gate fires in-loop.
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
+            # Model-load-bug fix (2026-05-31): pass the operator's skip list so
+            # requested models whose load failed are not silently excluded from
+            # the rubric (only truly operator-skipped models are excluded).
+            operator_skip_models=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or []
+            ),
         )
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable

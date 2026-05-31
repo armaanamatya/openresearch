@@ -1033,6 +1033,72 @@ _RUBRIC_GUARD_BLOCK = (
 )
 
 
+# ---------------------------------------------------------------------------
+# RL Scaffold guidance block (opt-in: REPROLAB_RL_SCAFFOLD=1)
+# ---------------------------------------------------------------------------
+_RL_SCAFFOLD_BLOCK = (
+    "\n\nRL SCAFFOLD — harness-owned GRPO + vLLM training scaffold:\n"
+    "The harness provides a copyable RL-training scaffold in\n"
+    "``backend/agents/rlm/rl_scaffold.py``.  Use it instead of writing raw\n"
+    "FSDP/generate() loops — it owns the distributed-RL infra so you only\n"
+    "inject the paper-specific reward function and custom-loss term.\n"
+    "\n"
+    "STEP 1 — copy the scaffold verbatim:\n"
+    "  Paste ``backend/agents/rlm/rl_scaffold.py`` as ``code/rl_scaffold.py``.\n"
+    "  Zero non-stdlib deps at module top-level; trl/vllm are lazy-imported.\n"
+    "\n"
+    "STEP 2 — emit a thin train.py:\n"
+    "  from rl_scaffold import GRPOScaffold, opsd_custom_loss_term, BETA, LAMBDA\n"
+    "  scaffold = GRPOScaffold(\n"
+    "      model_name=\"Qwen/Qwen3-1.7B\",  # paper's actual model\n"
+    "      ref_model_name=\"Qwen/Qwen3-1.7B\",  # teacher = student (self-distill)\n"
+    "      reward_fn=my_reward_fn,\n"
+    "      custom_loss_term=opsd_custom_loss_term,  # SDAR OPSD; None = plain GRPO\n"
+    "      vllm_server_host=os.environ.get('REPROLAB_VLLM_HOST', 'localhost'),\n"
+    "      vllm_server_port=int(os.environ.get('REPROLAB_VLLM_PORT', '8000')),\n"
+    "      num_trainer_gpus=int(os.environ.get('REPROLAB_TRAINER_GPUS', '1')),\n"
+    "      output_dir=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'rl_output'),\n"
+    "      metrics_path=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'metrics.json'),\n"
+    "      model_tag='qwen3_1.7b',\n"
+    "  )\n"
+    "  scaffold.train(dataset)\n"
+    "  scaffold.finalize_metrics(\n"
+    "      final_eval={...},\n"
+    "      required_keys=['per_model', 'baselines_vs_sdar'],\n"
+    "      omitted=['alfworld', 'webshop', 'qwen2.5_7b'],\n"
+    "  )\n"
+    "\n"
+    "STEP 3 — emit rl_launch.py from ``rl_scaffold.RL_LAUNCH_TEMPLATE``:\n"
+    "  This orchestrator starts the vLLM server on GPU 0, then runs\n"
+    "  ``accelerate launch train.py`` on GPUs 1..N (FSDP1, bf16).\n"
+    "  When <= 1 GPU is visible it runs train.py directly.\n"
+    "\n"
+    "STEP 4 — commands.json entry MUST begin with the sentinel comment:\n"
+    "  # reprolab:rl-scaffold-owns-launch\n"
+    "  python rl_launch.py\n"
+    "  (This suppresses the harness's generic accelerate-launch rewriter,\n"
+    "  which would conflict with the scaffold's 2-tier launch.)\n"
+    "\n"
+    "STEP 5 — pin deps in requirements.txt:\n"
+    "  trl==0.16.1\n"
+    "  vllm==0.7.3\n"
+    "  torch==2.5.1+cu121\n"
+    "  fastapi uvicorn pydantic requests\n"
+    "\n"
+    "SDAR OPSD constants (literal — rubric reads the source):\n"
+    "  BETA = 10.0   # gate sharpness: g_t = sigmoid(BETA * delta_t)\n"
+    "  LAMBDA = 0.1  # composite:     total = grpo_loss + LAMBDA * opsd_loss\n"
+    "  Gate is DETACHED (stop-grad): g_t = sigmoid(...).detach()\n"
+    "  Divergence: reverse-KL (mode-seeking).\n"
+    "\n"
+    "Required SDAR metrics keys (emit in metrics.json, per_model shape):\n"
+    "  alfworld_success_rate_per_model, searchqa_em_per_model,\n"
+    "  webshop_score_per_model, per_model, baselines_vs_sdar, omitted.\n"
+    "  Smallest-two scope: Qwen3-1.7B + Qwen2.5-3B, Search-QA only.\n"
+    "  Declare ALFWorld / WebShop / 7B in omitted[].\n"
+)
+
+
 _EAGER_METRICS_BLOCK = (
     "\n\nEAGER METRICS EMISSION — always-on:\n"
     "Write `metrics.json` AS YOU GO, not just at the end.  Whenever a sub-experiment "
@@ -1841,6 +1907,15 @@ def _compute_constraint_guidance(
     # whose text becomes the next iteration's repair_context — a loud, precise
     # failure signal before the grader runs.
     guidance += _RUBRIC_GUARD_BLOCK
+
+    # 5.85. RL scaffold guidance — opt-in (REPROLAB_RL_SCAFFOLD=1).
+    # Tells the agent to copy rl_scaffold.py, write a thin train.py with
+    # GRPOScaffold + the OPSD custom-loss term, emit rl_launch.py, and pin
+    # trl/vllm/torch in requirements.txt.
+    # DEFAULT OFF → not injected → guidance byte-identical to today.
+    import os as _os_scaffold
+    if _os_scaffold.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+        guidance += _RL_SCAFFOLD_BLOCK
 
     # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
     # metrics_shape, bind the agent to those exact paths. Injected after the
