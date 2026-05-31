@@ -53,6 +53,10 @@ class RLMFinalReport(BaseModel):
     # this exact record (closing metric → experiment record → metrics.json hash).
     experiment_run_id: str | None = None
     metrics_sha256: str | None = None
+    # P3 §5b: the root's self-attested metrics — NON-AUTHORITATIVE. baseline_metrics
+    # is projected from the canonical experiment artifact; this preserves what the
+    # root reported for diffing/diagnostics, never fed to the scorer/leaderboard.
+    reported_metrics: dict = Field(default_factory=dict)
     paper_claims: dict = Field(default_factory=dict)
     # ── paper_claims coercer ──
     # The root model occasionally returns paper_claims as a LIST of claim
@@ -707,24 +711,45 @@ def build_final_report(
     # authoritative ledger count, then enforce the honesty invariant: a result
     # section must be backed by the primitive that produces it.
     trace = _authoritative_primitive_trace(ctx)
-    baseline_metrics = parsed.get("baseline_metrics") or {}
     summary = str(parsed.get("reproduction_summary") or "")
-    if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
-        # The root reported metrics it never measured — run_experiment never
-        # ran. Drop them and say so; downgrade an over-claimed verdict.
-        logger.warning(
-            "report: dropping %d unbacked baseline metric(s) — run_experiment "
-            "never ran (root-fabricated)",
-            len(baseline_metrics),
-        )
-        baseline_metrics = {}
-        summary = (
-            summary
-            + "\n\n[honesty guard] Baseline metrics were dropped: the "
-            "run_experiment primitive never ran, so no metrics were measured."
-        ).strip()
-        if verdict == "reproduced":
-            verdict = "partial"
+    # §5b metric projection (REPROLAB_METRIC_PROVENANCE, default true): the final
+    # baseline_metrics are PROJECTED from the canonical experiment artifact — the
+    # root no longer types ground-truth numbers (mirrors RDR, controller.py:1184
+    # `baseline_metrics=exp.get("metrics")`). The root's self-attested numbers are
+    # preserved non-authoritatively in `reported_metrics` (never scored).
+    reported_metrics = parsed.get("baseline_metrics") or {}
+    canonical_record = _latest_successful_experiment_record(ctx.project_dir)
+    if _metric_provenance_enabled() and canonical_record is not None:
+        # The record's existence proves run_experiment ran successfully, so the
+        # honesty drop-guard below is moot — project the measured metrics.
+        baseline_metrics = canonical_record.get("metrics") or {}
+        if reported_metrics and reported_metrics != baseline_metrics:
+            summary = (
+                summary
+                + "\n\n[metric provenance] baseline_metrics projected from the "
+                f"canonical experiment artifact (experiment_run_id="
+                f"{canonical_record.get('experiment_run_id')}); root-reported "
+                "numbers preserved non-authoritatively in reported_metrics."
+            ).strip()
+    else:
+        # Fallback (provenance disabled OR no successful experiment): keep the
+        # existing honesty guard — a metric the root typed but run_experiment
+        # never backed is dropped, and an over-claimed verdict downgraded.
+        baseline_metrics = reported_metrics
+        if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
+            logger.warning(
+                "report: dropping %d unbacked baseline metric(s) — run_experiment "
+                "never ran (root-fabricated)",
+                len(baseline_metrics),
+            )
+            baseline_metrics = {}
+            summary = (
+                summary
+                + "\n\n[honesty guard] Baseline metrics were dropped: the "
+                "run_experiment primitive never ran, so no metrics were measured."
+            ).strip()
+            if verdict == "reproduced":
+                verdict = "partial"
 
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(
@@ -812,12 +837,15 @@ def build_final_report(
             _r["best_of_run"] = True
             kwargs["rubric"] = _r
 
-    # P2 back-link (invariant 2): point the report at the canonical experiment
-    # record + its metrics.json hash so a final metric traces to the exact
-    # artifact bytes. P3 will project baseline_metrics from this same record.
+    # P2/P3 provenance: back-link the report to the canonical experiment record +
+    # its metrics.json hash (invariant 2 trace), and preserve the root's
+    # non-authoritative self-attested numbers. `_canonical_experiment_provenance`
+    # selects the same latest-successful record `baseline_metrics` was projected
+    # from above (§5b), so the back-link and the projected metrics name one run.
     _prov = _canonical_experiment_provenance(ctx.project_dir)
     kwargs["experiment_run_id"] = _prov.get("experiment_run_id")
     kwargs["metrics_sha256"] = _prov.get("metrics_sha256")
+    kwargs["reported_metrics"] = reported_metrics
 
     return RLMFinalReport(**kwargs)
 
@@ -830,19 +858,19 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-def _canonical_experiment_provenance(project_dir: Path) -> dict:
-    """P2 back-link: return ``{experiment_run_id, metrics_sha256}`` for the
-    canonical ``experiment_runs.jsonl`` record so the final report points back to
-    the exact artifact behind its metrics (invariant 2). Canonical = the latest
-    SUCCESSFUL record (deterministic). ``{}`` when none / unreadable — a run with
-    no successful experiment has no metric to trace. P3 projects baseline_metrics
-    from this same record."""
+def _latest_successful_experiment_record(project_dir: Path) -> dict | None:
+    """The canonical experiment record: the latest SUCCESSFUL
+    ``experiment_runs.jsonl`` row carrying an ``experiment_run_id`` (deterministic;
+    ``None`` when none / unreadable). Both the P3 §5b ``baseline_metrics``
+    projection and the P2 ``final_report`` provenance back-link derive from this
+    one record, so they always agree on "which run produced the reported result."
+    """
     import json
 
     exp_log = project_dir / "experiment_runs.jsonl"
     if not exp_log.exists():
-        return {}
-    successful: list[dict] = []
+        return None
+    chosen: dict | None = None
     try:
         for line in exp_log.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -853,16 +881,39 @@ def _canonical_experiment_provenance(project_dir: Path) -> dict:
             except Exception:  # noqa: BLE001 — tolerate a torn/partial line
                 continue
             if isinstance(rec, dict) and rec.get("success") and rec.get("experiment_run_id"):
-                successful.append(rec)
+                chosen = rec  # keep the latest successful
     except OSError:
+        return None
+    return chosen
+
+
+def _canonical_experiment_provenance(project_dir: Path) -> dict:
+    """P2 back-link: return ``{experiment_run_id, metrics_sha256}`` for the
+    canonical record (see :func:`_latest_successful_experiment_record`) so the
+    final report points back to the exact artifact behind its metrics (invariant
+    2). ``{}`` when none — a run with no successful experiment has no metric to
+    trace."""
+    chosen = _latest_successful_experiment_record(project_dir)
+    if chosen is None:
         return {}
-    if not successful:
-        return {}
-    chosen = successful[-1]
     out: dict = {"experiment_run_id": chosen["experiment_run_id"]}
     if chosen.get("metrics_sha256"):
         out["metrics_sha256"] = chosen["metrics_sha256"]
     return out
+
+
+def _metric_provenance_enabled() -> bool:
+    """``REPROLAB_METRIC_PROVENANCE`` (default true): project ``baseline_metrics``
+    from the canonical experiment artifact instead of trusting root-typed values
+    (§5b). Disable to fall back to the prior root-attested + honesty-guard path."""
+    import os
+
+    return os.environ.get("REPROLAB_METRIC_PROVENANCE", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 # ---------------------------------------------------------------------------
