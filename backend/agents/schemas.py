@@ -114,10 +114,43 @@ class PaperClaimMap(BaseModel):
             return v
         return [{key: item} if isinstance(item, str) else item for item in v]
 
+    @staticmethod
+    def _stringify_claim_value(val: Any) -> str:
+        """Coerce one claim-dict value to a string (claims is list[dict[str,str]]).
+
+        LLM output (esp. gpt-5) routinely emits non-string values — ``dataset:
+        null``, ``dataset: ["ALFWorld","WebShop"]``, numbers — which used to die
+        with ``claims.0.dataset: Input should be a valid string`` and kill the
+        whole run at implement_baseline's input validation (2026-05-30). Coerce
+        rather than reject: None→"", list/tuple→comma-joined, dict→JSON, else str.
+        """
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val
+        if isinstance(val, (list, tuple)):
+            return ", ".join(str(x) for x in val)
+        if isinstance(val, dict):
+            import json as _json
+            try:
+                return _json.dumps(val, ensure_ascii=False, sort_keys=True)
+            except Exception:  # noqa: BLE001
+                return str(val)
+        return str(val)
+
     @field_validator("claims", mode="before")
     @classmethod
     def _coerce_claims(cls, v: Any) -> Any:
-        return cls._coerce_str_items(v, "claim")
+        v = cls._coerce_str_items(v, "claim")
+        if not isinstance(v, list):
+            return v
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, dict):
+                out.append({str(k): cls._stringify_claim_value(val) for k, val in item.items()})
+            else:
+                out.append(item)
+        return out
 
     @field_validator("datasets", mode="before")
     @classmethod

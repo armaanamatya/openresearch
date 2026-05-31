@@ -119,18 +119,24 @@ else
     echo "[start.sh] Runpod preflight not required for sandbox=${OPENRESEARCH_DEFAULT_SANDBOX}."
 fi
 
-# 2b. Docker preflight: build_environment runs a real local `docker build`
-# for every sandbox EXCEPT local (including runpod — the pod boots its own
-# image, but the local build still hard-requires a daemon). Catch the missing
-# daemon here with an actionable message instead of a mid-run
-# SandboxRuntimeError(backend_unavailable).
-if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
-    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-        echo "[start.sh] Docker daemon not reachable, but sandbox=${OPENRESEARCH_DEFAULT_SANDBOX} requires one for build_environment."
-        echo "[start.sh] Start Docker Desktop/OrbStack, or set OPENRESEARCH_DEFAULT_SANDBOX=local, or bypass with START_SKIP_PREFLIGHT=1."
-        exit 1
+# 2b. Docker daemon preflight. build_environment does a LOCAL `docker build` only
+# for sandbox `docker` and `auto`/unknown (LocalDockerBackend). Both `local` and
+# `runpod` short-circuit build_environment to a no-op — runpod boots its own pod
+# image over SSH — so neither needs a daemon. A down daemon makes only docker/auto
+# runs fail at build_environment with backend_unavailable, so surface it at startup
+# for those modes. Warn (don't refuse): a per-run --sandbox override changes the
+# requirement, and the dashboard can outlive a daemon restart.
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "runpod" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[start.sh] WARNING: 'docker' CLI not found — runs with sandbox in {docker,auto} will fail at build_environment. Install OrbStack/Docker, or use --sandbox local/runpod."
+    elif ! docker info >/dev/null 2>&1; then
+        echo "[start.sh] WARNING: Docker daemon not reachable (sandbox=${OPENRESEARCH_DEFAULT_SANDBOX})."
+        echo "[start.sh]          build_environment runs a LOCAL docker build for sandbox docker/auto —"
+        echo "[start.sh]          so those runs will fail with backend_unavailable until it is up."
+        echo "[start.sh]          Start OrbStack/Docker Desktop (verify: 'docker info'), or run with --sandbox local/runpod."
+    else
+        echo "[start.sh] Docker daemon reachable."
     fi
-    echo "[start.sh] Docker daemon reachable."
 fi
 
 # 3. Boot the API.

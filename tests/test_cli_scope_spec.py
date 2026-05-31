@@ -91,14 +91,14 @@ class TestEndToEndComposition:
         operator = ScopeSpec()  # empty operator
         effective = operator.merge_with_paper_default(hint.default_scope)
         assert len(effective.models) == 3
-        assert "Qwen3-1.7B-Instruct" in effective.models
+        assert "Qwen3-1.7B" in effective.models
 
     def test_operator_narrows_sdar(self):
         from backend.agents.prompts.paper_hints import lookup_paper_hint
         hint = lookup_paper_hint("2605.15155")
-        operator = ScopeSpec(models=["Qwen3-1.7B-Instruct"])  # operator picks one
+        operator = ScopeSpec(models=["Qwen3-1.7B"])  # operator picks one
         effective = operator.merge_with_paper_default(hint.default_scope)
-        assert effective.models == ["Qwen3-1.7B-Instruct"]
+        assert effective.models == ["Qwen3-1.7B"]
         # datasets + seeds fall back to paper defaults
         assert len(effective.datasets) == 3
         assert effective.seeds == [42, 43, 44]

@@ -1655,6 +1655,26 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # override replaces the source-derived id *after* registration so the event-
     # store aggregate (keyed by the source-derived id) is still created correctly.
     if getattr(args, "project_id", None):
+        # ISSUE-1 (2026-05-30, ported): the override may only *mirror* the
+        # source-derived id. The REST API spawns the CLI with --project-id set
+        # to the SAME deterministic id (project_id_for(source)) so the CLI
+        # writes to the dir the API watches — that is a safe no-op. An
+        # ARBITRARY value (e.g. the old runbook's `sdar_<ts>`) repoints
+        # project_id AFTER register_project keyed the event-store aggregate by
+        # the source-derived id, so the very next fetch_paper(project_id=...)
+        # misses the aggregate -> UnknownProject and the run dies at ingest.
+        # Reject the mismatch with an actionable message rather than failing
+        # opaquely three steps later.
+        if args.project_id != project_id:
+            print(
+                f"             ERROR: --project-id={args.project_id!r} does not match the "
+                f"source-derived project id {project_id!r}. The override may only mirror the "
+                f"source-derived id (the REST API passes the same deterministic id); an "
+                f"arbitrary value breaks ingest (fetch_paper -> UnknownProject). "
+                f"Omit --project-id to use the source-derived id.",
+                file=sys.stderr,
+            )
+            return 1
         project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
     # STAB-3: register the in-flight run so a SIGTERM/SIGHUP marks it "killed".

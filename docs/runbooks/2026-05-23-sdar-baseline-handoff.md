@@ -55,7 +55,10 @@ OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="SCOPE: reproduce SDAR using ONLY the two S
   reverted default to cuda-devel.
 - **claude-oauth root model** — works fine on RunPod but is "not paper-validated"
   per CLAUDE.md (warning is informational; quality may be lower than
-  Featherless Qwen3-Coder).
+  Featherless Qwen3-Coder). **As of 2026-05-31 it is the ONLY working root** —
+  the `.env` OpenAI key is out of quota (see the 2026-05-31 attempt below), so
+  the gpt-5 root and the gpt-5-mini accelerator are both dead until OpenAI is
+  topped up.
 
 ## Open follow-ups (not done this cycle)
 
@@ -177,4 +180,30 @@ Secondary: BUG-LR-014 — the first CLI attempt died at iter 0 with a 401 becaus
 Full forensics + fix designs: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
 
 **BUG-LR-011 + BUG-LR-012 + BUG-LR-013 + BUG-LR-014 + BUG-LR-015 resolved in `271df91`.** The rerun command above is now safe — same env vars, same flags. No `env -u` prefix needed (the boot-time validator will warn if a shadow is detected).
+
+---
+
+## 2026-05-31 attempt — OpenAI quota exhausted → pivot to claude-oauth
+
+Project: `prj_09047604e591d969` (same arxiv 2605.15155). Branch `feat/rlm-wedge-hardening`.
+
+**Pre-work merged this session:**
+- Merged Armaan's `82e9806` (FROM-line normalization, no-experiment guard BUG-NEW-046, RunPod build short-circuit) into the branch. It independently re-implements the same `build_environment` runpod short-circuit as local `875995c`; the auto-merge left a harmless duplicate (the first `if _sb_key == "runpod"` returns first, so the second is dead code — `env_id` can never reach the pod image because `RunpodBackend` line 155 always uses `self.image_name`).
+- Committed `42b03b6`: **canonical Qwen3-1.7B id fix** — `Qwen/Qwen3-1.7B-Instruct` 401s (does not exist); the real repo is `Qwen/Qwen3-1.7B` (Qwen3 post-trained models drop `-Instruct`; only Qwen2.5 keeps it). Fixed in `docs/papers/2605.15155.yaml` (the path the pre-flight fidelity guard enforces verbatim) + `backend/agents/prompts/paper_hints.py`. The wrong id was a hollow-success generator: every run passed preflight then 401'd at runtime.
+
+**Blocker hit:** a `--model gpt-5` run wedged in `generate_rubric_tree`, backoff-retrying `429 {code: insufficient_quota, "You exceeded your current quota — check your plan and billing"}`. The OpenAI key is out of quota. GOTCHA: a `curl GET /v1/models` connectivity check returned **HTTP 200** anyway (listing doesn't consume quota) — a false positive that masked the dead key. Both OpenAI surfaces (gpt-5 root + `REPROLAB_ACCELERATOR=endpoint` gpt-5-mini) are therefore dead. No `FEATHERLESS_API_KEY` / `AZURE_OPENAI_API_KEY` present.
+
+**Working launch while OpenAI is dry** (`--model claude-oauth`, subscription on both surfaces):
+```bash
+unset OPENAI_API_KEY ANTHROPIC_API_KEY REPROLAB_FORCE_SANDBOX   # OAuth on both surfaces
+export REPROLAB_RUNPOD_API_KEY="$(grep -E '^REPROLAB_RUNPOD_API_KEY=' .env | head -1 | cut -d= -f2-)"
+export REPROLAB_ACCELERATOR=off                                  # accel needs OpenAI — off
+export REPROLAB_DEFAULT_SANDBOX=runpod REPROLAB_DYNAMIC_GPU=true REPROLAB_VRAM_OVERRIDE_GB=38
+caffeinate -ims .venv/bin/python -m backend.cli reproduce 2605.15155 \
+  --mode rlm --sandbox runpod --model claude-oauth --paper-hint 2605.15155 \
+  --vram-gb 38 --max-wall-clock 21600 --max-pod-seconds 21600 --max-usd 30
+```
+Cleared the 429 (zero on the oauth run); pipeline emits an advisory `root_model_unvalidated` warning (harmless). Tradeoff: all-subscription burns the Max cap. Expect a 60-180s "no signal Xs" chip at start (claude-oauth is slower than the gpt-5 path the chip was calibrated for — see `known-issues-and-monitoring.md` §1b/§3.4, board rows 24-25). Monitor with `MONITOR_INTERVAL=90 bash scripts/loops/service_monitor.sh` (logs run `evgap` to `logs/service-validation/operator.log`).
+
+Still-open from prior cycle: `run_experiment` greenlights all-models-failed (`success` bool ignores `per_model.*.status`) — see the project memory file.
 

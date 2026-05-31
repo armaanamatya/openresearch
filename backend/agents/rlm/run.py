@@ -131,6 +131,8 @@ def _watchdog_hard_ceiling_s() -> float:
         return _WATCHDOG_HARD_CEILING_DEFAULT_S
 
 
+_WATCHDOG_POLL_S = 30.0       # wall-clock poll cadence (sleep-robust; see _arm_watchdog)
+
 _ROOT_PROMPT = (
     "Reproduce the research paper offloaded in the REPL variable `context`. "
     "Navigate it with REPL code and sub-calls (llm_query / rlm_query) over slices "
@@ -958,12 +960,19 @@ def _arm_watchdog(
     worker thread.
 
     ``iteration_count`` is a zero-arg callable returning the iterations done so
-    far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
-    it on normal completion. When ``deadline_s`` is ``None`` (no explicit
+    far.  Returns a handle exposing ``.cancel()`` — the caller must call it on
+    normal completion. When ``deadline_s`` is ``None`` (no explicit
     ``--max-wall-clock``), the watchdog falls back to the always-on hard-ceiling
     backstop (``_watchdog_hard_ceiling_s``) so a wedged/hung run still ships a
     partial report; it returns ``None`` (fully bypassed) only when that backstop
     is disabled via ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0``.
+
+    Sleep-robust (2026-05-30, ported): a ``threading.Timer`` waits on a
+    MONOTONIC clock that PAUSES during macOS system sleep, so a closed lid
+    stretched a 2h deadline to ~5h before the timer fired. This polls real
+    wall-clock ``time.time()`` (which counts sleep) against an absolute
+    deadline, so on wake it fires within one poll interval regardless of how
+    long the machine slept.
     """
     if deadline_s is None:
         ceiling = _watchdog_hard_ceiling_s()
@@ -997,10 +1006,38 @@ def _arm_watchdog(
             exit_code=_WATCHDOG_EXIT_CODE,
         )
 
-    timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
-    timer.daemon = True
-    timer.start()
-    return timer
+    import time as _time
+    fire_at = _time.time() + deadline_s + _WATCHDOG_GRACE_S
+    stop_event = threading.Event()
+
+    def _poll() -> None:
+        # stop_event.wait() also waits on a monotonic clock, but only for one
+        # poll interval at a time — on wake the in-flight wait finishes within
+        # <= _WATCHDOG_POLL_S of real post-wake time, then the time.time() check
+        # sees the full elapsed wall clock and fires.
+        while not stop_event.wait(_WATCHDOG_POLL_S):
+            if _time.time() >= fire_at:
+                _fire()
+                return
+
+    threading.Thread(
+        target=_poll, name="rlm-wallclock-watchdog", daemon=True
+    ).start()
+
+    class _WatchdogHandle:
+        """Cancel handle for the polling watchdog. ``interval`` mirrors the
+        old ``threading.Timer.interval`` (armed delay in seconds) so callers
+        and tests can introspect what was armed."""
+
+        __slots__ = ("interval",)
+
+        def __init__(self, interval: float) -> None:
+            self.interval = interval
+
+        def cancel(self) -> None:
+            stop_event.set()
+
+    return _WatchdogHandle(deadline_s + _WATCHDOG_GRACE_S)
 
 
 def _install_sigterm_finalizer(

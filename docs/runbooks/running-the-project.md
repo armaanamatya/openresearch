@@ -26,11 +26,11 @@ See `CLAUDE.md` → "RLM auth" for the full credential matrix and gotchas
 |---|---|---|---|
 | `local` | **no** | host GPUs via `OPENRESEARCH_GPU_DEVICE_IDS` | `build_environment` is a no-op; experiments run as host subprocesses |
 | `docker` | **yes** | local | real `docker build`; network/mem/CPU capped |
-| `runpod` (repo default) | **yes** (for the local build, currently wasted — rough edge) | remote pod via SSH | pod boots `OPENRESEARCH_RUNPOD_IMAGE` (`cuda-devel` default); `OPENRESEARCH_RUNPOD_API_KEY` + SSH key required |
+| `runpod` (repo default) | **no** (build_environment short-circuits — ported 2026-06-09) | remote pod via SSH | pod boots `OPENRESEARCH_RUNPOD_IMAGE` (`cuda-devel` default); `OPENRESEARCH_RUNPOD_API_KEY` + SSH key required |
 | `auto` | yes | resolved | picks docker/runpod by availability |
 
-`start.sh` preflight-checks `docker info` whenever the sandbox is not `local`
-(bypass `START_SKIP_PREFLIGHT=1`).
+`start.sh` preflight-warns on `docker info` for the `docker`/`auto` sandboxes
+(non-fatal; bypass `START_SKIP_PREFLIGHT=1`). `local` and `runpod` need no daemon.
 
 ## Troubleshooting
 

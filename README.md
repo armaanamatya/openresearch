@@ -104,11 +104,10 @@ flowchart TD
 - Python >= 3.11
 - Node.js >= 20.19 (< 21) or >= 22.12
 - At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
-- A Docker daemon (Docker Desktop / OrbStack) — required for every sandbox
-  except `local`, *including* the default `runpod` (its `build_environment`
-  step runs a local `docker build`). No Docker yet? Set
-  `OPENRESEARCH_DEFAULT_SANDBOX=local` in `.env` (what `.env.example` ships)
-  or pass `--sandbox local` for your first run.
+- A Docker daemon (Docker Desktop / OrbStack) — required only for the
+  `docker`/`auto` sandboxes (`local` and `runpod` build no local image; the
+  pod boots its own). No Docker yet? `local` and `runpod` work without it —
+  `.env.example` ships `OPENRESEARCH_DEFAULT_SANDBOX=local`.
 
 ### Setup
 
