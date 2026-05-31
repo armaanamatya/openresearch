@@ -158,14 +158,33 @@ def main() -> int:
     else:
         _log(f"warn: no paper-text override at {_paper_text}; relying on live parse")
 
+    # Cap flags are OMITTED when their env knob is a sentinel (none/off/0/empty) →
+    # backend.cli defaults to None = UNLIMITED (budgets bind only when not-None;
+    # cli.py:619). A plain launch keeps the historical 14400s/$25/20-iter caps; set
+    # SDAR_MAX_WALL_CLOCK=none (etc.) for a truly uncapped run that can finish.
+    def _cap(flag: str, raw: str) -> str:
+        return "" if str(raw).strip().lower() in ("none", "off", "0", "") else f"{flag} {raw} "
+
+    if str(max_iters).strip().lower() in ("none", "off", "0", ""):
+        env.pop("REPROLAB_MAX_RLM_ITERATIONS", None)  # belt-and-suspenders: no inherited cap
+
+    extra = (
+        f"--paper-hint 2605.15155 --scope-spec {REPO / scope_spec} "
+        + _cap("--max-wall-clock", max_wall)
+        + _cap("--max-usd", max_usd)
+        + _cap("--max-rlm-iterations", max_iters)
+        + f"--execution-mode {exec_mode} --seed 42"
+    )
+    _caps_desc = ", ".join(
+        f"{n}={v}" for n, v in (("wall", max_wall), ("usd", max_usd), ("iters", max_iters))
+    )
+    _log(f"caps: {_caps_desc}  (sentinel none/off/0 → uncapped)")
+
     cmd = [
         str(VENV_PY), str(REPO / "scripts/batch_reproduce.py"), "2605.15155",
         "--gpus-per-run", str(run_n), "--sandbox", "local", "--model", "claude-oauth",
         "--mode", "rlm", "--runs-root", str(REPO / "runs"),
-        "--extra",
-        f"--paper-hint 2605.15155 --scope-spec {REPO / scope_spec} "
-        f"--max-wall-clock {max_wall} --max-usd {max_usd} "
-        f"--max-rlm-iterations {max_iters} --execution-mode {exec_mode} --seed 42",
+        "--extra", extra,
     ]
     _log(f"run: launching batch_reproduce --gpus-per-run {run_n} (log → {LAUNCH_LOG})")
     rc = 1
