@@ -191,6 +191,50 @@ _MAX_FILE_BYTES = 6 * 1024          # 6 KB per file
 _MAX_TOTAL_EVIDENCE_BYTES = 40 * 1024  # 40 KB total
 
 
+def _latest_metrics_path(run_dir: Path) -> Path | None:
+    """Return the NEWEST-by-mtime metrics.json — the canonical latest experiment.
+
+    A run accumulates one ``code/outputs/<run-id>/metrics.json`` per
+    ``run_experiment`` call (including failed/OOM/superseded attempts), plus an
+    optional top-level ``code/metrics.json``. Selecting the lexicographically
+    first (the old behaviour) reads an ARBITRARY STALE result — e.g. a
+    SDAR-loses-to-GRPO attempt that was later improved — so result-match and
+    experiment leaves are graded against a superseded outcome. Selecting by
+    mtime reads the actual most-recent result. Returns ``None`` when no
+    metrics.json exists.
+    """
+    cands: list[Path] = []
+    outputs = run_dir / "code" / "outputs"
+    if outputs.exists():
+        cands.extend(outputs.rglob("metrics.json"))
+    top = run_dir / "code" / "metrics.json"
+    if top.exists():
+        cands.append(top)
+    if not cands:
+        return None
+
+    # Prefer the NEWEST metrics that actually carries RESULTS — a real
+    # experiment populates per_model and/or comparison. An in-progress or
+    # just-created experiment dir (the run keeps iterating) can be newest by
+    # mtime yet empty; selecting it would lose both the result AND the scope
+    # declaration. Rank (has_results, mtime) so an empty newest loses to the
+    # most recent results-bearing metrics; fall back to newest-overall.
+    def _rank(p: Path) -> tuple[int, float]:
+        has_results = False
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
+        except Exception:
+            has_results = False
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            mt = 0.0
+        return (1 if has_results else 0, mt)
+
+    return max(cands, key=_rank)
+
+
 def _gather_evidence(run_dir: Path) -> str:
     """Gather bounded reproduction evidence from a run directory."""
     parts: list[str] = []
@@ -216,6 +260,23 @@ def _gather_evidence(run_dir: Path) -> str:
             total += len(text)
         except Exception as exc:
             logger.warning("Could not read final_report.json: %s", exc)
+
+    # Latest experiment metrics.json — the actual run RESULTS (per-model scores,
+    # the SDAR-vs-GRPO comparison, reward/gate curves). Without this the grader
+    # sees only the CODE, never the OUTCOME, so result-match / experiment-execution
+    # / data-fidelity leaves score ~0 even when the run succeeded and (e.g.) SDAR
+    # beat GRPO. metrics.json is not a priority code extension, so it would
+    # otherwise never reach the grader. Read the NEWEST experiment's metrics.
+    metrics_path = _latest_metrics_path(run_dir)
+    if metrics_path is not None:
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            body = json.dumps(metrics, indent=2)[:_MAX_FILE_BYTES]
+            text = f"=== latest experiment metrics.json (measured run results) ===\n{body}\n"
+            parts.append(text)
+            total += len(text)
+        except Exception as exc:
+            logger.warning("Could not read latest metrics.json: %s", exc)
 
     # code/ directory listing
     code_dir = run_dir / "code"
@@ -329,10 +390,13 @@ def _detect_data_unavailable_leaves(
     # Signal 1: data_load_failures from the most recent metrics.json
     failed_datasets: list[str] = []
     metrics_data: dict[str, Any] = {}
-    # Search for metrics.json under run_dir/code/outputs/ (agent output location)
-    for mpath in sorted((run_dir / "code" / "outputs").rglob("metrics.json")) if (run_dir / "code" / "outputs").exists() else []:
+    # Read the NEWEST experiment's metrics.json (not the lexicographically-first,
+    # which is an arbitrary stale/superseded per-experiment dir — see
+    # _latest_metrics_path).
+    _mpath = _latest_metrics_path(run_dir)
+    if _mpath is not None:
         try:
-            metrics_data = json.loads(mpath.read_text(encoding="utf-8"))
+            metrics_data = json.loads(_mpath.read_text(encoding="utf-8"))
             for entry in metrics_data.get("data_load_failures") or []:
                 if isinstance(entry, dict) and entry.get("dataset"):
                     failed_datasets.append(str(entry["dataset"]))
@@ -340,7 +404,6 @@ def _detect_data_unavailable_leaves(
                     failed_datasets.append(entry)
         except Exception:
             pass
-        break  # use the first (lexicographically earliest) metrics.json only
 
     # Signal 1b: failed / skipped MODELS. Graceful degradation (2026-05-30 user
     # mandate) excludes a model's leaves from the rubric — numerator AND
