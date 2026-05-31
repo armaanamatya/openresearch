@@ -47,6 +47,13 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "syntax_error",              # train.py wouldn't parse
     "scope_shape_violation",     # metrics.json missing per_model when scope demands
     "contract_violation",        # RubricContract violations only (no other class fired)
+    "silent_oom",                # exited 0 but logged a caught backward OOM (no updates)
+    "insufficient_train_steps",  # trained below the convergence floor
+    "code_bug",                  # a Python exception masked as a data_load_failure
+    "degenerate_training",       # status=ok but 0 steps / zero-variance reward (no learning)
+    "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
+    "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
+    "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
     "unknown",                   # falls-through
 )
 
@@ -106,6 +113,42 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "agent's next iteration gets the precise hint",
         "contract_violation":
             "RubricContract found gaps vs paper_targets — see contract_violations field",
+        "silent_oom":
+            "train.py caught a CUDA OOM on the backward pass and skipped the step — no "
+            "gradients applied. Reduce per-step memory (batch / rollouts / "
+            "gradient_checkpointing), shard across GPUs with torchrun+FSDP, and let OOM "
+            "fail loudly (do not catch+skip the backward pass)",
+        "insufficient_train_steps":
+            "training ran fewer optimizer steps than REPROLAB_MIN_TRAIN_STEPS — increase "
+            "epochs/steps so the model actually converges",
+        "code_bug":
+            "a dataset/env/model loader raised a Python exception (TypeError, "
+            "AttributeError, HfUriError, invalid model id, 'returned 0 rows', etc.) that "
+            "your code CAUGHT and recorded as a data_load_failure — masking a real bug as "
+            "data-unavailability. Fix the loader/parse bug named in data_load_failures; "
+            "only a genuine 404/403/licence/removed dataset is a true data failure",
+        "degenerate_training":
+            "training 'completed' but produced no learning signal — 0 optimizer steps "
+            "with status=ok, or reward with zero variance across the whole curve (so GRPO "
+            "has no advantage signal). Verify the reward is real and non-constant before "
+            "the RL loop (print zero-shot accuracy; fix answer extraction/matching), and "
+            "ensure optimizer.step() actually runs",
+        "disk_exhausted":
+            "free disk fell below REPROLAB_DISK_FLOOR_GB or an HF cache dir exceeded "
+            "REPROLAB_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
+            "+ slice datasets (never a full natural_questions-style download), use lighter "
+            "variants, or raise the floor/cap if the footprint is legitimately large",
+        "incomplete_metrics":
+            "the run exited 0 but metrics.json is a placeholder (non-terminal status, or "
+            "per_model entries empty) — NO results were measured. Train to completion and, "
+            "at the END, set a terminal status and populate per_model[<model>] with the "
+            "measured eval metric(s) (e.g. accuracy) for every model you ran",
+        "insufficient_training":
+            "the run exited 0 with metrics but finished in seconds — a SMOKE, not a real "
+            "training of the paper's models (loading real weights + the RL loop takes "
+            "minutes). A smoke must never be the scored reproduction. Run the FULL training "
+            "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
+            "completion and record the measured eval metric for every model before finalizing",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -128,6 +171,12 @@ def classify_failure(result: dict) -> tuple[str, str]:
     try:
         if result.get("success"):
             return ("ok", "")
+
+        # Respect an explicit failure_class set by a postflight (the training-health
+        # check sets silent_oom / insufficient_train_steps) — it is authoritative.
+        _preset = str(result.get("failure_class") or "")
+        if _preset and _preset in FAILURE_CLASSES and _preset != "unknown":
+            return (_preset, _suggest(_preset))
 
         err = str(result.get("error") or "")
         logs = str(result.get("logs") or "")

@@ -1009,6 +1009,10 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     if getattr(args, "vram_gb", None) is not None:
         _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+    if getattr(args, "gpu_parallelism", None) is not None:
+        _os.environ["REPROLAB_GPU_PARALLELISM"] = args.gpu_parallelism
+    if getattr(args, "accelerator", None) is not None:
+        _os.environ["REPROLAB_ACCELERATOR"] = args.accelerator
     _max_rlm_iter = getattr(args, "max_rlm_iterations", None)
     if _max_rlm_iter is not None and _max_rlm_iter > 0:
         _os.environ["REPROLAB_MAX_RLM_ITERATIONS"] = str(_max_rlm_iter)
@@ -1046,6 +1050,21 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"[paper-hint] No built-in hint for {args.paper_hint!r}; continuing without one.",
             file=sys.stderr,
         )
+
+    # Paper-hint invariants → env var so the spawned subprocess's RunContext
+    # picks them up via __post_init__ without requiring run.py changes.
+    # Serialise as a JSON array of InvariantSpec dicts.  Empty/unset when the
+    # hint has no invariants — the env var being absent is safe (RunContext
+    # __post_init__ treats a missing/empty value as "no invariants").
+    if _paper_hint_obj is not None and _paper_hint_obj.invariants:
+        import json as _json_mod
+        _os.environ["REPROLAB_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
+            [inv.model_dump() for inv in _paper_hint_obj.invariants]
+        )
+    else:
+        # No hint (or hint with empty invariants list) — ensure any stale env var
+        # from a previous run in the same process is cleared.
+        _os.environ.pop("REPROLAB_PAPER_HINT_INVARIANTS_JSON", None)
     if getattr(args, "scope_spec", None):
         print(
             f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "
@@ -1495,6 +1514,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "GPU policy for experiment sandboxes: off disables CUDA visibility; "
             "auto records intent without forcing GPUs; prefer/max request Docker GPUs when available."
+        ),
+    )
+    reproduce.add_argument(
+        "--gpu-parallelism",
+        choices=("auto", "single", "multi"),
+        default=None,
+        help=(
+            "Multi-GPU policy for the generated train.py: "
+            "auto (use multi-GPU when the paper benefits and >1 visible) | "
+            "single | multi. Default auto."
+        ),
+    )
+    reproduce.add_argument(
+        "--accelerator",
+        choices=("off", "auto", "local", "runpod", "azure", "endpoint"),
+        default=None,
+        help=(
+            "Route cheap RLM calls to a fast accelerator endpoint: "
+            "off|auto|local(vLLM on local GPUs)|runpod|azure|endpoint. Default off."
         ),
     )
     reproduce.add_argument(

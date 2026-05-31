@@ -8,6 +8,10 @@ export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
+export type DemoGpuParallelism = "auto" | "single" | "multi";
+
+export type DemoAccelerator = "off" | "auto" | "local" | "runpod" | "azure" | "endpoint";
+
 export type DemoModelChoice = string;
 
 export type DemoRunStatus =

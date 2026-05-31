@@ -57,6 +57,7 @@ class SandboxConfig(BaseModel):
     memory_limit: str | None = "4g"
     cpus: float | None = 2.0
     gpu_mode: str = "auto"
+    gpu_device_ids: tuple[str, ...] = ()  # explicit GPU UUIDs/indices to expose; () => backend default (all)
 
     def resolved_artifact_root(self) -> Path:
         return self.artifact_root or self.project_root / "artifacts"

@@ -19,7 +19,7 @@ def test_reproduce_defaults_accept_generated_namespace_without_cli_fields() -> N
     assert args.verification_provider is None
     assert args.hints is None
     assert args.n_paths == 3
-    assert args.execution_mode == "efficient"
+    assert args.execution_mode == "max"  # default flipped efficient→max in 738478a
     assert args.sandbox == "runpod"
     assert args.gpu_mode == "auto"
     assert args.command_timeout is None

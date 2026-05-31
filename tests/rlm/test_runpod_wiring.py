@@ -51,5 +51,5 @@ def test_backend_for_sandbox_mode_falls_back_for_unsupported_modes():
     from backend.agents.rlm.primitives import _backend_for_sandbox_mode
     from backend.services.runtime.local_docker import LocalDockerBackend
 
-    backend = _backend_for_sandbox_mode(SandboxMode.local, run_budget=None)
+    backend = _backend_for_sandbox_mode(SandboxMode.simulate, run_budget=None)
     assert isinstance(backend, LocalDockerBackend)

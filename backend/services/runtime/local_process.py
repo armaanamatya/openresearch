@@ -45,6 +45,9 @@ class LocalProcessBackend(RuntimeBackend):
             **os.environ,
             **sandbox.config.environment,
         }
+        if sandbox.config.gpu_device_ids:
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(sandbox.config.gpu_device_ids)
+            env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         try:
             process = await asyncio.create_subprocess_shell(
                 command,

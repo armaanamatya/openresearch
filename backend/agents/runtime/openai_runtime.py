@@ -21,7 +21,24 @@ from backend.agents.runtime.base import (
 
 
 class OpenAiAgentRuntime:
-    """AgentRuntime implementation backed by ``openai-agents``."""
+    """AgentRuntime implementation backed by ``openai-agents``.
+
+    With no args it runs against OpenAI's API (Responses). Pass ``base_url`` to
+    point it at a custom OpenAI-compatible endpoint (e.g. a local vLLM server
+    serving Qwen) in chat-completions mode — used by the executor tier so
+    ``implement_baseline`` can run on Qwen instead of Sonnet.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        use_chat_completions: bool = True,
+    ) -> None:
+        self._base_url = base_url
+        self._api_key = api_key
+        self._use_chat_completions = use_chat_completions
 
     @property
     def provider_name(self) -> ProviderName:
@@ -45,9 +62,21 @@ class OpenAiAgentRuntime:
         Runner = agents_module.Runner
         WebSearchTool = getattr(agents_module, "WebSearchTool", None)
         function_tool = agents_module.function_tool
-        configure_openai_agents_sdk_credentials(
-            getattr(agents_module, "set_default_openai_key", None)
-        )
+        if self._base_url:
+            from backend.agents.runtime.factory import (
+                configure_openai_agents_sdk_for_endpoint,
+            )
+            configure_openai_agents_sdk_for_endpoint(
+                self._base_url,
+                self._api_key or "local",
+                set_default_openai_client=getattr(agents_module, "set_default_openai_client", None),
+                set_default_openai_api=getattr(agents_module, "set_default_openai_api", None),
+                use_chat_completions=self._use_chat_completions,
+            )
+        else:
+            configure_openai_agents_sdk_credentials(
+                getattr(agents_module, "set_default_openai_key", None)
+            )
 
         root = (agent.working_directory or Path.cwd()).resolve()
         handoffs = [

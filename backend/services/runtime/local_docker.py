@@ -193,7 +193,7 @@ class LocalDockerBackend(RuntimeBackend):
         # uses to pick the torch wheel, so the two stay in lock-step.
         from backend.services.runtime.gpu_resolution import is_gpu_passthrough_mode
         if is_gpu_passthrough_mode(config.gpu_mode):
-            run_kwargs["device_requests"] = [_gpu_device_request()]
+            run_kwargs["device_requests"] = [_gpu_device_request(config.gpu_device_ids)]
             run_kwargs["environment"] = {
                 **config.environment,
                 "REPROLAB_GPU_MODE": config.gpu_mode,
@@ -495,12 +495,16 @@ def _split_container_path(path: str) -> tuple[str, str]:
     return parent, name
 
 
-def _gpu_device_request() -> Any:
+def _gpu_device_request(device_ids: tuple[str, ...] = ()) -> Any:
     try:
         from docker.types import DeviceRequest  # type: ignore[import-untyped]
 
+        if device_ids:
+            return DeviceRequest(device_ids=list(device_ids), capabilities=[["gpu"]])
         return DeviceRequest(count=-1, capabilities=[["gpu"]])
     except Exception:  # pragma: no cover - used by tests without Docker SDK
+        if device_ids:
+            return SimpleNamespace(device_ids=list(device_ids), capabilities=[["gpu"]])
         return SimpleNamespace(count=-1, capabilities=[["gpu"]])
 
 
