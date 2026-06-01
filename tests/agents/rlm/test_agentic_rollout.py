@@ -162,21 +162,27 @@ def test_single_turn_solves_immediately():
     assert traj.response_mask == [0] * len(expected_prompt0) + [1] * len(expected_resp0)
 
 
-def test_multi_turn_episode_mask_alignment():
-    """Two non-answering turns then a solving turn — the meat of the module.
+def test_multi_turn_no_action_duplicated_in_context():
+    """Two non-answering turns then a solving turn — the meat of the module, and
+    the regression test for the 2026-06-01 BLOCKER.
 
-    Verifies the prompt-delta rule across turns: each later turn contributes only
-    the NEW transcript tail (the prior action + the new observation) as context,
-    then its response, and the mask lines up exactly.
+    The fix: an action's tokens appear ONLY as that turn's mask-1 ``response_ids``
+    and NEVER re-enter as mask-0 context (the old transcript-delta re-tokenised the
+    prior recorded action back in as context, duplicating it).  We prove it with
+    sentinel response ids that no char-ord encode of any text could produce, then
+    assert those ids land only on mask-1 positions and nowhere in the context —
+    while the env's observations DO appear in the context.
     """
     tok = CharTokenizer()
-    scripted = ["let me look around", "still thinking", "the answer is 42"]
+    # Distinct sentinel id-blocks per turn; values no short char-ord encode yields.
+    sentinels = [[90001, 90002], [90011, 90012, 90013], [90021]]
+    actions = ["let me look around", "still thinking", "the answer is 42"]  # last = magic
     calls = {"i": 0}
 
     def generate(prompt_text):
-        text = scripted[calls["i"]]
+        i = calls["i"]
         calls["i"] += 1
-        return text, tok.encode(text)
+        return actions[i], list(sentinels[i])
 
     env = ScriptedEnv()
     env.reset(seed=1, task=None)
@@ -188,29 +194,30 @@ def test_multi_turn_episode_mask_alignment():
     assert traj.info["n_turns"] == 3
     assert calls["i"] == 3  # generate called exactly once per turn
 
-    # Each turn's prompt must be a strict prefix-extension of the prior turn's
-    # prompt (transcript is append-only) — which is what makes the length-based
-    # delta a clean tail.
-    p0 = traj.turns[0].prompt_ids
-    p1 = traj.turns[1].prompt_ids
-    p2 = traj.turns[2].prompt_ids
+    # The prompts are still the full append-only transcript (used for generation),
+    # so prefix-extension still holds even though the SEQUENCE is built obs-by-obs.
+    p0, p1, p2 = (t.prompt_ids for t in traj.turns)
     assert p1[:len(p0)] == p0
     assert p2[:len(p1)] == p1
 
-    # Reconstruct the expected flat sequence from the prompt-delta rule and
-    # compare — the canonical alignment check.
-    expected_seq: list[int] = []
-    expected_mask: list[int] = []
-    prev: list[int] = []
-    for turn in traj.turns:
-        delta = turn.prompt_ids[len(prev):]
-        expected_seq += delta + turn.response_ids
-        expected_mask += [0] * len(delta) + [1] * len(turn.response_ids)
-        prev = turn.prompt_ids
-    assert traj.sequence_ids == expected_seq
-    assert traj.response_mask == expected_mask
-    # Total context (mask 0) == the final full prompt length (deltas telescope).
-    assert (len(traj.response_mask) - sum(traj.response_mask)) == len(p2)
+    # Each turn's sentinel block is exactly that turn's mask-1 run, in order.
+    runs = _runs_of_ones(traj.response_mask)
+    assert [[traj.sequence_ids[p] for p in run] for run in runs] == sentinels
+
+    # THE fix: no generated/action token appears at a mask-0 (context) position.
+    context_ids = [traj.sequence_ids[i] for i, m in enumerate(traj.response_mask) if m == 0]
+    all_sentinels = {s for block in sentinels for s in block}
+    assert not (all_sentinels & set(context_ids)), "an action token leaked into the context"
+
+    # The env's intermediate observations DID enter the context (obs-delta), so the
+    # model still conditions on what it saw. ScriptedEnv emits "OBS1/OBS2: keep going."
+    ctx_ord_set = set(context_ids)
+    for obs_snippet in ("OBS1: keep going.", "OBS2: keep going."):
+        assert set(tok.encode(obs_snippet)) <= ctx_ord_set
+
+    # Sanity: context excludes the actions, so it is strictly shorter than encoding
+    # the full final transcript (which contains both actions and observations).
+    assert (len(traj.response_mask) - sum(traj.response_mask)) < len(p2)
 
 
 def test_generated_ids_are_appended_verbatim_not_retokenized():

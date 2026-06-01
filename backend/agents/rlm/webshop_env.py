@@ -324,6 +324,22 @@ class WebShopEnv(AgenticEnv):
             return True, f"WebShop reachable at {url}"
         return False, f"WebShop probe to {url} returned status {getattr(resp, 'status', 0)}"
 
+    def _unavailable_state(self) -> str | None:
+        """Return a non-empty reason iff this instance's server is unreachable.
+
+        The single source of truth both :meth:`reset` and :meth:`step` consult so
+        they agree on availability.  Unavailable means either no URL was ever
+        configured, OR the landing fetch in :meth:`reset` came back unreachable
+        (status 0 / non-2xx) and recorded ``_unavailable_reason``.  When set, the
+        first :meth:`step` returns the same terminal ``unavailable`` result the
+        empty-URL path returns instead of burning turns on degraded pages.
+        """
+        if not self.base_url:
+            return self._unavailable_reason or "WEBSHOP_URL is not set"
+        if self._unavailable_reason:
+            return self._unavailable_reason
+        return None
+
     # --- action parsing ------------------------------------------------------
 
     @staticmethod
@@ -368,6 +384,24 @@ class WebShopEnv(AgenticEnv):
         t = re.sub(r"[^a-z]+", " ", (target or "").lower()).strip()
         return t in {"buy now", "buy", "purchase", "place order", "buy it now"}
 
+    @staticmethod
+    def _coerce_seed(seed: Any) -> int:
+        """Coerce any ``seed`` to a non-negative int — never raises.
+
+        ``reset`` / ``_resolve_goal_idx`` derive the session id and goal index from
+        the seed, so a garbage seed (a non-numeric string, a float, ``None``) must
+        not propagate an exception into the rollout (the fail-soft contract).
+        Tries ``int(seed)`` first (handles ints, numeric strings, floats); on
+        failure falls back to a deterministic ``0`` so the same bad seed always
+        maps to the same episode.
+        """
+        if seed is None:
+            return 0
+        try:
+            return int(seed)
+        except (TypeError, ValueError):
+            return 0
+
     # --- episode lifecycle ---------------------------------------------------
 
     def reset(self, *, seed: int | None = None, task: Any = None) -> str:
@@ -380,7 +414,7 @@ class WebShopEnv(AgenticEnv):
         replays the same instruction (the determinism contract).
         """
         self._goal_idx = self._resolve_goal_idx(task=task, seed=seed)
-        seed_part = 0 if seed is None else int(seed)
+        seed_part = self._coerce_seed(seed)
         # Deterministic, server-friendly session id (alnum + underscore only).
         self._session_id = f"sdar_{self._goal_idx}_{seed_part}"
         self._unavailable_reason = None
@@ -411,7 +445,7 @@ class WebShopEnv(AgenticEnv):
             idx = int(task.strip())
 
         if idx is None:
-            idx = int(seed) if seed is not None else 0
+            idx = self._coerce_seed(seed)
         if idx < 0:
             idx = -idx
         if self._num_goals and self._num_goals > 0:
@@ -446,8 +480,9 @@ class WebShopEnv(AgenticEnv):
         Never raises.  Flow:
 
         1. Record the raw action (counts the turn).
-        2. If the server is unavailable, finish immediately with a zero-reward
-           terminal step carrying ``info={"unavailable": True, ...}``.
+        2. If the server is unavailable (no URL, or reset()'s landing came back
+           unreachable — see :meth:`_unavailable_state`), finish immediately with
+           a zero-reward terminal step carrying ``info={"unavailable": True, ...}``.
         3. Parse the action.  Unparseable / unsupported → a nudge observation, not
            done (wastes the turn).
         4. ``search[...]`` → POST the query, observe the results page.
@@ -458,9 +493,13 @@ class WebShopEnv(AgenticEnv):
         """
         self._record_act(action)
 
-        # (2) Hard-unavailable: no server at all → terminal, fail-soft.
-        if not self.base_url:
-            reason = self._unavailable_reason or "WEBSHOP_URL is not set"
+        # (2) Unavailable server → terminal, fail-soft.  Covers BOTH no URL at all
+        # and a set-but-dead URL whose landing fetch came back unreachable in
+        # reset() (status 0 / non-2xx).  Without this second case a dead server
+        # would burn every turn on status-0 degraded pages instead of returning
+        # the promised unavailable terminal.
+        reason = self._unavailable_state()
+        if reason is not None:
             return self._terminal_unavailable(reason)
 
         verb, arg = self._parse_action(action)

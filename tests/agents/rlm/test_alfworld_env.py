@@ -217,6 +217,88 @@ def test_initial_observation_recorded_in_transcript(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Admissible commands are surfaced in the recorded observation (2026-05-31 HIGH)
+# ---------------------------------------------------------------------------
+
+
+def test_reset_surfaces_admissible_commands_in_observation(monkeypatch):
+    """reset() must append the legal commands the env reports, not just the room.
+
+    The fake's reset infos carry ``admissible_commands=[["go to fridge 1",
+    "look"]]``; the recorded observation (and the student prompt) must list them
+    so the policy can choose from the legal set — the system prompt promises this.
+    """
+    monkeypatch.delenv("ALFWORLD_DATA", raising=False)
+    env = ALFWorldEnv(_env=_FakeTWEnv())
+    obs = env.reset(seed=0)
+    assert "admissible commands" in obs.lower()
+    assert "go to fridge 1" in obs
+    assert "look" in obs
+    # The augmented observation is what was recorded into the transcript.
+    assert obs in env.build_student_prompt()
+
+
+def test_step_surfaces_admissible_commands_in_observation(monkeypatch):
+    """step() observations also carry the admissible-command block."""
+    monkeypatch.delenv("ALFWORLD_DATA", raising=False)
+
+    class _AdmissibleStepEnv(_FakeTWEnv):
+        def step(self, commands):
+            assert isinstance(commands, (list, tuple))
+            self.commands_seen.append(commands[0])
+            obs = "You arrive at fridge 1."
+            infos = {"won": [False], "admissible_commands": [["open fridge 1", "look"]]}
+            return [obs], [0.0], [False], infos
+
+    env = ALFWorldEnv(_env=_AdmissibleStepEnv())
+    env.reset(seed=0)
+    res = env.step("go to fridge 1")
+    assert res.done is False
+    # Both the returned StepResult and the recorded transcript carry the block.
+    assert "admissible commands" in res.observation.lower()
+    assert "open fridge 1" in res.observation
+    assert res.observation in env.build_student_prompt()
+
+
+def test_admissible_commands_block_is_bounded(monkeypatch):
+    """A huge admissible-command list is capped (count + chars) so the prompt
+    can't blow the token budget."""
+    monkeypatch.delenv("ALFWORLD_DATA", raising=False)
+
+    big_list = [f"go to location {i}" for i in range(500)]
+
+    class _BigAdmissibleEnv(_FakeTWEnv):
+        def reset(self):
+            obs = "You are in the kitchen.\nYour task is to: find a thing."
+            return [obs], {"won": [False], "admissible_commands": [list(big_list)]}
+
+    env = ALFWorldEnv(_env=_BigAdmissibleEnv())
+    obs = env.reset(seed=0)
+    assert "admissible commands" in obs.lower()
+    # Far fewer than 500 commands survive, and the block is char-bounded.
+    block = obs.split("Admissible commands:", 1)[1]
+    assert block.count("go to location") <= alfworld_env._MAX_ADMISSIBLE_COMMANDS
+    assert len(block) <= alfworld_env._MAX_ADMISSIBLE_CHARS + 16  # + "…" suffix slack
+    assert "…" in obs  # truncation marker present
+
+
+def test_missing_admissible_commands_records_obs_unchanged(monkeypatch):
+    """When infos has no admissible_commands the observation is recorded as-is
+    (no block, no crash)."""
+    monkeypatch.delenv("ALFWORLD_DATA", raising=False)
+
+    class _NoAdmissibleEnv(_FakeTWEnv):
+        def reset(self):
+            obs = "You are in the kitchen.\nYour task is to: find a thing."
+            return [obs], {"won": [False]}  # no admissible_commands key
+
+    env = ALFWorldEnv(_env=_NoAdmissibleEnv())
+    obs = env.reset(seed=0)
+    assert "admissible commands" not in obs.lower()
+    assert "kitchen" in obs.lower()
+
+
+# ---------------------------------------------------------------------------
 # Fail-soft behaviour: bad action / raising env / unavailable backend
 # ---------------------------------------------------------------------------
 
@@ -291,6 +373,31 @@ def test_turn_cap_terminates_episode(monkeypatch):
     assert res.reward == 0.0
     assert res.info["success"] is False
     assert env.turns_taken == 3
+
+
+def test_reset_with_garbage_seed_does_not_raise(monkeypatch):
+    """A non-int/garbage seed must coerce to the default (0), never raise.
+
+    ``reset(seed=...)`` coerces inside a try/except so a bad seed degrades to the
+    deterministic default instead of bubbling a ValueError/TypeError out of the
+    fail-soft env. Covers a string, a float, an unconvertible object, and None.
+    """
+    monkeypatch.delenv("ALFWORLD_DATA", raising=False)
+
+    class _Unconvertible:
+        def __int__(self):  # pragma: no cover - exercised via int() raising
+            raise ValueError("nope")
+
+    for bad in ("not-a-seed", 3.7, object(), _Unconvertible(), [1, 2], None):
+        fake = _FakeTWEnv()
+        env = ALFWorldEnv(_env=fake)
+        obs = env.reset(seed=bad)  # type: ignore[arg-type]  # must NOT raise
+        assert isinstance(obs, str) and obs
+        assert env.done is False
+        # A garbage seed still yields a usable episode (drive it to a win).
+        env.step("go to fridge 1")
+        res = env.step("take apple 1 from fridge 1")
+        assert res.done is True and res.reward == 1.0
 
 
 def test_reset_is_idempotent_across_episodes(monkeypatch):

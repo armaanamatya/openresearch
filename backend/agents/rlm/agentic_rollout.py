@@ -32,23 +32,32 @@ transcript via ``env.build_student_prompt()``, feeds that text to ``generate``,
 This matches the §1 protocol (``env.reset(...)`` then loop) and keeps the module's
 sole responsibility the error-prone token/mask conversion.
 
-**The mask-alignment rule (the crux).**  Each turn ``env.build_student_prompt()``
-returns the *full* running transcript, which only ever grows (``_record_*`` only
-appends).  We therefore track the previous turn's full-prompt token ids and take
+**The mask-alignment rule (the crux).**  The training sequence is assembled
+*observation-by-observation*, NOT by diffing the rendered transcript.  Each turn
+contributes, in order:
 
-    delta_ids = current_full_prompt_ids[len(prev_full_prompt_ids):]
+    [context_ids]      (mask 0)   then   [response_ids]   (mask 1)
 
-— the new transcript *tail* since the previous turn (system header + the prior
-action as the env recorded it + the new observation).  The sequence for the turn
-is then ``delta_ids`` (mask ``0`` — context) followed by the turn's
-``response_ids`` (mask ``1`` — generated).  We compare *prompt-to-prompt* (not
-prompt-to-sequence): the generated ``response_ids`` are appended out-of-band and
-are deliberately kept out of the prompt-delta arithmetic, so a tokenizer that
-re-tokenizes the recorded action differently from what the model emitted can
-never desync the delta.  The invariants this guarantees — proven in the test —
-are ``len(response_mask) == len(sequence_ids)``,
-``sum(response_mask) == total response tokens across turns``, and the mask-``1``
-runs equal each turn's ``response_ids`` in order.
+where ``context_ids`` is the WHOLE opening prompt on turn 0 (system + initial
+observation) and ONLY the observation the previous ``env.step`` returned on every
+later turn.  The model's action enters the sequence *exactly once* — as that
+turn's ``response_ids`` (mask 1), appended verbatim (never re-tokenised).  It is
+never folded back in as context.
+
+This is deliberate.  An earlier design diffed the full transcript
+(``current_prompt_ids[len(prev_prompt_ids):]``) and so re-tokenised the prior
+action — which the env had already recorded, often *cleaned* (e.g. a stripped
+``> ``) — as mask-0 context, even though that action was already present as
+mask-1 ``response_ids``.  That duplicated every action in the sequence and
+silently corrupted the GRPO/OPSD loss context (the 2026-06-01 review BLOCKER).
+Taking context only from the env's returned observations removes the action from
+the context path entirely.  Generation still conditions on the full
+``build_student_prompt()`` render (the env owns its system header + formatting);
+only the *training* sequence is built obs-by-obs.  The invariants this guarantees
+— proven in the test — are ``len(response_mask) == len(sequence_ids)``,
+``sum(response_mask) == total response tokens across turns``, the mask-``1`` runs
+equal each turn's ``response_ids`` in order, and no prior action's tokens ever
+appear at a mask-``0`` position.
 """
 
 from __future__ import annotations
@@ -180,13 +189,15 @@ def rollout_episode(
        new observation to the transcript (so the *next* prompt grows).
     4. Stop at ``env.done`` or when ``max_turns`` turns have been taken.
 
-    Sequence/mask are built with the prompt-delta rule documented at module top:
-    each turn contributes ``current_prompt_ids[len(prev_prompt_ids):]`` (mask 0)
-    then ``response_ids`` (mask 1).
+    Sequence/mask are built with the observation-delta rule documented at module
+    top: turn 0 contributes the whole opening prompt (mask 0) then its
+    ``response_ids`` (mask 1); each later turn contributes ONLY the prior step's
+    observation (mask 0) then its ``response_ids`` (mask 1).  An action is in the
+    sequence exactly once — as response tokens — never re-tokenised as context.
 
     Robustness: a ``generate`` returning ``("", [])`` still *counts as a turn*
     (the env is stepped with the empty action, may nudge or waste the turn) and
-    never crashes — the turn simply contributes its prompt-delta and zero response
+    never crashes — the turn contributes its context delta and zero response
     tokens.  ``max_new_tokens`` is accepted for API symmetry with the trainer's
     ``generate`` wrapper.
     """
@@ -204,13 +215,21 @@ def rollout_episode(
     response_mask: list[int] = []
     response_lengths: list[int] = []
 
-    # The previous turn's FULL prompt token ids.  Empty at turn 0, so the first
-    # delta is the whole opening prompt (system + initial observation).  Because
-    # the transcript only ever grows (``_record_*`` append-only), comparing the
-    # current full prompt against the previous full prompt yields a clean,
-    # monotonic tail — and keeps the model-generated ``response_ids`` (appended
-    # below, out of band) from ever entering the prompt-delta arithmetic.
-    prev_prompt_ids: list[int] = []
+    # Context is appended to the TRAINING sequence exactly once per source: the
+    # opening transcript (system + initial observation) at turn 0, then ONLY the
+    # observation the env returns from each step thereafter.  The model's action
+    # NEVER re-enters as context — it lives in the sequence solely as that turn's
+    # ``response_ids`` (mask 1).  Generation still conditions on the FULL running
+    # transcript (``build_student_prompt`` — the env owns its system header +
+    # formatting), but the sequence is assembled obs-by-obs so a prior action the
+    # env recorded (possibly cleaned) is never re-tokenised back in as mask-0
+    # context.  That re-tokenisation was the 2026-06-01 review BLOCKER: it
+    # duplicated each action (already present as mask-1 ``response_ids``) and
+    # silently corrupted the GRPO/OPSD loss context.
+    #
+    # ``next_context_text is None`` is the turn-0 sentinel → use the whole opening
+    # prompt; on later turns it is the prior step's observation (possibly "").
+    next_context_text: str | None = None
 
     for _turn_idx in range(cap):
         # Defensive: if the env is already terminal (caller stepped it, or a prior
@@ -218,18 +237,21 @@ def rollout_episode(
         if getattr(env, "done", False):
             break
 
+        # Generation conditions on the full running transcript (best fidelity).
         prompt_text = env.build_student_prompt()
         if prompt_text is None:
             prompt_text = ""
         prompt_ids = _encode(tokenizer, prompt_text)
 
-        # --- mask-alignment: the new transcript tail since the previous turn ---
-        # delta = the suffix of this turn's prompt beyond the previous prompt's
-        # length.  These are pure CONTEXT tokens (header on turn 0; the prior
-        # recorded action + the new observation on later turns) → mask 0.
-        delta_ids = prompt_ids[len(prev_prompt_ids):]
-        sequence_ids.extend(delta_ids)
-        response_mask.extend(0 for _ in delta_ids)
+        # --- context for the TRAINING sequence (mask 0) ---
+        # turn 0: the whole opening prompt; later turns: ONLY the new observation
+        # the previous step returned (never the action — see the note above).
+        if next_context_text is None:
+            context_ids = prompt_ids
+        else:
+            context_ids = _encode(tokenizer, next_context_text)
+        sequence_ids.extend(context_ids)
+        response_mask.extend(0 for _ in context_ids)
 
         # One model turn.  ``generate`` is injected; tolerate a bad return shape.
         try:
@@ -249,14 +271,16 @@ def rollout_episode(
         )
         response_lengths.append(len(response_ids))
 
-        # Advance the env with the model's TEXT action.  The env records the
-        # action + new observation onto the transcript, so the next prompt grows.
+        # Advance the env with the model's TEXT action.  The env records the action
+        # + new observation onto its transcript; we take the RETURNED observation
+        # as the next turn's context delta (never the action).
         try:
             result = env.step(response_text)
         except Exception:  # pragma: no cover - AgenticEnv.step contracts to never raise
             break
 
-        prev_prompt_ids = prompt_ids
+        obs = getattr(result, "observation", "")
+        next_context_text = obs if isinstance(obs, str) else ("" if obs is None else str(obs))
 
         if getattr(result, "done", False) or getattr(env, "done", False):
             break

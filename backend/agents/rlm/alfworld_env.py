@@ -78,6 +78,13 @@ _DATA_SUBPATH_EVAL_OOD = "$ALFWORLD_DATA/json_2.1.1/valid_unseen"
 #: The six ALFRED task types (all of them — the paper trains across the full set).
 _ALL_TASK_TYPE_IDS = [1, 2, 3, 4, 5, 6]
 
+#: Bounds on the admissible-command block appended to each observation. The real
+#: TextWorld env can report dozens of legal commands per turn; without a cap the
+#: block would inflate the student prompt and blow the token budget on long
+#: rollouts. Cap the count first, then hard-truncate the joined string.
+_MAX_ADMISSIBLE_COMMANDS = 50
+_MAX_ADMISSIBLE_CHARS = 1500
+
 #: Guidance prepended to the system prompt so the policy emits clean TextWorld
 #: commands instead of chat scaffolding (``> ...`` / ``action: ...``), and knows
 #: it may inspect the admissible-action list the env reports each turn.
@@ -197,6 +204,38 @@ def _first(value: Any, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _format_admissible(commands: Any) -> str:
+    """Render a bounded "Admissible commands: …" line from a command list.
+
+    The system prompt promises the policy that the env reports the legal
+    commands each turn; without this the policy never actually sees them (the
+    2026-05-31 HIGH finding).  ``commands`` is the *already-unwrapped* value for
+    this turn (a list of command strings) — callers pass
+    ``infos["admissible_commands"]`` after :meth:`_unwrap_infos`.  Returns "" for
+    a missing/empty/non-list value (no block, no crash), else a single line
+    capped at :data:`_MAX_ADMISSIBLE_COMMANDS` commands and
+    :data:`_MAX_ADMISSIBLE_CHARS` characters so it can't blow the token budget.
+    """
+    if not isinstance(commands, (list, tuple)) or not commands:
+        return ""
+    items: list[str] = []
+    for cmd in commands[:_MAX_ADMISSIBLE_COMMANDS]:
+        if cmd is None:
+            continue
+        text = str(cmd).strip()
+        if text:
+            items.append(text)
+    if not items:
+        return ""
+    truncated = len(commands) > len(items)
+    joined = ", ".join(items)
+    if len(joined) > _MAX_ADMISSIBLE_CHARS:
+        joined = joined[:_MAX_ADMISSIBLE_CHARS].rstrip(", ")
+        truncated = True
+    suffix = ", …" if truncated else ""
+    return f"Admissible commands: {joined}{suffix}"
+
+
 class ALFWorldEnv(AgenticEnv):
     """Real long-horizon ALFWorld TextWorld environment (SDAR full-scope).
 
@@ -303,7 +342,13 @@ class ALFWorldEnv(AgenticEnv):
             )
 
         # 3. Can the package be imported?
+        #    Hard-assign ALFWORLD_DATA to the resolved root BEFORE importing —
+        #    importing alfworld defaults ALFWORLD_DATA to ~/.cache/alfworld via a
+        #    setdefault, which would then ignore an explicit ``data_dir``. Assign
+        #    (not setdefault) so the explicit path always wins. ``root`` is the
+        #    verified existing directory from step 1.
         try:
+            os.environ["ALFWORLD_DATA"] = str(root)
             from alfworld.agents.environment import get_environment  # noqa: WPS433
 
             get_environment("AlfredTWEnv")
@@ -348,7 +393,13 @@ class ALFWorldEnv(AgenticEnv):
         self._won = False
         self._unavailable_reason = None
         self._env = None
-        seed_val = 0 if seed is None else int(seed)
+        # Coerce the seed defensively: a bad seed (str/float/garbage) must never
+        # raise out of reset() — the AgenticEnv contract is fail-soft. Bad input
+        # degrades to the deterministic default (0), not a crash.
+        try:
+            seed_val = 0 if seed is None else int(seed)
+        except (TypeError, ValueError):
+            seed_val = 0
 
         system = _ACTION_GUIDANCE
 
@@ -395,7 +446,7 @@ class ALFWorldEnv(AgenticEnv):
         self._start_episode(system=full_system)
 
         observation = obs if obs else "You are in a room."
-        self._record_obs(observation)
+        observation = self._record_obs_with_admissible(observation, infos)
         return observation
 
     def step(self, action: str) -> StepResult:
@@ -450,7 +501,7 @@ class ALFWorldEnv(AgenticEnv):
         obs, score, done, infos = self._unpack_step(step_out)
         self._infos = infos
         observation = obs if obs else "(no change)"
-        self._record_obs(observation)
+        observation = self._record_obs_with_admissible(observation, infos)
 
         won = self._won_from(infos, score)
         # Terminal if the env says done, the goal is met, or we hit the turn cap.
@@ -469,6 +520,27 @@ class ALFWorldEnv(AgenticEnv):
             return StepResult(observation=observation, reward=reward, done=True, info=info)
 
         return StepResult(observation=observation, reward=0.0, done=False)
+
+    # --- observation recording (with admissible-command surfacing) -----------
+
+    def _record_obs_with_admissible(self, observation: str, infos: dict[str, Any]) -> str:
+        """Record ``observation`` with a bounded admissible-command block appended.
+
+        The env requests ``EnvInfos(admissible_commands=True)`` and the system
+        prompt tells the policy the env reports the legal commands each turn — but
+        before the 2026-05-31 fix only the raw room text was recorded, so the
+        policy never actually saw them.  This appends a single bounded
+        ``Admissible commands: …`` line derived from ``infos["admissible_commands"]``
+        (already unwrapped to a list by :meth:`_unwrap_infos`).  When the key is
+        missing/empty the observation is recorded unchanged (no crash).  Returns
+        the (possibly augmented) text so the caller can mirror it into StepResult.
+        """
+        block = ""
+        if isinstance(infos, dict):
+            block = _format_admissible(infos.get("admissible_commands"))
+        full = f"{observation}\n{block}" if block else observation
+        self._record_obs(full)
+        return full
 
     # --- backend construction (the seam ladder) ------------------------------
 
@@ -511,29 +583,45 @@ class ALFWorldEnv(AgenticEnv):
         """Construct the genuine ``AlfredTWEnv`` and return its batched gym env.
 
         Lazy-imports alfworld here so the module imports without the package
-        side-effects firing at import time.  Exports ``ALFWORLD_DATA`` (the
-        config interpolates ``$ALFWORLD_DATA``).  ``init_env(batch_size=1)``
-        returns a ``TextworldBatchGymEnv``.
+        side-effects firing at import time.  ``init_env(batch_size=1)`` returns a
+        ``TextworldBatchGymEnv``.
+
+        Two correctness fixes (2026-05-31 Codex review):
+
+        * **ALFWORLD_DATA must be hard-assigned BEFORE the import.** Importing
+          ``alfworld`` has the side effect of defaulting ``ALFWORLD_DATA`` to
+          ``~/.cache/alfworld``; a post-import ``setdefault`` then silently keeps
+          that default and *ignores* the explicit ``data_dir``.  When the caller
+          supplied an explicit root we therefore assign ``os.environ`` (not
+          setdefault) *before* importing the package so the config's literal
+          ``$ALFWORLD_DATA`` resolves to the intended path.
+        * **Seed the gym env, not the AlfredTWEnv.** ``AlfredTWEnv`` (alfworld
+          0.4.2) has no ``seed()`` method; the seedable object is the
+          ``TextworldBatchGymEnv`` returned by ``init_env``.  Seeding ``alfred``
+          was a silent no-op, so we seed the gym env after building it.
         """
+        data_dir = self._data_dir or os.environ.get("ALFWORLD_DATA")
+        if self._data_dir:
+            # Explicit root → hard-assign BEFORE importing alfworld so the
+            # package's import-time default can't win and the config's literal
+            # "$ALFWORLD_DATA" resolves to the intended path.
+            os.environ["ALFWORLD_DATA"] = str(self._data_dir)
+
         from alfworld.agents.environment import get_environment  # noqa: WPS433
 
-        data_dir = self._data_dir or os.environ.get("ALFWORLD_DATA")
-        if data_dir:
-            # The config uses literal "$ALFWORLD_DATA"; ensure it resolves.
-            os.environ.setdefault("ALFWORLD_DATA", data_dir)
+        if data_dir and not os.environ.get("ALFWORLD_DATA"):
+            # No explicit root, but we resolved one from the env var before the
+            # import wiped it: restore it so the config still interpolates.
+            os.environ["ALFWORLD_DATA"] = str(data_dir)
 
         config = _minimal_alfworld_config(data_dir or "")
         env_cls = get_environment("AlfredTWEnv")
         alfred = env_cls(config, train_eval=self._train_eval)
 
-        # Seed the game-pool shuffle for determinism, then build the gym env.
-        seed_fn = getattr(alfred, "seed", None)
-        if callable(seed_fn):
-            try:
-                seed_fn(seed)
-            except Exception:  # noqa: BLE001 - best-effort
-                pass
-        return alfred.init_env(batch_size=1)
+        # Build the batched gym env, THEN seed it for determinism. The seedable
+        # object is the TextworldBatchGymEnv (AlfredTWEnv has no seed()).
+        env = alfred.init_env(batch_size=1)
+        return self._maybe_seed(env, seed)
 
     # --- batched-output unwrapping -------------------------------------------
 

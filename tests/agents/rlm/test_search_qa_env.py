@@ -476,3 +476,47 @@ def test_hotpot_contexts_seed_pool_for_bm25_path(monkeypatch):
     res2 = env.step("answer(Marie Curie)")
     assert res2.info["retriever"] == "overlap"
     assert res2.reward == pytest.approx(1.0)
+
+
+def test_dense_loader_resolves_nonstandard_index_filename(tmp_path, monkeypatch):
+    """The dense tier must load a FAISS index even when the downloaded repo names
+    it something other than ``index.faiss`` and nests it in a subdir — env_cache
+    advertises E5 for ANY ``*.faiss``/``*.index`` under the dir, so the retriever
+    must load exactly what that gate accepts or dense is advertised then silently
+    degrades to BM25 (the 2026-06-01 review MEDIUM). Heavy deps are faked so this
+    runs on the base venv (no faiss / sentence-transformers installed)."""
+    import json as _json
+    import types
+
+    # A repo whose index is named e5_Flat.index (NOT index.faiss), nested one level.
+    sub = tmp_path / "wiki18"
+    sub.mkdir()
+    (sub / "e5_Flat.index").write_bytes(b"FAKE-FAISS")
+    (sub / "passages.json").write_text(_json.dumps(["alpha passage", "beta passage"]))
+
+    captured: dict = {}
+
+    def _read_index(p):
+        captured["index_path"] = p
+        return "FAKE_INDEX_OBJ"
+
+    fake_faiss = types.SimpleNamespace(read_index=_read_index)
+
+    class _FakeST:
+        def __init__(self, name):
+            captured["model"] = name
+
+        def encode(self, *a, **k):  # pragma: no cover - not exercised by _ensure_dense
+            return [[0.0]]
+
+    fake_st = types.ModuleType("sentence_transformers")
+    fake_st.SentenceTransformer = _FakeST  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "faiss", fake_faiss)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
+
+    r = Retriever(index_dir=str(tmp_path))
+    assert r._ensure_dense() is True
+    assert r._dense_ready is True
+    assert captured["index_path"].endswith("e5_Flat.index")   # nonstandard name resolved
+    assert r._passages == ["alpha passage", "beta passage"]    # nested passage store loaded
+    assert captured["model"] == "intfloat/e5-base-v2"

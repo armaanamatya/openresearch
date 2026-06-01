@@ -260,28 +260,53 @@ class Retriever:
             import json
             import pickle
 
+            from pathlib import Path as _Path
+
             from sentence_transformers import SentenceTransformer  # lazy
             import faiss  # lazy
 
             idx_dir = self._index_dir or ""
-            index_path = os.path.join(idx_dir, "index.faiss")
+            root = _Path(idx_dir)
+
+            def _find_first(patterns: list[str]) -> str | None:
+                # Prefer an exact top-level match, then any recursive match — so a
+                # snapshot_download that nests the index under a repo subdir, or
+                # names it e.g. ``e5_Flat.index`` instead of ``index.faiss``, still
+                # resolves.  This mirrors the env_cache provisioning gate, which
+                # advertises E5 for ANY ``*.faiss``/``*.index`` under the dir; the
+                # retriever must therefore load exactly what that gate accepts, or
+                # the dense tier is advertised then silently falls back to BM25.
+                for pat in patterns:
+                    p = root / pat
+                    if p.is_file():
+                        return str(p)
+                for pat in patterns:
+                    hits = sorted(root.rglob(pat))
+                    if hits:
+                        return str(hits[0])
+                return None
+
+            # FAISS index: index.faiss → any *.faiss → any *.index.
+            index_path = _find_first(["index.faiss", "*.faiss", "*.index"])
+            if not index_path:
+                raise FileNotFoundError(f"no FAISS index (*.faiss/*.index) under {idx_dir!r}")
             self._faiss_index = faiss.read_index(index_path)
 
-            # Passage store: prefer passages.json, accept passages.pkl, else a
-            # newline-delimited passages.txt.  Each entry is a passage string.
+            # Passage store: passages.json → passages.pkl → passages.txt, top-level
+            # then nested.  Each entry is one passage string.
             passages: list[str] | None = None
-            json_path = os.path.join(idx_dir, "passages.json")
-            pkl_path = os.path.join(idx_dir, "passages.pkl")
-            txt_path = os.path.join(idx_dir, "passages.txt")
-            if os.path.exists(json_path):
+            json_path = _find_first(["passages.json"])
+            pkl_path = _find_first(["passages.pkl"])
+            txt_path = _find_first(["passages.txt"])
+            if json_path:
                 with open(json_path, "r", encoding="utf-8") as fh:
                     raw = json.load(fh)
                 passages = [_as_passage_text(r) for r in raw]
-            elif os.path.exists(pkl_path):
+            elif pkl_path:
                 with open(pkl_path, "rb") as fh:
                     raw = pickle.load(fh)
                 passages = [_as_passage_text(r) for r in raw]
-            elif os.path.exists(txt_path):
+            elif txt_path:
                 with open(txt_path, "r", encoding="utf-8") as fh:
                     passages = [ln.rstrip("\n") for ln in fh]
             if not passages:
