@@ -3626,6 +3626,8 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
     (anti-gaming). Idempotent and fail-soft — any error leaves the original
     metrics untouched so scope enrichment can never break the run.
     """
+    if not isinstance(metrics, dict):
+        return metrics
     op_excls = _operator_scope_exclusions(ctx)
     if not op_excls:
         return metrics

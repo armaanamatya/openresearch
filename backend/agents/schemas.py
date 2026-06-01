@@ -970,6 +970,19 @@ class ScopeSpec(BaseModel):
                 ),
             )
 
+        # Models (2026-06-01): an operator-narrowed ``models`` list implicitly
+        # de-scopes the paper-default models it dropped. Fold those into
+        # ``skip_models`` (symmetry with the datasets/skip_datasets rule below) so
+        # the rubric excludes their leaves instead of scoring them 0. Only triggers
+        # when the operator actually set ``models`` (a deliberate narrowing), never
+        # on a pure paper-default run.
+        if paper_default is not None and self.models:
+            _active_m = set(base.models)
+            _dropped_m = [m for m in paper_default.models if m not in _active_m]
+            if _dropped_m:
+                base = base.model_copy(
+                    update={"skip_models": list({*base.skip_models, *_dropped_m})}
+                )
         if base.skip_models and base.models:
             skipped = set(base.skip_models)
             base = base.model_copy(

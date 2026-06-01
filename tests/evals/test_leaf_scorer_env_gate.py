@@ -85,3 +85,36 @@ def test_verified_model_exclusion_via_structured(tmp_path: Path):
     skip = _detect_data_unavailable_leaves(leaves, tmp_path)
     assert "leaf_7b" in skip
     assert "leaf_core" not in skip
+
+
+def test_verified_exclusion_is_self_sufficient_without_skip_lists(tmp_path: Path):
+    # SHOULD-FIX #1: a verified exclusion that lands ONLY in scope.exclusions (no
+    # co-populated environments_skipped — e.g. a Part B env_setup_failed Exclusion)
+    # must STILL exclude its leaves. Hand-build the scope so the legacy list is absent.
+    scope = {"exclusions": [{"item": "WebShop", "axis": "environment",
+                             "kind": "env_setup_failed", "verified": True,
+                             "reason": "alfworld-download failed", "evidence": ""}]}
+    assert "environments_skipped" not in scope  # deliberately absent
+    _write(tmp_path, scope)
+    skip = _detect_data_unavailable_leaves(LEAVES, tmp_path)
+    assert "leaf_webshop" in skip
+    assert "leaf_core" not in skip
+
+
+def test_unverified_exclusion_self_sufficient_path_still_gated(tmp_path: Path):
+    # The self-sufficiency path must NOT leak unverified items into the match set.
+    scope = {"exclusions": [{"item": "WebShop", "axis": "environment",
+                             "kind": "env_setup_failed", "verified": False, "reason": "agent"}]}
+    _write(tmp_path, scope)
+    assert _detect_data_unavailable_leaves(LEAVES, tmp_path) == set()
+
+
+def test_dataset_axis_exclusion_matched_not_dropped(tmp_path: Path):
+    # SHOULD-FIX #2: a verified dataset-axis exclusion must be matched, not silently
+    # dropped (the pre-hardening code handled only environment/model axes).
+    scope = {"exclusions": [{"item": "WebShop", "axis": "dataset",
+                             "kind": "dataset_dead", "verified": True, "reason": "404"}]}
+    _write(tmp_path, scope)
+    skip = _detect_data_unavailable_leaves(LEAVES, tmp_path)
+    assert "leaf_webshop" in skip
+    assert "leaf_core" not in skip

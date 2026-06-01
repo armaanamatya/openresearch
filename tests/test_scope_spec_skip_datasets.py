@@ -27,6 +27,22 @@ def test_narrowing_datasets_derives_skip_datasets():
     assert "Qwen2.5-7B" not in eff.models  # skip_models still reconciled
 
 
+def test_narrowing_models_derives_skip_models():
+    # SHOULD-FIX #3: symmetry with datasets — an operator-narrowed `models` list
+    # auto-de-scopes the dropped paper-default models into skip_models, so their
+    # rubric leaves are excluded rather than scored 0.
+    eff = ScopeSpec(models=["Qwen3-1.7B", "Qwen2.5-3B-Instruct"]).merge_with_paper_default(_paper_default())
+    assert "Qwen2.5-7B" in eff.skip_models
+    assert "Qwen2.5-7B" not in eff.models
+    assert sorted(eff.models) == ["Qwen2.5-3B-Instruct", "Qwen3-1.7B"]
+
+
+def test_pure_default_run_derives_no_model_skips():
+    eff = ScopeSpec().merge_with_paper_default(_paper_default())
+    assert eff.skip_models == []
+    assert "Qwen2.5-7B" in eff.models
+
+
 def test_explicit_skip_datasets_reconciled_out_of_datasets():
     eff = ScopeSpec(datasets=["Search-QA", "ALFWorld"], skip_datasets=["ALFWorld"]).merge_with_paper_default(None)
     assert [d.name for d in eff.datasets] == ["Search-QA"]
