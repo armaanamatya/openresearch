@@ -223,3 +223,28 @@ def test_disk_exhausted_from_enospc_trace() -> None:
         klass, fix = classify_failure({"success": False, "error": err})
         assert klass == "disk_exhausted", f"{err!r} → {klass}"
         assert "disk" in fix.lower() or "REPROLAB_DISK_FLOOR_GB" in fix
+
+
+# ---------------------------------------------------------------------------
+# F-08 — gated HF repo (401/403) and NCCL collective timeout were misclassified
+# as 'unknown'. Gated Qwen/Llama weights are exactly the SDAR baseline scenario.
+# ---------------------------------------------------------------------------
+
+def test_hf_gated_repo_auth_classified() -> None:
+    for err in (
+        "GatedRepoError: 401 Client Error. Access to model meta-llama/Llama-2-7b is restricted",
+        "huggingface_hub.errors.HfHubHTTPError: 403 Forbidden for url: https://huggingface.co/Qwen/Qwen2.5-7B",
+    ):
+        klass, fix = classify_failure({"success": False, "error": err})
+        assert klass == "missing_dataset", f"{err!r} → {klass}"
+        assert "token" in fix.lower() or "licence" in fix.lower() or "auth" in fix.lower()
+
+
+def test_nccl_collective_timeout_classified() -> None:
+    err = (
+        "[E ProcessGroupNCCL.cpp] Watchdog caught collective operation timeout: "
+        "NCCL timeout after 600000ms running collective"
+    )
+    klass, fix = classify_failure({"success": False, "error": err})
+    assert klass == "nccl_timeout"
+    assert fix
