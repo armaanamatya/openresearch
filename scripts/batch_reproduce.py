@@ -309,8 +309,17 @@ def _run_one(
         if not venv_dir.exists():
             logger.info("batch_reproduce: [%s] creating venv at %s", paper, venv_dir)
             try:
+                # --system-site-packages: the per-run venv INHERITS the repo .venv's
+                # complete base ML stack (torch, transformers, datasets, matplotlib,
+                # numpy, scipy, accelerate, vllm, …) so an incomplete/failed
+                # requirements.txt install can never leave the experiment env without
+                # torch/matplotlib (the 2026-06-01 'No module named matplotlib' crash
+                # on the legacy `python train.py` path). The agent's requirements.txt
+                # still installs paper-specific deps ON TOP, isolated; only the base
+                # stack is shared. The cell route already uses the repo interpreter
+                # directly — this makes the legacy route's env equally complete.
                 result = subprocess.run(
-                    [interpreter, "-m", "venv", str(venv_dir)],
+                    [interpreter, "-m", "venv", "--system-site-packages", str(venv_dir)],
                     capture_output=True,
                     text=True,
                     timeout=120,
