@@ -974,6 +974,21 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     return 0 if success else 2
 
 
+# Title-like first sections that are actually generic section labels or the
+# corpus placeholder — never promote these to the displayed paperTitle.
+# 'paper_text' is the literal corpus-entry placeholder (_one_entry hard-codes
+# it); 'document' is the no-heading HTML-parser fallback section title (F-30).
+_NOISE_TITLES = frozenset({
+    "abstract", "introduction", "1 introduction", "1. introduction",
+    "summary", "overview", "paper_text", "document",
+})
+
+
+def _is_noise_title(title: str | None) -> bool:
+    """True when *title* is empty or a generic/placeholder label, not a real title."""
+    return (not title) or title.strip().lower() in _NOISE_TITLES
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     # BUG-LR-014: warn early if shell API-key vars shadow .env — see
@@ -1228,11 +1243,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _entries = (workspace_claim_map or {}).get("entries") or []
         _first_title = (_entries[0].get("title") if _entries else "") or ""
         # Reject the noise titles the bundle path produces ("Abstract",
-        # "Introduction", "1 Introduction"). Anything else is probably real.
-        _is_noise = (not _first_title) or _first_title.strip().lower() in {
-            "abstract", "introduction", "1 introduction", "1. introduction",
-            "summary", "overview",
-        }
+        # "Introduction", "1 Introduction") and the 'paper_text'/'document'
+        # placeholders (F-30). Anything else is probably real.
+        _is_noise = _is_noise_title(_first_title)
         if not _is_noise:
             _paper_title = _first_title.strip()
         _existing.update({
