@@ -98,6 +98,16 @@ class HtmlPaperParser:
                     new_p.string = ct
                     fig.insert_after(new_p)
 
+        # Preserve equation text — LaTeXML renders equations as <math> subtrees
+        # which are otherwise dropped via _DROP_TAGS, stripping rubric invariants
+        # (e.g. the SDAR g_t=σ(β·Δ_t), λ=0.1). Rescue the alttext LaTeX (LaTeXML
+        # emits it on the <math> root) or fall back to the unicode get_text, and
+        # replace the subtree with an inline string so the equation survives the
+        # decompose. Mirrors the figcaption rescue above.
+        for m in soup.find_all("math"):
+            tex = (m.get("alttext") or "").strip() or m.get_text(separator="", strip=True)
+            m.replace_with(soup.new_string(f" {tex} " if tex else " "))
+
         for tag_name in _DROP_TAGS:
             for element in soup.find_all(tag_name):
                 element.decompose()
