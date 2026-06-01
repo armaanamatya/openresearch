@@ -1901,6 +1901,13 @@ def _finalize(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx)
     )
 
+    # Persist GEPA training examples for future runs of the same paper.
+    try:
+        from backend.agents.gepa.prompt_registry import save_gepa_examples
+        save_gepa_examples(ctx)
+    except Exception as _gepa_save_exc:
+        logger.debug("save_gepa_examples skipped: %s", _gepa_save_exc)
+
     # Phase 9: mine per-paper negative lessons from this run's experiment records
     # (cross-run failure memory). Fail-soft, flag-gated (REPROLAB_NEGATIVE_LESSONS).
     try:
