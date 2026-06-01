@@ -339,3 +339,51 @@ def test_html_fetch_does_not_retry_on_404(tmp_path: Path, monkeypatch):
     assert html_path.exists(), "should recover via ar5iv"
     assert html_path.read_bytes() == _GOOD_HTML
     assert native_calls["n"] == 1, "404 is permanent — native tried exactly once, then ar5iv"
+
+
+# ---------------------------------------------------------------------------
+# F-31 — validated-cache reuse: a valid cached raw_paper.html is reused instead
+# of re-downloading (arXiv paper versions are immutable).
+# ---------------------------------------------------------------------------
+
+def test_html_fetch_reuses_validated_cache(tmp_path: Path):
+    """A valid cached raw_paper.html is reused without re-querying the network (F-31).
+
+    Asserts on the urlopen call count (not a raised error — _try_fetch_html
+    swallows exceptions), so a cache miss is detectable.
+    """
+    project_id = "prj_html_cache"
+    dst = tmp_path / project_id
+    dst.mkdir(parents=True)
+    (dst / "raw_paper.html").write_bytes(_GOOD_HTML)  # seed a valid cached body
+
+    calls = {"n": 0}
+
+    def _count(request: Request, *, timeout: float) -> _FakeResponse:
+        calls["n"] += 1
+        return _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_count)
+    fetcher._fetch_html(_ARXIV_ID, project_id=project_id)
+    assert calls["n"] == 0, "a valid cached raw_paper.html must be reused, not re-fetched"
+    assert (dst / "raw_paper.html").read_bytes() == _GOOD_HTML
+
+
+def test_html_fetch_force_refetch_bypasses_cache(tmp_path: Path):
+    """force_refetch=True re-fetches even when a valid cached HTML body exists (F-31)."""
+    project_id = "prj_html_force"
+    dst = tmp_path / project_id
+    dst.mkdir(parents=True)
+    (dst / "raw_paper.html").write_bytes(_GOOD_HTML)
+
+    calls = {"n": 0}
+    fresh = b"<!DOCTYPE html><html><body><article>" + b"y" * 6000 + b"</article></body></html>"
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        calls["n"] += 1
+        return _FakeResponse(fresh, status=200, content_type="text/html")
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    fetcher._fetch_html(_ARXIV_ID, project_id=project_id, force_refetch=True)
+    assert calls["n"] >= 1, "force_refetch must re-fetch"
+    assert (dst / "raw_paper.html").read_bytes() == fresh
