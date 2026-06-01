@@ -63,7 +63,7 @@ flowchart TD
 
 1. **Ingest** -- Parse the paper (HTML > PDF > OCR cascade via `ResolvingParser`). The winning parse becomes `parsed_full_text.txt`.
 2. **Understand** -- The RLM root calls `understand_section` and `extract_hyperparameters` to map the paper's claims, methods, and training recipes.
-3. **Environment** -- `detect_environment` reads framework/package clues; `build_environment` builds (and repairs) a **local** Docker image. This step runs a local `docker build` for every sandbox except `--sandbox local`, **including `--sandbox runpod`** — so the local Docker daemon must be up even when the experiment will execute on a remote GPU pod.
+3. **Environment** -- `detect_environment` reads framework/package clues; `build_environment` builds (and repairs) a **local** Docker image for `--sandbox docker` and `auto`/unknown. For `--sandbox local` and `--sandbox runpod` it short-circuits to a no-op (the runpod pod boots its own image over SSH), so **a local Docker daemon is only needed for `docker`/`auto`** — not for `local` or `runpod`.
 4. **Plan & Implement** -- `plan_reproduction` defines the reproduction contract; `implement_baseline` dispatches a coding agent (Claude Sonnet via `claude-agent-sdk`) to write the code.
 5. **Execute** -- `run_experiment` runs the code inside a sandboxed environment (Docker, RunPod GPU pod, or local process).
 6. **Score** -- `verify_against_rubric` grades the reproduction against a PaperBench-style rubric.
@@ -90,7 +90,7 @@ flowchart TD
 - Python >= 3.11
 - Node.js >= 20.19 (< 21) or >= 22.12
 - At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
-- **A running Docker engine (OrbStack or Docker Desktop) — for every sandbox except `--sandbox local`.** `build_environment` does a *local* `docker build`, so even **RunPod runs need the local Docker daemon up** (the repo defaults to `--sandbox runpod`). If it's down, runs fail at `build_environment` with `backend_unavailable`. Verify with `docker info`. See the [sandbox matrix](docs/runbooks/running-the-project.md) for what each mode needs.
+- **A running Docker engine (OrbStack or Docker Desktop) — only for `--sandbox docker` and `auto`/unknown.** For `--sandbox local` and `--sandbox runpod` (the repo default), `build_environment` short-circuits to a no-op, so **no local Docker daemon is needed**. If you use `docker`/`auto` and the engine is down, runs fail at `build_environment` with `backend_unavailable`. Verify with `docker info`. See the [sandbox matrix](docs/runbooks/running-the-project.md) for what each mode needs.
 
 ### Setup
 
@@ -156,6 +156,7 @@ docker compose up --build
 | `REPROLAB_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
 | `REPROLAB_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
 | `REPROLAB_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
+| `REPROLAB_GEPA_OPTIMIZATION` | No | `off` (default) / `on` / `plan-only` / `baseline-only` / `improve-only`: per-run GEPA prompt optimization (needs the separately-installed `gepa` package; no-op otherwise) |
 
 See `.env.example` for the full list.
 
@@ -194,6 +195,7 @@ backend/
   agents/
     rlm/              # RLM orchestrator: primitives, binding, system prompt, SSE bridge
     rdr/              # Rubric-driven harness (--mode rdr)
+    gepa/             # Per-run GEPA prompt optimization (feature-flagged off)
     runtime/          # LLM runtime resolution (Claude, OpenAI, Azure)
     resilience/       # Budget, cost tracking, failure classification
   services/
@@ -232,19 +234,20 @@ docs/                 # Design docs, runbooks, setup guides
 
 ## Sandbox Modes & Prerequisites
 
-`--sandbox` (or `REPROLAB_DEFAULT_SANDBOX`) chooses where `build_environment` and `run_experiment` execute. **The local Docker daemon is required for every mode except `local`** — see [running-the-project.md](docs/runbooks/running-the-project.md) for the full workflow and troubleshooting.
+`--sandbox` (or `REPROLAB_DEFAULT_SANDBOX`) chooses where `build_environment` and `run_experiment` execute. **The local Docker daemon is required only for `docker` and `auto`/unknown** — `local` and `runpod` both short-circuit `build_environment` to a no-op (the `runpod` short-circuit landed in `875995c`), so neither needs a local daemon. See [running-the-project.md](docs/runbooks/running-the-project.md) for the full workflow and troubleshooting.
 
 | Sandbox | Local Docker daemon | RunPod creds | Local GPU | `build_environment` | `run_experiment` |
 |---|:---:|:---:|:---:|---|---|
 | `local` | not needed | no | yes (GPU papers) | no-op (skipped) | host subprocess + per-run venv |
 | `docker` | **required** | no | optional | local `docker build` | local container |
-| `runpod` *(repo default)* | **required** (for the build step) | yes | no (remote) | local `docker build` (image **not** used on the pod) | remote GPU pod over SSH |
+| `runpod` *(repo default)* | not needed *(since `875995c`)* | yes | no (remote) | no-op (skipped — pod boots its own image) | remote GPU pod over SSH |
 | `auto` / unset / other | **required** (falls back to docker) | — | optional | local `docker build` | local container |
 
-> Common gotcha: the default is `runpod`, so people forget Docker is still needed for the
-> `build_environment` step. If OrbStack/Docker is down, a RunPod run dies at `build_environment`
-> (`backend_unavailable`) before reaching the pod. `start.sh` now preflight-checks the Docker
-> daemon whenever the sandbox is not `local`.
+> Common gotcha: the default is `runpod`, but **since `875995c` a RunPod run no longer
+> needs a local Docker daemon** — `build_environment` short-circuits and the pod boots its own
+> image over SSH. Docker is still required for `--sandbox docker` and `auto`/unknown. `start.sh`
+> preflight-checks the Docker daemon only when the default sandbox is `docker`/`auto` (not `local`,
+> not `runpod`).
 
 ## Dynamic GPU Selection
 
@@ -278,3 +281,4 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 | [setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions |
 | [deployment.md](docs/guides/deployment.md) | Deployment guide |
 | [e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook |
+| [gepa-per-run-integration-design.md](docs/superpowers/specs/2026-05-31-gepa-per-run-integration-design.md) | GEPA per-run prompt optimization design |

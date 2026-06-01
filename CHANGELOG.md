@@ -8,6 +8,14 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (GEPA per-run prompt optimization — feature-flagged, off by default)
+- `backend/agents/gepa/` — per-run GEPA (Genetic-Pareto) prompt optimization subsystem: `hooks.py` (`gepa_pre_call`/`gepa_post_call`), `optimizer.py` (`run_gepa_mini`, fail-soft wrapper over `gepa.optimize()`), `callback.py` (`SSEGepaCallback`), `prompt_registry.py` (example-buffer persistence), plus `adapters/`, `metrics/`, and `trainset/` for `plan_reproduction` / `implement_baseline` / `propose_improvements`.
+- `REPROLAB_GEPA_OPTIMIZATION` setting (`off` default / `on` / `plan-only` / `baseline-only` / `improve-only`) + bounds (`gepa_max_metric_calls_*`, `gepa_timeout_*_s`, `gepa_reflection_model`, `gepa_viz_port`) in `backend/config.py`.
+- Two prompt-injection paths in `binding.py::wrap_primitive` / `primitives.py` / `runtime/invoke.py`: Path A monkey-patches `llm_client.complete` (plan/improve); Path B threads `system_prompt_override` through `run_with_sdk` → `collect_agent_text` → `spec.instructions` for `implement_baseline` (claude-agent-sdk sub-agent).
+- 5 GEPA SSE events (`gepa_phase_start`/`gepa_phase_complete`/`gepa_candidate_proposed`/`gepa_candidate_accepted`/`gepa_candidate_rejected`) in `sse_bridge.py`; gepa-viz live UI proxied via `frontend/src/app/api/gepa-viz/[...path]/route.ts`.
+- `tests/gepa/` — evaluator, metrics, hooks, passthrough, and runner-integration coverage. Spec: `docs/superpowers/specs/2026-05-31-gepa-per-run-integration-design.md`.
+- Dormant by default: `gepa`/`gepa-viz` are not in `backend/requirements.txt`; `run_gepa_mini` returns the seed prompt on missing-package or any error, so the off-state and no-package-state are exact no-ops.
+
 ### Added (night — constellation UI + dynamic sandbox capability + outcome canonicalization)
 - `frontend/src/components/lab/rlm/constellation-canvas.tsx` (695 LOC) + `layout-constellation.ts` (234 LOC) — replace the 4-node Reingold-Tilford tree with a force-directed graph that visualizes every primitive call and every mini-RLM, with progressive disclosure so the default view stays clean.
 - `frontend/src/components/lab/rlm/layout-constellation.test.ts` — pinned: empty input, 1+3 candidates, 50-primitive density (no-overlap under `forceCollide(radius+14)`), deterministic seed.

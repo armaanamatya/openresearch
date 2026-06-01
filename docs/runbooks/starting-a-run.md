@@ -36,8 +36,9 @@ shell-empty guard below and your credential setup do **not** conflict.
 Each item is a one-line **CHECK** (exits 0 when ready) plus the **FIX** if it
 fails. Run from the repo root (`/Volumes/CS_Stuff/openresearch`).
 
-1. **Docker engine up (OrbStack OR Docker Desktop)** — needed for `docker` and
-   `runpod`; skip only for `--sandbox local`.
+1. **Docker engine up (OrbStack OR Docker Desktop)** — needed only for `docker`
+   and `auto`/unknown; `--sandbox local` and `runpod` short-circuit the build and
+   need no local daemon.
    - CHECK: `docker info >/dev/null 2>&1`
    - FIX: start your engine — OrbStack: `open -a OrbStack`; Docker Desktop:
      `open -a Docker` (macOS) / `systemctl start docker` (Linux). Re-verify with
@@ -77,9 +78,10 @@ fails. Run from the repo root (`/Volumes/CS_Stuff/openresearch`).
      only the *subscription*, never the *API key's balance*. For safe local dev,
      leave `ANTHROPIC_API_KEY` empty.
 
-6. **RunPod credentials — ONLY for `--sandbox runpod`.** Three gates, all
-   required: engine up (item 1), an API key, and an SSH key (`create_sandbox`
-   raises `backend_unavailable` if the SSH key is missing).
+6. **RunPod credentials — ONLY for `--sandbox runpod`.** Two gates: an API key
+   and an SSH key (`create_sandbox` raises `backend_unavailable` if the SSH key
+   is missing). A local Docker engine is **not** required for runpod —
+   `build_environment` short-circuits (so item 1 does not apply to runpod runs).
    - CHECK (API key): `grep -Eq '^REPROLAB_RUNPOD_API_KEY=.+' .env`
    - CHECK (SSH key): `test -f "${REPROLAB_RUNPOD_SSH_KEY_PATH:-$HOME/.ssh/id_ed25519}"`
    - FIX: get a key at <https://console.runpod.io/account/api-keys>, set
@@ -108,7 +110,7 @@ when launching `--sandbox runpod`.
 # Wrapped in a subshell ( ... ) so a NOT-READY `exit` ends the check, NOT your terminal.
 ( cd /Volumes/CS_Stuff/openresearch || exit 1
   docker info >/dev/null 2>&1 \
-    || { echo "NOT-READY: docker engine down — start OrbStack or Docker Desktop, then 'docker info' (skip only for --sandbox local)"; exit 1; }
+    || echo "WARN: docker engine down — only needed for --sandbox docker/auto (fine for local & runpod, which short-circuit the build). Start OrbStack/Docker if you use those modes."
   .venv/bin/python -c "from backend.app import create_app; create_app()" >/dev/null 2>&1 \
     || { echo "NOT-READY: venv/deps — run: .venv/bin/pip install -r backend/requirements.txt"; exit 1; }
   .venv/bin/python -c "import docker" >/dev/null 2>&1 \
