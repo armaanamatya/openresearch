@@ -3655,6 +3655,41 @@ def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
     return ("code_bug", masked) if masked else None
 
 
+def _surface_masked_bug_on_failed_run(result: dict) -> dict | None:
+    """F-05: for an already-FAILED run with no specific ``failure_class``, surface a
+    masked code bug's precise message so the next repair targets the real loader/parse
+    bug instead of a vaguer error.
+
+    ``_reclassify_masked_code_bugs`` is metrics-based and success-agnostic, but its
+    call site only runs on SUCCESSFUL runs (to flip them to repairable). A run that
+    already failed for a vague reason can still carry a masked code bug in
+    ``metrics.data_load_failures``; promote that precise message into
+    ``error``/``suggested_fix`` and set the precise ``failure_class``.
+
+    Returns the fields to merge into ``result``, or None when not applicable. NEVER
+    flips ``success`` (the run is already failed) and never overrides an
+    already-specific ``failure_class``.
+    """
+    if result.get("success"):
+        return None
+    if _failure_class_key(result.get("failure_class")):
+        return None  # a specific class is already set — leave it
+    masked = _reclassify_masked_code_bugs(result)
+    if masked is None:
+        return None
+    _cls, _bugs = masked
+    msg = (
+        "code_bug: a loader/parse error was caught and masked as a data_load_failure "
+        "(it would be silently excluded from the rubric). These are CODE bugs to fix, "
+        "not missing data — " + "; ".join(_bugs[:5])
+    )
+    return {
+        "failure_class": _cls,
+        "error": msg,
+        "suggested_fix": result.get("suggested_fix") or msg,
+    }
+
+
 def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
     """True when the scope element named in ``hint`` is covered by the agent's own
     ``metrics.data_load_failures`` — i.e. the agent tried to obtain it and failed.
@@ -4457,6 +4492,17 @@ def run_experiment(
             logger.warning(
                 "run_experiment[%s]: reclassified %d masked code bug(s) as repairable: %s",
                 getattr(ctx, "run_id", "?"), len(_bugs), _bugs[:3],
+            )
+    else:
+        # F-05: the run already failed for a vague reason — still surface a masked
+        # code bug's precise message (never flipping success) so the next repair
+        # targets the real loader/parse bug instead of a vague error.
+        _surfaced = _surface_masked_bug_on_failed_run(result)
+        if _surfaced is not None:
+            result = {**result, **_surfaced}
+            logger.warning(
+                "run_experiment[%s]: surfaced masked code bug on a failed run (%s)",
+                getattr(ctx, "run_id", "?"), _surfaced.get("failure_class"),
             )
 
     # Training-health postflight (2026-05-29): a run that exited 0 but logged a
