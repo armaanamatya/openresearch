@@ -3285,10 +3285,14 @@ _CODE_BUG_PHRASES = (
     "returned 0 rows",
     "must be a string or a real number",   # float(tuple) family
     "repository id must be",
-    "no such file or directory",           # FileNotFoundError without the class name
-    "errno 2",
-    "has no attribute",
 )
+
+# F-03: a bare OSError-style "no such file" / "errno 2" is a code bug only when a
+# config/source co-signal co-occurs (a missing base_config.yaml / *.py). Without
+# one, a missing DATA path is a provably-unobtainable dataset, not a code bug.
+# ("has no attribute" was dropped from _CODE_BUG_PHRASES — AttributeError /
+# FileNotFoundError are already caught by class name in _CODE_BUG_RE.)
+_CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
 
 
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
@@ -3339,7 +3343,16 @@ def _data_load_failure_is_code_bug(err: str) -> bool:
     low = (err or "").lower()
     if any(p in low for p in _CODE_BUG_PHRASES):
         return True
-    return bool(_CODE_BUG_RE.search(err or ""))
+    if _CODE_BUG_RE.search(err or ""):
+        return True
+    # Bare 'no such file'/'errno 2' is a code bug ONLY with a config/source
+    # co-signal (a missing base_config.yaml / *.py); a bare missing DATA path
+    # stays data-unavailable so it force-reduces on first sight (F-03).
+    if ("no such file or directory" in low or "errno 2" in low) and any(
+        c in low for c in _CONFIG_CODE_COSIGNALS
+    ):
+        return True
+    return False
 
 
 def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
