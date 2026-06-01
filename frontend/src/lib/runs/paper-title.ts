@@ -20,8 +20,10 @@ export interface PaperTitleInput {
 
 /** Inputs for deriving the unique per-run directory id. */
 export interface RunDirInput {
+  runDir?: string;
   outputDir?: string;
   projectId: string;
+  startedAt?: string;
   updatedAt?: string;
 }
 
@@ -72,18 +74,22 @@ export function paperDisplayTitle(run: PaperTitleInput): string {
 }
 
 /**
- * The UNIQUE per-run id: the last non-empty path segment of `outputDir`
- * (e.g. "prj_abc__20260531-231049") when present, else a `projectId:updatedAt`
- * composite. Used as the React list key so runs sharing a `projectId` don't
- * collide.
+ * The UNIQUE + STABLE per-run id, used as the React list key so runs sharing a
+ * `projectId` don't collide:
+ *   1. `runDir` — the backend-supplied filesystem dir name (truly unique, e.g.
+ *      "prj_abc__20260531-231049").
+ *   2. else `projectId::startedAt` — `startedAt` is set once at run start, so it
+ *      is both unique-per-run and STABLE across re-renders. (`outputDir` is NOT
+ *      used: it is the stale canonical path, identical across preserved
+ *      snapshots; `updatedAt` is unique but changes mid-run, which would remount
+ *      the row on every status tick.)
  */
 export function runDirName(run: RunDirInput): string {
-  if (typeof run.outputDir === "string" && run.outputDir.trim().length > 0) {
-    const segments = run.outputDir.split("/").filter((segment) => segment.length > 0);
-    const last = segments[segments.length - 1];
-    if (last) return last;
+  if (typeof run.runDir === "string" && run.runDir.trim().length > 0) {
+    return run.runDir.trim();
   }
-  return `${run.projectId}:${run.updatedAt ?? ""}`;
+  const stamp = run.startedAt ?? run.updatedAt ?? "";
+  return `${run.projectId}::${stamp}`;
 }
 
 function paperKey(run: RunNumberInput): string {
