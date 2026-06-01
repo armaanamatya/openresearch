@@ -14,6 +14,45 @@
 
 ---
 
+## STATUS — Session 2 (2026-06-01): merge LANDED + F-04/05/11 DONE
+
+Integration lives on branch **`integrate/harden-into-sdar`** (worktree
+`/home/sww35/openresearch-integrate`, forked off sdar `c19b78c`). Done this session:
+- **harden → integrate** merged (`44ce144`); full suite **3530 green**.
+- **abheek_recent_runs_panel** merged `--no-ff` (`be49356`); **3561 green**. Recent-runs UI
+  + leaderboard scoring + SDAR diagnostics. Conflicts resolved keeping ALL unique features
+  (cli.py shadow-dup `_is_noise_title` removed; leaderboard shared-`types.ts` refactor +
+  grafted `title`; CLAUDE.md kept ours — abheek's 4 new invariant rules describe
+  wedge-hardening code not present, dropped for accuracy).
+- **F-04** (`b8bfa83`): `_is_oom_escalation_trigger` — watchdog-killed OOM with a marker
+  buried past the 4 KB tail now advances the GPU ladder; staleness kills still break.
+- **F-05** (`22a4a6b`): `_surface_masked_bug_on_failed_run` — a FAILED run with no specific
+  failure_class now surfaces a masked code bug's precise message (never flips success).
+- **F-11** (`03b14a0`): `_apply_best_of_run_floor` moved BEFORE the verdict reconcile, so
+  verdict + displayed score stay consistent on the no-amend path.
+- Author `lolout1 <appradhann@gmail.com>`, NO trailer. Suite **3577** (4 load-induced
+  timeout/Dockerfile flakes pass in isolation — not regressions).
+- **PR → `main`** (opened this session).
+
+**DEFERRED — do in dedicated sessions:**
+- **`feat/rlm-wedge-hardening`** (55 commits off main): attempted merge = **24 conflicted
+  files / ~70 hunks** incl. **5 add/add PARALLEL implementations** (`local_gpu_allocator.py`,
+  `scripts/batch_reproduce.py`, `scripts/serve_local_llm.py`, `rlm/accelerator.py`,
+  `test_local_sandbox_routing.py`) — `git merge --abort`'d clean. Needs careful
+  parallel-impl reconciliation. Its CLAUDE.md carries the 4 invariant rules (Dockerfile
+  shape guard, RunStatus killed/interrupted, CLI `_install_termination_handlers`, SDK
+  isolation) whose code lives ONLY on this branch.
+- **F-33** (grader head+tail evidence) & **F-35** (citation-clamp + spec-gate): observe-first
+  score-movers — validate against a real SDAR run before enforcing.
+
+**REMAINING BACKLOG:** wedge merge · F-33 · F-35 · Phase C (cost) · D (budget/runtime = P4) ·
+E (security; F-37 SSRF) · F (cleanup). §1–§5 below = the (now-completed) merge plan + the
+still-pending backlog detail.
+
+⚠ **DO NOT disturb the live SDAR run `prj_09047604e591d969`** — it trained throughout this session.
+
+---
+
 ## 0. TL;DR — do this first
 
 1. **Decide nothing about scope** — the goal is a single integrated mainline that has BOTH the
