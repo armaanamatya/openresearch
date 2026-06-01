@@ -1808,6 +1808,16 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     def _note_sdk_event() -> None:
         _sdk_activity["last"] = _time.time()
 
+    # GEPA Path B: read the system-prompt override for implement_baseline directly
+    # from ctx, bypassing binding.py's Path A monkey-patch (which targets
+    # llm_client.complete — a surface the claude-agent-sdk sub-agent never uses).
+    # Captured here so the closure below sees a local binding rather than a
+    # late-binding read at call time.
+    _gepa_system_override: str | None = (
+        ctx.gepa_prompt_overrides.get("implement_baseline")
+        if hasattr(ctx, "gepa_prompt_overrides") else None
+    )
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -1842,6 +1852,9 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
             # stall watchdog distinguishes a working agent from a hung SDK.
             on_event=_note_sdk_event,
+            # GEPA Path B: replace the agent registry's default system prompt
+            # with the GEPA-optimized override (None → no-op, uses registry default).
+            system_prompt_override=_gepa_system_override,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).

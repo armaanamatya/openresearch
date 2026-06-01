@@ -1827,6 +1827,7 @@ async def run_with_sdk(
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
     on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook, forwarded to collect_agent_text
+    system_prompt_override: str | None = None,  # GEPA Path B: replaces agent system prompt, not the per-run prompt payload
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
 
@@ -1943,6 +1944,7 @@ async def run_with_sdk(
         provider=provider,
         runtime=runtime,
         on_event=on_event,
+        system_prompt_override=system_prompt_override,
     )
 
     # PR-ξ γ: post-emit knowledge-channel verification. After the sub-agent has

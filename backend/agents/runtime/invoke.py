@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import re
@@ -116,6 +117,7 @@ async def collect_agent_text(
     runtime: AgentRuntime | None = None,
     max_turns: int | None = None,
     on_event: Callable[[], None] | None = None,
+    system_prompt_override: str | None = None,
 ) -> str:
     """Run one agent and return concatenated text output.
 
@@ -123,6 +125,13 @@ async def collect_agent_text(
     are written.  Callers that set ``project_dir`` to a code subdirectory (e.g.
     ``runs/<id>/code/``) should pass ``ledger_dir=project_dir.parent`` so ledger
     entries land in the run root alongside demo_status.json.
+
+    ``system_prompt_override`` — when set, replaces the agent registry's default
+    system prompt (``spec.instructions``) while preserving the per-run ``prompt``
+    payload (project_id, context JSON, sandbox_guidance).  Used by the GEPA
+    Path B injection for ``implement_baseline``, which routes through the
+    claude-agent-sdk and therefore cannot use the llm_client.complete
+    monkey-patch (Path A).
     """
     selected_runtime = runtime or make_runtime(provider)
     started_at = datetime.now(timezone.utc).isoformat()
@@ -132,6 +141,8 @@ async def collect_agent_text(
         working_directory=project_dir,
         max_turns=max_turns,
     )
+    if system_prompt_override is not None:
+        spec = dataclasses.replace(spec, instructions=system_prompt_override)
     collected: list[str] = []
     tool_calls: list[dict[str, object]] = []
     subagent_usage: dict[str, int] = {

@@ -423,9 +423,13 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
 
                     # GEPA Path A: inject optimized system prompt via llm_client.complete monkey-patch.
                     # Only active when gepa_prompt_overrides has an entry for this primitive.
+                    # NOT used for implement_baseline — that primitive routes through the
+                    # claude-agent-sdk sub-agent which never calls llm_client.complete.
+                    # implement_baseline uses Path B instead (system_prompt_override kwarg
+                    # threaded through run_with_sdk → collect_agent_text → spec.instructions).
                     _gepa_override = ctx.gepa_prompt_overrides.get(name) if hasattr(ctx, "gepa_prompt_overrides") else None
                     _orig_complete = None
-                    if _gepa_override and hasattr(ctx, "llm_client") and ctx.llm_client is not None:
+                    if _gepa_override and name != "implement_baseline" and hasattr(ctx, "llm_client") and ctx.llm_client is not None:
                         _orig_complete = ctx.llm_client.complete
                         def _patched_complete(*, system, user, **_kw):
                             return _orig_complete(system=_gepa_override, user=user, **_kw)
