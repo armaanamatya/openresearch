@@ -1,34 +1,41 @@
 """EnvCacheManager — host-shared, crash-safe cache for heavy RL environments.
 
-Part B of full-scope-envs (2026-06-01). The SDAR full scope needs two expensive
-environments that a Search-QA-only run skips: **ALFWorld** (a multi-GB one-time
-``alfworld-download``) and **WebShop** (a single indexed server process). Doing
-either per-run — or worse, per-cell — wastes minutes and disk and is flaky. This
-manager makes both:
+Part B of full-scope-envs (2026-06-01), extended 2026-06-01 for the agentic
+re-enablement of the SDAR full scope. The SDAR paper needs three environments a
+Search-QA-only run skips: **ALFWorld** (a multi-GB one-time ``alfworld-download``),
+**WebShop** (a single indexed server process), and a **dense Search-QA retriever**
+(an E5 index over the wiki-18 corpus — large to build, pointless to rebuild). This
+manager makes all three:
 
-* **idempotent + host-shared** — ALFWorld is downloaded ONCE into a shared cache
-  dir (``REPROLAB_ENV_CACHE_DIR``, default ``<runs_root>/.cache/envs``) and reused
-  by every later run/cell;
+* **idempotent + host-shared** — ALFWorld data and the dense Search-QA index are
+  built/downloaded ONCE into a shared cache dir (``REPROLAB_ENV_CACHE_DIR``,
+  default ``<runs_root>/.cache/envs``) and reused by every later run/cell;
 * **ref-counted** — ONE WebShop server backs N concurrent leases and is torn down
   only when the last lease releases;
 * **crash-safe** — an ``fcntl``-locked state file with stale-server reclaim by PID
   liveness, mirroring ``backend/services/runtime/local_gpu_allocator.py``;
 * **fail-soft into the rubric** — a setup that cannot complete on this host returns
   a VERIFIED ``env_setup_failed`` :class:`~backend.agents.rlm.exclusion.Exclusion`
-  (NOT an exception), so the grid runs the environments that work and the rubric
-  EXCLUDES (numerator AND denominator) the rest. This is the fairness principle
+  (NOT an exception) for ALFWorld/WebShop, so the grid runs the environments that
+  work and the rubric EXCLUDES (numerator AND denominator) the rest. Search-QA
+  never excludes: a cold/unavailable dense index degrades to BM25 (still real
+  retrieval), so the environment always runs. This is the fairness principle
   (2026-06-01): never dock the rubric for an environment the harness could not
   stand up. The verified Exclusion flows through ``exclusion.build_scope_block``
-  into ``metrics.json::scope`` and is honoured by the leaf scorer (self-sufficient
-  since the Part A review follow-up — a verified ``scope.exclusions`` record
-  excludes its leaves even without a co-populated ``environments_skipped``).
+  into ``metrics.json::scope`` and is honoured by the leaf scorer.
 
-INTEGRATION STATUS (design doc §5): the cache / lock / ref-count / Exclusion logic
-is unit-tested with the downloader subprocess and the health probe INJECTED. The
-real ``alfworld-download`` invocation and the WebShop server bring-up are NOT
-end-to-end verified in this session (the shared box has no spare GPU and a live
-run holds it). The injected ``downloader`` / ``server_launcher`` / ``probe`` seams
-are exactly where a clean-host integration test plugs real commands in.
+DENSE RETRIEVER (2026-06-01): the dense E5/wiki-18 path is **opt-in + configurable**
+so a cold or offline host degrades to BM25 rather than blocking the grid on a
+multi-GB build. ``REPROLAB_SEARCH_QA_DENSE`` must be truthy to attempt anything;
+``REPROLAB_SEARCH_QA_INDEX_REPO`` names a HF repo holding a prebuilt FAISS index +
+passage store (snapshot-downloaded, cached, reused). Absent either, Search-QA
+provisions ``SEARCH_QA_RETRIEVER=bm25`` and the env's BM25/overlap retriever runs.
+
+INTEGRATION STATUS: the cache / lock / ref-count / Exclusion logic is unit-tested
+with the downloader subprocess, the health probe, and the index builder INJECTED.
+The real ``alfworld-download`` invocation (now resolved by abs path next to the
+interpreter), the WebShop server bring-up, and the dense index download are the
+seams a clean-host integration test / a live run plug real commands into.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import json
 import logging
 import os
 import signal
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -62,29 +70,49 @@ __all__ = [
     "FULL_SCOPE_ENV_GUIDANCE",
 ]
 
-# Guidance appended to REPROLAB_BASELINE_EXTRA_GUIDANCE (by backend/cli.py) ONLY
-# when the effective scope keeps ALFWorld/WebShop active — tells the agent to
-# write a BaseEnv subclass per environment + add their cells, and to consume the
-# cache locations the EnvCacheManager exports rather than re-provisioning.
+# Guidance appended to REPROLAB_BASELINE_EXTRA_GUIDANCE (by backend/cli.py) when the
+# effective scope keeps the SDAR paper environments active. Tells the agent to use
+# the SHIPPED concrete agentic env modules (copied into code/ as harness helpers)
+# rather than re-implementing ALFWorld / WebShop / retrieval by hand, to consume the
+# cache locations the EnvCacheManager exports, and to train at full depth.
 FULL_SCOPE_ENV_GUIDANCE = (
-    "[full-scope envs] This run's scope includes {envs}. For EACH of those "
-    "environments: write a concrete `*Env` class (e.g. `ALFWorldEnv`, `WebShopEnv`) "
-    "in code/sdar/ that subclasses `sdar_env_base.BaseEnv` and implements both "
-    "`build_student_prompt` and `build_teacher_prompt`, and add its cells to "
-    "code/cells.json (one cell per model x baseline x seed, with the env's name in "
-    "the `env` field). Load ALFWorld episodes from the directory in the "
-    "`ALFWORLD_DATA` environment variable and reach the WebShop server at the URL "
-    "in the `WEBSHOP_URL` environment variable — both are provided by the "
-    "host-shared environment cache, so do NOT re-download ALFWorld or start your "
-    "own WebShop server. If an environment's data or server is genuinely "
-    "unavailable at runtime, record it as a scope gap (do not crash the grid)."
+    "[full-scope envs] This run's scope includes {envs}. These are REAL multi-turn "
+    "agentic environments — do NOT fake them (no closed-book QA, no scripted stubs). "
+    "The harness has copied ready-made, tested env modules into your code/ dir; "
+    "import and use them rather than re-implementing:\n"
+    "  • `from sdar_env_base import AgenticEnv, StepResult` — the multi-turn contract "
+    "(reset()/step()/episode_reward() + transcript-rendering prompt builders).\n"
+    "  • `from search_qa_env import SearchQAEnv, load_search_qa_tasks` — real retrieval "
+    "QA (the model issues search(<q>) then answer(<a>)); it reads the cached dense E5 "
+    "index from SEARCH_QA_INDEX_DIR when SEARCH_QA_RETRIEVER=e5, else BM25. It KEEPS "
+    "HotpotQA contexts. Reward = token-F1.\n"
+    "  • `from alfworld_env import ALFWorldEnv` — real ALFWorld TextWorld episodes "
+    "loaded from the directory in the ALFWORLD_DATA env var.\n"
+    "  • `from webshop_env import WebShopEnv` — real WebShop via the server at the "
+    "WEBSHOP_URL env var.\n"
+    "  • `from agentic_rollout import rollout_episode` — drives ONE multi-turn episode "
+    "and returns a flat Trajectory(sequence_ids, response_mask, reward, info). Compute "
+    "the GRPO advantage over a group of G such rollouts and the OPSD gate token-wise "
+    "over the response_mask positions — do NOT hand-roll the turn→token-mask "
+    "conversion.\n"
+    "ALFWORLD_DATA / WEBSHOP_URL / SEARCH_QA_INDEX_DIR / SEARCH_QA_RETRIEVER are "
+    "provided by the host-shared environment cache — consume them; do NOT re-download "
+    "ALFWorld, start your own WebShop server, or rebuild the index. Add one cell per "
+    "(model × baseline × seed × env) to code/cells.json with the env name in the "
+    "`env` field, and add the env deps your modules import to requirements.txt "
+    "(rank_bm25, sentence-transformers, faiss-cpu, datasets, alfworld; requests is "
+    "optional — webshop_env prefers stdlib urllib). Train at PAPER DEPTH, not "
+    "smoke-test depth: STEPS >= 400, GROUP_SIZE = 8, and a token budget large enough "
+    "for multi-turn rollouts (agentic episodes need many turns × tokens). If an "
+    "environment's data or server is genuinely unavailable at runtime, record it as a "
+    "scope gap (do NOT crash the grid) — the harness converts a verified-unavailable "
+    "env into a rubric exclusion."
 )
 
-# Environments this manager knows how to stand up. "Search-QA" needs no special
-# environment (it is a dataset loaded by the cell trainer), so it is always "ok"
-# with nothing to provision — listed so the caller can treat all axes uniformly.
+# Environments this manager knows how to stand up.
 _ALFWORLD = "ALFWorld"
 _WEBSHOP = "WebShop"
+_SEARCH_QA = "Search-QA"
 
 
 def default_cache_dir() -> Path:
@@ -100,9 +128,12 @@ def default_cache_dir() -> Path:
 class EnvSetupResult:
     """Outcome of provisioning one environment.
 
-    Exactly one of (``ok=True`` with a path/url) or (``ok=False`` with
+    Exactly one of (``ok=True`` with a path/url/env-vars) or (``ok=False`` with
     ``exclusion``) holds. ``data_path`` is set for ALFWorld, ``base_url`` for
-    WebShop; ``Search-QA`` returns ``ok=True`` with neither (nothing to provision).
+    WebShop; ``Search-QA`` returns ``ok=True`` with ``env_vars`` carrying the
+    retriever selection (``SEARCH_QA_INDEX_DIR`` + ``SEARCH_QA_RETRIEVER``) and no
+    path/url. ``env_vars`` is a generic bag merged into the child environment by
+    :meth:`as_env_vars` (alongside the ALFWorld/WebShop legacy keys).
     """
 
     env: str
@@ -111,13 +142,16 @@ class EnvSetupResult:
     base_url: str | None = None
     exclusion: Exclusion | None = None
     detail: str = ""
+    env_vars: dict[str, str] = field(default_factory=dict)
 
     def as_env_vars(self) -> dict[str, str]:
         """Cache locations to splice into a child run's environment (empty on fail)."""
-        out: dict[str, str] = {}
-        if self.ok and self.data_path:
+        if not self.ok:
+            return {}
+        out: dict[str, str] = dict(self.env_vars)
+        if self.data_path:
             out["ALFWORLD_DATA"] = self.data_path
-        if self.ok and self.base_url:
+        if self.base_url:
             out["WEBSHOP_URL"] = self.base_url
         return out
 
@@ -137,12 +171,38 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _resolve_console_script(name: str) -> str | None:
+    """Resolve a venv console script (e.g. ``alfworld-download``) to an abs path.
+
+    Console scripts install next to the interpreter (``<venv>/bin/<name>``) but
+    that dir is not necessarily on a child process's PATH, so resolve by abs path
+    first and fall back to a PATH lookup. Returns ``None`` if not found.
+    """
+    import shutil
+
+    candidate = Path(sys.executable).with_name(name)
+    if candidate.exists():
+        return str(candidate)
+    return shutil.which(name)
+
+
 def _default_alfworld_downloader(cache_dir: Path) -> None:
-    """Run ``alfworld-download`` into ``cache_dir`` (real path; injected in tests)."""
+    """Run ``alfworld-download`` into ``cache_dir`` (real path; injected in tests).
+
+    ``ALFWORLD_DATA`` controls the download target. The console script is resolved
+    by abs path (it may not be on the child's PATH); a missing script raises, which
+    ``ensure_alfworld`` converts into a verified Exclusion.
+    """
     import subprocess  # local import: only the real path needs it
 
+    exe = _resolve_console_script("alfworld-download")
+    if not exe:
+        raise FileNotFoundError(
+            "alfworld-download console script not found next to the interpreter "
+            f"({Path(sys.executable).parent}) or on PATH"
+        )
     env = {**os.environ, "ALFWORLD_DATA": str(cache_dir)}
-    subprocess.run(["alfworld-download"], check=True, env=env, timeout=3600)
+    subprocess.run([exe], check=True, env=env, timeout=3600)
 
 
 def _default_webshop_launcher(cache_dir: Path, port: int) -> int:
@@ -169,14 +229,69 @@ def _default_probe(url: str, *, timeout_s: float = 2.0) -> bool:
         return False
 
 
-class EnvCacheManager:
-    """Idempotent, fcntl-locked, ref-counted cache for ALFWorld + WebShop.
+def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
+    """Build/download a dense E5 wiki-18 retrieval index (real path; injected in tests).
 
-    All side-effecting operations (download, server launch, health probe) are
-    injected callables, so the entire lifecycle is unit-testable without touching
-    the network, a multi-GB download, or a real server. Every public method is
-    fail-soft: a provisioning error becomes an :class:`EnvSetupResult` carrying a
-    verified ``env_setup_failed`` :class:`Exclusion`, never a raised exception.
+    Returns the index dir on success, ``None`` to fall back to BM25 — NEVER raises.
+    Opt-in + configurable so a cold/offline host degrades gracefully:
+
+      * ``REPROLAB_SEARCH_QA_DENSE`` must be truthy to attempt anything;
+      * ``REPROLAB_SEARCH_QA_INDEX_REPO`` — a HF repo holding a prebuilt FAISS index
+        + passage store; snapshot-downloaded into ``cache_dir`` when set (fastest,
+        no local embedding). ``REPROLAB_SEARCH_QA_INDEX_REPO_TYPE`` selects the HF
+        repo type (default ``dataset``).
+
+    The downloaded artifact is cached under ``cache_dir`` and reused by
+    :meth:`EnvCacheManager.ensure_search_qa_index`. A local-embed path (download the
+    corpus + embed with e5 on GPU) is intentionally left to a follow-up — the repo
+    download keeps the common case fast and the BM25 fallback keeps every host live.
+    """
+    flag = os.environ.get("REPROLAB_SEARCH_QA_DENSE", "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return None
+    repo = os.environ.get("REPROLAB_SEARCH_QA_INDEX_REPO", "").strip()
+    if not repo:
+        logger.info(
+            "env_cache: REPROLAB_SEARCH_QA_DENSE set but REPROLAB_SEARCH_QA_INDEX_REPO "
+            "is empty — using BM25 (set the repo to enable dense E5 retrieval)."
+        )
+        return None
+    try:
+        from huggingface_hub import snapshot_download  # lazy: only the real path needs it
+
+        repo_type = os.environ.get("REPROLAB_SEARCH_QA_INDEX_REPO_TYPE", "dataset").strip() or "dataset"
+        dest = cache_dir / "search_qa_index"
+        dest.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=repo, repo_type=repo_type, local_dir=str(dest),
+            local_dir_use_symlinks=False,
+        )
+        # Minimal sanity: a FAISS index file must exist for the env to load it.
+        if any(dest.rglob("*.index")) or any(dest.rglob("*.faiss")):
+            return dest
+        logger.warning(
+            "env_cache: search-qa index repo %s downloaded but no .index/.faiss file "
+            "found — BM25 fallback.", repo,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 — dense is best-effort; BM25 always works
+        logger.warning(
+            "env_cache: dense search-qa index build failed (%s: %s); BM25 fallback.",
+            type(exc).__name__, str(exc)[:160],
+        )
+        return None
+
+
+class EnvCacheManager:
+    """Idempotent, fcntl-locked, ref-counted cache for ALFWorld + WebShop + Search-QA.
+
+    All side-effecting operations (download, server launch, health probe, dense
+    index build) are injected callables, so the entire lifecycle is unit-testable
+    without touching the network, a multi-GB download, or a real server. Every
+    public method is fail-soft: an ALFWorld/WebShop provisioning error becomes an
+    :class:`EnvSetupResult` carrying a verified ``env_setup_failed``
+    :class:`Exclusion`; a Search-QA dense-index failure degrades to BM25 (never an
+    exclusion — the env always runs). Nothing raises.
     """
 
     def __init__(
@@ -186,6 +301,7 @@ class EnvCacheManager:
         downloader: Callable[[Path], None] | None = None,
         server_launcher: Callable[[Path, int], int] | None = None,
         probe: Callable[[str], bool] | None = None,
+        index_builder: Callable[[Path], "Path | None"] | None = None,
         webshop_port: int = 3000,
         server_ready_timeout_s: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
@@ -197,6 +313,7 @@ class EnvCacheManager:
         self._downloader = downloader or _default_alfworld_downloader
         self._launcher = server_launcher or _default_webshop_launcher
         self._probe = probe or _default_probe
+        self._index_builder = index_builder or _default_search_qa_index_builder
         self._webshop_port = int(webshop_port)
         self._ready_timeout_s = float(server_ready_timeout_s)
         self._clock = clock
@@ -253,7 +370,10 @@ class EnvCacheManager:
             return self.ensure_alfworld(display_name=env or _ALFWORLD)
         if key in ("webshop", "web shop", "web-shop"):
             return self.acquire_webshop(display_name=env or _WEBSHOP)
-        # Search-QA (and any dataset-only env): nothing to provision.
+        if key in ("search-qa", "searchqa", "search_qa", "search qa",
+                   "nq", "nq-open", "nq_open", "hotpotqa", "hotpot_qa"):
+            return self.ensure_search_qa_index(display_name=env or _SEARCH_QA)
+        # Any other dataset-only env: nothing to provision.
         return EnvSetupResult(env=env or "", ok=True, detail="no environment to provision")
 
     def ensure_alfworld(self, *, display_name: str = _ALFWORLD) -> EnvSetupResult:
@@ -322,6 +442,48 @@ class EnvCacheManager:
         except Exception as exc:  # noqa: BLE001 — release must never raise
             logger.warning("env_cache: WebShop release failed (non-fatal): %s", exc)
 
+    def ensure_search_qa_index(self, *, display_name: str = _SEARCH_QA) -> EnvSetupResult:
+        """Provide a Search-QA retriever: dense E5 index when buildable + cached,
+        else BM25 (always works).
+
+        Unlike ALFWorld/WebShop, Search-QA NEVER returns an exclusion — a cold or
+        unavailable dense index degrades to ``SEARCH_QA_RETRIEVER=bm25`` and the
+        env's BM25/overlap retriever runs. The dense build is idempotent + shared
+        (cached under ``<cache>/search_qa_index``).
+        """
+        try:
+            with self._locked_state() as state:
+                rec = state.get("search_qa") or {}
+                if (rec.get("ready") and rec.get("retriever") == "e5"
+                        and Path(rec.get("index_dir", "")).exists()):
+                    return EnvSetupResult(
+                        env=display_name, ok=True, detail="cache hit (e5)",
+                        env_vars={"SEARCH_QA_INDEX_DIR": rec["index_dir"],
+                                  "SEARCH_QA_RETRIEVER": "e5"},
+                    )
+                built = self._index_builder(self.cache_dir)  # injected; None → BM25
+                if built is not None and Path(built).exists():
+                    state["search_qa"] = {"ready": True, "retriever": "e5",
+                                          "index_dir": str(built), "built_at": self._clock()}
+                    return EnvSetupResult(
+                        env=display_name, ok=True, detail="dense index ready",
+                        env_vars={"SEARCH_QA_INDEX_DIR": str(built),
+                                  "SEARCH_QA_RETRIEVER": "e5"},
+                    )
+                state["search_qa"] = {"ready": True, "retriever": "bm25",
+                                      "built_at": self._clock()}
+                return EnvSetupResult(
+                    env=display_name, ok=True, detail="bm25 (no dense index)",
+                    env_vars={"SEARCH_QA_RETRIEVER": "bm25"},
+                )
+        except Exception as exc:  # noqa: BLE001 — Search-QA must always run
+            logger.warning("env_cache: search-qa provisioning issue (%s); BM25",
+                           type(exc).__name__)
+            return EnvSetupResult(
+                env=display_name, ok=True, detail="bm25 (provisioning fell back)",
+                env_vars={"SEARCH_QA_RETRIEVER": "bm25"},
+            )
+
     def _await_ready(self, url: str) -> bool:
         """Poll the health probe until ready or the ready-timeout elapses."""
         deadline = self._clock() + self._ready_timeout_s
@@ -337,11 +499,12 @@ class ProvisionResult:
     """Outcome of provisioning a whole scope's worth of environments.
 
     ``env_vars`` are the cache locations to splice into the child run's
-    environment (ALFWORLD_DATA / WEBSHOP_URL). ``exclusions`` are the VERIFIED
-    ``env_setup_failed`` records for any env that could not be stood up on this
-    host — feed them to ``exclusion.build_scope_block`` so the rubric excludes
-    (not zeroes) those leaves. ``release()`` drops every WebShop lease acquired
-    (a no-op for ALFWorld / Search-QA); call it in the run's ``finally``.
+    environment (ALFWORLD_DATA / WEBSHOP_URL / SEARCH_QA_INDEX_DIR /
+    SEARCH_QA_RETRIEVER). ``exclusions`` are the VERIFIED ``env_setup_failed``
+    records for any env that could not be stood up on this host — feed them to
+    ``exclusion.build_scope_block`` so the rubric excludes (not zeroes) those
+    leaves. ``release()`` drops every WebShop lease acquired (a no-op for ALFWorld
+    / Search-QA); call it in the run's ``finally``.
     """
 
     env_vars: dict[str, str] = field(default_factory=dict)

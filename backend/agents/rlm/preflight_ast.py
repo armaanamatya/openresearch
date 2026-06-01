@@ -565,7 +565,18 @@ def _check_local_import_from(
 
 _REQUIRED_ENV_METHODS = ("build_student_prompt", "build_teacher_prompt")
 _BASE_ENV_NAME = "BaseEnv"
+_AGENTIC_ENV_NAME = "AgenticEnv"
 _BASE_ENV_MODULE = "sdar_env_base"
+# Bases that already satisfy the teacher/student contract: BaseEnv (the ABC) and
+# AgenticEnv (which subclasses BaseEnv and ships concrete prompt builders), plus
+# the harness-shipped concrete agentic envs the agent is told to use directly.
+# A ``class FooEnv(<any of these>)`` cannot AttributeError on the contract.
+_VALID_ENV_BASES = frozenset({
+    _BASE_ENV_NAME, _AGENTIC_ENV_NAME,
+    "SearchQAEnv", "ALFWorldEnv", "WebShopEnv",
+})
+# Names whose mere presence means the SDAR env contract is "in play".
+_ENV_CONTRACT_NAMES = frozenset({_BASE_ENV_NAME, _AGENTIC_ENV_NAME})
 
 
 def _file_uses_env_contract(tree: ast.AST) -> bool:
@@ -589,13 +600,13 @@ def _file_uses_env_contract(tree: ast.AST) -> bool:
             if module_stem.split(".")[0] == _BASE_ENV_MODULE:
                 return True
             for alias in node.names:
-                if alias.name == _BASE_ENV_NAME:
+                if alias.name in _ENV_CONTRACT_NAMES:
                     return True
-        # Bare name ``BaseEnv`` referenced anywhere.
-        if isinstance(node, ast.Name) and node.id == _BASE_ENV_NAME:
+        # Bare name ``BaseEnv`` / ``AgenticEnv`` referenced anywhere.
+        if isinstance(node, ast.Name) and node.id in _ENV_CONTRACT_NAMES:
             return True
-        # Attribute access of the form ``module.BaseEnv``.
-        if isinstance(node, ast.Attribute) and node.attr == _BASE_ENV_NAME:
+        # Attribute access of the form ``module.BaseEnv`` / ``module.AgenticEnv``.
+        if isinstance(node, ast.Attribute) and node.attr in _ENV_CONTRACT_NAMES:
             return True
         # Reference to one of the required methods — either ``obj.build_student_prompt``
         # (attribute access / call) or the bare name (e.g. passed around).
@@ -606,16 +617,17 @@ def _file_uses_env_contract(tree: ast.AST) -> bool:
     return False
 
 
-def _base_is_base_env(base: ast.expr) -> bool:
-    """Return True if an ``ast`` base-class expression names ``BaseEnv``.
+def _base_is_valid_env_base(base: ast.expr) -> bool:
+    """Return True if an ``ast`` base-class expression names a contract-satisfying
+    base — ``BaseEnv``, ``AgenticEnv``, or a harness-shipped concrete env.
 
-    Matches both ``class Foo(BaseEnv):`` (``ast.Name``) and
-    ``class Foo(mod.BaseEnv):`` (``ast.Attribute``).
+    Matches both ``class Foo(AgenticEnv):`` (``ast.Name``) and
+    ``class Foo(mod.AgenticEnv):`` (``ast.Attribute``).
     """
     if isinstance(base, ast.Name):
-        return base.id == _BASE_ENV_NAME
+        return base.id in _VALID_ENV_BASES
     if isinstance(base, ast.Attribute):
-        return base.attr == _BASE_ENV_NAME
+        return base.attr in _VALID_ENV_BASES
     return False
 
 
@@ -682,7 +694,7 @@ def _check_env_interface_contract(
                 continue
             # Does it directly subclass BaseEnv? If so, the ABC enforces the
             # methods at construction — don't flag.
-            if any(_base_is_base_env(base) for base in node.bases):
+            if any(_base_is_valid_env_base(base) for base in node.bases):
                 continue
             # Does it define the methods itself (incl. same-file inheritance)?
             members = _collect_all_class_members_with_inheritance(tree, name)
@@ -695,11 +707,11 @@ def _check_env_interface_contract(
                 class_name=name,
                 missing_attr="build_student_prompt/build_teacher_prompt",
                 suggested_fix=(
-                    f"Make `{name}` subclass BaseEnv from sdar_env_base and "
-                    f"implement build_student_prompt + build_teacher_prompt: "
-                    f"`from sdar_env_base import BaseEnv` then "
-                    f"`class {name}(BaseEnv): ...`. The harness copies "
-                    f"sdar_env_base.py into code/."
+                    f"Make `{name}` subclass BaseEnv (single-turn) or AgenticEnv "
+                    f"(multi-turn) from sdar_env_base: `from sdar_env_base import "
+                    f"AgenticEnv` then `class {name}(AgenticEnv): ...` (implement "
+                    f"reset/step) — or import a shipped env (search_qa_env, "
+                    f"alfworld_env, webshop_env). The harness copies these into code/."
                 ),
                 severity="hard",
                 detail=(

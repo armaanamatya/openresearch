@@ -3629,7 +3629,12 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
     if not isinstance(metrics, dict):
         return metrics
     op_excls = _operator_scope_exclusions(ctx)
-    if not op_excls:
+    # Verified env-setup failures from run-start provisioning (an ALFWorld/WebShop
+    # the host could not stand up) are excluded on the SAME fairness footing as an
+    # operator de-scope — both are outside the agent's control, both verified.
+    env_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+    all_excls = op_excls + env_excls
+    if not all_excls:
         return metrics
     try:
         from backend.agents.rlm import exclusion as _excl
@@ -3642,7 +3647,7 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
         recovered = _excl.exclusions_from_gaps(existing.get("gaps") or [])
         existing["gaps"] = []
         metrics["scope"] = _excl.build_scope_block(
-            recovered + op_excls,
+            recovered + all_excls,
             models_run=existing.get("models_run"),
             existing=existing,
         )

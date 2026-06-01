@@ -1333,6 +1333,39 @@ async def run_pipeline_rlm(
         gpu_visible_count=_visible_gpu_count(),
     )
 
+    # 4b. Full-scope environment provisioning (2026-06-01). When the scope names
+    # heavy RL envs (ALFWorld / WebShop) or Search-QA, stand them up ONCE in the
+    # host-shared cache and splice their locations (ALFWORLD_DATA / WEBSHOP_URL /
+    # SEARCH_QA_INDEX_DIR / SEARCH_QA_RETRIEVER) into os.environ so every cell
+    # subprocess inherits them. Fail-soft: an ALFWorld/WebShop that cannot be stood
+    # up becomes a VERIFIED exclusion on ctx (folded into metrics.scope → excluded,
+    # not zeroed). A no-op for non-SDAR papers (setup() ignores unknown dataset
+    # names) and for Search-QA when dense is off (it just runs BM25).
+    _provision_envs = (
+        [d.normalized_id() for d in (getattr(_scope_spec, "datasets", None) or [])]
+        if _scope_spec is not None else []
+    )
+    if _provision_envs:
+        try:
+            import atexit as _atexit
+            from backend.services.runtime.env_cache import (
+                EnvCacheManager as _EnvCacheManager,
+                provision_scope as _provision_scope,
+            )
+            _prov = _provision_scope(_provision_envs, _EnvCacheManager())
+            if _prov.env_vars:
+                os.environ.update(_prov.env_vars)
+            ctx.env_setup_exclusions = list(_prov.exclusions)
+            _atexit.register(_prov.release)
+            logger.info(
+                "run_pipeline_rlm[%s]: env provisioning — vars=%s, exclusions=%s",
+                project_id, sorted(_prov.env_vars), [e.item for e in _prov.exclusions],
+            )
+        except Exception:  # noqa: BLE001 — provisioning must never abort the run
+            logger.warning(
+                "run_pipeline_rlm: env provisioning failed (non-fatal)", exc_info=True
+            )
+
     # 5. Primitives — the real binding or the stub provider.
     # repair_policy_holder is a late-binding 1-slot list: the tool wrappers
     # close over it, and run.py populates slot 0 after the ForcedIterationPolicy

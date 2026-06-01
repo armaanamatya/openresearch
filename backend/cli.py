@@ -1158,13 +1158,16 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # Full-scope env guidance (2026-06-01, Part B): when the EFFECTIVE scope keeps
-    # ALFWorld / WebShop active (i.e. the operator did NOT de-scope them), the agent
-    # must write a *Env subclass per environment and add their cells. Appended only
-    # when those envs are in scope, so the smallest-two (Search-QA only) run — whose
-    # merge auto-derives skip_datasets=[ALFWorld, WebShop] — is unaffected.
+    # Full-scope env guidance (2026-06-01): when the EFFECTIVE scope keeps any of the
+    # SDAR paper environments active, tell the agent to use the shipped AGENTIC env
+    # modules (real ALFWorld / WebShop / dense-retrieval Search-QA) and train at paper
+    # depth — never fake them. Search-QA is included so even a Search-QA-only run gets
+    # the real-retrieval guidance (the 2026-05-31 closed-book surrogate floored it);
+    # an env the operator de-scopes drops out of _active_envs and is simply not named.
     _active_envs = {d.normalized_id().strip().lower() for d in _effective_scope.datasets}
-    _full_scope_envs = [e for e in ("ALFWorld", "WebShop") if e.lower() in _active_envs]
+    _full_scope_envs = [
+        e for e in ("ALFWorld", "WebShop", "Search-QA") if e.lower() in _active_envs
+    ]
     if _full_scope_envs:
         from backend.services.runtime.env_cache import FULL_SCOPE_ENV_GUIDANCE
         _fs_text = FULL_SCOPE_ENV_GUIDANCE.format(envs=" + ".join(_full_scope_envs))
@@ -1174,7 +1177,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         )
         print(
             f"[full-scope] {' + '.join(_full_scope_envs)} active in scope — appended "
-            f"BaseEnv-subclass guidance for the agent.",
+            f"agentic-env (AgenticEnv + shipped modules) guidance for the agent.",
             file=sys.stderr,
         )
 
