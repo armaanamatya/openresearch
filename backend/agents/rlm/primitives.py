@@ -1169,23 +1169,6 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "note": "runpod sandbox: pod boots REPROLAB_RUNPOD_IMAGE over SSH; local build skipped (unused)",
         }, PrimitiveOutcome.ok)
 
-    # RunPod sandbox: the pod pulls its base image from Docker Hub directly —
-    # a locally-built image is never pushed to a registry, so local Docker is
-    # unnecessary.  Short-circuit with the configured RunPod image so
-    # run_experiment can pass it to the RunPod backend (which uses
-    # self.image_name with higher priority anyway).  Dependencies from
-    # requirements.txt are installed on the pod via SSH bootstrap.
-    if _sb_key == "runpod":
-        from backend.config import get_settings as _get_settings
-        _runpod_image = _get_settings().runpod_image
-        return _with_outcome({
-            "ok": True,
-            "image_tag": _runpod_image,
-            "attempts": 0,
-            "skipped": True,
-            "note": f"runpod sandbox: pod pulls {_runpod_image} from Docker Hub; no local build needed",
-        }, PrimitiveOutcome.ok)
-
     import asyncio
     import concurrent.futures
     import hashlib
