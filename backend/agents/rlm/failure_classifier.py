@@ -280,6 +280,16 @@ def classify_failure(result: dict) -> tuple[str, str]:
         ):
             return ("missing_dataset", _suggest("missing_dataset"))
 
+        # Disk exhaustion — a mid-run pip/HF download that fills the disk crashes
+        # with a raw ENOSPC trace (no postflight preset). The class + fix already
+        # exist; this is the missing inline detector (F-07).
+        if (
+            "no space left on device" in haystack
+            or "errno 28" in haystack
+            or "disk quota exceeded" in haystack
+        ):
+            return ("disk_exhausted", _suggest("disk_exhausted"))
+
         # Contract violations only (set by rubric_contract.validate post-run)
         if result.get("contract_violations"):
             return ("contract_violation", _suggest("contract_violation"))

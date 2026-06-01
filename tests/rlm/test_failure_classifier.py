@@ -206,3 +206,20 @@ def test_all_known_classes_have_suggested_fix() -> None:
             continue  # unknown is allowed to have a short hint
         fix = _suggest(klass)
         assert fix, f"missing suggested fix for class {klass!r}"
+
+
+# ---------------------------------------------------------------------------
+# F-07 — disk_exhausted is a declared class with a suggested-fix but had no
+# inline haystack detector, so a raw mid-run ENOSPC crash fell through to
+# 'unknown' instead of the actionable disk-cleanup guidance.
+# ---------------------------------------------------------------------------
+
+def test_disk_exhausted_from_enospc_trace() -> None:
+    for err in (
+        "OSError: [Errno 28] No space left on device: '/root/.cache/huggingface'",
+        "Traceback ...\nOSError: No space left on device\n",
+        "RuntimeError: disk quota exceeded while writing checkpoint",
+    ):
+        klass, fix = classify_failure({"success": False, "error": err})
+        assert klass == "disk_exhausted", f"{err!r} → {klass}"
+        assert "disk" in fix.lower() or "REPROLAB_DISK_FLOOR_GB" in fix
