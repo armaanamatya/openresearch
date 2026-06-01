@@ -70,6 +70,19 @@ export function TreeNode({ node, selected, onSelect }: TreeNodeProps) {
         </span>
       )}
 
+      {/* GEPA candidate: primitive name subtitle + score delta */}
+      {kind === "gepa_candidate" && node.gepaInfo && (
+        <span className={styles.subtitle}>
+          GEPA · {node.gepaInfo.primitive_name}
+          {node.gepaInfo.score != null && (
+            <span className={styles.delta}>
+              {(node.gepaInfo.score_delta ?? 0) >= 0 ? "+" : ""}
+              {node.gepaInfo.score.toFixed(2)}
+            </span>
+          )}
+        </span>
+      )}
+
       {/* Outcome badge — shows the outcome text for all nodes that have one.
           This is the text that getByText(/promoted/) matches in tests, and
           satisfies the spec requirement that outcome is shown by text not color. */}

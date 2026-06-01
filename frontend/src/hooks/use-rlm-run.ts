@@ -23,6 +23,9 @@ import type {
   IterationHeartbeatEvent,
   GpuResolvedEvent,
   ExperimentCompletedEvent,
+  GepaCandidateProposedEvent,
+  GepaCandidateAcceptedEvent,
+  GepaCandidateRejectedEvent,
 } from "../lib/events/rlm-events";
 
 // ─── Member types ─────────────────────────────────────────────────────────────
@@ -127,7 +130,8 @@ export interface TreeNode {
     | "subrlm"
     | "declined-group"
     | "primitive"
-    | "llm_primitive";
+    | "llm_primitive"
+    | "gepa_candidate";
   parentId: string | null;
   /** Display title — uniform across node kinds. */
   title: string;
@@ -158,6 +162,14 @@ export interface TreeNode {
   rubricScore?: number | null;
   /** The raw primitive name (for primitive/llm_primitive nodes). */
   primitiveName?: string;
+  /** GEPA candidate metadata (for kind==="gepa_candidate"). */
+  gepaInfo?: {
+    primitive_name: string;
+    prompt_preview: string;
+    score?: number;
+    score_delta?: number;
+    outcome?: "accepted" | "rejected" | "running";
+  };
 }
 
 // ─── RlmRunState ──────────────────────────────────────────────────────────────
@@ -886,6 +898,66 @@ function foldRunComplete(
   };
 }
 
+function foldGepaCandidateProposed(
+  state: RlmRunState,
+  ev: GepaCandidateProposedEvent
+): RlmRunState {
+  const node: TreeNode = {
+    id: ev.candidate_id,
+    kind: "gepa_candidate",
+    parentId: null,
+    title: `GEPA: ${ev.primitive_name} #${ev.iteration}`,
+    iterationRange: [state.iterationCount, state.iterationCount],
+    outcome: "running",
+    gepaInfo: {
+      primitive_name: ev.primitive_name,
+      prompt_preview: ev.prompt_preview,
+      outcome: "running",
+    },
+  };
+  return { ...state, tree: [...state.tree, node] };
+}
+
+function foldGepaCandidateAccepted(
+  state: RlmRunState,
+  ev: GepaCandidateAcceptedEvent
+): RlmRunState {
+  return {
+    ...state,
+    tree: state.tree.map((n) =>
+      n.id === ev.candidate_id
+        ? {
+            ...n,
+            outcome: "promoted" as const,
+            gepaInfo: n.gepaInfo
+              ? { ...n.gepaInfo, score: ev.score, score_delta: ev.score_delta, outcome: "accepted" as const }
+              : n.gepaInfo,
+          }
+        : n
+    ),
+  };
+}
+
+function foldGepaCandidateRejected(
+  state: RlmRunState,
+  ev: GepaCandidateRejectedEvent
+): RlmRunState {
+  return {
+    ...state,
+    tree: state.tree.map((n) =>
+      n.id === ev.candidate_id
+        ? {
+            ...n,
+            outcome: "declined" as const,
+            gepaInfo: n.gepaInfo
+              ? { ...n.gepaInfo, outcome: "rejected" as const }
+              : n.gepaInfo,
+          }
+        : n
+    ),
+  };
+}
+
 // ─── Pure fold ────────────────────────────────────────────────────────────────
 
 /**
@@ -930,6 +1002,15 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
       return foldExperimentCompleted(seeded, event);
     case "gpu_resolved":
       return foldGpuResolved(seeded, event);
+    case "gepa_candidate_proposed":
+      return foldGepaCandidateProposed(seeded, event);
+    case "gepa_candidate_accepted":
+      return foldGepaCandidateAccepted(seeded, event);
+    case "gepa_candidate_rejected":
+      return foldGepaCandidateRejected(seeded, event);
+    case "gepa_phase_start":
+    case "gepa_phase_complete":
+      return seeded; // phase lifecycle events don't mutate the tree
     default:
       // Exhaustiveness guard; unknown events return state unchanged.
       return seeded;

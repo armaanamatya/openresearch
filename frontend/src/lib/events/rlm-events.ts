@@ -271,6 +271,52 @@ export interface WorkerReportFailedEvent {
   blockers?: unknown[];
 }
 
+export interface GepaPhaseStartEvent {
+  event: "gepa_phase_start";
+  primitive_name: string;
+  max_metric_calls: number;
+  timestamp: string;
+}
+
+export interface GepaCandidateProposedEvent {
+  event: "gepa_candidate_proposed";
+  primitive_name: string;
+  iteration: number;
+  candidate_id: string;
+  prompt_preview: string;
+  parent_id?: string;
+  timestamp: string;
+}
+
+export interface GepaCandidateAcceptedEvent {
+  event: "gepa_candidate_accepted";
+  primitive_name: string;
+  candidate_id: string;
+  score: number;
+  score_delta: number;
+  timestamp: string;
+}
+
+export interface GepaCandidateRejectedEvent {
+  event: "gepa_candidate_rejected";
+  primitive_name: string;
+  candidate_id: string;
+  reason: string;
+  score: number;
+  timestamp: string;
+}
+
+export interface GepaPhaseCompleteEvent {
+  event: "gepa_phase_complete";
+  primitive_name: string;
+  final_score: number;
+  baseline_score: number;
+  delta: number;
+  total_metric_calls: number;
+  duration_s: number;
+  timestamp: string;
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -294,6 +340,11 @@ export const RLM_EVENT_TYPES = [
   "worker_report_started",
   "worker_report_completed",
   "worker_report_failed",
+  "gepa_phase_start",
+  "gepa_candidate_proposed",
+  "gepa_candidate_accepted",
+  "gepa_candidate_rejected",
+  "gepa_phase_complete",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -318,7 +369,12 @@ export type RlmDashboardEvent =
   | GpuResolvedEvent
   | WorkerReportStartedEvent
   | WorkerReportCompletedEvent
-  | WorkerReportFailedEvent;
+  | WorkerReportFailedEvent
+  | GepaPhaseStartEvent
+  | GepaCandidateProposedEvent
+  | GepaCandidateAcceptedEvent
+  | GepaCandidateRejectedEvent
+  | GepaPhaseCompleteEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

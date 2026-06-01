@@ -27,7 +27,7 @@ const MIN_FIT_H = 400;
 const FIT_PADDING = 32;
 
 // Node kinds that are structural (always visible in default view)
-const STRUCTURAL_KINDS: TreeNodeData["kind"][] = ["paper", "work", "baseline", "candidate", "declined-group"];
+const STRUCTURAL_KINDS: TreeNodeData["kind"][] = ["paper", "work", "baseline", "candidate", "declined-group", "gepa_candidate"];
 // Node kinds that are detail/activity nodes (hidden until expanded)
 const ACTIVITY_KINDS: TreeNodeData["kind"][] = ["primitive", "llm_primitive", "subrlm"];
 
@@ -140,6 +140,7 @@ const NodeRect = memo(function NodeRect({
   let fill = "var(--panel)";
   let textFill = "var(--ink)";
   if (kind === "baseline") stroke = "var(--accent)";
+  if (kind === "gepa_candidate") stroke = "var(--gepa, #f97316)"; // orange
   if (kind === "subrlm") stroke = "var(--hermes)";
   if (kind === "paper") { stroke = "var(--line-2)"; }
   if (outcome === "promoted") stroke = "var(--accent)";

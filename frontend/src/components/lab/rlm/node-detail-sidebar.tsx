@@ -64,6 +64,7 @@ function kindLabel(kind: TreeNode["kind"]): string {
     case "candidate": return "candidate";
     case "subrlm": return "sub-rlm";
     case "declined-group": return "declined";
+    case "gepa_candidate": return "gepa";
     default: return kind;
   }
 }
@@ -445,6 +446,36 @@ function SidebarBody({
         ) : (
           <p className={styles.noDetail}>no iteration detail</p>
         )}
+      </div>
+    );
+  }
+
+  if (kind === "gepa_candidate" && node.gepaInfo) {
+    return (
+      <div className={styles.body}>
+        <dl className={styles.metaList}>
+          <div className={styles.metaRow}>
+            <dt className={styles.metaKey}>primitive</dt>
+            <dd className={styles.metaVal}>{node.gepaInfo.primitive_name}</dd>
+          </div>
+          {node.gepaInfo.score != null && (
+            <div className={styles.metaRow}>
+              <dt className={styles.metaKey}>score</dt>
+              <dd className={styles.metaVal}>
+                {node.gepaInfo.score.toFixed(4)}
+                {node.gepaInfo.score_delta != null && (
+                  <span style={{ color: (node.gepaInfo.score_delta ?? 0) >= 0 ? "var(--accent)" : "var(--err)" }}>
+                    {" "}({(node.gepaInfo.score_delta ?? 0) >= 0 ? "+" : ""}{node.gepaInfo.score_delta.toFixed(4)})
+                  </span>
+                )}
+              </dd>
+            </div>
+          )}
+        </dl>
+        <pre className={styles.promptPreview}>
+          {node.gepaInfo.prompt_preview || "(no preview)"}
+        </pre>
+        {nowBlock}
       </div>
     );
   }
