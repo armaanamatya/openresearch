@@ -411,6 +411,26 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 if guard_result is not None:
                     result = guard_result
                 else:
+                    # GEPA: run mini optimization before the primitive thread starts.
+                    # No-op when REPROLAB_GEPA_OPTIMIZATION=off or when gepa_optimization_active
+                    # is True (re-entrancy guard). Catches all exceptions — never fatal.
+                    if name in ("plan_reproduction", "implement_baseline", "propose_improvements"):
+                        try:
+                            from backend.agents.gepa.hooks import gepa_pre_call
+                            gepa_pre_call(ctx, name, args, kwargs)
+                        except Exception as _gepa_exc:
+                            logger.debug("gepa_pre_call skipped (%s): %s", name, _gepa_exc)
+
+                    # GEPA Path A: inject optimized system prompt via llm_client.complete monkey-patch.
+                    # Only active when gepa_prompt_overrides has an entry for this primitive.
+                    _gepa_override = ctx.gepa_prompt_overrides.get(name) if hasattr(ctx, "gepa_prompt_overrides") else None
+                    _orig_complete = None
+                    if _gepa_override and hasattr(ctx, "llm_client") and ctx.llm_client is not None:
+                        _orig_complete = ctx.llm_client.complete
+                        def _patched_complete(*, system, user, **_kw):
+                            return _orig_complete(system=_gepa_override, user=user, **_kw)
+                        ctx.llm_client.complete = _patched_complete
+
                     _prim_future: Future = Future()
 
                     def _runner() -> None:
@@ -427,7 +447,22 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     _t.start()
                     try:
                         result = _prim_future.result(timeout=_timeout_s)
+                        # Restore llm_client.complete after thread finishes
+                        if _orig_complete is not None:
+                            ctx.llm_client.complete = _orig_complete
+                            _orig_complete = None
+                        # GEPA post-call: record result as training example
+                        if name in ("plan_reproduction", "implement_baseline", "propose_improvements"):
+                            try:
+                                from backend.agents.gepa.hooks import gepa_post_call
+                                gepa_post_call(ctx, name, result)
+                            except Exception as _gepa_post_exc:
+                                logger.debug("gepa_post_call error: %s", _gepa_post_exc)
                     except FuturesTimeoutError:
+                        # Restore llm_client.complete if it was monkey-patched
+                        if _orig_complete is not None:
+                            ctx.llm_client.complete = _orig_complete
+                            _orig_complete = None
                         logger.warning(
                             "primitive %s timed out after %ss — marking retryable",
                             name, _timeout_s,
@@ -457,6 +492,13 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                             "wall_clock_s": _timeout_s,
                         }
             except Exception as exc:
+                # Restore llm_client.complete if it was monkey-patched before exception
+                try:
+                    if _orig_complete is not None:
+                        ctx.llm_client.complete = _orig_complete
+                        _orig_complete = None
+                except Exception:  # noqa: BLE001
+                    pass
                 # Value-free event: an exception MESSAGE can carry raw LLM output,
                 # paper text or paths, and result_summary is streamed to the UI.
                 # Only the type + (for pydantic ValidationError) field paths +
