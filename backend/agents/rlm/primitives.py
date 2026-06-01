@@ -539,6 +539,30 @@ def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
     return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
 
 
+def _is_oom_escalation_trigger(result: dict, *, exit_code: int, stderr_tail: str) -> bool:
+    """True when a failed experiment should advance the GPU ladder due to OOM (F-04).
+
+    Two cases:
+      1. A direct CUDA OOM signal — delegated to ``_detect_cuda_oom`` (exit code
+         137/-9 or an OOM marker in the last ~4 KB ``stderr_tail``).
+      2. A stall-watchdog kill (``result['watchdog_killed']``) whose OOM marker is
+         buried earlier than ``stderr_tail``: the watchdog return dict surfaces no
+         ``exit_code`` (the gate defaults it to 1) and the marker can sit thousands
+         of lines before the tail, so case 1 alone misses it — scan the FULL
+         ``result['logs']`` for a marker.
+
+    The watchdog kills on *staleness* (no signal), NOT memory, so a watchdog kill
+    escalates ONLY when the full logs carry an explicit OOM marker; a genuine
+    no-signal stall (no marker) breaks the loop as before.
+    """
+    if _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        return True
+    if result.get("watchdog_killed"):
+        full_logs = result.get("logs") or ""
+        return any(marker in full_logs for marker in _CUDA_OOM_MARKERS)
+    return False
+
+
 def _cap_logs(text: str) -> str:
     """Bound an unbounded log string to a head+tail window for LLM consumption."""
     if len(text) <= _MAX_LOG_CHARS:
@@ -4349,7 +4373,9 @@ def run_experiment(
         # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        # F-04: also catch a watchdog-killed OOM whose marker is buried earlier
+        # than the 4 KB stderr_tail (the watchdog dict carries no exit_code).
+        is_oom = _is_oom_escalation_trigger(result, exit_code=exit_code, stderr_tail=stderr_tail)
         is_infra = infra_error_kind is not None
         if not is_oom and not is_infra:
             break
