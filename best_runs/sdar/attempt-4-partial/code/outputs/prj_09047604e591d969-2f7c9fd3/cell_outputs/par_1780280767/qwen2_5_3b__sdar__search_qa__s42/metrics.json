@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "metric": 0.26281190679792077,
+  "reward_mean": 0.26281190679792077,
+  "gate_mean": 0.3665597062557936,
+  "gate_active": 0.19514683103188873,
+  "delta_t_mean": -0.503047310914984,
+  "opsd_loss_mean": 0.20446918371599168,
+  "zero_shot_f1": 0.1446148366319636,
+  "steps_run": 150,
+  "wall_time_s": 924.5761258602142,
+  "cell_id": "qwen2_5_3b__sdar__search_qa__s42"
+}

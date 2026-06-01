@@ -1,0 +1,87 @@
+# SDAR hyperparameters (Table 3 / Section 3.1)
+# All paper values; scale-down for single-GPU noted inline
+
+# Core SDAR invariants
+BETA: 10.0          # sigmoid sharpness for gate g_t = sigmoid(beta * delta_t)
+LAMBDA: 0.1         # distillation coefficient
+
+# GRPO parameters
+eps: 0.2            # PPO clip ratio
+group_size: 8       # G = rollouts per prompt
+kl_coef: 0.0        # KL penalty toward reference policy (0 = pure GRPO)
+
+# Training
+steps: 150          # optimizer steps (paper: 150)
+learning_rate: 1.0e-5  # Adafactor scale
+grad_clip: 1.0
+
+# Batch sizes (paper vs single-GPU)
+batch_size:
+  search_qa: 16     # paper: 128; reduced for single-GPU (log this)
+  alfworld: 16      # paper: 16 tasks per batch
+  webshop: 16       # paper: 16 tasks per batch
+max_prompt_length:
+  search_qa: 2048   # paper: 4096; reduced for memory
+  alfworld: 2048    # paper: 2048
+  webshop: 2048     # paper: 4096; reduced for memory
+
+# Generation
+max_new_tokens:
+  search_qa: 128
+  alfworld: 64
+  webshop: 64
+
+# Retrieval
+retrieval_default: "KM"     # default retrieval strategy
+top_k_skills: 3             # number of skills to retrieve
+
+# Evaluation
+eval_batch_size: 16
+eval_steps: 50              # eval episodes
+
+# Model list
+models:
+  - id: "Qwen/Qwen3-1.7B"
+    short: "qwen3_1_7b"
+    bf16: true
+    grad_ckpt: false
+  - id: "Qwen/Qwen2.5-3B-Instruct"
+    short: "qwen2_5_3b"
+    bf16: true
+    grad_ckpt: false
+  - id: "Qwen/Qwen2.5-7B-Instruct"
+    short: "qwen2_5_7b"
+    bf16: true
+    grad_ckpt: true
+
+# Environments
+environments:
+  - search_qa
+  - alfworld
+  - webshop
+
+# Algorithms / baselines
+algorithms:
+  - sdar
+  - grpo
+  - opsd
+  - skill_sd
+  - grpo_opsd
+  - rlsd
+
+# Ablations
+ablation_beta: [0, 1, 5, 10, 20]
+ablation_lambda: [0.0, 0.01, 0.05, 0.1, 0.5, 1.0]
+ablation_gates: ["gap", "entropy", "soft_or"]
+ablation_retrievals: ["km", "ucb", "full", "random"]
+ablation_steps: 20   # short sweep for ablations
+
+# Skill config
+eval_with_skills:
+  sdar: false         # SDAR evaluates WITHOUT skill context
+  grpo: false
+  opsd: false
+  skill_sd: false
+  grpo_opsd: false
+  rlsd: false
+  skill_grpo_star: true   # starred variants use skills at eval

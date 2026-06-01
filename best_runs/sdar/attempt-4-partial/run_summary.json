@@ -1,0 +1,57 @@
+{
+  "source_run_dir": "runs/prj_09047604e591d969",
+  "status": "completed",
+  "started_at": "2026-05-31T23:58:00.280890+00:00",
+  "completed_at": "2026-06-01T03:15:08.209587+00:00",
+  "verdict": "partial",
+  "iterations": 10,
+  "mode": "rlm",
+  "stop_reason": null,
+  "rubric_overall_score": 0.3633423076923077,
+  "rubric_target_score": null,
+  "rubric_leaf_count": 26,
+  "rubric_coverage_pct": 1.0,
+  "rubric_meets_target": false,
+  "wall_clock_s": 11827.9,
+  "tokens": {
+    "input_total": 455,
+    "output_total": 494697,
+    "by_model": {
+      "claude-haiku-4-5-20251001": {
+        "input": 10,
+        "output": 1395
+      },
+      "claude-oauth": {
+        "input": 73,
+        "output": 28721
+      },
+      "claude-sonnet-4-6": {
+        "input": 372,
+        "output": 464581
+      }
+    }
+  },
+  "estimated_cost_usd": {
+    "total": 22.9879,
+    "rlm_root": 3.554,
+    "baseline_subagents": 19.4339,
+    "note": "estimated API-equivalent; run used claude-oauth subscription so actual LLM cash cost is ~$0"
+  },
+  "outcome": "PARTIAL \u2014 scored 0.363/0.600 on Search-QA (Qwen3-1.7B + Qwen2.5-3B); 10 iterations",
+  "packaged_files": [
+    "batch_child.log",
+    "cost_ledger.jsonl",
+    "dashboard_events.jsonl",
+    "demo_status.json",
+    "environment_spec.json",
+    "experiment_runs.jsonl",
+    "final_report.json",
+    "final_report.md",
+    "generated_rubric.json",
+    "rubric_evaluation.json",
+    "timing.json",
+    "tokens_total.json",
+    "worker_reports.jsonl"
+  ],
+  "code_files_copied": 108
+}

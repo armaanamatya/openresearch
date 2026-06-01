@@ -1,0 +1,58 @@
+{
+  "source_run_dir": "runs/prj_09047604e591d969__20260531-231049",
+  "status": "completed",
+  "started_at": "2026-05-31T19:05:49.687078+00:00",
+  "completed_at": "2026-05-31T21:08:39.449447+00:00",
+  "verdict": "failed",
+  "iterations": 3,
+  "mode": "rlm",
+  "stop_reason": null,
+  "rubric_overall_score": 0.0,
+  "rubric_target_score": null,
+  "rubric_leaf_count": 26,
+  "rubric_coverage_pct": 1.0,
+  "rubric_meets_target": false,
+  "wall_clock_s": 4813.2,
+  "tokens": {
+    "input_total": 183,
+    "output_total": 156462,
+    "by_model": {
+      "claude-oauth": {
+        "input": 12,
+        "output": 4452
+      },
+      "claude-sonnet-4-6": {
+        "input": 171,
+        "output": 152010
+      }
+    }
+  },
+  "estimated_cost_usd": {
+    "total": 10.9266,
+    "rlm_root": 0.7764,
+    "baseline_subagents": 10.1502,
+    "note": "estimated API-equivalent; run used claude-oauth subscription so actual LLM cash cost is ~$0"
+  },
+  "outcome": "failed \u2014 CUDA OOM (a foreign process held 22+GiB of the 23.7GiB A5000) + ALFWorld AttributeError",
+  "packaged_files": [
+    "batch_child.log",
+    "cost_ledger.jsonl",
+    "dashboard_events.jsonl",
+    "demo_status.json",
+    "environment_spec.json",
+    "experiment_runs.jsonl",
+    "final_report.json",
+    "final_report.md",
+    "generated_rubric.json",
+    "rubric_evaluation.json",
+    "timing.json",
+    "tokens_total.json",
+    "train_alfworld.log",
+    "train_run.log",
+    "train_run2.log",
+    "train_run3.log",
+    "user_messages.jsonl",
+    "worker_reports.jsonl"
+  ],
+  "code_files_copied": 31
+}

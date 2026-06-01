@@ -1,0 +1,158 @@
+{
+  "qwen3_1_7b__search_qa": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  },
+  "qwen3_1_7b__alfworld": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  },
+  "qwen2_5_3b__search_qa": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  },
+  "qwen2_5_3b__alfworld": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  },
+  "qwen2_5_7b__search_qa": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  },
+  "qwen2_5_7b__alfworld": {
+    "sdar": {
+      "step": [],
+      "reward": []
+    },
+    "grpo": {
+      "step": [],
+      "reward": []
+    },
+    "opsd": {
+      "step": [],
+      "reward": []
+    },
+    "skill_sd": {
+      "step": [],
+      "reward": []
+    },
+    "grpo_opsd": {
+      "step": [],
+      "reward": []
+    },
+    "rlsd": {
+      "step": [],
+      "reward": []
+    }
+  }
+}

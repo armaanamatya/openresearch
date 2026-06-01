@@ -1,0 +1,42 @@
+{
+  "_comment": "SDAR hyperparameters (arXiv 2605.15155 Table 3 + operator scope)",
+  "BETA":           10.0,
+  "LAMBDA":         0.1,
+  "CLIP_EPS":       0.2,
+  "ALPHA_KL":       0.01,
+  "GROUP_SIZE":     4,
+  "LR":             1e-5,
+  "STEPS":          150,
+  "MAX_NEW_TOKENS": 64,
+  "MAX_PROMPT_LEN": 192,
+  "MAX_SEQ_LEN":    256,
+  "BATCH_QUESTIONS": 1,
+  "SEED":           42,
+  "optimizer":      "Adafactor (scale_parameter=False, relative_step=False)",
+  "models": [
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen2.5-3B-Instruct"
+  ],
+  "models_skipped": ["Qwen/Qwen2.5-7B-Instruct"],
+  "baselines": ["sdar", "grpo", "grpo_opsd"],
+  "envs": ["search_qa"],
+  "envs_skipped": ["alfworld", "webshop"],
+  "datasets": {
+    "in_domain_train": ["nq_open (validation split)", "hotpotqa/hotpot_qa (distractor, validation)"],
+    "ood_eval": ["out of scope"]
+  },
+  "reward_function": "max-alias token-F1 (SQuAD-style normalisation)",
+  "gate_formula": "g_t = sigmoid(BETA * delta_t).detach()  where delta_t = logp_teacher(y_t) - logp_student(y_t)",
+  "opsd_loss":    "L_opsd = -(gate * logp_student * mask).sum() / n_tok",
+  "total_loss":   "loss = grpo_loss + (LAMBDA * opsd_loss if opsd_enabled else 0.0)",
+  "note_table3": {
+    "beta":               10,
+    "lambda":             0.1,
+    "group_size_G":       "4 (paper=8, reduced for budget)",
+    "ppo_clip_eps":       0.2,
+    "lr":                 "1e-5",
+    "alpha_KL":           0.01,
+    "skill_retrieval":    "KM (out of scope for this run)",
+    "gating_strategy":    "gap (sigmoid gate on teacher-student gap)"
+  }
+}
