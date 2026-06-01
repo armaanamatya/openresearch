@@ -8,6 +8,14 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  /* Lane (2026-05-31): Band 2.5 stacks ABOVE the workspace in the vertical
+   * flex shell. A rubric with many areas grows the table + footer tall enough
+   * to push the flex:1 ConstellationCanvas to near-zero height. Cap the band
+   * and scroll its own content so the graph always keeps a visible region.
+   * flex-shrink:0 makes the cap a hard ceiling within the column flex. */
+  flex-shrink: 0;
+  max-height: 38vh;
+  overflow-y: auto;
 }
 
 /* ── FIG label ──────────────────────────────────────────────── */
