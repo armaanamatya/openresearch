@@ -27,13 +27,18 @@ def _make_policy(
     remaining_s: float = 3600.0,
 ) -> ForcedIterationPolicy:
     refusals: list[str] = []
-    return ForcedIterationPolicy(
+    policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
         remaining_s=lambda: remaining_s,
         on_refusal=lambda msg: refusals.append(msg),
     )
+    # Simulate a baseline run so the BUG-NEW-046 "run_experiment never called"
+    # guard (forced_iteration.py:211) doesn't fire before the rubric checks under
+    # test (production calls record_run_experiment() per run_experiment call).
+    policy.record_run_experiment("ok")
+    return policy
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ def _make_policy(
     on_repair_refusal: Any = None,
 ) -> ForcedIterationPolicy:
     refusals: list[str] = []
-    return ForcedIterationPolicy(
+    policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
@@ -53,6 +53,13 @@ def _make_policy(
         on_refusal=lambda msg: refusals.append(msg),
         on_repair_refusal=on_repair_refusal,
     )
+    # Simulate that the baseline was executed at least once. Every repair/rubric/
+    # budget check these tests target sits AFTER the BUG-NEW-046 "run_experiment
+    # never called" guard (forced_iteration.py:211); in production the run_experiment
+    # wrapper calls record_run_experiment() per call. Without this the guard would
+    # fire first and mask the behavior under test. ("ok" is a non-failure outcome.)
+    policy.record_run_experiment("ok")
+    return policy
 
 
 # -----------------------------------------------------------------------

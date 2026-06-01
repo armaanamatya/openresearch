@@ -1032,9 +1032,10 @@ def test_paper_invariants_load_sdar_yaml() -> None:
     # models_in_paper declared → real_model_required True, canonical models populated.
     assert inv.algorithm.real_model_required is True
     assert inv.models is not None
-    # The yaml lists qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct (and 3b, 7b).
+    # The yaml lists qwen3_1_7b: Qwen/Qwen3-1.7B (and 3b, 7b). The -Instruct
+    # variant was dropped in 42b03b6 because Qwen/Qwen3-1.7B-Instruct 401s.
     assert "qwen3_1_7b" in inv.models.canonical_models
-    assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B-Instruct"
+    assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B"
 
 
 # ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ class TestEndToEndComposition:
         operator = ScopeSpec()  # empty operator
         effective = operator.merge_with_paper_default(hint.default_scope)
         assert len(effective.models) == 3
-        assert "Qwen3-1.7B-Instruct" in effective.models
+        assert "Qwen3-1.7B" in effective.models  # canonical id (no -Instruct; that variant 401s — 42b03b6)
 
     def test_operator_narrows_sdar(self):
         from backend.agents.prompts.paper_hints import lookup_paper_hint

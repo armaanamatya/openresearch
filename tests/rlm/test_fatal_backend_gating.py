@@ -205,8 +205,13 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
     repl.locals["report"] = "{'score': 0.0}"
 
     with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
-        # Simulate run_experiment call (records the repair attempt).
+        # Simulate run_experiment call. In production TWO recorders fire: the main
+        # tool wrapper's record_run_experiment() (the _total_run_experiments counter
+        # gating the BUG-NEW-046 "never called" guard) and _record_last_primitive_
+        # result_tools' record_repair_attempt() (wired via fake_tools). The fake tool
+        # only does the latter, so record the former explicitly to mirror production.
         wrapped["run_experiment"]["tool"]()
+        policy.record_run_experiment("repairable")
 
         # Simulate root calling FINAL_VAR immediately after the repairable outcome.
         with forced_iteration_policy(policy):

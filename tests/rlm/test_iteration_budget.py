@@ -41,7 +41,7 @@ def _make_policy(
 ) -> ForcedIterationPolicy:
     captured: list[str] = refusals if refusals is not None else []
     budget_captured: list[str] = budget_msgs if budget_msgs is not None else []
-    return ForcedIterationPolicy(
+    policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
@@ -50,6 +50,12 @@ def _make_policy(
         max_rlm_iterations=max_rlm_iterations,
         on_budget_exceeded=lambda msg: budget_captured.append(msg),
     )
+    # Simulate a baseline run so the BUG-NEW-046 "run_experiment never called"
+    # guard (forced_iteration.py:211) doesn't fire before the budget/rubric checks
+    # under test (the iteration-budget cap is checked before that guard, so cap
+    # tests are unaffected; this only matters for the cap-disabled paths).
+    policy.record_run_experiment("ok")
+    return policy
 
 
 # --- 1. Budget cap accepts at limit ---
