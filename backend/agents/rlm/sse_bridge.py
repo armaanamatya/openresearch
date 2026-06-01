@@ -376,6 +376,18 @@ class ReproLabRLMLogger(RLMLogger):
         # those steps does not leave ctx with a stale counter.
         if self._ctx is not None:
             self._ctx.current_iteration = index
+            # F-06: reset the forced-iteration policy's per-turn trackers at the
+            # real REPL turn boundary, not only on a FINAL_VAR refusal. Without
+            # this, single failing run_experiment outcomes from DIFFERENT
+            # iterations accumulate and falsely trip the two-experiment-per-turn
+            # guard. Fail-soft — a reset (a list assignment) must never break
+            # logging.
+            _pol = getattr(self._ctx, "_forced_iteration_policy", None)
+            if _pol is not None:
+                try:
+                    _pol.on_iteration_advance()
+                except Exception:  # noqa: BLE001 — best-effort turn-boundary reset
+                    pass
 
 
 # ---------------------------------------------------------------------------
