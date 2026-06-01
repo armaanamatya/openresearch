@@ -59,8 +59,7 @@ class Settings(BaseSettings):
     provider_fallback_disabled: bool = False
 
     # GEPA per-run prompt optimization
-    # gepa_optimization: "off" | "on" | "plan-only" | "baseline-only" | "improve-only"
-    gepa_optimization: str = "off"
+    gepa_optimization: Literal["off", "on", "plan-only", "baseline-only", "improve-only"] = "off"
     gepa_max_metric_calls_plan: int = 10
     gepa_max_metric_calls_baseline: int = 5
     gepa_max_metric_calls_improve: int = 10

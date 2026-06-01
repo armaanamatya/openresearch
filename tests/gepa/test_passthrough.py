@@ -43,19 +43,16 @@ def test_gepa_fields_default_empty(ctx_gepa_off):
     assert ctx_gepa_off.gepa_optimization_active is False
 
 
-def test_no_gepa_calls_when_off(ctx_gepa_off):
-    """With REPROLAB_GEPA_OPTIMIZATION=off, gepa_pre_call is never invoked."""
+def test_is_enabled_returns_false_when_off(ctx_gepa_off):
+    """_is_enabled returns False when gepa_optimization=off."""
     with patch.dict(os.environ, {"REPROLAB_GEPA_OPTIMIZATION": "off"}):
-        from backend.agents.gepa.hooks import gepa_pre_call
-        gepa_pre_call(ctx_gepa_off, "plan_reproduction", (), {})
-        assert ctx_gepa_off.gepa_prompt_overrides == {}
-        assert ctx_gepa_off.gepa_optimization_active is False
+        from backend.agents.gepa.hooks import _is_enabled
+        assert _is_enabled(ctx_gepa_off, "plan_reproduction") is False
 
 
-def test_gepa_optimization_active_guard(ctx_gepa_off):
-    """gepa_pre_call is a no-op when gepa_optimization_active is already True."""
+def test_is_enabled_returns_false_when_reentrant(ctx_gepa_off):
+    """_is_enabled returns False when gepa_optimization_active is True (re-entrancy guard)."""
     ctx_gepa_off.gepa_optimization_active = True
     with patch.dict(os.environ, {"REPROLAB_GEPA_OPTIMIZATION": "on"}):
-        from backend.agents.gepa.hooks import gepa_pre_call
-        gepa_pre_call(ctx_gepa_off, "plan_reproduction", (), {})
-        assert ctx_gepa_off.gepa_prompt_overrides == {}
+        from backend.agents.gepa.hooks import _is_enabled
+        assert _is_enabled(ctx_gepa_off, "plan_reproduction") is False

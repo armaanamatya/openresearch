@@ -9,13 +9,17 @@ logger = logging.getLogger(__name__)
 GEPA_TARGETS = frozenset({"plan_reproduction", "implement_baseline", "propose_improvements"})
 
 
+def _get_config():
+    from backend.config import get_settings
+    return get_settings()
+
+
 def _is_enabled(ctx: Any, primitive_name: str) -> bool:
     """Return True if GEPA should run for this primitive call."""
     if ctx.gepa_optimization_active:
         return False  # re-entrancy guard
     try:
-        from backend.config import Settings
-        cfg = Settings()
+        cfg = _get_config()
         mode = cfg.gepa_optimization
     except Exception:
         return False
@@ -44,7 +48,7 @@ def gepa_pre_call(ctx: Any, primitive_name: str, args: tuple, kwargs: dict) -> N
 
 def gepa_post_call(ctx: Any, primitive_name: str, result: Any) -> None:
     """Record real primitive result as a training example for future calls."""
-    if primitive_name not in GEPA_TARGETS:
+    if not _is_enabled(ctx, primitive_name):
         return
     if ctx.gepa_example_buffer.get(primitive_name) is None:
         ctx.gepa_example_buffer[primitive_name] = []
