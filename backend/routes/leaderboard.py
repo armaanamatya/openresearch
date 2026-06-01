@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.services.events.leaderboard_cache import evict_missing, get_or_load
+from backend.services.runs.report_resolution import (
+    extract_scores,
+    resolve_best_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,46 +59,71 @@ class LeaderboardRow(BaseModel):
     started_at: str | None
     completed_at: str | None
     verdict: str
+    # β5: attempt-aware fields.
+    # status: honest run status — "running"/"queued" coerced to "completed" when
+    #         final_report.json exists (stale demo_status after an ungraceful exit).
+    # attempts: total archived-attempt count for this project (0 = first run).
+    status: str = "completed"
+    attempts: int = 0
+
+
+_TERMINAL_STATUSES: frozenset[str] = frozenset({
+    "completed",
+    "failed",
+    "stopped",
+    "interrupted",
+    "killed",
+})
 
 
 def _read_run(run_dir: Path) -> LeaderboardRow | None:
-    fr_path = run_dir / "final_report.json"
-    if not fr_path.is_file():
+    # β5: use resolve_best_report to pick the highest-scoring final_report.json
+    # across the top-level and all archived attempts.
+    resolved = resolve_best_report(run_dir)
+    if resolved.report is None:
+        # No readable report in this run dir at all.
         return None
-    data = get_or_load(run_dir.name, fr_path)
-    if data is None:
-        logger.warning(
-            "leaderboard: skipping %s — unreadable final_report",
-            run_dir.name,
-        )
-        return None
+
+    data = resolved.report
 
     # Defensive: legacy/test final_report.json files (e.g. prj_verify_offline_report)
     # had rubric as a list-of-areas instead of the {overall_score, meets_target,
-    # areas} dict. `data.get("rubric") or {}` keeps the list (truthy), then the
-    # subsequent `.get()` blows up with `'list' object has no attribute 'get'` —
-    # 500ing the whole leaderboard. Coerce to {} when the shape is wrong so a
-    # malformed row gets a None score but doesn't fail the entire aggregation.
+    # areas} dict. Coerce to {} when the shape is wrong so a malformed row gets a
+    # None score but doesn't fail the entire aggregation.
     def _as_dict(v):
         return v if isinstance(v, dict) else {}
+
     paper = _as_dict(data.get("paper"))
     rubric = _as_dict(data.get("rubric"))
     cost = _as_dict(data.get("cost"))
     models = _as_dict(data.get("models"))
     started_at = data.get("started_at")
     completed_at = data.get("completed_at")
-    # β4: read execution_mode from demo_status.json (executionMode field) first,
-    # then fall back to the run's direct demo_status read if it's in the data.
-    # demo_status.json isn't loaded here — read it lazily from disk.
+
+    # β4: read execution_mode from demo_status.json (executionMode field) first.
     _execution_mode: str | None = None
+    _demo_status_raw: str | None = None
     _demo_status_path = run_dir / "demo_status.json"
     if _demo_status_path.is_file():
         try:
             import json as _json_m
             _ds = _json_m.loads(_demo_status_path.read_text(encoding="utf-8"))
             _execution_mode = _ds.get("executionMode") or _ds.get("execution_mode")
+            _demo_status_raw = _ds.get("status")
         except Exception:
             pass
+
+    # β5: status — honest run status.
+    # "running"/"queued" are coerced to "completed" when a final_report.json
+    # exists (the process exited without writing the terminal status).
+    if _demo_status_raw in _TERMINAL_STATUSES:
+        _status = _demo_status_raw
+    elif resolved.report_path is not None:
+        # Report exists but status is non-terminal (or missing) → the run
+        # finished; treat as completed.
+        _status = "completed"
+    else:
+        _status = _demo_status_raw or "unknown"
 
     wall_clock_s: float | None = None
     if started_at and completed_at:
@@ -106,26 +135,15 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         except ValueError:
             wall_clock_s = None
 
-    # Honest score handling: the post-fix C2c default is `None` (no fabrication).
-    # Propagate None on the row so the UI can tell the difference between
-    # "scored 0" and "not scored". The aggregator's sort_key coerces None to
-    # the lowest rank below.
-    score_raw = rubric.get("overall_score")
-    overall_score: float | None = float(score_raw) if score_raw is not None else None
-
-    # β3: compute_adjusted_score — floor-anchored score on clipped runs.
-    # Falls back to overall_score for old reports without the field.
-    _adj_raw = rubric.get("compute_adjusted_score")
-    compute_adjusted_score: float | None = (
-        float(_adj_raw) if _adj_raw is not None else overall_score
-    )
+    # β5: extract_scores handles nested-rubric and flat-rubric_score schemas.
+    overall_score, compute_adjusted_score = extract_scores(data)
 
     return LeaderboardRow(
         project_id=run_dir.name,
         paper_id=str(paper.get("id") or run_dir.name),
         paper_title=paper.get("title"),
         title=data.get("title"),
-        mode=data.get("mode", "rlm"),
+        mode=data.get("mode", "rlm") if data.get("mode") in ("rlm", "rdr") else "rlm",
         models=RoleModels(
             planner=models.get("planner"),
             executor=models.get("executor"),
@@ -144,6 +162,8 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         started_at=started_at,
         completed_at=completed_at,
         verdict=str(data.get("verdict", "failed")),
+        status=_status,
+        attempts=resolved.attempts_total,
     )
 
 
@@ -191,7 +211,14 @@ def aggregate_leaderboard(
                 r.wall_clock_s if r.wall_clock_s is not None else 0.0,
             )
         if order_by == "finished_at":
-            return (r.completed_at is None, r.completed_at or "")
+            # Newest first; runs without a completed_at timestamp sort last.
+            if r.completed_at is None:
+                return (1, 0.0)
+            try:
+                ts = datetime.fromisoformat(r.completed_at).timestamp()
+            except ValueError:
+                ts = 0.0
+            return (0, -ts)
         return 0
 
     rows.sort(key=_sort_key)

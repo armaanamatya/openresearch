@@ -1596,12 +1596,18 @@ def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
     ) or "baseline_metrics" in report
 
     if is_rlm:
+        from backend.services.runs.report_resolution import extract_scores as _extract_scores
+        _overall, _adjusted = _extract_scores(report)
+        # Use the best available score: adjusted (compute_adjusted_score) when
+        # present, otherwise overall — handles compute_adjusted-only runs and
+        # legacy flat rubric_score runs.
+        _rubric_score = _adjusted if _adjusted is not None else _overall
         rubric = report.get("rubric") or {}
         cost = report.get("cost") or {}
         return {
             "benchmark": {
                 "verdict": report.get("verdict", ""),
-                "rubric_score": rubric.get("overall_score"),
+                "rubric_score": _rubric_score,
                 "metrics": report.get("baseline_metrics") or {},
                 "cost_usd": cost.get("llm_usd"),
             }
