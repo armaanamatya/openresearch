@@ -1158,6 +1158,26 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # Full-scope env guidance (2026-06-01, Part B): when the EFFECTIVE scope keeps
+    # ALFWorld / WebShop active (i.e. the operator did NOT de-scope them), the agent
+    # must write a *Env subclass per environment and add their cells. Appended only
+    # when those envs are in scope, so the smallest-two (Search-QA only) run — whose
+    # merge auto-derives skip_datasets=[ALFWorld, WebShop] — is unaffected.
+    _active_envs = {d.normalized_id().strip().lower() for d in _effective_scope.datasets}
+    _full_scope_envs = [e for e in ("ALFWorld", "WebShop") if e.lower() in _active_envs]
+    if _full_scope_envs:
+        from backend.services.runtime.env_cache import FULL_SCOPE_ENV_GUIDANCE
+        _fs_text = FULL_SCOPE_ENV_GUIDANCE.format(envs=" + ".join(_full_scope_envs))
+        _existing_fs = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_existing_fs}\n\n{_fs_text}" if _existing_fs else _fs_text
+        )
+        print(
+            f"[full-scope] {' + '.join(_full_scope_envs)} active in scope — appended "
+            f"BaseEnv-subclass guidance for the agent.",
+            file=sys.stderr,
+        )
+
     # Paper-hint invariants → env var so the spawned subprocess's RunContext
     # picks them up via __post_init__ without requiring run.py changes.
     # Serialise as a JSON array of InvariantSpec dicts.  Empty/unset when the

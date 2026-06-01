@@ -292,6 +292,7 @@ def _run_one(
             "batch_reproduce: [%s] timed out waiting for GPU lease after %ds" % (paper, _ACQUIRE_TIMEOUT_S)
         )
 
+    _provision = None  # opt-in EnvCacheManager provisioning (released in the finally)
     # Everything after a successful acquire is wrapped in try/finally so the
     # lease is ALWAYS released — even if venv creation, env setup, or launch
     # raises before the child process starts. reclaim_stale() only reaps DEAD
@@ -373,6 +374,29 @@ def _run_one(
         if venv_ok:
             per_run_env["REPROLAB_EXPERIMENT_VENV"] = str(venv_dir)
 
+        # Opt-in (REPROLAB_PROVISION_ENVS="ALFWorld,WebShop"): stand the heavy RL
+        # environments up ONCE via the host-shared EnvCacheManager and hand their
+        # cache locations (ALFWORLD_DATA / WEBSHOP_URL) to the child. An env that
+        # cannot be provisioned on this host becomes a VERIFIED env_setup_failed
+        # Exclusion (logged) instead of failing the run — the grid runs what works
+        # and the rubric excludes (not zeroes) the rest. Dormant unless the env var
+        # is set, so the default smallest-two run is unaffected.
+        _provision_names = [
+            s.strip() for s in os.environ.get("REPROLAB_PROVISION_ENVS", "").split(",") if s.strip()
+        ]
+        if _provision_names:
+            try:
+                from backend.services.runtime.env_cache import EnvCacheManager, provision_scope
+                _provision = provision_scope(_provision_names, EnvCacheManager())
+                per_run_env.update(_provision.env_vars)
+                if _provision.exclusions:
+                    logger.warning(
+                        "batch_reproduce: [%s] env provisioning produced %d verified exclusion(s): %s",
+                        paper, len(_provision.exclusions), [e.item for e in _provision.exclusions],
+                    )
+            except Exception as exc:  # noqa: BLE001 — provisioning must never crash the launch
+                logger.warning("batch_reproduce: [%s] env provisioning hook failed (continuing): %s", paper, exc)
+
         child_env = {**os.environ, **per_run_env}
 
         # --- 6f: Build command ---
@@ -444,6 +468,11 @@ def _run_one(
         # --- 6i: Always release lease + deregister (idempotent) ---
         live_procs.pop(lease_id, None)
         alloc.release(lease_id)
+        if _provision is not None:
+            try:
+                _provision.release()   # drop any WebShop lease acquired for this run
+            except Exception as exc:  # noqa: BLE001 — release must never raise
+                logger.warning("batch_reproduce: env provision release failed (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------

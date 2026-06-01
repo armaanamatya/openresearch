@@ -214,3 +214,44 @@ through the real `_detect_data_unavailable_leaves` + `roll_up` with ALFWorld/Web
 as verified `operator_scope` exclusions: **0.356 → 0.413** (9 of 26 leaves
 excluded). Tests: 199 green (174 existing + 25 new), 0 regressions. The live run
 (launched on pre-fix code) won't pick this up mid-flight; future runs + a re-score do.
+
+**Part A review follow-ups (commit `db2f0b2`):** an adversarial review confirmed
+no blockers / no regression; its SHOULD-FIX items landed — verified
+`scope.exclusions` are now SELF-SUFFICIENT (exclude their leaves without a
+co-populated legacy list — required for Part B's `env_setup_failed`), dataset/
+baseline axes matched (not silently dropped), `merge_with_paper_default` mirrors
+the auto-derive for `models`, and fail-soft hardening for malformed `scope`/
+`metrics`. +5 tests. Full suite: 3479 passed (the 2 `implement_baseline` timeout
+"failures" reproduce on baseline under load → pre-existing environmental flakes,
+not regressions).
+
+## 10. Part B — landed (Claude; Codex stalled 34 min and was cancelled)
+
+Codex (the intended Part B owner) hung in "investigating" for 34 min with zero
+output and was cancelled; built directly instead.
+
+- `backend/services/runtime/env_cache.py` (NEW) — `EnvCacheManager`: fcntl-locked,
+  crash-safe shared-state cache (mirrors `local_gpu_allocator`); idempotent
+  `ensure_alfworld` (download-once), ref-counted `acquire_webshop`/`release_webshop`
+  with stale-PID reclaim; **fail-soft** — every setup failure returns a VERIFIED
+  `env_setup_failed` `Exclusion` (never raises). `provision_scope(env_names, mgr)`
+  provisions a whole scope → `(env_vars, exclusions, release)`. Downloader / server
+  launcher / health probe / clock are all INJECTED → fully unit-testable.
+- `scripts/batch_reproduce.py` — opt-in hook (`REPROLAB_PROVISION_ENVS=ALFWorld,WebShop`)
+  that provisions via `provision_scope`, injects `ALFWORLD_DATA`/`WEBSHOP_URL` into
+  the child env, and releases WebShop leases in the `finally`. **Dormant by default**
+  → the smallest-two run and the live run are unaffected.
+- `backend/cli.py` — `FULL_SCOPE_ENV_GUIDANCE` appended to the agent's guidance ONLY
+  when the effective scope keeps ALFWorld/WebShop active (smallest-two auto-derives
+  `skip_datasets=[ALFWorld, WebShop]`, so it is unaffected).
+- `tests/services/runtime/test_env_cache.py` (NEW) — 12 tests: idempotent download,
+  ref-counted server lifecycle, crash-safe shared state across instances, stale-PID
+  reclaim, not-ready→kill, failure→verified-Exclusion, `provision_scope` mix, routing.
+
+**INTEGRATION STATUS:** the cache/lock/ref-count/Exclusion orchestration is
+unit-tested with the downloader subprocess + HTTP probe injected. The real
+`alfworld-download` and WebShop server bring-up are **NOT** end-to-end verified in
+this session (shared box, no spare GPU, live run holds it). The injected seams are
+exactly where a clean-host integration test plugs the real commands in. The
+end-to-end re-run therefore stays smallest-two (Search-QA, fairness exclusion
+active); full scope is ready-but-integration-pending.
