@@ -786,6 +786,97 @@ class SubcallTracker:
                 logger.debug("SubcallTracker: emit failed", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# GEPA per-run optimization event builders
+# ---------------------------------------------------------------------------
+
+def build_gepa_phase_start(
+    *,
+    primitive_name: str,
+    max_metric_calls: int,
+) -> dict[str, Any]:
+    """Emitted when a GEPA mini-optimization loop starts before a primitive."""
+    return {
+        "event": "gepa_phase_start",
+        "primitive_name": primitive_name,
+        "max_metric_calls": max_metric_calls,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_gepa_candidate_proposed(
+    *,
+    primitive_name: str,
+    iteration: int,
+    candidate_id: str,
+    prompt_preview: str,
+    parent_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "event": "gepa_candidate_proposed",
+        "primitive_name": primitive_name,
+        "iteration": iteration,
+        "candidate_id": candidate_id,
+        "prompt_preview": prompt_preview[:200],
+        "parent_id": parent_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_gepa_candidate_accepted(
+    *,
+    primitive_name: str,
+    candidate_id: str,
+    score: float,
+    score_delta: float,
+) -> dict[str, Any]:
+    return {
+        "event": "gepa_candidate_accepted",
+        "primitive_name": primitive_name,
+        "candidate_id": candidate_id,
+        "score": round(score, 4),
+        "score_delta": round(score_delta, 4),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_gepa_candidate_rejected(
+    *,
+    primitive_name: str,
+    candidate_id: str,
+    reason: str,
+    score: float,
+) -> dict[str, Any]:
+    return {
+        "event": "gepa_candidate_rejected",
+        "primitive_name": primitive_name,
+        "candidate_id": candidate_id,
+        "reason": reason,
+        "score": round(score, 4),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_gepa_phase_complete(
+    *,
+    primitive_name: str,
+    final_score: float,
+    baseline_score: float,
+    total_metric_calls: int,
+    duration_s: float,
+) -> dict[str, Any]:
+    return {
+        "event": "gepa_phase_complete",
+        "primitive_name": primitive_name,
+        "final_score": round(final_score, 4),
+        "baseline_score": round(baseline_score, 4),
+        "delta": round(final_score - baseline_score, 4),
+        "total_metric_calls": total_metric_calls,
+        "duration_s": round(duration_s, 2),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 __all__ = [
     "RUBRIC_AREA_PARTIAL_THRESHOLD",
     "RUBRIC_AREA_PASS_THRESHOLD",
@@ -795,6 +886,11 @@ __all__ = [
     "build_cluster_started",
     "build_candidate_outcome_event",
     "build_candidate_proposed_event",
+    "build_gepa_candidate_accepted",
+    "build_gepa_candidate_proposed",
+    "build_gepa_candidate_rejected",
+    "build_gepa_phase_complete",
+    "build_gepa_phase_start",
     "build_iteration_heartbeat_event",
     "build_repair_dispatched",
     "build_rubric_score_event",
