@@ -669,6 +669,31 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
+    """Return ``rubric`` with ``overall_score`` floored to the run's best recorded
+    rubric score (best-of-run; 2026-05-30, reordered for F-11).
+
+    A late regression or a degraded self-report can never bury a higher score the
+    run actually achieved. Applied BEFORE verdict reconciliation so the verdict
+    reflects the floored score, not the degraded self-reported one — F-11: the floor
+    used to run only AFTER reconciliation, leaving verdict and score inconsistent on
+    the no-amend path. No-op when no better score was recorded.
+    """
+    best = _best_recorded_rubric_score(project_dir)
+    if best is None:
+        return rubric
+    floored = dict(rubric or {})
+    cur = floored.get("overall_score")
+    try:
+        cur_f = float(cur) if cur is not None else None
+    except (TypeError, ValueError):
+        cur_f = None
+    if cur_f is None or best > cur_f:
+        floored["overall_score"] = best
+        floored["best_of_run"] = True
+    return floored
+
+
 def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
     """Recover the last terminal ``stop_reason`` from ``experiment_runs.jsonl``.
 
@@ -789,11 +814,17 @@ def build_final_report(
             if verdict == "reproduced":
                 verdict = "partial"
 
+    # F-11: floor the rubric to the run's best-of-run score BEFORE reconciling the
+    # verdict, so a late regression / degraded self-report can't cap the verdict
+    # below what the run actually achieved. (The floor used to run only after this,
+    # leaving verdict and the displayed score inconsistent on the no-amend path.)
+    rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
+
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(
         verdict,
         baseline_metrics=baseline_metrics,
-        rubric=parsed.get("rubric") or {},
+        rubric=rubric_floored,
         primitive_trace=trace,
     )
     if downgrade_reason:
@@ -842,7 +873,7 @@ def build_final_report(
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
-        "rubric": parsed.get("rubric") or {
+        "rubric": rubric_floored or {
             "overall_score": None,
             "meets_target": None,
             "target_score": None,
@@ -866,24 +897,10 @@ def build_final_report(
     if isinstance(_stop, dict) and _stop.get("kind"):
         kwargs["stop_reason"] = _stop
 
-    # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
-    # final state and self-report a LOWER rubric than it actually achieved — the
-    # SDAR run reported 0.0 despite scoring ~0.18 mid-run. Surface the best
-    # overall_score the run recorded so a late regression can never bury a real
-    # result. Reads dashboard_events.jsonl, so re-running this builder also
-    # salvages an already-finalized degraded run.
-    _best = _best_recorded_rubric_score(ctx.project_dir)
-    if _best is not None:
-        _r = dict(kwargs.get("rubric") or {})
-        _cur = _r.get("overall_score")
-        try:
-            _cur_f = float(_cur) if _cur is not None else None
-        except (TypeError, ValueError):
-            _cur_f = None
-        if _cur_f is None or _best > _cur_f:
-            _r["overall_score"] = _best
-            _r["best_of_run"] = True
-            kwargs["rubric"] = _r
+    # Best-of-run floor is applied via _apply_best_of_run_floor BEFORE the verdict
+    # reconciliation (rubric_floored above), so kwargs["rubric"] already carries the
+    # floored score and verdict + displayed score stay consistent on the no-amend
+    # path (F-11; the floor previously ran only here, after the reconcile).
 
     # P2/P3 provenance: back-link the report to the canonical experiment record +
     # its metrics.json hash (invariant 2 trace), and preserve the root's
