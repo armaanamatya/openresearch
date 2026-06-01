@@ -39,6 +39,21 @@ _HTML_RETRY_BACKOFF_SECONDS = [1.0]  # sleep before attempt 2
 _html_sleep_fn = time.sleep  # module-level hook — patched in tests to avoid real sleeps
 
 
+def _cached_html_is_valid(body: bytes) -> bool:
+    """Body-based validation for reusing a cached raw_paper.html (F-31).
+
+    Mirrors the structural checks ``_try_fetch_html`` applies (min size + an
+    HTML-looking prefix + the arXiv ``<article>``/``ltx_document`` marker). It
+    is intentionally conservative: a miss only triggers a fresh fetch, never a
+    false reuse.
+    """
+    if len(body) < _HTML_MIN_BYTES:
+        return False
+    if not (body[:9].lower().startswith(b"<!doctype") or body[:5].lower().startswith(b"<html")):
+        return False
+    return b"<article" in body or b"ltx_document" in body
+
+
 class ArxivFetcher(IntakeFetcher):
     def __init__(
         self,
@@ -77,7 +92,7 @@ class ArxivFetcher(IntakeFetcher):
 
         return result
 
-    def _fetch_html(self, arxiv_id: str, *, project_id: str) -> None:
+    def _fetch_html(self, arxiv_id: str, *, project_id: str, force_refetch: bool = False) -> None:
         """Fetch the arXiv HTML rendering and write it as raw_paper.html.
 
         Tries the native arxiv.org/html endpoint first, then the ar5iv mirror as
@@ -86,9 +101,23 @@ class ArxivFetcher(IntakeFetcher):
         valid body. Never raises — the PDF fetch result is the authoritative
         contract.
 
+        A valid cached raw_paper.html is reused instead of re-downloading
+        (F-31; arXiv paper versions are immutable). ``force_refetch=True``
+        bypasses the cache for a genuine re-ingest.
+
         Source order (native-then-ar5iv) adapted from huggingface/ml-intern
         papers_tool.py (Apache-2.0).
         """
+        html_path = self._runs_root / project_id / "raw_paper.html"
+        if not force_refetch and html_path.exists():
+            try:
+                cached = html_path.read_bytes()
+            except OSError:
+                cached = b""
+            if _cached_html_is_valid(cached):
+                logger.info("arXiv HTML reused from cache: %s (%d bytes)", html_path, len(cached))
+                return
+
         for base_url in (_HTML_BASE_URL, _AR5IV_BASE_URL):
             body = self._try_fetch_html(f"{base_url}/{arxiv_id}", arxiv_id)
             if body is None:

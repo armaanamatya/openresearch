@@ -139,6 +139,7 @@ def download_pdf(
     headers: Mapping[str, str] | None = None,
     timeout_seconds: float = 30.0,
     urlopen_fn: UrlOpen = urlopen,
+    force_refetch: bool = False,
 ) -> FetchResult:
     """Download a remote PDF with bounded size, magic-byte validation, and retry.
 
@@ -146,11 +147,42 @@ def download_pdf(
     HTTP 429 or 5xx) are retried up to ``_MAX_ATTEMPTS`` total attempts with
     exponential backoff capped at ``_RETRY_BACKOFF_CAP`` seconds.  Non-transient
     failures (e.g. HTTP 404) propagate immediately on the first attempt.
+
+    A committed ``raw_paper.pdf`` is always a complete download (written via
+    atomic ``os.replace`` only after the ``%PDF-`` check), and arXiv paper
+    versions are immutable, so an existing valid cache is reused instead of
+    re-downloading (F-31). Pass ``force_refetch=True`` for a genuine re-ingest.
     """
     dst_dir = runs_root / project_id
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst_path = dst_dir / "raw_paper.pdf"
     tmp_path = dst_dir / "raw_paper.pdf.tmp"
+
+    # Validated-cache reuse (F-31) — re-hash the cached file (cheaper than a
+    # re-download) and return it when it still starts with the PDF magic.
+    if not force_refetch and dst_path.exists():
+        try:
+            digest = hashlib.sha256()
+            total = 0
+            head = b""
+            with dst_path.open("rb") as fh:
+                while True:
+                    chunk = fh.read(_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if not head:
+                        head = chunk[: len(_PDF_MAGIC)]
+                    digest.update(chunk)
+                    total += len(chunk)
+            if head == _PDF_MAGIC and total > 0:
+                logger.info("%s PDF reused from cache: %s (%d bytes)", fetched_via, dst_path, total)
+                return FetchResult(
+                    raw_paper_path=str(dst_path.resolve()),
+                    pdf_sha256=digest.hexdigest(),
+                    pdf_size_bytes=total,
+                )
+        except OSError:
+            pass  # cache unreadable — fall through to a fresh download
 
     request = Request(
         url,
