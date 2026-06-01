@@ -188,14 +188,21 @@ def _extract_json_object(raw: str) -> dict | None:
 
 
 def _is_placeholder_requirement(req: str) -> bool:
-    """Return True if a leaf requirement is a generic placeholder.
+    """Return True only for a genuinely empty / comma-only parenthetical.
 
-    Catches patterns like "(, )", "( )", "(β, λ)", "(, λ)", "(α, β, ...)"
-    and vague catch-all phrases that embed no concrete values.
+    This regex is the *last-resort* net for a truly empty template the model
+    forgot to fill — "(, )", "( )", "(,)". The primary defense against vague
+    leaves is the system prompt's concrete-value requirement; this net must
+    never over-drop a concrete leaf.
+
+    The earlier net ``\\(\\s*[^)0-9A-Za-z"\\']*\\s*\\)`` over-dropped real
+    metric/equation leaves whose parenthetical merely lacked an ASCII char —
+    "success rate (%)", "(gate.detach())" (inner ()), "r_t(θ)" (Greek) — which
+    stripped the SDAR rubric invariants from the tree (F-32). So it fires only
+    on an empty/comma-only paren, and never on a method-call paren (one
+    immediately preceded by a word char, e.g. ``detach()``).
     """
-    # Empty parenthetical: two or more commas/spaces/Greek-letters with no digits or
-    # quoted words inside — covers "(, )", "( )", "(β, λ)", "(, λ)", "(α, β, etc.)"
-    if re.search(r'\(\s*[^)0-9A-Za-z"\']*\s*\)', req):
+    if re.search(r'(?<!\w)\(\s*(?:,\s*)*\)', req):
         return True
     return False
 

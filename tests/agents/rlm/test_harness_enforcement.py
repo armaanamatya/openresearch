@@ -61,6 +61,25 @@ def test_datasetnotfound_with_badid_signal_is_code_bug():
     ) is True
 
 
+@pytest.mark.parametrize("err", [
+    # F-03: a bare missing DATA path — no config/source co-signal, no exception
+    # class name — is a provably-unobtainable dataset, NOT a code bug. Treating
+    # it as code_bug both wastes a repair iteration AND blocks force-reduce.
+    "OSError: [Errno 2] No such file or directory: '/data/webshop/items.json'",
+    "could not find /data/searchqa/nq_open — no such file or directory",
+])
+def test_bare_missing_data_path_is_not_code_bug(err):
+    assert _data_load_failure_is_code_bug(err) is False
+
+
+def test_missing_config_path_is_still_code_bug():
+    # A missing CONFIG/source path (the SDAR alfworld base_config.yaml shape)
+    # keeps the co-signal → code_bug, so F-03 doesn't regress it.
+    assert _data_load_failure_is_code_bug(
+        "OSError: [Errno 2] No such file or directory: 'configs/base_config.yaml'"
+    ) is True
+
+
 def test_reclassify_picks_only_code_bug_entries():
     res = {"success": True, "metrics": {"data_load_failures": [
         {"dataset": "webshop", "error": "HTTP Error 404"},          # data

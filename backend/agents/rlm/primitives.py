@@ -3115,6 +3115,52 @@ async def _execute_in_sandbox(
     }
 
 
+def _manifest_enrichment(result: dict) -> None:
+    """P2 provenance manifest: enrich a run_experiment result IN PLACE with the
+    fields that bind a final metric to the artifact that produced it (invariant 2:
+    every final metric traces to a persisted artifact via a manifest).
+
+    Best-effort + fail-soft — observability must never break a run, so every
+    lookup degrades silently:
+      - ``sandbox_backend``: promoted from ``resource_limits`` so the manifest
+        names the backend without callers digging into nested limits.
+      - ``metrics_sha256``: sha256 of the canonical ``metrics.json`` artifact, so
+        a final-report metric can be tied to the exact bytes that produced it
+        (the trace that closes invariant 2 for the RLM path).
+    """
+    try:
+        _rl = result.get("resource_limits") or {}
+        _backend = _rl.get("sandbox_mode") or _rl.get("sandbox_backend")
+        if _backend:
+            result.setdefault("sandbox_backend", str(_backend))
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+    try:
+        _artifact_dir = result.get("artifact_dir")
+        if _artifact_dir and not result.get("metrics_sha256"):
+            import hashlib
+            from pathlib import Path as _Path
+
+            _mjson = _Path(str(_artifact_dir)) / "metrics.json"
+            if _mjson.exists():
+                result["metrics_sha256"] = hashlib.sha256(_mjson.read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+
+
+def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: list) -> None:
+    """P2 manifest: record the identifiers that bind a run_experiment result to
+    its run — ``experiment_run_id`` (the ``run_id`` used for this attempt's
+    artifacts, previously minted in the escalation loop and discarded),
+    ``env_id``, and the structured ``commands`` list. ``setdefault`` so a value an
+    earlier path already set is never clobbered; a non-dict result is a no-op."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault("experiment_run_id", run_id)
+    result.setdefault("env_id", env_id)
+    result.setdefault("commands", list(commands) if commands else [])
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3147,6 +3193,9 @@ def _persist_experiment_result(
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
     _with_outcome(result, _classify_run_experiment_outcome(result))
+
+    # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
+    _manifest_enrichment(result)
 
     if not result.get("success"):
         logger.warning(
@@ -3255,10 +3304,14 @@ _CODE_BUG_PHRASES = (
     "returned 0 rows",
     "must be a string or a real number",   # float(tuple) family
     "repository id must be",
-    "no such file or directory",           # FileNotFoundError without the class name
-    "errno 2",
-    "has no attribute",
 )
+
+# F-03: a bare OSError-style "no such file" / "errno 2" is a code bug only when a
+# config/source co-signal co-occurs (a missing base_config.yaml / *.py). Without
+# one, a missing DATA path is a provably-unobtainable dataset, not a code bug.
+# ("has no attribute" was dropped from _CODE_BUG_PHRASES — AttributeError /
+# FileNotFoundError are already caught by class name in _CODE_BUG_RE.)
+_CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
 
 
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
@@ -3309,7 +3362,16 @@ def _data_load_failure_is_code_bug(err: str) -> bool:
     low = (err or "").lower()
     if any(p in low for p in _CODE_BUG_PHRASES):
         return True
-    return bool(_CODE_BUG_RE.search(err or ""))
+    if _CODE_BUG_RE.search(err or ""):
+        return True
+    # Bare 'no such file'/'errno 2' is a code bug ONLY with a config/source
+    # co-signal (a missing base_config.yaml / *.py); a bare missing DATA path
+    # stays data-unavailable so it force-reduces on first sight (F-03).
+    if ("no such file or directory" in low or "errno 2" in low) and any(
+        c in low for c in _CONFIG_CODE_COSIGNALS
+    ):
+        return True
+    return False
 
 
 def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
@@ -4108,6 +4170,11 @@ def run_experiment(
         # A2: persist the updated count so subsequent run_experiment calls in
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
+
+    # P2 manifest: the escalation loop has produced its final result — stamp the
+    # identifiers the persist chokepoint records. run_id/env_id/commands are in
+    # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
+    _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
 
     # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
     # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0

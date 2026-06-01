@@ -82,6 +82,16 @@ class RunContext:
     # None / [] means no paper-hint was supplied or the hint has no invariants.
     paper_hint_invariants: list[Any] = field(default_factory=list)
 
+    # Benchmark-integrity blocklist (2026-05-31, #7): canonical PaperBench
+    # blacklist terms (the paper's own repo, etc.) that NO agent may fetch.
+    # Threaded into every agent spec's RuntimeGuard via collect_agent_text →
+    # to_runtime_spec. Auto-loaded from REPROLAB_BLOCKED_TERMS_JSON at run start
+    # (cli.py unions bundle.blacklist_entries() + --blacklist + the arXiv-keyed
+    # paper_hints blocklist, then sets the env var — mirrors the scope_spec /
+    # paper_hint_invariants pattern). Empty () means no blocklist resolved → the
+    # RuntimeGuard is a no-op.
+    blocked_terms: tuple[str, ...] = ()
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so
@@ -93,32 +103,38 @@ class RunContext:
     latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
 
     def __post_init__(self) -> None:
-        """Auto-load paper_hint_invariants from REPROLAB_PAPER_HINT_INVARIANTS_JSON
-        when not already set by the caller.
+        """Auto-load env-var-backed run config when not already set by the caller.
 
-        This env-var path mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py
-        serialises PaperHint.invariants to JSON and sets the env var before the
-        subprocess is spawned, so every RunContext picks them up automatically
-        without requiring a change to run.py.
+        Mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py serialises values to
+        JSON and sets the env var before the subprocess is spawned, so every
+        RunContext picks them up automatically without a change to run.py. An
+        env-var parse failure must never crash a run, so each block is guarded.
+        Each field is loaded independently — a caller-supplied invariants list
+        must not suppress the blocked_terms autoload (and vice versa).
         """
+        import json as _json
         import os as _os
-        if self.paper_hint_invariants:
-            # Caller already set them (e.g. tests) — don't override.
-            return
-        _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
-        if not _inv_json:
-            return
-        try:
-            import json as _json
-            from backend.agents.schemas import InvariantSpec as _InvariantSpec
-            _raw = _json.loads(_inv_json)
-            if isinstance(_raw, list):
-                self.paper_hint_invariants = [
-                    _InvariantSpec.model_validate(item) if isinstance(item, dict) else item
-                    for item in _raw
-                ]
-        except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
-            pass
+
+        # paper_hint_invariants ← REPROLAB_PAPER_HINT_INVARIANTS_JSON
+        if not self.paper_hint_invariants:
+            _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
+            if _inv_json:
+                try:
+                    from backend.agents.schemas import InvariantSpec as _InvariantSpec
+                    _raw = _json.loads(_inv_json)
+                    if isinstance(_raw, list):
+                        self.paper_hint_invariants = [
+                            _InvariantSpec.model_validate(item) if isinstance(item, dict) else item
+                            for item in _raw
+                        ]
+                except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
+                    pass
+
+        # blocked_terms ← REPROLAB_BLOCKED_TERMS_JSON (#7) via the shared parser,
+        # so RunContext and collect_agent_text seed the RuntimeGuard identically.
+        if not self.blocked_terms:
+            from backend.agents.runtime.base import blocked_terms_from_env
+            self.blocked_terms = blocked_terms_from_env()
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.
