@@ -184,3 +184,33 @@ untested-pending-a-clean-host.
   user's "score without the 2 disabled experiments") — reported with the delta.
 - Part B `EnvCacheManager` unit-green; integration documented as pending.
 - Merge Codex's branch into `feat/full-scope-envs` (disjoint files), push.
+
+## 9. Part A — landed (2026-06-01)
+
+- `ScopeSpec.skip_datasets` added (mirrors `skip_models`); `merge_with_paper_default`
+  auto-derives it from a narrowed `datasets` list (operator narrowing IS the
+  decision) and reconciles it out of the effective datasets.
+- `primitives._operator_scope_exclusions` / `_apply_operator_scope` mint verified
+  `operator_scope` Exclusions from `skip_models`/`skip_datasets`, recover the
+  capacity/dataset gate gaps as structured exclusions, and fold all of them into
+  `metrics.scope` via `exclusion.build_scope_block` at both cell-route aggregate
+  sites.
+- `leaf_scorer._detect_data_unavailable_leaves` consumes `scope.exclusions`
+  (verified-only) and gates `environments_skipped` by an `operator_skip_environments`
+  set — closing the env anti-gaming hole. Verified env/model exclusions are
+  authoritative; an agent-declared (unverified) skip stays scored.
+  `score_reproduction` threads `operator_skip_environments` (from
+  `scope_spec.skip_datasets`).
+
+**A3 decision:** because `operator_scope` is `verified=True` (the `--scope-spec`
+is the evidence), de-scoped environments are excluded from the *official*
+`overall_score` directly — identical to how operator-skipped models already are.
+No separate `compute_adjusted_score` is introduced; the strict score is the fair
+score. The pre-existing β3 `compute_adjusted_score` (floor-anchored result-match)
+is a distinct mechanism and is left untouched.
+
+**Result on the live run (`prj_09047604e591d969`):** re-scoring its actual rubric
+through the real `_detect_data_unavailable_leaves` + `roll_up` with ALFWorld/WebShop
+as verified `operator_scope` exclusions: **0.356 → 0.413** (9 of 26 leaves
+excluded). Tests: 199 green (174 existing + 25 new), 0 regressions. The live run
+(launched on pre-fix code) won't pick this up mid-flight; future runs + a re-score do.

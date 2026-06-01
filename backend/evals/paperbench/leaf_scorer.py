@@ -360,6 +360,7 @@ def _detect_data_unavailable_leaves(
     run_dir: Path,
     metrics_shape: list[dict] | None = None,
     operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
 ) -> set[str]:
     """Return the set of leaf ids that depend on a dataset declared unavailable.
 
@@ -430,6 +431,34 @@ def _detect_data_unavailable_leaves(
         except Exception:
             pass
 
+    # --- Structured verified exclusions (2026-06-01) ---
+    # The cell route writes ``scope.exclusions`` — Exclusion records carrying a
+    # ``verified`` flag. When present they are the AUTHORITATIVE skip source: a
+    # verified env/model exclusion is honoured (leaves excluded) regardless of the
+    # operator_skip_* params, and — critically — an UNVERIFIED exclusion is NOT
+    # honoured (anti-gaming: an agent cannot launder a failure into a free scope
+    # reduction). Legacy runs without ``scope.exclusions`` keep the prior behaviour.
+    op_skip_env = _operator_skip_set(operator_skip_environments)
+    _scope_obj = metrics_data.get("scope") or {}
+    _structured = _scope_obj.get("exclusions")
+    has_structured_exclusions = isinstance(_structured, list) and len(_structured) > 0
+    if has_structured_exclusions:
+        for _ex in _structured:
+            if not isinstance(_ex, dict) or not _ex.get("verified"):
+                continue
+            _axis = str(_ex.get("axis", "")).lower()
+            _item = str(_ex.get("item", "") or "")
+            if not _item:
+                continue
+            if _axis == "environment":
+                op_skip_env = op_skip_env | {_normalise_model_name(_item)}
+            elif _axis == "model":
+                op_skip = op_skip | {_normalise_model_name(_item)}
+    # Enforce the environment anti-gaming gate when the caller passed an explicit
+    # env skip list OR the run carries structured exclusions; otherwise keep the
+    # legacy lenient env behaviour (env skips honoured unconditionally).
+    enforce_env_gate = has_structured_exclusions or (operator_skip_environments is not None)
+
     # Signal 1b: failed / skipped MODELS.
     #
     # INTENTIONAL operator de-scope (present in op_skip) → excluded from rubric
@@ -485,16 +514,32 @@ def _detect_data_unavailable_leaves(
             repairable_models,
         )
 
-    # Signal 1c: environments_skipped — the agent's structured declaration that an
-    # environment (e.g. ALFWorld / WebShop for a Search-QA-only run) is out of
-    # scope.  Mirrors models_skipped: its leaves are excluded from numerator AND
-    # denominator exactly like a skipped model (2026-05-31 fix — previously only
-    # models_skipped was honoured, so honestly de-scoped environments scored 0.0
-    # and dragged the overall score down).
+    # Signal 1c: environments_skipped — a de-scoped environment (e.g. ALFWorld /
+    # WebShop for a Search-QA-only run).  Its leaves are excluded from numerator
+    # AND denominator exactly like a skipped model.  Anti-gaming (2026-06-01):
+    # when the env gate is enforced (structured exclusions present, or an explicit
+    # operator_skip_environments list), an env is honoured ONLY when it is
+    # operator-de-scoped / verified — an env the agent dumped into
+    # environments_skipped without operator/harness corroboration is treated as a
+    # repairable failure and STAYS scored (mirrors the model-axis logic, closing
+    # the hole where a broad ``except`` could launder a failure into a free skip).
     failed_envs: list[str] = []
-    for _e in ((metrics_data.get("scope") or {}).get("environments_skipped") or []):
-        if isinstance(_e, str) and _e:
+    repairable_envs: list[str] = []
+    for _e in (_scope_obj.get("environments_skipped") or []):
+        if not isinstance(_e, str) or not _e:
+            continue
+        if not enforce_env_gate or _normalise_model_name(_e) in op_skip_env:
             failed_envs.append(_e)
+        else:
+            repairable_envs.append(_e)
+    if repairable_envs:
+        logger.warning(
+            "_detect_data_unavailable_leaves: %d environment(s) in environments_skipped "
+            "were NOT operator-de-scoped/verified — treating as repairable, NOT scope "
+            "reductions: %s",
+            len(repairable_envs),
+            repairable_envs,
+        )
 
     # Signal 2: scope.gaps — read from BOTH metrics.json::scope (where the agent
     # writes structured scope, mirroring where models_skipped is already read) AND
@@ -853,6 +898,7 @@ def score_reproduction(
     metrics_shape: list[dict] | None = None,
     invariants: list[Any] | None = None,
     operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
@@ -977,7 +1023,9 @@ def score_reproduction(
     # Pass operator_skip_models so requested-but-load-failed models are NOT
     # silently excluded (they stay in scoring as code bugs, not scope gaps).
     unavailable_ids: set[str] = _detect_data_unavailable_leaves(
-        leaves, run_dir, metrics_shape, operator_skip_models=operator_skip_models
+        leaves, run_dir, metrics_shape,
+        operator_skip_models=operator_skip_models,
+        operator_skip_environments=operator_skip_environments,
     )
     skip_set: frozenset[str] = frozenset(unavailable_ids)
 
