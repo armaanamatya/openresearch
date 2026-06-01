@@ -82,6 +82,17 @@ class RunContext:
     # None / [] means no paper-hint was supplied or the hint has no invariants.
     paper_hint_invariants: list[Any] = field(default_factory=list)
 
+    # GEPA per-run prompt optimization (backend/agents/gepa/)
+    # gepa_prompt_overrides: filled by gepa_pre_call() before each targeted primitive;
+    #   keys match primitive names ("plan_reproduction", "implement_baseline", "propose_improvements")
+    gepa_prompt_overrides: dict = field(default_factory=dict)
+    # gepa_example_buffer: accumulated training examples from previous calls within this run;
+    #   keys match primitive names; each value is list[dict] with "input","output","score"
+    gepa_example_buffer: dict = field(default_factory=dict)
+    # Re-entrancy guard: True while GEPA's mini optimize() loop is running, prevents
+    # wrap_primitive() from triggering a nested GEPA call during metric evaluation
+    gepa_optimization_active: bool = False
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     # keys.
     provider_fallback_disabled: bool = False
 
+    # GEPA per-run prompt optimization
+    # gepa_optimization: "off" | "on" | "plan-only" | "baseline-only" | "improve-only"
+    gepa_optimization: str = "off"
+    gepa_max_metric_calls_plan: int = 10
+    gepa_max_metric_calls_baseline: int = 5
+    gepa_max_metric_calls_improve: int = 10
+    gepa_timeout_plan_s: int = 60
+    gepa_timeout_baseline_s: int = 30
+    gepa_timeout_improve_s: int = 60
+    gepa_reflection_model: str = "openai/gpt-4o"
+    gepa_viz_port: int = 5151
+
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,
     # AND the REPROLAB_-prefixed forms, because some deployments reserve
