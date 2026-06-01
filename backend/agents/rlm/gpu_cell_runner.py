@@ -220,6 +220,14 @@ def _run_cell_subprocess(
         own parameters without parsing argv.
     """
     child_env = {**os.environ}
+    # Put the running interpreter's bin/ on PATH so console scripts a cell may shell
+    # out to (e.g. ``alfworld-download``) resolve. A venv invoked by path (not
+    # "activated") does NOT place its bin/ on PATH, so a bare-name ``subprocess``
+    # call FileNotFounds — exactly how the 2026-06-01 SDAR ALFWorld cells died
+    # (``alfworld-download failed: [Errno 2] No such file or directory``).
+    _interp_bin = os.path.dirname(os.path.abspath(sys.executable))
+    if _interp_bin:
+        child_env["PATH"] = _interp_bin + os.pathsep + child_env.get("PATH", "")
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
     child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     child_env["REPROLAB_CELL_OUTPUT_DIR"] = str(output_dir)
