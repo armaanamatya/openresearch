@@ -717,11 +717,30 @@ def _coerce_answers(raw: Any) -> list[str]:
     return [str(raw)]
 
 
-def _load_nq_open(n: int) -> list[dict[str, Any]]:
-    """Load NQ-open validation rows as closed-pool tasks (no per-question context)."""
+def _load_dataset_resilient(repo_id: str, *args: Any, **kwargs: Any):
+    """Load a HF dataset by its canonical ``owner/name`` id.
+
+    Modern ``datasets`` rejects bare short names (``HfUriError: Repository id
+    must be 'namespace/name'``), so callers MUST pass the namespaced id. We
+    fall back to the legacy bare name (derived, never a literal) so a cache
+    populated under the old id still resolves offline.
+    """
     from datasets import load_dataset  # lazy
 
-    ds = load_dataset("nq_open", split=f"validation[:{n}]")
+    try:
+        return load_dataset(repo_id, *args, **kwargs)
+    except Exception:
+        bare = repo_id.split("/")[-1]
+        if bare != repo_id:
+            return load_dataset(bare, *args, **kwargs)
+        raise
+
+
+def _load_nq_open(n: int) -> list[dict[str, Any]]:
+    """Load NQ-open validation rows as closed-pool tasks (no per-question context)."""
+    ds = _load_dataset_resilient(
+        "google-research-datasets/nq_open", split=f"validation[:{n}]"
+    )
     tasks: list[dict[str, Any]] = []
     for row in ds:
         question = str(row.get("question", "") or "").strip()
@@ -741,9 +760,9 @@ def _load_nq_open(n: int) -> list[dict[str, Any]]:
 
 def _load_hotpotqa(n: int) -> list[dict[str, Any]]:
     """Load HotpotQA distractor validation rows, KEEPING the gold context paragraphs."""
-    from datasets import load_dataset  # lazy
-
-    ds = load_dataset("hotpot_qa", "distractor", split=f"validation[:{n}]")
+    ds = _load_dataset_resilient(
+        "hotpotqa/hotpot_qa", "distractor", split=f"validation[:{n}]"
+    )
     tasks: list[dict[str, Any]] = []
     for row in ds:
         question = str(row.get("question", "") or "").strip()
