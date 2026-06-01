@@ -7,6 +7,72 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 
+class _GepaAdapterWrapper:
+    """Minimal GEPAAdapter wrapping our callable evaluators.
+
+    Our evaluators: (candidate: dict, example: Any) -> (float, dict)
+    GEPAAdapter protocol:
+      evaluate(batch, candidate, capture_traces) -> EvaluationBatch
+      make_reflective_dataset(candidate, eval_batch, components) -> dict
+      propose_new_texts = None  (use GEPA's default reflective proposer)
+    """
+
+    # Explicitly None so GEPA uses its built-in reflective mutation proposer
+    propose_new_texts = None
+
+    def __init__(self, evaluator_fn: Callable) -> None:
+        self._fn = evaluator_fn
+
+    def evaluate(
+        self,
+        batch: list,
+        candidate: dict[str, str],
+        capture_traces: bool = False,
+    ) -> Any:
+        from gepa.core.adapter import EvaluationBatch
+
+        outputs: list = []
+        scores: list[float] = []
+        trajectories: list | None = [] if capture_traces else None
+
+        for example in batch:
+            try:
+                result = self._fn(candidate=candidate, example=example)
+                score, side_info = (result if isinstance(result, tuple) else (float(result), {}))
+            except Exception as exc:
+                logger.debug("GepaAdapterWrapper evaluate error: %s", exc)
+                score, side_info = 0.0, {"error": str(exc)}
+
+            outputs.append(side_info if isinstance(side_info, dict) else {})
+            scores.append(float(score))
+            if trajectories is not None:
+                trajectories.append({"score": score, "side_info": side_info})
+
+        return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajectories)
+
+    def make_reflective_dataset(
+        self,
+        candidate: dict[str, str],
+        eval_batch: Any,
+        components_to_update: list[str],
+    ) -> dict:
+        dataset: dict[str, list] = {}
+        for comp in components_to_update:
+            records = []
+            outputs = getattr(eval_batch, "outputs", []) or []
+            scores = getattr(eval_batch, "scores", []) or []
+            for i, output in enumerate(outputs):
+                score = scores[i] if i < len(scores) else 0.0
+                feedback = output.get("feedback", "") if isinstance(output, dict) else ""
+                records.append({
+                    "Inputs": {"index": i},
+                    "Generated Outputs": output if isinstance(output, dict) else {},
+                    "Feedback": f"Score: {score:.3f}" + (f" | {feedback}" if feedback else ""),
+                })
+            dataset[comp] = records
+        return dataset
+
+
 def run_gepa_mini(
     *,
     seed_prompt: str,
@@ -34,7 +100,7 @@ def run_gepa_mini(
         result = gepa.optimize(
             seed_candidate={component_name: seed_prompt},
             trainset=trainset,
-            evaluator=evaluator,
+            adapter=_GepaAdapterWrapper(evaluator),
             reflection_lm=reflection_model,
             max_metric_calls=max_metric_calls,
             stop_callbacks=[
@@ -43,6 +109,7 @@ def run_gepa_mini(
             ],
             callbacks=callbacks,
             display_progress_bar=False,
+            raise_on_exception=False,
             seed=0,
         )
         best = result.best_candidate
