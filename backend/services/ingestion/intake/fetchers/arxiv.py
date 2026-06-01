@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen as _stdlib_urlopen
 
 from backend.services.ingestion.intake.fetchers.interface import (
@@ -26,6 +28,15 @@ _HTML_TIMEOUT = 30.0
 _HTML_MIN_BYTES = 5000
 _HTML_MAX_BYTES = 50 * 1024 * 1024  # 50 MB — half the PDF cap; guard against DoS (T17, review I5)
 _USER_AGENT = "Mozilla/5.0 (compatible; openresearch-ingestion/0.1)"
+
+# Within-source transient-failure retry for the HTML fetch (F-28) — mirrors the
+# PDF fetch retry (remote_pdf.download_pdf). The native endpoint and the ar5iv
+# mirror are each retried up to _HTML_MAX_ATTEMPTS times on a transient signal
+# (timeout, URLError, HTTP 429/5xx) before falling through to the next source;
+# a non-transient miss (404 / non-HTML / too-small / no marker) is not retried.
+_HTML_MAX_ATTEMPTS = 2
+_HTML_RETRY_BACKOFF_SECONDS = [1.0]  # sleep before attempt 2
+_html_sleep_fn = time.sleep  # module-level hook — patched in tests to avoid real sleeps
 
 
 class ArxivFetcher(IntakeFetcher):
@@ -92,42 +103,74 @@ class ArxivFetcher(IntakeFetcher):
     def _try_fetch_html(self, html_url: str, arxiv_id: str) -> bytes | None:
         """Fetch + validate a single HTML source. Returns the validated body or None.
 
-        Never raises — any network error or validation miss yields None so the
-        caller can fall through to the next source.
+        Transient failures (timeout, URLError, HTTP 429/5xx) are retried up to
+        ``_HTML_MAX_ATTEMPTS`` times within this source before falling through
+        (F-28) — mirroring the PDF fetch retry. A non-transient miss (404 /
+        non-HTML / too-small / missing arXiv marker / size-cap) returns None
+        immediately. Never raises — any error yields None so the caller can fall
+        through to the next source.
         """
-        try:
-            _open = self._urlopen_fn if self._urlopen_fn is not None else _stdlib_urlopen
-            request = Request(
-                html_url,
-                headers={"User-Agent": _USER_AGENT},
-            )
-            with _open(request, timeout=_HTML_TIMEOUT) as response:
-                status = getattr(response, "status", getattr(response, "code", 200))
-                if status is not None and int(status) != 200:
-                    logger.debug("arXiv HTML fetch returned HTTP %s for %s — skipping", status, html_url)
-                    return None
+        _open = self._urlopen_fn if self._urlopen_fn is not None else _stdlib_urlopen
+        request = Request(
+            html_url,
+            headers={"User-Agent": _USER_AGENT},
+        )
 
-                # Chunked-read with a 50 MB cap — unbounded read() OOM-kills
-                # ingestion on malicious/buggy endpoints (T17, review I5).
-                body = bytearray()
-                while True:
-                    chunk = response.read(64 * 1024)
-                    if not chunk:
-                        break
-                    body.extend(chunk)
-                    if len(body) > _HTML_MAX_BYTES:
-                        logger.warning(
-                            "arXiv HTML body for %s exceeded %d bytes — aborting (possible DoS)",
-                            arxiv_id,
-                            _HTML_MAX_BYTES,
-                        )
+        for attempt in range(_HTML_MAX_ATTEMPTS):
+            if attempt > 0:
+                idx = min(attempt - 1, len(_HTML_RETRY_BACKOFF_SECONDS) - 1)
+                sleep_s = _HTML_RETRY_BACKOFF_SECONDS[idx]
+                logger.warning(
+                    "arXiv HTML fetch for %s failed transiently (attempt %d/%d); retrying in %.1fs",
+                    html_url, attempt, _HTML_MAX_ATTEMPTS, sleep_s,
+                )
+                _html_sleep_fn(sleep_s)
+
+            try:
+                with _open(request, timeout=_HTML_TIMEOUT) as response:
+                    status = getattr(response, "status", getattr(response, "code", 200))
+                    if status is not None and int(status) != 200:
+                        code = int(status)
+                        if code == 429 or 500 <= code < 600:
+                            continue  # transient HTTP — retry within source
+                        logger.debug("arXiv HTML fetch returned HTTP %s for %s — skipping", status, html_url)
                         return None
-                body = bytes(body)
 
-                # Read headers inside the `with` block — response.info() is
-                # only valid while the connection is open (review M5 / T28).
-                content_type = response.info().get("Content-Type", "") or ""  # type: ignore[union-attr]
+                    # Chunked-read with a 50 MB cap — unbounded read() OOM-kills
+                    # ingestion on malicious/buggy endpoints (T17, review I5).
+                    body = bytearray()
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        body.extend(chunk)
+                        if len(body) > _HTML_MAX_BYTES:
+                            logger.warning(
+                                "arXiv HTML body for %s exceeded %d bytes — aborting (possible DoS)",
+                                arxiv_id,
+                                _HTML_MAX_BYTES,
+                            )
+                            return None
+                    body = bytes(body)
 
+                    # Read headers inside the `with` block — response.info() is
+                    # only valid while the connection is open (review M5 / T28).
+                    content_type = response.info().get("Content-Type", "") or ""  # type: ignore[union-attr]
+            except HTTPError as exc:
+                code = int(getattr(exc, "code", 0) or 0)
+                if code == 429 or 500 <= code < 600:
+                    continue  # transient — retry within source
+                logger.warning("arXiv HTML fetch failed for %s at %s: %s", arxiv_id, html_url, exc)
+                return None
+            except (URLError, TimeoutError) as exc:
+                # timeout / connection error (socket.timeout aliases TimeoutError) — transient
+                logger.warning("arXiv HTML fetch transient error for %s at %s: %s", arxiv_id, html_url, exc)
+                continue
+            except Exception as exc:
+                logger.warning("arXiv HTML fetch failed for %s at %s: %s", arxiv_id, html_url, exc)
+                return None
+
+            # --- Validation (non-transient — never retried) ---
             is_html = (
                 "html" in content_type.lower()
                 or body[:9].lower().startswith(b"<!doctype")
@@ -152,9 +195,8 @@ class ArxivFetcher(IntakeFetcher):
 
             return body
 
-        except Exception as exc:
-            logger.warning("arXiv HTML fetch failed for %s at %s: %s", arxiv_id, html_url, exc)
-            return None
+        # All attempts exhausted on transient failures.
+        return None
 
 
 __all__ = ["ArxivFetcher"]
