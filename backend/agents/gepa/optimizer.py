@@ -73,6 +73,36 @@ class _GepaAdapterWrapper:
         return dataset
 
 
+def _make_reflection_lm(model: str) -> str | Callable:
+    """Resolve a reflection LM for gepa.optimize(reflection_lm=...).
+
+    Accepted values for REPROLAB_GEPA_REFLECTION_MODEL:
+      "claude-oauth"            — Claude Code subscription (no API key needed);
+                                  uses the same ClaudeLlmClient path as sub-agents.
+      "anthropic/claude-*"      — Anthropic API key (ANTHROPIC_API_KEY must have credits).
+      "openai/gpt-*"            — OpenAI API key (OPENAI_API_KEY must have credits).
+      any litellm model string  — passed through to litellm.completion().
+
+    Returns a callable (prompt: str) -> str for "claude-oauth", or the
+    model string as-is for everything else (gepa.optimize wraps it in litellm).
+    """
+    if model != "claude-oauth":
+        return model
+
+    # Lazy import to avoid circular deps and startup overhead
+    from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+    _client = ClaudeLlmClient()
+
+    def _claude_oauth_lm(prompt: str) -> str:
+        # GEPA passes a single combined prompt; use an empty system so the full
+        # reflection instruction lands in the user turn (matching how the RLM
+        # root model uses ClaudeLlmClient for sub-calls).
+        return _client.complete(system="", user=prompt)
+
+    return _claude_oauth_lm
+
+
 def run_gepa_mini(
     *,
     seed_prompt: str,
@@ -88,6 +118,9 @@ def run_gepa_mini(
 
     Returns (best_prompt, best_score, total_metric_calls).
     On any failure returns (seed_prompt, 0.0, 0) — never raises.
+
+    reflection_model is resolved through _make_reflection_lm, so
+    "claude-oauth" works out of the box without any API key.
     """
     try:
         import gepa
@@ -97,11 +130,12 @@ def run_gepa_mini(
         return seed_prompt, 0.0, 0
 
     try:
+        resolved_lm = _make_reflection_lm(reflection_model)
         result = gepa.optimize(
             seed_candidate={component_name: seed_prompt},
             trainset=trainset,
             adapter=_GepaAdapterWrapper(evaluator),
-            reflection_lm=reflection_model,
+            reflection_lm=resolved_lm,
             max_metric_calls=max_metric_calls,
             stop_callbacks=[
                 TimeoutStopCondition(timeout_seconds=timeout_s),

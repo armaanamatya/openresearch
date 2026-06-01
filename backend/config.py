@@ -66,7 +66,12 @@ class Settings(BaseSettings):
     gepa_timeout_plan_s: int = 60
     gepa_timeout_baseline_s: int = 30
     gepa_timeout_improve_s: int = 60
-    gepa_reflection_model: str = "openai/gpt-4o"
+    # Reflection LM for GEPA's proposal step. Accepted values:
+    #   "claude-oauth"           — Claude Code subscription, no API key needed (default)
+    #   "anthropic/claude-*"     — Anthropic API (ANTHROPIC_API_KEY with credits)
+    #   "openai/gpt-*"           — OpenAI API (OPENAI_API_KEY with credits)
+    #   any litellm model string — passed through to litellm.completion()
+    gepa_reflection_model: str = "claude-oauth"
     gepa_viz_port: int = 5151
 
     # External provider API keys. We read both the unprefixed names that
