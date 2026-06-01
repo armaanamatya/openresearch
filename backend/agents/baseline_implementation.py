@@ -1020,6 +1020,12 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
     "and 'Evaluation protocol and metric correctness' loses partial credit because the\n"
     "grader can't verify intermediate-step claims (e.g. 'BN reaches baseline's final\n"
     "acc 60% faster').  All five are cheap — make them all unconditional.\n"
+    "FAIL-SOFT the OPTIONAL / VISUALIZATION imports: wrap matplotlib / seaborn / wandb /\n"
+    "tensorboard imports AND the figure-writing calls in try/except so a MISSING viz or\n"
+    "logging library degrades to 'skip that figure', NEVER an ImportError that aborts the\n"
+    "whole training. metrics.json + config_used.json are MANDATORY; figures are best-effort.\n"
+    "(2026-06-01: an unguarded top-level `import matplotlib` aborted a full training run\n"
+    "with zero metrics — a one-line try/except would have saved the whole run.)\n"
 )
 
 
@@ -1130,6 +1136,10 @@ _CELL_CONTRACT_BLOCK = (
     "and HEAD-probes each dataset_url (a confirmed 404 -> scope.gaps), so a too-big model or a\n"
     "dead dataset becomes an honest rubric gap instead of an OOM/crash. You do NOT need a\n"
     "commands.json when you provide cells.json + train_cell.py — the harness runs the matrix.\n"
+    "STICKY ACROSS ITERATIONS: this holds on EVERY iteration including repairs/improvements.\n"
+    "When you refine the method, EDIT train_cell.py + keep cells.json — do NOT collapse the\n"
+    "matrix back into a single monolithic train.py (that silently drops you onto the legacy\n"
+    "one-process path and forfeits the per-GPU-per-cell OOM safety).\n"
 )
 
 
