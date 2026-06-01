@@ -30,3 +30,11 @@ it("does not mark Upload as active when a run is active", () => {
   const uploadLink = screen.getByRole("link", { name: /Upload/ });
   expect(uploadLink.className).not.toContain("active");
 });
+
+it("renders a Leaderboard nav link pointing to /leaderboard", () => {
+  render(<LabSidebar active="upload" recents={[]} />);
+
+  const leaderboardLink = screen.getByRole("link", { name: /Leaderboard/i });
+  expect(leaderboardLink).toBeInTheDocument();
+  expect(leaderboardLink.getAttribute("href")).toBe("/leaderboard");
+});

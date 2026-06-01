@@ -88,7 +88,7 @@ def test_every_primitive_binds_and_heuristic_ones_run(make_context, tmp_path):
 
     ctx = make_context(tmp_path)
     tools = build_custom_tools(ctx)
-    assert len(tools) == 15  # the nine brief-§7 primitives + record_candidate_outcome (Task 13) + check_user_messages + respond_to_user + heartbeat + recommend_next_tool + resolve_gpu_requirements
+    assert len(tools) == 16  # existing RLM primitives plus optional codex_repair
     for entry in tools.values():
         assert callable(entry["tool"])
 

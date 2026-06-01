@@ -7,6 +7,9 @@ import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, DemoModelChoice, 
 import type { RecentRunSummary } from "@/lib/runs/server-list";
 import { paperDisplayTitle } from "@/lib/runs/paper-title";
 import type { ModelChoice } from "@/lib/models/server-fetch";
+import type { LeaderboardRow } from "@/lib/leaderboard/types";
+import { RecentRunsPanel } from "./recent-runs-panel";
+import recentRunsStyles from "./recent-runs-panel.module.css";
 import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { UploadView } from "./upload-view";
 import { LabSidebar } from "./lab-sidebar";
@@ -35,6 +38,8 @@ type LabShellProps = {
   initialAuthStatus?: AuthStatus | null;
   serverDefaultSandbox?: DemoSandboxMode;
   presentationMode?: PresentationMode;
+  initialLeaderboardRows?: LeaderboardRow[];
+  initialLeaderboardError?: string | null;
 };
 
 function WorkflowView({
@@ -116,7 +121,9 @@ export function LabShell({
   initialModels = [],
   initialAuthStatus = null,
   serverDefaultSandbox,
-  presentationMode = "internal"
+  presentationMode = "internal",
+  initialLeaderboardRows = [],
+  initialLeaderboardError = null,
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
   const [over, setOver] = useState(false);
@@ -228,6 +235,13 @@ export function LabShell({
               dashboardEvents={dashboardEvents}
             />
           ) : (
+            <>
+            <div className={recentRunsStyles.panelWrap}>
+              <RecentRunsPanel
+                rows={initialLeaderboardRows}
+                error={initialLeaderboardError}
+              />
+            </div>
             <UploadView
               arxiv={arxiv}
               authStatus={initialAuthStatus}
@@ -339,6 +353,7 @@ export function LabShell({
               providerCredentials={providerCredentials}
               onProviderCredentialsChange={setProviderCredentials}
             />
+            </>
           )}
           </RlmReplayContent>
         </RlmFixtureContent>

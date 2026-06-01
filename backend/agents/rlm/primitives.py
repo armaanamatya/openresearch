@@ -62,6 +62,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "permission_denied",
     "syntax_error",
     "scope_shape_violation",
+    "dockerfile_invalid",
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -80,6 +81,33 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     "quota_exceeded",
     # Existing classifier label for the same fatal funding state.
     "runpod_balance_too_low",
+}
+
+_CODEX_HARD_ALLOWED_TASKS = {
+    "implementation_repair",
+    "test_debugging",
+    "dockerfile_repair",
+    "requirements_repair",
+    "traceback_explanation",
+}
+_CODEX_REJECTED_TASKS = {
+    "paper_summary",
+    "paper_navigation",
+    "rubric_judgment",
+    "final_report",
+    "broad_research",
+    "open-ended_planning",
+    "open_ended_planning",
+    "credential_inspection",
+    "secret_search",
+}
+_CODEX_AGENT_CORRECTABLE_FAILURES = {
+    "syntax_error",
+    "missing_module",
+    "requirements_not_found",
+    "dockerfile_invalid",
+    "contract_violation",
+    "scope_shape_violation",
 }
 
 # PR-ζ: transient-error retry policy for _execute_in_sandbox.
@@ -214,6 +242,74 @@ def _harvest_baseline_artifacts(
 
 def _failure_class_key(value: object) -> str:
     return str(value or "").strip().lower().replace("-", "_")
+
+
+def _codex_env_allowed_tasks(raw: str | None) -> set[str]:
+    return {
+        item.strip().lower().replace("-", "_")
+        for item in str(raw or "").split(",")
+        if item.strip()
+    }
+
+
+def _codex_repair_error(error_type: str, message: str, **extra: Any) -> dict:
+    payload = {
+        "ok": False,
+        "success": False,
+        "disabled": error_type == "disabled",
+        "timed_out": False,
+        "exit_code": None,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "changed_files": [],
+        "duration_s": 0.0,
+        "error_type": error_type,
+        "error": message,
+    }
+    payload.update(extra)
+    return _with_outcome(payload, PrimitiveOutcome.repairable)
+
+
+def _codex_failure_class(
+    failure_class: str | None,
+    repair_context: dict | None,
+) -> str:
+    if failure_class:
+        return _failure_class_key(failure_class)
+    if isinstance(repair_context, dict):
+        return _failure_class_key(repair_context.get("failure_class"))
+    return ""
+
+
+def _build_codex_prompt(
+    *,
+    task_type: str,
+    instructions: str,
+    test_command: str,
+    allowed_paths: list[str],
+    timeout_s: int,
+    failure_class: str,
+) -> str:
+    allowed = "\n".join(f"- {p}" for p in allowed_paths) if allowed_paths else "- Entire workspace"
+    return (
+        "You are a specialized ReproLab repo-editing repair subagent.\n"
+        "Do not perform paper navigation, paper summarization, rubric judgment, "
+        "final report writing, broad research, credential inspection, or secret search.\n\n"
+        f"Task type: {task_type}\n"
+        f"Failure class: {failure_class or 'not provided'}\n"
+        f"Exact task:\n{instructions.strip()}\n\n"
+        "Allowed files or workspace scope:\n"
+        f"{allowed}\n\n"
+        f"Test command to run:\n{test_command.strip()}\n\n"
+        f"Max time budget: {timeout_s} seconds.\n\n"
+        "Constraints:\n"
+        "- Touch only files needed for the targeted repair and do not touch unrelated files.\n"
+        "- Do not print secrets, environment variables, access tokens, credential files, or auth state.\n"
+        "- Do not read, print, parse, or copy ~/.codex/auth.json or any credential store.\n"
+        "- Run only the targeted test command above unless a smaller diagnostic command is necessary.\n"
+        "- Summarize changed files and tests run in your final response.\n"
+        "- Stop after the targeted fix; do not continue into open-ended cleanup or planning.\n"
+    )
 
 
 def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
@@ -1921,6 +2017,143 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     if harvested.get("ok") is True:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
     return harvested
+
+
+def codex_repair(
+    task_type: str,
+    instructions: str,
+    test_command: str,
+    allowed_paths: list[str] | tuple[str, ...] | str | None = None,
+    repair_context: dict | None = None,
+    failure_class: str | None = None,
+    readonly: bool = False,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Deliberately invoke Codex CLI for bounded repo repair.
+
+    This primitive is default-off and gated by task type, failure class, and a
+    per-run call budget. It is not used by ``rlm_query`` and is not a provider
+    for paper navigation, summarization, rubric judgment, or final reports.
+    """
+    from pathlib import Path
+
+    from backend.config import get_settings
+    from backend.agents.rlm.codex_subagent import run_codex_subagent
+
+    settings = get_settings()
+    if not bool(getattr(settings, "codex_subagent", False)):
+        return _codex_repair_error(
+            "disabled",
+            "codex_repair is disabled; set REPROLAB_CODEX_SUBAGENT=1 to enable it.",
+        )
+
+    normalized_task = str(task_type or "").strip().lower().replace("-", "_")
+    if normalized_task in _CODEX_REJECTED_TASKS:
+        return _codex_repair_error(
+            "task_type_rejected",
+            f"codex_repair rejected task_type={task_type!r}; this route is only for repo repair.",
+        )
+    env_allowed = _codex_env_allowed_tasks(getattr(settings, "codex_allowed_tasks", ""))
+    if normalized_task not in _CODEX_HARD_ALLOWED_TASKS or normalized_task not in env_allowed:
+        return _codex_repair_error(
+            "task_type_not_allowed",
+            f"codex_repair task_type={task_type!r} is not enabled by REPROLAB_CODEX_ALLOWED_TASKS.",
+            allowed_tasks=sorted(env_allowed & _CODEX_HARD_ALLOWED_TASKS),
+        )
+
+    klass = _codex_failure_class(failure_class, repair_context)
+    if klass not in _CODEX_AGENT_CORRECTABLE_FAILURES:
+        return _codex_repair_error(
+            "failure_class_not_allowed",
+            (
+                "codex_repair requires a failed run_experiment repair_context or "
+                "failure_class in: "
+                + ", ".join(sorted(_CODEX_AGENT_CORRECTABLE_FAILURES))
+            ),
+            failure_class=klass or None,
+        )
+    if isinstance(repair_context, dict) and repair_context.get("success") is True:
+        return _codex_repair_error(
+            "experiment_not_failed",
+            "codex_repair only runs after a failed experiment result.",
+            failure_class=klass,
+        )
+
+    call_count = int(getattr(ctx, "_codex_subagent_calls", 0) or 0)
+    max_calls = int(getattr(settings, "codex_max_calls_per_run", 3) or 0)
+    if call_count >= max_calls:
+        return _codex_repair_error(
+            "max_calls_exceeded",
+            f"codex_repair call budget exhausted ({call_count}/{max_calls}).",
+            calls_used=call_count,
+            max_calls=max_calls,
+        )
+
+    if isinstance(allowed_paths, str):
+        allowed = [allowed_paths]
+    else:
+        allowed = [str(p) for p in (allowed_paths or [])]
+    allowed = [p.strip() for p in allowed if p and p.strip()]
+    instructions = str(instructions or "").strip()
+    test_command = str(test_command or "").strip()
+    if not instructions:
+        return _codex_repair_error("invalid_request", "codex_repair instructions must be non-empty.")
+    if not test_command:
+        return _codex_repair_error("invalid_request", "codex_repair test_command must be non-empty.")
+
+    timeout_s = int(getattr(settings, "codex_timeout_s", 900) or 900)
+    max_output_chars = int(getattr(settings, "codex_max_output_chars", 12000) or 12000)
+    profile = str(getattr(settings, "codex_profile", "") or "").strip() or None
+    prompt = _build_codex_prompt(
+        task_type=normalized_task,
+        instructions=instructions,
+        test_command=test_command,
+        allowed_paths=allowed,
+        timeout_s=timeout_s,
+        failure_class=klass,
+    )
+
+    def _event_sink(event_type: str, payload: dict) -> None:
+        _emit_dashboard_event(ctx, event_type=event_type, payload=payload)
+
+    setattr(ctx, "_codex_subagent_calls", call_count + 1)
+    result = run_codex_subagent(
+        prompt=prompt,
+        workspace=Path(ctx.project_dir),
+        timeout_s=timeout_s,
+        profile=profile,
+        readonly=bool(readonly),
+        task_type=normalized_task,
+        max_output_chars=max_output_chars,
+        event_sink=_event_sink,
+    )
+    payload = result.as_dict()
+    payload["success"] = result.ok
+    payload["task_type"] = normalized_task
+    payload["failure_class"] = klass
+    payload["calls_used"] = call_count + 1
+    payload["max_calls"] = max_calls
+
+    if allowed and result.changed_files:
+        allowed_prefixes = [p.rstrip("/") + "/" for p in allowed if not p.startswith("..")]
+        allowed_exact = {p.rstrip("/") for p in allowed if not p.startswith("..")}
+        outside = [
+            changed for changed in result.changed_files
+            if changed not in allowed_exact
+            and not any(changed.startswith(prefix) for prefix in allowed_prefixes)
+        ]
+        if outside:
+            payload["ok"] = False
+            payload["success"] = False
+            payload["error_type"] = "changed_files_outside_allowed_paths"
+            payload["error"] = "codex_repair changed files outside allowed_paths"
+            payload["outside_allowed_paths"] = outside
+
+    return _with_outcome(
+        payload,
+        PrimitiveOutcome.ok if payload.get("ok") else PrimitiveOutcome.repairable,
+    )
 
 
 def _backend_for_sandbox_mode(
@@ -5249,6 +5482,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "heartbeat": heartbeat,
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
+    "codex_repair": codex_repair,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -5326,4 +5560,14 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "cloud_type, sku_usd_per_hr, total_usd_per_hr, source, ladder_remaining, ...}. "
         "Call ONCE per run after accumulating hardware clues from understand_section. "
         "Idempotent — subsequent calls return the cached plan.",
+    "codex_repair": "codex_repair(task_type, instructions, test_command, "
+        "allowed_paths=None, repair_context=None, failure_class=None, readonly=False) "
+        "-> dict — optional, default-off Codex CLI repo-editing subagent for "
+        "bounded software-engineering repairs only. Use only after a failed "
+        "run_experiment with an agent-correctable failure_class such as "
+        "syntax_error, missing_module, requirements_not_found, dockerfile_invalid, "
+        "contract_violation, or scope_shape_violation. Do NOT use for paper "
+        "navigation, paper summaries, rubric judgment, final reports, broad "
+        "research, credential inspection, secret search, or high-frequency "
+        "rlm_query calls.",
 }
