@@ -94,3 +94,48 @@ def test_run_proceeds_when_parsed_full_text_present(
         if "degraded" in r.message.lower() or "lossy" in r.message.lower()
     ]
     assert not degraded_records, f"Unexpected warning(s): {[r.message for r in degraded_records]}"
+
+
+# ---------------------------------------------------------------------------
+# F-29: make the lossy fallback OBSERVABLE (not a buried logger.warning) so an
+# operator can see the run is non-faithful — without changing run outcomes
+# (default stays allow_lossy=True; observe-first per the PR-ρ deferral).
+# ---------------------------------------------------------------------------
+
+def test_returns_degraded_reason_when_lossy_allowed(tmp_path: Path) -> None:
+    """allow_lossy=True + degraded → returns a non-None reason the caller can
+    surface (was None, so the degradation was invisible to callers)."""
+    project_dir = tmp_path / "prj_lossy_reason"
+    project_dir.mkdir()
+    reason = _assert_paper_text_precondition(project_dir, allow_lossy=True)
+    assert reason is not None
+    assert "degraded" in reason.lower() or "lossy" in reason.lower()
+
+
+def test_returns_none_when_not_degraded(tmp_path: Path) -> None:
+    """Intact paper text → None (no warning to surface)."""
+    project_dir = tmp_path / "prj_ok_reason"
+    project_dir.mkdir()
+    (project_dir / "parsed_full_text.txt").write_text("x" * 2048, encoding="utf-8")
+    assert _assert_paper_text_precondition(project_dir, allow_lossy=False) is None
+
+
+def test_demo_status_surfaces_and_preserves_paper_text_warning(tmp_path: Path) -> None:
+    """The degraded reason lands in demo_status.json at run-start and survives the
+    merge into the terminal write (F-29 — operator-visible, not silent)."""
+    import json
+
+    from backend.agents.rlm.run import _write_demo_status
+
+    project_dir = tmp_path / "prj_warn"
+    project_dir.mkdir()
+    warn = "paper text degraded — proceeding with lossy workspace fallback"
+
+    _write_demo_status(project_dir, "running", warnings=[warn])
+    data = json.loads((project_dir / "demo_status.json").read_text(encoding="utf-8"))
+    assert data.get("warnings") == [warn]
+
+    # A later terminal write without warnings must preserve the field via merge.
+    _write_demo_status(project_dir, "completed", verdict="partial")
+    data2 = json.loads((project_dir / "demo_status.json").read_text(encoding="utf-8"))
+    assert data2.get("warnings") == [warn]

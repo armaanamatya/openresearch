@@ -130,6 +130,7 @@ def test_is_noise_title_rejects_placeholders():
         "paper_text", "PAPER_TEXT", " paper_text ", "paper text",
         "untitled", "Untitled Paper", "title", "abstract", "Introduction",
         "1 Introduction", "summary", "overview", "",
+        "document", "Document",  # F-30: no-heading HTML-parser fallback section title
     ):
         assert _is_noise_title(junk) is True, junk
 
