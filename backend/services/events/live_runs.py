@@ -941,6 +941,11 @@ class FileLiveRunService:
             data = _read_json(status_path)
             if not data:
                 continue
+            # Unique per-run identity for the UI list key: the filesystem dir name
+            # is unique even when the paper-locked projectId AND the (stale)
+            # outputDir collide across preserved prj_…__<timestamp> snapshots
+            # (2026-06-01 duplicate-React-key fix).
+            data["runDir"] = status_path.parent.name
             if status_filter is not None and data.get("status") != status_filter:
                 continue
             if needle is not None:

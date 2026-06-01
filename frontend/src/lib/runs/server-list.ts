@@ -5,11 +5,13 @@ export interface RecentRunSummary {
   projectId: string;
   status: string;
   sourceLabel?: string;
+  startedAt?: string;
   updatedAt?: string;
   paperTitle?: string;
   paper?: { id?: string; title?: string } | null;
   paperId?: string;
   outputDir?: string;
+  runDir?: string;
 }
 
 /**
