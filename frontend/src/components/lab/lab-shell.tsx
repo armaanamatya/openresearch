@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense, type ReactNode } from "react";
+import { useState, useEffect, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
 import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
@@ -123,42 +123,29 @@ export function LabShell({
   // credentials or absent from the registry, fall back to the first
   // available model (or, for legacy sonnet/opus, claude-oauth). Keeps the
   // select from rendering a stale unselectable option.
-  const [model, setModel] = useState<DemoModelChoice>(() =>
-    resolveInitialModel(readUserPrefs().model ?? "sonnet", initialModels)
+  const [model, setModel] = useState<DemoModelChoice>(
+    resolveInitialModel("sonnet", initialModels)
   );
 
   // Provider selection state (D3 — persisted to localStorage).
-  // If the persisted choice is unavailable per initialAuthStatus, fall back
-  // to the server-reported default (D3 fall-back rule).
-  const [rootProvider, setRootProvider] = useState<RootProvider>(() => {
-    const saved = readProviderPrefs().root_provider as RootProvider | undefined;
-    if (saved && initialAuthStatus) {
-      const providerStatus = initialAuthStatus.providers[saved];
-      if (!providerStatus?.available) {
-        return initialAuthStatus.defaults.root_provider;
-      }
-    }
-    return saved ?? initialAuthStatus?.defaults.root_provider ?? "anthropic_oauth";
-  });
-  const [subagentAuth, setSubagentAuth] = useState<SubagentAuth>(() => {
-    const saved = readProviderPrefs().subagent_auth as SubagentAuth | undefined;
-    if (saved && initialAuthStatus) {
-      const available = initialAuthStatus.subagent_auth[saved];
-      if (!available) {
-        return initialAuthStatus.defaults.subagent_auth;
-      }
-    }
-    return saved ?? initialAuthStatus?.defaults.subagent_auth ?? "anthropic_oauth";
-  });
-  const [dynamicGpu, setDynamicGpu] = useState<boolean>(() => readProviderPrefs().dynamic_gpu ?? false);
-  const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
-  const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
-  const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
+  // All localStorage-reading initialisers use server-safe defaults here;
+  // the useEffect below hydrates them from localStorage after mount so the
+  // SSR HTML and the first client render always agree (no hydration mismatch).
+  const [rootProvider, setRootProvider] = useState<RootProvider>(
+    initialAuthStatus?.defaults.root_provider ?? "anthropic_oauth"
+  );
+  const [subagentAuth, setSubagentAuth] = useState<SubagentAuth>(
+    initialAuthStatus?.defaults.subagent_auth ?? "anthropic_oauth"
+  );
+  const [dynamicGpu, setDynamicGpu] = useState<boolean>(false);
+  const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(false);
+  const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(0);
+  const [vramGb, setVramGb] = useState<number>(0);
   // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
   // prefs so the user's preferred reproduction style sticks across reloads.
-  const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
-  const [gpuParallelism, setGpuParallelism] = useState<DemoGpuParallelism>(() => readProviderPrefs().gpu_parallelism ?? "auto");
-  const [accelerator, setAccelerator] = useState<DemoAccelerator>(() => readProviderPrefs().accelerator ?? "off");
+  const [minimizeCompute, setMinimizeCompute] = useState<boolean>(false);
+  const [gpuParallelism, setGpuParallelism] = useState<DemoGpuParallelism>("auto");
+  const [accelerator, setAccelerator] = useState<DemoAccelerator>("off");
   // Bring-your-own API keys. Kept in-memory only — never persisted to
   // localStorage by default, so a page reload requires the user to retype.
   // This is the safest default for credentials a user typed into a browser.
@@ -180,8 +167,47 @@ export function LabShell({
   // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
   // the fallback without requiring a code change.
   const [sandbox, setSandbox] = useState<DemoSandboxMode>(
-    () => readUserPrefs().sandbox ?? serverDefaultSandbox ?? "docker"
+    serverDefaultSandbox ?? "docker"
   );
+
+  // Hydrate all localStorage-backed prefs after mount.
+  // Must run after the server-safe defaults above so the first render (SSR
+  // + hydration) is identical; setState calls here happen after hydration
+  // commits, so React reconciles cleanly without a mismatch warning.
+  useEffect(() => {
+    const up = readUserPrefs();
+    const pp = readProviderPrefs();
+
+    if (up.model) setModel(resolveInitialModel(up.model, initialModels));
+    if (up.sandbox) setSandbox(up.sandbox);
+
+    if (pp.root_provider) {
+      const saved = pp.root_provider as RootProvider;
+      setRootProvider(
+        initialAuthStatus?.providers[saved]?.available === false
+          ? initialAuthStatus.defaults.root_provider
+          : saved
+      );
+    }
+    if (pp.subagent_auth) {
+      const saved = pp.subagent_auth as SubagentAuth;
+      setSubagentAuth(
+        initialAuthStatus && !initialAuthStatus.subagent_auth[saved]
+          ? initialAuthStatus.defaults.subagent_auth
+          : saved
+      );
+    }
+    if (pp.dynamic_gpu != null) setDynamicGpu(pp.dynamic_gpu);
+    if (pp.force_single_gpu != null) setForceSingleGpu(pp.force_single_gpu);
+    if (pp.max_gpu_usd_per_hour != null) setMaxGpuUsdPerHour(pp.max_gpu_usd_per_hour);
+    if (pp.vram_gb != null) setVramGb(pp.vram_gb);
+    if (pp.minimize_compute != null) setMinimizeCompute(pp.minimize_compute);
+    if (pp.gpu_parallelism) setGpuParallelism(pp.gpu_parallelism);
+    if (pp.accelerator) setAccelerator(pp.accelerator);
+  // initialModels and initialAuthStatus are stable server-computed props;
+  // this effect runs once on mount to sync localStorage → state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const {
     run,

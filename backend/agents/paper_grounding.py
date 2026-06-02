@@ -91,12 +91,24 @@ def assert_paper_grounded(
     for ds in (paper_claim_map.get("datasets") or []):
         if not isinstance(ds, str) or not ds.strip():
             continue
-        if not _is_grounded(ds, paper_text, min_overlap_threshold):
+        # BUG-NEW-046: root sometimes returns datasets as stringified dicts like
+        # "{'name': 'CIFAR-10', 'source': 'torchvision', ...}". Extract the name
+        # field rather than checking the full dict repr against the paper text.
+        name_to_check = ds
+        if ds.strip().startswith("{"):
+            try:
+                import ast as _ast
+                _parsed = _ast.literal_eval(ds)
+                if isinstance(_parsed, dict) and "name" in _parsed:
+                    name_to_check = str(_parsed["name"])
+            except Exception:
+                pass
+        if not _is_grounded(name_to_check, paper_text, min_overlap_threshold):
             violations.append(GroundingViolation(
                 field="datasets",
-                value=ds,
+                value=name_to_check,
                 suggestion=(
-                    f"'{ds}' not found in paper text — verify the dataset name "
+                    f"'{name_to_check}' not found in paper text — verify the dataset name "
                     f"matches the paper's wording exactly"
                 ),
             ))

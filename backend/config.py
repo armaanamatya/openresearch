@@ -63,9 +63,9 @@ class Settings(BaseSettings):
     gepa_max_metric_calls_plan: int = 10
     gepa_max_metric_calls_baseline: int = 5
     gepa_max_metric_calls_improve: int = 10
-    gepa_timeout_plan_s: int = 60
-    gepa_timeout_baseline_s: int = 30
-    gepa_timeout_improve_s: int = 60
+    gepa_timeout_plan_s: int = 180
+    gepa_timeout_baseline_s: int = 90
+    gepa_timeout_improve_s: int = 180
     # Reflection LM for GEPA's proposal step. Accepted values:
     #   "claude-oauth"           — Claude Code subscription, no API key needed (default)
     #   "anthropic/claude-*"     — Anthropic API (ANTHROPIC_API_KEY with credits)

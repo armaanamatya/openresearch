@@ -3434,8 +3434,15 @@ def run_experiment(
                     }
                 elif "RUNPOD_TRANSIENT_500" in exc_msg:
                     # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # — advance the ladder so the run doesn't dead-end. Bounded
-                    # by dynamic_gpu_max_escalations so a request-shape bug
+                    # infra hiccups — advance the ladder so the run doesn't dead-end.
+                    # This is intentionally the same path as CAPACITY_EXHAUSTED
+                    # because: (a) the 500 may itself be capacity under a different
+                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
+                    # with exponential backoff before bubbling up here, so a genuine
+                    # transient would have recovered.  BUG-NEW-049: consider adding
+                    # a same-tier retry before escalating if TRANSIENT_500 is the
+                    # sole failure mode (CAPACITY_EXHAUSTED still escalates immediately).
+                    # Bounded by dynamic_gpu_max_escalations so a request-shape bug
                     # cannot burn the whole catalog.
                     infra_error_kind = "runpod_transient_500"
                     result = {
@@ -3852,6 +3859,35 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     # metrics from disk, so the cache MUST invalidate when either changes.
     from backend.agents.rlm import primitive_cache as _cache
     import hashlib as _hashlib
+    # BUG-NEW-050: root model sometimes passes results={} (empty) instead of
+    # the run_experiment output. Fall back to the most recent successful entry
+    # in experiment_runs.jsonl so the grader always has real metrics to work with.
+    if not results or ("success" not in results and "metrics" not in results):
+        try:
+            _exp_runs_path = ctx.project_dir / "experiment_runs.jsonl"
+            if _exp_runs_path.exists():
+                _fallback_entry = None
+                for _exp_line in _exp_runs_path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        _exp = __import__("json").loads(_exp_line)
+                        if _exp.get("success") and _exp.get("metrics"):
+                            _fallback_entry = _exp
+                    except Exception:
+                        pass
+                if _fallback_entry:
+                    results = {
+                        "success": True,
+                        "metrics": _fallback_entry["metrics"],
+                    }
+                    logger.warning(
+                        "verify_against_rubric[%s]: results was empty — fell back to "
+                        "last successful experiment_runs.jsonl entry (metrics keys: %s)",
+                        ctx.project_id,
+                        list((_fallback_entry.get("metrics") or {}).keys()),
+                    )
+        except Exception as _fb_exc:  # noqa: BLE001
+            logger.debug("verify_against_rubric: experiment_runs fallback failed: %s", _fb_exc)
+
     _evidence_hash_bits: list[str] = []
     try:
         _code_dir = ctx.project_dir / "code"
@@ -3865,6 +3901,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         _metrics_file = ctx.project_dir / "code" / "metrics.json"
         if _metrics_file.exists():
             _evidence_hash_bits.append(_hashlib.sha256(_metrics_file.read_bytes()).hexdigest()[:16])
+        # BUG-NEW-050 (cache key): include experiment_runs.jsonl content so the
+        # cache invalidates when a new experiment completes, preventing stale
+        # degraded scores from being returned after a successful run.
+        _exp_runs_for_hash = ctx.project_dir / "experiment_runs.jsonl"
+        if _exp_runs_for_hash.exists():
+            _evidence_hash_bits.append(_hashlib.sha256(_exp_runs_for_hash.read_bytes()).hexdigest()[:16])
     except Exception:  # noqa: BLE001
         _evidence_hash_bits = []
     _payload = {
