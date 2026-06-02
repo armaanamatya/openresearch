@@ -3743,6 +3743,11 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         output_root=str(artifact_root),
         gpus=gpus or None,
         per_cell_timeout_s=timeout_s,
+        # Bound the WHOLE matrix, not just each cell — without this, a matrix of
+        # slow/wedged cells could run for hours (2026-06-01 hang). The root then
+        # scores whatever cells finished and ships a partial instead of waiting
+        # for the process watchdog. Mirrors the per-experiment cap.
+        overall_timeout_s=timeout_s,
     )
     wall = _time.monotonic() - _t0
 
