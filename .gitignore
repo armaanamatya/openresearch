@@ -71,6 +71,7 @@ Thumbs.db
 !/runs/*/batch_child.log
 !/runs/*/experiment_runs.jsonl
 !/runs/*/cost_ledger.jsonl
+!/runs/*/tokens_total.json
 # (dashboard_events.jsonl is the full SSE firehose — can be large; track it
 #  per-run on demand with `git add -f runs/<id>/dashboard_events.jsonl`.)
 runs/_archive/

@@ -42,14 +42,28 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
     target_pdf.write_bytes(source_pdf.read_bytes())
 
 
-# Harness-owned, zero-non-stdlib-dep helper modules the agent's generated code
-# imports by name. Copied verbatim into code/ (2026-05-31 OOM/GPU remediation,
-# comp 2b) so the copy-and-paste import route always resolves inside any sandbox
-# — mirror of the rubric_guard.py "emit alongside train.py" pattern, but a real
-# file copy rather than a prompt instruction:
+# Harness-owned helper modules the agent's generated code imports by name. Copied
+# verbatim into code/ (2026-05-31 OOM/GPU remediation, comp 2b; extended 2026-06-01
+# for the agentic full-scope envs) so the copy-and-paste import route always
+# resolves inside any sandbox — mirror of the rubric_guard.py "emit alongside
+# train.py" pattern, but a real file copy rather than a prompt instruction:
 #   * gpu_cell_runner.py — single-cell trainer references its env-var contract.
-#   * sdar_env_base.py   — every teacher/student *Env subclasses BaseEnv.
-_HARNESS_CODE_HELPERS: tuple[str, ...] = ("gpu_cell_runner.py", "sdar_env_base.py")
+#   * sdar_env_base.py   — BaseEnv (single-turn) + AgenticEnv (multi-turn) bases.
+#   * agentic_rollout.py — multi-turn episode → (sequence_ids, response_mask, reward).
+#   * search_qa_env.py   — real retrieval QA env (dense E5 / BM25 / overlap).
+#   * alfworld_env.py    — real ALFWorld TextWorld agentic env.
+#   * webshop_env.py     — real WebShop agentic env.
+# The first two are zero-non-stdlib-dep; the three agentic envs lazy-import their
+# heavy deps (rank_bm25 / sentence-transformers / faiss / alfworld), so the COPY +
+# bare ``import`` always work and the deps load only when an env is actually used.
+_HARNESS_CODE_HELPERS: tuple[str, ...] = (
+    "gpu_cell_runner.py",
+    "sdar_env_base.py",
+    "agentic_rollout.py",
+    "search_qa_env.py",
+    "alfworld_env.py",
+    "webshop_env.py",
+)
 
 
 def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
@@ -66,6 +80,32 @@ def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
             shutil.copy2(src_dir / helper, code_dir / helper)
         except OSError as exc:  # missing source / unwritable dest — non-fatal
             logger.warning("could not copy harness helper %s into code/: %s", helper, exc)
+
+
+def refresh_harness_helpers(code_dir: str | Path) -> Path:
+    """Refresh the vendored stdlib-only harness helpers in ``code_dir`` for $0.
+
+    Public re-copy entry point for the cell-level resume path (Track B): a warm
+    retry that skips codegen leaves STALE helper copies in ``code/`` (the agent's
+    ``run_with_sdk`` only re-copies them as a side effect of a full codegen pass).
+    Resume needs the *current* helper bytes — both so a bug-fix to e.g.
+    ``alfworld_env.py`` actually re-runs the affected cells and so the
+    fingerprint reflects what is on disk — without paying for a regeneration.
+
+    This is a thin wrapper over :func:`_copy_harness_helpers_to_code_root`: same
+    file list, same idempotent + fail-soft semantics, no SDK / LLM call.  The
+    directory is created if absent.
+
+    Args:
+        code_dir: The run's ``code/`` directory to refresh.
+
+    Returns:
+        The resolved ``code_dir`` as a :class:`~pathlib.Path`.
+    """
+    code = Path(code_dir)
+    code.mkdir(parents=True, exist_ok=True)
+    _copy_harness_helpers_to_code_root(code)
+    return code
 
 
 # ---------------------------------------------------------------------------
