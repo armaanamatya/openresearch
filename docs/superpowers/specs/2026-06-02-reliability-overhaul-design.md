@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-02  
 **Branch:** `feat/gepa-integration`  
-**Status:** Research synthesis — implementation planning phase  
+**Status:** Research + Phase 1 partially implemented — see §2a for current fix status  
 **Author:** Brainstormed from 6 live runs, 2 research sweeps (80+ papers), advisor review
 
 ---
@@ -57,13 +57,38 @@ With `claude-oauth` reflection LM, seed evaluation takes ~2 min (subscription la
 
 ### BUG-NEW-050 — Root passes `results={}` to `verify_against_rubric`; all leaves score 0.0
 **Severity:** HIGH — directly caused false `verdict=failed` on Run #6  
-**Partially fixed in this branch:** `verify_against_rubric` now falls back to the most recent successful `experiment_runs.jsonl` entry when `results` is empty. Cache key now includes `experiment_runs.jsonl` hash to prevent stale cached scores.  
-**Root fix still needed:** the root model prompt must explicitly instruct the root to pass the full `run_experiment` return value, not a reconstructed or empty dict.
+**Fully fixed** (`a1377d0` + `33b90c1`):
+1. `verify_against_rubric` fallback to last successful `experiment_runs.jsonl` entry when `results` is empty (code-level safety net)
+2. `experiment_runs.jsonl` included in primitive cache key (prevents stale degraded score returning on new experiments)
+3. System prompt: explicit instruction to store `run_experiment` return value and pass it directly to `verify_against_rubric`, never `{}` (root-cause fix)
+4. Anytime fallback scoring: `_try_anytime_score()` fires after first successful experiment (≤1800s remaining), writes to `rlm_state/anytime_score.json`; `_finalize` and watchdog read it as rubric score fallback when root times out before scoring
 
 ### BUG-NEW-051 — Multi-experiment `train.py` exceeds wall-clock budget
 **Severity:** HIGH — caused Run #4 to complete training but score 0  
+**Partially mitigated** (`33b90c1`): anytime fallback scoring captures the rubric score after any successful experiment, so if CIFAR-10 experiments succeed before CIFAR-100 times out, the run now reports a non-zero score instead of 0.0.  
 **Workaround:** `REPROLAB_BASELINE_EXTRA_GUIDANCE` explicitly limits to CIFAR-10 only.  
 **Root fix:** see Proposal 2 (multi-fidelity scope planning) — estimate runtime before writing `train.py` and drop experiments that won't fit within `remaining_wall_clock_s * 0.7`.
+
+---
+
+## 2a. Implementation Status (as of 2026-06-02)
+
+| Item | Commit | Status |
+|------|--------|--------|
+| BUG-NEW-046 fix — `paper_grounding.py` dict-repr extraction | `a1377d0` | ✅ Done |
+| BUG-NEW-047 fix — `environment_detective.py` CPU note clarification | `a1377d0` | ✅ Done |
+| BUG-NEW-048 fix — GEPA timeouts raised 60/30/60 → 180/90/180s | `a1377d0` | ✅ Done |
+| BUG-NEW-050 code fallback — `verify_against_rubric` reads `experiment_runs.jsonl` | `a1377d0` | ✅ Done |
+| BUG-NEW-050 root fix — system prompt: pass `run_experiment` return value | `33b90c1` | ✅ Done |
+| Anytime fallback scoring — `_try_anytime_score`, `rlm_state/anytime_score.json` | `33b90c1` | ✅ Done |
+| `_finalize` reads `anytime_score.json` fallback | `33b90c1` | ✅ Done |
+| Watchdog reads `anytime_score.json` fallback | `33b90c1` | ✅ Done |
+| Frontend SSR hydration fix — `lab-shell.tsx` localStorage in `useEffect` | `a1377d0` | ✅ Done |
+| BUG-NEW-049 fix — `TRANSIENT_500` same-tier retry before escalation | — | ⬜ Open |
+| Proposal 2 — multi-fidelity scope planning (5-epoch probe) | — | ⬜ Open |
+| Proposal 3 — GPU pre-warming at `build_environment` time | — | ⬜ Open |
+| Proposal 4 — structured error feedback + tacit knowledge recovery | — | ⬜ Open |
+| Proposal 5 — parallel experiment execution (separate pods) | — | ⬜ Open |
 
 ---
 

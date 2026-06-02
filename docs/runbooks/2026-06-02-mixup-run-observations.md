@@ -72,7 +72,7 @@ Escalation ladder remaining: `l40s → a100_40 → a100_80 → h100_80` (3 more 
 2. In `PaperClaimMap` constructor: if a dataset entry is a dict, extract `entry["name"]` rather than `str(entry)`.
 3. In the root system prompt: explicitly instruct the root that `datasets` must be a flat list of plain name strings (not dict objects).
 
-**Severity**: Low. **Status**: Open.
+**Severity**: Low. **Status**: **Fixed `a1377d0`** — `paper_grounding.py::assert_paper_grounded` now extracts `name` field from dict-repr strings.
 
 ---
 
@@ -86,7 +86,7 @@ Escalation ladder remaining: `l40s → a100_40 → a100_80 → h100_80` (3 more 
 
 **Fix**: Add to the root system prompt (or to `detect_environment` output): a note that `compatibility_notes` reflects the LOCAL developer machine environment used to generate the spec, NOT the RunPod sandbox where experiments execute. The RunPod image always has CUDA available.
 
-**Severity**: Low. **Status**: Open.
+**Severity**: Low. **Status**: **Fixed `a1377d0`** — `environment_detective.py` compatibility_notes now explicitly states LOCAL dev machine context, not RunPod execution environment.
 
 ---
 
@@ -115,7 +115,7 @@ The fail-soft mechanism correctly engaged (`best_prompt = seed`, run not blocked
 - `backend/agents/gepa/adapters/plan_reproduction.py` — `PlanReproductionEvaluator`
 - `backend/config.py` — `gepa_timeout_plan_s` (currently 60s)
 
-**Severity**: Medium (GEPA effectively disabled on claude-oauth path). **Status**: Open.
+**Severity**: Medium. **Status**: **Fixed `a1377d0`** — `gepa_timeout_plan_s` raised 60→180s, `gepa_timeout_baseline_s` 30→90s, `gepa_timeout_improve_s` 60→180s in `backend/config.py`.
 
 ---
 
@@ -163,7 +163,7 @@ Wait, further investigation is needed here. The `degraded_no_metrics` justificat
 2. **Code-level validation**: In `verify_against_rubric`, if `results={}` (empty), look up the most recent successful entry in `experiment_runs.jsonl` and use those metrics.
 3. **Cache invalidation**: Don't cache `verify_against_rubric` results when `results` is empty — these are meaningless and should not be cached.
 
-**Severity**: HIGH (causes false `verdict=failed` despite successful training). **Status**: Open (BUG-NEW-050).
+**Severity**: HIGH. **Status**: **Fully fixed** (`a1377d0` + `33b90c1`) — (1) `verify_against_rubric` fallback to `experiment_runs.jsonl` when results empty; (2) cache key includes `experiment_runs.jsonl` hash; (3) system prompt explicit instruction to pass full `run_experiment` return value; (4) anytime `_try_anytime_score` fires after first successful experiment and persists score to `rlm_state/anytime_score.json`.
 
 ---
 
