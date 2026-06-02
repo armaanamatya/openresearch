@@ -121,3 +121,32 @@ class TestDenseRetrieveLazyJsonl:
         )
         assert r.backend in ("bm25", "overlap")
         assert "banana" in hits[0].text
+
+    def test_ntotal_mismatch_falls_back_to_bm25(self, tmp_path):
+        # Index built from a DIFFERENT snapshot than the corpus (2 vectors vs 3
+        # passages) -> alignment guard trips -> dense disabled -> BM25, never silent
+        # wrong passages (adversarial-review H1).
+        _write_corpus(tmp_path)  # 3-line corpus
+        vecs = np.eye(2, 4, dtype="float32")  # only 2 vectors
+        ix = faiss.IndexFlatIP(4)
+        ix.add(vecs)
+        faiss.write_index(ix, str(tmp_path / "e5.index"))
+        r = sq.Retriever(index_dir=str(tmp_path), _encoder=_FakeEncoder([0, 1, 0, 0]))
+        hits = r.retrieve("yellow fruit", pool=["banana is yellow", "cat is a pet"], k=1)
+        assert r.backend in ("bm25", "overlap")  # NOT "e5"
+        assert "banana" in hits[0].text
+
+    def test_stale_offsets_cache_rebuilt_on_corpus_change(self, tmp_path):
+        # A cached .offsets.npy must NOT be trusted when the corpus byte-size changed
+        # (adversarial-review H1) — else seeks land on wrong lines.
+        p = tmp_path / "wiki_dump.jsonl"
+        _write_corpus(tmp_path)  # 3 rows -> builds offsets + .offsets.size
+        assert len(sq._LazyJsonlStore(str(p))) == 3
+        assert (tmp_path / "wiki_dump.jsonl.offsets.size").exists()
+        # Regenerate the corpus with a different size (4 longer rows).
+        with open(p, "w", encoding="utf-8") as f:
+            for i in range(4):
+                f.write(json.dumps({"id": str(i), "contents": f'"T{i}"\nrow number {i} body text here'}) + "\n")
+        store2 = sq._LazyJsonlStore(str(p))  # size differs -> must rebuild, not reuse stale
+        assert len(store2) == 4
+        assert "row number 3" in store2[3]

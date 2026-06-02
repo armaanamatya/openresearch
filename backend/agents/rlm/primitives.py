@@ -3738,16 +3738,20 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
 
     _t0 = _time.monotonic()
+    # Bound the WHOLE matrix as a backstop, but GENEROUSLY: cells run in waves of
+    # min(free_gpus, cells), so each sequential wave must get a full per-cell budget
+    # — capping the whole matrix at ONE cell's budget would silently drop every cell
+    # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
+    # run-level watchdog is the ultimate hang guard; this just lets the root score a
+    # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
+    _n_gpus = max(1, len(gpus))
+    _waves = (len(kept) + _n_gpus - 1) // _n_gpus  # ceil(cells / gpus)
     matrix_result = gpu_cell_runner.run_matrix(
         kept, str(code / "train_cell.py"),
         output_root=str(artifact_root),
         gpus=gpus or None,
         per_cell_timeout_s=timeout_s,
-        # Bound the WHOLE matrix, not just each cell — without this, a matrix of
-        # slow/wedged cells could run for hours (2026-06-01 hang). The root then
-        # scores whatever cells finished and ships a partial instead of waiting
-        # for the process watchdog. Mirrors the per-experiment cap.
-        overall_timeout_s=timeout_s,
+        overall_timeout_s=timeout_s * max(1, _waves),
     )
     wall = _time.monotonic() - _t0
 

@@ -323,6 +323,15 @@ class Retriever:
                     passages = _LazyJsonlStore(jsonl_path)
             if not passages:
                 raise FileNotFoundError(f"no passage store under {idx_dir!r}")
+            # Alignment guard: faiss row i must map to corpus line i. A row-count
+            # mismatch means the index + corpus came from different snapshots — fail
+            # to BM25 rather than silently serving wrong passages.
+            _ntotal = getattr(self._faiss_index, "ntotal", None)
+            if _ntotal is not None and len(passages) != _ntotal:
+                raise ValueError(
+                    f"dense index ntotal {_ntotal} != corpus passages {len(passages)} "
+                    "— misaligned; falling back"
+                )
             self._passages = passages
 
             # The query encoder MUST match the encoder the index was built with
@@ -334,6 +343,7 @@ class Retriever:
             self._dense_ready = True
         except Exception as exc:  # noqa: BLE001 — disable dense tier, fall back
             print(f"[search_qa] dense E5 index unavailable ({exc!r}); using fallback.")
+            self._faiss_index = None  # drop the (possibly mmap'd) handle we won't use
             self._dense_ready = False
         return self._dense_ready
 
@@ -437,13 +447,31 @@ class _LazyJsonlStore:
 
     def __init__(self, jsonl_path: str, offsets_path: str | None = None) -> None:
         import numpy as _np  # lazy
+        import threading
 
         self._path = str(jsonl_path)
         op = offsets_path or (self._path + ".offsets.npy")
-        if os.path.exists(op):
+        size_marker = self._path + ".offsets.size"
+        cur_size = os.path.getsize(self._path)
+        # Trust a cached offsets array ONLY if the corpus byte-size still matches —
+        # a stale cache (corpus regenerated, offsets not) would seek to the wrong
+        # lines and silently serve wrong passages. On any mismatch, rebuild.
+        cached_ok = False
+        if os.path.exists(op) and os.path.exists(size_marker):
+            try:
+                cached_ok = int(open(size_marker).read().strip()) == cur_size
+            except Exception:  # noqa: BLE001
+                cached_ok = False
+        if cached_ok:
             self._offsets = _np.load(op, mmap_mode="r")
         else:
             self._offsets = self._build_offsets(self._path, op)
+            try:
+                with open(size_marker, "w") as _sf:
+                    _sf.write(str(cur_size))
+            except OSError:
+                pass
+        self._lock = threading.Lock()  # serialise seek+readline on the shared fd
         # Long-lived read handle for per-hit seeks (one fd per retriever instance).
         self._fh = open(self._path, "rb")  # noqa: SIM115
 
@@ -473,8 +501,10 @@ class _LazyJsonlStore:
         if i < 0 or i >= len(self._offsets):
             return ""
         try:
-            self._fh.seek(int(self._offsets[i]))
-            return _as_passage_text(json.loads(self._fh.readline()))
+            with self._lock:  # seek+readline must be atomic on the shared fd
+                self._fh.seek(int(self._offsets[i]))
+                line = self._fh.readline()
+            return _as_passage_text(json.loads(line))
         except Exception:  # noqa: BLE001 — a malformed line never kills retrieval
             return ""
 
