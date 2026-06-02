@@ -392,6 +392,31 @@ def _mark_demo_status_failed(
             "error": reason,
         }
         _atomic_write_json(path, merged)
+        # Also leave a terminal final_report.json so the leaderboard/aggregator
+        # can represent this crashed run. A crash before the run's try/finally
+        # reached `_finalize` (e.g. an early setup exception) flips demo_status
+        # to failed above but writes no report — leaving the run report-less.
+        # Best-effort + nested try: this must never raise (mirrors the outer
+        # contract) and must NEVER overwrite an existing report (a real
+        # _finalize / scorer write always wins).
+        try:
+            fr = runs_root / project_id / "final_report.json"
+            if not fr.exists():
+                from backend.agents.rlm.report import (
+                    RLMFinalReport,
+                    write_final_report_rlm,
+                )
+
+                write_final_report_rlm(
+                    RLMFinalReport(
+                        verdict="failed",
+                        reproduction_summary=reason,
+                        iterations=0,
+                    ),
+                    runs_root / project_id,
+                )
+        except Exception:
+            pass
     except Exception:
         return
 
