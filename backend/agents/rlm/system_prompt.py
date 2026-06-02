@@ -283,6 +283,16 @@ ITERATION DISCIPLINE — one run_experiment per iteration:
   returns `ok=False`, call `propose_improvements` or retry `implement_baseline`
   with repair_context; do not spend a run_experiment primitive on that failure.
 
+  CRITICAL — always store and forward the run_experiment return value:
+
+    exp = run_experiment(code_path, env_id)    # store in a variable
+    score = verify_against_rubric(exp, rubric) # pass `exp` directly — NEVER pass {}
+
+  Passing an empty dict `{}` or any other value instead of the actual return
+  value produces a degraded score of 0.0 even when training succeeded. The
+  authoritative result lives in the variable, not in a file read — always pass
+  it through explicitly.
+
   After every `run_experiment` call, *return from the current iteration*.
   Do not write a follow-up propose_improvements -> implement_baseline ->
   run_experiment -> verify_against_rubric chain in the same REPL turn -- let

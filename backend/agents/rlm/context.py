@@ -82,6 +82,13 @@ class RunContext:
     # None / [] means no paper-hint was supplied or the hint has no invariants.
     paper_hint_invariants: list[Any] = field(default_factory=list)
 
+    # Rubric spec stored for anytime fallback scoring (set by run.py after rubric is resolved).
+    # Enables _try_anytime_score() to call verify_against_rubric without a rubric parameter.
+    rubric: dict | None = None
+    # Anytime-scoring one-shot gate: True after _try_anytime_score fired so we don't
+    # re-score on every subsequent successful run_experiment.
+    anytime_score_fired: bool = False
+
     # GEPA per-run prompt optimization (backend/agents/gepa/)
     # gepa_prompt_overrides: filled by gepa_pre_call() before each targeted primitive;
     #   keys match primitive names ("plan_reproduction", "implement_baseline", "propose_improvements")

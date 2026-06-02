@@ -2918,6 +2918,84 @@ async def _execute_in_sandbox(
     }
 
 
+def _try_anytime_score(ctx: "RunContext") -> None:
+    """Fire verify_against_rubric against the current code dir and persist the result.
+
+    Called (once per run) from _persist_experiment_result when a successful
+    experiment lands near the wall-clock deadline (remaining_s ≤ 1800 or no
+    deadline) and the root has not yet called verify_against_rubric.
+
+    Persists the result to ``rlm_state/anytime_score.json`` via atomic rename so
+    the watchdog (_arm_watchdog._fire) and _finalize can both read it even after
+    ``os._exit()`` terminates the process mid-finalization.
+
+    Fail-soft: any error is logged at DEBUG and silently ignored — anytime scoring
+    must never block or crash the run.
+    """
+    import json
+    import tempfile
+
+    try:
+        rubric = getattr(ctx, "rubric", None)
+        if not rubric or not isinstance(rubric, dict):
+            return
+        # Only fire if root hasn't scored yet — if ctx.latest_rubric_score is set,
+        # the root already called verify and there's no need to duplicate it.
+        if getattr(ctx, "latest_rubric_score", None) is not None:
+            return
+
+        # One-shot guard: mark fired before the LLM call so that re-entrancy
+        # (e.g. GEPA mini-loop triggering another experiment) cannot double-fire.
+        ctx.anytime_score_fired = True
+
+        # Pass the best experiment_runs.jsonl entry as `results` so the
+        # BUG-NEW-050 fallback inside verify_against_rubric uses it for the
+        # degraded tri-state calculation.
+        _best: dict = {}
+        try:
+            _exp_path = ctx.project_dir / "experiment_runs.jsonl"
+            if _exp_path.exists():
+                for _line in _exp_path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        _e = json.loads(_line)
+                        if _e.get("success") and _e.get("metrics"):
+                            _best = _e
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        logger.debug("_try_anytime_score: firing post-experiment rubric score")
+        scored = verify_against_rubric(_best, rubric, ctx=ctx)
+
+        # Only persist if scoring produced a real score (success path).
+        if not isinstance(scored, dict) or scored.get("success") is False:
+            logger.debug("_try_anytime_score: scoring returned failure — not persisting")
+            return
+
+        # Atomic write: temp file + rename so a mid-write kill leaves a valid file
+        # (either the old version or nothing — never a partial write).
+        _state_dir = ctx.project_dir / "rlm_state"
+        _state_dir.mkdir(parents=True, exist_ok=True)
+        _target = _state_dir / "anytime_score.json"
+        _payload = json.dumps({"source": "anytime_fallback", **scored}, indent=2)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=_state_dir, delete=False, suffix=".tmp"
+        ) as _tf:
+            _tf.write(_payload)
+            _tmp_path = _tf.name
+        import os as _os
+        _os.replace(_tmp_path, _target)
+        logger.info(
+            "_try_anytime_score: persisted rubric score=%.3f to %s",
+            scored.get("overall_score", 0.0),
+            _target,
+        )
+
+    except Exception:  # noqa: BLE001 — anytime scoring must never block the run
+        logger.debug("_try_anytime_score failed", exc_info=True)
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3018,6 +3096,24 @@ def _persist_experiment_result(
             _fip.record_run_experiment(_outcome_str)
         except Exception:  # noqa: BLE001 — never crash for observability
             pass
+
+    # Anytime fallback scoring: fire a rubric score when this experiment succeeded,
+    # a rubric is available, the root hasn't scored yet, and we're within the
+    # wall-clock budget window.  Fires at most once per run (anytime_score_fired
+    # gate on ctx).  This is a BLOCKING call — safe because the primitive runs in
+    # a worker thread and the root model's REPL is blocked on its result.
+    if (
+        result.get("success")
+        and not getattr(ctx, "anytime_score_fired", False)
+        and getattr(ctx, "rubric", None) is not None
+        and getattr(ctx, "latest_rubric_score", None) is None
+    ):
+        _remaining = ctx.remaining_s()
+        # Only fire when we're inside the last 1800 s (30 min) of the run, or
+        # when no deadline is set (local/unbounded run — anytime scoring for free).
+        if _remaining is None or _remaining <= 1800:
+            _try_anytime_score(ctx)
+
     return result
 
 

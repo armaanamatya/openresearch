@@ -863,13 +863,32 @@ def _arm_watchdog(
             _WATCHDOG_GRACE_S,
         )
         done = iteration_count()
+        # Load anytime_score.json if _try_anytime_score() persisted one during the run.
+        # This gives the watchdog-killed report a real rubric score instead of None.
+        _watchdog_rubric: dict | None = None
+        _watchdog_verdict = "failed"
+        try:
+            _anytime_path = project_dir / "rlm_state" / "anytime_score.json"
+            if _anytime_path.exists():
+                _at = json.loads(_anytime_path.read_text(encoding="utf-8"))
+                if isinstance(_at, dict) and _at.get("overall_score") is not None:
+                    _watchdog_rubric = _at
+                    _watchdog_verdict = "partial"  # honest: training succeeded, time ran out
+        except Exception:  # noqa: BLE001 — watchdog must never stall on a file read
+            pass
         report = RLMFinalReport(
-            verdict="failed",
+            verdict=_watchdog_verdict,
             reproduction_summary=(
                 f"Wall-clock watchdog: the run exceeded {deadline_s:.0f}s "
                 f"and was hard-stopped after {done} iteration(s)."
+                + (
+                    f" Anytime rubric score {_watchdog_rubric.get('overall_score', 0.0):.3f} "
+                    "captured from last successful experiment."
+                    if _watchdog_rubric else ""
+                )
             ),
             iterations=done,
+            **({"rubric": _watchdog_rubric} if _watchdog_rubric else {}),
         )
         try:
             write_final_report_rlm(report, project_dir)
@@ -1472,6 +1491,12 @@ async def run_pipeline_rlm(
         else:
             logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
 
+    # Store resolved rubric on ctx for anytime fallback scoring (see _try_anytime_score).
+    # Covers both bundle runs (rubric_spec already set before this block) and arXiv runs
+    # (set by the generation block above).
+    if context_dict.get("rubric_spec"):
+        ctx.rubric = context_dict["rubric_spec"]
+
     # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
     # so the root model repairs rather than reproduces from scratch.
     active_prompt = _ROOT_PROMPT
@@ -1817,6 +1842,30 @@ def _finalize(
     # A crashed or budget-exhausted run is never a clean completion — force "failed".
     if run_failed:
         report.verdict = "failed"
+
+    # Anytime fallback: if the root model never called verify_against_rubric (rubric
+    # score is absent from the report), load the anytime_score.json that
+    # _try_anytime_score() may have persisted during the run.  This ensures a partial
+    # score is reported even when the run timed out before the root could score.
+    # Condition: rubric.overall_score is None (not 0.0 — a real 0.0 is an honest score).
+    if report.rubric.get("overall_score") is None and ctx is not None:
+        _ctx_project_dir = getattr(ctx, "project_dir", project_dir)
+        _anytime_path = _ctx_project_dir / "rlm_state" / "anytime_score.json"
+        if _anytime_path.exists():
+            try:
+                _anytime = json.loads(_anytime_path.read_text(encoding="utf-8"))
+                if isinstance(_anytime, dict) and _anytime.get("overall_score") is not None:
+                    report.rubric = _anytime
+                    logger.info(
+                        "_finalize: applied anytime fallback rubric score=%.3f",
+                        _anytime.get("overall_score", 0.0),
+                    )
+                    # Lift verdict from failed→partial when training produced real evidence
+                    # but the root model just didn't get to FINAL_VAR in time.
+                    if report.verdict == "failed" and not run_failed:
+                        report.verdict = "partial"
+            except Exception:  # noqa: BLE001 — fallback MUST NOT crash finalization
+                logger.debug("_finalize: could not load anytime_score.json", exc_info=True)
 
     # T21 / review I8: stub-run honesty — mark degraded, cap verdict.
     if "stub" in tools_label.lower():
