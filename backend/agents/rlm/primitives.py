@@ -3670,9 +3670,10 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     """
     import json
     import time as _time
+    from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_matrix, gpu_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -3749,6 +3750,20 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
     _n_slots = max(1, len(gpus) // _gpus_per_cell)
     _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Cell-level resume (Track B): compute each kept cell's content fingerprint so
+    # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
+    # REPROLAB_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
+    # REPROLAB_RESUME_FORCE_CELLS (CSV of cell ids the CLI builds from --rerun-env /
+    # --rerun-cell). All no-ops when resume is unset; fingerprints are always recorded.
+    _fingerprints = {
+        c["id"]: cell_fingerprint.compute_fingerprint(c, str(code))
+        for c in kept if isinstance(c, dict) and c.get("id")
+    }
+    _force_cells = {
+        cid.strip()
+        for cid in (os.environ.get("REPROLAB_RESUME_FORCE_CELLS", "") or "").split(",")
+        if cid.strip()
+    }
     matrix_result = gpu_cell_runner.run_matrix(
         kept, str(code / "train_cell.py"),
         output_root=str(artifact_root),
@@ -3756,6 +3771,9 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         per_cell_timeout_s=timeout_s,
         overall_timeout_s=timeout_s * max(1, _waves),
         gpus_per_cell=_gpus_per_cell,
+        fingerprints=_fingerprints,
+        force_cells=_force_cells or None,
+        now_iso=datetime.now(timezone.utc).isoformat(),
     )
     wall = _time.monotonic() - _t0
 

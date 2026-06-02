@@ -82,6 +82,32 @@ def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
             logger.warning("could not copy harness helper %s into code/: %s", helper, exc)
 
 
+def refresh_harness_helpers(code_dir: str | Path) -> Path:
+    """Refresh the vendored stdlib-only harness helpers in ``code_dir`` for $0.
+
+    Public re-copy entry point for the cell-level resume path (Track B): a warm
+    retry that skips codegen leaves STALE helper copies in ``code/`` (the agent's
+    ``run_with_sdk`` only re-copies them as a side effect of a full codegen pass).
+    Resume needs the *current* helper bytes — both so a bug-fix to e.g.
+    ``alfworld_env.py`` actually re-runs the affected cells and so the
+    fingerprint reflects what is on disk — without paying for a regeneration.
+
+    This is a thin wrapper over :func:`_copy_harness_helpers_to_code_root`: same
+    file list, same idempotent + fail-soft semantics, no SDK / LLM call.  The
+    directory is created if absent.
+
+    Args:
+        code_dir: The run's ``code/`` directory to refresh.
+
+    Returns:
+        The resolved ``code_dir`` as a :class:`~pathlib.Path`.
+    """
+    code = Path(code_dir)
+    code.mkdir(parents=True, exist_ok=True)
+    _copy_harness_helpers_to_code_root(code)
+    return code
+
+
 # ---------------------------------------------------------------------------
 # PPO CartPole-v1 implementation template
 # ---------------------------------------------------------------------------

@@ -412,6 +412,63 @@ class TestAggregateCellMetrics:
         assert out["status"] == "complete"
         assert out["scope"]["models_run"] == ["qwen2_5_3b", "qwen3_1_7b"]
 
+    def test_skipped_cell_aggregates_as_complete_leaf(self):
+        """A resume-skipped cell (Track B) is an ok leaf and counts toward complete."""
+        cells = [_cell("qwen3_1_7b", "search_qa", "sdar")]
+        matrix_result = {
+            "qwen3_1_7b__sdar__search_qa__s42": {
+                "status": "skipped",
+                "metrics": {"status": "ok", "metric": 0.42, "reward_mean": 1.3},
+                "gpu": "0", "retries": 0, "error": None,
+            },
+        }
+        out = aggregate_cell_metrics(matrix_result, cells)
+        leaf = out["per_model"]["qwen3_1_7b"]["search_qa"]["sdar"]
+        assert leaf["status"] == "ok"           # forced to ok in the leaf
+        assert leaf["metric"] == 0.42
+        assert leaf["reward_mean"] == 1.3       # prior metrics passed through
+        assert out["status"] == "complete"      # a skipped cell is not a failure
+        assert out["scope"]["models_run"] == ["qwen3_1_7b"]
+
+    def test_skipped_plus_ok_is_complete(self):
+        """A mix of skipped + freshly-ok cells is still 'complete' (no failures)."""
+        cells = [
+            _cell("qwen3_1_7b", "search_qa", "sdar"),
+            _cell("qwen2_5_3b", "search_qa", "sdar"),
+        ]
+        matrix_result = {
+            "qwen3_1_7b__sdar__search_qa__s42": {
+                "status": "skipped", "metrics": {"metric": 0.4}, "gpu": "0",
+                "retries": 0, "error": None,
+            },
+            "qwen2_5_3b__sdar__search_qa__s42": {
+                "status": "ok", "metrics": {"metric": 0.5}, "gpu": "1",
+                "retries": 0, "error": None,
+            },
+        }
+        out = aggregate_cell_metrics(matrix_result, cells)
+        assert out["status"] == "complete"
+        assert sorted(out["scope"]["models_run"]) == ["qwen2_5_3b", "qwen3_1_7b"]
+
+    def test_skipped_plus_failed_is_partial(self):
+        """skipped (=ok) + a failed cell → partial, mirroring ok+failed."""
+        cells = [
+            _cell("qwen3_1_7b", "search_qa", "sdar"),
+            _cell("qwen2_5_3b", "search_qa", "sdar"),
+        ]
+        matrix_result = {
+            "qwen3_1_7b__sdar__search_qa__s42": {
+                "status": "skipped", "metrics": {"metric": 0.4}, "gpu": "0",
+                "retries": 0, "error": None,
+            },
+            "qwen2_5_3b__sdar__search_qa__s42": {
+                "status": "oom_failed", "metrics": None, "gpu": "1",
+                "retries": 2, "error": "CUDA out of memory",
+            },
+        }
+        out = aggregate_cell_metrics(matrix_result, cells)
+        assert out["status"] == "partial"
+
     def test_status_failed_when_none_ok(self):
         cells = [_cell("qwen3_1_7b", "search_qa", "sdar")]
         matrix_result = {
