@@ -47,6 +47,16 @@ class RLMFinalReport(BaseModel):
         default_factory=dict,
         description="Measured metrics; may be {} until Phase 5.",
     )
+    # P2 provenance back-link (invariant 2): the canonical experiment record this
+    # report's metrics trace to, + the sha256 of that run's metrics.json artifact.
+    # None when no successful experiment ran. P3 projects baseline_metrics from
+    # this exact record (closing metric → experiment record → metrics.json hash).
+    experiment_run_id: str | None = None
+    metrics_sha256: str | None = None
+    # P3 §5b: the root's self-attested metrics — NON-AUTHORITATIVE. baseline_metrics
+    # is projected from the canonical experiment artifact; this preserves what the
+    # root reported for diffing/diagnostics, never fed to the scorer/leaderboard.
+    reported_metrics: dict = Field(default_factory=dict)
     paper_claims: dict = Field(default_factory=dict)
     # ── paper_claims coercer ──
     # The root model occasionally returns paper_claims as a LIST of claim
@@ -659,6 +669,31 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
+    """Return ``rubric`` with ``overall_score`` floored to the run's best recorded
+    rubric score (best-of-run; 2026-05-30, reordered for F-11).
+
+    A late regression or a degraded self-report can never bury a higher score the
+    run actually achieved. Applied BEFORE verdict reconciliation so the verdict
+    reflects the floored score, not the degraded self-reported one — F-11: the floor
+    used to run only AFTER reconciliation, leaving verdict and score inconsistent on
+    the no-amend path. No-op when no better score was recorded.
+    """
+    best = _best_recorded_rubric_score(project_dir)
+    if best is None:
+        return rubric
+    floored = dict(rubric or {})
+    cur = floored.get("overall_score")
+    try:
+        cur_f = float(cur) if cur is not None else None
+    except (TypeError, ValueError):
+        cur_f = None
+    if cur_f is None or best > cur_f:
+        floored["overall_score"] = best
+        floored["best_of_run"] = True
+    return floored
+
+
 def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
     """Recover the last terminal ``stop_reason`` from ``experiment_runs.jsonl``.
 
@@ -739,30 +774,57 @@ def build_final_report(
     # authoritative ledger count, then enforce the honesty invariant: a result
     # section must be backed by the primitive that produces it.
     trace = _authoritative_primitive_trace(ctx)
-    baseline_metrics = parsed.get("baseline_metrics") or {}
     summary = str(parsed.get("reproduction_summary") or "")
-    if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
-        # The root reported metrics it never measured — run_experiment never
-        # ran. Drop them and say so; downgrade an over-claimed verdict.
-        logger.warning(
-            "report: dropping %d unbacked baseline metric(s) — run_experiment "
-            "never ran (root-fabricated)",
-            len(baseline_metrics),
-        )
-        baseline_metrics = {}
-        summary = (
-            summary
-            + "\n\n[honesty guard] Baseline metrics were dropped: the "
-            "run_experiment primitive never ran, so no metrics were measured."
-        ).strip()
-        if verdict == "reproduced":
-            verdict = "partial"
+    # §5b metric projection (REPROLAB_METRIC_PROVENANCE, default true): the final
+    # baseline_metrics are PROJECTED from the canonical experiment artifact — the
+    # root no longer types ground-truth numbers (mirrors RDR, controller.py:1184
+    # `baseline_metrics=exp.get("metrics")`). The root's self-attested numbers are
+    # preserved non-authoritatively in `reported_metrics` (never scored).
+    reported_metrics = parsed.get("baseline_metrics") or {}
+    canonical_record = _latest_successful_experiment_record(ctx.project_dir)
+    if _metric_provenance_enabled() and canonical_record is not None:
+        # The record's existence proves run_experiment ran successfully, so the
+        # honesty drop-guard below is moot — project the measured metrics.
+        baseline_metrics = canonical_record.get("metrics") or {}
+        if reported_metrics and reported_metrics != baseline_metrics:
+            summary = (
+                summary
+                + "\n\n[metric provenance] baseline_metrics projected from the "
+                f"canonical experiment artifact (experiment_run_id="
+                f"{canonical_record.get('experiment_run_id')}); root-reported "
+                "numbers preserved non-authoritatively in reported_metrics."
+            ).strip()
+    else:
+        # Fallback (provenance disabled OR no successful experiment): keep the
+        # existing honesty guard — a metric the root typed but run_experiment
+        # never backed is dropped, and an over-claimed verdict downgraded.
+        baseline_metrics = reported_metrics
+        if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
+            logger.warning(
+                "report: dropping %d unbacked baseline metric(s) — run_experiment "
+                "never ran (root-fabricated)",
+                len(baseline_metrics),
+            )
+            baseline_metrics = {}
+            summary = (
+                summary
+                + "\n\n[honesty guard] Baseline metrics were dropped: the "
+                "run_experiment primitive never ran, so no metrics were measured."
+            ).strip()
+            if verdict == "reproduced":
+                verdict = "partial"
+
+    # F-11: floor the rubric to the run's best-of-run score BEFORE reconciling the
+    # verdict, so a late regression / degraded self-report can't cap the verdict
+    # below what the run actually achieved. (The floor used to run only after this,
+    # leaving verdict and the displayed score inconsistent on the no-amend path.)
+    rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
 
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(
         verdict,
         baseline_metrics=baseline_metrics,
-        rubric=parsed.get("rubric") or {},
+        rubric=rubric_floored,
         primitive_trace=trace,
     )
     if downgrade_reason:
@@ -811,7 +873,7 @@ def build_final_report(
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
-        "rubric": parsed.get("rubric") or {
+        "rubric": rubric_floored or {
             "overall_score": None,
             "meets_target": None,
             "target_score": None,
@@ -835,24 +897,20 @@ def build_final_report(
     if isinstance(_stop, dict) and _stop.get("kind"):
         kwargs["stop_reason"] = _stop
 
-    # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
-    # final state and self-report a LOWER rubric than it actually achieved — the
-    # SDAR run reported 0.0 despite scoring ~0.18 mid-run. Surface the best
-    # overall_score the run recorded so a late regression can never bury a real
-    # result. Reads dashboard_events.jsonl, so re-running this builder also
-    # salvages an already-finalized degraded run.
-    _best = _best_recorded_rubric_score(ctx.project_dir)
-    if _best is not None:
-        _r = dict(kwargs.get("rubric") or {})
-        _cur = _r.get("overall_score")
-        try:
-            _cur_f = float(_cur) if _cur is not None else None
-        except (TypeError, ValueError):
-            _cur_f = None
-        if _cur_f is None or _best > _cur_f:
-            _r["overall_score"] = _best
-            _r["best_of_run"] = True
-            kwargs["rubric"] = _r
+    # Best-of-run floor is applied via _apply_best_of_run_floor BEFORE the verdict
+    # reconciliation (rubric_floored above), so kwargs["rubric"] already carries the
+    # floored score and verdict + displayed score stay consistent on the no-amend
+    # path (F-11; the floor previously ran only here, after the reconcile).
+
+    # P2/P3 provenance: back-link the report to the canonical experiment record +
+    # its metrics.json hash (invariant 2 trace), and preserve the root's
+    # non-authoritative self-attested numbers. `_canonical_experiment_provenance`
+    # selects the same latest-successful record `baseline_metrics` was projected
+    # from above (§5b), so the back-link and the projected metrics name one run.
+    _prov = _canonical_experiment_provenance(ctx.project_dir)
+    kwargs["experiment_run_id"] = _prov.get("experiment_run_id")
+    kwargs["metrics_sha256"] = _prov.get("metrics_sha256")
+    kwargs["reported_metrics"] = reported_metrics
 
     return RLMFinalReport(**kwargs)
 
@@ -863,6 +921,64 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _latest_successful_experiment_record(project_dir: Path) -> dict | None:
+    """The canonical experiment record: the latest SUCCESSFUL
+    ``experiment_runs.jsonl`` row carrying an ``experiment_run_id`` (deterministic;
+    ``None`` when none / unreadable). Both the P3 §5b ``baseline_metrics``
+    projection and the P2 ``final_report`` provenance back-link derive from this
+    one record, so they always agree on "which run produced the reported result."
+    """
+    import json
+
+    exp_log = project_dir / "experiment_runs.jsonl"
+    if not exp_log.exists():
+        return None
+    chosen: dict | None = None
+    try:
+        for line in exp_log.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:  # noqa: BLE001 — tolerate a torn/partial line
+                continue
+            if isinstance(rec, dict) and rec.get("success") and rec.get("experiment_run_id"):
+                chosen = rec  # keep the latest successful
+    except OSError:
+        return None
+    return chosen
+
+
+def _canonical_experiment_provenance(project_dir: Path) -> dict:
+    """P2 back-link: return ``{experiment_run_id, metrics_sha256}`` for the
+    canonical record (see :func:`_latest_successful_experiment_record`) so the
+    final report points back to the exact artifact behind its metrics (invariant
+    2). ``{}`` when none — a run with no successful experiment has no metric to
+    trace."""
+    chosen = _latest_successful_experiment_record(project_dir)
+    if chosen is None:
+        return {}
+    out: dict = {"experiment_run_id": chosen["experiment_run_id"]}
+    if chosen.get("metrics_sha256"):
+        out["metrics_sha256"] = chosen["metrics_sha256"]
+    return out
+
+
+def _metric_provenance_enabled() -> bool:
+    """``REPROLAB_METRIC_PROVENANCE`` (default true): project ``baseline_metrics``
+    from the canonical experiment artifact instead of trusting root-typed values
+    (§5b). Disable to fall back to the prior root-attested + honesty-guard path."""
+    import os
+
+    return os.environ.get("REPROLAB_METRIC_PROVENANCE", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 # ---------------------------------------------------------------------------

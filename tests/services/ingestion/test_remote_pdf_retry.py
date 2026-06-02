@@ -245,3 +245,52 @@ def test_not_a_pdf_raises_immediately(tmp_path: Path):
 
     assert exc_info.value.cause_kind == "not_a_pdf"
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# F-31 — validated-cache reuse (raw_paper.pdf is re-fetched on every ingest;
+# a committed PDF is always a complete magic-validated download, and arXiv
+# paper versions are immutable, so it should be reused).
+# ---------------------------------------------------------------------------
+
+def test_download_pdf_reuses_validated_cache(tmp_path: Path):
+    """A committed raw_paper.pdf is reused on the next call with no network
+    fetch (F-31); the returned FetchResult matches the cached file."""
+    first = _run_download(tmp_path, _make_urlopen(_FakeResponse()))
+
+    def _explode(request: Request, *, timeout: float):
+        raise AssertionError("network fetch must not happen on a cache hit")
+
+    second = _module.download_pdf(
+        url="http://arxiv.org/pdf/2605.15155",
+        runs_root=tmp_path,
+        project_id="prj_test",
+        fetched_via="test_fetcher",
+        urlopen_fn=_explode,
+        timeout_seconds=5.0,
+    )
+    assert second.raw_paper_path == first.raw_paper_path
+    assert second.pdf_sha256 == first.pdf_sha256
+    assert second.pdf_size_bytes == first.pdf_size_bytes
+
+
+def test_download_pdf_force_refetch_bypasses_cache(tmp_path: Path):
+    """force_refetch=True re-downloads even when a valid cached PDF exists (F-31)."""
+    _run_download(tmp_path, _make_urlopen(_FakeResponse()))
+
+    calls = {"n": 0}
+
+    def _count(request: Request, *, timeout: float):
+        calls["n"] += 1
+        return _FakeResponse()
+
+    _module.download_pdf(
+        url="http://arxiv.org/pdf/2605.15155",
+        runs_root=tmp_path,
+        project_id="prj_test",
+        fetched_via="test_fetcher",
+        urlopen_fn=_count,
+        timeout_seconds=5.0,
+        force_refetch=True,
+    )
+    assert calls["n"] == 1, "force_refetch must re-download"
