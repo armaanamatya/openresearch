@@ -3701,10 +3701,13 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
 
-    # PREVENT — clamp to one-card budget, drop confirmed-dead datasets (fail-soft).
+    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
+    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    _gpus_per_cell = max(1, int(os.environ.get("REPROLAB_GPUS_PER_CELL", "1") or "1"))
+    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
     headroom = _dynamic_gpu_headroom()
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
-        all_cells, caps.per_gpu_vram_gb, headroom=headroom)
+        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
 
     gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
@@ -3744,14 +3747,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
     # run-level watchdog is the ultimate hang guard; this just lets the root score a
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
-    _n_gpus = max(1, len(gpus))
-    _waves = (len(kept) + _n_gpus - 1) // _n_gpus  # ceil(cells / gpus)
+    _n_slots = max(1, len(gpus) // _gpus_per_cell)
+    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
     matrix_result = gpu_cell_runner.run_matrix(
         kept, str(code / "train_cell.py"),
         output_root=str(artifact_root),
         gpus=gpus or None,
         per_cell_timeout_s=timeout_s,
         overall_timeout_s=timeout_s * max(1, _waves),
+        gpus_per_cell=_gpus_per_cell,
     )
     wall = _time.monotonic() - _t0
 

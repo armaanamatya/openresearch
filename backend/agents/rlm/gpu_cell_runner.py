@@ -316,6 +316,7 @@ def run_matrix(
     max_oom_retries: int = 2,
     per_cell_timeout_s: float | None = None,
     overall_timeout_s: float | None = None,
+    gpus_per_cell: int = 1,
 ) -> dict[str, dict[str, Any]]:
     """Schedule and run all cells across the GPU pool.
 
@@ -382,8 +383,17 @@ def run_matrix(
     if not resolved_gpus:
         resolved_gpus = ["0"]
 
-    parallelism = max_parallel if max_parallel is not None else len(resolved_gpus)
-    parallelism = max(1, min(parallelism, len(resolved_gpus)))
+    # Multi-GPU cells (2026-06-02): group GPUs into SLOTS of `gpus_per_cell` so a
+    # cell that shards a large model (device_map='auto') sees several GPUs at once.
+    # Each slot is a CSV of physical ids → CUDA_VISIBLE_DEVICES for that cell.
+    n_per = max(1, int(gpus_per_cell))
+    gpu_slots = [",".join(resolved_gpus[i:i + n_per])
+                 for i in range(0, len(resolved_gpus) - n_per + 1, n_per)]
+    if not gpu_slots:                       # fewer GPUs than n_per → one slot of all
+        gpu_slots = [",".join(resolved_gpus)]
+
+    parallelism = max_parallel if max_parallel is not None else len(gpu_slots)
+    parallelism = max(1, min(parallelism, len(gpu_slots)))
 
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -398,10 +408,11 @@ def run_matrix(
     for cell in cells:
         work_queue.put((cell, 0))
 
-    # GPU pool — a queue of free GPU ids.
+    # GPU pool — a queue of free GPU SLOTS (each a CSV of `gpus_per_cell` ids,
+    # set as CUDA_VISIBLE_DEVICES so a cell can device_map-shard across them).
     gpu_pool: Queue[str] = Queue()
-    for gid in resolved_gpus[:parallelism]:
-        gpu_pool.put(gid)
+    for slot in gpu_slots[:parallelism]:
+        gpu_pool.put(slot)
 
     active_threads: list[threading.Thread] = []
     active_lock = threading.Lock()
