@@ -4784,12 +4784,89 @@ def run_experiment(
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
+def _leaf_status(score: object, state: object) -> str:
+    """Map a leaf (score, state) pair to a UI status string.
+
+    ``"unavailable"`` when the leaf was skipped (state contains ``skipped``) or
+    its score is ``None`` (PR-κ data-unavailable). Otherwise threshold the score:
+    ``pass`` (>=0.75) / ``partial`` (>=0.4) / ``fail``. Fail-soft: a malformed
+    score coerces to 0.0 → ``fail``.
+    """
+    if score is None or (isinstance(state, str) and "skipped" in state):
+        return "unavailable"
+    try:
+        s = float(score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "fail"
+    if s >= 0.75:
+        return "pass"
+    if s >= 0.4:
+        return "partial"
+    return "fail"
+
+
+def _enrich_area_leaves(area_node: dict, leaf_detail: dict[str, dict]) -> list[dict]:
+    """Build the per-area ``leaves`` list for one top-level rubric sub_task.
+
+    Walks the area's sub-tree via ``flatten_leaves`` to get the leaf nodes (which
+    carry the human-readable ``requirements`` label + ``id``), then joins each to
+    its scored record in ``leaf_detail`` (id -> {score, justification, state}).
+
+    Each emitted leaf: ``{id, label, score, status, why}`` where ``label`` is the
+    requirements text (≤140 chars), ``score`` is the leaf score (``None`` when
+    unavailable), ``status`` from :func:`_leaf_status`, and ``why`` the leaf
+    justification (≤280 chars, single line). Fail-soft per leaf: a malformed leaf
+    node is skipped rather than crashing the whole area.
+    """
+    from backend.evals.paperbench.leaf_scorer import flatten_leaves
+
+    out: list[dict] = []
+    try:
+        leaf_nodes = flatten_leaves(area_node)
+    except Exception:  # noqa: BLE001 — a malformed tree must not crash the area
+        return out
+    for node in leaf_nodes:
+        try:
+            if not isinstance(node, dict):
+                continue
+            lid = str(node.get("id", "") or "")
+            if not lid:
+                continue
+            label = " ".join(str(node.get("requirements") or "").split())[:140]
+            detail = leaf_detail.get(lid) or {}
+            raw_score = detail.get("score") if "score" in detail else None
+            state = detail.get("state")
+            status = _leaf_status(raw_score, state)
+            score_out: float | None = None
+            if status != "unavailable":
+                try:
+                    score_out = max(0.0, min(1.0, float(raw_score)))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    score_out = None
+            why = " ".join(str(detail.get("justification") or "").split())[:280]
+            out.append({
+                "id": lid,
+                "label": label,
+                "score": score_out,
+                "status": status,
+                "why": why,
+            })
+        except Exception:  # noqa: BLE001 — skip the one bad leaf, keep the rest
+            continue
+    return out
+
+
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
 
     Each top-level sub_task becomes one area entry:
-      {"name": <requirements text, truncated>, "score": <rolled-up float>,
-       "weight": <raw weight int/float>}
+      {"area": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>,
+       "leaves": [{id, label, score, status, why}, ...]}
+
+    The ``leaves`` list carries leaf-level detail (which criteria fail + why),
+    mapped to the area via the same rubric-tree structure that produces the
+    rollup (``flatten_leaves`` over the area sub-tree).
 
     This gives the root model named, scored areas it can include verbatim in
     the final report instead of fabricating blank placeholders.  Fail-soft:
@@ -4811,6 +4888,14 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         if isinstance(e, dict) and e.get("id") and e.get("score") is not None
     }
 
+    # Build a {leaf_id: full-record} map so per-area leaves can attach
+    # score + justification + state (the label/requirements come from the tree).
+    leaf_detail: dict[str, dict] = {
+        str(e["id"]): e
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
     areas: list[dict] = []
     for i, task in enumerate(sub_tasks):
         name = str(task.get("requirements") or "")[:120]
@@ -4818,8 +4903,72 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
             name = f"Area {i + 1}"
         score = _clamp01(roll_up(task, leaf_score_map))
         weight = task.get("weight")
-        areas.append({"area": name, "score": score, "weight": weight})
+        areas.append({
+            "area": name,
+            "score": score,
+            "weight": weight,
+            "leaves": _enrich_area_leaves(task, leaf_detail),
+        })
     return areas
+
+
+def _recent_experiment_errors(project_dir: "Path", limit: int = 3) -> list[dict]:
+    """Return the last ``limit`` failed ``run_experiment`` entries as UI rows.
+
+    Reads ``experiment_runs.jsonl`` in ``project_dir`` and selects the most
+    recent lines with ``success=False``. Each row: ``{kind, message, iteration}``
+    where ``kind`` is the classified ``failure_class`` (fallback ``cause_kind`` /
+    ``"unknown"``), ``message`` is the error string truncated to 200 chars
+    (falling back to a logs tail when ``error`` is absent — the real-world common
+    case), and ``iteration`` is the entry's iteration if recorded else ``None``.
+
+    Fail-soft: a missing/unreadable file or any malformed line yields ``[]`` (or
+    the rows parsed so far) — observability must never break the run.
+    """
+    import json as _json_re
+
+    path = project_dir / "experiment_runs.jsonl"
+    try:
+        if not path.exists():
+            return []
+        # Read the tail only — the file can grow large over a long run.
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+
+    out: list[dict] = []
+    # Walk newest-first so we collect the most recent failures.
+    for raw in reversed(lines):
+        if len(out) >= max(0, int(limit)):
+            break
+        raw = raw.strip()
+        if not raw or '"success"' not in raw:
+            continue
+        try:
+            entry = _json_re.loads(raw)
+        except Exception:  # noqa: BLE001 — skip a corrupt line
+            continue
+        if not isinstance(entry, dict) or entry.get("success") is not False:
+            continue
+        kind = str(
+            entry.get("failure_class")
+            or entry.get("cause_kind")
+            or "unknown"
+        )
+        # `error` is frequently None on real failures — the diagnostic lives in
+        # the logs tail (e.g. a ModuleNotFoundError traceback). Fall back so the
+        # UI row is actually informative.
+        message = entry.get("error")
+        if not message:
+            logs = str(entry.get("logs") or "")
+            message = logs[-200:] if logs else (entry.get("suggested_fix") or "")
+        message = " ".join(str(message).split())[:200]
+        iteration = entry.get("iteration")
+        if not isinstance(iteration, int):
+            iteration = None
+        out.append({"kind": kind, "message": message, "iteration": iteration})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -5107,6 +5256,21 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             [e for e in leaf_scores if isinstance(e, dict) and e.get("score") is not None],
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
+        # leaf_id -> top-level area name, so the UI can group each weak leaf under
+        # its area. Built from the SAME top-level sub_task structure as the area
+        # rollup. Fail-soft: a malformed tree yields an empty map (area="").
+        _leaf_area: dict[str, str] = {}
+        try:
+            from backend.evals.paperbench.leaf_scorer import flatten_leaves as _flat
+            for _i, _task in enumerate(
+                c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)
+            ):
+                _aname = str(_task.get("requirements") or "")[:120] or f"Area {_i + 1}"
+                for _ln in _flat(_task):
+                    if isinstance(_ln, dict) and _ln.get("id"):
+                        _leaf_area[str(_ln["id"])] = _aname
+        except Exception:  # noqa: BLE001 — area attribution is best-effort
+            _leaf_area = {}
 
         result = {
             "overall_score": overall_score,
@@ -5122,7 +5286,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
-                 "justification": e.get("justification", "")}
+                 "justification": e.get("justification", ""),
+                 "area": _leaf_area.get(str(e.get("id", "")), "")}
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
