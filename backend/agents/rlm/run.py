@@ -110,7 +110,7 @@ _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query rec
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
-_WATCHDOG_HARD_CEILING_DEFAULT_S = 28800.0  # 8h — generous backstop, above a real full-scope run
+_WATCHDOG_HARD_CEILING_DEFAULT_S = 50400.0  # 14h — generous backstop (operator preference 2026-06-02)
 
 
 def _watchdog_hard_ceiling_s() -> float:
@@ -119,7 +119,7 @@ def _watchdog_hard_ceiling_s() -> float:
     Read at arm-time (not import-time) so tests and operators can tune it via
     ``REPROLAB_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
     entirely, restoring the pre-2026-06-01 fully-unbounded behaviour. A malformed
-    value falls back to the 8h default rather than crashing the run.
+    value falls back to the 14h default rather than crashing the run.
     """
     raw = os.environ.get("REPROLAB_WATCHDOG_HARD_CEILING_S", "").strip()
     if raw == "":
