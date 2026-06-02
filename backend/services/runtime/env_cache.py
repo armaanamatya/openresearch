@@ -214,8 +214,13 @@ def _default_webshop_launcher(cache_dir: Path, port: int) -> int:
     import subprocess
 
     log = open(cache_dir / "webshop_server.log", "ab")  # noqa: SIM115 — child owns it
+    # Use the running interpreter, not a bare ``python`` (which need not be on the
+    # cell's PATH — a venv invoked by path doesn't put its bin/ there). With the
+    # correct interpreter, an un-installed ``web_agent_site`` surfaces as a clear
+    # ModuleNotFoundError that ``ensure_webshop`` turns into a verified
+    # ``env_setup_failed`` Exclusion, instead of a misleading ``No such file: python``.
     proc = subprocess.Popen(
-        ["python", "-m", "web_agent_site.app", "--port", str(port)],
+        [sys.executable, "-m", "web_agent_site.app", "--port", str(port)],
         cwd=str(cache_dir), stdout=log, stderr=subprocess.STDOUT,
         env={**os.environ},
     )
@@ -231,6 +236,14 @@ def _default_probe(url: str, *, timeout_s: float = 2.0) -> bool:
             return 200 <= int(getattr(resp, "status", 0) or 0) < 500
     except Exception:  # noqa: BLE001
         return False
+
+
+def _search_qa_encoder() -> str:
+    """The e5 encoder the dense index was built with — the query encoder MUST match
+    it (same dimension + semantics) or FAISS search errors. The prebuilt wiki-18
+    indexes are e5-base-v2; override with ``REPROLAB_SEARCH_QA_ENCODER`` for an index
+    built with a different e5 variant."""
+    return os.environ.get("REPROLAB_SEARCH_QA_ENCODER", "").strip() or "intfloat/e5-base-v2"
 
 
 def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
@@ -253,6 +266,17 @@ def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
     flag = os.environ.get("REPROLAB_SEARCH_QA_DENSE", "").strip().lower()
     if flag not in ("1", "true", "yes", "on"):
         return None
+    # A pre-staged local index (operator placed the FAISS index + corpus on a roomy
+    # disk already, e.g. via a one-time download) — use it directly, no network call.
+    direct = os.environ.get("REPROLAB_SEARCH_QA_INDEX_DIR", "").strip()
+    if direct:
+        ddir = Path(direct)
+        if ddir.is_dir() and (any(ddir.rglob("*.index")) or any(ddir.rglob("*.faiss"))):
+            return ddir
+        logger.warning(
+            "env_cache: REPROLAB_SEARCH_QA_INDEX_DIR=%s has no .index/.faiss file; "
+            "falling through to repo download / BM25.", direct,
+        )
     repo = os.environ.get("REPROLAB_SEARCH_QA_INDEX_REPO", "").strip()
     if not repo:
         logger.info(
@@ -463,7 +487,8 @@ class EnvCacheManager:
                     return EnvSetupResult(
                         env=display_name, ok=True, detail="cache hit (e5)",
                         env_vars={"SEARCH_QA_INDEX_DIR": rec["index_dir"],
-                                  "SEARCH_QA_RETRIEVER": "e5"},
+                                  "SEARCH_QA_RETRIEVER": "e5",
+                                  "SEARCH_QA_ENCODER": _search_qa_encoder()},
                     )
                 built = self._index_builder(self.cache_dir)  # injected; None → BM25
                 if built is not None and Path(built).exists():
@@ -472,7 +497,8 @@ class EnvCacheManager:
                     return EnvSetupResult(
                         env=display_name, ok=True, detail="dense index ready",
                         env_vars={"SEARCH_QA_INDEX_DIR": str(built),
-                                  "SEARCH_QA_RETRIEVER": "e5"},
+                                  "SEARCH_QA_RETRIEVER": "e5",
+                                  "SEARCH_QA_ENCODER": _search_qa_encoder()},
                     )
                 state["search_qa"] = {"ready": True, "retriever": "bm25",
                                       "built_at": self._clock()}

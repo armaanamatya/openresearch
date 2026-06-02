@@ -286,15 +286,23 @@ class Retriever:
                         return str(hits[0])
                 return None
 
-            # FAISS index: index.faiss → any *.faiss → any *.index.
+            # FAISS index: index.faiss → any *.faiss → any *.index. mmap-load so a
+            # multi-GB index is shared across cell processes via the OS page cache
+            # (one physical copy, not one per cell); fall back to a full read for an
+            # index type that can't be memory-mapped.
             index_path = _find_first(["index.faiss", "*.faiss", "*.index"])
             if not index_path:
                 raise FileNotFoundError(f"no FAISS index (*.faiss/*.index) under {idx_dir!r}")
-            self._faiss_index = faiss.read_index(index_path)
+            try:
+                self._faiss_index = faiss.read_index(index_path, faiss.IO_FLAG_MMAP)
+            except Exception:  # noqa: BLE001 — not every index type mmaps; read fully
+                self._faiss_index = faiss.read_index(index_path)
 
-            # Passage store: passages.json → passages.pkl → passages.txt, top-level
-            # then nested.  Each entry is one passage string.
-            passages: list[str] | None = None
+            # Passage store. A small index ships an explicit passages.{json,pkl,txt}
+            # loaded into RAM. A wiki-scale corpus ships as a *.jsonl ({id, contents},
+            # FAISS row i ↔ line i) accessed LAZILY by byte offset — so 21M passages
+            # cost ~one seek per hit, not ~14 GB resident in every cell process.
+            passages: Any = None
             json_path = _find_first(["passages.json"])
             pkl_path = _find_first(["passages.pkl"])
             txt_path = _find_first(["passages.txt"])
@@ -309,12 +317,20 @@ class Retriever:
             elif txt_path:
                 with open(txt_path, "r", encoding="utf-8") as fh:
                     passages = [ln.rstrip("\n") for ln in fh]
+            else:
+                jsonl_path = _find_first(["*.jsonl"])
+                if jsonl_path:
+                    passages = _LazyJsonlStore(jsonl_path)
             if not passages:
                 raise FileNotFoundError(f"no passage store under {idx_dir!r}")
             self._passages = passages
 
+            # The query encoder MUST match the encoder the index was built with
+            # (dimension + semantics) — configurable so a non-e5-base index works.
+            # Default matches the prebuilt wiki-18 indexes (intfloat/e5-base-v2).
             if self._encoder is None:
-                self._encoder = SentenceTransformer("intfloat/e5-base-v2")
+                _enc = os.environ.get("SEARCH_QA_ENCODER", "").strip() or "intfloat/e5-base-v2"
+                self._encoder = SentenceTransformer(_enc)
             self._dense_ready = True
         except Exception as exc:  # noqa: BLE001 — disable dense tier, fall back
             print(f"[search_qa] dense E5 index unavailable ({exc!r}); using fallback.")
@@ -407,6 +423,60 @@ def _as_passage_text(record: Any) -> str:
                 body = str(record[key])
                 return f"{title}. {body}".strip(". ") if title else body
     return str(record)
+
+
+class _LazyJsonlStore:
+    """Indexable, RAM-frugal view over a large ``{id, contents}`` JSONL corpus.
+
+    FAISS row ``i`` corresponds to JSONL line ``i``. A byte-offset array (built once
+    and cached next to the corpus as ``<name>.offsets.npy``) lets ``store[i]`` seek
+    directly to line ``i`` and read just that passage, so a 21M-passage / ~14 GB wiki
+    corpus costs ~168 MB of offsets + one disk seek per retrieved hit instead of
+    loading the whole corpus into every cell process. Never raises on a bad line.
+    """
+
+    def __init__(self, jsonl_path: str, offsets_path: str | None = None) -> None:
+        import numpy as _np  # lazy
+
+        self._path = str(jsonl_path)
+        op = offsets_path or (self._path + ".offsets.npy")
+        if os.path.exists(op):
+            self._offsets = _np.load(op, mmap_mode="r")
+        else:
+            self._offsets = self._build_offsets(self._path, op)
+        # Long-lived read handle for per-hit seeks (one fd per retriever instance).
+        self._fh = open(self._path, "rb")  # noqa: SIM115
+
+    @staticmethod
+    def _build_offsets(path: str, offsets_path: str) -> Any:
+        import numpy as _np  # lazy
+
+        offsets: list[int] = []
+        pos = 0
+        with open(path, "rb") as fh:
+            for line in fh:
+                offsets.append(pos)
+                pos += len(line)
+        arr = _np.asarray(offsets, dtype=_np.int64)
+        try:
+            _np.save(offsets_path, arr)
+        except OSError:
+            pass
+        return arr
+
+    def __len__(self) -> int:
+        return int(len(self._offsets))
+
+    def __getitem__(self, i: int) -> str:
+        import json  # lazy (cached after first call)
+
+        if i < 0 or i >= len(self._offsets):
+            return ""
+        try:
+            self._fh.seek(int(self._offsets[i]))
+            return _as_passage_text(json.loads(self._fh.readline()))
+        except Exception:  # noqa: BLE001 — a malformed line never kills retrieval
+            return ""
 
 
 # ---------------------------------------------------------------------------
