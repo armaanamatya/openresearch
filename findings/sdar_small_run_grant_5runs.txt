@@ -23,10 +23,10 @@ which model we use, while GPU time is what really drives the total. Five full ru
 about $24 on our recommended model (Claude Sonnet 4.6) and at most $79 on the priciest
 option (Table 1). GPU time is the real lever: five runs cost $60-120 on a basic card,
 about $90-175 on a mid card, or $340-680 on a high-end card (Table 2). We request about
-$1,000, enough for five high-end-card runs plus a 20% cushion.
+$1,000 — enough for five high-end-card runs plus a 20% cushion.
 
 
-TABLE 1: AI-MODEL COST FOR 5 RUNS
+TABLE 1 — AI-MODEL COST FOR 5 RUNS
 ----------------------------------
   AI model                            $ per run    5 runs
   ----------------------------------  ----------   --------
@@ -44,7 +44,7 @@ TABLE 1: AI-MODEL COST FOR 5 RUNS
   Claude Opus 4.8 (fast mode)         $15.86       $79
 
 
-TABLE 2: GPU COST FOR 5 RUNS, AND TOTAL
+TABLE 2 — GPU COST FOR 5 RUNS, AND TOTAL
 ----------------------------------------
   GPU card               per hour   per run      5 runs
   --------------------   --------   ----------   ----------
@@ -55,4 +55,4 @@ TABLE 2: GPU COST FOR 5 RUNS, AND TOTAL
   Total for 5 runs                  AI models   GPU        +20% cushion   TOTAL
   -------------------------------   ---------   --------   ------------   ----------------------
   Recommended (Sonnet + A100-80)    $24         $340-680   ~$73-141       ~$440-845
-  Cheapest (free model + RTX 4090)  $0          $60-120    -              ~$60-120
+  Cheapest (free model + RTX 4090)  $0          $60-120    —              ~$60-120
