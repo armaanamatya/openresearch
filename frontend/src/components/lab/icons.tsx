@@ -131,6 +131,14 @@ export const ICONS = {
       <rect x="6" y="6" width="6" height="6" />
       <path d="M3 6.5h-1M3 11.5h-1M16 6.5h-1M16 11.5h-1M6.5 3v-1M11.5 3v-1M6.5 16v-1M11.5 16v-1" />
     </>
+  ),
+  leaderboard: icon(
+    <>
+      <rect x="6.5" y="7" width="5" height="7.5" rx="0.5" />
+      <rect x="2.5" y="10" width="4" height="4.5" rx="0.5" />
+      <rect x="11" y="5" width="4.5" height="9.5" rx="0.5" />
+      <path d="M2.5 15.5h13" />
+    </>
   )
 };
 

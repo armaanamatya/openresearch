@@ -1,0 +1,24 @@
+{
+  "paperId": "2605.15155",
+  "paperTitle": "paper_text",
+  "paper": {
+    "id": "2605.15155",
+    "title": "paper_text"
+  },
+  "projectId": "prj_09047604e591d969",
+  "outputDir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "runMode": "rlm",
+  "status": "running",
+  "updatedAt": "2026-05-31T17:21:00.726795+00:00",
+  "startedAt": "2026-05-31T17:21:00.726795+00:00",
+  "primitiveProvider": "real",
+  "process_status": "running",
+  "verdict": "unknown",
+  "cost_summary": {
+    "usd_total": 0.0,
+    "usd_this_iter": 0.0,
+    "iter_count": 0,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-05-31T17:49:08.406946+00:00"
+  }
+}

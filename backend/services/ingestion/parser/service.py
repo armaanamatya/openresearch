@@ -12,6 +12,7 @@ Single command: `StartParsing(project_id)`.
 from __future__ import annotations
 
 import hashlib
+import logging as _logging
 import os
 import time
 from pathlib import Path
@@ -49,6 +50,11 @@ from backend.services.ingestion.parser.events import (
 from backend.services.ingestion.parser.extractor import NullExtractor, PaperExtractor
 from backend.services.ingestion.parser.interface import Parser, ParseError
 
+_logger = _logging.getLogger(__name__)
+
+# Minimum byte threshold for "good" parsed text — mirrors the check in run.py.
+_FULL_TEXT_MIN_BYTES = 1024
+
 
 class StartParsing(Command):
     model_config = ConfigDict(frozen=True)
@@ -75,6 +81,81 @@ def write_parsed_full_text(project_dir: Path, text: str | None) -> None:
     tmp = path.with_suffix(".txt.tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _load_paper_text_override() -> str | None:
+    """Read REPROLAB_PAPER_TEXT_PATH override text, or return None.
+
+    Returns the file's UTF-8 text when:
+    - the env var is set and non-empty,
+    - the file exists and is readable,
+    - the content is >= _FULL_TEXT_MIN_BYTES bytes when encoded.
+
+    Returns None (silently or with a logged warning) in all other cases —
+    the caller must treat None as "override not available".
+    """
+    override_path_str = os.environ.get("REPROLAB_PAPER_TEXT_PATH", "").strip()
+    if not override_path_str:
+        return None
+    override_path = Path(override_path_str)
+    try:
+        text = override_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _logger.warning(
+            "REPROLAB_PAPER_TEXT_PATH=%r not found; override ignored",
+            override_path_str,
+        )
+        return None
+    except OSError as exc:
+        _logger.warning(
+            "REPROLAB_PAPER_TEXT_PATH=%r unreadable (%s); override ignored",
+            override_path_str,
+            exc,
+        )
+        return None
+    if len(text.encode("utf-8")) < _FULL_TEXT_MIN_BYTES:
+        _logger.warning(
+            "REPROLAB_PAPER_TEXT_PATH=%r is shorter than %d bytes; override ignored",
+            override_path_str,
+            _FULL_TEXT_MIN_BYTES,
+        )
+        return None
+    return text
+
+
+def _resolve_full_text(cascade_text: str | None) -> str | None:
+    """Choose the authoritative full-text: cascade result vs env-var override.
+
+    Precedence rules:
+    1. If cascade_text is good (>= _FULL_TEXT_MIN_BYTES bytes UTF-8) → keep it.
+       The override must never silently replace a healthy live parse.
+    2. If cascade_text is empty/short AND an override is available → use override.
+    3. Otherwise → return cascade_text (may be None/empty; caller handles deletion).
+
+    Emits exactly one structured INFO/WARNING log line naming the winning source.
+    """
+    cascade_is_good = bool(
+        cascade_text and len(cascade_text.encode("utf-8")) >= _FULL_TEXT_MIN_BYTES
+    )
+    if cascade_is_good:
+        _logger.info("parsed_full_text source: cascade (%d bytes)", len(cascade_text.encode("utf-8")))
+        return cascade_text
+
+    override_text = _load_paper_text_override()
+    if override_text is not None:
+        _logger.warning(
+            "parsed_full_text source: REPROLAB_PAPER_TEXT_PATH override "
+            "(%d bytes) — cascade result was absent or <1KB",
+            len(override_text.encode("utf-8")),
+        )
+        return override_text
+
+    # No override available; return whatever cascade gave us (may be None/empty).
+    if cascade_text:
+        _logger.info("parsed_full_text source: cascade (%d bytes)", len(cascade_text.encode("utf-8")))
+    else:
+        _logger.warning("parsed_full_text source: cascade (empty/absent); no override available")
+    return cascade_text
 
 
 def _aggregate_id(project_id: str, suffix: str) -> AggregateId:
@@ -153,12 +234,14 @@ class ParserAppService:
                 retryable=exc.retryable,
             )
             self._append(parsed, parsed_agg_id, [failure], cid)
-            # Invalidate any stale blob — a re-run into a dir that holds a
-            # prior paper's blob would silently feed the RLM the wrong corpus
-            # (review I6 / T18).
+            # Cascade parse failed: check whether the REPROLAB_PAPER_TEXT_PATH
+            # override can rescue the blob before we delete it (review I6 / T18).
+            # _resolve_full_text(None) returns the override text when available,
+            # otherwise None — which causes write_parsed_full_text to delete any
+            # stale blob just as before.
             blob_dir = self._runs_root / project_id
             blob_dir.mkdir(parents=True, exist_ok=True)
-            write_parsed_full_text(blob_dir, None)
+            write_parsed_full_text(blob_dir, _resolve_full_text(None))
             return False
 
         # Step 2b: augmentation pass (fail-soft by contract).
@@ -167,8 +250,7 @@ class ParserAppService:
                 project_id=project_id, paper_path=paper_path, base=result
             )
         except Exception:
-            import logging as _logging
-            _logging.getLogger(__name__).exception(
+            _logger.exception(
                 "Extractor %r raised unexpectedly for project %s; continuing with base result",
                 self._extractor.name,
                 project_id,
@@ -192,11 +274,15 @@ class ParserAppService:
             self._append(parsed, parsed_agg_id, events, cid)
 
         # Step 4: store full text as a blob (atomic write), append ParsingCompleted.
+        # _resolve_full_text applies the REPROLAB_PAPER_TEXT_PATH override when the
+        # cascade result is absent/short; a good cascade result always wins.
         blob_dir = self._runs_root / project_id
         blob_dir.mkdir(parents=True, exist_ok=True)
-        write_parsed_full_text(blob_dir, result.full_text)
+        authoritative_text = _resolve_full_text(result.full_text)
+        write_parsed_full_text(blob_dir, authoritative_text)
         blob_path = blob_dir / "parsed_full_text.txt"
-        full_text_sha = hashlib.sha256(result.full_text.encode()).hexdigest()
+        _text_for_hash = authoritative_text or ""
+        full_text_sha = hashlib.sha256(_text_for_hash.encode()).hexdigest()
 
         completed = ParsingCompleted(
             project_id=project_id,

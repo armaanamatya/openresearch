@@ -1,0 +1,24 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct', 'Qwen2.5-7B-Instruct'], datasets=['Search-QA', 'ALFWorld', 'WebShop'], seeds=[42, 43, 44].
+[archive] Moved 16 prior-attempt artifact(s) to /home/sww35/openresearch/runs/prj_09047604e591d969/attempts/20260531T172100-353809-57f49f
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'ALFWorld is scored as success rate (%) over the six task categories (Pick, Look, Clean, Heat, Cool, Pick2) on the 3827-i'
+generate_rubric_tree: dropped placeholder leaf: 'Search-QA reports accuracy (%) on the seven datasets (NQ, TriviaQA, PopQA, HotpotQA, 2Wiki, MuSiQue, Bamboogle), per Sec'
+generate_rubric_tree: dropped placeholder leaf: 'WebShop reports both Score and Acc (%) over the 128 fixed validation tasks, as in Section 3 and Table 1.'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2557699 is closed

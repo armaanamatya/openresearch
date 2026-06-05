@@ -6,6 +6,7 @@ import { Command } from "cmdk";
 
 import type { LiveDemoRunState } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
+import { paperDisplayTitle, runDirName } from "@/lib/runs/paper-title";
 
 import "./command-palette.css";
 
@@ -132,12 +133,12 @@ export function CommandPalette({ open, setOpen, recents, currentRun }: CommandPa
             <Command.Group className="cmdk-group" heading="Recent runs">
               {recents.map((entry) => (
                 <Command.Item
-                  key={entry.projectId}
+                  key={runDirName(entry)}
                   className="cmdk-item"
-                  value={`${entry.projectId} ${entry.sourceLabel ?? ""} ${entry.status}`}
+                  value={`${entry.projectId} ${paperDisplayTitle(entry)} ${entry.status}`}
                   onSelect={onNavigate(`/lab?projectId=${entry.projectId}`)}
                 >
-                  <span>{entry.sourceLabel ?? entry.projectId}</span>
+                  <span>{paperDisplayTitle(entry)}</span>
                   <span className="cmdk-item-id">{entry.projectId}</span>
                 </Command.Item>
               ))}

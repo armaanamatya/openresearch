@@ -34,7 +34,8 @@ def test_complete_works_from_sync_context_no_loop():
     client = _make_client()
     expected = "hello from sync"
 
-    mock_coro = AsyncMock(return_value=expected)
+    # _async_complete returns (result_text, usage_dict); complete() unpacks both.
+    mock_coro = AsyncMock(return_value=(expected, {}))
     with patch.object(client, "_async_complete", mock_coro):
         result = client.complete(system="sys", user="usr")
 
@@ -52,7 +53,8 @@ def test_complete_works_from_inside_running_loop():
     client = _make_client()
     expected = "hello from loop"
 
-    mock_coro = AsyncMock(return_value=expected)
+    # _async_complete returns (result_text, usage_dict); complete() unpacks both.
+    mock_coro = AsyncMock(return_value=(expected, {}))
 
     async def _inner():
         with patch.object(client, "_async_complete", mock_coro):
@@ -108,7 +110,13 @@ def test_complete_propagates_exceptions_from_sync_path():
 
 
 def test_complete_does_not_block_on_hung_worker_in_loop_path():
-    """shutdown(wait=False) is invoked and the call raises rather than blocks."""
+    """A hung worker (future.result times out) returns empty — not blocks, not crashes.
+
+    Contract (2026-05-29): complete() now passes a timeout to future.result() and,
+    on TimeoutError, abandons the worker via shutdown(wait=False) and returns ""
+    so the RLM loop continues (an empty completion is a no-op iteration) rather
+    than the whole run wedging forever or crashing on a propagated TimeoutError.
+    """
     client = _make_client()
 
     # Track whether shutdown(wait=False) was called.
@@ -136,8 +144,8 @@ def test_complete_does_not_block_on_hung_worker_in_loop_path():
         ):
             return client.complete(system="s", user="u")
 
-    with pytest.raises(concurrent.futures.TimeoutError):
-        asyncio.run(_inner())
+    result = asyncio.run(_inner())
+    assert result == "", "hung worker (timeout) must return empty, not raise/block"
 
     # The finally block must have called shutdown(wait=False).
     assert shutdown_calls, "shutdown() was never called"

@@ -10,6 +10,10 @@ from __future__ import annotations
 import os
 
 from backend.services.context.workspace.tools._retry import with_429_backoff
+from backend.services.context.workspace.tools.openai_client import (
+    _usage_from_response,
+    _zero_usage,
+)
 
 # Current Azure OpenAI Chat Completions GA used as the default when the
 # operator (or BYO body) doesn't specify one. 2024-10-21 is the
@@ -61,6 +65,9 @@ class AzureOpenAILlmClient:
         )
         self._model = model
         self._max_tokens = max_tokens
+        # See OpenAILlmClient: mirror the API usage so Azure cheap-call spend is
+        # recorded to the cost ledger instead of zeros.
+        self._last_usage: dict[str, int] = _zero_usage()
 
     @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
@@ -73,6 +80,7 @@ class AzureOpenAILlmClient:
             temperature=0,
             max_tokens=self._max_tokens,
         )
+        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
 
 

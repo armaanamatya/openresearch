@@ -47,6 +47,14 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "syntax_error",              # train.py wouldn't parse
     "scope_shape_violation",     # metrics.json missing per_model when scope demands
     "contract_violation",        # RubricContract violations only (no other class fired)
+    "silent_oom",                # exited 0 but logged a caught backward OOM (no updates)
+    "insufficient_train_steps",  # trained below the convergence floor
+    "code_bug",                  # a Python exception masked as a data_load_failure
+    "degenerate_training",       # status=ok but 0 steps / zero-variance reward (no learning)
+    "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
+    "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
+    "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
+    "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
     "unknown",                   # falls-through
 )
 
@@ -106,6 +114,48 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "agent's next iteration gets the precise hint",
         "contract_violation":
             "RubricContract found gaps vs paper_targets — see contract_violations field",
+        "silent_oom":
+            "train.py caught a CUDA OOM on the backward pass and skipped the step — no "
+            "gradients applied. Reduce per-step memory (batch / rollouts / "
+            "gradient_checkpointing), shard across GPUs with torchrun+FSDP, and let OOM "
+            "fail loudly (do not catch+skip the backward pass)",
+        "insufficient_train_steps":
+            "training ran fewer optimizer steps than REPROLAB_MIN_TRAIN_STEPS — increase "
+            "epochs/steps so the model actually converges",
+        "code_bug":
+            "a dataset/env/model loader raised a Python exception (TypeError, "
+            "AttributeError, HfUriError, invalid model id, 'returned 0 rows', etc.) that "
+            "your code CAUGHT and recorded as a data_load_failure — masking a real bug as "
+            "data-unavailability. Fix the loader/parse bug named in data_load_failures; "
+            "only a genuine 404/403/licence/removed dataset is a true data failure",
+        "degenerate_training":
+            "training 'completed' but produced no learning signal — 0 optimizer steps "
+            "with status=ok, or reward with zero variance across the whole curve (so GRPO "
+            "has no advantage signal). Verify the reward is real and non-constant before "
+            "the RL loop (print zero-shot accuracy; fix answer extraction/matching), and "
+            "ensure optimizer.step() actually runs",
+        "disk_exhausted":
+            "free disk fell below REPROLAB_DISK_FLOOR_GB or an HF cache dir exceeded "
+            "REPROLAB_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
+            "+ slice datasets (never a full natural_questions-style download), use lighter "
+            "variants, or raise the floor/cap if the footprint is legitimately large",
+        "incomplete_metrics":
+            "the run exited 0 but metrics.json is a placeholder (non-terminal status, or "
+            "per_model entries empty) — NO results were measured. Train to completion and, "
+            "at the END, set a terminal status and populate per_model[<model>] with the "
+            "measured eval metric(s) (e.g. accuracy) for every model you ran",
+        "insufficient_training":
+            "the run exited 0 with metrics but finished in seconds — a SMOKE, not a real "
+            "training of the paper's models (loading real weights + the RL loop takes "
+            "minutes). A smoke must never be the scored reproduction. Run the FULL training "
+            "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
+            "completion and record the measured eval metric for every model before finalizing",
+        "nccl_timeout":
+            "a distributed collective (NCCL) timed out — one rank hung or died while the "
+            "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "
+            "SAME number of forward/backward steps (no per-rank early-exit or uneven batch "
+            "counts), set NCCL_P2P_DISABLE=1 on kernels that hang multi-GPU P2P, and check "
+            "whether an earlier rank crashed first (its trace is the real cause)",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -128,6 +178,12 @@ def classify_failure(result: dict) -> tuple[str, str]:
     try:
         if result.get("success"):
             return ("ok", "")
+
+        # Respect an explicit failure_class set by a postflight (the training-health
+        # check sets silent_oom / insufficient_train_steps) — it is authoritative.
+        _preset = str(result.get("failure_class") or "")
+        if _preset and _preset in FAILURE_CLASSES and _preset != "unknown":
+            return (_preset, _suggest(_preset))
 
         err = str(result.get("error") or "")
         logs = str(result.get("logs") or "")
@@ -230,6 +286,34 @@ def classify_failure(result: dict) -> tuple[str, str]:
             or ("huggingface" in haystack and "404" in haystack)
         ):
             return ("missing_dataset", _suggest("missing_dataset"))
+
+        # Gated / auth-walled HF repo (401/403) — gated Qwen/Llama weights are the
+        # SDAR baseline scenario; surface the token/licence fix not an opaque trace (F-08)
+        if (
+            "gatedrepoerror" in haystack
+            or (
+                ("401 client error" in haystack or "403 forbidden" in haystack)
+                and ("huggingface" in haystack or "hf.co" in haystack)
+            )
+        ):
+            return (
+                "missing_dataset",
+                _suggest("missing_dataset", extra="gated/auth — set a valid HF token and accept the model licence"),
+            )
+
+        # NCCL collective hang — the FSDP rank-0 ~600s watchdog timeout (F-08)
+        if "nccl" in haystack and ("timeout" in haystack or "timed out" in haystack):
+            return ("nccl_timeout", _suggest("nccl_timeout"))
+
+        # Disk exhaustion — a mid-run pip/HF download that fills the disk crashes
+        # with a raw ENOSPC trace (no postflight preset). The class + fix already
+        # exist; this is the missing inline detector (F-07).
+        if (
+            "no space left on device" in haystack
+            or "errno 28" in haystack
+            or "disk quota exceeded" in haystack
+        ):
+            return ("disk_exhausted", _suggest("disk_exhausted"))
 
         # Contract violations only (set by rubric_contract.validate post-run)
         if result.get("contract_violations"):

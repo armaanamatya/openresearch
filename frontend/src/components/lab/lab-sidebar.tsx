@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 
 import type { RecentRunSummary } from "@/lib/runs/server-list";
+import { paperDisplayTitle, runDirName, numberRunsByPaper } from "@/lib/runs/paper-title";
 import { ICONS, type IconKey } from "./icons";
 
 import "./lab-sidebar.css";
@@ -19,7 +20,8 @@ type NavItem = {
 const NAV: NavItem[] = [
   { id: "upload", label: "Upload", icon: "upload", href: "/lab?new=1" },
   { id: "lab", label: "Lab", icon: "lab", href: "/lab" },
-  { id: "library", label: "Library", icon: "papers", href: "/library" }
+  { id: "library", label: "Library", icon: "papers", href: "/library" },
+  { id: "leaderboard", label: "Leaderboard", icon: "leaderboard", href: "/leaderboard" },
 ];
 
 export function LabSidebar({
@@ -32,6 +34,9 @@ export function LabSidebar({
   recentsError?: string | null;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  // Numbers runs that share a paper (1..N by recency); null when a paper has a
+  // single run so we don't render a meaningless "run 1".
+  const runNumbers = numberRunsByPaper(recents);
 
   return (
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
@@ -91,10 +96,14 @@ export function LabSidebar({
               : run.status === "failed"
                 ? "var(--warn)"
                 : "var(--muted-2)";
-          const label = run.sourceLabel ?? run.projectId.slice(0, 14);
+          const runNumber = runNumbers.get(run);
+          const label =
+            runNumber !== null && runNumber !== undefined
+              ? `${paperDisplayTitle(run)} · run ${runNumber}`
+              : paperDisplayTitle(run);
           return (
             <a
-              key={run.projectId}
+              key={runDirName(run)}
               href={`/lab?projectId=${encodeURIComponent(run.projectId)}`}
               className="navitem navitem-small"
             >

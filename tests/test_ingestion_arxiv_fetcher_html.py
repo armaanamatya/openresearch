@@ -9,6 +9,7 @@ from urllib.request import Request
 
 import pytest
 
+from backend.services.ingestion.intake.fetchers import arxiv as arxiv_mod
 from backend.services.ingestion.intake.fetchers.arxiv import ArxivFetcher
 from backend.services.ingestion.intake.sources import ArxivId
 
@@ -207,3 +208,182 @@ def test_fetch_result_unchanged_when_html_fails(tmp_path: Path):
     assert result.raw_paper_path.endswith("raw_paper.pdf")
     html_path = tmp_path / project_id / "raw_paper.html"
     assert not html_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# ar5iv fallback (P0 / borrow #2) — native-then-ar5iv source order.
+# Native and ar5iv are distinguished by "ar5iv" in the request URL.
+# ---------------------------------------------------------------------------
+
+def test_html_falls_back_to_ar5iv_when_native_unavailable(tmp_path: Path):
+    """When arxiv.org/html 404s, the ar5iv mirror is tried and its body is used.
+
+    Freshly-posted papers often lack a native arxiv.org/html rendering for hours
+    but are already on ar5iv — the fallback recovers those.
+    """
+    project_id = "prj_html_ar5iv_fallback"
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_404 = _FakeResponse(b"not found", status=404, content_type="text/html")
+    ar5iv_good = _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "ar5iv" in url:
+            return ar5iv_good
+        if "html" in url:
+            return native_404
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists(), "raw_paper.html should be written from the ar5iv fallback"
+    assert html_path.read_bytes() == _GOOD_HTML
+
+
+def test_html_prefers_native_arxiv_and_skips_ar5iv(tmp_path: Path):
+    """A valid native arxiv.org/html body short-circuits — ar5iv is never queried."""
+    project_id = "prj_html_prefer_native"
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_good = _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    requested_html_urls: list[str] = []
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "html" in url:
+            requested_html_urls.append(url)
+            return native_good
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists()
+    assert html_path.read_bytes() == _GOOD_HTML
+    # Exactly one HTML fetch — the native endpoint — and ar5iv was never queried.
+    assert len(requested_html_urls) == 1, f"expected 1 HTML fetch, got {requested_html_urls}"
+    assert "ar5iv" not in requested_html_urls[0]
+    assert "arxiv.org/html" in requested_html_urls[0]
+
+
+# ---------------------------------------------------------------------------
+# F-28 — within-source transient retry (the PDF fetch got a 3-attempt retry;
+# the HTML fetch was single-shot, so a transient 503/429/timeout silently
+# degraded the run to figure-noisy PDF).
+# ---------------------------------------------------------------------------
+
+def test_html_fetch_retries_transient_then_succeeds(tmp_path: Path, monkeypatch):
+    """A transient 503 on the native HTML endpoint is retried within-source and
+    then succeeds — without degrading to ar5iv/PDF (F-28)."""
+    project_id = "prj_html_retry"
+    monkeypatch.setattr(arxiv_mod, "_html_sleep_fn", lambda _s: None)
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_calls = {"n": 0}
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "ar5iv" in url:
+            # ar5iv must NOT be needed — the native retry should succeed first.
+            return _FakeResponse(b"ar5iv should not be used", status=500, content_type="text/html")
+        if "html" in url:  # native arxiv.org/html
+            native_calls["n"] += 1
+            if native_calls["n"] == 1:
+                return _FakeResponse(b"upstream busy", status=503, content_type="text/html")
+            return _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists(), "raw_paper.html should be written after a within-source transient retry"
+    assert html_path.read_bytes() == _GOOD_HTML
+    assert native_calls["n"] == 2, "native HTML must be retried once (2 attempts), not single-shot"
+
+
+def test_html_fetch_does_not_retry_on_404(tmp_path: Path, monkeypatch):
+    """A 404 (no HTML rendering yet) is permanent — tried once, then falls
+    straight through to the ar5iv mirror; F-28's retry must not over-retry."""
+    project_id = "prj_html_404_noretry"
+    monkeypatch.setattr(arxiv_mod, "_html_sleep_fn", lambda _s: None)
+
+    pdf_resp = _FakeResponse(_PDF_BYTES, status=200, content_type="application/pdf")
+    native_calls = {"n": 0}
+    ar5iv_good = _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        url = request.full_url
+        if "ar5iv" in url:
+            return ar5iv_good
+        if "html" in url:
+            native_calls["n"] += 1
+            return _FakeResponse(b"not found", status=404, content_type="text/html")
+        return pdf_resp
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    source = ArxivId(arxiv_id=_ARXIV_ID)
+    fetcher.fetch(source, project_id=project_id)
+
+    html_path = tmp_path / project_id / "raw_paper.html"
+    assert html_path.exists(), "should recover via ar5iv"
+    assert html_path.read_bytes() == _GOOD_HTML
+    assert native_calls["n"] == 1, "404 is permanent — native tried exactly once, then ar5iv"
+
+
+# ---------------------------------------------------------------------------
+# F-31 — validated-cache reuse: a valid cached raw_paper.html is reused instead
+# of re-downloading (arXiv paper versions are immutable).
+# ---------------------------------------------------------------------------
+
+def test_html_fetch_reuses_validated_cache(tmp_path: Path):
+    """A valid cached raw_paper.html is reused without re-querying the network (F-31).
+
+    Asserts on the urlopen call count (not a raised error — _try_fetch_html
+    swallows exceptions), so a cache miss is detectable.
+    """
+    project_id = "prj_html_cache"
+    dst = tmp_path / project_id
+    dst.mkdir(parents=True)
+    (dst / "raw_paper.html").write_bytes(_GOOD_HTML)  # seed a valid cached body
+
+    calls = {"n": 0}
+
+    def _count(request: Request, *, timeout: float) -> _FakeResponse:
+        calls["n"] += 1
+        return _FakeResponse(_GOOD_HTML, status=200, content_type="text/html")
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_count)
+    fetcher._fetch_html(_ARXIV_ID, project_id=project_id)
+    assert calls["n"] == 0, "a valid cached raw_paper.html must be reused, not re-fetched"
+    assert (dst / "raw_paper.html").read_bytes() == _GOOD_HTML
+
+
+def test_html_fetch_force_refetch_bypasses_cache(tmp_path: Path):
+    """force_refetch=True re-fetches even when a valid cached HTML body exists (F-31)."""
+    project_id = "prj_html_force"
+    dst = tmp_path / project_id
+    dst.mkdir(parents=True)
+    (dst / "raw_paper.html").write_bytes(_GOOD_HTML)
+
+    calls = {"n": 0}
+    fresh = b"<!DOCTYPE html><html><body><article>" + b"y" * 6000 + b"</article></body></html>"
+
+    def _urlopen(request: Request, *, timeout: float) -> _FakeResponse:
+        calls["n"] += 1
+        return _FakeResponse(fresh, status=200, content_type="text/html")
+
+    fetcher = ArxivFetcher(runs_root=tmp_path, urlopen_fn=_urlopen)
+    fetcher._fetch_html(_ARXIV_ID, project_id=project_id, force_refetch=True)
+    assert calls["n"] >= 1, "force_refetch must re-fetch"
+    assert (dst / "raw_paper.html").read_bytes() == fresh

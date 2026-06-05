@@ -3,9 +3,13 @@
 import { useState, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 
-import type { AuthStatus, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
+import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
+import { paperDisplayTitle } from "@/lib/runs/paper-title";
 import type { ModelChoice } from "@/lib/models/server-fetch";
+import type { LeaderboardRow } from "@/lib/leaderboard/types";
+import { RecentRunsPanel } from "./recent-runs-panel";
+import recentRunsStyles from "./recent-runs-panel.module.css";
 import { type DashboardLiveEvent } from "@/lib/events/dashboard-live-event";
 import { UploadView } from "./upload-view";
 import { LabSidebar } from "./lab-sidebar";
@@ -22,6 +26,7 @@ import { readUserPrefs, writeUserPref, readProviderPrefs, writeProviderPrefs } f
 import { RlmLab } from "./rlm/rlm-lab";
 import { isRlmEvent } from "@/lib/events/rlm-events";
 import { replayFixture } from "./rlm/replay";
+import { RlmReplayContent } from "./rlm/replay-surface";
 
 import "./lab-shell.css";
 
@@ -33,6 +38,8 @@ type LabShellProps = {
   initialAuthStatus?: AuthStatus | null;
   serverDefaultSandbox?: DemoSandboxMode;
   presentationMode?: PresentationMode;
+  initialLeaderboardRows?: LeaderboardRow[];
+  initialLeaderboardError?: string | null;
 };
 
 function WorkflowView({
@@ -43,7 +50,7 @@ function WorkflowView({
   run: LiveDemoRunState;
 }) {
   const rlmEvents = dashboardEvents.filter(isRlmEvent);
-  const paperTitle = run.sourceLabel ?? "Untitled paper";
+  const paperTitle = paperDisplayTitle(run);
   const paperMeta = run.sourceNote ?? "";
   const isActive = run.status === "queued" || run.status === "running";
   return (
@@ -114,7 +121,9 @@ export function LabShell({
   initialModels = [],
   initialAuthStatus = null,
   serverDefaultSandbox,
-  presentationMode = "internal"
+  presentationMode = "internal",
+  initialLeaderboardRows = [],
+  initialLeaderboardError = null,
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
   const [over, setOver] = useState(false);
@@ -157,6 +166,8 @@ export function LabShell({
   // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
   // prefs so the user's preferred reproduction style sticks across reloads.
   const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
+  const [gpuParallelism, setGpuParallelism] = useState<DemoGpuParallelism>(() => readProviderPrefs().gpu_parallelism ?? "auto");
+  const [accelerator, setAccelerator] = useState<DemoAccelerator>(() => readProviderPrefs().accelerator ?? "off");
   // Bring-your-own API keys. Kept in-memory only — never persisted to
   // localStorage by default, so a page reload requires the user to retype.
   // This is the safest default for credentials a user typed into a browser.
@@ -202,6 +213,8 @@ export function LabShell({
     providerCredentials,
     estimateId: budget.estimate?.estimate_id,
     recipeMode: selectedRecipe,
+    gpuParallelism: gpuParallelism || undefined,
+    accelerator: accelerator || undefined,
   });
 
   const palette = useCommandPalette();
@@ -215,12 +228,20 @@ export function LabShell({
           When rlmFixture=1, the normal run/upload content is replaced. */}
       <Suspense fallback={null}>
         <RlmFixtureContent>
+          <RlmReplayContent>
           {run ? (
             <WorkflowView
               run={run}
               dashboardEvents={dashboardEvents}
             />
           ) : (
+            <>
+            <div className={recentRunsStyles.panelWrap}>
+              <RecentRunsPanel
+                rows={initialLeaderboardRows}
+                error={initialLeaderboardError}
+              />
+            </div>
             <UploadView
               arxiv={arxiv}
               authStatus={initialAuthStatus}
@@ -307,6 +328,16 @@ export function LabShell({
                 setForceSingleGpu(value);
                 writeProviderPrefs({ ...readProviderPrefs(), force_single_gpu: value });
               }}
+              gpuParallelism={gpuParallelism}
+              onGpuParallelismChange={(value) => {
+                setGpuParallelism(value);
+                writeProviderPrefs({ ...readProviderPrefs(), gpu_parallelism: value });
+              }}
+              accelerator={accelerator}
+              onAcceleratorChange={(value) => {
+                setAccelerator(value);
+                writeProviderPrefs({ ...readProviderPrefs(), accelerator: value });
+              }}
               onMaxGpuUsdPerHourChange={(value) => {
                 setMaxGpuUsdPerHour(value);
                 writeProviderPrefs({ ...readProviderPrefs(), max_gpu_usd_per_hour: value });
@@ -322,7 +353,9 @@ export function LabShell({
               providerCredentials={providerCredentials}
               onProviderCredentialsChange={setProviderCredentials}
             />
+            </>
           )}
+          </RlmReplayContent>
         </RlmFixtureContent>
       </Suspense>
     </main>

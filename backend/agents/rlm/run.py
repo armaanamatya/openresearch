@@ -73,6 +73,7 @@ from backend.agents.rlm._oauth_backend_patch import (
     apply_anthropic_caching_patch,
 )
 from backend.agents.rlm.forced_iteration import (
+    _TERMINAL_FAILURE_CLASSES,
     ForcedIterationPolicy,
     apply_forced_iteration_patch,
     forced_iteration_policy,
@@ -141,6 +142,19 @@ class RLMRunResult:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _accelerator_grader_offloaded(scope: str | None) -> bool:
+    """Whether ``REPROLAB_ACCELERATOR_SCOPE`` routes the rubric grader to the accelerator.
+
+    The grader is ``ctx.llm_client`` (used by ``verify_against_rubric`` and
+    ``propose_improvements`` — quality-critical judgment/generation). Default
+    ``"navigation"`` keeps it on the strong root model (e.g. Sonnet) so a small
+    accelerator never decides the score; only ``"all"`` offloads it (sensible only with a
+    strong accelerator). Context navigation (``rlm_query``/``llm_query``) always uses the
+    accelerator when one is active, independent of this setting.
+    """
+    return (scope or "navigation").strip().lower() == "all"
 
 
 def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any, str]:
@@ -294,6 +308,19 @@ def _resolve_agent_runtime(
     """
     if runtime is not None:
         return runtime, None, "caller-supplied"
+
+    # Executor tier (REPROLAB_EXECUTOR): run the code-writing agent on a local Qwen
+    # (vLLM) instead of Sonnet to save Sonnet usage. Health-probed with graceful
+    # fallback to the default below when the endpoint is unset/unreachable.
+    try:
+        from backend.agents.rlm.executor import resolve_executor
+
+        _plan = resolve_executor()
+        if _plan is not None:
+            return _plan.runtime, _plan.model, f"executor:{_plan.label}"
+    except Exception as exc:  # noqa: BLE001 — never block on the optional tier
+        logger.warning("executor-tier resolution failed (%s); using default executor", exc)
+
     from backend.agents.runtime.factory import (
         has_provider_credentials,
         make_runtime,
@@ -495,7 +522,7 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
-def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> None:
+def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> str | None:
     """PR-π Module E — fail-fast gate for missing/degraded parsed_full_text.txt.
 
     Raises ``RuntimeError`` when ``allow_lossy=False`` and the parsed paper
@@ -506,11 +533,16 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
     This guard runs at the START of ``run_pipeline_rlm`` — before any RLM
     loop iteration — so the user gets an actionable failure message instead of
     a silent lossy-workspace fallback that defeats paper-grounding.
+
+    Returns the human-readable *degraded reason* when the run proceeds in lossy
+    mode, so the caller can surface it as an operator-visible warning in
+    ``demo_status.json`` (F-29) rather than only a buried log line; returns
+    ``None`` when the paper text is intact.
     """
     parsed_path = project_dir / "parsed_full_text.txt"
     degraded = not parsed_path.exists() or parsed_path.stat().st_size < 1024
     if not degraded:
-        return
+        return None
     if not allow_lossy:
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
@@ -522,6 +554,10 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "(parsed_full_text.txt missing or <1KB at %s)",
         parsed_path,
     )
+    return (
+        "paper text degraded — proceeding with lossy workspace fallback "
+        f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
+    )
 
 
 def _write_demo_status(
@@ -530,6 +566,9 @@ def _write_demo_status(
     *,
     error: Any | None = None,
     primitive_provider: str = "real",  # T21 / review I8
+    process_status: str | None = None,
+    verdict: str | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -540,11 +579,24 @@ def _write_demo_status(
     overwritten, so an earlier ``startedAt`` survives the terminal write.
 
     ``status`` must be a valid ``RunStatus`` (``running`` | ``completed`` |
-    ``failed`` | ``stopped``) — the reproduction *verdict* (which may be
-    ``partial``) is a separate axis and lives in ``final_report.json``.
+    ``failed`` | ``stopped``). Two related axes are recorded alongside it:
+    ``process_status`` — the run-subprocess lifecycle (``running`` while the
+    process is alive, ``completed`` once it has exited) — and ``verdict`` — the
+    reproduction outcome (``reproduced`` | ``partial`` | ``failed`` |
+    ``unknown``, also mirrored in ``final_report.json``). Both are derived from
+    ``status`` when not passed explicitly. ``LiveRunState`` ignores these extra
+    keys (pydantic ``extra='ignore'``); they exist for richer status consumers,
+    and the CLI sanity/reproduce paths pass them explicitly.
     """
     path = project_dir / "demo_status.json"
     now = datetime.now(timezone.utc).isoformat()
+    terminal = status in ("completed", "failed", "stopped")
+    # Derive the lifecycle/verdict axes from RunStatus when not supplied so the
+    # snapshot schema is consistent regardless of which caller wrote it.
+    if process_status is None:
+        process_status = "completed" if terminal else "running"
+    if verdict is None:
+        verdict = "failed" if status == "failed" else "unknown"
     existing: dict[str, Any] = {}
     if path.exists():
         try:
@@ -560,11 +612,18 @@ def _write_demo_status(
         "updatedAt": now,
     }
     payload.setdefault("startedAt", now)
-    if status in ("completed", "failed", "stopped"):
+    if terminal:
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
+    # Operator-visible warnings (e.g. degraded paper text, F-29). Merged via
+    # ``**existing`` on later writes, so a run-start warning survives the
+    # terminal write; only replaced when this call explicitly supplies one.
+    if warnings:
+        payload["warnings"] = list(warnings)
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
+    payload["process_status"] = process_status
+    payload["verdict"] = verdict
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -627,6 +686,37 @@ def _record_last_primitive_result_tools(
                         logger.exception(
                             "_record_last_primitive_result_tools: record_repair_attempt failed"
                         )
+                # comp 4b (2026-05-31): a terminal capacity/OOM stop is NOT repairable
+                # by re-running the same config — notify the policy so forced_iteration
+                # accepts the next FINAL_VAR (stop + report) instead of re-OOMing the
+                # same matrix. This is INDEPENDENT of the repairable branch above: a
+                # terminal cell-matrix result carries aggregated metrics, so it
+                # classifies as partial_evidence (not repairable), and the
+                # record_repair_attempt path would never fire for it.
+                if name == "run_experiment" and repair_policy_holder:
+                    _stop = result.get("stop_reason")
+                    _stop_kind = _stop.get("kind") if isinstance(_stop, dict) else None
+                    _terminal_class = _stop_kind or result.get("failure_class")
+                    if _terminal_class in _TERMINAL_FAILURE_CLASSES:
+                        policy = repair_policy_holder[0]
+                        # Stash for build_final_report so final_report.json carries
+                        # the structured stop_reason (done-criteria #3).
+                        setattr(
+                            ctx, "_terminal_stop_reason",
+                            _stop if isinstance(_stop, dict) and _stop.get("kind")
+                            else {"kind": str(_terminal_class)},
+                        )
+                        try:
+                            policy.note_terminal_failure(str(_terminal_class))
+                            logger.warning(
+                                "run_experiment returned terminal stop '%s' — accepting "
+                                "the next FINAL_VAR (stop + report, no re-OOM loop)",
+                                _terminal_class,
+                            )
+                        except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                            logger.exception(
+                                "_record_last_primitive_result_tools: note_terminal_failure failed"
+                            )
             return result
 
         _wrapped.__name__ = getattr(tool, "__name__", name)
@@ -965,9 +1055,75 @@ def _update_cost_summary_loop(
             logger.debug("cost_summary_loop: update failed (will retry)", exc_info=True)
 
 
+def _parse_gpu_device_ids() -> tuple[str, ...]:
+    """Parse REPROLAB_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
+
+    Empty / unset => () meaning "no explicit pin" (backend default). A batch
+    launcher exports this per run so the experiment subprocess is pinned to a
+    disjoint GPU subset; CUDA_VISIBLE_DEVICES is also set by the launcher, so
+    this is the explicit, testable companion that flows into SandboxConfig.
+    """
+    raw = (os.environ.get("REPROLAB_GPU_DEVICE_IDS") or "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _parse_gpu_parallelism() -> str:
+    """REPROLAB_GPU_PARALLELISM -> one of {auto,single,multi}; default 'auto'."""
+    val = (os.environ.get("REPROLAB_GPU_PARALLELISM") or "auto").strip().lower()
+    return val if val in {"auto", "single", "multi"} else "auto"
+
+
+def _visible_gpu_count() -> int | None:
+    """Best-effort count of GPUs visible to this run, for the multi-GPU guidance
+    hint. Prefer the explicit lease (REPROLAB_GPU_DEVICE_IDS), then
+    CUDA_VISIBLE_DEVICES; None when neither is set (agent relies on runtime
+    torch.cuda.device_count() inside the sandbox)."""
+    ids = _parse_gpu_device_ids()
+    if ids:
+        return len(ids)
+    raw = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    if not raw:
+        return None
+    parts = [p for p in raw.split(",") if p.strip()]
+    return len(parts) or None
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+
+def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
+    """Point the volume-mount data root at a writable dir for LOCAL sandboxes.
+
+    Local hosts have no ``/workspace`` volume (that path is RunPod-only), yet
+    ``config.runpod_volume_mount_path`` defaults to ``/workspace`` and the baseline
+    DATASET-SETUP guidance defaults every dataset dir to ``/workspace/data/<env>``.
+    On a local box ``os.makedirs('/workspace/...')`` raises PermissionError, the
+    agent's env loader swallows it, and every algorithm reports ``env_load_failed``
+    with zero reward while the GPUs sit idle (the 2026-05-29 SDAR local failure).
+    Repoint ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable, SHARED (download-once)
+    cache dir so ALFWorld/WebShop/HF setup actually succeeds.  No-op for runpod/docker
+    (they keep the real ``/workspace`` volume); an explicit non-default operator
+    override always wins.
+    """
+    import os as _os
+
+    key = getattr(sandbox_mode, "value", str(sandbox_mode or "")).lower()
+    if "local" not in key:
+        return
+    current = (_os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "").strip()
+    if current and current != "/workspace":
+        return  # operator pinned an explicit writable root — respect it
+    data_root = (runs_root / ".cache" / "data").resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    _os.environ["REPROLAB_RUNPOD_VOLUME_MOUNT_PATH"] = str(data_root)
+    logger.info(
+        "local sandbox: volume-mount data root → %s (writable shared cache; "
+        "/workspace is RunPod-only)", data_root,
+    )
 
 
 async def run_pipeline_rlm(
@@ -1012,7 +1168,7 @@ async def run_pipeline_rlm(
     # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
     _settings_for_gate = get_settings()
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
-    _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
+    _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);
@@ -1027,7 +1183,18 @@ async def run_pipeline_rlm(
 
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
-    _write_demo_status(project_dir, "running")
+    # Surface a degraded-paper-text warning here (F-29) so an operator sees the
+    # run is non-faithful; the merge in _write_demo_status carries it forward.
+    _write_demo_status(
+        project_dir,
+        "running",
+        warnings=[_paper_degraded_reason] if _paper_degraded_reason else None,
+    )
+
+    # Local sandboxes have no /workspace volume — repoint the dataset root at a
+    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
+    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
+    _ensure_local_data_root(sandbox_mode, runs_root)
 
     # 1. Observability + budget.
     cost_ledger = RunCostLedger.load_jsonl(
@@ -1056,6 +1223,48 @@ async def run_pipeline_rlm(
 
     # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
     llm_client, llm_model = _build_llm_client(provider, root_model)
+
+    # 3a. Accelerator override — route cheap calls to a fast endpoint when
+    # REPROLAB_ACCELERATOR is set to anything other than "off".
+    import os as _os
+    _accel_mode = (_os.environ.get("REPROLAB_ACCELERATOR") or "off").strip().lower()
+    _accel_ep = None
+    if _accel_mode != "off":
+        try:
+            from backend.agents.rlm.accelerator import resolve_accelerator, build_accelerator_client
+            _accel_ep = resolve_accelerator(_accel_mode, sandbox_mode=sandbox_mode, settings=get_settings())
+        except Exception as _exc:  # explicit-provider failure (AcceleratorError) etc.
+            logger.warning(
+                "accelerator %r could not be resolved (%s); using default Sonnet/OAuth for cheap calls",
+                _accel_mode, _exc,
+            )
+            _accel_ep = None
+        if _accel_ep is not None:
+            # REPROLAB_ACCELERATOR_SCOPE — which call tiers the accelerator serves:
+            #   "navigation" (default): only the rlms rlm_query/llm_query context-navigation
+            #     calls (high-volume, low-judgment) route to the accelerator (see
+            #     other_backends below). The quality-critical GRADER + improvement calls
+            #     (ctx.llm_client → verify_against_rubric / propose_improvements) stay on the
+            #     strong root model (e.g. Sonnet), so a small accelerator never decides the
+            #     rubric score — it only speeds up paper navigation.
+            #   "all": also route ctx.llm_client to the accelerator (max offload). Only
+            #     sensible when the accelerator is itself strong (e.g. a 32B), else grading
+            #     quality drops.
+            _accel_scope = (_os.environ.get("REPROLAB_ACCELERATOR_SCOPE") or "navigation").strip().lower()
+            if _accelerator_grader_offloaded(_accel_scope):
+                llm_client = build_accelerator_client(_accel_ep)   # grader + nav both on accel
+                llm_model = _accel_ep.model
+            logger.info(
+                "accelerator: %s (%s, model=%s); scope=%s — navigation routes to the "
+                "accelerator; grader/improvements use %s",
+                _accel_ep.base_url, _accel_ep.kind, _accel_ep.model, _accel_scope, llm_model,
+            )
+        elif _accel_mode != "auto":
+            logger.warning(
+                "accelerator=%r requested but unavailable; cheap calls fall back to Sonnet/OAuth",
+                _accel_mode,
+            )
+
     bk = root_model.backend_kwargs
     if root_model.rlm_backend == "openai" and bk.get("base_url"):
         import urllib.parse
@@ -1140,6 +1349,9 @@ async def run_pipeline_rlm(
             if execution_profile is not None
             else False
         ),
+        gpu_device_ids=_parse_gpu_device_ids(),
+        gpu_parallelism=_parse_gpu_parallelism(),
+        gpu_visible_count=_visible_gpu_count(),
     )
 
     # 5. Primitives — the real binding or the stub provider.
@@ -1268,6 +1480,22 @@ async def run_pipeline_rlm(
     compaction_threshold_pct = 0.7 if is_featherless else 0.85
 
     # 9. Construct the RLM engine.
+    # Accelerator sub-backend override: when an accelerator endpoint is active and
+    # not Azure, redirect rlm_query/llm_query navigation to the same fast endpoint
+    # so context-navigation calls also benefit from the accelerator.  Azure endpoints
+    # require their own backend type and are left unchanged.
+    _other_backends = [root_model.sub_backend]
+    _other_backend_kwargs = [root_model.sub_backend_kwargs]
+    if _accel_ep is not None and not _accel_ep.is_azure:
+        _other_backends = ["openai"]
+        _other_backend_kwargs = [
+            {
+                "model_name": _accel_ep.model,
+                "base_url": _accel_ep.base_url,
+                "api_key": _accel_ep.api_key,
+            }
+        ]
+
     rlm = RLM(
         backend=root_model.rlm_backend,
         backend_kwargs=root_model.backend_kwargs,
@@ -1278,8 +1506,8 @@ async def run_pipeline_rlm(
         max_budget=max_usd,                        # T2/M-BUDGET: enforced by rlm between iterations
         compaction=True,
         compaction_threshold_pct=compaction_threshold_pct,
-        other_backends=[root_model.sub_backend],
-        other_backend_kwargs=[root_model.sub_backend_kwargs],
+        other_backends=_other_backends,
+        other_backend_kwargs=_other_backend_kwargs,
         custom_tools=custom_tools,
         custom_sub_tools={},                       # sub-calls navigate text, not primitives
         custom_system_prompt=system_prompt,
@@ -1413,8 +1641,74 @@ async def run_pipeline_rlm(
     run_failed = False
     fatal_abort: _FatalPrimitiveAbort | None = None
     try:
-        with forced_iteration_policy(iteration_policy):
-            result_obj = await asyncio.to_thread(rlm.completion, context_dict, active_prompt)
+        def _run_completion_on_worker() -> Any:
+            # The forced-iteration policy stack is THREAD-LOCAL (forced_iteration._LOCAL),
+            # and the FINAL_VAR interceptor (LocalREPL._final_var) executes on whatever
+            # thread runs rlm.completion. asyncio.to_thread dispatches completion to a
+            # SEPARATE worker thread, so the policy MUST be pushed on THAT thread — entering
+            # the context manager on the asyncio loop thread (as this code did until
+            # 2026-05-31) leaves the interceptor's _current_policy() empty on the worker
+            # thread, silently disabling the entire premature-exit guard (Lane H /
+            # BUG-LR-013): the root could FINAL_VAR after one sub-target iteration and
+            # nothing refused it. Enter the policy INSIDE the worker callable.
+            with forced_iteration_policy(iteration_policy):
+                return rlm.completion(context_dict, active_prompt)
+
+        result_obj = await asyncio.to_thread(_run_completion_on_worker)
+
+        # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
+        # ledger cache tokens for the root reasoning turns.
+        #
+        # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
+        #
+        #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
+        #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
+        #   - final_report.cost.llm_usd is sourced from result.usage_summary
+        #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
+        #   - Therefore: adding a rlm_root row to the ledger with the full
+        #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
+        #     It does add these tokens to tokens_total.json, which is the desired
+        #     behaviour — the root's tokens were previously absent from tokens_total.
+        #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
+        #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
+        if root_model.rlm_backend == "anthropic-oauth":
+            try:
+                from backend.agents.rlm.claude_oauth_client import drain_root_usage
+                from backend.agents.resilience.cost import CostLedgerEntry
+
+                root_usage_by_model = drain_root_usage()
+                for _model, _u in root_usage_by_model.items():
+                    if _u.get("calls", 0) == 0:
+                        continue
+                    _entry = CostLedgerEntry.from_usage(
+                        agent_id="rlm_root",
+                        attempt_index=0,
+                        provider="anthropic",  # type: ignore[arg-type]
+                        model=_model,
+                        usage={
+                            "input_tokens": _u.get("input_tokens", 0),
+                            "output_tokens": _u.get("output_tokens", 0),
+                            "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
+                            "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
+                            "reasoning_tokens": 0,
+                        },
+                    )
+                    if ctx.cost_ledger is not None:
+                        ctx.cost_ledger.append(_entry)
+                    # Also write directly to the ledger file (mirrors
+                    # record_subagent_usage_to_path for resilience when
+                    # ctx.cost_ledger has no path attached).
+                    _ledger_path = project_dir / "cost_ledger.jsonl"
+                    if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                        import json as _json_ledger
+                        _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                        with _ledger_path.open("a", encoding="utf-8") as _fh:
+                            _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+                    else:
+                        ctx.cost_ledger.flush()
+            except Exception:  # noqa: BLE001 — ledgering is best-effort
+                logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc
         run_failed = True
@@ -1511,11 +1805,14 @@ def _finalize(
     # Lifts started_at from demo_status.json (written at run start); stamps
     # completed_at at write time; records per-role models for leaderboard ranking.
     report.mode = "rlm"
+    # verifier == grader: both are the rubric-scoring client (ctx.llm_client), whose model
+    # is llm_model. Under the default accelerator scope="navigation" this stays the strong
+    # root model (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
     report.models = {
         "planner": llm_model,
         "executor": getattr(ctx, "agent_model", None),
-        "verifier": None,
-        "grader": None,
+        "verifier": llm_model,
+        "grader": llm_model,
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"
