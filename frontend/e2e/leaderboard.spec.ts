@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * Leaderboard e2e — fixture-driven empty-state + content rendering.
  *
- * The leaderboard fetches from REPROLAB_BACKEND_URL/leaderboard server-side at
+ * The leaderboard fetches from OPENRESEARCH_BACKEND_URL/leaderboard server-side at
  * request time. In the e2e harness the backend may not be running, in which
  * case the page must render an explicit unavailable state instead of pretending
  * an empty leaderboard loaded successfully.

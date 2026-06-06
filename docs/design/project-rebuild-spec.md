@@ -1,4 +1,8 @@
-# OpenResearch / ReproLab — Project Rebuild Spec
+<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+# OpenResearch / OpenResearch — Project Rebuild Spec
+
+> **Doc status:** Current · the closest thing to a PRD (the *what*/*why*) ·
+> last verified 2026-06-03. Policy: [`../policies/documentation.md`](../policies/documentation.md).
 
 **Audience:** a future "me" rebuilding this system from scratch in a new framework
 (DSPy, LangGraph, custom REPL, …) without reading the existing Python.
@@ -6,17 +10,23 @@
 import path. Everything here is implementation-agnostic.
 
 **Companion files (kept for verification, not required reading):**
-- `system_overview.md` — current state of the 14-stage system
-- `docs/design/rlm-integration.md` — conservative Pattern-A wiring (RLM as a tool)
-- `docs/design/rlm-pivot-brief.md` — radical pivot (RLM as the orchestrator)
-- `docs/design/rlm-and-hermes-visualized.md` — diagrams of the two layers in place
-- `docs/agents/*.md` — per-agent contracts
+- `system_overview.md` — current state of the system ("why" + how it fits)
+- `docs/design/rlm-pivot-brief.md` — the RLM-as-orchestrator pivot (canonical
+  RLM architecture reference)
+- `CLAUDE.md` — day-to-day developer reference (commands, conventions, gotchas)
+
+> Note (2026-06-03): the previously-listed `docs/design/rlm-integration.md` and
+> `docs/design/rlm-and-hermes-visualized.md` were the pre-pivot architecture
+> docs; they were intentionally removed in commit `529a3db` once the project
+> committed to RLM-as-orchestrator. `docs/agents/*.md` never landed — per-agent
+> behavior is documented inline in the code (named by function) and in
+> `system_overview.md`.
 
 ---
 
 ## 1. Project goal in one paragraph
 
-ReproLab is an **agent system that reproduces a research paper end-to-end**: given an
+OpenResearch is an **agent system that reproduces a research paper end-to-end**: given an
 arXiv URL or PDF, it (a) ingests and understands the paper, (b) discovers code/data
 artifacts, (c) builds a containerized environment, (d) plans and implements a
 baseline that re-creates the paper's headline result, (e) runs that baseline in a

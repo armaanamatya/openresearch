@@ -134,7 +134,7 @@ file:line investigation of `leaf_scorer.py` + the `run_experiment` postflight:
 - **Directional result-match** must not let a *full* run off the hook — gate it on an
   explicit `reduced_budget`/`budget_per_model` declaration; default = absolute.
 - **Backward-compat**: all new guards default-on but env-toggleable
-  (`REPROLAB_METRICS_COMPLETENESS_CHECK`, `REPROLAB_DIRECTIONAL_RESULT_MATCH`), and
+  (`OPENRESEARCH_METRICS_COMPLETENESS_CHECK`, `OPENRESEARCH_DIRECTIONAL_RESULT_MATCH`), and
   `own`-style empty defaults preserve existing single-model behavior.
 
 ## 5. Files

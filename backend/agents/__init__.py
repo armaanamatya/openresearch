@@ -1,4 +1,4 @@
-"""ReproLab Agent Layer — LLM-powered agents for paper reproduction."""
+"""OpenResearch Agent Layer — LLM-powered agents for paper reproduction."""
 
 from backend.agents.registry import AGENT_REGISTRY, get_agent_definitions
 from backend.agents.schemas import (

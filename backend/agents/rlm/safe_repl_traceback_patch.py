@@ -26,7 +26,7 @@ import traceback
 from rlm.environments import local_repl as _local_repl
 
 logger = logging.getLogger(__name__)
-_PATCHED_ATTR = "_reprolab_traceback_patched"
+_PATCHED_ATTR = "_openresearch_traceback_patched"
 _TRACEBACK_CAP = 2000
 
 

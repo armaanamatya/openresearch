@@ -26,7 +26,7 @@ class LlmClient(Protocol):
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a research-reproduction rubric author for ReproLab.
+You are a research-reproduction rubric author for OpenResearch.
 
 You are given the full text of a research paper. Produce a PaperBench-style
 weighted rubric that a grader will use to score an attempted reproduction of

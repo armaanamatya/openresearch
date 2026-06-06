@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seed a fake in-flight run for UI audits.
 #
-# Writes ${REPROLAB_RUNS_ROOT:-runs}/<project_id>/{demo_status.json,agent_telemetry.jsonl}
+# Writes ${OPENRESEARCH_RUNS_ROOT:-runs}/<project_id>/{demo_status.json,agent_telemetry.jsonl}
 # so /lab?projectId=<id> renders the workflow view, /library shows
 # the run, and the telemetry strip has non-zero numbers.
 #
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-runs_root="${REPROLAB_RUNS_ROOT:-runs}"
+runs_root="${OPENRESEARCH_RUNS_ROOT:-runs}"
 
 if [[ "${1:-}" == "--clean" ]]; then
     find "${runs_root}" -maxdepth 1 -type d -name "prj_*_smoke" -exec rm -r {} +

@@ -1,4 +1,4 @@
-# ReproLab backend — development + testing dependencies.
+# OpenResearch backend — development + testing dependencies.
 # Install with: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
 # Pull in the runtime deps too

@@ -1,4 +1,4 @@
-"""ReproLab backend service modules."""
+"""OpenResearch backend service modules."""
 
 from backend.services.approval import ApprovalPolicy, ApprovalService
 from backend.services.datasets import DatasetCacheService

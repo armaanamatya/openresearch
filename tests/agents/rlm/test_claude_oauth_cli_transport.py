@@ -132,7 +132,7 @@ def test_completion_falls_back_to_sdk_when_cli_none(monkeypatch):
 
 
 def test_transport_sdk_skips_cli(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "sdk")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", "sdk")
     assert _root_transport() == "sdk"
     c = ClaudeOauthClient(model_name="m")
 
@@ -150,7 +150,7 @@ def test_transport_sdk_skips_cli(monkeypatch):
 
 
 def test_root_transport_default_is_cli(monkeypatch):
-    monkeypatch.delenv("REPROLAB_RLM_ROOT_TRANSPORT", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", raising=False)
     assert _root_transport() == "cli"
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "garbage")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", "garbage")
     assert _root_transport() == "cli"  # invalid → safe default

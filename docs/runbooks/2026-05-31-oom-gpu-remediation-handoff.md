@@ -55,7 +55,7 @@
 
 ## 3. Pre-existing assets you build ON
 
-- `backend/agents/rlm/gpu_cell_runner.py` — **complete, 37 tests pass.** One-GPU-per-cell subprocess pool + OOM shrink-retry (`run_matrix(cells, cell_script, *, output_root, gpus, max_oom_retries=2, per_cell_timeout_s)`). Per-cell env contract it SETS: `CUDA_VISIBLE_DEVICES=<one id>`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `REPROLAB_CELL_PARAMS=<cell json>`, `REPROLAB_CELL_OUTPUT_DIR`, `REPROLAB_CELL_BATCH_SCALE` (0.5 then 0.25 on retry), `REPROLAB_CELL_GRAD_CHECKPOINT=1`; argv `--cell-id`, `--output-dir`. **The agent's `train_cell.py` must READ these.**
+- `backend/agents/rlm/gpu_cell_runner.py` — **complete, 37 tests pass.** One-GPU-per-cell subprocess pool + OOM shrink-retry (`run_matrix(cells, cell_script, *, output_root, gpus, max_oom_retries=2, per_cell_timeout_s)`). Per-cell env contract it SETS: `CUDA_VISIBLE_DEVICES=<one id>`, `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `OPENRESEARCH_CELL_PARAMS=<cell json>`, `OPENRESEARCH_CELL_OUTPUT_DIR`, `OPENRESEARCH_CELL_BATCH_SCALE` (0.5 then 0.25 on retry), `OPENRESEARCH_CELL_GRAD_CHECKPOINT=1`; argv `--cell-id`, `--output-dir`. **The agent's `train_cell.py` must READ these.**
 - `backend/services/runtime/local_gpu_allocator.py` — `discover_gpus()→[GpuDevice]`, `free_devices(...)` (excludes tenant-held cards). Already used by `gpu_capacity.py`.
 - `backend/services/runtime/gpu_catalog.py` — `find_ladder()` (cloud SKU escalation; local ladder is empty by design).
 
@@ -97,7 +97,7 @@ shutil.copy2(Path(__file__).parent / "rlm" / "sdar_env_base.py", code_dir / "sda
 ### Component 3 — `implement_baseline` cell contract
 In `backend/agents/baseline_implementation.py` `_compute_constraint_guidance` (def **1778**, append before `return` ~**2026**) add three blocks; thread `caps = describe_capacity(ctx)` in from `run_with_sdk` (**2124**) ← `implement_baseline` (`primitives.py:1322`):
 - **(a) GPU budget brief:** `"You have {caps.num_gpus} GPU(s) × {caps.per_gpu_vram_gb:.0f} GB. Per-cell budget = {per_gpu} GB. A model that cannot full-fine-tune in that budget is OUT OF SCOPE — record it in scope.gaps."` (24 GB ⇒ smallest-two; never the 7B.)
-- **(b) cell contract:** "Write a single-cell trainer `train_cell.py` that trains **one** cell, reading `REPROLAB_CELL_PARAMS` (JSON) + `REPROLAB_CELL_OUTPUT_DIR` + argv `--cell-id`/`--output-dir`, honoring `REPROLAB_CELL_BATCH_SCALE`/`REPROLAB_CELL_GRAD_CHECKPOINT`, and writing `metrics.json` to the output dir. Also emit `cells.json` enumerating the matrix (schema below). Do NOT write a monolithic coordinator that loops `cuda:0`." (place near `_RUBRIC_GUARD_BLOCK`, ~**1909**.)
+- **(b) cell contract:** "Write a single-cell trainer `train_cell.py` that trains **one** cell, reading `OPENRESEARCH_CELL_PARAMS` (JSON) + `OPENRESEARCH_CELL_OUTPUT_DIR` + argv `--cell-id`/`--output-dir`, honoring `OPENRESEARCH_CELL_BATCH_SCALE`/`OPENRESEARCH_CELL_GRAD_CHECKPOINT`, and writing `metrics.json` to the output dir. Also emit `cells.json` enumerating the matrix (schema below). Do NOT write a monolithic coordinator that loops `cuda:0`." (place near `_RUBRIC_GUARD_BLOCK`, ~**1909**.)
 - **(c) memory discipline (always-on, after `_EAGER_METRICS_BLOCK` ~**1860**):** "FORBIDDEN: materializing a full-vocab fp32 `log_softmax` `[B,T,vocab]`. Compute token log-probs with `torch.gather` on logits + chunked `logsumexp` (or `F.cross_entropy(reduction='none')`). Use bf16, `model.config.use_cache=False`, `gradient_checkpointing_enable()`, `mini_batch ≤ 2` for ≥3 B." (this is the ~20 GB blowup that OOM'd even the 1.7 B.)
 
 `cells.json` schema (the ONLY place the 5-baseline axis exists — `ScopeSpec` has only model×dataset×seed):
@@ -126,7 +126,7 @@ if caps.backend_kind in ("local","docker") and not caps.is_empty:
 **Mutual exclusion:** skip `_resolve_distributed_launch` (**2401-2509**, fires only when `len(gpu_device_ids)>1`) on the cell-runner branch.
 
 ### Component 5 — Launcher flag
-`scripts/reserve_and_run_sdar.py:101` sets `env["REPROLAB_DISABLE_TORCHRUN_WRAP"]="1"`. With harness-owned one-GPU-per-cell, remove it (or gate it off the cell path). **`batch_reproduce.py:347-350` already propagates `CUDA_VISIBLE_DEVICES`+`REPROLAB_GPU_DEVICE_IDS` correctly — leave it.** (The 2026-05-31 collapse was the agent coordinator looping `cuda:0` + this flag, NOT a propagation gap.) Risk **L**.
+`scripts/reserve_and_run_sdar.py:101` sets `env["OPENRESEARCH_DISABLE_TORCHRUN_WRAP"]="1"`. With harness-owned one-GPU-per-cell, remove it (or gate it off the cell path). **`batch_reproduce.py:347-350` already propagates `CUDA_VISIBLE_DEVICES`+`OPENRESEARCH_GPU_DEVICE_IDS` correctly — leave it.** (The 2026-05-31 collapse was the agent coordinator looping `cuda:0` + this flag, NOT a propagation gap.) Risk **L**.
 
 ### Component 7 — Integration/contract tests + full suite
 Capacity-gate clamp (24 GB drops 7B, 80 GB keeps it); env-ABC rejects incomplete subclass; dataset preflight drops a 404 to a gap; aggregation yields leaf-scorer-shaped metrics (assert against a real sample); `run_matrix` route splits a 2-cell matrix across 2 mock GPUs with no stacking. Then `.venv/bin/python -m pytest tests/ -q` green; keep the 37 `gpu_cell_runner` + 84 forced-iteration tests passing. Mock nvidia-smi/subprocess exactly as `test_gpu_cell_runner.py` does.
@@ -148,8 +148,8 @@ Capacity-gate clamp (24 GB drops 7B, 80 GB keeps it); env-ABC rejects incomplete
 
 - **Box:** shared 8×NVIDIA RTX A5000 (24 GB). `local_gpu_allocator` excludes tenant-held cards — "use as much as possible" = all currently-free cards.
 - **Run tests:** `.venv/bin/python -m pytest tests/<path> -q` (pytest config in `pyproject.toml`; `.venv` is the project venv, Python 3.12).
-- **Launch an SDAR run:** `.venv/bin/python scripts/reserve_and_run_sdar.py` (reserves GPUs, sets `SDAR_GUIDANCE_FILE`/`REPROLAB_BASELINE_EXTRA_GUIDANCE`, delegates to `scripts/batch_reproduce.py --gpus-per-run N --model claude-oauth`). Full context: `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.
-- **Guidance file:** ensure `reserve_and_run_sdar.py` points `SDAR_GUIDANCE_FILE` at the **smallest-two** guidance (`extra_guidance_sdar.txt`), NOT `extra_guidance_sdar_full.txt` (the full-7B-matrix file regressed the run). Drop the `REPROLAB_FORCE_SINGLE_GPU="false"` override — with the cell runner, GPU count is owned by the lease, not a flag.
+- **Launch an SDAR run:** `.venv/bin/python scripts/reserve_and_run_sdar.py` (reserves GPUs, sets `SDAR_GUIDANCE_FILE`/`OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`, delegates to `scripts/batch_reproduce.py --gpus-per-run N --model claude-oauth`). Full context: `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.
+- **Guidance file:** ensure `reserve_and_run_sdar.py` points `SDAR_GUIDANCE_FILE` at the **smallest-two** guidance (`extra_guidance_sdar.txt`), NOT `extra_guidance_sdar_full.txt` (the full-7B-matrix file regressed the run). Drop the `OPENRESEARCH_FORCE_SINGLE_GPU="false"` override — with the cell runner, GPU count is owned by the lease, not a flag.
 - **Auth (CLAUDE.md):** leave `ANTHROPIC_API_KEY=` empty, `claude login` once, `--model claude-oauth` for $0 sub-agents; shell env shadows `.env` (prefix `env -u OPENAI_API_KEY` if a stale shell key bites).
 - **Verify the GPU split live:** during a run, `nvidia-smi` should show **multiple** A5000s busy (one per concurrent cell), never all load on GPU 0. Each cell's log shows its pinned `CUDA_VISIBLE_DEVICES`.
 

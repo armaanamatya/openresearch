@@ -18,13 +18,13 @@ fi
 
 # --- SSH key injection (Railway / env-only deployments) ---------------------
 # Railway can't mount files, so inject the private key as a base64 env var.
-# Set REPROLAB_RUNPOD_SSH_KEY_B64 in Railway Variables and this block writes
-# it to disk and points REPROLAB_RUNPOD_SSH_KEY_PATH at it automatically.
-if [[ -n "${REPROLAB_RUNPOD_SSH_KEY_B64:-}" ]]; then
+# Set OPENRESEARCH_RUNPOD_SSH_KEY_B64 in Railway Variables and this block writes
+# it to disk and points OPENRESEARCH_RUNPOD_SSH_KEY_PATH at it automatically.
+if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_B64:-}" ]]; then
     mkdir -p /root/.ssh
-    echo "$REPROLAB_RUNPOD_SSH_KEY_B64" | base64 -d > /root/.ssh/runpod_id_rsa
+    echo "$OPENRESEARCH_RUNPOD_SSH_KEY_B64" | base64 -d > /root/.ssh/runpod_id_rsa
     chmod 600 /root/.ssh/runpod_id_rsa
-    export REPROLAB_RUNPOD_SSH_KEY_PATH=/root/.ssh/runpod_id_rsa
+    export OPENRESEARCH_RUNPOD_SSH_KEY_PATH=/root/.ssh/runpod_id_rsa
 fi
 
 # --- Backend: FastAPI via uvicorn -------------------------------------------

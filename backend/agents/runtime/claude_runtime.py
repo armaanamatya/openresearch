@@ -211,7 +211,7 @@ def _tools_for_agent(
 
 
 def _hermetic_enabled() -> bool:
-    """``REPROLAB_SDK_HERMETIC`` (default true). When on, the SDK runs hermetically
+    """``OPENRESEARCH_SDK_HERMETIC`` (default true). When on, the SDK runs hermetically
     — no ambient ``CLAUDE.md`` / ``.claude/settings.json`` / discovered-MCP
     leakage (``setting_sources=[]`` + ``strict_mcp_config=True``). Disable only
     for local debugging. Note this gates ONLY the hermetic config; the
@@ -219,7 +219,7 @@ def _hermetic_enabled() -> bool:
     """
     import os
 
-    return os.environ.get("REPROLAB_SDK_HERMETIC", "true").strip().lower() not in (
+    return os.environ.get("OPENRESEARCH_SDK_HERMETIC", "true").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -255,7 +255,7 @@ def _agent_options_kwargs(
     allowed_tools = _tools_for_agent(agent, mcp_tool_extensions)
     if allowed_tools:
         kwargs["allowed_tools"] = allowed_tools
-    # Hermetic isolation — gated by REPROLAB_SDK_HERMETIC (default true).
+    # Hermetic isolation — gated by OPENRESEARCH_SDK_HERMETIC (default true).
     if _hermetic_enabled():
         kwargs["setting_sources"] = []
         kwargs["strict_mcp_config"] = True

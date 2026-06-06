@@ -956,7 +956,7 @@ def synthetic_runs(tmp_path: Path, monkeypatch):
     """Create two preserved runs: one max, one efficient."""
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
 
     # Run A: max mode, raw=adjusted=0.7
     run_a = runs_root / "prj_a"

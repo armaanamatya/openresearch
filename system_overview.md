@@ -1,22 +1,26 @@
-# System Overview — OpenResearch / ReproLab
+# System Overview — OpenResearch / OpenResearch
 
+<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+> **Doc status:** Current · source-of-truth tier 1 (the "why") · last verified
+> 2026-06-03. See [`docs/policies/documentation.md`](docs/policies/documentation.md).
+>
 > Orientation for new Claude Code / Codex sessions: the non-obvious "why" and
 > "how it fits together." For *what's where*, read the code — it's named by
 > function. Keep this current.
 
 ## Goal
 
-Given a paper (arXiv link or uploaded PDF), ReproLab ingests it, understands the
+Given a paper (arXiv link or uploaded PDF), OpenResearch ingests it, understands the
 claimed results, builds an environment, implements and runs a baseline, scores
 the reproduction against a PaperBench-style rubric, explores improvements, and
 emits a benchmark report comparing the reproduction to the paper's claims.
 
-RLM is the *paradigm the project is built on*, not a paper ReproLab reproduces.
-ReproLab reproduces other papers; the `rlms` library is its substrate.
+RLM is the *paradigm the project is built on*, not a paper OpenResearch reproduces.
+OpenResearch reproduces other papers; the `rlms` library is its substrate.
 
 ## Architecture
 
-ReproLab is built on the **Recursive Language Model** paradigm (arXiv 2512.24601,
+OpenResearch is built on the **Recursive Language Model** paradigm (arXiv 2512.24601,
 Zhang/Kraska/Khattab, MIT CSAIL). The `rlms` library (`pip install rlms`) is the
 engine; our code is the domain layer. The RLM root model never receives the paper
 text — it is offloaded as a REPL `context` variable and the model accesses it
@@ -47,7 +51,7 @@ Run state is **file-backed**, not a service — `runs/<project_id>/` holds the
 status snapshot (`demo_status.json`), per-iteration checkpoints (`rlm_state/`),
 `final_report.{json,md}`, `dashboard_events.jsonl`, `cost_ledger.jsonl`,
 `experiment_runs.jsonl`, the reproduced `code/`, and Hermes audit artifacts.
-SQLite (`REPROLAB_DATABASE_URL`) is the event/persistence store.
+SQLite (`OPENRESEARCH_DATABASE_URL`) is the event/persistence store.
 
 ## Paper ingestion
 
@@ -124,7 +128,7 @@ blocks `globals` and `locals`, but those are pure namespace getters with no
 risk surface — and blocking them by setting the entries to `None` means any
 model code that calls `globals().get("report_state", {...})` (a normal idiom
 for cross-iteration state) raises a bare
-`TypeError: 'NoneType' object is not callable`. ReproLab patches both at
+`TypeError: 'NoneType' object is not callable`. OpenResearch patches both at
 import time via `backend/agents/rlm/safe_builtins_patch.py` (restore
 `globals`/`locals` to the real builtins) and
 `backend/agents/rlm/safe_repl_traceback_patch.py` (extend
@@ -135,7 +139,7 @@ see `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
 
 ## Dynamic GPU selection (spec 2026-05-23)
 
-When `REPROLAB_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`REPROLAB_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `REPROLAB_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `REPROLAB_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `REPROLAB_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
+When `OPENRESEARCH_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `OPENRESEARCH_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `OPENRESEARCH_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `OPENRESEARCH_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
 
 ## Chat steering surface (2026-05-23)
 
@@ -209,7 +213,9 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
   must land before the next SDAR attempt.
 - `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` —
   sub-agent token-burn measurement + retry-burst elimination (sibling track).
-- `learn.md` — post-mortems: bugs shipped + the guardrail for each.
+- `docs/archive/learn.md` — **archived** post-mortems (bugs shipped + guardrail
+  for each), frozen 2026-06-03; current incident narratives live in
+  `docs/superpowers/specs/` + per-bug memory files.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model
   and the empty-`ANTHROPIC_API_KEY` + Claude Code OAuth pattern preferred for

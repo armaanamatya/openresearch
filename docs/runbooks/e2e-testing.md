@@ -1,3 +1,4 @@
+<!-- doc-meta: status=current; last-verified=2026-05-23 -->
 # End-to-end testing runbook — UI + backend on origin/main
 
 _Last updated: 2026-05-23. Session that produced this doc: F1–F6 deployment-blocker fixes._
@@ -15,7 +16,7 @@ cd /home/abheekp/openresearch
 
 # Terminal 2 — frontend
 cd /home/abheekp/openresearch/frontend
-export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+export OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000
 npm run dev
 ```
 
@@ -79,7 +80,7 @@ Expect to see `Uvicorn running on http://127.0.0.1:8000`. `--reload` auto-picks 
 
 ```bash
 cd /home/abheekp/openresearch/frontend
-export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+export OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000
 npm run dev
 ```
 
@@ -193,7 +194,7 @@ Common failure modes + remedies:
 | `FileNotFoundError: PaperBench bundle not found` | F1 should have fixed this. Same stale-code remedy. |
 | `RuntimeError: Pipeline exited with status 3` | The pipeline returned a fail status. Look HIGHER in the stderr for the real exception that produced status=3. |
 | `Error code: 401 - Incorrect API key provided` | The provider routing picked OpenAI but the key in `.env` is invalid. Either replace the key or remove it (the `_effective_provider` from Track D should prefer Anthropic OAuth when both are configured, but only on the rdr path). For pure RLM, the resolved root model is determined by `--model` or env. |
-| `Sandbox preflight failed` | Docker not reachable. Use `--sandbox local` explicitly OR (on WSL) F5 should have auto-degraded sandbox=auto → local. If F5 hasn't landed yet, set `REPROLAB_DEFAULT_SANDBOX=local` in `.env`. |
+| `Sandbox preflight failed` | Docker not reachable. Use `--sandbox local` explicitly OR (on WSL) F5 should have auto-degraded sandbox=auto → local. If F5 hasn't landed yet, set `OPENRESEARCH_DEFAULT_SANDBOX=local` in `.env`. |
 
 ### 4b. Frontend: 404 spam on `/api/demo/runs/<id>/leaf-scores`
 
@@ -208,7 +209,7 @@ To check the hook state from devtools:
 
 ### 4c. Frontend: 400 on `/api/demo`
 
-The initial `POST /api/demo` (run-start) — usually only fails if the demo gate is configured AND the secret doesn't match. Check `REPROLAB_DEMO_SECRET` env var on backend; if set, the frontend must send `X-Demo-Secret` header. For local dev, leave unset.
+The initial `POST /api/demo` (run-start) — usually only fails if the demo gate is configured AND the secret doesn't match. Check `OPENRESEARCH_DEMO_SECRET` env var on backend; if set, the frontend must send `X-Demo-Secret` header. For local dev, leave unset.
 
 ### 4d. Lab UI shows stale state after a run failed
 
@@ -248,7 +249,7 @@ pkill -9 -f "claude_agent_sdk/_bundled/claude"
 
 The in-flight run subprocess is **resumable** from `runs/<id>/rlm_state/` if it was checkpointed; otherwise it stops with `status: "failed"`. **Frontend resilience (F7)** keeps the lab UI usable even while the backend is wedged — no 502 spam — so the user can navigate, read the existing log, and start a fresh run after the restart.
 
-Tracking: see `learn.md` 2026-05-22 (Workaround B). Long-term: upstream SDK fix.
+Tracking: see `docs/archive/learn.md` 2026-05-22 (Workaround B). Long-term: upstream SDK fix.
 
 ### 4g. Orphan `claude` SDK subprocesses lingering
 
@@ -376,7 +377,7 @@ These are deferred follow-ups, not regressions:
 | 404 spam in console | Confirm F2 deployed (`git log --oneline | grep 633f2a5\|45e60df`); should stop after 15s |
 | Auth errors mid-run | Check `cost_ledger.jsonl` for which provider was actually used per call |
 | Hybrid not dispatching to RDR for a bundle | Verify `third_party/paperbench/<paper_id>/rubric.json` exists |
-| SDK aclose timeouts | Already mitigated by Workaround B (`_run_sdk_in_thread` + `shutdown(wait=False)`) — see `learn.md` 2026-05-22 |
+| SDK aclose timeouts | Already mitigated by Workaround B (`_run_sdk_in_thread` + `shutdown(wait=False)`) — see `docs/archive/learn.md` 2026-05-22 |
 
 ---
 

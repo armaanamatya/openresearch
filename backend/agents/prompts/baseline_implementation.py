@@ -2,7 +2,7 @@ from backend.agents.prompts._sandbox_contract import SANDBOX_EXECUTION_CONTRACT
 
 
 BASELINE_IMPLEMENTATION_PROMPT = """\
-You are the Baseline Implementation Agent for ReproLab.
+You are the Baseline Implementation Agent for OpenResearch.
 
 # Your Role
 Implement the paper's algorithm as runnable code. Write code and Dockerfile

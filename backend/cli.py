@@ -1,4 +1,4 @@
-"""ReproLab CLI — drives ingestion, inspection, and reproduction.
+"""OpenResearch CLI — drives ingestion, inspection, and reproduction.
 
   $ python -m backend.cli ingest <pdf-path>
       project_id=prj_..., parsed=N sections, sources=N, chunks=N,
@@ -91,7 +91,7 @@ def _warn_on_shell_env_override() -> None:
     _SUSPECT_KEYS = (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
         "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
-        "AZURE_OPENAI_API_KEY", "REPROLAB_RUNPOD_API_KEY",
+        "AZURE_OPENAI_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY",
     )
     def _prefix(s: str) -> str:
         return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
@@ -169,7 +169,7 @@ def _derive_paper_title(
 
     Precedence:
       1. ``paper_text_first_line`` (the first meaningful line of the
-         pre-extracted full paper text, via ``REPROLAB_PAPER_TEXT_PATH``) when
+         pre-extracted full paper text, via ``OPENRESEARCH_PAPER_TEXT_PATH``) when
          it looks like a title — this is the most authoritative real title.
       2. ``claim_map_first_title`` when it is NOT a placeholder/section header
          (see ``_is_noise_title``).
@@ -203,7 +203,7 @@ def _derive_paper_title(
 def _read_paper_text_first_line(path_str: str | None) -> str:
     """Fail-soft read of the first meaningful line from a paper-text file.
 
-    ``path_str`` is typically ``os.environ["REPROLAB_PAPER_TEXT_PATH"]``. Reads
+    ``path_str`` is typically ``os.environ["OPENRESEARCH_PAPER_TEXT_PATH"]``. Reads
     only a bounded prefix (the title lives in the first lines). Any error —
     missing file, permission, decode — yields "" so ingest never crashes.
     """
@@ -604,7 +604,7 @@ def _summarize_value(value: object) -> object:
 
 _REPRODUCE_DEFAULTS = {
     "database_url": get_settings().database_url,
-    # Honor REPROLAB_RUNS_ROOT via Settings — see backend/config.py.
+    # Honor OPENRESEARCH_RUNS_ROOT via Settings — see backend/config.py.
     "runs_root": str(get_settings().runs_root) if get_settings().runs_root else "runs",
     "source_kind": "auto",
     "agent": "default",
@@ -763,7 +763,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
-            "\n[reprolab] RDR pipeline interrupted (Ctrl-C). Exiting.",
+            "\n[openresearch] RDR pipeline interrupted (Ctrl-C). Exiting.",
             file=sys.stderr,
             flush=True,
         )
@@ -862,7 +862,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
         gpu_mode=getattr(args, "gpu_mode", "auto"),
     )
     # PR-μ.2: thread execution_mode for resolve_experiment_timeout_s (see other call site).
-    os.environ["REPROLAB_EXECUTION_MODE"] = execution_profile.mode.value
+    os.environ["OPENRESEARCH_EXECUTION_MODE"] = execution_profile.mode.value
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None))
     _max_invocations = _max_invocations_from_arg(getattr(args, "max_invocations", None))
@@ -937,7 +937,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
             ))
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
-            f"\n[reprolab] {_runner_label} pipeline interrupted (Ctrl-C). Exiting.",
+            f"\n[openresearch] {_runner_label} pipeline interrupted (Ctrl-C). Exiting.",
             file=sys.stderr,
             flush=True,
         )
@@ -1009,7 +1009,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         "os.makedirs(out, exist_ok=True)\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
         "    json.dump({'sanity_ok': 1.0}, fh)\n"
-        "print('reprolab sanity ok')\n",
+        "print('openresearch sanity ok')\n",
         encoding="utf-8",
     )
     (code_dir / "commands.json").write_text(json.dumps(["python sanity.py"]), encoding="utf-8")
@@ -1098,7 +1098,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # module gets a chance to emit. This is the *subprocess* hot path
     # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),
     # so configuring here ensures the agent logs land in logs/<TS>/ alongside
-    # the server logs. No-op when REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT unset.
+    # the server logs. No-op when OPENRESEARCH_LOG_DIR / OPENRESEARCH_RUNS_ROOT unset.
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
     runs_root = Path(args.runs_root)
@@ -1107,27 +1107,27 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
     import os as _os
     if getattr(args, "dynamic_gpu", None) is not None:
-        _os.environ["REPROLAB_DYNAMIC_GPU"] = "true" if args.dynamic_gpu else "false"
+        _os.environ["OPENRESEARCH_DYNAMIC_GPU"] = "true" if args.dynamic_gpu else "false"
     if getattr(args, "force_single_gpu", None) is not None:
-        _os.environ["REPROLAB_FORCE_SINGLE_GPU"] = "true" if args.force_single_gpu else "false"
+        _os.environ["OPENRESEARCH_FORCE_SINGLE_GPU"] = "true" if args.force_single_gpu else "false"
     if getattr(args, "max_gpu_usd_per_hour", None) is not None:
-        _os.environ["REPROLAB_MAX_GPU_USD_PER_HOUR"] = str(args.max_gpu_usd_per_hour)
+        _os.environ["OPENRESEARCH_MAX_GPU_USD_PER_HOUR"] = str(args.max_gpu_usd_per_hour)
     if getattr(args, "max_run_gpu_usd", None) is not None:
-        _os.environ["REPROLAB_MAX_RUN_GPU_USD"] = str(args.max_run_gpu_usd)
+        _os.environ["OPENRESEARCH_MAX_RUN_GPU_USD"] = str(args.max_run_gpu_usd)
     if getattr(args, "dynamic_gpu_headroom", None) is not None:
-        _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
+        _os.environ["OPENRESEARCH_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     if getattr(args, "vram_gb", None) is not None:
-        _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+        _os.environ["OPENRESEARCH_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
     if getattr(args, "gpu_parallelism", None) is not None:
-        _os.environ["REPROLAB_GPU_PARALLELISM"] = args.gpu_parallelism
+        _os.environ["OPENRESEARCH_GPU_PARALLELISM"] = args.gpu_parallelism
     if getattr(args, "accelerator", None) is not None:
-        _os.environ["REPROLAB_ACCELERATOR"] = args.accelerator
+        _os.environ["OPENRESEARCH_ACCELERATOR"] = args.accelerator
     _max_rlm_iter = getattr(args, "max_rlm_iterations", None)
     if _max_rlm_iter is not None and _max_rlm_iter > 0:
-        _os.environ["REPROLAB_MAX_RLM_ITERATIONS"] = str(_max_rlm_iter)
+        _os.environ["OPENRESEARCH_MAX_RLM_ITERATIONS"] = str(_max_rlm_iter)
     elif _max_rlm_iter == 0:
         # Explicit 0 disables the cap; clear any inherited env var.
-        _os.environ.pop("REPROLAB_MAX_RLM_ITERATIONS", None)
+        _os.environ.pop("OPENRESEARCH_MAX_RLM_ITERATIONS", None)
 
     # Paper-hint + operator scope-spec composition. The two flags are independent —
     # either, both, or neither may be set. Result is persisted via env vars so the
@@ -1139,13 +1139,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     _effective_scope = _operator_scope.merge_with_paper_default(
         _paper_hint_obj.default_scope if _paper_hint_obj is not None else None
     )
-    _os.environ["REPROLAB_SCOPE_SPEC_JSON"] = _effective_scope.model_dump_json()
+    _os.environ["OPENRESEARCH_SCOPE_SPEC_JSON"] = _effective_scope.model_dump_json()
 
     if _paper_hint_obj is not None and _paper_hint_obj.guidance:
-        _existing_guidance = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _existing_guidance = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
         _hint_id = args.paper_hint
         _hint_text = f"[paper-hint {_hint_id}] {_paper_hint_obj.guidance}"
-        _os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (
+        _os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (
             f"{_hint_text}\n\n{_existing_guidance}" if _existing_guidance else _hint_text
         )
         print(
@@ -1167,16 +1167,16 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # __post_init__ treats a missing/empty value as "no invariants").
     if _paper_hint_obj is not None and _paper_hint_obj.invariants:
         import json as _json_mod
-        _os.environ["REPROLAB_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
+        _os.environ["OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
             [inv.model_dump() for inv in _paper_hint_obj.invariants]
         )
     else:
         # No hint (or hint with empty invariants list) — ensure any stale env var
         # from a previous run in the same process is cleared.
-        _os.environ.pop("REPROLAB_PAPER_HINT_INVARIANTS_JSON", None)
+        _os.environ.pop("OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON", None)
 
     # #7 benchmark integrity: paper-hint blocked_resources ∪ operator --blacklist
-    # → REPROLAB_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
+    # → OPENRESEARCH_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
     # ctx.blocked_terms → every agent spec's RuntimeGuard (Unit A). Curated
     # sources only (the regex auto-derivation was rejected — it would block
     # framework deps like trl). The arXiv path loads no bundle, so the paper-hint
@@ -1184,14 +1184,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     _blocked_terms = _resolve_blocked_terms(getattr(args, "blacklist", None), _paper_hint_obj)
     if _blocked_terms:
         import json as _json_bl
-        _os.environ["REPROLAB_BLOCKED_TERMS_JSON"] = _json_bl.dumps(_blocked_terms)
+        _os.environ["OPENRESEARCH_BLOCKED_TERMS_JSON"] = _json_bl.dumps(_blocked_terms)
         print(
             f"[benchmark-guard] {len(_blocked_terms)} blocked resource(s) active — "
             "the RuntimeGuard refuses agent access to them.",
             file=sys.stderr,
         )
     else:
-        _os.environ.pop("REPROLAB_BLOCKED_TERMS_JSON", None)
+        _os.environ.pop("OPENRESEARCH_BLOCKED_TERMS_JSON", None)
         if getattr(args, "paper_hint", None) or getattr(args, "blacklist", None):
             print(
                 "[benchmark-guard] WARNING: this benchmark/hint run resolved an "
@@ -1338,9 +1338,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _entries = (workspace_claim_map or {}).get("entries") or []
         _first_title = (_entries[0].get("title") if _entries else "") or ""
         # Highest-priority real title: the first meaningful line of the
-        # pre-extracted full paper text (REPROLAB_PAPER_TEXT_PATH). Fail-soft.
+        # pre-extracted full paper text (OPENRESEARCH_PAPER_TEXT_PATH). Fail-soft.
         _text_first_line = _read_paper_text_first_line(
-            os.environ.get("REPROLAB_PAPER_TEXT_PATH")
+            os.environ.get("OPENRESEARCH_PAPER_TEXT_PATH")
         )
         _paper_title = _derive_paper_title(
             _source_kind,
@@ -1375,7 +1375,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     # --- Phase 2: Agent Pipeline ---
     user_hints = [h.strip() for h in args.hints.split(",")] if args.hints else None
-    # (#7) The blacklist is resolved + published to REPROLAB_BLOCKED_TERMS_JSON in
+    # (#7) The blacklist is resolved + published to OPENRESEARCH_BLOCKED_TERMS_JSON in
     # the paper-hint env block above (this was a dead `blacklist_terms` line that
     # computed the value and discarded it — the benchmark-integrity bug #7 fixes).
     from backend.agents.execution import (
@@ -1400,7 +1400,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # primitives.py falls back to this env var when ctx.execution_mode is None.
     # Without this, max-mode capped at the 7200s default instead of the
     # EXPERIMENT_TIMEOUT_BY_MODE["max"]=21600s the user requested.
-    os.environ["REPROLAB_EXECUTION_MODE"] = execution_profile.mode.value
+    os.environ["OPENRESEARCH_EXECUTION_MODE"] = execution_profile.mode.value
     run_budget = None
     _max_pod_seconds = _resolve_max_pod_seconds(args.max_pod_seconds)
     _max_run_gpu_usd = getattr(args, "max_run_gpu_usd", None)
@@ -1484,7 +1484,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         # to mark the run "failed" via _pid_exists. Conventional SIGINT
         # exit code is 130.
         print(
-            "\n[reprolab] Pipeline interrupted (Ctrl-C). "
+            "\n[openresearch] Pipeline interrupted (Ctrl-C). "
             "Marking run as stopped and exiting.",
             file=sys.stderr,
             flush=True,
@@ -1547,17 +1547,17 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build and return the reprolab argument parser (testable without calling main)."""
-    parser = argparse.ArgumentParser(prog="reprolab")
+    """Build and return the openresearch argument parser (testable without calling main)."""
+    parser = argparse.ArgumentParser(prog="openresearch")
     parser.add_argument(
         "--database-url",
         default=get_settings().database_url,
-        help="SQLite URL for the event store (defaults to REPROLAB_DATABASE_URL).",
+        help="SQLite URL for the event store (defaults to OPENRESEARCH_DATABASE_URL).",
     )
     parser.add_argument(
         "--runs-root",
         default=str(get_settings().runs_root) if get_settings().runs_root else "runs",
-        help="Per-project blob directory root (defaults to REPROLAB_RUNS_ROOT or ./runs).",
+        help="Per-project blob directory root (defaults to OPENRESEARCH_RUNS_ROOT or ./runs).",
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1608,7 +1608,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=("anthropic", "openai"),
         default=None,
-        help="SDK provider override (defaults to REPROLAB_LLM_PROVIDER).",
+        help="SDK provider override (defaults to OPENRESEARCH_LLM_PROVIDER).",
     )
     reproduce.add_argument(
         "--verification-provider",
@@ -1722,9 +1722,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "Maximum elapsed seconds a RunPod pod may run AFTER SSH connect "
             "(not from POST /pods — boot time is not budgeted) before the next "
             "exec() raises BudgetExhausted and the pod is force-destroyed. "
-            "Persistent pods (REPROLAB_RUNPOD_POD_ID) are NOT auto-deleted; "
+            "Persistent pods (OPENRESEARCH_RUNPOD_POD_ID) are NOT auto-deleted; "
             "an ERROR log is emitted and manual cleanup is required. "
-            "Also read from REPROLAB_MAX_POD_SECONDS env var."
+            "Also read from OPENRESEARCH_MAX_POD_SECONDS env var."
         ),
     )
     reproduce.add_argument(
@@ -1732,35 +1732,35 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="dynamic_gpu",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable dynamic GPU SKU selection from paper hardware clues (default: from REPROLAB_DYNAMIC_GPU).",
+        help="Enable dynamic GPU SKU selection from paper hardware clues (default: from OPENRESEARCH_DYNAMIC_GPU).",
     )
     reproduce.add_argument(
         "--force-single-gpu",
         dest="force_single_gpu",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="When dynamic-gpu is on, cap GPU count at 1 (default: from REPROLAB_FORCE_SINGLE_GPU).",
+        help="When dynamic-gpu is on, cap GPU count at 1 (default: from OPENRESEARCH_FORCE_SINGLE_GPU).",
     )
     reproduce.add_argument(
         "--max-gpu-usd-per-hour",
         dest="max_gpu_usd_per_hour",
         type=float,
         default=None,
-        help="Per-GPU $/hr cap for SKU selection (default: from REPROLAB_MAX_GPU_USD_PER_HOUR=10.0).",
+        help="Per-GPU $/hr cap for SKU selection (default: from OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0).",
     )
     reproduce.add_argument(
         "--max-run-gpu-usd",
         dest="max_run_gpu_usd",
         type=float,
         default=None,
-        help="Total RunPod USD cap per run (default: from REPROLAB_MAX_RUN_GPU_USD=10.0).",
+        help="Total RunPod USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
     )
     reproduce.add_argument(
         "--dynamic-gpu-headroom",
         dest="dynamic_gpu_headroom",
         type=float,
         default=None,
-        help="Multiplier on LLM VRAM estimate before tier-up (default: from REPROLAB_DYNAMIC_GPU_HEADROOM=1.25).",
+        help="Multiplier on LLM VRAM estimate before tier-up (default: from OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25).",
     )
     reproduce.add_argument(
         "--vram-gb",
@@ -1784,7 +1784,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Disable the primitive_cache for this run (debugging aid). "
-            "Equivalent to REPROLAB_PRIMITIVE_CACHE=disabled. Forces every "
+            "Equivalent to OPENRESEARCH_PRIMITIVE_CACHE=disabled. Forces every "
             "cacheable primitive (understand_section, plan_reproduction, "
             "implement_baseline, verify_against_rubric, etc.) to recompute. "
             "Cache hits still validate via schema-on-hit even when enabled, "
@@ -1852,7 +1852,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "(rlm mode) hard cap on the total number of RLM root-loop iterations. "
             "When the root reaches this count, FINAL_VAR is accepted unconditionally "
             "and the best partial report is shipped. Default: from "
-            "REPROLAB_MAX_RLM_ITERATIONS env var (default 5). "
+            "OPENRESEARCH_MAX_RLM_ITERATIONS env var (default 5). "
             "Set to 0 to disable the cap."
         ),
     )
@@ -1912,7 +1912,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Paper-specific hint id (typically an arXiv id, e.g. 2605.15155). "
             "Looks up PaperHint from backend.agents.prompts.paper_hints.PAPER_HINTS. "
             "Composes three independent layers: appends .guidance to "
-            "REPROLAB_BASELINE_EXTRA_GUIDANCE (with [paper-hint <id>] prefix); "
+            "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE (with [paper-hint <id>] prefix); "
             "merges .default_scope under any operator --scope-spec via "
             "ScopeSpec.merge_with_paper_default; .invariants ride along to PR D's "
             "rubric scorer. Unknown ids are silently ignored — the run continues."
@@ -1946,7 +1946,7 @@ def main(argv: list[str] | None = None) -> int:
     # --no-cache: disable primitive_cache as early as possible so no module
     # that imports primitive_cache caches a stale ``is_enabled()`` read.
     if getattr(args, "no_cache", False):
-        os.environ["REPROLAB_PRIMITIVE_CACHE"] = "disabled"
+        os.environ["OPENRESEARCH_PRIMITIVE_CACHE"] = "disabled"
     return int(args.func(args))
 
 
@@ -2147,7 +2147,7 @@ def _load_scope_spec_arg(raw: str | None):
 
 
 def _resolve_max_pod_seconds(cli_value: float | None) -> float | None:
-    """CLI flag wins; falls back to REPROLAB_MAX_POD_SECONDS env var.
+    """CLI flag wins; falls back to OPENRESEARCH_MAX_POD_SECONDS env var.
 
     Explicit None from the CLI (flag unset) triggers env fallback;
     an explicit float value (including 0.0, the kill-switch) is honored
@@ -2156,7 +2156,7 @@ def _resolve_max_pod_seconds(cli_value: float | None) -> float | None:
     """
     if cli_value is not None:
         return cli_value
-    env_value = os.environ.get("REPROLAB_MAX_POD_SECONDS")
+    env_value = os.environ.get("OPENRESEARCH_MAX_POD_SECONDS")
     if env_value:
         return float(env_value)
     return None

@@ -438,7 +438,7 @@ async def _stderr_watchdog(
 
 
 def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> StartRunRequest:
-    """Force the sandbox mode for all runs when REPROLAB_FORCE_SANDBOX is set.
+    """Force the sandbox mode for all runs when OPENRESEARCH_FORCE_SANDBOX is set.
 
     Deployments without a GPU or Docker daemon (e.g. Railway) must pin every
     run to ``local`` regardless of what the client requested. An empty force
@@ -450,7 +450,7 @@ def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> Star
 
 
 def apply_provider_override(request: StartRunRequest, force_provider: str) -> StartRunRequest:
-    """Force the LLM provider for all runs when REPROLAB_FORCE_LLM_PROVIDER is set.
+    """Force the LLM provider for all runs when OPENRESEARCH_FORCE_LLM_PROVIDER is set.
 
     The UI hard-codes ``provider="anthropic"`` in its start-run requests; on
     deployments where the operator only has credentials for the other side,
@@ -487,11 +487,11 @@ class FileLiveRunService:
         env: dict[str, str] = {**os.environ}
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
-        # REPROLAB_* keys in .env are always authoritative: a stale shell
-        # export from a previous login (e.g. REPROLAB_RUNPOD_SSH_KEY_PATH
+        # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
+        # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
         # pointing to a different user's home) must not override the
         # project-level .env which reflects the operator's deliberate config.
-        # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
+        # Non-OPENRESEARCH keys (API keys, PATH tweaks, etc.) respect the
         # standard precedence: shell export > .env.
         dotenv_path = self.repo_root / ".env"
         if dotenv_path.is_file():
@@ -503,9 +503,9 @@ class FileLiveRunService:
                     if "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip()
-                        # REPROLAB_ settings: .env wins over stale process env.
+                        # OPENRESEARCH_ settings: .env wins over stale process env.
                         # Everything else: only add if not already in env.
-                        if k and (k.startswith("REPROLAB_") or k not in env):
+                        if k and (k.startswith("OPENRESEARCH_") or k not in env):
                             env[k] = v
             except OSError:
                 pass
@@ -519,14 +519,14 @@ class FileLiveRunService:
                     env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
 
         # Thread run-specific vars
-        env["REPROLAB_GPU_MODE"] = request.gpuMode
+        env["OPENRESEARCH_GPU_MODE"] = request.gpuMode
         if request.gpu_parallelism:
-            env["REPROLAB_GPU_PARALLELISM"] = request.gpu_parallelism
+            env["OPENRESEARCH_GPU_PARALLELISM"] = request.gpu_parallelism
         if request.accelerator:
-            env["REPROLAB_ACCELERATOR"] = request.accelerator
-        env["REPROLAB_LLM_PROVIDER"] = request.provider
+            env["OPENRESEARCH_ACCELERATOR"] = request.accelerator
+        env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
-            env["REPROLAB_VERIFICATION_PROVIDER"] = request.verificationProvider
+            env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider
 
         # Bring-your-own credentials — these override .env (and process env)
         # for the subprocess only, because the user explicitly typed them
@@ -1007,8 +1007,8 @@ class FileLiveRunService:
                 _write_minimal_pdf(code_pdf, title=title)
                 shutil.copyfile(code_pdf, raw_pdf)
         else:
-            display_name = "reprolab-demo-paper.pdf"
-            title = "ReproLab PPO Reproducibility Demo"
+            display_name = "openresearch-demo-paper.pdf"
+            title = "OpenResearch PPO Reproducibility Demo"
             fixture_pdf = self._fixture_pdf_path()
             if fixture_pdf is not None:
                 shutil.copyfile(fixture_pdf, code_pdf)
@@ -1055,12 +1055,12 @@ class FileLiveRunService:
         report_path = code_dir / "final_benchmark_report.md"
         comparison_path = code_dir / "paperbench_comparison.json"
         log_path = logs_dir / "paperbench_eval.log"
-        manifest_path = code_dir / "reprolab_manifest.json"
+        manifest_path = code_dir / "openresearch_manifest.json"
         readme_path = code_dir / "README.md"
 
         benchmark = {
             "benchmarkName": "PaperBench-style final benchmark",
-            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+            "paperbenchTaskId": "openresearch-demo/ppo-cartpole-v1",
             "overallScore": 91.4 if not uploaded else 0.0,
             "targetMetric": "mean_reward",
             "targetValue": 475.0,
@@ -1123,7 +1123,7 @@ class FileLiveRunService:
                     "root_files": [
                         "paper.pdf",
                         "README.md",
-                        "reprolab_manifest.json",
+                        "openresearch_manifest.json",
                         "paperbench_comparison.json",
                         "final_benchmark_report.md",
                     ],
@@ -1512,7 +1512,7 @@ def _paperbench_log(project_id: str, benchmark: dict[str, Any], uploaded: bool) 
         )
     return "\n".join(
         [
-            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task reprolab-demo/ppo-cartpole-v1",
+            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task openresearch-demo/ppo-cartpole-v1",
             f"2026-05-10T09:30:13Z paperbench-eval INFO project={project_id}",
             "2026-05-10T09:30:14Z paperbench-eval INFO validating source artifact code/paper.pdf",
             "2026-05-10T09:30:15Z paperbench-eval INFO checking generated code root manifest",
@@ -1529,7 +1529,7 @@ def _generated_codebase_readme(
     source_pdf: dict[str, Any],
     uploaded: bool,
 ) -> str:
-    source_mode = "uploaded lab paper" if uploaded else "built-in ReproLab demo paper"
+    source_mode = "uploaded lab paper" if uploaded else "built-in OpenResearch demo paper"
     return f"""# Generated Reproduction Codebase
 
 This directory is the generated code root for `{project_id}`.
@@ -1555,7 +1555,7 @@ python train.py
 - `paperbench_comparison.json` - structured benchmark comparison
 - `final_benchmark_report.md` - human-readable benchmark report
 - `logs/paperbench_eval.log` - PaperBench-style evaluator log
-- `reprolab_manifest.json` - source and artifact manifest
+- `openresearch_manifest.json` - source and artifact manifest
 """
 
 
@@ -1686,7 +1686,7 @@ def _initial_status(
         status.update(
             {
                 "sourceKind": "workspace_fixture",
-                "sourceLabel": "ReproLab PPO demo paper",
+                "sourceLabel": "OpenResearch PPO demo paper",
                 "sourceNote": (
                     "This demo uses a checked-in PPO-style paper PDF, a deterministic generated "
                     "codebase, and a PaperBench-style final benchmark comparison."

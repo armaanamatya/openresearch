@@ -1,5 +1,5 @@
 /* The orchestrator's CSS — top-level layout chrome (layout, content,
- * reproLab base) plus everything inside WorkflowView, RunOverview and
+ * openResearch base) plus everything inside WorkflowView, RunOverview and
  * Stat that doesn't belong to a leaf component (overview-*, stat-*,
  * subagent-*, workflow-*, btn-primary).
  *

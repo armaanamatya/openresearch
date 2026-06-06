@@ -263,7 +263,7 @@
   .spec-header { grid-template-columns: 1fr; gap: 18px; }
 }
 
-/* numbered tag — distinctly ReproLab: rotated 90deg rail on desktop, inline on mobile */
+/* numbered tag — distinctly OpenResearch: rotated 90deg rail on desktop, inline on mobile */
 .spec-num {
   font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
   font-size: 13px;

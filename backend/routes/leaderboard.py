@@ -2,7 +2,7 @@
 
 Scans `runs/<id>/final_report.json` (+ `demo_status.json` for sandbox /
 status fallback) and returns ranked rows. Read-only; not gated by
-REPROLAB_DEMO_SECRET per spec §3 #10.
+OPENRESEARCH_DEMO_SECRET per spec §3 #10.
 
 Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.5.
 """
@@ -237,11 +237,11 @@ def list_leaderboard_runs(
 ):
     """Return ranked leaderboard rows aggregated from on-disk runs.
 
-    Read-only; not gated by REPROLAB_DEMO_SECRET.
+    Read-only; not gated by OPENRESEARCH_DEMO_SECRET.
     """
     settings = get_settings()
-    # Reuse the existing REPROLAB_RUNS_ROOT setting (bound on Settings.runs_root)
-    # rather than introducing a parallel REPROLAB_RUNS_DIR.
+    # Reuse the existing OPENRESEARCH_RUNS_ROOT setting (bound on Settings.runs_root)
+    # rather than introducing a parallel OPENRESEARCH_RUNS_DIR.
     runs_root = settings.runs_root if settings.runs_root is not None else Path("runs")
     try:
         return aggregate_leaderboard(

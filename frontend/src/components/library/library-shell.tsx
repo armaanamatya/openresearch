@@ -24,7 +24,7 @@ export function LibraryShell({
   recentsError?: string | null;
 }) {
   return (
-    <div className="reproLab">
+    <div className="openResearch">
       <div className="layout">
         <LabSidebar
           active="library"

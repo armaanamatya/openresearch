@@ -107,16 +107,16 @@ describe("useResizablePanels", () => {
     const { result } = renderHook(() => useResizablePanels());
     act(() => { result.current.setSize("reportRail", 320); });
     // Before debounce fires, localStorage is not updated yet.
-    expect(localStorageMock.getItem("reprolab:lab-workspace-sizes:v1")).toBeNull();
+    expect(localStorageMock.getItem("openresearch:lab-workspace-sizes:v1")).toBeNull();
     // Advance timers past 200ms debounce.
     act(() => { vi.advanceTimersByTime(250); });
-    const stored = JSON.parse(localStorageMock.getItem("reprolab:lab-workspace-sizes:v1") ?? "{}");
+    const stored = JSON.parse(localStorageMock.getItem("openresearch:lab-workspace-sizes:v1") ?? "{}");
     expect(stored.reportRail).toBe(320);
   });
 
   it("restores sizes from localStorage on mount", async () => {
     localStorageMock.setItem(
-      "reprolab:lab-workspace-sizes:v1",
+      "openresearch:lab-workspace-sizes:v1",
       JSON.stringify({ replRail: 300, reportRail: 250, detailSidebar: 400 })
     );
     const { result } = renderHook(() => useResizablePanels());
@@ -130,7 +130,7 @@ describe("useResizablePanels", () => {
 
   it("clamps out-of-bounds localStorage values on restore", async () => {
     localStorageMock.setItem(
-      "reprolab:lab-workspace-sizes:v1",
+      "openresearch:lab-workspace-sizes:v1",
       JSON.stringify({ replRail: 10, reportRail: 9000, detailSidebar: 360 })
     );
     const { result } = renderHook(() => useResizablePanels());
@@ -142,7 +142,7 @@ describe("useResizablePanels", () => {
   });
 
   it("handles corrupt localStorage gracefully", () => {
-    localStorageMock.setItem("reprolab:lab-workspace-sizes:v1", "{{invalid json}}");
+    localStorageMock.setItem("openresearch:lab-workspace-sizes:v1", "{{invalid json}}");
     const { result } = renderHook(() => useResizablePanels());
     act(() => {});
     // Falls back to defaults without throwing.

@@ -146,7 +146,7 @@ def test_get_runs_q_is_case_insensitive(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
     _write_status(runs_root, "prj_a", {
         "status": "completed", "projectId": "prj_a",
-        "sourceLabel": "ReproLab PPO Reproducibility Demo",
+        "sourceLabel": "OpenResearch PPO Reproducibility Demo",
         "updatedAt": "2026-03-01T00:00:00Z",
     })
 

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Project** | OpenResearch / ReproLab — an autonomous agent that reproduces ML papers end-to-end (ingest PDF → derive rubric → implement → train on GPU → score against the paper's own claims), with no human in the coding loop. |
+| **Project** | OpenResearch / OpenResearch — an autonomous agent that reproduces ML papers end-to-end (ingest PDF → derive rubric → implement → train on GPU → score against the paper's own claims), with no human in the coding loop. |
 | **Principal investigator** | A. Amatya |
 | **Representative hard target** | *Self-Distilled Agentic Reinforcement Learning* (SDAR), arXiv 2605.15155v1 |
 | **Calibration target (light)** | *Adam: A Method for Stochastic Optimization* (Kingma & Ba, ICLR 2015) — already reproduced end-to-end, rubric 0.741 |
@@ -154,7 +154,7 @@ A per-paper reproduction cost on the order of a student-day of compute — with 
 
 ## 9. Risk & cost-reduction
 
-**Levers (built into the system).** OAuth sub-agents → Sonnet coding at **$0** (cuts the LLM line ~95 %); navigation already on Haiku/gpt-5-mini; `--model qwen3-coder-featherless` flat-rate root; batch processing −50 % on Claude; RunPod COMMUNITY vs SECURE −45 %; `cuda-runtime` image saves $0.50–1.50 + 5–10 min/run; `--max-usd` / `REPROLAB_MAX_RUN_GPU_USD` hard-cap each tier; smallest-two scope keeps iteration in Tier 1/2.
+**Levers (built into the system).** OAuth sub-agents → Sonnet coding at **$0** (cuts the LLM line ~95 %); navigation already on Haiku/gpt-5-mini; `--model qwen3-coder-featherless` flat-rate root; batch processing −50 % on Claude; RunPod COMMUNITY vs SECURE −45 %; `cuda-runtime` image saves $0.50–1.50 + 5–10 min/run; `--max-usd` / `OPENRESEARCH_MAX_RUN_GPU_USD` hard-cap each tier; smallest-two scope keeps iteration in Tier 1/2.
 
 **Risks & mitigations.** (a) *Per-cell GPU hours unknown* (paper reports none) — widest factor; mitigated by Tier-2 scoping and hard $ caps before any Tier-3 commit. (b) *Death-spiral retries* (11 attempts observed on the hard run) — covered by the 20 % contingency and ×1.5 Tier-3 factor. (c) *SDAR token model partly extrapolated* (no clean completed SDAR run yet; sub-agent anchor from PPO-class runs) — M1 captures real SDAR metered `usage` to convert estimate → measurement.
 

@@ -43,7 +43,7 @@ button {
  * mean /library doesn't load these rules on direct navigation.
  * ------------------------------------------------------------------------ */
 
-.reproLab {
+.openResearch {
   min-height: 100vh;
   background: var(--bg);
   color: var(--ink);

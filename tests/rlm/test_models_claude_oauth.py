@@ -75,7 +75,7 @@ class TestDefaultFallsBackToClaudeOauth:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
 
         monkeypatch.setattr(
             "backend.agents.runtime.factory.has_provider_credentials",
@@ -96,7 +96,7 @@ class TestDefaultFallsThroughToQwen3CoderWhenNoCredentials:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
 
         monkeypatch.setattr(
             "backend.agents.runtime.factory.has_provider_credentials",

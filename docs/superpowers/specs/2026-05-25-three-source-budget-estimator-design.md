@@ -2,7 +2,7 @@
 
 **Status:** proposed (2026-05-25)
 **Supersedes:** parts of `2026-05-25-budget-estimation-design.md` (the LLM-only `_extract_workload` leg + zero-floor precision math).
-**Locked invariants from predecessor (kept):** pre-Begin blocking panel, dual cache schema (`{sha8}_{recipe_mode}_{catalog_v}_{calibration_v}`), `.preserved` marker as GC protection, secret redaction at `_extract_text_from_pdf`, 2.0× overhead multiplier configurable via `REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER`.
+**Locked invariants from predecessor (kept):** pre-Begin blocking panel, dual cache schema (`{sha8}_{recipe_mode}_{catalog_v}_{calibration_v}`), `.preserved` marker as GC protection, secret redaction at `_extract_text_from_pdf`, 2.0× overhead multiplier configurable via `OPENRESEARCH_ESTIMATE_OVERHEAD_MULTIPLIER`.
 
 ---
 

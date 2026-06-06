@@ -60,7 +60,7 @@ function deriveChipState({
     return {
       label: `runpod: executing${secs === null ? "" : ` ${secs}s`}`,
       title:
-        "RunPod pod work is active. ReproLab creates the pod lazily at run_experiment, executes the generated commands, then destroys the pod.",
+        "RunPod pod work is active. OpenResearch creates the pod lazily at run_experiment, executes the generated commands, then destroys the pod.",
       tone: secs !== null && secs > 600 ? "warn" : "info",
       pulse: true,
     };
@@ -102,7 +102,7 @@ function deriveChipState({
   return {
     label: "runpod: not yet",
     title:
-      "No RunPod pod is expected yet. ReproLab creates pods lazily at run_experiment, after paper understanding, environment detection, planning, and baseline implementation.",
+      "No RunPod pod is expected yet. OpenResearch creates pods lazily at run_experiment, after paper understanding, environment detection, planning, and baseline implementation.",
     tone: "muted",
     pulse: status === "running",
   };

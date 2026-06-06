@@ -1,3 +1,11 @@
+<!-- doc-meta: status=archived; archived=2026-06-03 -->
+> ⚠️ **ARCHIVED — point-in-time development status, NOT current.**
+> Frozen 2026-06-03 (last entry 2026-05-23). Run/promotion counts and "round N"
+> notes below describe a single development session and are not the current
+> state. For current status use `git log` and the
+> [leaderboard](../../README.md#ui-pages); for run results see
+> [`best_runs/`](../../best_runs/README.md).
+
 ## 2026-05-23 (night) — Constellation UI + dynamic sandbox + outcome canonicalization; 3 promotions / 2 distinct papers, round 3 chasing the 3rd-distinct
 
 _Updated: 2026-05-23 night._

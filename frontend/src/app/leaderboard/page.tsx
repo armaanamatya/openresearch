@@ -7,12 +7,12 @@ import styles from "./page.module.css";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Leaderboard — ReproLab",
+  title: "Leaderboard — OpenResearch",
   description: "Ranked completed runs across reproduction models and papers.",
 };
 
 async function fetchRows(): Promise<{ rows: LeaderboardRow[]; error: string | null }> {
-  const backendUrl = (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  const backendUrl = ((process.env.OPENRESEARCH_BACKEND_URL ?? process.env.REPROLAB_BACKEND_URL) ?? "http://127.0.0.1:8000").replace(/\/$/, "");
   try {
     const resp = await fetch(`${backendUrl}/leaderboard`, {
       cache: "no-store",

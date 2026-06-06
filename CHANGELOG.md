@@ -1,5 +1,14 @@
 # Changelog
 
+> ⚠️ **This changelog is behind `main` and is NOT the source of truth for
+> recent history.** The newest entry below stops at **2026-05-23**, but
+> development continued through 2026-06-03 (RLM stability remediation
+> BUG-LR-011..015, OAuth-contamination fix BUG-NEW-038, evidence-gate closure,
+> the gated codex repair primitive, the CLAUDE.md compaction, and more — none
+> recorded here). For an accurate, current history use **`git log`**. This file
+> is kept for the manual narrative it does contain; treat it as a partial,
+> hand-maintained log, not a complete record. *(flagged 2026-06-03)*
+
 All notable changes to OpenResearch land here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/spec/v2.0.0.html). Add new entries to the top
@@ -22,7 +31,7 @@ version + date and start a new `[Unreleased]` block above it.
 ### Changed (night)
 - `rlm-lab.tsx` swaps `ExplorationCanvas → ConstellationCanvas`. `ExplorationCanvas + layout-tree` are NOT deleted — preserved as fallback.
 - `TreeNode.kind` union extended with `primitive` and `llm_primitive`; `foldPrimitiveCall` appends one tree node per `status=ok` call keyed by `primitivePhase`. `LLM_USING_PRIMITIVES` set (understand_section, propose_improvements, recommend_next_tool, verify_against_rubric, plan_reproduction, extract_hyperparameters, detect_environment) gets the pulsing mini-RLM visual; `NON_VISUALIZED` set (heartbeat, check_user_messages, record_candidate_outcome, respond_to_user) is filtered out.
-- `run_experiment` default cap removed — only honors `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var OR `ctx.remaining_s()` from `--max-wall-clock`. Without either, `timeout=None` waits indefinitely (per user mandate "no cost cap until set"). The CPU-bound-baseline problem the 1800s cap was working around is now addressed at the agent prompt layer instead.
+- `run_experiment` default cap removed — only honors `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env var OR `ctx.remaining_s()` from `--max-wall-clock`. Without either, `timeout=None` waits indefinitely (per user mandate "no cost cap until set"). The CPU-bound-baseline problem the 1800s cap was working around is now addressed at the agent prompt layer instead.
 - `record_candidate_outcome` — strict-reject of any outcome not in `_VALID_OUTCOMES` (commit 1f72e07) replaced with canonicalize-or-accept-literal. Empty/None outcome falls back to the literal string `"unknown"` so the event still emits.
 - `_run_baseline_with_sdk` call now threads `gpu_mode=getattr(ctx, "gpu_mode", None)` so the sandbox-aware prompt receives the real value.
 
@@ -41,8 +50,8 @@ version + date and start a new `[Unreleased]` block above it.
 ### Added (late evening — parallel paper sweep + reliability sprint)
 - `tests/services/events/test_live_runs_status_ordering.py` — 5 compile-the-wrapper tests pinning: `write_status("completed")` before `finalize_benchmark()`; finalize wrapped in try/except; `finally:` block with `os._exit`; exit code follows status; failure path also reaches finally.
 - `tests/test_eventstore_sqlite_concurrent.py` — 3 tests pinning concurrent SQLite writers under WAL: 2 threads × different aggregates both succeed; 4×20 = 80 appends complete < 25 s; same-aggregate same-version → exactly one wins with `ConcurrencyError` (not `"database is locked"`).
-- `tests/rlm/test_run_experiment_timeout.py` — 3 tests pinning new `run_experiment` cap: default 1800 s; `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env-var override; invalid value falls back to default.
-- `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var — tunable aggregate cap for `run_experiment` primitive.
+- `tests/rlm/test_run_experiment_timeout.py` — 3 tests pinning new `run_experiment` cap: default 1800 s; `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env-var override; invalid value falls back to default.
+- `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env var — tunable aggregate cap for `run_experiment` primitive.
 - `runs/_archived_legacy_fixtures_20260523/` — 3 legacy test fixtures (`prj_verify_offline_report`, `prj_verify_offline_report2`, `prj_verify_polish`) moved here so the leaderboard scan doesn't trip on their list-shaped `rubric` fields.
 
 ### Changed (late evening)
@@ -399,7 +408,7 @@ version + date and start a new `[Unreleased]` block above it.
   field is optional and defaults empty — a run with the verifier disabled
   produces a byte-identical report and benchmark.
 - **Track 3 Phase C — capped self-improvement re-iteration loop.** After Gate 3,
-  `ReproLabOrchestrator` now loops back through improvement-selection + Gate 3
+  `OpenResearchOrchestrator` now loops back through improvement-selection + Gate 3
   while the rubric verifier reports below `rubric_target_score`, up to
   `rubric_max_improvement_iterations` rounds
   (`_run_improvement_reiteration_loop`). Termination is guaranteed by the pure
@@ -450,7 +459,7 @@ version + date and start a new `[Unreleased]` block above it.
   by the `?projectId=` query param — `app/lab/page.tsx` is an async
   server component that restores the run server-side, so a refresh or a
   shared link reopens the exact run instead of dropping to the upload
-  view. A per-browser `localStorage` pointer (`reprolab:lastRun`)
+  view. A per-browser `localStorage` pointer (`openresearch:lastRun`)
   auto-resumes an in-flight run when the tab is reopened on a bare
   `/lab` URL; a stale link, a deleted run, and a transient 504 are each
   handled without discarding a live run. New `lib/demo/server-run.ts`
@@ -458,7 +467,7 @@ version + date and start a new `[Unreleased]` block above it.
 - **Hybrid vision-leaning paper extraction.** A modular `PaperExtractor`
   augmentation pass runs after the base PyMuPDF parser
   (`backend/services/ingestion/parser/extractor.py`). In `hybrid` mode
-  (`REPROLAB_PAPER_EXTRACTION_MODE`, default `hybrid`) it renders
+  (`OPENRESEARCH_PAPER_EXTRACTION_MODE`, default `hybrid`) it renders
   scanned / figure-heavy pages to images and calls Claude vision
   (`vision.py`) for figure / table / equation descriptions and OCR
   text, enriching the parsed `full_text` that downstream agents
@@ -470,13 +479,13 @@ version + date and start a new `[Unreleased]` block above it.
   the Claude agent runtime registers `https://jakub-kopecky--arxiv-mcp-
   server.apify.actor/sse` as an MCP server named `apify-arxiv` (SSE
   transport, `Authorization: Bearer` header) and grants its tools to the
-  builder agents listed in `REPROLAB_APIFY_ARXIV_ENABLED_AGENTS`
+  builder agents listed in `OPENRESEARCH_APIFY_ARXIV_ENABLED_AGENTS`
   (default: `artifact-discovery,paper-understanding`). Tools surface as
   `mcp__apify-arxiv__*` and give those agents direct paper search /
   access / listing against arXiv without round-tripping through generic
   WebSearch. Empty token = MCP wiring is skipped entirely (no cold-start
   handshake, no extra latency).
-- **Persistent Runpod pod reuse via `REPROLAB_RUNPOD_POD_ID`.** When set,
+- **Persistent Runpod pod reuse via `OPENRESEARCH_RUNPOD_POD_ID`.** When set,
   `RunpodBackend.create_sandbox` attaches to the existing pod via SSH
   instead of `POST /pods`, reusing it across pipeline runs. The pod is
   structurally undeletable (never added to `_owned_pod_ids`). If the
@@ -507,8 +516,8 @@ version + date and start a new `[Unreleased]` block above it.
   `codex_cli`, which uses `codex exec` with the operator's ChatGPT OAuth
   session after API-key OpenAI is unavailable. The provider never reads
   OAuth tokens; it only checks for the binary and `~/.codex/auth.json`.
-  Optional overrides: `REPROLAB_CODEX_CLI_PATH` and
-  `REPROLAB_CODEX_AUTH_PATH`. Verified locally with `codex-cli 0.125.0`.
+  Optional overrides: `OPENRESEARCH_CODEX_CLI_PATH` and
+  `OPENRESEARCH_CODEX_AUTH_PATH`. Verified locally with `codex-cli 0.125.0`.
 - **Phase 2 research workspace services.** Added deterministic services for
   AST-backed knowledge graph construction and `graph_query()`, reusable
   cross-project memory, multi-paper comparison summaries, Git worktree
@@ -537,7 +546,7 @@ version + date and start a new `[Unreleased]` block above it.
   if that flag flips, an in-memory allowlist (`_owned_pod_ids`)
   populated only by `_create_pod` blocks deletion of foreign pods. A
   belt-and-suspenders second check verifies the pod's name still
-  starts with `reprolab-` before issuing the API DELETE — so a future
+  starts with `openresearch-` before issuing the API DELETE — so a future
   code path that adds a pod ID to the allowlist by mistake still
   can't delete a coworker's pod on the same RunPod account. Locked in
   by `tests/test_runpod_delete_guardrails.py` (4 tests).
@@ -564,7 +573,7 @@ version + date and start a new `[Unreleased]` block above it.
 - **PaperBench head-to-head pipeline.** Vendored FTRL bundle scaffold
   (`third_party/paperbench/ftrl/`) + bundle loader, weight-aware rubric
   scorer, submission validator, seeded multi-attempt runner, and the
-  `reprolab paperbench {list,summary,run,status}` CLI subcommand. Default
+  `openresearch paperbench {list,summary,run,status}` CLI subcommand. Default
   is `--pipeline` (real LLM run); `--no-pipeline` runs a dry validation
   for CI. Status JSON is persisted to `runs/paperbench/<run_group_id>/`.
 - **`/paperbench` page** with paper picker, seed input, dry/pipeline
@@ -729,7 +738,7 @@ version + date and start a new `[Unreleased]` block above it.
   programmatically inspectable; see `learn.md` 2026-05-09.
 - **`ValueError: Invalid IPv6 URL`** crashing `paper_understood` on any
   agent output containing brackets — see `learn.md` 2026-05-09.
-- **`database disk image is malformed`** on `reprolab.db` after a killed
+- **`database disk image is malformed`** on `openresearch.db` after a killed
   pipeline subprocess. Restored from offline backup; `synchronous=FULL`
   prevents recurrence — see `learn.md` 2026-05-09.
 
@@ -742,10 +751,10 @@ version + date and start a new `[Unreleased]` block above it.
 
 ### Tooling
 - `.gitignore` exclusions for build/test artifacts:
-  `frontend/tsconfig.tsbuildinfo`, `_test_logs/`, `reprolab.db.*`,
+  `frontend/tsconfig.tsbuildinfo`, `_test_logs/`, `openresearch.db.*`,
   Windows `*:Zone.Identifier`, stray pip-version files at repo root.
   `paperbench1.pdf` is whitelisted as the canonical input fixture.
 - `tests/test_issue16_workspace_service.py::test_build_workspace_auto_embeds_chunks`
   now uses `pytest.importorskip("chromadb")` so the suite stays green
-  when the optional `reprolab-backend[semantic]` extras aren't
+  when the optional `openresearch-backend[semantic]` extras aren't
   installed (matches the pattern in `test_semantic_layer2.py`).

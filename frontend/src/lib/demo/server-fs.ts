@@ -81,7 +81,7 @@ export interface TelemetryRecord {
 }
 
 export function repoRoot(): string {
-  const override = process.env.REPROLAB_REPO_ROOT?.trim();
+  const override = (process.env.OPENRESEARCH_REPO_ROOT ?? process.env.REPROLAB_REPO_ROOT)?.trim();
   if (override) {
     return override;
   }
@@ -132,7 +132,7 @@ export function buildFixtureMeta(
     executionMode,
     sandboxMode,
     gpuMode,
-    sourceLabel: "ReproLab PPO demo paper",
+    sourceLabel: "OpenResearch PPO demo paper",
     sourceNote:
       "This demo uses a checked-in PPO-style paper PDF, a deterministic generated codebase, and a PaperBench-style final benchmark comparison."
   };

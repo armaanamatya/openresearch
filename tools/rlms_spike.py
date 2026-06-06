@@ -47,7 +47,7 @@ import sys
 import traceback
 
 # --- mock domain primitives -------------------------------------------------
-# Stand-ins for ReproLab's real stage-agent functions. Each records that it was
+# Stand-ins for OpenResearch's real stage-agent functions. Each records that it was
 # invoked, so the spike can prove `custom_tools` were callable IN THE REPL
 # rather than merely accepted by the constructor.
 TOOL_CALLS: dict[str, int] = {"understand_section": 0, "extract_hyperparameters": 0}

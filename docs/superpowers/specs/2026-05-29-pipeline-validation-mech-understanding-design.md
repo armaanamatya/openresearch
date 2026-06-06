@@ -1,6 +1,6 @@
 # Pipeline validation on `mechanistic-understanding` — design (2026-05-29)
 
-**Goal:** prove that ReproLab reproduces an arbitrary ML paper end-to-end (ingest → understand → plan → implement → run_experiment → verify_against_rubric → final_report) on a paper that is significantly less complex than SDAR but still exercises the full pipeline against a real LM. Result: ONE definitive data point that the system reproduces real ML papers, decoupling "SDAR-specific complexity" from "general harness brittleness."
+**Goal:** prove that OpenResearch reproduces an arbitrary ML paper end-to-end (ingest → understand → plan → implement → run_experiment → verify_against_rubric → final_report) on a paper that is significantly less complex than SDAR but still exercises the full pipeline against a real LM. Result: ONE definitive data point that the system reproduces real ML papers, decoupling "SDAR-specific complexity" from "general harness brittleness."
 
 ## Why this paper, why now
 
@@ -26,7 +26,7 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
 ```
 
 Notes:
-- Full paper scope (no `REPROLAB_BASELINE_EXTRA_GUIDANCE` restriction) — the bundle's rubric covers both GPT2-medium and Llama2-7b
+- Full paper scope (no `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` restriction) — the bundle's rubric covers both GPT2-medium and Llama2-7b
 - `--sandbox runpod` is the production target; we accept the capacity-exhaustion risk as a real-world signal
 - `--max-usd 15` ceiling — Llama2-7b on RTX 4090 community tier (~$0.34/hr) for 2h is ~$0.68; rest of the budget covers retries
 - `--preflight-sanity` is the new flag from P3 below

@@ -16,7 +16,7 @@ from backend.agents.schemas import GpuPlan, GpuRequirements
 def ctx(tmp_path: Path, monkeypatch):
     from backend.config import get_settings
 
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_ENABLED", "true")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_ENABLED", "true")
     get_settings(_force_reload=True)
     runs_root = tmp_path / "runs"
     project_dir = runs_root / "proj1"

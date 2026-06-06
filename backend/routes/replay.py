@@ -7,7 +7,7 @@ lab UI can replay a completed run's timeline (iterations, primitive calls, rubri
 candidates) with no compute — the replay driver paces them by their ``timestamp`` deltas.
 
 200 with an empty list when the run/dir/file doesn't exist; never 500. Not gated by
-REPROLAB_DEMO_SECRET (read-only introspection, same posture as the reports router).
+OPENRESEARCH_DEMO_SECRET (read-only introspection, same posture as the reports router).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _runs_root() -> Path:
     import os
 
     s = get_settings()
-    env_val = os.environ.get("REPROLAB_RUNS_ROOT")
+    env_val = os.environ.get("OPENRESEARCH_RUNS_ROOT")
     if s.runs_root is not None:
         return Path(s.runs_root)
     if env_val:

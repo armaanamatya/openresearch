@@ -1,6 +1,6 @@
 # Harness Breakdown & Recent Changelog
 
-A working map of the OpenResearch / ReproLab reproduction **harness** — the layers
+A working map of the OpenResearch / OpenResearch reproduction **harness** — the layers
 that take a paper to a scored reproduction — and a changelog of what was
 added/changed in the 2026-05-31 → 2026-06-01 work (the OOM/GPU cell-runner
 remediation, env robustness, the lab-UI clarity fixes, and the fidelity-scoring
@@ -29,7 +29,7 @@ redesign). For the "why it fits together" narrative see `system_overview.md` and
 - `run_experiment` (`primitives.py`) executes the baseline. Two paths:
   - **Cell route (preferred, OOM-safe):** when the backend exposes ≥1 GPU (local/docker) AND the agent emitted `code/cells.json` + `code/train_cell.py`, the matrix runs **one training cell per GPU** via `backend/agents/rlm/gpu_cell_runner.py::run_matrix` (`min(free_gpus, cells)` in parallel, per-cell OOM shrink-retry). Capacity/dataset gating + leaf-shaped aggregation: `backend/agents/rlm/cell_matrix.py`. Capacity descriptor: `backend/services/runtime/gpu_capacity.py`.
   - **Legacy route (fallback):** `python train.py` via `commands.json`, dispatched to a sandbox backend (`local` / `docker` / `runpod`) by `_execute_in_sandbox`. Used when no `cells.json`.
-- Sandboxes: `REPROLAB_DEFAULT_SANDBOX` selects `local` (host subprocesses), `docker`, or `runpod` (remote GPU pods). Local multi-GPU leasing: `backend/services/runtime/local_gpu_allocator.py`. Launcher: `scripts/reserve_and_run_sdar.py` → `scripts/batch_reproduce.py` (leases GPUs, per-run venv, monitors).
+- Sandboxes: `OPENRESEARCH_DEFAULT_SANDBOX` selects `local` (host subprocesses), `docker`, or `runpod` (remote GPU pods). Local multi-GPU leasing: `backend/services/runtime/local_gpu_allocator.py`. Launcher: `scripts/reserve_and_run_sdar.py` → `scripts/batch_reproduce.py` (leases GPUs, per-run venv, monitors).
 
 ### (3) Scoring — leaf scorer + rubric areas + invariants
 - `backend/evals/paperbench/leaf_scorer.py::score_reproduction` — the authority. Flattens the rubric tree to leaves, gathers evidence (code + metrics, bounded), and **LLM-grades each leaf 0..1 with a justification**. Rolls leaves up into 6 weighted **areas** (method fidelity, data fidelity, execution, eval protocol, result match, artifacts).
@@ -85,4 +85,4 @@ Uncapped SDAR rerun on 6×A5000 (smallest-two, Search-QA): cells **trained one-p
 1. **Regex invariant gate** caps the highest-weight area (method fidelity) on correct code → the §D semantic verifier is the biggest unlock.
 2. **`implement_baseline` ~15 min/iter** (full-rewrite, not patch) is the wall-clock bottleneck.
 3. **Per-run venv torch** historically missing (now mitigated by `--system-site-packages`).
-4. **Lossy paper parse** (`parsed_full_text.txt` missing) is mitigated by `REPROLAB_PAPER_TEXT_PATH` but tracked out-of-scope.
+4. **Lossy paper parse** (`parsed_full_text.txt` missing) is mitigated by `OPENRESEARCH_PAPER_TEXT_PATH` but tracked out-of-scope.

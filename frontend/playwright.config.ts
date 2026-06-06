@@ -34,7 +34,7 @@ export default defineConfig({
         url: "http://localhost:3001",
         reuseExistingServer: false,
         timeout: 240_000,
-        env: { REPROLAB_BACKEND_URL: "http://127.0.0.1:8000" }
+        env: { OPENRESEARCH_BACKEND_URL: "http://127.0.0.1:8000" }
       },
   projects: [
     {
