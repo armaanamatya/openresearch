@@ -41,10 +41,16 @@ def test_validate_provider_credentials_checks_matching_env(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
-    # The Anthropic check also passes when the `claude` CLI is on PATH (it
-    # inherits subscription auth); pin it absent so this test deterministically
-    # exercises the missing-credentials path regardless of the host environment.
+    # The Anthropic check also passes when the `claude` CLI subscription is
+    # present; pin it absent so this test deterministically exercises the
+    # missing-credentials path regardless of the host environment. shutil.which
+    # alone is insufficient — on macOS the subscription lives in the Keychain,
+    # not on PATH — so mock the OAuth probe directly.
     monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory._has_claude_subscription_oauth",
+        lambda *_a, **_k: False,
+    )
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: SimpleNamespace(
@@ -286,6 +292,12 @@ def test_has_provider_credentials_anthropic_returns_false_when_unset(monkeypatch
         lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
     )
     monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+    # macOS keeps the `claude` subscription in the Keychain (not on PATH), so
+    # pin the OAuth probe absent directly — otherwise this is host-dependent.
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory._has_claude_subscription_oauth",
+        lambda *_a, **_k: False,
+    )
     assert has_provider_credentials("anthropic") is False
 
 
