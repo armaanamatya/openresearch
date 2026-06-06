@@ -1,8 +1,8 @@
-<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+<!-- doc-meta: status=current; last-verified=2026-06-06 -->
 # CLAUDE.md
 
 > **Doc status:** Current · source-of-truth tier 2 (day-to-day) · last verified
-> 2026-06-03. Policy: [`docs/policies/documentation.md`](docs/policies/documentation.md).
+> 2026-06-06. Policy: [`docs/policies/documentation.md`](docs/policies/documentation.md).
 
 Guidance for Claude Code (claude.ai/code) working in this repo. This documents the **day-to-day**; `system_overview.md` and `docs/design/rlm-pivot-brief.md` document the "why" — read those before non-trivial architectural changes.
 
@@ -147,7 +147,7 @@ A `localStorage` pointer auto-resumes an in-flight run on a bare `/lab`.
 
 **Local Docker daemon is a prerequisite for every sandbox except `local` — including `runpod` (the repo default).** `build_environment` (`primitives.py:1090`) short-circuits to a no-op ONLY when `ctx.sandbox_mode == "local"`; for `docker`/`runpod`/`auto`/unknown it runs a real local `docker build` and raises `SandboxRuntimeError(backend_unavailable)` if no daemon is reachable. Under `runpod` the locally-built image is **never used on the pod** (the pod boots `OPENRESEARCH_RUNPOD_IMAGE` and runs over SSH in a per-run venv, `runpod_backend.py`) — so the local build is currently wasted work that still hard-requires Docker (**rough edge flagged 2026-05-30**; a future change could short-circuit `build_environment` under `runpod` too). Until then keep OrbStack/Docker up for RunPod runs, or use `--sandbox local`. Since 2026-05-30 `start.sh` preflight-checks `docker info` whenever the sandbox is not `local`. Full workflow + sandbox×prerequisite matrix + troubleshooting: `docs/runbooks/running-the-project.md`. A hollow `partial` with `SDK success-with-no-text` is an **auth/SDK** failure (credentials), NOT Docker — read the `/lab` detail-panel blockers to tell them apart.
 
-**RunPod default image is `cuda-runtime` (~4 GB)** — reproduction code calls pre-built CUDA libs (PyTorch etc.), never compiles kernels, so `devel` (~18 GB) is unnecessary bloat. Default: `runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04`. Override with `OPENRESEARCH_RUNPOD_IMAGE=...-devel-...` only if a paper actually compiles CUDA (rare).
+**RunPod default image is `cuda-devel` (~18 GB)** — `config.runpod_image` defaults to `runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04`. The `-devel-` headers are required because common deps JIT-compile against CUDA at install/run time (bitsandbytes, flash-attn, deepspeed); an earlier switch to the lighter `-runtime-` image (~4 GB) silently broke a chained `pip install bitsandbytes && python train.py`, so it was reverted (commit `88c45b0`). Override with `OPENRESEARCH_RUNPOD_IMAGE=...-runtime-...` to get the lighter (~4 GB) image when a paper needs no CUDA JIT. **Two distinct knobs, intentionally different:** this pod image (what the pod actually boots) is `-devel-`, whereas the base of the *locally-generated* Dockerfile for `--sandbox runpod` (`environment_detective._RUNPOD_PYTORCH_BASE`) stays on the lighter `-runtime-` image — that local build is never used on the pod (see the prerequisite note above), so it is deliberately kept light.
 
 ### Local multi-GPU sandbox (docker-free, spec 2026-05-29)
 For a host with local NVIDIA GPUs but no docker/RunPod (e.g. 8×A5000): the `local` sandbox runs experiments as host subprocesses with no image build. `SandboxMode.local` → `LocalProcessBackend`; `build_environment` is a no-op success under `local`; `SandboxConfig.gpu_device_ids` pins GPUs (`LocalProcessBackend`→`CUDA_VISIBLE_DEVICES`, `LocalDockerBackend`→`DeviceRequest(device_ids=...)`). `RunContext.gpu_device_ids` from `OPENRESEARCH_GPU_DEVICE_IDS`.
