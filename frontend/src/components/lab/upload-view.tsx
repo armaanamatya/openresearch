@@ -258,7 +258,7 @@ export function UploadView({
         <div className="upload-icon">{ICONS.upload}</div>
         <h1 className="upload-title">Upload PDF</h1>
         <p className="upload-copy">
-          Drop a paper here or click to browse. ReproLab will reproduce, verify, and report -
+          Drop a paper here or click to browse. OpenResearch will reproduce, verify, and report -
           independently.
         </p>
         <div className="upload-meta">PDF - max 50 MB - arXiv preprints recommended</div>

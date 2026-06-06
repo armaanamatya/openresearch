@@ -92,7 +92,7 @@ def test_gpu_fallback_emitted_when_source_is_fallback(tmp_path, monkeypatch):
     # Pass requirements that will cause a fallback (no paper_gpu_string, low vram).
     # The resolver falls back to RTX 4090 when no catalog match is found with
     # dynamic_gpu_enabled=False or requirements below minimum.
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU", "false")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU", "false")
     primitives.resolve_gpu_requirements(
         {
             "estimated_vram_gb": 8,

@@ -6,7 +6,7 @@ vi.mock("server-only", () => ({}));
 
 describe("/api/demo/leaderboard proxy", () => {
   beforeEach(() => {
-    vi.stubEnv("REPROLAB_BACKEND_URL", "http://backend.test");
+    vi.stubEnv("OPENRESEARCH_BACKEND_URL", "http://backend.test");
   });
 
   afterEach(() => {

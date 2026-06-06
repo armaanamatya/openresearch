@@ -60,9 +60,9 @@ export function LabSidebar({
           <path d="M10 4l-4 4 4 4" />
         </svg>
       </button>
-      <Link href="/" className="brand-row" aria-label="ReproLab — back to landing">
+      <Link href="/" className="brand-row" aria-label="OpenResearch — back to landing">
         <span className="nav-icon">{ICONS.logo}</span>
-        <span className="brand-text">ReproLab</span>
+        <span className="brand-text">OpenResearch</span>
       </Link>
       <div className="dotted" />
       {NAV.map((item) => (

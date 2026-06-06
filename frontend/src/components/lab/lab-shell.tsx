@@ -185,7 +185,7 @@ export function LabShell({
   // BudgetPanel's Confirm button can launch the run on click. arXiv URL
   // lives in `arxiv` already.
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  // Sandbox default: user's saved pref → server-side REPROLAB_DEFAULT_SANDBOX → "docker".
+  // Sandbox default: user's saved pref → server-side OPENRESEARCH_DEFAULT_SANDBOX → "docker".
   // serverDefaultSandbox is read from env at request time so Railway (runpod) overrides
   // the fallback without requiring a code change.
   const [sandbox, setSandbox] = useState<DemoSandboxMode>(
@@ -362,7 +362,7 @@ export function LabShell({
   );
 
   return (
-    <div className="reproLab">
+    <div className="openResearch">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
           <LabSidebar

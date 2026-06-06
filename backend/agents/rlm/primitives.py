@@ -130,7 +130,7 @@ _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 # covers large-file generation + planning on complex papers; a genuine SDK hang still
 # surfaces, just later — an acceptable trade for an unbounded reproduction where a
 # FALSE stall (which aborts the whole run) is far costlier than slow hang-detection.
-# Override with REPROLAB_PRE_EMIT_STALL_S. (Follow-up: make progress SDK-stream/liveness
+# Override with OPENRESEARCH_PRE_EMIT_STALL_S. (Follow-up: make progress SDK-stream/liveness
 # aware rather than code_dir-mtime-only, so the threshold matters less.)
 _DEFAULT_PRE_EMIT_STALL_S = 900.0
 
@@ -292,7 +292,7 @@ def _build_codex_prompt(
 ) -> str:
     allowed = "\n".join(f"- {p}" for p in allowed_paths) if allowed_paths else "- Entire workspace"
     return (
-        "You are a specialized ReproLab repo-editing repair subagent.\n"
+        "You are a specialized OpenResearch repo-editing repair subagent.\n"
         "Do not perform paper navigation, paper summarization, rubric judgment, "
         "final report writing, broad research, credential inspection, or secret search.\n\n"
         f"Task type: {task_type}\n"
@@ -351,18 +351,18 @@ def _timeout_for(ctx: "RunContext", cap_s: float) -> float:
 def _pre_emit_stall_s() -> float:
     """Resolve PR-π pre-emit stall threshold from env.
 
-    Pre: ``REPROLAB_PRE_EMIT_STALL_S`` may be unset or a positive number.
+    Pre: ``OPENRESEARCH_PRE_EMIT_STALL_S`` may be unset or a positive number.
     Post: returns a positive second threshold, defaulting to 120s.
     Side effects: logs a warning for invalid environment values.
     Exceptions raised: none.
     """
-    raw = os.environ.get("REPROLAB_PRE_EMIT_STALL_S", "").strip()
+    raw = os.environ.get("OPENRESEARCH_PRE_EMIT_STALL_S", "").strip()
     if not raw:
         return _DEFAULT_PRE_EMIT_STALL_S
     try:
         value = float(raw)
     except ValueError:
-        logger.warning("invalid REPROLAB_PRE_EMIT_STALL_S=%r; using default", raw)
+        logger.warning("invalid OPENRESEARCH_PRE_EMIT_STALL_S=%r; using default", raw)
         return _DEFAULT_PRE_EMIT_STALL_S
     return value if value > 0 else _DEFAULT_PRE_EMIT_STALL_S
 
@@ -378,7 +378,7 @@ def resolve_experiment_timeout_s(ctx) -> int:
     """Resolve the wall-clock cap for a single run_experiment call.
 
     Order:
-      1. REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env var (if set and > 0)
+      1. OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S env var (if set and > 0)
       2. EXPERIMENT_TIMEOUT_BY_MODE[ctx.execution_mode]
       3. _DEFAULT_EXPERIMENT_TIMEOUT_S
 
@@ -388,7 +388,7 @@ def resolve_experiment_timeout_s(ctx) -> int:
     import math as _math
     import os as _os
 
-    _env = _os.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", "").strip()
+    _env = _os.environ.get("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", "").strip()
     if _env:
         try:
             override = int(_env)
@@ -397,19 +397,19 @@ def resolve_experiment_timeout_s(ctx) -> int:
             else:
                 resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
                     getattr(ctx, "execution_mode", None)
-                    or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+                    or _os.environ.get("OPENRESEARCH_EXECUTION_MODE"),
                     _DEFAULT_EXPERIMENT_TIMEOUT_S,
                 )
         except ValueError:
             resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
                 getattr(ctx, "execution_mode", None)
-                or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+                or _os.environ.get("OPENRESEARCH_EXECUTION_MODE"),
                 _DEFAULT_EXPERIMENT_TIMEOUT_S,
             )
     else:
         resolved = EXPERIMENT_TIMEOUT_BY_MODE.get(
             getattr(ctx, "execution_mode", None)
-            or _os.environ.get("REPROLAB_EXECUTION_MODE"),
+            or _os.environ.get("OPENRESEARCH_EXECUTION_MODE"),
             _DEFAULT_EXPERIMENT_TIMEOUT_S,
         )
 
@@ -510,7 +510,7 @@ _EXEC_TIMEOUT_SECONDS = 14400  # 4 hr — generous per-command cap so long-runni
                                 # cut off by the per-command guard.  The outer
                                 # ctx.remaining_s() wall-clock still binds the
                                 # whole run; this is just the inner ceiling.
-                                # Override via REPROLAB_RUN_EXPERIMENT_TIMEOUT_S
+                                # Override via OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S
                                 # in run_experiment if a single run truly needs
                                 # a tighter bound.
 
@@ -573,7 +573,7 @@ def _cap_logs(text: str) -> str:
 
 
 _PLAN_REPRODUCTION_SYSTEM = (
-    "You are the Reproduction Planner for ReproLab. Given a paper's method "
+    "You are the Reproduction Planner for OpenResearch. Given a paper's method "
     "spec and a target environment spec, produce a ReproductionContract: what "
     "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
     "the expected output artifacts, a dataset plan, an evaluation plan, and a "
@@ -1074,7 +1074,7 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # run_experiment runs whichever image the tag last pointed at. Key the
         # tag to the Dockerfile so distinct environments get distinct images.
         digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
-        tag = f"reprolab/{ctx.project_id}:env-{digest}"
+        tag = f"openresearch/{ctx.project_id}:env-{digest}"
 
         # Three-layer "don't redo work" guard: content-addressed tag → Docker
         # layer cache → this existence check.  When the image is already
@@ -1358,7 +1358,7 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
 def _baseline_subprocess_enabled() -> bool:
     """Run the baseline SDK call in an isolated child process (OPT-IN, default off).
 
-    Set ``REPROLAB_BASELINE_SUBPROCESS=1`` to isolate the claude-agent-sdk call in
+    Set ``OPENRESEARCH_BASELINE_SUBPROCESS=1`` to isolate the claude-agent-sdk call in
     a fresh process so its ``aclose()`` async-gen race crashes only that child and
     can't poison the reproduction process. Default OFF: the in-process path is the
     long-standing behavior the unit tests mock (``run_with_sdk`` patched in-process
@@ -1366,7 +1366,7 @@ def _baseline_subprocess_enabled() -> bool:
     ``implement_baseline`` — the *root* model uses the same SDK, so this is a
     partial mitigation, kept opt-in until a full root-level fix lands.
     """
-    return os.environ.get("REPROLAB_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
+    return os.environ.get("OPENRESEARCH_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _drive_baseline_child(
@@ -2069,7 +2069,7 @@ def codex_repair(
     if not bool(getattr(settings, "codex_subagent", False)):
         return _codex_repair_error(
             "disabled",
-            "codex_repair is disabled; set REPROLAB_CODEX_SUBAGENT=1 to enable it.",
+            "codex_repair is disabled; set OPENRESEARCH_CODEX_SUBAGENT=1 to enable it.",
         )
 
     normalized_task = str(task_type or "").strip().lower().replace("-", "_")
@@ -2082,7 +2082,7 @@ def codex_repair(
     if normalized_task not in _CODEX_HARD_ALLOWED_TASKS or normalized_task not in env_allowed:
         return _codex_repair_error(
             "task_type_not_allowed",
-            f"codex_repair task_type={task_type!r} is not enabled by REPROLAB_CODEX_ALLOWED_TASKS.",
+            f"codex_repair task_type={task_type!r} is not enabled by OPENRESEARCH_CODEX_ALLOWED_TASKS.",
             allowed_tasks=sorted(env_allowed & _CODEX_HARD_ALLOWED_TASKS),
         )
 
@@ -2419,13 +2419,13 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     stays False) and the rubric grades a half-finished experiment ~0 on
     eval/result/execution. Catching it here flips it to a repairable failure so
     the loop must re-run to REAL measured numbers before it can score or finalize.
-    Opt out with ``REPROLAB_METRICS_COMPLETENESS_CHECK=0``. Returns
+    Opt out with ``OPENRESEARCH_METRICS_COMPLETENESS_CHECK=0``. Returns
     ``(failure_class, message)`` or ``None``. See
     docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
     """
     import os as _os
 
-    if _os.environ.get("REPROLAB_METRICS_COMPLETENESS_CHECK", "1").strip().lower() in ("0", "false", "no"):
+    if _os.environ.get("OPENRESEARCH_METRICS_COMPLETENESS_CHECK", "1").strip().lower() in ("0", "false", "no"):
         return None
     metrics = result.get("metrics")
     if not isinstance(metrics, dict) or not metrics:
@@ -2470,7 +2470,7 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
         backward OOM and skipped the step, so no gradients were applied and the
         metrics are meaningless (the 2026-05-29 SDAR hours-of-grinding failure).
     (2) ``insufficient_train_steps`` — fewer optimizer steps than
-        ``REPROLAB_MIN_TRAIN_STEPS`` (opt-in; default 0 = disabled).
+        ``OPENRESEARCH_MIN_TRAIN_STEPS`` (opt-in; default 0 = disabled).
 
     Returns ``(failure_class, message)`` or None. The message becomes repair_context
     so the next implement_baseline reduces memory / trains longer.
@@ -2493,7 +2493,7 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
         )
 
     try:
-        min_steps = int(_os.environ.get("REPROLAB_MIN_TRAIN_STEPS", "0") or "0")
+        min_steps = int(_os.environ.get("OPENRESEARCH_MIN_TRAIN_STEPS", "0") or "0")
     except ValueError:
         min_steps = 0
     if min_steps > 0:
@@ -2502,7 +2502,7 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
             return (
                 "insufficient_train_steps",
                 f"insufficient_train_steps: training ran only {steps} optimizer step(s) "
-                f"(< REPROLAB_MIN_TRAIN_STEPS={min_steps}). Sparse-reward tasks cannot "
+                f"(< OPENRESEARCH_MIN_TRAIN_STEPS={min_steps}). Sparse-reward tasks cannot "
                 f"learn in so few steps — increase epochs/steps so total updates "
                 f">= {min_steps}.",
             )
@@ -2511,15 +2511,15 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
     # briefly to be REAL training. A seconds-long smoke (CPU stub / surrogate / no real
     # weights) must never be the scored reproduction; loading the paper's real models and
     # running the RL loop takes minutes, not seconds. Opt-in like the step floor above:
-    # REPROLAB_MIN_TRAIN_WALL_S (seconds; default 0 = disabled) is the minimum plausible
+    # OPENRESEARCH_MIN_TRAIN_WALL_S (seconds; default 0 = disabled) is the minimum plausible
     # wall-clock for a real training of THIS paper — a wall-time floor is inherently
     # paper-specific (an inference-only paper legitimately finishes in seconds), so it is
     # opt-in per run, never a global default. A run shorter than the floor BUT showing
-    # substantial optimizer progress (>= REPROLAB_MIN_REAL_TRAIN_STEPS, default 5) is
+    # substantial optimizer progress (>= OPENRESEARCH_MIN_REAL_TRAIN_STEPS, default 5) is
     # exempted, so a genuinely fast-but-real run can never be false-flagged. Motivated by
     # the 2026-05-29 SDAR failure that scored a 2 s smoke after real FSDP training crashed.
     try:
-        wall_floor = float(_os.environ.get("REPROLAB_MIN_TRAIN_WALL_S", "0") or "0")
+        wall_floor = float(_os.environ.get("OPENRESEARCH_MIN_TRAIN_WALL_S", "0") or "0")
     except ValueError:
         wall_floor = 0.0
     wall = result.get("wall_time_s")
@@ -2533,7 +2533,7 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
         and health_metrics
     ):
         try:
-            step_exempt = int(_os.environ.get("REPROLAB_MIN_REAL_TRAIN_STEPS", "5") or "5")
+            step_exempt = int(_os.environ.get("OPENRESEARCH_MIN_REAL_TRAIN_STEPS", "5") or "5")
         except ValueError:
             step_exempt = 5
         wall_steps = _max_train_steps(health_metrics)
@@ -2547,7 +2547,7 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
                 "insufficient_training",
                 f"insufficient_training: the experiment exited 0 with metrics but ran only "
                 f"{wall:.1f}s wall-clock ({_steps_phrase}) — below the "
-                f"REPROLAB_MIN_TRAIN_WALL_S={wall_floor:.0f}s floor for a REAL training of this "
+                f"OPENRESEARCH_MIN_TRAIN_WALL_S={wall_floor:.0f}s floor for a REAL training of this "
                 f"paper's models. That is a SMOKE / trivial run, not a faithful reproduction, and "
                 f"MUST NOT be scored. Run the FULL training — real pretrained weights, real "
                 f"episodes, optimizer.step() each iteration — to completion and record the measured "
@@ -2557,9 +2557,9 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
 
     # (3) degenerate_training — exited 0, status=ok, but no learning signal (constant
     # / all-zero reward or 0 steps). Opt-in (default on); disable with =0.
-    if _os.environ.get("REPROLAB_DEGENERATE_TRAINING_CHECK", "1").strip().lower() not in ("0", "false", "no"):
+    if _os.environ.get("OPENRESEARCH_DEGENERATE_TRAINING_CHECK", "1").strip().lower() not in ("0", "false", "no"):
         try:
-            _deg_eps = float(_os.environ.get("REPROLAB_DEGENERATE_REWARD_EPSILON", "1e-6") or "1e-6")
+            _deg_eps = float(_os.environ.get("OPENRESEARCH_DEGENERATE_REWARD_EPSILON", "1e-6") or "1e-6")
         except ValueError:
             _deg_eps = 1e-6
         _deg = _degenerate_training_violation(result.get("metrics") or {}, epsilon=_deg_eps)
@@ -2606,7 +2606,7 @@ def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
     identically to FSDP2 for our purpose and runs on torch >= 1.12, whereas
     FSDP2 (``fsdp_version: 2``) requires **torch >= 2.6** — this host is pinned to
     torch 2.5.1 by the cu121 wheel index (CUDA-12.2 driver), so FSDP2 errors at
-    launch (validated 2026-05-30). Set ``REPROLAB_FSDP_VERSION=2`` on a
+    launch (validated 2026-05-30). Set ``OPENRESEARCH_FSDP_VERSION=2`` on a
     torch>=2.6 environment (e.g. a newer RunPod image) to use the per-parameter
     FSDP2 API. Either way the harness owns the sharding policy (full shard, bf16,
     transformer auto-wrap — Qwen exposes ``_no_split_modules`` so the layer class
@@ -2617,7 +2617,7 @@ def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
     """
     import os as _os
 
-    version = (_os.environ.get("REPROLAB_FSDP_VERSION", "1") or "1").strip()
+    version = (_os.environ.get("OPENRESEARCH_FSDP_VERSION", "1") or "1").strip()
     if version not in ("1", "2"):
         version = "1"
     cfg = (
@@ -2642,7 +2642,7 @@ def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
             "  fsdp_sharding_strategy: FULL_SHARD\n"
             "  fsdp_use_orig_params: true\n"
         )
-    path = code_dir / "_reprolab_fsdp.yaml"
+    path = code_dir / "_openresearch_fsdp.yaml"
     try:
         path.write_text(cfg, encoding="utf-8")
     except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
@@ -2658,7 +2658,7 @@ def _nccl_env_prefix() -> str:
     NCCL collective during FSDP setup hangs for the full 600s timeout at >2 GPUs
     unless P2P is disabled (validated 2026-05-30 — likely the real cause of the
     earlier "multi-GPU runs stall"). Defaults on; override per-var with
-    ``REPROLAB_NCCL_P2P_DISABLE=0`` / ``REPROLAB_NCCL_IB_DISABLE=0`` on a
+    ``OPENRESEARCH_NCCL_P2P_DISABLE=0`` / ``OPENRESEARCH_NCCL_IB_DISABLE=0`` on a
     well-connected box (e.g. NVLink RunPod) where P2P is fast and reliable.
     """
     import os as _os
@@ -2667,9 +2667,9 @@ def _nccl_env_prefix() -> str:
         return (_os.environ.get(name, "1") or "1").strip().lower() not in ("0", "false", "no")
 
     parts: list[str] = []
-    if _on("REPROLAB_NCCL_P2P_DISABLE"):
+    if _on("OPENRESEARCH_NCCL_P2P_DISABLE"):
         parts.append("NCCL_P2P_DISABLE=1")
-    if _on("REPROLAB_NCCL_IB_DISABLE"):
+    if _on("OPENRESEARCH_NCCL_IB_DISABLE"):
         parts.append("NCCL_IB_DISABLE=1")
     return (" ".join(parts) + " ") if parts else ""
 
@@ -2707,33 +2707,33 @@ def _resolve_distributed_launch(
     if ngpu <= 1:
         return commands
     # Escape hatch — keep the agent's launch verbatim (operator override).
-    if _os.environ.get("REPROLAB_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
-        logger.info("_resolve_distributed_launch[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
+    if _os.environ.get("OPENRESEARCH_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("_resolve_distributed_launch[%s]: disabled via OPENRESEARCH_DISABLE_TORCHRUN_WRAP", run_id)
         return commands
     # RL-scaffold sentinel — the scaffold owns its own launch orchestration
     # (vLLM server + accelerate trainer partition), so the harness rewriter
     # must NOT wrap the launch command again.  Three detection surfaces:
-    #   1. Command-line marker: a command containing '# reprolab:rl-scaffold-owns-launch'
-    #   2. Sentinel file:       code_dir/.reprolab_rl_scaffold exists
-    #   3. Environment var:     REPROLAB_RL_SCAFFOLD=1
-    if _os.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+    #   1. Command-line marker: a command containing '# openresearch:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.openresearch_rl_scaffold exists
+    #   3. Environment var:     OPENRESEARCH_RL_SCAFFOLD=1
+    if _os.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         logger.info(
-            "_resolve_distributed_launch[%s]: skipping rewrite — REPROLAB_RL_SCAFFOLD=1 "
+            "_resolve_distributed_launch[%s]: skipping rewrite — OPENRESEARCH_RL_SCAFFOLD=1 "
             "(scaffold owns launch)",
             run_id,
         )
         return commands
-    if (code_dir / ".reprolab_rl_scaffold").exists():
+    if (code_dir / ".openresearch_rl_scaffold").exists():
         logger.info(
-            "_resolve_distributed_launch[%s]: skipping rewrite — .reprolab_rl_scaffold "
+            "_resolve_distributed_launch[%s]: skipping rewrite — .openresearch_rl_scaffold "
             "sentinel file present (scaffold owns launch)",
             run_id,
         )
         return commands
-    if any("# reprolab:rl-scaffold-owns-launch" in cmd for cmd in commands):
+    if any("# openresearch:rl-scaffold-owns-launch" in cmd for cmd in commands):
         logger.info(
             "_resolve_distributed_launch[%s]: skipping rewrite — "
-            "'# reprolab:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            "'# openresearch:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
             run_id,
         )
         return commands
@@ -2870,7 +2870,7 @@ async def _execute_in_sandbox(
     import os as _os
     _exp_env_extra: dict[str, str] = {}
     _mode_str_local = str(getattr(sandbox_mode, "value", sandbox_mode) or "").lower()
-    _venv = (_os.environ.get("REPROLAB_EXPERIMENT_VENV") or "").strip()
+    _venv = (_os.environ.get("OPENRESEARCH_EXPERIMENT_VENV") or "").strip()
     if _mode_str_local == "local" and _venv:
         _exp_env_extra["VIRTUAL_ENV"] = _venv
         _exp_env_extra["PATH"] = f"{_venv}/bin:" + _os.environ.get("PATH", "")
@@ -2897,7 +2897,7 @@ async def _execute_in_sandbox(
             # so train.py doesn't need to fall back via directory introspection.
             # Docker/RunPod: /artifacts is the container-mounted volume — keep it.
             "OUTPUT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
-            "REPROLAB_ARTIFACT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "OPENRESEARCH_ARTIFACT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
             "MPLCONFIGDIR": str(artifact_root / ".matplotlib") if _mode_str_local == "local" else "/artifacts/.matplotlib",
             "PYTHONUNBUFFERED": "1",
             **_exp_env_extra,
@@ -2950,12 +2950,12 @@ async def _execute_in_sandbox(
     # OR a plain string "runpod". Use substring match to cover both forms.
     _mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     if "runpod" in _mode_str:
-        # Lane 6: when REPROLAB_BOOTSTRAP_MKDIRS is set by the RunPod backend
+        # Lane 6: when OPENRESEARCH_BOOTSTRAP_MKDIRS is set by the RunPod backend
         # (because a network volume is mounted for persistent pip / HF cache),
         # create those dirs FIRST so pip and HuggingFace can write to them.
         # Pre-pip step — must run before any other bootstrap.
         bootstrap_commands.append(
-            'mkdir -p ${REPROLAB_BOOTSTRAP_MKDIRS:-/tmp/.reprolab_noop}'
+            'mkdir -p ${OPENRESEARCH_BOOTSTRAP_MKDIRS:-/tmp/.openresearch_noop}'
         )
         # Lane 1: auto-derive requirements.txt from the Dockerfile when the
         # agent forgot to write one. The local-docker sandbox path builds an
@@ -3025,9 +3025,9 @@ async def _execute_in_sandbox(
         # driver-compatible torch FIRST from the matching PyTorch wheel index; the
         # agent's requirements.txt (torch>=…) is then satisfied by it and won't pull an
         # incompatible build. cu121 matches this 8×A5000 host (driver 12.2) and the vLLM
-        # stack. Override via REPROLAB_LOCAL_TORCH_INDEX_URL; set it empty to disable.
+        # stack. Override via OPENRESEARCH_LOCAL_TORCH_INDEX_URL; set it empty to disable.
         _torch_index = _os.environ.get(
-            "REPROLAB_LOCAL_TORCH_INDEX_URL",
+            "OPENRESEARCH_LOCAL_TORCH_INDEX_URL",
             "https://download.pytorch.org/whl/cu121",
         ).strip()
         if _torch_index:
@@ -3061,7 +3061,7 @@ async def _execute_in_sandbox(
     project_dir_for_watchdog = code_dir.parent if code_dir.name == "code" else code_dir
     # Lane N — bounded recovery budget. Pod is destroyed once this is exhausted.
     import os as _os_env_wd
-    _MAX_SOFT_RECOVERIES = int(_os_env_wd.environ.get("REPROLAB_WATCHDOG_MAX_SOFT_RECOVERIES", "3"))
+    _MAX_SOFT_RECOVERIES = int(_os_env_wd.environ.get("OPENRESEARCH_WATCHDOG_MAX_SOFT_RECOVERIES", "3"))
 
     _wd_cfg = _WatchdogConfig.from_env()
 
@@ -3311,7 +3311,7 @@ async def _execute_in_sandbox(
 
     # PR-ζ: sandbox fallback — when RunPod retries are exhausted and the host
     # supports local docker + GPU, optionally swap ctx.sandbox_mode to local
-    # for the remainder of the run. Opt-in via REPROLAB_RUNPOD_AUTO_FALLBACK=true
+    # for the remainder of the run. Opt-in via OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true
     # (default off). The ctx object is not available inside _execute_in_sandbox
     # (it does not receive ctx); fallback is handled in run_experiment which
     # calls this function. See _apply_sandbox_fallback_if_eligible in run_experiment.
@@ -3573,14 +3573,14 @@ _CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "conf
 
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
     """Return a repairable ``disk_exhausted`` violation if free disk on ANY of
-    ``paths`` is below ``REPROLAB_DISK_FLOOR_GB`` (default 15; 0 disables). Never
+    ``paths`` is below ``OPENRESEARCH_DISK_FLOOR_GB`` (default 15; 0 disables). Never
     raises. Used as a pre-check (don't start a doomed run) and a post-check (the
     experiment ate the shared disk → tell the next iteration to stream/slice).
     """
     import shutil
 
     try:
-        floor_gb = float(os.environ.get("REPROLAB_DISK_FLOOR_GB", "15") or "15")
+        floor_gb = float(os.environ.get("OPENRESEARCH_DISK_FLOOR_GB", "15") or "15")
     except ValueError:
         floor_gb = 15.0
     if floor_gb <= 0:
@@ -3600,7 +3600,7 @@ def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
                 f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} "
                 "GB). A dataset/model download has ballooned the shared disk. Stream + slice "
                 "datasets (NEVER a full natural_questions-style download), use lighter "
-                "variants (e.g. nq_open not natural_questions), or lower REPROLAB_DISK_FLOOR_GB "
+                "variants (e.g. nq_open not natural_questions), or lower OPENRESEARCH_DISK_FLOOR_GB "
                 "if the footprint is legitimately large.",
             )
     return None
@@ -3904,10 +3904,10 @@ def _persist_escalation_count(state_dir: "Path", count: int) -> None:
 
 
 def _dynamic_gpu_headroom() -> float:
-    """REPROLAB_DYNAMIC_GPU_HEADROOM (default 1.25) — the VRAM safety multiplier the
+    """OPENRESEARCH_DYNAMIC_GPU_HEADROOM (default 1.25) — the VRAM safety multiplier the
     capacity gate clamps against. Matches the dynamic-GPU resolver's headroom."""
     try:
-        h = float(os.environ.get("REPROLAB_DYNAMIC_GPU_HEADROOM", "1.25") or "1.25")
+        h = float(os.environ.get("OPENRESEARCH_DYNAMIC_GPU_HEADROOM", "1.25") or "1.25")
     except ValueError:
         h = 1.25
     return h if h > 0 else 1.25
@@ -4221,7 +4221,7 @@ def run_experiment(
         logger.exception("run_experiment: pre_flight_validator raised — skipping")
 
     # PR-μ Solution B: mode-scaled wall-clock cap.
-    # resolve_experiment_timeout_s applies REPROLAB_RUN_EXPERIMENT_TIMEOUT_S >
+    # resolve_experiment_timeout_s applies OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S >
     # EXPERIMENT_TIMEOUT_BY_MODE[execution_mode] > _DEFAULT_EXPERIMENT_TIMEOUT_S,
     # clamped to ctx.remaining_s() when finite.
     timeout = resolve_experiment_timeout_s(ctx)
@@ -4248,7 +4248,7 @@ def run_experiment(
     # Disk pre-check (2026-05-30): fail fast if the shared disk is already below the
     # floor — starting a run that then exhausts it starves other users and crashes.
     _disk_pre = _disk_floor_violation([
-        str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+        str(ctx.project_dir), os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", ""),
     ])
     if _disk_pre is not None:
         return _persist_experiment_result(ctx, {
@@ -4368,12 +4368,12 @@ def run_experiment(
                         "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
                     }
                 # PR-ζ: opt-in sandbox fallback after transient retry exhaustion.
-                # When REPROLAB_RUNPOD_AUTO_FALLBACK=true and the exception carries
+                # When OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true and the exception carries
                 # _retry_attempts (set by _execute_in_sandbox after exhausting
                 # transient retries), check whether local docker + GPU is viable
                 # and if so mutate ctx.sandbox_mode for the rest of this run.
                 import os as _os_fallback
-                if _os_fallback.environ.get("REPROLAB_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
+                if _os_fallback.environ.get("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
                     _retry_attempts_on_exc = getattr(exc, "_retry_attempts", None)
                     _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
                     if (
@@ -4560,7 +4560,7 @@ def run_experiment(
                 except Exception:  # noqa: BLE001
                     pass
             try:
-                _maxr = int(_os.environ.get("REPROLAB_MAX_SCOPE_FAILURE_REPEATS", "2") or "2")
+                _maxr = int(_os.environ.get("OPENRESEARCH_MAX_SCOPE_FAILURE_REPEATS", "2") or "2")
             except ValueError:
                 _maxr = 2
             # A gap the agent recorded in data_load_failures is provably
@@ -4583,7 +4583,7 @@ def run_experiment(
     # repairable so the next iteration streams/slices instead of downloading again.
     if result.get("success"):
         _disk_post = _disk_floor_violation([
-            str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+            str(ctx.project_dir), os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", ""),
         ])
         if _disk_post is not None:
             result = {**result, "success": False, "error": _disk_post[1], "failure_class": _disk_post[0]}
@@ -5109,15 +5109,15 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                     pass
             _hist.append(float(overall_score))
             try:
-                _win = int(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_WINDOW", "3") or "3")
+                _win = int(_os.environ.get("OPENRESEARCH_RUBRIC_PLATEAU_WINDOW", "3") or "3")
             except ValueError:
                 _win = 3
             try:
-                _eps = float(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_EPSILON", "0.005") or "0.005")
+                _eps = float(_os.environ.get("OPENRESEARCH_RUBRIC_PLATEAU_EPSILON", "0.005") or "0.005")
             except ValueError:
                 _eps = 0.005
             try:
-                _floor = int(_os.environ.get("REPROLAB_MIN_RUBRIC_ITERATIONS", "2") or "2")
+                _floor = int(_os.environ.get("OPENRESEARCH_MIN_RUBRIC_ITERATIONS", "2") or "2")
             except ValueError:
                 _floor = 2
             _cur_iter = int(getattr(ctx, "current_iteration", 0) or 0)

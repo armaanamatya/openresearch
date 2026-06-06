@@ -48,7 +48,7 @@ async def collect_agent_text(
     selected_runtime = runtime or make_runtime(provider)
     started_at = datetime.now(timezone.utc).isoformat()
     # #7 benchmark integrity: when the caller didn't pass an explicit blocklist,
-    # seed it from the curated env-var seam (REPROLAB_BLOCKED_TERMS_JSON, set by
+    # seed it from the curated env-var seam (OPENRESEARCH_BLOCKED_TERMS_JSON, set by
     # cli.py). collect_agent_text is the single chokepoint EVERY agent flows
     # through (baseline-implementation, rdr, patch-mode, future callers), so this
     # makes the RuntimeGuard uniform and un-forgettable — no per-caller threading

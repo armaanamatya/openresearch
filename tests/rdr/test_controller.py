@@ -106,7 +106,7 @@ class FakeBundle:
 # ---------------------------------------------------------------------------
 
 _FAKE_ENV_SPEC = {"dockerfile": "FROM python:3.11", "python_version": "3.11"}
-_FAKE_BUILD_OK = {"ok": True, "image_tag": "reprolab/test:env-abc123", "error": "", "attempts": 1}
+_FAKE_BUILD_OK = {"ok": True, "image_tag": "openresearch/test:env-abc123", "error": "", "attempts": 1}
 _FAKE_EXP_OK = {"success": True, "metrics": {"accuracy": 0.95}, "logs": ""}
 _FAKE_SCORES_HIGH = {
     "overall_score": 0.85,

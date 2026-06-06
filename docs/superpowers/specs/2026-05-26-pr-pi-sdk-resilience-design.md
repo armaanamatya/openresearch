@@ -6,7 +6,7 @@ Author: Opus (design); Codex (impl); Opus (review).
 
 ## 1. Why this exists — the failure that motivated it
 
-VAE re-dispatch on 2026-05-27T00:00:35 UTC died at 00:09 UTC inside `implement_baseline`. The stderr file shows 7 `aclose(): asynchronous generator is already running` errors followed by the CLI's `{"status": "partial"}` summary. The dashboard's last event was `worker_report_started agent=implement_baseline` at 00:05:34 with NO succeeded/failed counterpart. NO `commands.json`, NO `train.py`, NO `_reprolab_curated.py` were written — meaning the PR-ξ γ knowledge-channel mechanism never even executed. `demo_status.json` remained `status=running` (stale) because the Python process exited bypassing both `_mark_demo_status_stopped` (graceful) and `_mark_demo_status_failed` (uncaught exception).
+VAE re-dispatch on 2026-05-27T00:00:35 UTC died at 00:09 UTC inside `implement_baseline`. The stderr file shows 7 `aclose(): asynchronous generator is already running` errors followed by the CLI's `{"status": "partial"}` summary. The dashboard's last event was `worker_report_started agent=implement_baseline` at 00:05:34 with NO succeeded/failed counterpart. NO `commands.json`, NO `train.py`, NO `_openresearch_curated.py` were written — meaning the PR-ξ γ knowledge-channel mechanism never even executed. `demo_status.json` remained `status=running` (stale) because the Python process exited bypassing both `_mark_demo_status_stopped` (graceful) and `_mark_demo_status_failed` (uncaught exception).
 
 The existing PR-μ defenses (`sdk_isolation.run_isolated`, the 120s stall watchdog at `primitives.py:1373-1472`, the `live_runs.py` stderr-tail watchdog) all assume specific failure shapes:
 
@@ -146,7 +146,7 @@ _ACLOSE_STALL_S = 120  # post-emit stall
 
 # NEW:
 _PRE_EMIT_STALL_S = 240   # 4 min of total SDK silence before commands.json
-_PRE_EMIT_PROGRESS_FILES = ("commands.json", "train.py", "_reprolab_curated.py")
+_PRE_EMIT_PROGRESS_FILES = ("commands.json", "train.py", "_openresearch_curated.py")
 
 # In the polling loop:
 if not commands_json.exists():

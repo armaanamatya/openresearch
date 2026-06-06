@@ -39,7 +39,7 @@ def test_config_loads_defaults():
 
 def test_config_respects_env_override(monkeypatch):
     """Config values can be overridden via environment variables."""
-    monkeypatch.setenv("REPROLAB_ENVIRONMENT", "testing")
+    monkeypatch.setenv("OPENRESEARCH_ENVIRONMENT", "testing")
     from backend.config import get_settings
     # Force re-creation if cached
     settings = get_settings(_force_reload=True) if hasattr(get_settings, '_force_reload') else get_settings()

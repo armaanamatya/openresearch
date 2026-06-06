@@ -1,4 +1,4 @@
-"""Evaluation schemas for ReproLab agent evaluation system.
+"""Evaluation schemas for OpenResearch agent evaluation system.
 
 Covers both reproduction evaluation (ground-truth-based) and
 innovation evaluation (judgment-based).

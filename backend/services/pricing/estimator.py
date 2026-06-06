@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 # Codex C5 fix: 1.5 was the original spec value but doesn't absorb RunPod
 # cold-start (5-10 min flat on a 30-min run = 20-33% overhead alone). 2.0
 # covers cold-start (~10 min) + eval (~10%) + checkpoint I/O (~5%) + safety.
-# Override via REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER for operators willing to
+# Override via OPENRESEARCH_ESTIMATE_OVERHEAD_MULTIPLIER for operators willing to
 # run tighter.
 _OVERHEAD_MULTIPLIER: float = float(
-    os.environ.get("REPROLAB_ESTIMATE_OVERHEAD_MULTIPLIER", "2.0")
+    os.environ.get("OPENRESEARCH_ESTIMATE_OVERHEAD_MULTIPLIER", "2.0")
 )
 # PR-ε.6: the hardcoded 0.15× compression multiplier is REMOVED.  When the
 # operator has declared explicit compute reductions (via the contract's
@@ -104,7 +104,7 @@ async def _fetch_pdf_bytes(source_kind: str, source: str) -> tuple[bytes, str]:
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=httpx.Timeout(30.0, connect=10.0),
-        headers={"user-agent": "ReproLab/estimator"},
+        headers={"user-agent": "OpenResearch/estimator"},
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()

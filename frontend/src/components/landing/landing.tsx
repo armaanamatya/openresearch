@@ -37,7 +37,7 @@ function Nav(): React.JSX.Element {
         <Link href="/" className={styles.brand}>
           <span className={styles["brand-mark"]} aria-hidden />
           <span className={styles["brand-name"]}>
-            ReproLab<span className={styles.dot}>.</span>
+            OpenResearch<span className={styles.dot}>.</span>
           </span>
         </Link>
         <div className={styles["nav-links"]}>
@@ -71,7 +71,7 @@ function Hero(): React.JSX.Element {
           </h1>
           <div className={styles.reveal}>
             <p className={styles.lede} style={{ margin: "0 0 24px" }}>
-              ReproLab is a paper-reproduction agent built on the Recursive Language Model paradigm.
+              OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm.
               It reads a paper, builds the environment, implements the method, runs the experiments,
               and grades itself against the paper&apos;s own claims.
             </p>
@@ -385,7 +385,7 @@ function BenchmarkSection(): React.JSX.Element {
           </div>
           <div>
             <p className={styles["spec-blurb"]}>
-              ReproLab reports a reproduction score per paper on the PaperBench v0
+              OpenResearch reports a reproduction score per paper on the PaperBench v0
               protocol. Every figure on this page is a placeholder until a sealed,
               seed-pinned run confirms it. We will not ship a number we cannot rerun.
             </p>
@@ -437,7 +437,7 @@ function CTAFooter(): React.JSX.Element {
         <div className={styles["h-eyebrow"]} style={{ marginBottom: 22 }}>§ 7.0 — Try it</div>
         <h2>An end-to-end reproduction,<br />in one command.</h2>
         <p className={styles.lede}>
-          Point ReproLab at an arXiv ID. Get back a sealed environment, an implementation,
+          Point OpenResearch at an arXiv ID. Get back a sealed environment, an implementation,
           a scorecard, and an audit trail. If a claim doesn&apos;t reproduce, you&apos;ll see exactly which one.
         </p>
         <div className={styles.actions}>
@@ -461,7 +461,7 @@ function Footer(): React.JSX.Element {
       <div className={`${styles.wrap} ${styles["foot-inner"]}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span className={styles["brand-mark"]} style={{ width: 18, height: 18 }} aria-hidden />
-          <span>ReproLab · 2026</span>
+          <span>OpenResearch · 2026</span>
         </div>
         <div className={styles.links}>
           <a href="#pipeline">How it works</a>

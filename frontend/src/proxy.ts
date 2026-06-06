@@ -34,7 +34,7 @@ export async function proxy(request: NextRequest) {
 
 // The unlock gate is scoped to the live lab surface. `/lab` and `/library`
 // are open for internal use; `/api/demo/*` (the backend proxy for lab runs)
-// requires the unlock cookie when REPROLAB_DEMO_SECRET is set.
+// requires the unlock cookie when OPENRESEARCH_DEMO_SECRET is set.
 export const config = {
   matcher: ["/api/demo/:path*"],
 };

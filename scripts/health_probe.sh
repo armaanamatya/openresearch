@@ -65,7 +65,7 @@ fi
 
 # ── liveness signals ──────────────────────────────────────────────────────
 sdk_workers=$(pgrep -fc "claude_agent_sdk/_bundled" 2>/dev/null || echo 0)
-docker_execs=$(docker ps --filter "label=reprolab.project=$PROJECT" -q 2>/dev/null | wc -l | tr -d ' ')
+docker_execs=$(docker ps --filter "label=openresearch.project=$PROJECT" -q 2>/dev/null | wc -l | tr -d ' ')
 recent_files=$(find "$RUN_DIR/code" -mmin -3 -type f 2>/dev/null | head -1 | wc -l | tr -d ' ')
 
 # ── stderr tail ───────────────────────────────────────────────────────────

@@ -1,3 +1,11 @@
+<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=system_overview.md -->
+> ⚠️ **ARCHIVED — written for the Phase-4 redesign (issue #61); superseded.**
+> Frozen 2026-06-03. The current frontend↔backend contract is documented in
+> [`system_overview.md`](../../system_overview.md) (SSE bridge / run lifecycle),
+> [`README.md`](../../README.md) (Architecture), and
+> [`CLAUDE.md`](../../CLAUDE.md) ("UI ↔ backend run lifecycle"). Most of the
+> contract below still holds, but treat the canonical docs as authoritative.
+
 # Frontend Integration — Backend Contract
 
 How the frontend talks to the OpenResearch backend. The backend is the source

@@ -4,7 +4,7 @@ import type { LiveDemoRunState } from "./demo-run-types";
 import { enrichRunStateWithPayload } from "./server-payload";
 
 export function backendBaseUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  return ((process.env.OPENRESEARCH_BACKEND_URL ?? process.env.REPROLAB_BACKEND_URL) ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 }
 
 // Backend GET timeout for the lab page's status polling. Single-worker

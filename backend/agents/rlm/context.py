@@ -50,16 +50,16 @@ class RunContext:
                              # than assuming docker = CPU-only. (2026-05-23 user mandate:
                              # "sandbox shouldn't be cpu only it should be dynamic since
                              # we can use runpod etc.")
-    gpu_device_ids: tuple[str, ...] = ()  # host GPU UUIDs leased to this run (local sandbox); set from REPROLAB_GPU_DEVICE_IDS
-    gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from REPROLAB_GPU_PARALLELISM
+    gpu_device_ids: tuple[str, ...] = ()  # host GPU UUIDs leased to this run (local sandbox); set from OPENRESEARCH_GPU_DEVICE_IDS
+    gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from OPENRESEARCH_GPU_PARALLELISM
     gpu_visible_count: int | None = None  # GPUs visible to this run (from CUDA_VISIBLE_DEVICES / lease); hints the code-writing agent
     run_budget: Any = None   # RunBudget — threaded from --max-pod-seconds / --max-usd etc.
-    current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
+    current_iteration: int = 0  # root-loop iteration index, incremented by OpenResearchRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
     emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements
     scope_spec: Any = None  # ScopeSpec — typed via Any to avoid a top-level import cycle;
-                            # set by run.py / rdr/run.py from REPROLAB_SCOPE_SPEC_JSON.
+                            # set by run.py / rdr/run.py from OPENRESEARCH_SCOPE_SPEC_JSON.
     arxiv_id: str | None = None  # Bare arXiv ID (e.g. "2605.15155") when known; set by
                                  # run_pipeline_rlm from artifact_index.json / demo_status.json
                                  # so implement_baseline can route docs/papers/<id>.yaml even
@@ -76,7 +76,7 @@ class RunContext:
     reproduction_contract: Any = None  # ReproductionContract | None
 
     # Paper-hint invariants (2026-05-29): list[InvariantSpec] from
-    # PaperHint.invariants — loaded from REPROLAB_PAPER_HINT_INVARIANTS_JSON at
+    # PaperHint.invariants — loaded from OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON at
     # run start by run.py (mirrors the scope_spec env-var pattern).  Typed as
     # Any to avoid a top-level import cycle (schemas.InvariantSpec).
     # None / [] means no paper-hint was supplied or the hint has no invariants.
@@ -85,7 +85,7 @@ class RunContext:
     # Benchmark-integrity blocklist (2026-05-31, #7): canonical PaperBench
     # blacklist terms (the paper's own repo, etc.) that NO agent may fetch.
     # Threaded into every agent spec's RuntimeGuard via collect_agent_text →
-    # to_runtime_spec. Auto-loaded from REPROLAB_BLOCKED_TERMS_JSON at run start
+    # to_runtime_spec. Auto-loaded from OPENRESEARCH_BLOCKED_TERMS_JSON at run start
     # (cli.py unions bundle.blacklist_entries() + --blacklist + the arXiv-keyed
     # paper_hints blocklist, then sets the env var — mirrors the scope_spec /
     # paper_hint_invariants pattern). Empty () means no blocklist resolved → the
@@ -105,7 +105,7 @@ class RunContext:
     def __post_init__(self) -> None:
         """Auto-load env-var-backed run config when not already set by the caller.
 
-        Mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py serialises values to
+        Mirrors the OPENRESEARCH_SCOPE_SPEC_JSON pattern: cli.py serialises values to
         JSON and sets the env var before the subprocess is spawned, so every
         RunContext picks them up automatically without a change to run.py. An
         env-var parse failure must never crash a run, so each block is guarded.
@@ -115,9 +115,9 @@ class RunContext:
         import json as _json
         import os as _os
 
-        # paper_hint_invariants ← REPROLAB_PAPER_HINT_INVARIANTS_JSON
+        # paper_hint_invariants ← OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON
         if not self.paper_hint_invariants:
-            _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
+            _inv_json = _os.environ.get("OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON", "").strip()
             if _inv_json:
                 try:
                     from backend.agents.schemas import InvariantSpec as _InvariantSpec
@@ -130,7 +130,7 @@ class RunContext:
                 except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
                     pass
 
-        # blocked_terms ← REPROLAB_BLOCKED_TERMS_JSON (#7) via the shared parser,
+        # blocked_terms ← OPENRESEARCH_BLOCKED_TERMS_JSON (#7) via the shared parser,
         # so RunContext and collect_agent_text seed the RuntimeGuard identically.
         if not self.blocked_terms:
             from backend.agents.runtime.base import blocked_terms_from_env

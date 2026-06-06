@@ -1,0 +1,29 @@
+name: docs-freshness
+
+# Enforces docs/policies/documentation.md on every PR and push to main.
+# Mirrors `make docs-check` exactly. Pure stdlib — no install step.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "docs/policies/current-docs.txt"
+      - "scripts/docs_freshness_check.py"
+      - ".github/workflows/docs-freshness.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "docs/policies/current-docs.txt"
+      - "scripts/docs_freshness_check.py"
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Documentation freshness & consistency
+        run: python3 scripts/docs_freshness_check.py

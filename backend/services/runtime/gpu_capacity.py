@@ -19,7 +19,7 @@ azure               ADAPTER STUB (raises NotImplementedError)   True (future)
 ==================  =========================================  =============
 
 The descriptor reports **raw physical** capacity; the headroom multiplier
-(``REPROLAB_DYNAMIC_GPU_HEADROOM``) is applied by the capacity *gate*, not here,
+(``OPENRESEARCH_DYNAMIC_GPU_HEADROOM``) is applied by the capacity *gate*, not here,
 so this stays a pure observation of the hardware.  Every nvidia-smi touch is
 wrapped so a probe failure degrades to "no GPUs" rather than crashing a run.
 """
@@ -200,7 +200,7 @@ def _normalize_ids(value: Any) -> tuple[str, ...]:
 def _vram_override_gb(ctx: Any) -> float:
     raw = getattr(ctx, "vram_override", None)
     if raw in (None, ""):
-        raw = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
+        raw = os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB")
     try:
         return float(raw) if raw not in (None, "") else 0.0
     except (TypeError, ValueError):

@@ -1,3 +1,9 @@
+<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=docs/superpowers/specs/ -->
+> ⚠️ **ARCHIVED — historical UI-work log, not current-state documentation.**
+> Frozen 2026-06-03 (last entry 2026-05-23). For the current UI architecture see
+> [`README.md`](../../README.md) (UI Pages) and
+> [`CLAUDE.md`](../../CLAUDE.md) ("UI surfaces"). Kept for provenance only.
+
 # UI Progress Log
 
 _Append-only log of UI-facing work. Newest first. Each entry: **what shipped → why → guardrail**. Distill failure modes here so the next session doesn't re-learn them._

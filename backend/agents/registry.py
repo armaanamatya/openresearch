@@ -1,4 +1,4 @@
-"""Agent registry — RLM-path ReproLab agent definitions.
+"""Agent registry — RLM-path OpenResearch agent definitions.
 
 Usage:
     from backend.agents.registry import get_agent_definitions
@@ -22,7 +22,7 @@ from backend.config import get_settings
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """Internal registry entry for a ReproLab agent."""
+    """Internal registry entry for a OpenResearch agent."""
 
     agent_id: str
     role: str

@@ -1,11 +1,11 @@
 """PaperBench subcommand: drives bundle inspection and dry-mode runs.
 
 Mode 1 (no API key required):
-    reprolab paperbench list
-    reprolab paperbench summary --paper-id ftrl
+    openresearch paperbench list
+    openresearch paperbench summary --paper-id ftrl
 
 Mode 2 (dry run — no LLM, placeholder submission only):
-    reprolab paperbench run --paper-id ftrl [--bundles-root third_party/paperbench]
+    openresearch paperbench run --paper-id ftrl [--bundles-root third_party/paperbench]
 
 Status JSON is persisted to ``<runs_root>/paperbench/<run_group_id>/status.json``
 so the frontend can poll it without coupling to the in-process Python state.
@@ -205,7 +205,7 @@ def _run_dry(bundle: PaperBenchBundle, run_dir: Path, status: dict[str, Any]) ->
     if not readme.is_file():
         readme.write_text(
             f"# Placeholder submission for paper `{bundle.paper_id}`\n\n"
-            "This directory was produced by `reprolab paperbench run` in dry mode.\n"
+            "This directory was produced by `openresearch paperbench run` in dry mode.\n"
             "This is a dry-run submission; no pipeline outputs were generated.\n",
             encoding="utf-8",
         )

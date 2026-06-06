@@ -20,7 +20,7 @@
 | **Score ≥ 0.6 target** | **0** |
 
 **Orphaned resources:**
-- 1 active Docker container: `ec8a5bbcae11` (`reprolab/prj_3080fe2a02c20164`) running since `2026-05-26T00:35` UTC — still alive as of audit time, 6+ hours after the run was force-killed. The VAE run was manually salvaged; the container was never cleaned up.
+- 1 active Docker container: `ec8a5bbcae11` (`openresearch/prj_3080fe2a02c20164`) running since `2026-05-26T00:35` UTC — still alive as of audit time, 6+ hours after the run was force-killed. The VAE run was manually salvaged; the container was never cleaned up.
 - 7 exited Docker containers (`Exited (137)`) for prj_8819, prj_6d41, prj_9afa, and smoke-test runs. These are dead but not pruned.
 - No RunPod orphan pods confirmed: the two RunPod runs that failed at preflight (prj_0a77, prj_11e9) never provisioned a pod. The one successful RunPod run (prj_d02bd4) destroyed its pod normally.
 
@@ -139,7 +139,7 @@ failure_class: None, outcome: None
 **Mechanism:** RunPod credit ran to zero mid-session on 2026-05-25 17:41 UTC. All subsequent `run_experiment` calls failed. The transient classifier (PR-ζ) correctly classifies `RUNPOD_BALANCE_TOO_LOW` as `fatal` — no retry occurs, which is correct. However, `failure_class` and `outcome` fields in `experiment_runs.jsonl` show `null` because these runs predated PR-ζ (landed 2026-05-26T05:04 UTC).  
 **Classification: RESOLVED by PR-ζ (post-landing)** — A post-PR-ζ run seeing credit exhaustion will get `failure_class=fatal`, emit a clear fatal event, and stop immediately without burning further compute on futile retries. The user will still need to refill credit — the system cannot fix that — but the failure is now surfaced clearly.
 
-**Note:** The Adam run (prj_6d41) proposed "Switch to Local CPU Sandbox" as an improvement candidate but never tried it because BALANCE_TOO_LOW fired at every attempt before sandbox fallback could be chosen. Post-PR-ζ, sandbox fallback is opt-in via `REPROLAB_SANDBOX_FALLBACK_ENABLED`; it won't auto-trigger on fatal errors by design.
+**Note:** The Adam run (prj_6d41) proposed "Switch to Local CPU Sandbox" as an improvement candidate but never tried it because BALANCE_TOO_LOW fired at every attempt before sandbox fallback could be chosen. Post-PR-ζ, sandbox fallback is opt-in via `OPENRESEARCH_SANDBOX_FALLBACK_ENABLED`; it won't auto-trigger on fatal errors by design.
 
 ---
 
@@ -363,5 +363,5 @@ prj_8819ad4e6e250b73: pid=None, status="running" (never wrote PID)
 
 ### Orphan Docker container
 ```
-ec8a5bbcae11   reprolab/prj_3080fe2a02c20164:env-57444c4ac5c7   Up 6 hours
+ec8a5bbcae11   openresearch/prj_3080fe2a02c20164:env-57444c4ac5c7   Up 6 hours
 ```

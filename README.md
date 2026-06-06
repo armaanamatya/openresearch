@@ -1,6 +1,20 @@
-# ReproLab
+<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+# OpenResearch
 
-Automated research paper reproduction. Given a paper (arXiv link or PDF), ReproLab ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
+> **Doc status:** Current · last verified 2026-06-03 against `backend/` + `CLAUDE.md`.
+> This README is the public front door (source-of-truth tier 3): it must not claim
+> anything the code, [`system_overview.md`](system_overview.md), or
+> [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is enforced by `make docs-check`
+> — see [Documentation](#documentation). There is no `prd.md`; the closest
+> spec is [`docs/design/project-rebuild-spec.md`](docs/design/project-rebuild-spec.md).
+
+Automated research paper reproduction. Given a paper (arXiv link or PDF), OpenResearch ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
+
+> **Status (2026-06-03):** Single-user, locally-run research tool — not a hosted
+> product. End-to-end reproduction works on arXiv IDs and PDFs (see
+> [`best_runs/`](best_runs/README.md) for two scored reproductions). Multi-tenant
+> auth, hosted deployment, and a stable public API are **not** built. See
+> [Current Limitations](#current-limitations).
 
 Built on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm. The paper is offloaded as a REPL variable; an LLM root model writes Python to orchestrate the reproduction through domain-specific primitives. There is no fixed pipeline -- the model decides what to call and when.
 
@@ -115,7 +129,7 @@ cp .env.example .env
 
 # Terminal 2: frontend
 cd frontend
-export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+export OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000
 npm run dev
 # Open http://localhost:3000
 ```
@@ -147,16 +161,25 @@ docker compose up --build
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | One of these | Root model (GPT-5) |
-| `ANTHROPIC_API_KEY` | required | Sub-agents (Sonnet). Leave empty to use Claude OAuth. |
-| `REPROLAB_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` |
-| `REPROLAB_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
-| `REPROLAB_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
-| `REPROLAB_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
-| `REPROLAB_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
-| `REPROLAB_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
+| `OPENAI_API_KEY` | One auth path | Root model when `--model gpt-5` (the default root). |
+| `ANTHROPIC_API_KEY` | Optional | Sub-agents (Sonnet) and `--model claude`. **Leave empty to use Claude CLI OAuth** (`claude login`). A no-credit key does *not* fall back to OAuth — it hard-fails; see `CLAUDE.md` → "RLM auth". |
+| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` |
+| `OPENRESEARCH_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
+| `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
+| `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
+| `OPENRESEARCH_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
 
 See `.env.example` for the full list.
+
+> **Env-var rename (2026-06):** the prefix was renamed `REPROLAB_` → `OPENRESEARCH_`.
+> A backward-compat shim (`backend/config.py::_apply_legacy_env_aliases`) still reads
+> the old `REPROLAB_*` names, so existing deployments and shells keep working
+> unchanged; new setups should use `OPENRESEARCH_*`. The SQLite default likewise
+> moved `reprolab.db` → `openresearch.db` but falls back to an existing `reprolab.db`.
+> One exception with no auto-fallback: if you use the Codex sub-agent and have a
+> `reprolab-readwrite` profile in `~/.codex/`, rename it to `openresearch-readwrite`
+> or set `OPENRESEARCH_CODEX_PROFILE=reprolab-readwrite`.
 
 ## UI Pages
 
@@ -172,7 +195,7 @@ See `.env.example` for the full list.
 
 ```bash
 # Backend tests
-.venv/bin/python -m pytest tests/               # all (~220 tests)
+.venv/bin/python -m pytest tests/               # all (180+ test files)
 .venv/bin/python -m pytest tests/ -n auto        # parallel
 .venv/bin/python -m pytest tests/rlm/            # RLM tests only
 
@@ -231,7 +254,7 @@ docs/                 # Design docs, runbooks, setup guides
 
 ## Dynamic GPU Selection
 
-When `REPROLAB_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
+When `OPENRESEARCH_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
 
 ## LLM Auth Model
 
@@ -251,11 +274,56 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 
 ## Documentation
 
-| Document | Purpose |
+| Document | Purpose | Tier |
+|---|---|---|
+| [system_overview.md](system_overview.md) | Architecture rationale — the "why" and how the pieces fit | 1 |
+| [docs/design/rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM-as-orchestrator architecture reference | 1 |
+| [docs/design/project-rebuild-spec.md](docs/design/project-rebuild-spec.md) | Closest thing to a PRD: the *what*/*why*, framework-agnostic | 1 |
+| [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas, invariants | 2 |
+| [docs/guides/setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions | 3 |
+| [docs/guides/deployment.md](docs/guides/deployment.md) | Deployment guide | 3 |
+| [docs/runbooks/e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook | 3 |
+| [docs/policies/documentation.md](docs/policies/documentation.md) | **Source-of-truth hierarchy + freshness policy** | — |
+
+### Source of truth
+
+There is no `prd.md`. Authority runs **code → `system_overview.md` / design docs →
+`CLAUDE.md` → `README.md`**. When docs disagree, the higher tier wins; when a doc
+disagrees with the code, the **code wins** and the doc is a bug. Full hierarchy
+and the rules for not creating stale docs:
+[`docs/policies/documentation.md`](docs/policies/documentation.md).
+
+Historical material (engineering journals, old run logs, superseded notes) lives
+in [`docs/archive/`](docs/archive/) and under dated `docs/runbooks/` /
+`docs/superpowers/` files — each carries its date or an `ARCHIVED` banner and is
+**never** presented as current.
+
+### Generated artifacts
+
+These are **outputs of runs**, not hand-written docs. They reflect the run that
+produced them and are not regenerated by a docs command (regenerating means
+re-running an expensive reproduction):
+
+| Artifact | What it is |
 |---|---|
-| [system_overview.md](system_overview.md) | Architecture rationale and how the pieces fit together |
-| [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas |
-| [rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM architecture reference |
-| [setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions |
-| [deployment.md](docs/guides/deployment.md) | Deployment guide |
-| [e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook |
+| [`best_runs/`](best_runs/README.md) | Two point-in-time scored reproductions (Adam, VAE) + their full sidecars |
+| `runs/<project_id>/` | Live per-run state: `final_report.{json,md}`, event log, cost ledger, reproduced `code/` (gitignored) |
+| `docs/runbooks/artifacts/<id>/` | A committed reference run captured for a runbook |
+
+Tracked PDFs (`paperbench1.pdf`, `demo_paper.pdf`, `best_runs/adam/code/paper.pdf`)
+are **input fixtures** — the papers being reproduced. Papers don't go stale; they
+are not generated output.
+
+### Documentation freshness
+
+Current-state docs carry a machine-readable marker
+(`<!-- doc-meta: status=current; last-verified=YYYY-MM-DD -->`). A checker enforces
+it — run before pushing docs changes, and in CI on every PR:
+
+```bash
+make docs-check                      # or: python scripts/docs_freshness_check.py
+```
+
+It fails on tracked PDFs in the wrong place, current-state docs missing a freshness
+marker, broken internal links, README references to missing files, or a working-note
+file reappearing at the repo root. See the policy doc for the rules.

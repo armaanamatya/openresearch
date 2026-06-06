@@ -54,7 +54,7 @@ def test_terminal_class_via_record_repair_attempt_also_bypasses():
 
 def test_ordinary_repairable_class_still_refuses(monkeypatch):
     # A normal repairable failure (not terminal) must NOT be bypassed.
-    monkeypatch.setenv("REPROLAB_MIN_REPAIR_ITERATIONS", "2")
+    monkeypatch.setenv("OPENRESEARCH_MIN_REPAIR_ITERATIONS", "2")
     policy = fi.ForcedIterationPolicy(min_iterations=0, remaining_s=lambda: 600.0)
     policy.record_repair_attempt("preflight_blocked")
     refuse, msg = policy.should_refuse()

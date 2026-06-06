@@ -1,12 +1,12 @@
 """Tests for opt-in sandbox fallback after transient retry exhaustion (PR-ζ piece ζ.3).
 
 Verified behaviors:
-  - REPROLAB_RUNPOD_AUTO_FALLBACK=true + nvidia GPU + docker reachable
+  - OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true + nvidia GPU + docker reachable
     → ctx.sandbox_mode flips to SandboxMode.docker after exhausted transient retries
     → sandbox_fallback SSE event emitted with correct payload shape
-  - REPROLAB_RUNPOD_AUTO_FALLBACK=false (default) → no fallback even after exhaustion
-  - REPROLAB_RUNPOD_AUTO_FALLBACK=true + nvidia GPU NOT present → no fallback
-  - REPROLAB_RUNPOD_AUTO_FALLBACK=true + docker NOT reachable → no fallback
+  - OPENRESEARCH_RUNPOD_AUTO_FALLBACK=false (default) → no fallback even after exhaustion
+  - OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true + nvidia GPU NOT present → no fallback
+  - OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true + docker NOT reachable → no fallback
 """
 
 from __future__ import annotations
@@ -76,8 +76,8 @@ def _make_ctx(tmp_path: Path, sandbox_mode=SandboxMode.runpod):
 # ---------------------------------------------------------------------------
 
 def test_fallback_flips_sandbox_mode_when_enabled(tmp_path, monkeypatch):
-    """With REPROLAB_RUNPOD_AUTO_FALLBACK=true + GPU + docker, sandbox_mode flips."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_AUTO_FALLBACK", "true")
+    """With OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true + GPU + docker, sandbox_mode flips."""
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "true")
     ctx = _make_ctx(tmp_path, sandbox_mode=SandboxMode.runpod)
 
     code_dir = tmp_path / "code"
@@ -100,7 +100,7 @@ def test_fallback_flips_sandbox_mode_when_enabled(tmp_path, monkeypatch):
 
 def test_fallback_emits_sandbox_fallback_event(tmp_path, monkeypatch):
     """sandbox_fallback SSE event must carry from/to/reason/attempts fields."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_AUTO_FALLBACK", "true")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "true")
     ctx = _make_ctx(tmp_path, sandbox_mode=SandboxMode.runpod)
 
     code_dir = tmp_path / "code"
@@ -132,8 +132,8 @@ def test_fallback_emits_sandbox_fallback_event(tmp_path, monkeypatch):
 
 
 def test_no_fallback_when_disabled_by_default(tmp_path, monkeypatch):
-    """Default REPROLAB_RUNPOD_AUTO_FALLBACK (unset) → no fallback, mode unchanged."""
-    monkeypatch.delenv("REPROLAB_RUNPOD_AUTO_FALLBACK", raising=False)
+    """Default OPENRESEARCH_RUNPOD_AUTO_FALLBACK (unset) → no fallback, mode unchanged."""
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", raising=False)
     ctx = _make_ctx(tmp_path, sandbox_mode=SandboxMode.runpod)
     original_mode = ctx.sandbox_mode
 
@@ -154,8 +154,8 @@ def test_no_fallback_when_disabled_by_default(tmp_path, monkeypatch):
 
 
 def test_no_fallback_when_no_nvidia_gpu(tmp_path, monkeypatch):
-    """No GPU on host → no fallback even when REPROLAB_RUNPOD_AUTO_FALLBACK=true."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_AUTO_FALLBACK", "true")
+    """No GPU on host → no fallback even when OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true."""
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "true")
     ctx = _make_ctx(tmp_path, sandbox_mode=SandboxMode.runpod)
     original_mode = ctx.sandbox_mode
 

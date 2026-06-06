@@ -32,7 +32,7 @@ def _force_sdk_transport(monkeypatch):
     not bypass the injected SDK mock. The CLI path's empty→fallback is covered by
     tests/agents/rlm/test_claude_oauth_cli_transport.py. Harmless to the
     ClaudeLlmClient-direct tests, which never read the transport env."""
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "sdk")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", "sdk")
 
 
 def _make_client():
@@ -128,7 +128,7 @@ def test_complete_retries_pre_result_aclose_and_recovers():
 
 def test_complete_exhausted_aclose_returns_empty(monkeypatch):
     """When retries are exhausted, complete() returns "" (caller decides)."""
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_SDK_MAX_RETRIES", "1")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_SDK_MAX_RETRIES", "1")
     client = _make_client()
     calls = {"n": 0}
 
@@ -157,19 +157,19 @@ def _oauth_client_with_inner(return_value: str):
 
 
 def test_completion_empty_falls_back_to_noop_repl_turn(monkeypatch):
-    monkeypatch.delenv("REPROLAB_RLM_EMPTY_TURN_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK", raising=False)
     client = _oauth_client_with_inner("")
     out = client.completion("do something")
     assert "```repl" in out and "pass" in out, "empty completion must become a no-op turn"
 
 
 def test_completion_empty_fallback_optout(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RLM_EMPTY_TURN_FALLBACK", "0")
+    monkeypatch.setenv("OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK", "0")
     client = _oauth_client_with_inner("")
     assert client.completion("do something") == ""
 
 
 def test_completion_passthrough_when_nonempty(monkeypatch):
-    monkeypatch.delenv("REPROLAB_RLM_EMPTY_TURN_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK", raising=False)
     client = _oauth_client_with_inner("```repl\nprint(1)\n```")
     assert client.completion("x") == "```repl\nprint(1)\n```"

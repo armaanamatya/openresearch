@@ -55,7 +55,7 @@ def test_destroy_sync_is_idempotent():
     def _fake_get(url: str, **kwargs):
         resp = MagicMock()
         resp.status_code = 200
-        resp.json.return_value = {"name": "reprolab-test"}
+        resp.json.return_value = {"name": "openresearch-test"}
         resp.raise_for_status = MagicMock()
         return resp
 

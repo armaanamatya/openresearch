@@ -46,7 +46,7 @@ Measured as:
 | 7 | Leaderboard data model | **Adopt the cleanup-spec shape: `model_config: {planner, executor, verifier, grader}` + `mode` + `started_at` + `completed_at` in `final_report.json`.** Fill `planner` and `executor` from the run (root model + sub-agent model); leave `verifier` and `grader` `null` until the future picker lands. | Single-string `model` would commit the team to a migration later. Adopting the future shape with nullable unknowns is a strict subset, no contradiction. |
 | 8 | Leaderboard persistence | **Compute at request time from filesystem** (`runs/*/final_report.json` + `demo_status.json`). No SQLite projection in this delivery. | <100 runs locally; the cleanup spec's Phase 4 introduces the projection if needed. Avoid premature persistence. |
 | 9 | Leaderboard endpoint name | **`GET /leaderboard`** on the backend; **`/api/demo/leaderboard`** Next.js proxy; **`/leaderboard`** page route. | Matches the cleanup spec verbatim. `GET /runs/leaderboard` would collide with the `/runs/{id}` family. |
-| 10 | Demo-gate behavior | **`GET /leaderboard` is NOT gated by `REPROLAB_DEMO_SECRET`.** | The gate is for mutating routes that start runs. Reads are public; same policy as `GET /runs`. |
+| 10 | Demo-gate behavior | **`GET /leaderboard` is NOT gated by `OPENRESEARCH_DEMO_SECRET`.** | The gate is for mutating routes that start runs. Reads are public; same policy as `GET /runs`. |
 | 11 | Replay support | **None added.** The existing SSE-replay path (server replays `dashboard_events.jsonl` on reconnect) already works for completed runs — the lab page consumes events identically live vs. replayed. New work would be redundant. | The user's spec asks for replay; verify it works as-is, fix any gap if found. Don't add a parallel "replay mode." |
 | 12 | Playwright scope in this delivery | **In-session: criteria 3, 5, 6, 7, 8** (driven by `npm run dev` + fixtures + playwright MCP). **Deferred (docker-dependent): criteria 1, 2, 4** — they require `docker compose up --build` + real LLM creds + a real run. Plan documents the deferred criteria; commit boundaries make in-session progress durable. | Honest scoping. The user's spec says "FAIL or SKIP means not done — keep going." Across sessions, yes. In one session: finish the in-session bucket cleanly. |
 
@@ -274,7 +274,7 @@ The only new corpus-exposure surface to audit: `paper_title` in `LeaderboardRow`
 - `test_leaderboard_order_by`: each `order_by` produces deterministic ordering.
 - `test_final_report_models_field_written`: invoke `_finalize` with a known `llm_model` + `agent_model`, assert disk file carries them.
 - `test_final_report_models_field_back_compat`: load an old-shape JSON, assert it parses and defaults are filled.
-- `test_demo_gate_does_not_apply_to_leaderboard`: with `REPROLAB_DEMO_SECRET=foo` set, `GET /leaderboard` returns 200 without the header.
+- `test_demo_gate_does_not_apply_to_leaderboard`: with `OPENRESEARCH_DEMO_SECRET=foo` set, `GET /leaderboard` returns 200 without the header.
 - Sanitizer sanity (regression): `test_sanitize_iteration_unchanged_after_leaderboard`: existing sanitizer fixtures still pass — confirms no widening occurred.
 
 ### 6.2 Frontend (vitest)

@@ -45,7 +45,7 @@ Verified by reading:
   not route through the engine — it calls `selected_runtime.run_agent()`
   directly. The engine path is correct; the invoke path is the bug.
 - `backend/agents/rlm/primitives.py:89` — `_DEFAULT_PRE_EMIT_STALL_S = 240.0`,
-  override-able via `REPROLAB_PRE_EMIT_STALL_S`.
+  override-able via `OPENRESEARCH_PRE_EMIT_STALL_S`.
 - `backend/agents/rlm/forced_iteration.py` — 494-line module; provides the
   pattern (thread-local stack + `LocalREPL._final_var` patch + context manager)
   that `PlateauPolicy` will mirror.
@@ -94,7 +94,7 @@ tokens.
 
 3. **Drop pre-emit stall threshold to 60s.** `_DEFAULT_PRE_EMIT_STALL_S =
    240` is excessive once we resume from partial. Set to 60. Tune via
-   `REPROLAB_PRE_EMIT_STALL_S` if false positives appear.
+   `OPENRESEARCH_PRE_EMIT_STALL_S` if false positives appear.
 
 Existing retry cap (`_MAX_TRANSIENT_RETRIES = 3` at primitives.py:85) is
 unchanged — beyond 3 attempts we still fail to user.
@@ -149,9 +149,9 @@ Logic:
 
 ```
 if iteration_count < forced_iteration_floor: defer to forced_iteration policy
-elif len(rubric_history) >= REPROLAB_PLATEAU_WINDOW:
+elif len(rubric_history) >= OPENRESEARCH_PLATEAU_WINDOW:
     delta = max(history[-WINDOW:]) - min(history[-WINDOW:])
-    if delta < REPROLAB_PLATEAU_EPSILON:
+    if delta < OPENRESEARCH_PLATEAU_EPSILON:
         emit run_warning code="plateau_detected"
         AUTHORIZE next FINAL_VAR  # hint, not force
 ```
@@ -164,13 +164,13 @@ avoids cutting off legitimately-active exploration.
 Composition with forced_iteration: floor is unchanged; plateau lives above it.
 Both push onto the same thread-local policy stack.
 
-Defaults: `REPROLAB_PLATEAU_EPSILON=0.02`, `REPROLAB_PLATEAU_WINDOW=2`.
+Defaults: `OPENRESEARCH_PLATEAU_EPSILON=0.02`, `OPENRESEARCH_PLATEAU_WINDOW=2`.
 
 **C3: Hermes audit cadence.**
 
 Add `should_run_audit(iteration_n, last_audit_iter, mode)` gate in
 `backend/hermes_audit/providers.py`. Default cadence: iter 0, every Nth iter
-(N=`REPROLAB_HERMES_AUDIT_CADENCE`, default 3), and final iter (triggered when
+(N=`OPENRESEARCH_HERMES_AUDIT_CADENCE`, default 3), and final iter (triggered when
 a FINAL_VAR is accepted).
 
 **GATED ON OWNER SIGN-OFF.** The audit chain may rely on per-iteration audit for
@@ -198,7 +198,7 @@ Defer until Phases 0-2 measurements show whether it would meaningfully help.
 - Root model auth path. `claude-oauth` continues to ride the existing 98% cache
   hit rate.
 - RunPod sandbox or dynamic GPU resolution.
-- `REPROLAB_MIN_RUBRIC_ITERATIONS` semantics (still a floor).
+- `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` semantics (still a floor).
 - `_MAX_TRANSIENT_RETRIES = 3` retry cap.
 
 ## Code-touchpoint diff plan
@@ -349,13 +349,13 @@ Push `plateau_policy(...)` onto the same scope as `forced_iteration_policy(...)`
 
 **`backend/agents/rlm/rubric_guard.py`**
 
-Bound `repair_context` to `REPROLAB_REPAIR_CONTEXT_MAX_BYTES` (default 2048).
+Bound `repair_context` to `OPENRESEARCH_REPAIR_CONTEXT_MAX_BYTES` (default 2048).
 Truncate-with-marker.
 
 **`backend/hermes_audit/providers.py` (C3 — gated)**
 
 Add `should_run_audit(iteration_n, last_audit_iter, mode) -> bool`. Default
-cadence: iter == 0, (iter - last_audit_iter) >= REPROLAB_HERMES_AUDIT_CADENCE
+cadence: iter == 0, (iter - last_audit_iter) >= OPENRESEARCH_HERMES_AUDIT_CADENCE
 (default 3), or mode == "final". Wire the gate at every audit call site.
 
 ### Files not touched
@@ -399,7 +399,7 @@ line and trace.
 
 ### Phase 1 gate — Retry-burst eliminated
 
-**Setup:** add `REPROLAB_FORCE_PRE_EMIT_HANG_AT_ATTEMPT=1` (test-only env var)
+**Setup:** add `OPENRESEARCH_FORCE_PRE_EMIT_HANG_AT_ATTEMPT=1` (test-only env var)
 that simulates an aclose hang on the first implement_baseline attempt.
 
 **PASS condition 1:** the second attempt's `tokens_in` is < 30% of the first
@@ -424,8 +424,8 @@ across sub-agent rows in a single 10-iteration run.
   - If SDK does not support cache_control and we do not bypass, record the
     result and skip this gate.
 
-**C2 plateau early exit:** SDAR run with `REPROLAB_PLATEAU_EPSILON=0.02`,
-`REPROLAB_PLATEAU_WINDOW=2` terminates 3-5 iterations earlier than baseline AND
+**C2 plateau early exit:** SDAR run with `OPENRESEARCH_PLATEAU_EPSILON=0.02`,
+`OPENRESEARCH_PLATEAU_WINDOW=2` terminates 3-5 iterations earlier than baseline AND
 a `plateau_detected` warning event fires before FINAL_VAR.
 
 **C3 audit cadence:** `hermes_audit_*` row count ≤ `ceil(iteration_count / 3)
@@ -457,7 +457,7 @@ Track per-week:
    priorities shift — measurement is what tells us.
 4. **Pre-emit stall threshold drop 240→60s** may produce false-positive hang
    triggers on slow-but-honest sub-agents. Tune via
-   `REPROLAB_PRE_EMIT_STALL_S` if observed.
+   `OPENRESEARCH_PRE_EMIT_STALL_S` if observed.
 5. **PlateauPolicy false positives** — two zero-delta iterations during active
    exploration would prematurely hint at exit. Mitigation: the hint is advisory,
    not forced; root chooses.
@@ -489,7 +489,7 @@ verified. Each phase ships independently.
 - **`dashboard_events.jsonl`** — new `subagent_usage` event flows through it
   generically. No SSE allowlist entry needed.
 - **`cost_ledger.jsonl`** — schema unchanged; only consumer-side wire-up changes.
-- **`REPROLAB_FORCE_SANDBOX`, `REPROLAB_DYNAMIC_GPU`** — orthogonal; no
+- **`OPENRESEARCH_FORCE_SANDBOX`, `OPENRESEARCH_DYNAMIC_GPU`** — orthogonal; no
   interaction.
 - **`claude-oauth` subscription auth path** — preserved; this is what the
   measurement counts AGAINST.
@@ -744,10 +744,10 @@ Sub-agent tokens (in `code/cost_ledger.jsonl`, old subprocess path):
 
 **Suggested fix options:**
 1. `train.py` should import CPU-only torch (no CUDA URL) in local sandbox mode, or the generated Dockerfile should detect local vs GPU sandbox and use `torch` (CPU wheel, ~200MB) instead of `torch+cu118` (~2.5GB).
-2. Alternatively, set `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` to > 7200 for local dev, or pass `--no-cache-dir` caching hint.
+2. Alternatively, set `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` to > 7200 for local dev, or pass `--no-cache-dir` caching hint.
 3. The pre-flight validator could detect Dockerfiles with CUDA wheel downloads and warn before wasting build time.
 
-**Status:** Run is continuing in repair loop — RLM root received `suggested_fix: "reduce train.py epochs OR set REPROLAB_RUN_EXPERIMENT_TIMEOUT_S higher"` and started a new `implement_baseline` pass.
+**Status:** Run is continuing in repair loop — RLM root received `suggested_fix: "reduce train.py epochs OR set OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S higher"` and started a new `implement_baseline` pass.
 
 ### Phase 0 validation update (BUG-LR-008 fix scope note)
 
@@ -818,8 +818,8 @@ Three independent failures combined to produce 0/6 areas, all `degraded_no_metri
 
 ### Why RunPod wasn't used
 
-- `.env` has `REPROLAB_DEFAULT_SANDBOX=runpod` ✓ (correct)
-- `frontend/src/app/lab/page.tsx:38` reads `process.env.REPROLAB_DEFAULT_SANDBOX` → passes as `serverDefaultSandbox="runpod"` prop ✓
+- `.env` has `OPENRESEARCH_DEFAULT_SANDBOX=runpod` ✓ (correct)
+- `frontend/src/app/lab/page.tsx:38` reads `process.env.OPENRESEARCH_DEFAULT_SANDBOX` → passes as `serverDefaultSandbox="runpod"` prop ✓
 - `lab-shell.tsx:181`: `readUserPrefs().sandbox ?? serverDefaultSandbox ?? "docker"`
 - **User's browser localStorage** had `sandbox: "local"` saved from a previous manual selection → that took precedence over `serverDefaultSandbox`
 
@@ -842,7 +842,7 @@ Three independent failures combined to produce 0/6 areas, all `degraded_no_metri
 ### Fix 2: BUG-LR-010 — BASELINE_EXTRA_GUIDANCE enforces real Qwen weights (permanent)
 
 **Files changed:**
-- `.env` — added `REPROLAB_BASELINE_EXTRA_GUIDANCE` with SDAR-specific instructions:
+- `.env` — added `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` with SDAR-specific instructions:
   - Load `Qwen/Qwen3-1.7B-Instruct` + `Qwen/Qwen2.5-3B-Instruct` via `AutoModelForCausalLM.from_pretrained` (no surrogate)
   - Use `FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04` base in Dockerfile
   - Only install: transformers, accelerate, datasets, trl, peft, sentencepiece, alfworld
@@ -852,7 +852,7 @@ Three independent failures combined to produce 0/6 areas, all `degraded_no_metri
 
 ### Fix 3: `.env` RunPod image — devel → runtime (minor)
 
-- `REPROLAB_RUNPOD_IMAGE` changed from `devel-ubuntu22.04` to `runtime-ubuntu22.04`
+- `OPENRESEARCH_RUNPOD_IMAGE` changed from `devel-ubuntu22.04` to `runtime-ubuntu22.04`
 - The `devel` variant includes NVCC + full CUDA SDK (~18GB pod pull); SDAR never compiles CUDA kernels
 - Saves 5–10 min pod provisioning time and ~$0.50–1.50 per run
 
@@ -863,9 +863,9 @@ Three independent failures combined to produce 0/6 areas, all `degraded_no_metri
 Before starting the next SDAR reproduction:
 
 - [ ] In the lab UI, verify the **sandbox selector shows "RunPod"** (not "local" or "docker") before clicking Submit
-- [ ] Confirm `.env` `REPROLAB_BASELINE_EXTRA_GUIDANCE` is set (it is after this session's fix)
-- [ ] Confirm `.env` `REPROLAB_RUNPOD_IMAGE` is `runtime` not `devel` (fixed)
-- [ ] Confirm `REPROLAB_DEFAULT_SANDBOX=runpod` in `.env` (already correct)
+- [ ] Confirm `.env` `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` is set (it is after this session's fix)
+- [ ] Confirm `.env` `OPENRESEARCH_RUNPOD_IMAGE` is `runtime` not `devel` (fixed)
+- [ ] Confirm `OPENRESEARCH_DEFAULT_SANDBOX=runpod` in `.env` (already correct)
 - [ ] Watch for `detect_environment` in the run artifacts — Dockerfile should start with `FROM runpod/pytorch:...`
 - [ ] Watch for `implement_baseline` pre-flight PASS on attempt 1 (no more surrogate model blocks)
 - [ ] Watch `cost_ledger.jsonl` in run ROOT (not `code/`) for `subagent_usage` rows (BUG-LR-008 fix validation)

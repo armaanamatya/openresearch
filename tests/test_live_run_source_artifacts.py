@@ -30,7 +30,7 @@ def test_live_run_prepares_fixture_pdf_and_benchmark_bundle(tmp_path: Path) -> N
     assert benchmark["overallScore"] == 91.4
 
     comparison = json.loads((code_dir / "paperbench_comparison.json").read_text())
-    assert comparison["paperbench_task_id"] == "reprolab-demo/ppo-cartpole-v1"
+    assert comparison["paperbench_task_id"] == "openresearch-demo/ppo-cartpole-v1"
     assert comparison["result"]["status"] == "reproduced_with_caveats"
 
 

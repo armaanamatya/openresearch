@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Project** | OpenResearch / ReproLab — autonomous end-to-end reproduction of ML papers (ingest → derive rubric → implement → train on real GPUs → score against the paper's own claims) |
+| **Project** | OpenResearch / OpenResearch — autonomous end-to-end reproduction of ML papers (ingest → derive rubric → implement → train on real GPUs → score against the paper's own claims) |
 | **Principal investigator** | A. Amatya |
 | **Target** | *Self-Distilled Agentic Reinforcement Learning* (SDAR), arXiv 2605.15155v1 — **Tier-2 "smallest-two" scope** (Qwen3-1.7B + Qwen2.5-3B, GRPO + SDAR, full 150 steps, one 24–48 GB GPU) |
 | **Scope of this ask** | **5 scoped-faithful runs**, costed across **all supported LLM back-ends** |

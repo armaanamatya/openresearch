@@ -1,3 +1,8 @@
+<!-- doc-meta: status=archived; archived=2026-06-03 -->
+> ⚠️ **ARCHIVED — historical run log, NOT current.**
+> Frozen 2026-06-03 (last entry 2026-05-22). Current run results live in the
+> live leaderboard and [`best_runs/`](../../best_runs/README.md). Kept for provenance.
+
 # Run Log
 
 Every paper-reproduction run and its outcome. **Leaf score** = the authoritative

@@ -25,7 +25,7 @@ def _runs_root() -> Path:
     import os as _os
     from backend.config import get_settings as _gs
     s = _gs()
-    env_val = _os.environ.get("REPROLAB_RUNS_ROOT")
+    env_val = _os.environ.get("OPENRESEARCH_RUNS_ROOT")
     if s.runs_root is not None:
         return Path(s.runs_root)
     if env_val:

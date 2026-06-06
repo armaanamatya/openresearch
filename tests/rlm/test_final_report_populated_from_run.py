@@ -49,7 +49,7 @@ def test_finalize_writes_planner_executor_and_timestamps(tmp_path: Path):
     assert payload["models"]["planner"] == "gpt-5"
     assert payload["models"]["executor"] == "claude-sonnet-4-6"
     # verifier == grader == the rubric-scoring client (ctx.llm_client → llm_model). The
-    # per-role picker landed (REPROLAB_ACCELERATOR_SCOPE): these are no longer null stubs.
+    # per-role picker landed (OPENRESEARCH_ACCELERATOR_SCOPE): these are no longer null stubs.
     # Under the default scope="navigation" the grader stays the strong root/primitive model.
     assert payload["models"]["verifier"] == "gpt-5"
     assert payload["models"]["grader"] == "gpt-5"

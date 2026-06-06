@@ -1,7 +1,7 @@
-# ReproLab TUI — Terminal Runs Monitor — Design
+# OpenResearch TUI — Terminal Runs Monitor — Design
 
 **Status:** proposed (2026-05-25)
-**Spec target:** `reprolab tui` — a read-only terminal dashboard for observing run state, sandbox/GPU usage, log tails, and rubric scores across local + RunPod runs.
+**Spec target:** `openresearch tui` — a read-only terminal dashboard for observing run state, sandbox/GPU usage, log tails, and rubric scores across local + RunPod runs.
 
 ---
 
@@ -21,7 +21,7 @@ User-requested attributes: **robust, succinct, elegant.** That eliminates "big m
 
 ```
                 ┌─────────────────────────────────┐
-                │  reprolab tui  (Textual app)    │
+                │  openresearch tui  (Textual app)    │
                 ├─────────────────────────────────┤
                 │  RunList     (left, polls       │
                 │              runs/ dir)         │
@@ -67,7 +67,7 @@ User-requested attributes: **robust, succinct, elegant.** That eliminates "big m
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│  reprolab TUI                                                  q quit  ? help │
+│  openresearch TUI                                                  q quit  ? help │
 ├──────────────┬────────────────────────────────────────────────────────────────┤
 │ Active (2)   │ ▸ VAE  1312.6114                          rubric: pending     │
 │ ● VAE        │ ──────────────────────────────────────────────────────────   │
@@ -131,7 +131,7 @@ r              force refresh (rare — most updates are inotify-driven)
 ## CLI surface
 
 ```
-reprolab tui [PROJECT_ID]
+openresearch tui [PROJECT_ID]
   --runs-root PATH       Override runs/ location (default from settings/env)
   --refresh N            Polling interval seconds (default 5)
   --no-color             Disable ANSI colors
@@ -150,8 +150,8 @@ Entry point: add a new Click command to `backend/cli.py` next to `reproduce` / `
 @click.option("--no-color", is_flag=True)
 def cmd_tui(project_id, runs_root, refresh, no_color):
     """Launch the terminal runs monitor."""
-    from backend.cli_tui.app import ReproLabTUI
-    ReproLabTUI(runs_root=runs_root, project_id=project_id, refresh_s=refresh,
+    from backend.cli_tui.app import OpenResearchTUI
+    OpenResearchTUI(runs_root=runs_root, project_id=project_id, refresh_s=refresh,
                 color=not no_color).run()
 ```
 
@@ -162,7 +162,7 @@ def cmd_tui(project_id, runs_root, refresh, no_color):
 ```
 backend/cli_tui/
 ├── __init__.py
-├── app.py            # ReproLabTUI Textual app + main bindings
+├── app.py            # OpenResearchTUI Textual app + main bindings
 ├── run_list.py       # RunList widget — left sidebar
 ├── run_detail.py     # RunDetail widget — right pane + tabs
 ├── data/
@@ -192,11 +192,11 @@ UI widgets are not unit-tested at the pixel level (Textual's snapshot tooling is
 
 | Case | Behavior |
 |---|---|
-| `runs/` empty | RunList shows "No runs yet. Start one with `reprolab reproduce <paper>`." |
+| `runs/` empty | RunList shows "No runs yet. Start one with `openresearch reproduce <paper>`." |
 | `runs/<id>/demo_status.json` malformed | Show the run with status="error reading status"; don't crash. |
 | `exec.log` rotated (deleted + recreated) | log_tailer reopens; UI shows a "—— log rotated ——" separator. |
 | `runs/<id>` deleted while selected | Selected run shows "[deleted]" banner; auto-select first active or None. |
-| RunPod API returns 401 | Pod pane shows "RunPod auth missing — check REPROLAB_RUNPOD_API_KEY". TUI keeps running. |
+| RunPod API returns 401 | Pod pane shows "RunPod auth missing — check OPENRESEARCH_RUNPOD_API_KEY". TUI keeps running. |
 | nvidia-smi missing | GPU pane shows "no NVIDIA GPU detected". |
 | Backend writing demo_status mid-read | Atomic-write contract is the backend's existing invariant (already true); we read once per inotify event, retry on JSONDecodeError. |
 | Very long log lines | Wrap at terminal width; don't truncate (it's a log viewer). |
@@ -231,7 +231,7 @@ UI widgets are not unit-tested at the pixel level (Textual's snapshot tooling is
 | 2 | Textual app skeleton + RunList widget — boots, lists runs, navigation works | smoke test that app starts |
 | 3 | RunDetail header + Overview tab | snapshot of header rendering |
 | 4 | Logs / Events / Costs / Rubric tabs | data flow into widgets |
-| 5 | CLI integration (`reprolab tui`), keybindings, help overlay, docs in README | end-to-end smoke against fixture runs |
+| 5 | CLI integration (`openresearch tui`), keybindings, help overlay, docs in README | end-to-end smoke against fixture runs |
 
 Codex adversarial review after phase 5: file race conditions, nvidia-smi parsing robustness, RunPod auth error paths.
 

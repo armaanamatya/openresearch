@@ -115,7 +115,7 @@ gate** → commit as `lolout1` (no trailer).
 | `151be07` | **F-29** | rlm: surface degraded paper-text as `demo_status.json` `warnings` (observe-first — did **NOT** flip `allow_lossy` default; PR-ρ deferral stands). `_assert_paper_text_precondition` now returns the reason; `_write_demo_status` gained a `warnings` kwarg |
 | `839df3d` | **F-30** | cli: reject `paper_text`/`document` title via extracted `_is_noise_title`. **⚠ SUPERSEDED by sdar `e791c60` — DROP on merge (§3.3).** |
 | `e45c993` | **F-31** | ingestion: validated-cache reuse for `raw_paper.{pdf,html}` (+ `force_refetch` hatch); safe — attempt-isolation archives raw files before a different paper ingests |
-| `88a9380` | **F-06** | rlm: reset two-experiment `FINAL_VAR` guard at the real turn boundary in `ReproLabRLMLogger.log()` (was only reset on a refusal → false refusals; W-9 sibling) |
+| `88a9380` | **F-06** | rlm: reset two-experiment `FINAL_VAR` guard at the real turn boundary in `OpenResearchRLMLogger.log()` (was only reset on a refusal → false refusals; W-9 sibling) |
 | `d5b24cf` | **F-07** | rlm: inline `disk_exhausted` haystack detector (ENOSPC/errno 28/disk quota) — was "unknown" |
 | `f0da033` | **F-08** | rlm: classify HF gated-repo 401/403 → `missing_dataset`(+auth extra); add `nccl_timeout` class for NCCL collective hangs |
 | `2daa70c` | **F-03** | rlm: gate `no such file`/`errno 2` on a config/source co-signal in `_data_load_failure_is_code_bug`; drop standalone `has no attribute` (AttributeError already in `_CODE_BUG_RE`) |
@@ -199,7 +199,7 @@ and skip F-30. Same end state, smaller conflict blasts.
 - [ ] `pytest tests/ -q` green (0 failures) on the integrated branch.
 - [ ] F-30 NOT double-applied (only sdar's `_is_noise_title`; `"document"` grafted; one test file).
 - [ ] `_write_demo_status` still accepts `warnings=`; `_assert_paper_text_precondition` still returns the reason.
-- [ ] F-06: `ReproLabRLMLogger.log()` still calls `pol.on_iteration_advance()`; sdar's terminal-OOM bypass and this reset don't fight (different triggers).
+- [ ] F-06: `OpenResearchRLMLogger.log()` still calls `pol.on_iteration_advance()`; sdar's terminal-OOM bypass and this reset don't fight (different triggers).
 - [ ] F-03 co-signal clause intact in `_data_load_failure_is_code_bug`; not undone by `12b8590`.
 - [ ] Run-output `runs/` artifacts NOT committed.
 
@@ -217,7 +217,7 @@ touching it** (line anchors will have drifted post-merge — match on unique con
   method files to the front + **head+tail** slice so end-of-file gate logic reaches the grader. Plan
   (designed, not yet built): add `_evidence_priority(rel)` + `_truncate_head_tail(data,cap)`, sort
   candidates, give priority files a larger cap. **Score-moving + LLM-mediated → gate behind a
-  `REPROLAB_GRADER_*` env (default-on) or make it strictly-additive (always keep the head, *add* the
+  `OPENRESEARCH_GRADER_*` env (default-on) or make it strictly-additive (always keep the head, *add* the
   tail of method files).** Test `_gather_evidence` deterministically (no LLM).
 - **F-04** `l/l/small` — escalation loop misses watchdog-killed OOM. **Designed approach (use it):**
   the `_WatchdogKilled` return dict (`primitives.py` ~L2963) has no `exit_code`/infra flag, so the
@@ -239,7 +239,7 @@ touching it** (line anchors will have drifted post-merge — match on unique con
   no-amend path. **Do this against MERGED report.py.**
 - **F-35** `l/m/medium` (observe-first, KNOWN-pending) — §5c programmatic citation-clamp + B2 spec-gate
   short-circuit in `leaf_scorer.py`. Wire `_citation_validates(justification, evidence)` + clamp→0 under
-  `REPROLAB_RUBRIC_REQUIRE_CITATION` (emit would-clamp delta when enforce-off); early-return the
+  `OPENRESEARCH_RUBRIC_REQUIRE_CITATION` (emit would-clamp delta when enforce-off); early-return the
   hard-capped result before building grader batches when an invariant tripped. **Observe-first: enforce
   only after a real SDAR run confirms no spurious loss. Do LAST in Phase B.**
 
@@ -280,7 +280,7 @@ exfil-taint).
 - **One tested commit per finding**; red-before/green-after; **full-suite zero-regression gate** is the
   phase exit gate (run it before advancing).
 - **Only TIGHTEN existing logic** — no new deps/rewrites/frameworks. If a fix balloons, STOP and flag.
-- **Score/outcome-movers ship observe-first behind a `REPROLAB_*` hatch.** Pure fidelity fixes whose
+- **Score/outcome-movers ship observe-first behind a `OPENRESEARCH_*` hatch.** Pure fidelity fixes whose
   change is a strict improvement (F-27/F-32 style) ship default-on; genuine score-direction-unbounded
   changes (F-33, F-35) are gated/observe-first.
 - **Don't hallucinate** — re-Read the cited region right before editing; match `Edit` on unique content,

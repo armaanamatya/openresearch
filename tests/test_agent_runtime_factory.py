@@ -18,7 +18,7 @@ from backend.agents.runtime import (
 
 
 def test_selected_provider_accepts_aliases(monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_LLM_PROVIDER", raising=False)
 
     assert selected_provider("anthropic") == "anthropic"
     assert selected_provider("claude") == "anthropic"
@@ -27,7 +27,7 @@ def test_selected_provider_accepts_aliases(monkeypatch) -> None:
 
 
 def test_selected_provider_reads_env(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENRESEARCH_LLM_PROVIDER", "openai")
 
     assert selected_provider() == "openai"
 
@@ -65,14 +65,14 @@ def test_validate_provider_credentials_checks_matching_env(monkeypatch) -> None:
     assert validate_provider_credentials("openai") == "openai"
 
 
-def test_validate_provider_credentials_accepts_reprolab_openai_key(
+def test_validate_provider_credentials_accepts_openresearch_openai_key(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
-        lambda **_: SimpleNamespace(openai_api_key="sk-reprolab", openai_admin_key=""),
+        lambda **_: SimpleNamespace(openai_api_key="sk-openresearch", openai_admin_key=""),
     )
 
     assert validate_provider_credentials("openai") == "openai"
@@ -86,7 +86,7 @@ def test_configure_openai_agents_sdk_credentials_sets_default_key(
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
-        lambda **_: SimpleNamespace(openai_api_key="sk-reprolab", openai_admin_key=""),
+        lambda **_: SimpleNamespace(openai_api_key="sk-openresearch", openai_admin_key=""),
     )
 
     configure_openai_agents_sdk_credentials(
@@ -95,8 +95,8 @@ def test_configure_openai_agents_sdk_credentials_sets_default_key(
         )
     )
 
-    assert configured == [("sk-reprolab", True)]
-    assert os.environ["OPENAI_API_KEY"] == "sk-reprolab"
+    assert configured == [("sk-openresearch", True)]
+    assert os.environ["OPENAI_API_KEY"] == "sk-openresearch"
 
 
 def test_make_runtime_instantiates_without_credentials(monkeypatch) -> None:

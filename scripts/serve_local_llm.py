@@ -5,8 +5,8 @@ Leases GPUs from the shared :class:`LocalGpuAllocator` (same allocator used by
 ``batch_reproduce.py``), so paper-reproduction runs automatically get the
 remaining cards while the accelerator server holds its own exclusive lease.
 
-The OpenAI-compatible endpoint emitted here is consumed by ReproLab when the
-environment variable ``REPROLAB_ACCELERATOR=local`` (or ``auto``) is set.
+The OpenAI-compatible endpoint emitted here is consumed by OpenResearch when the
+environment variable ``OPENRESEARCH_ACCELERATOR=local`` (or ``auto``) is set.
 Upstream code constructs an ``openai.OpenAI(base_url="http://{host}:{port}/v1",
 api_key=<api-key>)`` client and routes cheap accelerator calls through it
 instead of burning Sonnet/GPT-5 tokens.
@@ -305,9 +305,9 @@ def _wait_for_readiness(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stand up a local vLLM OpenAI-compatible server for the ReproLab "
+            "Stand up a local vLLM OpenAI-compatible server for the OpenResearch "
             "accelerator tier. Leases GPUs via LocalGpuAllocator so paper runs "
-            "get the remaining cards. Set REPROLAB_ACCELERATOR=local (or auto) "
+            "get the remaining cards. Set OPENRESEARCH_ACCELERATOR=local (or auto) "
             "to route cheap RLM calls through this endpoint."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -529,7 +529,7 @@ def main() -> int:  # noqa: C901 (complexity is inherent to lifecycle management
             "serve_local_llm: vLLM ready at %s (model=%s, tp=%d, gpus=%s)",
             endpoint, model, tp, list(lease.gpu_indices),
         )
-        print(f"REPROLAB_ACCELERATOR_ENDPOINT={endpoint}", flush=True)
+        print(f"OPENRESEARCH_ACCELERATOR_ENDPOINT={endpoint}", flush=True)
 
         # ------------------------------------------------------------------
         # Step 6: Foreground vs background exit

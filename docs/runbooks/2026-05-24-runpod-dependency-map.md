@@ -61,7 +61,7 @@
 | Surrogate TinyLM instead of real Qwen | All metrics = 0 because synthetic | NO STUB prompt block forbids surrogates | `4b6798f` |
 | Agent forgets `assert os.path.exists(...)` after download | ALFWorld/SearchQA setup silently produces empty data | DATASET SETUP prompt requires asserts after each download | `62c98e6` |
 | β=2 written instead of paper's β=10 | Hyperparams diverge from rubric leaves | Rubric auto-checklist surfaces leaves; per-paper YAML override (e.g. SDAR's) carries exact hyperparams | `62c98e6` |
-| Agent runs full eval on single GPU → timeout | 32-task × 2-env × 2-model eval takes >2hr | Scope guidance env var `REPROLAB_BASELINE_EXTRA_GUIDANCE`; smaller `--max-wall-clock` | `9f5233c` |
+| Agent runs full eval on single GPU → timeout | 32-task × 2-env × 2-model eval takes >2hr | Scope guidance env var `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`; smaller `--max-wall-clock` | `9f5233c` |
 | Metrics not written incrementally | Timeout produces zero metrics | Prompt instructs agent to write metrics.json in try/finally — **partially adopted; verify on next attempt** | (in extra-guidance) |
 
 ## Canonical `requirements.txt` pattern for any LLM paper

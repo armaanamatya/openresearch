@@ -87,7 +87,7 @@ def test_local_docker_backend_delegates_lifecycle(tmp_path: Path) -> None:
         assert client.containers.created_kwargs["mem_limit"] == "4g"
         assert client.containers.created_kwargs["nano_cpus"] == 2_000_000_000
         assert client.containers.created_kwargs["device_requests"][0].count == -1
-        assert client.containers.created_kwargs["environment"]["REPROLAB_GPU_MODE"] == "prefer"
+        assert client.containers.created_kwargs["environment"]["OPENRESEARCH_GPU_MODE"] == "prefer"
 
         result = await backend.exec(sandbox, "python train.py", timeout=30)
         assert result.succeeded

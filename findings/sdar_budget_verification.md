@@ -14,7 +14,7 @@
 | Adam root: out 2,075 / cache-read 72,978 / cc+fresh 13,641 / ~89k / 19 iter | `best_runs/adam` | **exact** |
 | Adam rubric 0.741 | `best_runs/adam/final_report.json` | **exact** (0.7413) |
 | GPU catalog: 4090 $0.34 · A6000 $0.49 · L40S $0.86 · A100-40 $1.19 · A100-80 $1.89 · H100-80 $4.39 · H200 $7.99 (SECURE) | `gpu_catalog.py` | **all 7 exact** |
-| Budget caps `REPROLAB_MAX_RUN_GPU_USD`/`_PER_HOUR` default 10.0 | `cli.py` | **confirmed** |
+| Budget caps `OPENRESEARCH_MAX_RUN_GPU_USD`/`_PER_HOUR` default 10.0 | `cli.py` | **confirmed** |
 | 11 attempts from the 2026-05-28 death-spiral | `prj_09047604.../attempts` | **exact** (11 dated 20260528) |
 
 ## Verified — arithmetic (recomputed)

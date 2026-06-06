@@ -1,4 +1,4 @@
-"""Nous Hermes oversight layer for ReproLab."""
+"""Nous Hermes oversight layer for OpenResearch."""
 
 from backend.hermes_audit.client import NousHermesClient
 from backend.hermes_audit.memory import (

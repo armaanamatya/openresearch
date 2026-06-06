@@ -4,7 +4,7 @@ This test exercises the FULL orchestrator path end-to-end:
 
     run_pipeline_rlm
       → RLM(backend=<stub>, custom_tools=build_stub_custom_tools(...))
-      → ReproLabRLMLogger.log() (sanitize + checkpoint + emit)
+      → OpenResearchRLMLogger.log() (sanitize + checkpoint + emit)
       → IterationCheckpointer.record() (SQLite event store + snapshot JSONL)
       → build_final_report() + write_final_report_rlm()
       → RLMRunResult
@@ -251,7 +251,7 @@ class TestRunPipelineRlmIntegration:
     """End-to-end integration harness for run_pipeline_rlm.
 
     Uses a scripted (deterministic) rlm model backend, stub primitives
-    (REPROLAB_RLM_STUB_PRIMITIVES=1), and an isolated temp directory.
+    (OPENRESEARCH_RLM_STUB_PRIMITIVES=1), and an isolated temp directory.
     No network, no Docker, no real LLM calls.
     """
 
@@ -267,11 +267,11 @@ class TestRunPipelineRlmIntegration:
 
         # --- Environment setup -----------------------------------------------
         # Force stub primitives so _resolve_custom_tools never tries binding.py
-        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
 
         # Force a known root model so resolve_root_model is deterministic
         # regardless of which API keys the test runner happens to have set.
-        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")  # satisfy fail-fast check
 
         # The production build_system_prompt is used UNCHANGED. It returns a
@@ -427,8 +427,8 @@ class TestRunPipelineRlmIntegration:
         ``FileNotFoundError``.  ``run_pipeline_rlm`` must resolve ``runs_root``
         at entry so every artifact path is CWD-independent.
         """
-        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
-        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
 
         from backend.config import Settings
@@ -483,8 +483,8 @@ class TestRunPipelineRlmIntegration:
         the metrics dropped and a 'reproduced' verdict downgraded to 'partial'
         — proving the guard fires through a full run_pipeline_rlm, not only in
         unit tests (RLM run 5 fabricated metrics in production)."""
-        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
-        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
 
         from backend.config import Settings
