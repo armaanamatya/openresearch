@@ -2832,6 +2832,21 @@ async def _execute_in_sandbox(
             "python -m pip install -U accelerate || true"
         )
 
+    # Phase 2B — preflight IMPORT smoke (the executing half of preflight "TDD").
+    # When REPROLAB_PREFLIGHT_SMOKE is on, emit a stdlib-only probe into code/ and run
+    # it as the LAST bootstrap step (after deps install, before the training commands).
+    # It imports every third-party dependency on CPU (GPU hidden) — NOT the agent's own
+    # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
+    # seconds; the command loop then short-circuits the GPU training and the import
+    # error becomes the next iteration's repair_context.
+    try:
+        from backend.agents.rlm import preflight_smoke as _preflight_smoke
+        if _preflight_smoke.is_enabled():
+            _preflight_smoke.emit(code_dir)
+            bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+    except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
+
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
     # and emits run_warning SSE events at the warn-threshold + invokes
@@ -3017,10 +3032,21 @@ async def _execute_in_sandbox(
                     list(commands), code_dir, len(gpu_device_ids), run_id
                 )
 
+            from backend.agents.rlm.preflight_smoke import MARKER as _SMOKE_MARKER
             for command in (*bootstrap_commands, *commands):
-                results.append(await service.execute(
+                _cmd_res = await service.execute(
                     ExecuteCommand(sandbox=sandbox, command=command,
-                                   timeout=_EXEC_TIMEOUT_SECONDS)))
+                                   timeout=_EXEC_TIMEOUT_SECONDS))
+                results.append(_cmd_res)
+                # Phase 2B: a failed preflight IMPORT smoke means the training command
+                # would crash on the same missing dep — skip it (and the rest) so the bug
+                # surfaces in CPU-seconds, not after the GPU spins up. Only the marked
+                # smoke command triggers this; every other command runs exactly as before.
+                if _SMOKE_MARKER in command and not _cmd_res.succeeded:
+                    logger.warning(
+                        "_execute_in_sandbox: preflight import smoke FAILED — skipping "
+                        "remaining commands (no GPU training); see preflight_smoke_result.json")
+                    break
         except _WatchdogKilled as exc:
             # Surface as a fail-soft error dict so the caller's outer escalation
             # loop treats it like an OOM (advance ladder / repair_context).
