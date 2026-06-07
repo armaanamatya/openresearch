@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "metric": 0.37,
+  "reward_mean": 2.14,
+  "steps_run": 150,
+  "episodes_run": 150,
+  "avg_reward": 0.37,
+  "success_rate": 0.37
+}
