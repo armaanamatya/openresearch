@@ -398,6 +398,32 @@ def _run_one(
         else:
             venv_ok = True
 
+        # Work around the uv "--system-site-packages inherits the EMPTY uv-cpython
+        # base" gotcha: a venv created from a uv-managed .venv does NOT actually see
+        # the .venv's packages (the flag resolves to the bare cpython install, which
+        # uv keeps empty), so the per-run venv lands empty despite the flag above.
+        # The agent then has to re-install the whole torch/torchvision/numpy stack
+        # itself — a slow ~2 GB download whose version-guessing trips the
+        # torch_redundancy guard and the preflight import smoke (2026-06-07). Drop a
+        # .pth that puts the repo .venv's proven, mutually-compatible, GPU-enabled
+        # site-packages on the per-run venv's import path — making the venv actually
+        # do what the --system-site-packages comment above always intended. The
+        # per-run venv's OWN site-packages keep precedence, so paper-specific deps
+        # install on top and shadow the base; only the base ML stack is shared.
+        if venv_ok:
+            try:
+                # IMPORTANT: do NOT .resolve() the interpreter — `.venv/bin/python` is a
+                # symlink straight to the (empty) uv cpython base, so resolving it lands
+                # on the very empty dir we are working around. The unresolved `.venv`
+                # parent is the real site-packages with the installed ML stack.
+                _base_sp = next((Path(interpreter).parent.parent / "lib").glob("python*/site-packages"), None)
+                _run_sp = next((venv_dir / "lib").glob("python*/site-packages"), None)
+                if _base_sp and _run_sp and _base_sp.resolve() != _run_sp.resolve():
+                    (_run_sp / "_reprolab_base_inherit.pth").write_text(str(_base_sp) + "\n")
+                    logger.info("batch_reproduce: [%s] seeded base-inherit .pth → %s", paper, _base_sp)
+            except Exception as exc:  # noqa: BLE001 — best-effort; the agent can still install deps
+                logger.warning("batch_reproduce: [%s] base-inherit .pth seed failed: %s", paper, exc)
+
         # --- 6e: Build child environment ---
         gpu_uuid_csv = ",".join(lease.gpu_uuids)
         shared_hf = (runs_root / ".cache" / "hf").resolve()
