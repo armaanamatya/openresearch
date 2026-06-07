@@ -102,3 +102,56 @@ def test_smoke_command_carries_marker(tmp_path: Path):
     assert preflight_smoke.MARKER in cmd
     assert "_preflight_smoke.py" in cmd
     assert 'CUDA_VISIBLE_DEVICES=""' in cmd  # GPU hidden for the probe
+
+
+def test_smoke_ignores_lazy_in_function_imports(tmp_path: Path):
+    # A copied harness helper (mirror of search_qa_env.py / alfworld_env.py) lazy-imports
+    # a heavy dep INSIDE a function. Importing the helper module never runs that import,
+    # so a paper that never calls it must NOT be flagged as missing the dep. (Regression
+    # for the 2026-06-07 false positive where ast.walk probed nested lazy imports and
+    # flagged alfworld/faiss/etc. for a non-SDAR (Adam) paper.)
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "search_qa_env.py").write_text(
+        "def _retrieve():\n"
+        "    import definitely_missing_pkg_lazy_xyz  # lazy — only runs if called\n"
+        "    return definitely_missing_pkg_lazy_xyz\n",
+        encoding="utf-8",
+    )
+    (code / "train.py").write_text("import json\nimport os\n", encoding="utf-8")
+    proc = _emit_and_run(code)
+    assert proc.returncode == 0, proc.stderr  # lazy missing import not flagged
+    res = _result(code)
+    assert res["ok"] is True
+    assert "definitely_missing_pkg_lazy_xyz" not in res["probed"]
+
+
+def test_smoke_still_flags_module_level_missing(tmp_path: Path):
+    # The real failure mode — an UNGUARDED module-level import that is missing — is still
+    # caught (the fix narrows scope, it must not blind the smoke to genuine failures).
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "train.py").write_text(
+        "import definitely_missing_pkg_toplevel_xyz\n", encoding="utf-8")
+    proc = _emit_and_run(code)
+    assert proc.returncode == 3, (proc.returncode, proc.stdout, proc.stderr)
+    res = _result(code)
+    assert any(f["module"] == "definitely_missing_pkg_toplevel_xyz" for f in res["failures"])
+
+
+def test_smoke_skips_importerror_guarded_try(tmp_path: Path):
+    # A module-level ImportError-guarded optional dep (the code handles its absence) must
+    # NOT be flagged — it is not a hard failure.
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "train.py").write_text(
+        "try:\n"
+        "    import optional_missing_pkg_xyz\n"
+        "except ImportError:\n"
+        "    optional_missing_pkg_xyz = None\n",
+        encoding="utf-8",
+    )
+    proc = _emit_and_run(code)
+    assert proc.returncode == 0, proc.stderr
+    res = _result(code)
+    assert "optional_missing_pkg_xyz" not in res["probed"]

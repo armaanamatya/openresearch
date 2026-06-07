@@ -67,7 +67,16 @@ for py in sorted(HERE.rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"))
     except Exception:
         continue  # SyntaxError etc. is the static AST gate's job, not ours
-    for node in ast.walk(tree):
+    # MODULE-LEVEL imports only (direct children of the module body) — these are the
+    # imports that actually execute on ``import <module>``. Deliberately skip imports
+    # nested in functions/classes (lazy imports) and inside ``try``/``if`` blocks
+    # (ImportError-guarded optionals): a copied harness helper (search_qa_env.py,
+    # alfworld_env.py) lazy-imports faiss/datasets/alfworld INSIDE functions, so a
+    # non-SDAR paper that never calls them must NOT be flagged as missing them. A
+    # missed lazy import just degrades to the pre-smoke behaviour (caught at run time,
+    # repairable) — far cheaper than the false positive of installing alfworld for an
+    # optimizer paper.
+    for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 roots.add(alias.name.split(".")[0])
