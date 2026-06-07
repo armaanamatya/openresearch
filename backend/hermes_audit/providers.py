@@ -387,6 +387,10 @@ class ClaudeCodeSdkProvider:
         options = ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             max_turns=self.max_turns,
+            # SDK isolation (BUG-NEW-038): never inherit the developer's
+            # ~/.claude settings.json or MCP servers into the audit model.
+            setting_sources=[],
+            mcp_servers={},
         )
 
         async def _collect() -> str:

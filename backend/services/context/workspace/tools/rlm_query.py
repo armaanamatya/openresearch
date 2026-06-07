@@ -622,6 +622,12 @@ class ClaudeLlmClient:
             # side-effect-free here.
             permission_mode="default",
             tools=[],
+            # SDK isolation (BUG-NEW-038): never inherit the developer's
+            # ~/.claude settings.json or MCP servers into the inner model.
+            # Unconditional here (not gated by OPENRESEARCH_SDK_HERMETIC) — this
+            # navigation path has no legitimate need for either.
+            setting_sources=[],
+            mcp_servers={},
         )
 
         result_text = ""
