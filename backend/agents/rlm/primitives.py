@@ -2780,6 +2780,29 @@ async def _execute_in_sandbox(
     # `|| true` to prevent non-zero exit codes from causing `success=False`
     # in the all(r.succeeded) check. The commands.json entry handles the
     # actual package install via an explicit PATH-export bash -c command.
+    # Phase 2A (2026-06-07): synthesize requirements.txt on the LOCAL sandbox too.
+    # Previously ONLY the runpod block above called ensure_requirements_txt, while the
+    # local path gated on the file already existing — so a local run whose agent forgot
+    # requirements.txt installed nothing and died at the first third-party import (the
+    # matplotlib ModuleNotFoundError class). Mirror the runpod synthesis so the local
+    # install block + the commands.json install have a file to install.
+    if "local" in _mode_str and not requirements_path.exists():
+        try:
+            from backend.agents.rlm.requirements_derive import ensure_requirements_txt
+            _project_dir_local = code_dir.parent if code_dir.name == "code" else code_dir
+            ensure_requirements_txt(
+                code_dir,
+                dockerfile_path=_project_dir_local / "Dockerfile",
+                base_image=env_id,
+            )
+            if requirements_path.exists():
+                logger.info(
+                    "_execute_in_sandbox: synthesized requirements.txt for local sandbox "
+                    "(%d bytes)", requirements_path.stat().st_size,
+                )
+        except Exception:  # noqa: BLE001 — synthesis must never block the run
+            logger.exception("_execute_in_sandbox: local requirements.txt auto-derive failed")
+
     if "local" in _mode_str and requirements_path.exists():
         bootstrap_commands.append(
             "python -m pip install --upgrade pip wheel setuptools || true"
