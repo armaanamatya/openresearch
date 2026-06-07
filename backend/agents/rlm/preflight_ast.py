@@ -20,6 +20,14 @@ WHAT BLOCKS:
   * Import-from of a locally-defined symbol that doesn't exist — ``from .models
     import VAE`` but no class or function named ``VAE`` in models.py.
 
+WHAT WARNS (``soft`` — surfaced but never short-circuits the run):
+  * Swallowed-backward-OOM — a ``try: loss.backward()/optimizer.step()`` whose
+    handler catches the OOM (``RuntimeError`` / ``torch.cuda.OutOfMemoryError`` /
+    bare ``Exception``) and skips the step WITHOUT re-raising or shrinking a
+    batch/scale variable, so the run swallows the OOM and exits 0. Kept ``soft``
+    because the legitimate catch-OOM-shrink-and-retry pattern is structurally
+    similar (BES Phase 2 Component C, spec 2026-06-07).
+
 WHAT DOES NOT BLOCK (conservative — avoid false positives):
   * Dynamic attribute access — ``setattr(model, "reparameterize", ...)`` BEFORE the
     call → skip. ``__setattr__`` override / ``**kwargs``-driven ``__init__`` → skip.
@@ -542,6 +550,176 @@ def _check_local_import_from(
 
 
 # ---------------------------------------------------------------------------
+# Swallowed-backward-OOM check (BES Phase 2 Component C, spec 2026-06-07)
+# ---------------------------------------------------------------------------
+#
+# The anti-pattern: a training step wraps ``loss.backward()`` / ``optimizer.step()``
+# in a ``try`` whose handler catches the OOM (``RuntimeError`` /
+# ``torch.cuda.OutOfMemoryError`` / bare ``Exception``) and then SKIPS the step
+# (``continue`` / ``pass`` / ``break``) WITHOUT either re-raising or shrinking a
+# batch/scale variable. The script swallows the OOM and exits 0 — today this is
+# only caught POSTflight by a log scan (``_OOM_LOG_MARKERS`` in primitives.py),
+# i.e. after the GPU run already burned. This static check surfaces the shape
+# before sandbox dispatch.
+#
+# FP-tight by design (the spec demands ``soft``, never ``hard``): the legitimate
+# catch-OOM-shrink-and-retry pattern looks structurally similar, so a handler that
+# re-raises OR mutates a batch/scale/grad-accum/micro variable is explicitly NOT
+# flagged. The except-type names mirror ``_OOM_LOG_MARKERS`` semantics (this is a
+# STATIC AST match, not the runtime log scan).
+
+# Exception class names whose catch (alone) qualifies as "could be swallowing the
+# OOM". Mirrors the marker semantics of primitives.py ``_OOM_LOG_MARKERS`` but as
+# a static AST type match. A bare ``except:`` (handler.type is None) also catches
+# OOM and qualifies.
+_OOM_EXCEPT_NAMES = frozenset({
+    "RuntimeError",          # CUDA OOM raises a RuntimeError on most torch builds
+    "OutOfMemoryError",      # torch.cuda.OutOfMemoryError (modern torch)
+    "Exception",             # bare/broad catch swallows the OOM too
+})
+# Substrings that, when present in an assignment target's name, mean the handler is
+# shrinking the batch / loss scale / grad-accum (i.e. a real retry), so it must NOT
+# be flagged.
+_BATCH_SCALE_TOKENS = ("batch", "scale", "bs", "grad_accum", "micro")
+
+
+def _handler_catches_oom(handler: ast.ExceptHandler) -> bool:
+    """True if this ``except`` clause catches an OOM-shaped exception.
+
+    Qualifies on a bare ``except:`` (``handler.type is None``), or a clause naming
+    ``RuntimeError`` / ``OutOfMemoryError`` (incl. ``torch.cuda.OutOfMemoryError``
+    via attribute ``.attr``) / ``Exception`` — directly or inside a tuple
+    ``except (RuntimeError, ValueError):``.
+    """
+    etype = handler.type
+    if etype is None:
+        return True  # bare ``except:`` swallows everything, OOM included
+    candidates = etype.elts if isinstance(etype, ast.Tuple) else [etype]
+    for cand in candidates:
+        if isinstance(cand, ast.Name) and cand.id in _OOM_EXCEPT_NAMES:
+            return True
+        if isinstance(cand, ast.Attribute) and cand.attr in _OOM_EXCEPT_NAMES:
+            return True
+    return False
+
+
+def _handler_reraises(handler: ast.ExceptHandler) -> bool:
+    """True if the handler body re-raises anywhere (``raise`` / ``raise exc``)."""
+    return any(isinstance(n, ast.Raise) for n in ast.walk(handler))
+
+
+def _name_is_batch_scale(ident: str) -> bool:
+    low = ident.lower()
+    return any(tok in low for tok in _BATCH_SCALE_TOKENS)
+
+
+def _handler_mutates_batch_scale(handler: ast.ExceptHandler) -> bool:
+    """True if the handler assigns to a batch/scale/grad-accum/micro variable.
+
+    Covers plain ``x = ...`` (``ast.Assign``), augmented ``x //= 2``
+    (``ast.AugAssign``), and annotated ``x: int = ...`` (``ast.AnnAssign``). The
+    target may be a bare ``Name`` (``batch_size``) or an ``Attribute``
+    (``self.batch_size``) — a name-substring match against
+    ``_BATCH_SCALE_TOKENS`` means a real shrink-and-retry, so DON'T flag.
+    """
+    for node in ast.walk(handler):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        else:
+            continue
+        for tgt in targets:
+            if isinstance(tgt, ast.Name) and _name_is_batch_scale(tgt.id):
+                return True
+            if isinstance(tgt, ast.Attribute) and _name_is_batch_scale(tgt.attr):
+                return True
+    return False
+
+
+def _try_body_has_backward_step(node: ast.Try) -> int:
+    """Return the line of the first ``.backward()`` / ``.step()`` call in the
+    ``try`` BODY (not handlers / orelse / finalbody), or 0 if none.
+
+    Attribute-call match: ``<expr>.backward(...)`` or ``<expr>.step(...)`` — the
+    optimizer/scaler step the OOM swallow skips. We scope to the body so a
+    ``.step()`` inside the handler (e.g. a scheduler) does not count.
+    """
+    for stmt in node.body:
+        for sub in ast.walk(stmt):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if isinstance(func, ast.Attribute) and func.attr in ("backward", "step"):
+                return getattr(sub, "lineno", 0) or getattr(node, "lineno", 0)
+    return 0
+
+
+def _check_swallowed_backward_oom(
+    tree: ast.AST,
+    path: Path,
+    out: list[PreflightViolation],
+) -> None:
+    """Flag the swallow-and-skip OOM anti-pattern (BES Phase 2 Component C).
+
+    Emits a ``soft`` violation for an ``ast.Try`` whose BODY calls
+    ``.backward()`` / ``.step()`` and that has at least one handler which:
+      * catches an OOM-shaped exception (``RuntimeError`` /
+        ``torch.cuda.OutOfMemoryError`` / ``OutOfMemoryError`` / bare
+        ``except:`` / ``Exception``), AND
+      * does NOT re-raise, AND
+      * does NOT mutate a batch/scale/grad-accum/micro variable.
+
+    Such a handler skips the optimizer step and lets the run exit 0 — masking an
+    OOM. A legitimate catch-OOM-shrink-and-retry (re-raises OR shrinks a
+    batch/scale var) is deliberately NOT flagged (FP-tight). Always ``soft`` — the
+    spec keeps this report-not-block because the shrink pattern is similar.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        step_line = _try_body_has_backward_step(node)
+        if not step_line:
+            continue
+        for handler in node.handlers:
+            if not _handler_catches_oom(handler):
+                continue
+            if _handler_reraises(handler):
+                continue  # re-raises → not swallowed
+            if _handler_mutates_batch_scale(handler):
+                continue  # shrink-and-retry → legitimate, not swallowed
+            # Swallow confirmed: OOM-shaped catch that neither re-raises nor shrinks.
+            lineno = getattr(handler, "lineno", 0) or step_line
+            etype = (
+                "except:" if handler.type is None
+                else getattr(handler.type, "id", None)
+                or getattr(handler.type, "attr", "Exception")
+            )
+            out.append(PreflightViolation(
+                file=path.name,
+                line=lineno,
+                class_name=None,
+                missing_attr=None,
+                suggested_fix=(
+                    f"The `except {etype}` around the backward/optimizer step in "
+                    f"`{path.name}` skips the step on OOM (no re-raise, no batch/scale "
+                    f"shrink) — the run swallows the OOM and exits 0. Either re-raise so "
+                    f"the orchestrator's OOM shrink-retry handles it, or shrink a "
+                    f"batch/scale/grad_accum variable inside the handler and retry the step."
+                ),
+                severity="soft",
+                detail=(
+                    f"{path.name}:{lineno}: `.backward()`/`.step()` (line {step_line}) is "
+                    f"wrapped in a try whose `{etype}` handler neither re-raises nor "
+                    f"shrinks a batch/scale variable — a swallowed-OOM skip-the-step "
+                    f"pattern that exits 0 (silent_oom). Re-raise or shrink-and-retry."
+                ),
+            ))
+            break  # one violation per Try is enough
+
+
+# ---------------------------------------------------------------------------
 # SDAR teacher/student env interface contract
 # ---------------------------------------------------------------------------
 #
@@ -838,6 +1016,11 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
             _check_local_import_from(tree, path, code_dir, violations)
         except Exception:  # noqa: BLE001
             logger.debug("preflight_ast: _check_local_import_from failed on %s", path.name)
+
+        try:
+            _check_swallowed_backward_oom(tree, path, violations)
+        except Exception:  # noqa: BLE001
+            logger.debug("preflight_ast: _check_swallowed_backward_oom failed on %s", path.name)
 
     # SDAR teacher/student env interface contract — needs its OWN recursive walk
     # (``rglob``), independent of ``py_files`` above which only globs one level.
