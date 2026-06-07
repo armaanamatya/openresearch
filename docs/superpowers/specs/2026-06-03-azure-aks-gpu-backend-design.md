@@ -215,3 +215,25 @@ infra/azure/
 - `CLAUDE.md` — § Sandboxes, § One-GPU-per-cell execution + OOM remediation, § Dynamic GPU selection.
 - `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` — the cell-matrix model (`describe_capacity`, `run_matrix`, `aggregate_cell_metrics`) this extends; `_describe_azure`'s docstring points here.
 - `docs/runbooks/2026-06-03-azure-aks-gpu-backend-handoff.md` — operational standup + the next-session resume prompt.
+
+---
+
+## 13. Recon — change-map → real paths @ HEAD (2026-06-07, post BES+harden merge)
+
+The §4b line numbers were verified 2026-06-03 and **drifted** after the BES + harden + consolidation merges. Re-confirmed by symbol at `feat/azure-aks-gpu` (HEAD `8cddb31`), and the design was IMPLEMENTED against these:
+
+| Seam (design §4b) | Real location @ HEAD | Notes |
+|---|---|---|
+| `SandboxMode` enum | `backend/agents/execution.py:32` (members docker/local/runpod/**brev**/auto) | `brev` already exists — azure is purely additive. |
+| `ensure_sandbox_mode_available` | `backend/agents/execution.py:~270` | azure branch mirrors the runpod branch. |
+| `--sandbox` choices | `backend/cli.py:1921` (was 1605) | was `("auto","local","docker","runpod")`. |
+| `default_sandbox` / `force_sandbox` Literals | `backend/config.py:143` / `:150` | widened to include `"azure"`. |
+| `runpod_*` settings block | `backend/config.py:165-199` | `azure_*` block added after it (16 fields). |
+| `_backend_for_sandbox_mode` | `backend/agents/rlm/primitives.py:2206` (was 1926) | azure → `AksJobBackend(run_budget=...)`. |
+| `_execute_cell_matrix` | `backend/agents/rlm/primitives.py:4094` (was 3663); `run_matrix` call @4202, import @4111 | runner-select wraps the call; non-azure call preserved byte-for-byte. |
+| `_describe_azure` / `_backend_kind` | `backend/services/runtime/gpu_capacity.py:176` / `:104` | `_backend_kind` already routed "azure" here; stub replaced. |
+| `gpu_cell_runner.run_matrix` (the contract) | `backend/agents/rlm/gpu_cell_runner.py:413` (was 300) | **Signature drifted**: the real one has 11 params — `cells, cell_script, *, output_root, gpus, max_parallel, max_oom_retries, per_cell_timeout_s, overall_timeout_s, gpus_per_cell, fingerprints, force_cells, now_iso`. `k8s_job_cell_runner.run_matrix` mirrors ALL of them. |
+| `CellResult.to_dict` (return shape) | `backend/agents/rlm/gpu_cell_runner.py:70` | returns `{"status","metrics","gpu","retries","error"}`; cell_id is the MAP KEY. Confirmed by the W3 integration test: NO adapter needed into `aggregate_cell_metrics`. |
+| `RuntimeBackend` ABC | `backend/services/runtime/interface.py:115` | 5 abstract async methods + 2 optional hooks (probe_alive/soft_recover). |
+
+**Implementation status (2026-06-07):** all offline-buildable components landed on `feat/azure-aks-gpu` with a full mocked test suite (azure_blob, k8s_job_cell_runner, aks_job_backend, in-Job entrypoint, wiring, gpu_capacity, config, + cross-module integration). Live gates (terraform apply, ACR build, hello-GPU, live SDAR cell, `local`/`runpod` regression *smoke runs*) remain **blocked-on-tooling/quota** (no az/terraform/kubectl/helm/docker-daemon/Azure-creds in the build env) and are reported as such, never green. One design refinement: `azure_gpu_usd_per_hour` defaults to the real NC24ads_A100_v4 list price (3.67) so the run-USD cost cap is active by default (a 0 default would silently disable it).
