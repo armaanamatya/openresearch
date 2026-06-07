@@ -392,6 +392,31 @@ def _mark_demo_status_failed(
             "error": reason,
         }
         _atomic_write_json(path, merged)
+        # Also leave a terminal final_report.json so the leaderboard/aggregator
+        # can represent this crashed run. A crash before the run's try/finally
+        # reached `_finalize` (e.g. an early setup exception) flips demo_status
+        # to failed above but writes no report — leaving the run report-less.
+        # Best-effort + nested try: this must never raise (mirrors the outer
+        # contract) and must NEVER overwrite an existing report (a real
+        # _finalize / scorer write always wins).
+        try:
+            fr = runs_root / project_id / "final_report.json"
+            if not fr.exists():
+                from backend.agents.rlm.report import (
+                    RLMFinalReport,
+                    write_final_report_rlm,
+                )
+
+                write_final_report_rlm(
+                    RLMFinalReport(
+                        verdict="failed",
+                        reproduction_summary=reason,
+                        iterations=0,
+                    ),
+                    runs_root / project_id,
+                )
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -1155,6 +1180,29 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     elif getattr(args, "paper_hint", None):
         print(
             f"[paper-hint] No built-in hint for {args.paper_hint!r}; continuing without one.",
+            file=sys.stderr,
+        )
+
+    # Full-scope env guidance (2026-06-01): when the EFFECTIVE scope keeps any of the
+    # SDAR paper environments active, tell the agent to use the shipped AGENTIC env
+    # modules (real ALFWorld / WebShop / dense-retrieval Search-QA) and train at paper
+    # depth — never fake them. Search-QA is included so even a Search-QA-only run gets
+    # the real-retrieval guidance (the 2026-05-31 closed-book surrogate floored it);
+    # an env the operator de-scopes drops out of _active_envs and is simply not named.
+    _active_envs = {d.normalized_id().strip().lower() for d in _effective_scope.datasets}
+    _full_scope_envs = [
+        e for e in ("ALFWorld", "WebShop", "Search-QA") if e.lower() in _active_envs
+    ]
+    if _full_scope_envs:
+        from backend.services.runtime.env_cache import FULL_SCOPE_ENV_GUIDANCE
+        _fs_text = FULL_SCOPE_ENV_GUIDANCE.format(envs=" + ".join(_full_scope_envs))
+        _existing_fs = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_existing_fs}\n\n{_fs_text}" if _existing_fs else _fs_text
+        )
+        print(
+            f"[full-scope] {' + '.join(_full_scope_envs)} active in scope — appended "
+            f"agentic-env (AgenticEnv + shipped modules) guidance for the agent.",
             file=sys.stderr,
         )
 

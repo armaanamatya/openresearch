@@ -3579,6 +3579,83 @@ def _summarize_cell_logs(cells: list, matrix_result: dict, gpus: list) -> str:
     return "\n".join(lines)
 
 
+def _operator_scope_exclusions(ctx: "RunContext") -> list:
+    """Verified ``operator_scope`` Exclusions from the run's ScopeSpec.
+
+    ``skip_models`` → model-axis exclusions; ``skip_datasets`` → environment-axis
+    exclusions. Both are ``verified=True``: the operator's ``--scope-spec`` is the
+    evidence that the de-scope was a deliberate human decision (not an agent
+    laundering a failure into a free scope reduction), so the rubric EXCLUDES
+    their leaves rather than scoring them 0. Empty list when there is no
+    scope_spec. Never raises.
+    """
+    from backend.agents.rlm import exclusion as _excl
+
+    spec = getattr(ctx, "scope_spec", None)
+    if spec is None:
+        return []
+    evidence = "operator ScopeSpec (--scope-spec)"
+    out: list = []
+    pairs = (
+        (getattr(spec, "skip_models", None) or [], _excl.AXIS_MODEL, "skip_models"),
+        (getattr(spec, "skip_datasets", None) or [], _excl.AXIS_ENVIRONMENT, "skip_datasets"),
+    )
+    for items, axis, field in pairs:
+        for it in items:
+            name = str(it).strip()
+            if not name:
+                continue
+            try:
+                out.append(_excl.Exclusion(
+                    item=name, axis=axis, kind=_excl.KIND_OPERATOR_SCOPE,
+                    reason=f"{name} de-scoped by operator ({field})",
+                    verified=True, evidence=evidence,
+                ))
+            except ValueError:
+                logger.debug("operator-scope: skipped malformed exclusion %r", name)
+    return out
+
+
+def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
+    """Fold verified operator_scope + recovered gate exclusions into metrics.scope.
+
+    Rewrites ``metrics['scope']`` so it carries (a) a structured ``exclusions``
+    list spanning the capacity/dataset gate gaps AND the operator's
+    ``skip_models`` / ``skip_datasets``, and (b) legacy ``environments_skipped`` /
+    ``models_skipped`` / ``gaps`` derived from the VERIFIED subset only
+    (anti-gaming). Idempotent and fail-soft — any error leaves the original
+    metrics untouched so scope enrichment can never break the run.
+    """
+    if not isinstance(metrics, dict):
+        return metrics
+    op_excls = _operator_scope_exclusions(ctx)
+    # Verified env-setup failures from run-start provisioning (an ALFWorld/WebShop
+    # the host could not stand up) are excluded on the SAME fairness footing as an
+    # operator de-scope — both are outside the agent's control, both verified.
+    env_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+    all_excls = op_excls + env_excls
+    if not all_excls:
+        return metrics
+    try:
+        from backend.agents.rlm import exclusion as _excl
+
+        scope = metrics.get("scope") if isinstance(metrics, dict) else None
+        existing = dict(scope) if isinstance(scope, dict) else {}
+        # Recover the capacity/dataset gate gaps as structured exclusions so the
+        # final ``exclusions`` list is complete; clear ``gaps`` so
+        # build_scope_block regenerates ONE deduped list from the structured set.
+        recovered = _excl.exclusions_from_gaps(existing.get("gaps") or [])
+        existing["gaps"] = []
+        metrics["scope"] = _excl.build_scope_block(
+            recovered + all_excls,
+            models_run=existing.get("models_run"),
+            existing=existing,
+        )
+    except Exception:  # noqa: BLE001 — scope enrichment must never break the run
+        logger.warning("cell-matrix: operator-scope exclusion merge failed", exc_info=True)
+    return metrics
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -3653,6 +3730,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         metrics = cell_matrix.aggregate_cell_metrics(
             {}, [], capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
             models_skipped=models_skipped, environments_skipped=envs_skipped)
+        metrics = _apply_operator_scope(metrics, ctx)
         return _terminal(
             "capacity_exhausted",
             f"every cell exceeds the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB "
@@ -3660,17 +3738,27 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
 
     _t0 = _time.monotonic()
+    # Bound the WHOLE matrix as a backstop, but GENEROUSLY: cells run in waves of
+    # min(free_gpus, cells), so each sequential wave must get a full per-cell budget
+    # — capping the whole matrix at ONE cell's budget would silently drop every cell
+    # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
+    # run-level watchdog is the ultimate hang guard; this just lets the root score a
+    # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
+    _n_gpus = max(1, len(gpus))
+    _waves = (len(kept) + _n_gpus - 1) // _n_gpus  # ceil(cells / gpus)
     matrix_result = gpu_cell_runner.run_matrix(
         kept, str(code / "train_cell.py"),
         output_root=str(artifact_root),
         gpus=gpus or None,
         per_cell_timeout_s=timeout_s,
+        overall_timeout_s=timeout_s * max(1, _waves),
     )
     wall = _time.monotonic() - _t0
 
     metrics = cell_matrix.aggregate_cell_metrics(
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
         models_skipped=models_skipped, environments_skipped=envs_skipped)
+    metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 
     statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
@@ -4589,6 +4677,13 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             # the rubric (only truly operator-skipped models are excluded).
             operator_skip_models=list(
                 getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or []
+            ),
+            # 2026-06-01: the operator's de-scoped environments (skip_datasets,
+            # e.g. ALFWorld/WebShop on a Search-QA-only run) gate the environment
+            # axis the same way skip_models gates the model axis — verified
+            # operator scope is excluded; an agent-laundered env skip stays scored.
+            operator_skip_environments=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
             ),
         )
         # Honesty guard: if score_reproduction handed back zero successfully-graded

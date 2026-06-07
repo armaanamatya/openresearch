@@ -42,6 +42,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -220,6 +221,14 @@ def _run_cell_subprocess(
         own parameters without parsing argv.
     """
     child_env = {**os.environ}
+    # Put the running interpreter's bin/ on PATH so console scripts a cell may shell
+    # out to (e.g. ``alfworld-download``) resolve. A venv invoked by path (not
+    # "activated") does NOT place its bin/ on PATH, so a bare-name ``subprocess``
+    # call FileNotFounds — exactly how the 2026-06-01 SDAR ALFWorld cells died
+    # (``alfworld-download failed: [Errno 2] No such file or directory``).
+    _interp_bin = os.path.dirname(os.path.abspath(sys.executable))
+    if _interp_bin:
+        child_env["PATH"] = _interp_bin + os.pathsep + child_env.get("PATH", "")
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
     child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     child_env["REPROLAB_CELL_OUTPUT_DIR"] = str(output_dir)
@@ -306,6 +315,7 @@ def run_matrix(
     max_parallel: int | None = None,
     max_oom_retries: int = 2,
     per_cell_timeout_s: float | None = None,
+    overall_timeout_s: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Schedule and run all cells across the GPU pool.
 
@@ -334,6 +344,14 @@ def run_matrix(
                              0.5 then 0.25 before giving up).
         per_cell_timeout_s:  Per-cell wall-clock timeout in seconds.  ``None``
                              means no limit.
+        overall_timeout_s:   Wall-clock budget for the WHOLE matrix in seconds.
+                             ``None`` means no overall limit. When set, workers
+                             stop launching new cells once the deadline passes
+                             (recording them ``"timeout"``) and each in-flight
+                             cell's effective timeout is clamped to the time
+                             remaining, so the matrix can never run materially
+                             past the budget — the 2026-06-01 fix for an
+                             unbounded run_experiment matrix hanging for hours.
 
     Returns:
         Dict mapping ``cell["id"]`` → :meth:`CellResult.to_dict`.  Every input
@@ -352,6 +370,13 @@ def run_matrix(
     """
     if not cells:
         return {}
+
+    # Overall-matrix deadline (monotonic), or None for no overall bound.
+    overall_deadline: float | None = (
+        time.monotonic() + overall_timeout_s
+        if overall_timeout_s is not None and overall_timeout_s > 0
+        else None
+    )
 
     resolved_gpus: list[str] = gpus if gpus is not None else discover_visible_gpus()
     if not resolved_gpus:
@@ -404,6 +429,22 @@ def run_matrix(
             output_dir = output_root / cell_id
             log_path = output_root / f"{cell_id}.log"
 
+            # Overall-matrix deadline (2026-06-01): once the matrix budget is
+            # spent, do NOT launch further cells — record them as ``timeout`` and
+            # keep draining the queue so every cell still gets a result entry.
+            if overall_deadline is not None and time.monotonic() >= overall_deadline:
+                with results_lock:
+                    results[cell_id] = CellResult(
+                        cell_id=cell_id,
+                        status="timeout",
+                        metrics=_load_metrics(output_dir),
+                        gpu=gpu_id,
+                        retries=retry_idx,
+                        error="overall matrix timeout — cell not launched",
+                    )
+                gpu_pool.put(gpu_id)
+                continue
+
             # Determine OOM-mitigation parameters for this attempt.
             batch_scale: float | None = None
             grad_checkpoint = False
@@ -418,6 +459,17 @@ def run_matrix(
                 cell_id, gpu_id, retry_idx, batch_scale,
             )
 
+            # Clamp this cell's timeout to the time left in the overall budget so a
+            # single in-flight cell can't overrun the matrix deadline either.
+            eff_timeout = per_cell_timeout_s
+            if overall_deadline is not None:
+                remaining = overall_deadline - time.monotonic()
+                eff_timeout = (
+                    max(1.0, remaining)
+                    if per_cell_timeout_s is None
+                    else max(1.0, min(per_cell_timeout_s, remaining))
+                )
+
             returncode, output = _run_cell_subprocess(
                 cell=cell,
                 cell_script=cell_script,
@@ -425,12 +477,15 @@ def run_matrix(
                 output_dir=output_dir,
                 batch_scale=batch_scale,
                 grad_checkpoint=grad_checkpoint,
-                timeout_s=per_cell_timeout_s,
+                timeout_s=eff_timeout,
                 log_path=log_path,
             )
 
             # Return GPU to pool immediately after subprocess exits.
             gpu_pool.put(gpu_id)
+            deadline_hit = (
+                overall_deadline is not None and time.monotonic() >= overall_deadline
+            )
 
             if returncode == 0:
                 metrics = _load_metrics(output_dir)
@@ -444,7 +499,7 @@ def run_matrix(
                         error=None,
                     )
                 logger.info("gpu_cell_runner: cell=%s DONE ok (gpu=%s)", cell_id, gpu_id)
-            elif _is_oom(output) and retry_idx < max_oom_retries:
+            elif _is_oom(output) and retry_idx < max_oom_retries and not deadline_hit:
                 next_retry = retry_idx + 1
                 logger.warning(
                     "gpu_cell_runner: cell=%s OOM on gpu=%s, scheduling retry %d/%d",
@@ -456,7 +511,12 @@ def run_matrix(
                 # worker or a freshly spawned one).
                 _spawn_worker()
             else:
-                status = "oom_failed" if _is_oom(output) else "error"
+                if deadline_hit:
+                    status = "timeout"
+                elif _is_oom(output):
+                    status = "oom_failed"
+                else:
+                    status = "error"
                 error_snippet = output[-2000:] if output else f"exit code {returncode}"
                 with results_lock:
                     results[cell_id] = CellResult(

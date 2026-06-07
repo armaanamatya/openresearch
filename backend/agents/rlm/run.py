@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -95,15 +96,39 @@ logger = logging.getLogger(__name__)
 # --- Tuning constants ------------------------------------------------------
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
-# 2026-05-25 — wall-clock ceiling is now FULLY USER-CONTROLLED. When no
-# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set,
-# the run is unbounded. Adam (1412.6980) and Dropout (1207.0580) both
-# hard-stopped at 4h/2h ceilings under the old default; the user mandate
-# is "no ceiling unless the operator opts in." The watchdog still fires
-# but only when a deadline was explicitly requested.
+# 2026-05-25 — the rlm/ctx wall-clock ceiling is FULLY USER-CONTROLLED. When no
+# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set, rlm's
+# own between-iteration timeout and every per-primitive deadline are unbounded —
+# the user mandate is "no truncation of a long reproduction unless the operator
+# opts in." 2026-06-01 — but "unbounded" must NOT mean "can hang forever with no
+# report": a hard-ceiling watchdog backstop (``_watchdog_hard_ceiling_s``) is now
+# armed even when no explicit ceiling is requested, so a wedged run always ships a
+# partial report and hard-exits. The 2026-06-01 SDAR run hung ~3h inside one
+# synchronous run_experiment (every soft bound collapsed to None, watchdog unarmed),
+# the user killed it, and NO final_report was written — this backstop closes that
+# gap. Opt fully out with REPROLAB_WATCHDOG_HARD_CEILING_S=0.
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
+_WATCHDOG_HARD_CEILING_DEFAULT_S = 50400.0  # 14h — generous backstop (operator preference 2026-06-02)
+
+
+def _watchdog_hard_ceiling_s() -> float:
+    """Always-on watchdog backstop (seconds), used when no explicit wall-clock is set.
+
+    Read at arm-time (not import-time) so tests and operators can tune it via
+    ``REPROLAB_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
+    entirely, restoring the pre-2026-06-01 fully-unbounded behaviour. A malformed
+    value falls back to the 14h default rather than crashing the run.
+    """
+    raw = os.environ.get("REPROLAB_WATCHDOG_HARD_CEILING_S", "").strip()
+    if raw == "":
+        return _WATCHDOG_HARD_CEILING_DEFAULT_S
+    try:
+        return float(raw)
+    except ValueError:
+        return _WATCHDOG_HARD_CEILING_DEFAULT_S
+
 
 _ROOT_PROMPT = (
     "Reproduce the research paper offloaded in the REPL variable `context`. "
@@ -853,6 +878,44 @@ def _finalize_fatal_primitive_abort(
     )
 
 
+def _hard_stop_with_report(
+    *,
+    project_dir: Path,
+    emit: Any,
+    done: int,
+    summary: str,
+    status_error: str,
+    exit_code: int,
+) -> None:
+    """Ship a partial ``failed`` report, emit ``run_complete``, flip demo_status, and
+    hard-exit — the single "never die without a report" path shared by the wall-clock
+    watchdog and the SIGTERM finalizer (2026-06-01). Every step is best-effort so a
+    failure writing one artifact never blocks the others or the exit.
+    """
+    report = RLMFinalReport(verdict="failed", reproduction_summary=summary, iterations=done)
+    try:
+        write_final_report_rlm(report, project_dir)
+    except Exception:  # noqa: BLE001
+        logger.exception("run_pipeline_rlm: hard-stop could not write final report")
+    try:
+        emit(
+            build_run_complete_event(
+                status="failed",
+                iterations=done,
+                rubric_score=None,
+                cost_usd=None,
+                final_report_path=str(project_dir / "final_report.json"),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("run_pipeline_rlm: hard-stop could not emit run_complete event")
+    try:
+        _write_demo_status(project_dir, "failed", error=status_error)
+    except Exception:  # noqa: BLE001
+        logger.exception("run_pipeline_rlm: hard-stop could not write demo_status")
+    os._exit(exit_code)
+
+
 def _arm_watchdog(
     deadline_s: float | None,
     *,
@@ -871,11 +934,22 @@ def _arm_watchdog(
 
     ``iteration_count`` is a zero-arg callable returning the iterations done so
     far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
-    it on normal completion. Returns ``None`` when ``deadline_s`` is ``None``
-    (no ceiling): the watchdog is fully bypassed and there is nothing to cancel.
+    it on normal completion. When ``deadline_s`` is ``None`` (no explicit
+    ``--max-wall-clock``), the watchdog falls back to the always-on hard-ceiling
+    backstop (``_watchdog_hard_ceiling_s``) so a wedged/hung run still ships a
+    partial report; it returns ``None`` (fully bypassed) only when that backstop
+    is disabled via ``REPROLAB_WATCHDOG_HARD_CEILING_S=0``.
     """
     if deadline_s is None:
-        return None
+        ceiling = _watchdog_hard_ceiling_s()
+        if ceiling <= 0:
+            return None  # operator opted fully out — truly unbounded
+        deadline_s = ceiling
+        logger.warning(
+            "run_pipeline_rlm: no explicit wall-clock ceiling; arming the always-on "
+            "watchdog backstop at %.0fs (REPROLAB_WATCHDOG_HARD_CEILING_S=0 disables)",
+            deadline_s,
+        )
     def _fire() -> None:
         logger.error(
             "run_pipeline_rlm: wall-clock watchdog fired (%.0fs + %.0fs grace) — "
@@ -884,41 +958,74 @@ def _arm_watchdog(
             _WATCHDOG_GRACE_S,
         )
         done = iteration_count()
-        report = RLMFinalReport(
-            verdict="failed",
-            reproduction_summary=(
+        _hard_stop_with_report(
+            project_dir=project_dir,
+            emit=emit,
+            done=done,
+            summary=(
                 f"Wall-clock watchdog: the run exceeded {deadline_s:.0f}s "
                 f"and was hard-stopped after {done} iteration(s)."
             ),
-            iterations=done,
+            status_error=(
+                f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
+            ),
+            exit_code=_WATCHDOG_EXIT_CODE,
         )
-        try:
-            write_final_report_rlm(report, project_dir)
-        except Exception:  # noqa: BLE001
-            logger.exception("run_pipeline_rlm: watchdog could not write final report")
-        try:
-            emit(
-                build_run_complete_event(
-                    status="failed",
-                    iterations=done,
-                    rubric_score=None,
-                    cost_usd=None,
-                    final_report_path=str(project_dir / "final_report.json"),
-                )
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("run_pipeline_rlm: watchdog could not emit run_complete event")
-        _write_demo_status(
-            project_dir,
-            "failed",
-            error=f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline",
-        )
-        os._exit(_WATCHDOG_EXIT_CODE)
 
     timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
     timer.daemon = True
     timer.start()
     return timer
+
+
+def _install_sigterm_finalizer(
+    *,
+    project_dir: Path,
+    emit: Any,
+    iteration_count: Any,
+) -> Any:
+    """On SIGTERM, ship a partial report before exiting instead of dying silently.
+
+    The 2026-06-01 SDAR run was KILLED by the operator after it appeared stuck and
+    left NO ``final_report``. A run launched by the batch scheduler is stopped with
+    SIGTERM then SIGKILL-after-grace; catching SIGTERM lets us write the report
+    during that grace window. Returns the previously-installed handler (to restore
+    on clean completion) or ``None`` when not installed — off the main thread (where
+    signals cannot be set) or on a platform/handler error. ``SIGKILL`` (kill -9)
+    stays uncatchable by design; that case is covered by the batch scheduler.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    try:
+        prev = signal.getsignal(signal.SIGTERM)
+    except (ValueError, OSError):
+        return None
+
+    def _on_sigterm(signum: int, frame: Any) -> None:  # noqa: ARG001
+        logger.error(
+            "run_pipeline_rlm: SIGTERM received — shipping a partial report before exit"
+        )
+        done = iteration_count() if callable(iteration_count) else 0
+        _hard_stop_with_report(
+            project_dir=project_dir,
+            emit=emit,
+            done=done,
+            summary=(
+                f"Run terminated by SIGTERM after {done} iteration(s); a partial "
+                f"report was written from last-known state."
+            ),
+            status_error="run terminated by SIGTERM",
+            exit_code=143,  # 128 + SIGTERM(15)
+        )
+
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        logger.warning(
+            "run_pipeline_rlm: could not install SIGTERM finalizer", exc_info=True
+        )
+        return None
+    return prev
 
 
 # ---------------------------------------------------------------------------
@@ -1333,6 +1440,39 @@ async def run_pipeline_rlm(
         gpu_visible_count=_visible_gpu_count(),
     )
 
+    # 4b. Full-scope environment provisioning (2026-06-01). When the scope names
+    # heavy RL envs (ALFWorld / WebShop) or Search-QA, stand them up ONCE in the
+    # host-shared cache and splice their locations (ALFWORLD_DATA / WEBSHOP_URL /
+    # SEARCH_QA_INDEX_DIR / SEARCH_QA_RETRIEVER) into os.environ so every cell
+    # subprocess inherits them. Fail-soft: an ALFWorld/WebShop that cannot be stood
+    # up becomes a VERIFIED exclusion on ctx (folded into metrics.scope → excluded,
+    # not zeroed). A no-op for non-SDAR papers (setup() ignores unknown dataset
+    # names) and for Search-QA when dense is off (it just runs BM25).
+    _provision_envs = (
+        [d.normalized_id() for d in (getattr(_scope_spec, "datasets", None) or [])]
+        if _scope_spec is not None else []
+    )
+    if _provision_envs:
+        try:
+            import atexit as _atexit
+            from backend.services.runtime.env_cache import (
+                EnvCacheManager as _EnvCacheManager,
+                provision_scope as _provision_scope,
+            )
+            _prov = _provision_scope(_provision_envs, _EnvCacheManager())
+            if _prov.env_vars:
+                os.environ.update(_prov.env_vars)
+            ctx.env_setup_exclusions = list(_prov.exclusions)
+            _atexit.register(_prov.release)
+            logger.info(
+                "run_pipeline_rlm[%s]: env provisioning — vars=%s, exclusions=%s",
+                project_id, sorted(_prov.env_vars), [e.item for e in _prov.exclusions],
+            )
+        except Exception:  # noqa: BLE001 — provisioning must never abort the run
+            logger.warning(
+                "run_pipeline_rlm: env provisioning failed (non-fatal)", exc_info=True
+            )
+
     # 5. Primitives — the real binding or the stub provider.
     # repair_policy_holder is a late-binding 1-slot list: the tool wrappers
     # close over it, and run.py populates slot 0 after the ForcedIterationPolicy
@@ -1498,6 +1638,12 @@ async def run_pipeline_rlm(
     # 10. Arm the wall-clock backstop, then 11. run .completion() on a worker thread.
     watchdog = _arm_watchdog(
         wall_clock_s,
+        project_dir=project_dir,
+        emit=emit,
+        iteration_count=lambda: rlm_logger.iteration_count,
+    )
+    # Ship a partial report on a graceful SIGTERM kill too (not just on a hang).
+    _prev_sigterm = _install_sigterm_finalizer(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
@@ -1700,9 +1846,16 @@ async def run_pipeline_rlm(
         run_failed = True
         logger.exception("run_pipeline_rlm: rlm.completion failed: %s", exc)
     finally:
-        # Watchdog is None when no wall-clock ceiling was requested.
+        # Watchdog is None only when the hard-ceiling backstop is disabled (=0).
         if watchdog is not None:
             watchdog.cancel()
+        # Restore the prior SIGTERM handler so we don't leak our finalizer into a
+        # long-lived host process (CLI exits anyway; matters for server/tests).
+        if _prev_sigterm is not None:
+            try:
+                signal.signal(signal.SIGTERM, _prev_sigterm)
+            except (ValueError, OSError):
+                pass
         # Stop the cost-summary background thread.
         _cost_stop_event.set()
         _cost_thread.join(timeout=5.0)

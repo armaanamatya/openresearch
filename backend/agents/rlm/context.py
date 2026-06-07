@@ -82,6 +82,14 @@ class RunContext:
     # None / [] means no paper-hint was supplied or the hint has no invariants.
     paper_hint_invariants: list[Any] = field(default_factory=list)
 
+    # Verified env-setup exclusions (2026-06-01 full-scope): VERIFIED
+    # ``env_setup_failed`` Exclusions from provision_scope at run start (an
+    # ALFWorld/WebShop the host could not stand up). Folded into
+    # ``metrics.json::scope`` by primitives._apply_operator_scope so the rubric
+    # EXCLUDES (not zeroes) those env leaves — the fairness principle. Typed as
+    # Any to avoid importing exclusion.Exclusion at the module top.
+    env_setup_exclusions: list[Any] = field(default_factory=list)
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so
