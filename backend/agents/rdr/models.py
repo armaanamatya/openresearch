@@ -104,6 +104,11 @@ class AgentContext:
     dependency_artifacts: dict[str, str] = field(default_factory=dict)
     prior_feedback: str | None = None
     working_summary: str = ""
+    # BES (2026-06-07): when set, the agent writes into this per-candidate scratch
+    # dir instead of the shared project_dir/code — so N competing candidates build
+    # + score in isolation. None => shared code dir (today's path). String-typed
+    # annotation under `from __future__ import annotations` (no runtime import).
+    candidate_code_dir: "Path | None" = None
 
 
 @dataclass

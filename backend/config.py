@@ -216,6 +216,19 @@ class Settings(BaseSettings):
     dynamic_gpu_fallback_vram_gb: int = Field(default=24, ge=1, description="Substitute VRAM when LLM cannot estimate")
     dynamic_gpu_max_escalations: int = Field(default=2, ge=0, description="Max OOM-driven ladder advances per run")
 
+    # --- BES on RDR (spec 2026-06-07, default OFF) ---
+    # Competing candidates extend the RDR controller behind a MASTER gate. When
+    # bes_enabled is False every child flag below is inert and run_rdr behaves
+    # bit-for-bit as today. See docs/superpowers/specs/2026-06-07-bes-integration/.
+    bes_enabled: bool = Field(default=False, description="MASTER gate for BES-on-RDR; off => today's RDR path")
+    bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8, description="N competing candidates per cluster; 1 = parity")
+    bes_select_metric: str = Field(default="cluster_score", pattern=r"^(cluster_score|failed_leaves)$", description="Candidate SELECT metric")
+    bes_splice_enabled: bool = Field(default=False, description="Evolve/splice (v2, deferred) — no-op in v1")
+
+    # --- Mode-agnostic RDR pre-run gate (Phase 2, default OFF) ---
+    rdr_preflight_gate: bool = Field(default=False, description="Run scan_code_dir before run_experiment on the RDR path")
+    rdr_preflight_max_regens: int = Field(default=1, ge=0, le=3, description="Max code regenerations on a pre-run-gate violation")
+
     # Budget-awareness prompt for implement_baseline. Tells the baseline-writing
     # agent to scale train.py to fit remaining_s wall-clock.
     #   "auto"   — inject only on cost-bearing sandboxes (runpod / brev)
