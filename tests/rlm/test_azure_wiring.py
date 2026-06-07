@@ -4,7 +4,10 @@ Regression + wiring tests for --sandbox azure routing.
 Guards (a) local/runpod/docker still use gpu_cell_runner unchanged,
 (b) azure uses k8s_job_cell_runner with identical kwargs,
 (c) SandboxMode.azure and ensure_sandbox_mode_available wiring,
-(d) build_environment azure short-circuit returns no-op success.
+(d) build_environment azure short-circuit returns no-op success,
+(e) _backend_for_sandbox_mode azure passes gpu_plan to AksJobBackend,
+(f) resolve_gpu_requirements selects provider='azure' for azure mode,
+(g) _execute_cell_matrix azure passes gpu_plan to bind_run_context.
 """
 
 from __future__ import annotations
@@ -15,6 +18,42 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from backend.agents.execution import SandboxMode
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_valid_gpu_plan_dict(
+    *,
+    short_name: str = "azure_nc24ads_a100",
+    runpod_id: str = "Standard_NC24ads_A100_v4",
+    vram_gb: int = 80,
+    gpu_count: int = 1,
+    cloud_type: str = "ONDEMAND",
+    sku_usd_per_hr: float = 3.67,
+    source: str = "paper",
+) -> dict:
+    """Build a valid dict matching GpuPlan's schema (all required fields present)."""
+    from datetime import datetime, timezone
+    return {
+        "short_name": short_name,
+        "runpod_id": runpod_id,
+        "vram_gb": vram_gb,
+        "gpu_count": gpu_count,
+        "cloud_type": cloud_type,
+        "sku_usd_per_hr": sku_usd_per_hr,
+        "total_usd_per_hr": sku_usd_per_hr * gpu_count,
+        "container_disk_gb": 100,
+        "volume_gb": 200,
+        "source": source,
+        "requirements": {
+            "estimated_vram_gb": vram_gb,
+            "confidence": 0.9,
+            "reasoning": "test",
+        },
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +216,8 @@ def test_non_azure_modes_use_gpu_cell_runner(tmp_path, mode):
 def test_azure_mode_uses_k8s_runner_with_identical_kwargs(tmp_path):
     """azure must call k8s_job_cell_runner.run_matrix with the same kwargs shape
     (not gpu_cell_runner) — identical args minus the runner name."""
+    from contextlib import contextmanager
+
     from backend.agents.rlm import gpu_cell_runner as _gpu, k8s_job_cell_runner as _k8s
 
     code = _build_cells_json_env(tmp_path)
@@ -186,9 +227,14 @@ def test_azure_mode_uses_k8s_runner_with_identical_kwargs(tmp_path):
     mock_gpu = MagicMock(return_value={})
     mock_k8s = MagicMock(return_value={"c1": {"status": "ok", "metrics": {}}})
 
+    @contextmanager
+    def _fake_bind(*, run_budget=None, event_sink=None, gpu_plan=None):
+        yield
+
     with (
         patch.object(_gpu, "run_matrix", mock_gpu),
         patch.object(_k8s, "run_matrix", mock_k8s),
+        patch.object(_k8s, "bind_run_context", _fake_bind),
         patch("backend.agents.rlm.primitives._apply_operator_scope", lambda m, _: m),
         patch("backend.agents.rlm.primitives._summarize_cell_logs", return_value=""),
         patch("backend.agents.rlm.primitives._emit_dashboard_event"),
@@ -251,3 +297,380 @@ def test_backend_for_sandbox_mode_docker_unchanged():
 
     backend = _backend_for_sandbox_mode(SandboxMode.docker, run_budget=None)
     assert isinstance(backend, LocalDockerBackend)
+
+
+# ---------------------------------------------------------------------------
+# (e) _backend_for_sandbox_mode azure+gpu_plan threading
+# ---------------------------------------------------------------------------
+
+def test_backend_for_sandbox_mode_azure_threads_gpu_plan():
+    """sandbox_mode='azure' with a gpu_plan must pass it into AksJobBackend._gpu_plan."""
+    from types import SimpleNamespace
+
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+    from backend.services.runtime.aks_job_backend import AksJobBackend
+
+    plan = SimpleNamespace(short_name="azure_nc24ads_a100", gpu_count=1)
+
+    with patch("backend.services.runtime.ensure_azure_available", lambda: None):
+        backend = _backend_for_sandbox_mode(SandboxMode.azure, run_budget=None, gpu_plan=plan)
+
+    assert isinstance(backend, AksJobBackend)
+    assert backend._gpu_plan is plan
+
+
+def test_backend_for_sandbox_mode_azure_no_gpu_plan_still_works():
+    """sandbox_mode='azure' with gpu_plan=None constructs AksJobBackend without error."""
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+    from backend.services.runtime.aks_job_backend import AksJobBackend
+
+    with patch("backend.services.runtime.ensure_azure_available", lambda: None):
+        backend = _backend_for_sandbox_mode(SandboxMode.azure, run_budget=None, gpu_plan=None)
+
+    assert isinstance(backend, AksJobBackend)
+    assert backend._gpu_plan is None
+
+
+# ---------------------------------------------------------------------------
+# (f) resolve_gpu_requirements provider selection
+# ---------------------------------------------------------------------------
+
+def test_resolve_gpu_requirements_azure_mode_calls_resolve_with_azure_provider(tmp_path, monkeypatch):
+    """resolve_gpu_requirements with ctx.sandbox_mode=SandboxMode.azure must call
+    gpu_resolver.resolve(..., provider='azure', cloud_types=('ONDEMAND',))."""
+    from unittest.mock import MagicMock
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.azure,
+        project_dir=tmp_path,
+        vram_override=None,
+    )
+
+    captured: list[dict] = []
+
+    # Use SimpleNamespace as a fake GpuPlan — the resolver returns it, we just
+    # check that resolve() was called with the right kwargs.
+    fake_plan = SimpleNamespace(
+        short_name="azure_nc24ads_a100",
+        gpu_count=1,
+        source="paper",
+        model_dump=lambda mode=None: _make_valid_gpu_plan_dict(),
+    )
+
+    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
+        captured.append({"provider": provider, "cloud_types": cloud_types})
+        return fake_plan
+
+    monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
+    # Patch get_settings to avoid real config I/O.
+    fake_settings = MagicMock()
+    fake_settings.dynamic_gpu_enabled = True
+    fake_settings.force_single_gpu = True
+    fake_settings.max_gpu_usd_per_hour = None
+    fake_settings.dynamic_gpu_headroom = 1.25
+    fake_settings.dynamic_gpu_fallback_vram_gb = 16
+    fake_settings.runpod_cloud_type = "COMMUNITY"
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
+
+    from backend.agents.rlm.primitives import resolve_gpu_requirements
+    from backend.agents.schemas import GpuRequirements
+
+    req = GpuRequirements(estimated_vram_gb=40, confidence=0.9, reasoning="needs A100")
+    resolve_gpu_requirements(req, ctx=ctx)
+
+    assert len(captured) == 1, f"resolve was not called exactly once: {captured}"
+    assert captured[0]["provider"] == "azure", f"Expected provider='azure', got {captured[0]['provider']!r}"
+    assert captured[0]["cloud_types"] == ("ONDEMAND",), (
+        f"Expected cloud_types=('ONDEMAND',), got {captured[0]['cloud_types']!r}"
+    )
+
+
+def test_resolve_gpu_requirements_runpod_mode_uses_runpod_provider(tmp_path, monkeypatch):
+    """Regression: resolve_gpu_requirements with sandbox_mode=runpod must NOT pass provider='azure'."""
+    from unittest.mock import MagicMock
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.runpod,
+        project_dir=tmp_path,
+        vram_override=None,
+    )
+
+    captured: list[dict] = []
+
+    fake_plan = SimpleNamespace(
+        short_name="rtx4090",
+        gpu_count=1,
+        source="paper",
+        model_dump=lambda mode=None: _make_valid_gpu_plan_dict(
+            short_name="rtx4090", runpod_id="NVIDIA GeForce RTX 4090",
+            vram_gb=24, cloud_type="COMMUNITY", sku_usd_per_hr=0.34,
+        ),
+    )
+
+    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
+        captured.append({"provider": provider, "cloud_types": cloud_types})
+        return fake_plan
+
+    monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
+    fake_settings = MagicMock()
+    fake_settings.dynamic_gpu_enabled = True
+    fake_settings.force_single_gpu = True
+    fake_settings.max_gpu_usd_per_hour = None
+    fake_settings.dynamic_gpu_headroom = 1.25
+    fake_settings.dynamic_gpu_fallback_vram_gb = 16
+    fake_settings.runpod_cloud_type = "COMMUNITY"
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
+
+    from backend.agents.rlm.primitives import resolve_gpu_requirements
+    from backend.agents.schemas import GpuRequirements
+
+    req = GpuRequirements(estimated_vram_gb=20, confidence=0.8, reasoning="small GPU")
+    resolve_gpu_requirements(req, ctx=ctx)
+
+    assert len(captured) == 1
+    assert captured[0]["provider"] == "runpod", (
+        f"Regression: expected provider='runpod' for runpod mode, got {captured[0]['provider']!r}"
+    )
+    assert "azure" not in str(captured[0]["cloud_types"]).lower(), (
+        f"Regression: runpod path must not use ONDEMAND cloud_types, got {captured[0]['cloud_types']!r}"
+    )
+
+
+def test_resolve_gpu_requirements_local_mode_uses_runpod_provider(tmp_path, monkeypatch):
+    """Regression: local sandbox_mode must use provider='runpod' (not azure)."""
+    from unittest.mock import MagicMock
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.local,
+        project_dir=tmp_path,
+        vram_override=None,
+    )
+    captured: list[dict] = []
+    fake_plan = SimpleNamespace(
+        short_name="rtx4090",
+        gpu_count=1,
+        source="paper",
+        model_dump=lambda mode=None: _make_valid_gpu_plan_dict(
+            short_name="rtx4090", runpod_id="NVIDIA GeForce RTX 4090",
+            vram_gb=24, cloud_type="COMMUNITY", sku_usd_per_hr=0.34,
+        ),
+    )
+
+    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
+        captured.append({"provider": provider})
+        return fake_plan
+
+    monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
+    fake_settings = MagicMock()
+    fake_settings.dynamic_gpu_enabled = True
+    fake_settings.force_single_gpu = True
+    fake_settings.max_gpu_usd_per_hour = None
+    fake_settings.dynamic_gpu_headroom = 1.25
+    fake_settings.dynamic_gpu_fallback_vram_gb = 16
+    fake_settings.runpod_cloud_type = "COMMUNITY"
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
+
+    from backend.agents.rlm.primitives import resolve_gpu_requirements
+    from backend.agents.schemas import GpuRequirements
+
+    req = GpuRequirements(estimated_vram_gb=16, confidence=0.7, reasoning="local run")
+    resolve_gpu_requirements(req, ctx=ctx)
+
+    assert captured[0]["provider"] == "runpod"
+
+
+# ---------------------------------------------------------------------------
+# (g) _execute_cell_matrix azure branch: bind_run_context called with gpu_plan
+# ---------------------------------------------------------------------------
+
+def test_execute_cell_matrix_azure_passes_gpu_plan_to_bind_run_context(tmp_path, monkeypatch):
+    """_execute_cell_matrix for azure must call k8s_job_cell_runner.bind_run_context
+    with gpu_plan loaded from gpu_plan.json."""
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.agents.schemas import GpuPlan
+    from backend.services.runtime.gpu_capacity import GpuCapacity
+
+    # Write a gpu_plan.json into rlm_state/ (all required GpuPlan fields).
+    rlm_state = tmp_path / "rlm_state"
+    rlm_state.mkdir(parents=True)
+    plan_dict = _make_valid_gpu_plan_dict(
+        short_name="azure_nc24ads_a100",
+        runpod_id="Standard_NC24ads_A100_v4",
+        vram_gb=80,
+        gpu_count=1,
+        cloud_type="ONDEMAND",
+        sku_usd_per_hr=3.67,
+    )
+    (rlm_state / "gpu_plan.json").write_text(json.dumps(plan_dict), encoding="utf-8")
+
+    code = tmp_path / "code"
+    code.mkdir()
+    cells = [{"id": "c1", "model": "m1", "env": "e1", "baseline": "b1",
+               "est_vram_gb": 4, "dataset_url": ""}]
+    (code / "cells.json").write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    (code / "train_cell.py").write_text("# stub", encoding="utf-8")
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.azure,
+        project_dir=tmp_path,
+        run_budget=None,
+        _event_sink=None,
+        gpu_device_ids=None,
+    )
+    caps = GpuCapacity("azure", num_gpus=1, per_gpu_vram_gb=80.0,
+                       free_gpu_ids=("0",), can_escalate=False)
+
+    bind_kwargs_captured: list[dict] = []
+
+    @contextmanager
+    def _fake_bind_run_context(*, run_budget=None, event_sink=None, gpu_plan=None):
+        bind_kwargs_captured.append({
+            "run_budget": run_budget,
+            "event_sink": event_sink,
+            "gpu_plan": gpu_plan,
+        })
+        yield
+
+    from backend.agents.rlm import k8s_job_cell_runner as _k8s
+
+    mock_run_matrix = MagicMock(return_value={"c1": {"status": "ok", "metrics": {}}})
+
+    with (
+        patch.object(_k8s, "bind_run_context", _fake_bind_run_context),
+        patch.object(_k8s, "run_matrix", mock_run_matrix),
+        patch("backend.agents.rlm.primitives._apply_operator_scope", lambda m, _: m),
+        patch("backend.agents.rlm.primitives._summarize_cell_logs", return_value=""),
+        patch("backend.agents.rlm.primitives._emit_dashboard_event"),
+        patch("backend.agents.rlm.cell_matrix.capacity_gate",
+              lambda cells, *a, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.dataset_url_preflight",
+              lambda cells, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.aggregate_cell_metrics",
+              lambda *a, **kw: {}),
+        patch("backend.agents.rlm.cell_fingerprint.compute_fingerprint",
+              lambda *a, **kw: "fp"),
+    ):
+        from backend.agents.rlm.primitives import _execute_cell_matrix
+        _execute_cell_matrix(ctx, str(code), caps, timeout_s=60.0, run_id="r1")
+
+    assert len(bind_kwargs_captured) == 1, "bind_run_context must be called exactly once"
+    gpu_plan_passed = bind_kwargs_captured[0]["gpu_plan"]
+    assert gpu_plan_passed is not None, "gpu_plan must not be None when gpu_plan.json exists"
+    assert isinstance(gpu_plan_passed, GpuPlan), (
+        f"Expected GpuPlan instance, got {type(gpu_plan_passed).__name__}"
+    )
+    assert gpu_plan_passed.short_name == "azure_nc24ads_a100"
+
+
+def test_execute_cell_matrix_azure_passes_none_gpu_plan_when_no_file(tmp_path):
+    """_execute_cell_matrix for azure passes gpu_plan=None when gpu_plan.json is absent."""
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.services.runtime.gpu_capacity import GpuCapacity
+
+    # Do NOT create rlm_state/gpu_plan.json
+    code = tmp_path / "code"
+    code.mkdir()
+    cells = [{"id": "c1", "model": "m1", "env": "e1", "baseline": "b1",
+               "est_vram_gb": 4, "dataset_url": ""}]
+    (code / "cells.json").write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    (code / "train_cell.py").write_text("# stub", encoding="utf-8")
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.azure,
+        project_dir=tmp_path,
+        run_budget=None,
+        _event_sink=None,
+        gpu_device_ids=None,
+    )
+    caps = GpuCapacity("azure", num_gpus=1, per_gpu_vram_gb=80.0,
+                       free_gpu_ids=("0",), can_escalate=False)
+
+    bind_kwargs_captured: list[dict] = []
+
+    @contextmanager
+    def _fake_bind_run_context(*, run_budget=None, event_sink=None, gpu_plan=None):
+        bind_kwargs_captured.append({"gpu_plan": gpu_plan})
+        yield
+
+    from backend.agents.rlm import k8s_job_cell_runner as _k8s
+
+    with (
+        patch.object(_k8s, "bind_run_context", _fake_bind_run_context),
+        patch.object(_k8s, "run_matrix", MagicMock(return_value={"c1": {"status": "ok", "metrics": {}}})),
+        patch("backend.agents.rlm.primitives._apply_operator_scope", lambda m, _: m),
+        patch("backend.agents.rlm.primitives._summarize_cell_logs", return_value=""),
+        patch("backend.agents.rlm.primitives._emit_dashboard_event"),
+        patch("backend.agents.rlm.cell_matrix.capacity_gate",
+              lambda cells, *a, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.dataset_url_preflight",
+              lambda cells, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.aggregate_cell_metrics",
+              lambda *a, **kw: {}),
+        patch("backend.agents.rlm.cell_fingerprint.compute_fingerprint",
+              lambda *a, **kw: "fp"),
+    ):
+        from backend.agents.rlm.primitives import _execute_cell_matrix
+        _execute_cell_matrix(ctx, str(code), caps, timeout_s=60.0, run_id="r1")
+
+    assert len(bind_kwargs_captured) == 1
+    assert bind_kwargs_captured[0]["gpu_plan"] is None
+
+
+def test_execute_cell_matrix_non_azure_no_gpu_plan_plumbing(tmp_path):
+    """Regression: non-azure (_execute_cell_matrix) must use gpu_cell_runner with
+    NO gpu_plan plumbing into bind_run_context."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.agents.rlm import gpu_cell_runner as _gpu, k8s_job_cell_runner as _k8s
+    from backend.services.runtime.gpu_capacity import GpuCapacity
+
+    code = tmp_path / "code"
+    code.mkdir()
+    cells = [{"id": "c1", "model": "m1", "env": "e1", "baseline": "b1",
+               "est_vram_gb": 4, "dataset_url": ""}]
+    (code / "cells.json").write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    (code / "train_cell.py").write_text("# stub", encoding="utf-8")
+
+    ctx = SimpleNamespace(
+        sandbox_mode=SandboxMode.local,
+        project_dir=tmp_path,
+        run_budget=None,
+        _event_sink=None,
+        gpu_device_ids=None,
+    )
+    caps = GpuCapacity("local", num_gpus=1, per_gpu_vram_gb=24.0,
+                       free_gpu_ids=("0",), can_escalate=False)
+
+    mock_gpu_run = MagicMock(return_value={"c1": {"status": "ok", "metrics": {}}})
+    mock_k8s_bind = MagicMock()
+
+    with (
+        patch.object(_gpu, "run_matrix", mock_gpu_run),
+        patch.object(_k8s, "bind_run_context", mock_k8s_bind),
+        patch("backend.agents.rlm.primitives._apply_operator_scope", lambda m, _: m),
+        patch("backend.agents.rlm.primitives._summarize_cell_logs", return_value=""),
+        patch("backend.agents.rlm.primitives._emit_dashboard_event"),
+        patch("backend.agents.rlm.cell_matrix.capacity_gate",
+              lambda cells, *a, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.dataset_url_preflight",
+              lambda cells, **kw: (cells, [], [])),
+        patch("backend.agents.rlm.cell_matrix.aggregate_cell_metrics",
+              lambda *a, **kw: {}),
+        patch("backend.agents.rlm.cell_fingerprint.compute_fingerprint",
+              lambda *a, **kw: "fp"),
+    ):
+        from backend.agents.rlm.primitives import _execute_cell_matrix
+        _execute_cell_matrix(ctx, str(code), caps, timeout_s=60.0, run_id="r1")
+
+    mock_gpu_run.assert_called_once()
+    mock_k8s_bind.assert_not_called()

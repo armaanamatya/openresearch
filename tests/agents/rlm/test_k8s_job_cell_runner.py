@@ -16,6 +16,13 @@ Suite covers:
   * gpus_per_cell != 1 → every cell "error".
   * budget cap → cells beyond cap "error".
   * bind_run_context injects budget and event_sink without altering signature.
+  * cell_scheduler symbols adopted (CellResult, headline_metric, etc.).
+  * gpu_plan bound → manifest nodeSelector reprolab/sku + correct gpu_count.
+  * no gpu_plan → default manifest (back-compat, agentpool nodeSelector).
+  * SKU escalation: oom_failed + ladder → resubmit on bigger pool, gpu_escalated event.
+  * escalation graceful-degrade: empty ladder / not-provisioned → stays oom_failed.
+  * escalation cap: bounded by dynamic_gpu_max_escalations.
+  * bind_run_context(gpu_plan=...) round-trips via _get_gpu_plan().
 """
 from __future__ import annotations
 
@@ -38,6 +45,7 @@ from backend.agents.rlm.k8s_job_cell_runner import (
     run_matrix,
 )
 import backend.agents.rlm.gpu_cell_runner as gcr
+from backend.agents.rlm import cell_scheduler
 
 
 # ---------------------------------------------------------------------------
@@ -905,3 +913,760 @@ class TestGpusIgnored:
             gpus=["0", "1", "2"],  # ignored
         )
         assert results["gig0"]["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# 15. cell_scheduler symbols adoption
+# ---------------------------------------------------------------------------
+
+class TestCellSchedulerAdoption:
+    """Verify that the runner uses the shared cell_scheduler symbols, not local copies."""
+
+    def test_cell_manifest_name_is_scheduler_constant(self):
+        assert kjcr.CELL_MANIFEST_NAME is cell_scheduler.CELL_MANIFEST_NAME
+
+    def test_cell_result_is_scheduler_class(self):
+        # CellResult imported by kjcr must be the same class as in cell_scheduler.
+        assert kjcr.CellResult is cell_scheduler.CellResult
+
+    def test_headline_metric_is_scheduler_function(self):
+        assert kjcr.headline_metric is cell_scheduler.headline_metric
+
+    def test_load_cell_manifest_is_scheduler_function(self):
+        assert kjcr.load_cell_manifest is cell_scheduler.load_cell_manifest
+
+    def test_should_skip_cell_is_scheduler_function(self):
+        assert kjcr.should_skip_cell is cell_scheduler.should_skip_cell
+
+    def test_write_cell_manifest_is_scheduler_function(self):
+        assert kjcr.write_cell_manifest is cell_scheduler.write_cell_manifest
+
+    def test_is_resume_armed_is_scheduler_function(self):
+        assert kjcr.is_resume_armed is cell_scheduler.is_resume_armed
+
+    def test_deadline_from_timeout_is_scheduler_function(self):
+        assert kjcr.deadline_from_timeout is cell_scheduler.deadline_from_timeout
+
+    def test_clamp_cell_timeout_is_scheduler_function(self):
+        assert kjcr.clamp_cell_timeout is cell_scheduler.clamp_cell_timeout
+
+    def test_status_constants_match_scheduler(self):
+        assert kjcr.STATUS_OK is cell_scheduler.STATUS_OK
+        assert kjcr.STATUS_OOM_FAILED is cell_scheduler.STATUS_OOM_FAILED
+        assert kjcr.STATUS_SKIPPED is cell_scheduler.STATUS_SKIPPED
+        assert kjcr.STATUS_ERROR is cell_scheduler.STATUS_ERROR
+        assert kjcr.STATUS_TIMEOUT is cell_scheduler.STATUS_TIMEOUT
+
+    def test_write_cell_manifest_caller_k8s(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                            caplog: pytest.LogCaptureFixture):
+        """write_cell_manifest called by the runner must use caller='k8s_job_cell_runner'."""
+        import logging
+        cells = [{"id": "wm0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        output_root = tmp_path / "out"
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=output_root)
+
+        # The manifest must have been written (not raise).
+        manifest_path = output_root / "wm0" / CELL_MANIFEST_NAME
+        assert manifest_path.exists()
+
+    def test_existing_run_matrix_tests_still_pass_with_scheduler_symbols(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Smoke: a basic happy-path still works after adopting cell_scheduler."""
+        cells = [{"id": "cs0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.9})
+
+        results = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+        assert results["cs0"]["status"] == "ok"
+        assert results["cs0"]["metrics"] == {"metric": 0.9}
+
+
+# ---------------------------------------------------------------------------
+# 16. gpu_plan → Job manifest nodeSelector + gpu_count
+# ---------------------------------------------------------------------------
+
+class _FakeGpuPlan:
+    """Minimal GpuPlan stub for testing — only the fields _build_job_manifest reads."""
+
+    def __init__(
+        self,
+        short_name: str = "azure_a100_80",
+        gpu_count: int = 1,
+        ladder_remaining: tuple[str, ...] = (),
+    ) -> None:
+        self.short_name = short_name
+        self.gpu_count = gpu_count
+        self.ladder_remaining = ladder_remaining
+
+
+class TestGpuPlanManifest:
+    """Job manifest must honour gpu_plan when one is bound."""
+
+    def test_gpu_plan_sets_node_selector_sku(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """nodeSelector must include reprolab/sku=<plan.short_name> when gpu_plan is bound."""
+        cells = [{"id": "gpm0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        plan = _FakeGpuPlan(short_name="azure_a100_80", gpu_count=1)
+
+        with bind_run_context(gpu_plan=plan):
+            run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert len(k8s.batch.created_jobs) == 1
+        job_body = k8s.batch.created_jobs[0]
+        node_selector = (
+            job_body["spec"]["template"]["spec"]["nodeSelector"]
+        )
+        assert node_selector == {"reprolab/sku": "azure_a100_80"}, (
+            f"expected reprolab/sku nodeSelector, got {node_selector!r}"
+        )
+
+    def test_gpu_plan_sets_gpu_count_in_resources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """GPU resource request/limit must equal plan.gpu_count when gpu_plan is bound."""
+        cells = [{"id": "gpm1"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.2})
+
+        plan = _FakeGpuPlan(short_name="azure_a100_80x2", gpu_count=2)
+
+        with bind_run_context(gpu_plan=plan):
+            run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert len(k8s.batch.created_jobs) == 1
+        job_body = k8s.batch.created_jobs[0]
+        container = job_body["spec"]["template"]["spec"]["containers"][0]
+        resources = container["resources"]
+        assert resources["requests"]["nvidia.com/gpu"] == "2", (
+            f"expected gpu_count=2 in requests, got {resources['requests']!r}"
+        )
+        assert resources["limits"]["nvidia.com/gpu"] == "2", (
+            f"expected gpu_count=2 in limits, got {resources['limits']!r}"
+        )
+
+    def test_gpu_plan_taint_toleration_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Manifest must always tolerate nvidia.com/gpu taint (Exists, NoSchedule)."""
+        cells = [{"id": "gpm2"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        plan = _FakeGpuPlan(short_name="azure_a100_80", gpu_count=1)
+
+        with bind_run_context(gpu_plan=plan):
+            run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        tolerations = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["tolerations"]
+        nvidia_tols = [
+            t for t in tolerations
+            if t.get("key") == "nvidia.com/gpu" and t.get("operator") == "Exists"
+        ]
+        assert nvidia_tols, f"no nvidia.com/gpu taint toleration found in {tolerations!r}"
+
+    def test_no_gpu_plan_uses_default_agentpool_selector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Without a gpu_plan the manifest must use the legacy agentpool nodeSelector."""
+        cells = [{"id": "gpm3"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        # No bind_run_context at all → gpu_plan is None.
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        node_selector = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["nodeSelector"]
+        # Must use "agentpool" key, NOT "reprolab/sku".
+        assert "agentpool" in node_selector, (
+            f"expected agentpool nodeSelector without gpu_plan, got {node_selector!r}"
+        )
+        assert "reprolab/sku" not in node_selector, (
+            f"reprolab/sku must not be present without gpu_plan, got {node_selector!r}"
+        )
+
+    def test_no_gpu_plan_uses_single_gpu(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Without a gpu_plan the Job must request exactly 1 GPU."""
+        cells = [{"id": "gpm4"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        container = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["containers"][0]
+        assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# 17. bind_run_context gpu_plan round-trip
+# ---------------------------------------------------------------------------
+
+class TestBindRunContextGpuPlan:
+    def test_gpu_plan_round_trips_via_get_gpu_plan(self):
+        """bind_run_context(gpu_plan=...) must be readable via _get_gpu_plan()."""
+        plan = _FakeGpuPlan(short_name="azure_a10_24", gpu_count=1)
+        with bind_run_context(gpu_plan=plan):
+            retrieved = kjcr._get_gpu_plan()
+        assert retrieved is plan
+
+    def test_no_gpu_plan_returns_none(self):
+        with bind_run_context():
+            assert kjcr._get_gpu_plan() is None
+
+    def test_gpu_plan_none_explicit_returns_none(self):
+        with bind_run_context(gpu_plan=None):
+            assert kjcr._get_gpu_plan() is None
+
+    def test_gpu_plan_concurrent_isolation(self, tmp_path: Path):
+        """Two concurrent threads must see their own gpu_plan."""
+        seen: dict[str, Any] = {}
+        barrier = threading.Barrier(2, timeout=5)
+
+        def _thread_a() -> None:
+            plan_a = _FakeGpuPlan(short_name="azure_a10_24")
+            with bind_run_context(gpu_plan=plan_a):
+                barrier.wait()
+                seen["a"] = kjcr._get_gpu_plan()
+
+        def _thread_b() -> None:
+            with bind_run_context(gpu_plan=None):
+                barrier.wait()
+                seen["b"] = kjcr._get_gpu_plan()
+
+        ta = threading.Thread(target=_thread_a)
+        tb = threading.Thread(target=_thread_b)
+        ta.start(); tb.start()
+        ta.join(timeout=10); tb.join(timeout=10)
+
+        assert seen["a"] is not None
+        assert seen["a"].short_name == "azure_a10_24"
+        assert seen["b"] is None
+
+    def test_all_three_context_vars_coexist(self):
+        """run_budget, event_sink, and gpu_plan can all be bound simultaneously."""
+        from backend.agents.resilience.budget import RunBudget
+        events: list = []
+        plan = _FakeGpuPlan(short_name="azure_a100_80")
+        budget = RunBudget(max_run_gpu_usd=100.0)
+
+        with bind_run_context(
+            run_budget=budget,
+            event_sink=lambda t, p: events.append((t, p)),
+            gpu_plan=plan,
+        ):
+            assert kjcr._get_run_budget() is budget
+            assert kjcr._get_gpu_plan() is plan
+            # event_sink: call it directly to verify it's wired.
+            kjcr._get_event_sink()("run_warning", {"code": "test"})
+
+        assert any(e[0] == "run_warning" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# 18. SKU escalation on oom_failed
+# ---------------------------------------------------------------------------
+
+class _OomThenSucceedBatch:
+    """FakeK8sBatch that returns Failed(exit 42) for the first cell and Succeeded for resubmit."""
+
+    def __init__(self) -> None:
+        self.created_jobs: list[dict] = []
+        self._call_count = 0
+
+    def create_namespaced_job(self, namespace: str, body: dict) -> None:
+        self.created_jobs.append(body)
+
+    def read_namespaced_job_status(self, name: str, namespace: str) -> Any:
+        # First submit → oom (Failed + exit 42)
+        # Escalated submit → Succeeded (exit 0)
+        # Distinguish by number of created jobs so far.
+        # call_count tracks how many status reads have happened.
+        self._call_count += 1
+        if len(self.created_jobs) <= 1:
+            # First job: return Failed condition
+            return _FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Failed")]))
+        else:
+            # Escalated job: return Succeeded
+            return _FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Complete")]))
+
+    def delete_namespaced_job(self, name: str, namespace: str, **kwargs: Any) -> None:
+        pass
+
+
+class _StatefulCore:
+    """Fake CoreV1Api that returns exit-42 pod for job 1, exit-0 pod for job 2+."""
+
+    def __init__(self) -> None:
+        self._batch_ref: _OomThenSucceedBatch | None = None
+
+    def list_namespaced_pod(self, namespace: str, label_selector: str = "") -> _FakePodList:
+        # Determine which job number we're on based on batch.created_jobs.
+        n_jobs = len(self._batch_ref.created_jobs) if self._batch_ref else 1
+        if n_jobs <= 1:
+            return _FakePodList([_FakePod(exit_code=42, phase="Running")])
+        return _FakePodList([_FakePod(exit_code=0, phase="Running")])
+
+    def read_namespaced_pod_log(self, name: str, namespace: str, **kwargs: Any) -> str:
+        return "log text\n"
+
+
+class TestSkuEscalation:
+    """OOM escalation: cell oom_failed → escalate to bigger pool, emit gpu_escalated."""
+
+    def _make_oom_then_ok_k8s(self) -> tuple[_OomThenSucceedBatch, _K8sClients]:
+        batch = _OomThenSucceedBatch()
+        core = _StatefulCore()
+        core._batch_ref = batch
+        return batch, _K8sClients(batch=batch, core=core, watch_cls=None)
+
+    def test_escalation_resubmits_on_oom_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When a cell oom_fails and ladder has a provisioned SKU, a second Job is submitted."""
+        cells = [{"id": "esc0"}]
+        batch, k8s = self._make_oom_then_ok_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.4})
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],  # provisioned
+            "dynamic_gpu_max_escalations": 2,
+        }.get(name, default))
+
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        # Two Jobs must have been created: original + escalated.
+        assert len(batch.created_jobs) == 2, (
+            f"expected 2 Jobs (original + escalated), got {len(batch.created_jobs)}"
+        )
+
+    def test_escalation_targets_bigger_sku_node_selector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The escalated Job must have nodeSelector reprolab/sku=<next_sku>."""
+        cells = [{"id": "esc1"}]
+        batch, k8s = self._make_oom_then_ok_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.3})
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],
+            "dynamic_gpu_max_escalations": 2,
+        }.get(name, default))
+
+        with bind_run_context(gpu_plan=plan):
+            run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert len(batch.created_jobs) == 2
+        escalated_job = batch.created_jobs[1]
+        node_selector = escalated_job["spec"]["template"]["spec"]["nodeSelector"]
+        assert node_selector.get("reprolab/sku") == "azure_a100_80x2", (
+            f"escalated job must target azure_a100_80x2, got {node_selector!r}"
+        )
+
+    def test_escalation_emits_gpu_escalated_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Each escalation must emit a gpu_escalated event via the event_sink."""
+        cells = [{"id": "esc2"}]
+        batch, k8s = self._make_oom_then_ok_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.3})
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],
+            "dynamic_gpu_max_escalations": 2,
+        }.get(name, default))
+
+        events: list[tuple[str, dict]] = []
+
+        with bind_run_context(gpu_plan=plan, event_sink=lambda t, p: events.append((t, p))):
+            run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        escalated_events = [e for e in events if e[0] == "gpu_escalated"]
+        assert len(escalated_events) == 1, (
+            f"expected 1 gpu_escalated event, got {escalated_events!r}"
+        )
+        payload = escalated_events[0][1]
+        assert payload["cell_id"] == "esc2"
+        assert payload["from_sku"] == "azure_a100_80"
+        assert payload["to_sku"] == "azure_a100_80x2"
+
+    def test_escalation_final_result_ok_after_escalate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """After successful escalation the cell result must be 'ok'."""
+        cells = [{"id": "esc3"}]
+        batch, k8s = self._make_oom_then_ok_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.8})
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],
+            "dynamic_gpu_max_escalations": 2,
+        }.get(name, default))
+
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert results["esc3"]["status"] == "ok", (
+            f"expected ok after escalation, got {results['esc3']['status']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 19. Escalation graceful degrade
+# ---------------------------------------------------------------------------
+
+class TestEscalationGraceDegrade:
+    """When escalation cannot proceed, cell stays oom_failed — never crashes/loops."""
+
+    def _make_always_oom_k8s(self) -> _K8sClients:
+        """K8s that always returns Failed + exit 42."""
+        jobs = [_FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Failed")]))] * 20
+        pods = [_FakePod(exit_code=42, phase="Running")]
+        return _make_k8s(job_sequence=jobs, pods=pods)
+
+    def _common_settings(self, monkeypatch: pytest.MonkeyPatch, provisioned: list[str]) -> None:
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": provisioned,
+            "dynamic_gpu_max_escalations": 2,
+        }.get(name, default))
+
+    def test_empty_ladder_stays_oom_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Empty ladder_remaining → single Job, cell stays oom_failed."""
+        cells = [{"id": "dg0"}]
+        k8s = self._make_always_oom_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        self._common_settings(monkeypatch, provisioned=["azure_a100_80x2"])
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=(),  # empty
+        )
+
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert results["dg0"]["status"] == "oom_failed", (
+            f"expected oom_failed with empty ladder, got {results['dg0']['status']!r}"
+        )
+        # Only ONE Job submitted (no escalation).
+        assert len(k8s.batch.created_jobs) == 1, (
+            f"expected 1 Job with empty ladder, got {len(k8s.batch.created_jobs)}"
+        )
+
+    def test_not_provisioned_stays_oom_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Ladder has next SKU but it's not in azure_gpu_skus → stays oom_failed."""
+        cells = [{"id": "dg1"}]
+        k8s = self._make_always_oom_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        # azure_gpu_skus does NOT include azure_a100_80x2.
+        self._common_settings(monkeypatch, provisioned=["azure_a10_24"])
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),  # not provisioned
+        )
+
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert results["dg1"]["status"] == "oom_failed"
+        # Only ONE Job submitted.
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_escalation_cap_respected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Escalations are bounded by dynamic_gpu_max_escalations (default 2)."""
+        cells = [{"id": "dg2"}]
+        k8s = self._make_always_oom_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        # All SKUs provisioned.
+        self._common_settings(
+            monkeypatch,
+            provisioned=["azure_a100_80x2", "azure_a100_80x4"],
+        )
+        # Override max_escalations to 1.
+        _orig_setting = kjcr._setting
+
+        def _patched_setting(name: str, default: Any = None) -> Any:
+            if name == "dynamic_gpu_max_escalations":
+                return 1
+            return {
+                "azure_namespace": "reprolab",
+                "azure_service_account": "reprolab-sa",
+                "azure_node_pool_name": "gpunodes",
+                "azure_base_image": "img:latest",
+                "azure_storage_account": "acct",
+                "azure_blob_container": "ctr",
+                "azure_files_share": "share",
+                "azure_max_nodes": 4,
+                "azure_gpu_usd_per_hour": 3.5,
+                "azure_pending_timeout_seconds": 900,
+                "azure_gpu_skus": ["azure_a100_80x2", "azure_a100_80x4"],
+            }.get(name, default)
+
+        monkeypatch.setattr(kjcr, "_setting", _patched_setting)
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2", "azure_a100_80x4"),
+        )
+
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        # With max_escalations=1: original + 1 escalation = 2 Jobs max.
+        assert len(k8s.batch.created_jobs) <= 2, (
+            f"expected ≤2 Jobs with max_escalations=1, got {len(k8s.batch.created_jobs)}"
+        )
+        # Cell stays oom_failed (all attempts OOM'd).
+        assert results["dg2"]["status"] == "oom_failed"
+
+    def test_no_gpu_plan_no_escalation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Without a gpu_plan, oom_failed cells are not escalated."""
+        cells = [{"id": "dg3"}]
+        k8s = self._make_always_oom_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        self._common_settings(monkeypatch, provisioned=["azure_a100_80x2"])
+
+        # No gpu_plan bound.
+        results = run_matrix(
+            cells,
+            tmp_path / "train_cell.py",
+            output_root=tmp_path / "out",
+            max_parallel=1,
+        )
+
+        assert results["dg3"]["status"] == "oom_failed"
+        # Only ONE Job (no escalation without a plan).
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_escalation_no_crash_no_loop_when_every_attempt_ooms(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Even if every escalated attempt also OOMs, run_matrix returns cleanly."""
+        cells = [{"id": "dg4"}]
+        k8s = self._make_always_oom_k8s()
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        self._common_settings(
+            monkeypatch,
+            provisioned=["azure_a100_80x2", "azure_a100_80x4"],
+        )
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2", "azure_a100_80x4"),
+        )
+
+        # Must complete without hanging or raising.
+        with bind_run_context(gpu_plan=plan):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert "dg4" in results
+        assert results["dg4"]["status"] == "oom_failed"
+        # Jobs ≤ 1 (original) + max_escalations (2 from default) = 3 max.
+        assert len(k8s.batch.created_jobs) <= 3
+
+
+# ---------------------------------------------------------------------------
+# 20. _trim_ladder helper
+# ---------------------------------------------------------------------------
+
+class TestTrimLadder:
+    def test_trim_removes_used_and_prior(self):
+        ladder = ("a", "b", "c", "d")
+        result = kjcr._trim_ladder(ladder, "b")
+        assert result == ("c", "d")
+
+    def test_trim_last_element_returns_empty(self):
+        ladder = ("a", "b")
+        result = kjcr._trim_ladder(ladder, "b")
+        assert result == ()
+
+    def test_trim_not_found_returns_full_ladder(self):
+        ladder = ("a", "b", "c")
+        result = kjcr._trim_ladder(ladder, "x")
+        assert result == ("a", "b", "c")
+
+    def test_trim_first_element(self):
+        ladder = ("a", "b", "c")
+        result = kjcr._trim_ladder(ladder, "a")
+        assert result == ("b", "c")
+
+
+# ---------------------------------------------------------------------------
+# 21. _resolve_escalation_sku helper
+# ---------------------------------------------------------------------------
+
+class TestResolveEscalationSku:
+    def test_returns_first_provisioned(self):
+        ladder = ("azure_a100_80x2", "azure_a100_80x4")
+        provisioned = ["azure_a100_80x2", "azure_a100_80x4"]
+        assert kjcr._resolve_escalation_sku(ladder, provisioned) == "azure_a100_80x2"
+
+    def test_skips_unprovisioned(self):
+        ladder = ("azure_a100_80x2", "azure_a100_80x4")
+        provisioned = ["azure_a100_80x4"]  # only the bigger one
+        assert kjcr._resolve_escalation_sku(ladder, provisioned) == "azure_a100_80x4"
+
+    def test_empty_ladder_returns_none(self):
+        assert kjcr._resolve_escalation_sku((), ["azure_a100_80x2"]) is None
+
+    def test_none_provisioned_returns_none(self):
+        ladder = ("azure_a100_80x2",)
+        assert kjcr._resolve_escalation_sku(ladder, []) is None
+
+    def test_no_overlap_returns_none(self):
+        ladder = ("azure_a100_80x2",)
+        provisioned = ["azure_a10_24"]
+        assert kjcr._resolve_escalation_sku(ladder, provisioned) is None

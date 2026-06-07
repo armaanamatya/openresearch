@@ -956,11 +956,28 @@ def resolve_gpu_requirements(
         req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
 
     settings = get_settings()
-    cloud_types: tuple[str, ...] = (
-        ("COMMUNITY", "SECURE")
-        if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-        else ("COMMUNITY",)
-    )
+
+    # Select the cloud provider from the run's sandbox_mode: azure → azure SKUs
+    # (ONDEMAND tier, multi-GPU VM-size aware); everything else → runpod (default,
+    # byte-for-byte identical to the pre-azure behaviour).
+    from backend.agents.execution import SandboxMode as _SandboxMode
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    try:
+        _sb_enum = _SandboxMode(_sb_mode) if _sb_mode is not None else None
+    except (ValueError, TypeError):
+        _sb_enum = None
+    _is_azure = _sb_enum is _SandboxMode.azure
+
+    if _is_azure:
+        _provider = "azure"
+        cloud_types: tuple[str, ...] = ("ONDEMAND",)
+    else:
+        _provider = "runpod"
+        cloud_types = (
+            ("COMMUNITY", "SECURE")
+            if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
+            else ("COMMUNITY",)
+        )
 
     from backend.agents.schemas import GpuPlan as _GpuPlan
     plan: "_GpuPlan" = gpu_resolver.resolve(
@@ -971,6 +988,7 @@ def resolve_gpu_requirements(
         headroom_multiplier=settings.dynamic_gpu_headroom,
         fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
         cloud_types=cloud_types,
+        provider=_provider,
     )
 
     # ---- Persist atomically.
@@ -2266,7 +2284,7 @@ def _backend_for_sandbox_mode(
         from backend.services.runtime.aks_job_backend import AksJobBackend
 
         _runtime.ensure_azure_available()
-        return AksJobBackend(run_budget=run_budget)
+        return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
@@ -4220,9 +4238,22 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     ).lower()
     _run_budget_ecm = getattr(ctx, "run_budget", None)
     _event_sink_ecm = getattr(ctx, "_event_sink", None)
+
+    # Load the cached gpu_plan (written by resolve_gpu_requirements) so the K8s
+    # runner can target the resolved SKU/node-pool.  Mirror run_experiment's load;
+    # fail-soft to None so a missing plan never blocks the cell-matrix route.
+    _ecm_gpu_plan = None
+    try:
+        _ecm_plan_path = Path(ctx.project_dir) / "rlm_state" / "gpu_plan.json"
+        if _ecm_plan_path.exists():
+            from backend.agents.schemas import GpuPlan as _ECMGpuPlan
+            _ecm_gpu_plan = _ECMGpuPlan(**json.loads(_ecm_plan_path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
+        logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
+
     if _sb_key_ecm == "azure":
         with k8s_job_cell_runner.bind_run_context(
-            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm
+            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
         ):
             matrix_result = k8s_job_cell_runner.run_matrix(
                 kept, str(code / "train_cell.py"),

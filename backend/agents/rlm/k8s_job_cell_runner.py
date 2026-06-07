@@ -12,9 +12,10 @@ Key design choices (locked 2026-06-03):
   selects the runner by sandbox mode and calls it with identical args.
 * **gpus ignored** — K8s scheduler places each Job; ``gpus`` is accepted but
   silently ignored.  ``gpus_per_cell != 1`` → every non-skipped cell returns
-  ``"error"`` (Azure Jobs are 1 GPU each by design).
+  ``"error"`` (Azure Jobs are 1 GPU each by design; multi-GPU is via gpu_plan).
 * **OOM in-Job** — the Job wrapper owns the shrink ladder; the orchestrator
-  does NOT resubmit on OOM.  ``max_oom_retries`` is forwarded to the Job as
+  resubmits on OOM only when a ``gpu_plan`` with ``ladder_remaining`` is bound.
+  ``max_oom_retries`` is forwarded to the Job as
   ``REPROLAB_CELL_MAX_OOM_RETRIES``.
 * **Blob artifact bus** — code is uploaded once from
   ``Path(cell_script).parent``; per-cell ``metrics.json`` is downloaded after
@@ -25,11 +26,20 @@ Key design choices (locked 2026-06-03):
 * **Budget** — before each submit, reserved GPU-seconds are checked against
   ``RunBudget.max_pod_seconds`` and ``RunBudget.max_run_gpu_usd``; caps
   sourced from a ``bind_run_context``-injected context var.
+* **Dynamic gpu_plan** — when a ``GpuPlan`` is bound via ``bind_run_context``,
+  the Job manifest targets the plan's SKU node pool and GPU count.  On
+  ``oom_failed``, the runner escalates through ``plan.ladder_remaining``
+  (bounded by ``settings.dynamic_gpu_max_escalations``, default 2), emitting
+  ``gpu_escalated`` events.  No crash/loop on empty ladder or unprovisioned SKU.
 * **Lazy K8s imports** — ``kubernetes`` is NOT installed in the dev venv.
   All ``kubernetes.*`` calls go through ``_k8s_factory()`` which may be
   monkeypatched in tests.  Module import always succeeds.
 * **Concurrent-safe context** — ``bind_run_context`` uses a ``ContextVar``
-  so multiple concurrent runs (threads) each see their own budget/sink.
+  so multiple concurrent runs (threads) each see their own budget/sink/plan.
+* **DRY cell helpers** — ``CellResult``, ``headline_metric``, ``load_cell_manifest``,
+  ``should_skip_cell``, ``write_cell_manifest``, ``is_resume_armed``,
+  ``deadline_from_timeout``, ``clamp_cell_timeout``, and the ``STATUS_*``
+  constants are all imported from ``cell_scheduler`` (the shared module).
 
 Status mapping:
 
@@ -39,7 +49,7 @@ Status mapping:
     Pending beyond azure_pending_timeout_seconds  →  "error" (prefix capacity_exhausted:)
     Resume hit  →  "skipped"
 
-SSE events — only EXISTING types are emitted (``run_warning``).  No new types.
+SSE events — only EXISTING types are emitted (``run_warning``, ``gpu_escalated``).
 """
 from __future__ import annotations
 
@@ -55,6 +65,27 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+# ---------------------------------------------------------------------------
+# Shared cell-scheduler symbols (DRY adoption)
+# ---------------------------------------------------------------------------
+
+from backend.agents.rlm.cell_scheduler import (  # noqa: E402
+    CELL_MANIFEST_NAME,
+    STATUS_ERROR,
+    STATUS_OK,
+    STATUS_OOM_FAILED,
+    STATUS_SKIPPED,
+    STATUS_TIMEOUT,
+    CellResult,
+    deadline_from_timeout,
+    clamp_cell_timeout,
+    headline_metric,
+    is_resume_armed,
+    load_cell_manifest,
+    should_skip_cell,
+    write_cell_manifest,
+)
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -62,9 +93,6 @@ __all__ = [
     "run_matrix",
     "bind_run_context",
 ]
-
-# Name of the per-cell resume manifest (same as gpu_cell_runner).
-CELL_MANIFEST_NAME = "cell_manifest.json"
 
 # Exit codes from the in-Job wrapper that map to specific statuses.
 _EXIT_OOM_EXHAUSTED = 42
@@ -91,10 +119,12 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_gpu_usd_per_hour": 3.67,
     "azure_pending_timeout_seconds": 900,
     "azure_boot_timeout_seconds": 900,
+    "azure_gpu_skus": [],        # provisioned SKU short_names (list[str])
+    "dynamic_gpu_max_escalations": 2,
 }
 
 # ---------------------------------------------------------------------------
-# Context var — concurrent-safe budget + event-sink injection
+# Context var — concurrent-safe budget + event-sink + gpu_plan injection
 # ---------------------------------------------------------------------------
 
 _RUN_CONTEXT: ContextVar[dict[str, Any]] = ContextVar(
@@ -107,26 +137,39 @@ def bind_run_context(
     *,
     run_budget: Any | None = None,
     event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    gpu_plan: Any | None = None,
 ) -> Iterator[None]:
-    """Bind a ``RunBudget`` and/or an event sink for the duration of the ``with`` block.
+    """Bind a ``RunBudget``, event sink, and/or a ``GpuPlan`` for the duration of the
+    ``with`` block.
 
     Uses a ``ContextVar`` so concurrent runs on different threads each see their
     own context without interfering.  The wiring layer (``primitives.py``) calls
-    this around ``run_matrix`` to inject the budget and an SSE event sink without
-    changing ``run_matrix``'s signature.
+    this around ``run_matrix`` to inject the budget, an SSE event sink, and the
+    resolved GPU plan without changing ``run_matrix``'s signature.
 
     Args:
         run_budget:  A ``RunBudget`` instance (or None to disable checks).
         event_sink:  ``(event_type, payload) → None`` called to emit EXISTING SSE
-                     events (``primitive_call``, ``repl_iteration``, ``run_warning``).
-                     Default no-op when None.
+                     events (``primitive_call``, ``repl_iteration``, ``run_warning``,
+                     ``gpu_escalated``).  Default no-op when None.
+        gpu_plan:    A ``GpuPlan`` instance (or None to use default pool + 1 GPU).
+                     When bound, Jobs target the plan's SKU node pool; OOM cells
+                     escalate through ``plan.ladder_remaining``.
 
     Example::
 
-        with bind_run_context(run_budget=ctx.run_budget, event_sink=ctx.emit):
+        with bind_run_context(
+            run_budget=ctx.run_budget,
+            event_sink=ctx.emit,
+            gpu_plan=ctx.gpu_plan,
+        ):
             results = k8s_job_cell_runner.run_matrix(cells, cell_script, ...)
     """
-    token = _RUN_CONTEXT.set({"run_budget": run_budget, "event_sink": event_sink})
+    token = _RUN_CONTEXT.set({
+        "run_budget": run_budget,
+        "event_sink": event_sink,
+        "gpu_plan": gpu_plan,
+    })
     try:
         yield
     finally:
@@ -140,6 +183,11 @@ def _get_run_budget() -> Any | None:
 def _get_event_sink() -> Callable[[str, dict[str, Any]], None]:
     sink = _RUN_CONTEXT.get({}).get("event_sink")
     return sink if callable(sink) else lambda _t, _p: None
+
+
+def _get_gpu_plan() -> Any | None:
+    """Return the bound GpuPlan (or None when none was bound)."""
+    return _RUN_CONTEXT.get({}).get("gpu_plan")
 
 
 # ---------------------------------------------------------------------------
@@ -283,114 +331,6 @@ def _job_name(cell_id: str, run_id: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cell result / manifest helpers (mirrors gpu_cell_runner)
-# ---------------------------------------------------------------------------
-
-class CellResult:
-    """Result record for a single K8s-dispatched training cell."""
-
-    __slots__ = ("cell_id", "status", "metrics", "gpu", "retries", "error")
-
-    def __init__(
-        self,
-        *,
-        cell_id: str,
-        status: str,
-        metrics: dict[str, Any] | None,
-        gpu: str,
-        retries: int,
-        error: str | None,
-    ) -> None:
-        self.cell_id = cell_id
-        self.status = status
-        self.metrics = metrics
-        self.gpu = gpu
-        self.retries = retries
-        self.error = error
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "metrics": self.metrics,
-            "gpu": self.gpu,
-            "retries": self.retries,
-            "error": self.error,
-        }
-
-
-def _headline_metric(metrics: dict[str, Any] | None) -> Any:
-    if not isinstance(metrics, dict):
-        return None
-    for key in ("metric", "reward_mean", "accuracy"):
-        val = metrics.get(key)
-        if isinstance(val, bool):
-            continue
-        if isinstance(val, (int, float)):
-            return val
-    return None
-
-
-def _load_cell_manifest(output_dir: Path) -> dict[str, Any] | None:
-    mf = output_dir / CELL_MANIFEST_NAME
-    if not mf.is_file():
-        return None
-    try:
-        data = json.loads(mf.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _should_skip_cell(
-    cell_id: str,
-    output_dir: Path,
-    fingerprints: dict[str, str],
-    force_cells: set[str],
-) -> bool:
-    """Return True iff a prior manifest authorises skipping this cell (Track B)."""
-    if cell_id in force_cells:
-        return False
-    current_fp = fingerprints.get(cell_id)
-    if not current_fp:
-        return False
-    manifest = _load_cell_manifest(output_dir)
-    if not manifest or manifest.get("status") != "ok":
-        return False
-    return manifest.get("fingerprint") == current_fp
-
-
-def _write_cell_manifest(
-    output_dir: Path,
-    *,
-    cell_id: str,
-    status: str,
-    fingerprint: str | None,
-    metrics: dict[str, Any] | None,
-    retries: int,
-    now_iso: str | None,
-) -> None:
-    manifest: dict[str, Any] = {
-        "cell_id": cell_id,
-        "status": status,
-        "fingerprint": fingerprint,
-        "metric": _headline_metric(metrics),
-        "retries": retries,
-    }
-    if now_iso is not None:
-        manifest["completed_at"] = now_iso
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / CELL_MANIFEST_NAME).write_text(
-            json.dumps(manifest, indent=2, default=str), encoding="utf-8"
-        )
-    except OSError as exc:
-        logger.warning(
-            "k8s_job_cell_runner: could not write %s for cell=%s: %s",
-            CELL_MANIFEST_NAME, cell_id, exc,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Budget helpers
 # ---------------------------------------------------------------------------
 
@@ -446,8 +386,18 @@ def _build_job_manifest(
     max_oom_retries: int,
     fingerprint: str | None,
     now_iso: str | None,
+    gpu_plan: Any | None = None,
 ) -> dict[str, Any]:
-    """Build the K8s Job manifest dict for a single training cell."""
+    """Build the K8s Job manifest dict for a single training cell.
+
+    When ``gpu_plan`` is provided the manifest uses:
+    - ``nodeSelector = {"reprolab/sku": plan.short_name}`` (infra pool label contract)
+    - GPU resource request/limit ``nvidia.com/gpu = plan.gpu_count``
+    - taint toleration for ``nvidia.com/gpu`` (operator Exists)
+
+    Without ``gpu_plan`` the manifest uses the default ``agentpool`` node selector
+    and a single GPU, preserving full back-compat for unplanned runs.
+    """
     pvc_name = f"{namespace}-files-pvc"
 
     env_vars = [
@@ -465,6 +415,28 @@ def _build_job_manifest(
     if now_iso:
         env_vars.append({"name": "REPROLAB_CELL_NOW_ISO", "value": now_iso})
 
+    # GPU count: from plan when available, else 1.
+    gpu_count_str: str
+    if gpu_plan is not None:
+        gpu_count_str = str(getattr(gpu_plan, "gpu_count", 1))
+    else:
+        gpu_count_str = "1"
+
+    # Node selector: plan SKU label contract OR legacy agentpool label.
+    if gpu_plan is not None:
+        node_selector: dict[str, str] = {
+            "reprolab/sku": str(getattr(gpu_plan, "short_name", node_pool_name))
+        }
+    else:
+        node_selector = {"agentpool": node_pool_name}
+
+    # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
+    gpu_toleration = {
+        "key": "nvidia.com/gpu",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    }
+
     pod_template: dict[str, Any] = {
         "metadata": {
             "labels": {
@@ -476,14 +448,8 @@ def _build_job_manifest(
         "spec": {
             "serviceAccountName": service_account,
             "restartPolicy": "Never",
-            "tolerations": [
-                {
-                    "key": "nvidia.com/gpu",
-                    "operator": "Exists",
-                    "effect": "NoSchedule",
-                }
-            ],
-            "nodeSelector": {"agentpool": node_pool_name},
+            "tolerations": [gpu_toleration],
+            "nodeSelector": node_selector,
             "volumes": [
                 {
                     "name": "reprolab-cache",
@@ -496,8 +462,8 @@ def _build_job_manifest(
                     "image": base_image,
                     "env": env_vars,
                     "resources": {
-                        "requests": {"nvidia.com/gpu": "1"},
-                        "limits": {"nvidia.com/gpu": "1"},
+                        "requests": {"nvidia.com/gpu": gpu_count_str},
+                        "limits": {"nvidia.com/gpu": gpu_count_str},
                     },
                     "volumeMounts": [
                         {
@@ -826,28 +792,28 @@ def _map_status(
     log = watch.get("log", "")
 
     if w_status == "pending_timeout":
-        return "error", f"capacity_exhausted: Job {cell_id} stuck in Pending", retries
+        return STATUS_ERROR, f"capacity_exhausted: Job {cell_id} stuck in Pending", retries
 
     if w_status in ("overall_timeout", "deadline"):
-        return "error", f"timeout: watch_status={w_status}", retries
+        return STATUS_ERROR, f"timeout: watch_status={w_status}", retries
 
     if w_status == "failed":
         # Check for terminal OOM sentinel.
         if outcome == _SENTINEL_OOM_OUTCOME or exit_code == _EXIT_OOM_EXHAUSTED:
-            return "oom_failed", log[-2000:] if log else f"exit_code={exit_code}", retries
-        return "error", log[-2000:] if log else f"exit_code={exit_code}", retries
+            return STATUS_OOM_FAILED, log[-2000:] if log else f"exit_code={exit_code}", retries
+        return STATUS_ERROR, log[-2000:] if log else f"exit_code={exit_code}", retries
 
     if w_status == "succeeded":
         if exit_code is None or exit_code == 0:
-            return "ok", None, retries
+            return STATUS_OK, None, retries
         if exit_code == _EXIT_OOM_EXHAUSTED or outcome == _SENTINEL_OOM_OUTCOME:
-            return "oom_failed", log[-2000:] if log else f"exit_code={exit_code}", retries
+            return STATUS_OOM_FAILED, log[-2000:] if log else f"exit_code={exit_code}", retries
         if exit_code in _EXIT_TERMINAL:
-            return "error", f"wrapper exit {exit_code}", retries
-        return "ok", None, retries
+            return STATUS_ERROR, f"wrapper exit {exit_code}", retries
+        return STATUS_OK, None, retries
 
     # Fallback.
-    return "error", f"unexpected watch_status={w_status}", retries
+    return STATUS_ERROR, f"unexpected watch_status={w_status}", retries
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +840,7 @@ def _run_cell_job(
     fingerprint: str | None,
     now_iso: str | None,
     run_id: str,
+    gpu_plan: Any | None = None,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult."""
     cell_id: str = cell.get("id", f"cell_{id(cell)}")
@@ -900,20 +867,22 @@ def _run_cell_job(
         max_oom_retries=max_oom_retries,
         fingerprint=fingerprint,
         now_iso=now_iso,
+        gpu_plan=gpu_plan,
     )
 
     # Submit the Job.
     try:
         k8s.batch.create_namespaced_job(namespace, manifest)
         logger.info(
-            "k8s_job_cell_runner: submitted Job=%s for cell=%s (deadline=%ds)",
+            "k8s_job_cell_runner: submitted Job=%s for cell=%s (deadline=%ds sku=%s)",
             job_name, cell_id, active_deadline_seconds,
+            getattr(gpu_plan, "short_name", "default") if gpu_plan else "default",
         )
     except Exception as exc:
         logger.error("k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s", cell_id, exc)
         return CellResult(
             cell_id=cell_id,
-            status="error",
+            status=STATUS_ERROR,
             metrics=None,
             gpu="aks:unassigned",
             retries=0,
@@ -947,7 +916,7 @@ def _run_cell_job(
 
     # Pull metrics from Blob.
     metrics: dict[str, Any] | None = None
-    if status in ("ok", "oom_failed", "error"):
+    if status in (STATUS_OK, STATUS_OOM_FAILED, STATUS_ERROR):
         metrics = _try_download_metrics(
             cell_id=cell_id,
             output_blob_prefix=output_blob_prefix,
@@ -967,8 +936,9 @@ def _run_cell_job(
     )
 
     # Write local resume manifest.
-    _write_cell_manifest(
+    write_cell_manifest(
         output_dir,
+        caller="k8s_job_cell_runner",
         cell_id=cell_id,
         status=status,
         fingerprint=fingerprint,
@@ -989,6 +959,34 @@ def _run_cell_job(
         retries=retries,
         error=error,
     )
+
+
+# ---------------------------------------------------------------------------
+# SKU escalation helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_escalation_sku(
+    ladder_remaining: tuple[str, ...] | list[str],
+    provisioned_skus: list[str],
+) -> str | None:
+    """Return the first ladder SKU that is also provisioned, or None."""
+    provisioned_set = set(provisioned_skus)
+    for short_name in ladder_remaining:
+        if short_name in provisioned_set:
+            return short_name
+    return None
+
+
+def _lookup_sku_by_short_name(short_name: str) -> Any | None:
+    """Return the GpuSku for ``short_name`` from the catalog, or None."""
+    try:
+        from backend.services.runtime.gpu_catalog import CATALOG  # type: ignore[import]
+        for sku in CATALOG:
+            if sku.short_name == short_name:
+                return sku
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1029,7 +1027,8 @@ def run_matrix(
         per_cell_timeout_s:  Maps to Job ``activeDeadlineSeconds``.
         overall_timeout_s:   Wall-clock cap for the WHOLE matrix.
         gpus_per_cell:       Must be 1; any other value returns ``"error"`` for
-                             all non-skipped cells (Azure Jobs are 1-GPU each).
+                             all non-skipped cells (Azure Jobs are 1-GPU each by
+                             default; multi-GPU flows through ``gpu_plan``).
         fingerprints:        ``{cell_id: fingerprint}`` for resume parity.
         force_cells:         Cell ids that must always re-run.
         now_iso:             ISO-8601 timestamp stamped into ``cell_manifest.json``.
@@ -1037,6 +1036,18 @@ def run_matrix(
     Returns:
         Dict mapping ``cell["id"]`` → ``CellResult.to_dict()``.  Every input cell
         is present regardless of outcome; never raises on single-cell failure.
+
+    Dynamic gpu_plan + SKU escalation:
+        When a ``GpuPlan`` is bound via ``bind_run_context(gpu_plan=...)`` the
+        submitted Job targets ``plan.short_name`` (infra pool label) and
+        ``plan.gpu_count`` GPUs.  On ``oom_failed`` (in-Job shrink exhausted) the
+        runner picks the first ``plan.ladder_remaining`` SKU that is present in
+        ``settings.azure_gpu_skus`` (provisioned pools), looks it up in
+        ``gpu_catalog``, and resubmits the same cell targeting that bigger SKU.
+        Each resubmission emits a ``gpu_escalated`` event.  Escalations are capped
+        at ``settings.dynamic_gpu_max_escalations`` (default 2).  If the ladder is
+        empty, no candidate is provisioned, or the cap is reached, the cell stays
+        ``oom_failed`` — never crashes, never loops.
     """
     # Fast path — no SDK imports needed.
     if not cells:
@@ -1052,20 +1063,23 @@ def run_matrix(
     azure_max_nodes: int = int(_setting("azure_max_nodes", 8))
     gpu_usd_per_hour: float = float(_setting("azure_gpu_usd_per_hour", 3.67))
     pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 900))
+    provisioned_skus: list[str] = list(_setting("azure_gpu_skus", []) or [])
+    max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
 
     _fingerprints: dict[str, str] = fingerprints or {}
     _force_cells: set[str] = force_cells or set()
-    _resume_armed = bool(os.environ.get("REPROLAB_RESUME_CELLS", "").strip())
+    _resume_armed: bool = is_resume_armed()
 
     run_budget = _get_run_budget()
     event_sink = _get_event_sink()
+    gpu_plan = _get_gpu_plan()
 
     # Derive a run_id from the output_root path (last two segments).
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     run_id = output_root.name  # best-effort
 
-    # gpus_per_cell guard — Azure Jobs are 1-GPU each.
+    # gpus_per_cell guard — Azure Jobs are 1-GPU each (multi-GPU flows via gpu_plan).
     if gpus_per_cell != 1:
         msg = f"k8s_job_cell_runner: gpus_per_cell={gpus_per_cell} != 1; all cells error"
         logger.error(msg)
@@ -1073,7 +1087,7 @@ def run_matrix(
         return {
             cell.get("id", f"cell_{i}"): CellResult(
                 cell_id=cell.get("id", f"cell_{i}"),
-                status="error",
+                status=STATUS_ERROR,
                 metrics=None,
                 gpu="aks:unassigned",
                 retries=0,
@@ -1083,11 +1097,7 @@ def run_matrix(
         }
 
     # Overall deadline.
-    overall_deadline: float | None = (
-        time.monotonic() + overall_timeout_s
-        if overall_timeout_s is not None and overall_timeout_s > 0
-        else None
-    )
+    overall_deadline: float | None = deadline_from_timeout(overall_timeout_s)
 
     # Parallelism.
     parallelism = min(
@@ -1106,7 +1116,7 @@ def run_matrix(
         return {
             cell.get("id", f"cell_{i}"): CellResult(
                 cell_id=cell.get("id", f"cell_{i}"),
-                status="error",
+                status=STATUS_ERROR,
                 metrics=None,
                 gpu="aks:unassigned",
                 retries=0,
@@ -1137,7 +1147,7 @@ def run_matrix(
         return {
             cell.get("id", f"cell_{i}"): CellResult(
                 cell_id=cell.get("id", f"cell_{i}"),
-                status="error",
+                status=STATUS_ERROR,
                 metrics=None,
                 gpu="aks:unassigned",
                 retries=0,
@@ -1160,8 +1170,8 @@ def run_matrix(
         output_dir = output_root / cell_id
 
         # --- Resume skip (Track B) ---
-        if _resume_armed and _should_skip_cell(cell_id, output_dir, _fingerprints, _force_cells):
-            manifest = _load_cell_manifest(output_dir)
+        if _resume_armed and should_skip_cell(cell_id, output_dir, _fingerprints, _force_cells):
+            manifest = load_cell_manifest(output_dir)
             prior_metrics: dict[str, Any] | None = None
             if manifest:
                 mf = output_dir / "metrics.json"
@@ -1177,7 +1187,7 @@ def run_matrix(
             with results_lock:
                 results[cell_id] = CellResult(
                     cell_id=cell_id,
-                    status="skipped",
+                    status=STATUS_SKIPPED,
                     metrics=prior_metrics,
                     gpu="aks:unassigned",
                     retries=0,
@@ -1190,7 +1200,7 @@ def run_matrix(
             with results_lock:
                 results[cell_id] = CellResult(
                     cell_id=cell_id,
-                    status="error",
+                    status=STATUS_ERROR,
                     metrics=None,
                     gpu="aks:unassigned",
                     retries=0,
@@ -1228,7 +1238,7 @@ def run_matrix(
                 with results_lock:
                     results[cell_id] = CellResult(
                         cell_id=cell_id,
-                        status="error",
+                        status=STATUS_ERROR,
                         metrics=None,
                         gpu="aks:unassigned",
                         retries=0,
@@ -1237,33 +1247,97 @@ def run_matrix(
                 return
             reserved_gpu_seconds = new_reserved
 
-        # --- Submit and watch ---
-        result = _run_cell_job(
-            cell=cell,
-            k8s=k8s,
-            namespace=namespace,
-            service_account=service_account,
-            node_pool_name=node_pool_name,
-            base_image=base_image,
-            storage_account=storage_account,
-            blob_container=blob_container,
-            code_blob_prefix=code_blob_prefix,
-            output_blob_prefix=output_blob_prefix,
-            output_root=output_root,
-            active_deadline_seconds=active_deadline_seconds,
-            overall_deadline=overall_deadline,
-            pending_timeout_s=pending_timeout_s,
-            max_oom_retries=max_oom_retries,
-            fingerprint=_fingerprints.get(cell_id),
-            now_iso=now_iso,
-            run_id=run_id,
-        )
+        # --- Submit and watch (with optional SKU escalation on oom_failed) ---
+        current_plan = gpu_plan  # may become a lighter stub on escalation
+        escalation_count = 0
+
+        while True:
+            result = _run_cell_job(
+                cell=cell,
+                k8s=k8s,
+                namespace=namespace,
+                service_account=service_account,
+                node_pool_name=node_pool_name,
+                base_image=base_image,
+                storage_account=storage_account,
+                blob_container=blob_container,
+                code_blob_prefix=code_blob_prefix,
+                output_blob_prefix=output_blob_prefix,
+                output_root=output_root,
+                active_deadline_seconds=active_deadline_seconds,
+                overall_deadline=overall_deadline,
+                pending_timeout_s=pending_timeout_s,
+                max_oom_retries=max_oom_retries,
+                fingerprint=_fingerprints.get(cell_id),
+                now_iso=now_iso,
+                run_id=run_id,
+                gpu_plan=current_plan,
+            )
+
+            # Escalation check: only if oom_failed + plan available + cap not hit.
+            if (
+                result.status != STATUS_OOM_FAILED
+                or current_plan is None
+                or escalation_count >= max_escalations
+            ):
+                break
+
+            ladder = getattr(current_plan, "ladder_remaining", None) or ()
+            if not ladder:
+                logger.info(
+                    "k8s_job_cell_runner: cell=%s oom_failed, ladder empty → degrade",
+                    cell_id,
+                )
+                break
+
+            next_sku_name = _resolve_escalation_sku(ladder, provisioned_skus)
+            if next_sku_name is None:
+                logger.info(
+                    "k8s_job_cell_runner: cell=%s oom_failed, no provisioned ladder candidate → degrade",
+                    cell_id,
+                )
+                break
+
+            next_sku = _lookup_sku_by_short_name(next_sku_name)
+            from_sku = (
+                getattr(current_plan, "short_name", "unknown") if current_plan else "default"
+            )
+
+            logger.info(
+                "k8s_job_cell_runner: cell=%s oom_failed → escalate %s→%s (escalation %d/%d)",
+                cell_id, from_sku, next_sku_name, escalation_count + 1, max_escalations,
+            )
+            event_sink("gpu_escalated", {
+                "cell_id": cell_id,
+                "from_sku": from_sku,
+                "to_sku": next_sku_name,
+                "reason": STATUS_OOM_FAILED,
+            })
+
+            # Build a lightweight plan stub for the next attempt.
+            # We only need short_name and gpu_count to build the next manifest.
+            escalation_count += 1
+            current_plan = _EscalationPlan(
+                short_name=next_sku_name,
+                gpu_count=getattr(next_sku, "gpu_count", 1) if next_sku else 1,
+                # Trim the ladder: drop everything up to and including next_sku_name.
+                ladder_remaining=_trim_ladder(ladder, next_sku_name),
+            )
+            # Update job_name suffix to avoid K8s name collision with the prior attempt.
+            run_id_suffix = f"{run_id}-e{escalation_count}"
+            active_deadline_seconds = max(
+                1,
+                math.ceil(
+                    (overall_deadline - time.monotonic())
+                    if overall_deadline is not None else eff_cell_s
+                ),
+            )
+
         with results_lock:
             results[cell_id] = result
 
     # Run cells with thread-pool parallelism.
     cell_queue: list[dict[str, Any]] = list(cells)
-    active_threads: list[threading.Thread] = []
     cell_idx = 0
     cell_lock = threading.Lock()
 
@@ -1292,7 +1366,7 @@ def run_matrix(
         if cid not in results:
             results[cid] = CellResult(
                 cell_id=cid,
-                status="error",
+                status=STATUS_ERROR,
                 metrics=None,
                 gpu="aks:unassigned",
                 retries=0,
@@ -1300,3 +1374,42 @@ def run_matrix(
             )
 
     return {cid: r.to_dict() for cid, r in results.items()}
+
+
+# ---------------------------------------------------------------------------
+# Escalation plan stub
+# ---------------------------------------------------------------------------
+
+class _EscalationPlan:
+    """Lightweight plan stub used for escalation resubmits.
+
+    Carries only the fields _build_job_manifest reads from a GpuPlan:
+    ``short_name``, ``gpu_count``, and ``ladder_remaining`` (for further
+    escalations).  Never used outside this module.
+    """
+
+    __slots__ = ("short_name", "gpu_count", "ladder_remaining")
+
+    def __init__(
+        self,
+        *,
+        short_name: str,
+        gpu_count: int,
+        ladder_remaining: tuple[str, ...],
+    ) -> None:
+        self.short_name = short_name
+        self.gpu_count = gpu_count
+        self.ladder_remaining = ladder_remaining
+
+
+def _trim_ladder(
+    ladder: tuple[str, ...] | list[str],
+    used_name: str,
+) -> tuple[str, ...]:
+    """Return ladder entries that come AFTER ``used_name``."""
+    items = list(ladder)
+    try:
+        idx = items.index(used_name)
+        return tuple(items[idx + 1:])
+    except ValueError:
+        return tuple(items)

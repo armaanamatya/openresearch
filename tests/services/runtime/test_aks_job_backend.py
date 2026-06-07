@@ -37,6 +37,15 @@ from backend.services.runtime.interface import (
     SandboxRuntimeError,
 )
 
+# Import the real azure_blob module so it is registered as an attribute of the
+# ``backend.services.runtime`` package. copy_in/copy_out lazily do
+# ``from backend.services.runtime import azure_blob`` inside the method, and the
+# copy tests below ``patch("backend.services.runtime.azure_blob", ...)`` — which
+# only works if the attribute already exists. Without this import the patch
+# target is absent when this file runs in isolation (AttributeError), making the
+# copy tests order-dependent.
+from backend.services.runtime import azure_blob as _azure_blob  # noqa: F401
+
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -696,3 +705,159 @@ async def test_exec_pending_timeout_returns_capacity_exhausted_error(tmp_path: P
     # Should have returned an error (not timed_out from the main deadline)
     # with a capacity_exhausted prefix in stderr.
     assert "capacity_exhausted" in (result.stderr or "").lower() or result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# gpu_plan wiring: AksJobBackend.__init__ + job manifest node selection
+# ---------------------------------------------------------------------------
+
+
+def _make_gpu_plan_obj(short_name: str = "azure_nc24ads_a100", gpu_count: int = 1) -> Any:
+    """Build a minimal GpuPlan-like SimpleNamespace (attr-based)."""
+    from types import SimpleNamespace
+    return SimpleNamespace(short_name=short_name, gpu_count=gpu_count)
+
+
+def _make_gpu_plan_dict(short_name: str = "azure_nc24ads_a100", gpu_count: int = 1) -> dict:
+    """Build a plain dict GpuPlan."""
+    return {"short_name": short_name, "gpu_count": gpu_count}
+
+
+def test_aks_backend_stores_gpu_plan_object():
+    """AksJobBackend accepts a GpuPlan object and stores it as _gpu_plan."""
+    plan = _make_gpu_plan_obj("azure_nc24ads_a100", gpu_count=1)
+    backend = AksJobBackend(gpu_plan=plan)
+    assert backend._gpu_plan is plan
+
+
+def test_aks_backend_stores_gpu_plan_dict():
+    """AksJobBackend accepts a plain dict GpuPlan and stores it."""
+    plan = _make_gpu_plan_dict("azure_nc48ads_a100", gpu_count=2)
+    backend = AksJobBackend(gpu_plan=plan)
+    assert backend._gpu_plan is plan
+
+
+def test_aks_backend_no_gpu_plan_defaults():
+    """AksJobBackend with no gpu_plan returns None short_name and gpu_count=1."""
+    backend = AksJobBackend()
+    assert backend._gpu_plan_short_name() is None
+    assert backend._gpu_plan_gpu_count() == 1
+
+
+def test_aks_backend_gpu_plan_obj_accessors():
+    """_gpu_plan_short_name and _gpu_plan_gpu_count read from object attributes."""
+    plan = _make_gpu_plan_obj("azure_nc96ads_a100", gpu_count=4)
+    backend = AksJobBackend(gpu_plan=plan)
+    assert backend._gpu_plan_short_name() == "azure_nc96ads_a100"
+    assert backend._gpu_plan_gpu_count() == 4
+
+
+def test_aks_backend_gpu_plan_dict_accessors():
+    """_gpu_plan_short_name and _gpu_plan_gpu_count read from dict keys."""
+    plan = _make_gpu_plan_dict("azure_nc48ads_a100", gpu_count=2)
+    backend = AksJobBackend(gpu_plan=plan)
+    assert backend._gpu_plan_short_name() == "azure_nc48ads_a100"
+    assert backend._gpu_plan_gpu_count() == 2
+
+
+def test_build_exec_job_manifest_with_gpu_plan_sets_node_selector():
+    """_build_exec_job_manifest with gpu_sku sets nodeSelector and gpu resource limits."""
+    manifest = _build_exec_job_manifest(
+        job_name="reprolab-exec-test-abc12345",
+        namespace="reprolab",
+        image="reprolab/base:latest",
+        service_account="reprolab-sa",
+        command="python train.py",
+        environment={},
+        active_deadline_seconds=3600,
+        ttl_seconds=3600,
+        backoff_limit=2,
+        gpu_sku="azure_nc24ads_a100",
+        gpu_count=1,
+    )
+    pod_spec = manifest["spec"]["template"]["spec"]
+    assert pod_spec.get("nodeSelector") == {"reprolab/sku": "azure_nc24ads_a100"}
+    container = pod_spec["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+    assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+
+
+def test_build_exec_job_manifest_with_multi_gpu_plan():
+    """_build_exec_job_manifest with gpu_count>1 requests the correct count."""
+    manifest = _build_exec_job_manifest(
+        job_name="reprolab-exec-test-multi",
+        namespace="reprolab",
+        image="reprolab/base:latest",
+        service_account="reprolab-sa",
+        command="python train.py",
+        environment={},
+        active_deadline_seconds=3600,
+        ttl_seconds=3600,
+        backoff_limit=2,
+        gpu_sku="azure_nc96ads_a100",
+        gpu_count=4,
+    )
+    pod_spec = manifest["spec"]["template"]["spec"]
+    assert pod_spec["nodeSelector"] == {"reprolab/sku": "azure_nc96ads_a100"}
+    container = pod_spec["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "4"
+
+
+def test_build_exec_job_manifest_without_gpu_plan_no_node_selector():
+    """_build_exec_job_manifest without gpu_sku omits nodeSelector but still sets gpu resources."""
+    manifest = _build_exec_job_manifest(
+        job_name="reprolab-exec-test-default",
+        namespace="reprolab",
+        image="reprolab/base:latest",
+        service_account="reprolab-sa",
+        command="echo hi",
+        environment={},
+        active_deadline_seconds=60,
+        ttl_seconds=3600,
+        backoff_limit=2,
+    )
+    pod_spec = manifest["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod_spec
+    # Default 1 GPU resource is still requested.
+    container = pod_spec["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_exec_with_gpu_plan_sets_node_selector_in_submitted_job(tmp_path: Path):
+    """When AksJobBackend has a gpu_plan, the submitted Job manifest carries
+    nodeSelector={"reprolab/sku": plan.short_name} and correct gpu_count."""
+    plan = _make_gpu_plan_obj("azure_nc24ads_a100", gpu_count=1)
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = AksJobBackend(
+        gpu_plan=plan,
+        batch_api=batch_api,
+        core_api=FakeCoreApi(),
+    )
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "python train.py", timeout=30)
+
+    assert len(batch_api.created_jobs) == 1
+    body = batch_api.created_jobs[0]["body"]
+    pod_spec = body["spec"]["template"]["spec"]
+    assert pod_spec.get("nodeSelector") == {"reprolab/sku": "azure_nc24ads_a100"}
+    container = pod_spec["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_exec_without_gpu_plan_no_node_selector_in_submitted_job(tmp_path: Path):
+    """When AksJobBackend has no gpu_plan, the submitted Job has no nodeSelector."""
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = AksJobBackend(batch_api=batch_api, core_api=FakeCoreApi())
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "echo hi", timeout=10)
+
+    assert len(batch_api.created_jobs) == 1
+    body = batch_api.created_jobs[0]["body"]
+    pod_spec = body["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod_spec

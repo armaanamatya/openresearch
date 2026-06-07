@@ -174,18 +174,56 @@ def _describe_cloud(ctx: Any, kind: str) -> GpuCapacity:
 
 
 def _describe_azure(ctx: Any) -> GpuCapacity:
-    """Settings-driven Azure AKS GPU capacity descriptor.
+    """Plan-aware Azure AKS GPU capacity descriptor.
 
-    Reads ``azure_max_nodes`` and ``azure_per_gpu_vram_gb`` from Settings to
-    describe the configured GPU node pool.  ``can_escalate=False`` because the
-    AKS backend uses a fixed SKU (single node-pool, no catalog ladder).
+    Tries to load the resolved ``gpu_plan.json`` from
+    ``<ctx.project_dir>/rlm_state/gpu_plan.json`` (same fail-soft pattern as
+    ``run_experiment``).  When the plan is present *and* is an Azure plan
+    (``cloud_type == "ONDEMAND"`` or ``short_name.startswith("azure_")``),
+    ``per_gpu_vram_gb`` is taken from ``plan.vram_gb``.  In all other cases
+    (no plan, unreadable file, non-azure plan, missing ctx attribute) the
+    settings defaults are used so capacity queries made before
+    ``resolve_gpu_requirements`` runs are still valid.
+
+    ``num_gpus`` always comes from ``azure_max_nodes`` (the AKS node-pool
+    concurrency cap) — the plan's ``gpu_count`` is a per-node count and the
+    azure runner scales horizontally, not per-GPU.  ``can_escalate=False``
+    because AKS uses a fixed SKU node-pool (no catalog ladder).
+
     Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
     """
+    import json
+    from pathlib import Path
+
     from backend.config import get_settings
 
     s = get_settings()
     num_gpus = max(1, int(s.azure_max_nodes))
     per_gpu_vram_gb = float(s.azure_per_gpu_vram_gb)
+
+    # Try to load the resolved gpu_plan and refine per_gpu_vram_gb from it.
+    try:
+        project_dir = getattr(ctx, "project_dir", None)
+        if project_dir is not None:
+            plan_path = Path(project_dir) / "rlm_state" / "gpu_plan.json"
+            if plan_path.exists():
+                raw = json.loads(plan_path.read_text(encoding="utf-8"))
+                short_name = raw.get("short_name", "") or ""
+                cloud_type = raw.get("cloud_type", "") or ""
+                is_azure_plan = (
+                    cloud_type == "ONDEMAND"
+                    or (isinstance(short_name, str) and short_name.startswith("azure_"))
+                )
+                if is_azure_plan:
+                    plan_vram = raw.get("vram_gb")
+                    if plan_vram is not None:
+                        per_gpu_vram_gb = float(plan_vram)
+    except Exception:  # noqa: BLE001 — capacity probe must never raise
+        logger.warning(
+            "_describe_azure: gpu_plan.json present but unreadable; using settings defaults",
+            exc_info=True,
+        )
+
     ids = tuple(str(i) for i in range(num_gpus))
     return GpuCapacity(
         "azure",

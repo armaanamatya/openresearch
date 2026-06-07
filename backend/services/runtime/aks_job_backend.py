@@ -173,6 +173,12 @@ class AksJobBackend(RuntimeBackend):
 
     Constructor keyword arguments (all optional; test doubles injected here):
       run_budget   – ``RunBudget`` for pod-second / GPU-USD caps.
+      gpu_plan     – ``GpuPlan`` (or a plain dict with the same keys) resolved by
+                     ``resolve_gpu_requirements``; when set, Jobs are scheduled on
+                     the matching node pool via ``nodeSelector={"reprolab/sku": plan.short_name}``
+                     and request ``nvidia.com/gpu=plan.gpu_count`` resources.  When
+                     ``None`` (default) the backend falls back to the settings node
+                     pool and requests 1 GPU.
       batch_api    – pre-built ``kubernetes.client.BatchV1Api`` (or fake).
       core_api     – pre-built ``kubernetes.client.CoreV1Api`` (or fake).
       blob_client  – pre-built Blob ``ContainerClient`` (or fake).
@@ -183,12 +189,14 @@ class AksJobBackend(RuntimeBackend):
         self,
         *,
         run_budget: Any | None = None,
+        gpu_plan: Any | None = None,
         batch_api: Any | None = None,
         core_api: Any | None = None,
         blob_client: Any | None = None,
         settings: Any | None = None,
     ) -> None:
         self._run_budget = run_budget
+        self._gpu_plan = gpu_plan
         self._batch_api = batch_api
         self._core_api = core_api
         self._blob_client = blob_client
@@ -232,6 +240,30 @@ class AksJobBackend(RuntimeBackend):
     # ------------------------------------------------------------------
     # API accessors (lazy — fall back to constructing real clients)
     # ------------------------------------------------------------------
+
+    def _gpu_plan_short_name(self) -> str | None:
+        """Return the SKU short_name from the stored gpu_plan (GpuPlan or dict), or None."""
+        plan = self._gpu_plan
+        if plan is None:
+            return None
+        try:
+            if isinstance(plan, dict):
+                return plan.get("short_name") or None
+            return getattr(plan, "short_name", None) or None
+        except Exception:
+            return None
+
+    def _gpu_plan_gpu_count(self) -> int:
+        """Return gpu_count from the stored gpu_plan (GpuPlan or dict), defaulting to 1."""
+        plan = self._gpu_plan
+        if plan is None:
+            return 1
+        try:
+            if isinstance(plan, dict):
+                return int(plan.get("gpu_count") or 1)
+            return int(getattr(plan, "gpu_count", None) or 1)
+        except Exception:
+            return 1
 
     def _get_batch_api(self) -> Any:
         if self._batch_api is not None:
@@ -325,6 +357,8 @@ class AksJobBackend(RuntimeBackend):
             active_deadline_seconds=timeout,
             ttl_seconds=_DEFAULT_TTL_AFTER_FINISHED_S,
             backoff_limit=_DEFAULT_BACKOFF_LIMIT,
+            gpu_sku=self._gpu_plan_short_name(),
+            gpu_count=self._gpu_plan_gpu_count(),
         )
 
         batch_api = self._get_batch_api()
@@ -636,14 +670,43 @@ def _build_exec_job_manifest(
     active_deadline_seconds: int,
     ttl_seconds: int,
     backoff_limit: int,
+    gpu_sku: str | None = None,
+    gpu_count: int = 1,
 ) -> dict[str, Any]:
     """Return a Kubernetes Job manifest dict for a short exec command.
 
     Uses a plain JSON-serialisable dict so this module does not depend on the
     kubernetes SDK at import time; the SDK materialises it via ``create_namespaced_job``.
+
+    When *gpu_sku* is set (from a resolved GpuPlan), the pod spec gains a
+    ``nodeSelector`` targeting that SKU's node pool (``reprolab/sku: <short_name>``)
+    and requests ``nvidia.com/gpu: <gpu_count>`` resources.  When *gpu_sku* is None
+    the spec falls back to the cluster default (1 GPU, no explicit nodeSelector).
     """
     env_list = [{"name": k, "value": str(v)} for k, v in sorted(environment.items())]
     env_list.append({"name": "REPROLAB_EXEC_COMMAND", "value": command})
+
+    gpu_count = max(1, int(gpu_count or 1))
+
+    pod_spec: dict[str, Any] = {
+        "serviceAccountName": service_account,
+        "restartPolicy": "Never",
+        "containers": [
+            {
+                "name": "exec",
+                "image": image,
+                "command": ["/bin/sh", "-c", command],
+                "env": env_list,
+                "resources": {
+                    "limits": {"nvidia.com/gpu": str(gpu_count)},
+                    "requests": {"nvidia.com/gpu": str(gpu_count)},
+                },
+            }
+        ],
+    }
+
+    if gpu_sku:
+        pod_spec["nodeSelector"] = {"reprolab/sku": gpu_sku}
 
     return {
         "apiVersion": "batch/v1",
@@ -668,18 +731,7 @@ def _build_exec_job_manifest(
                         "azure.workload.identity/use": "true",
                     }
                 },
-                "spec": {
-                    "serviceAccountName": service_account,
-                    "restartPolicy": "Never",
-                    "containers": [
-                        {
-                            "name": "exec",
-                            "image": image,
-                            "command": ["/bin/sh", "-c", command],
-                            "env": env_list,
-                        }
-                    ],
-                },
+                "spec": pod_spec,
             },
         },
     }
