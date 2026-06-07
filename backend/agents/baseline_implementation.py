@@ -1248,6 +1248,90 @@ _RL_SCAFFOLD_BLOCK = (
 )
 
 
+# ---------------------------------------------------------------------------
+# SDAR baseline-coverage guidance block (opt-in: REPROLAB_SDAR_BASELINES=1)
+# ---------------------------------------------------------------------------
+# BES Phase 1 — Coverage Completion (spec
+# docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
+# A "baseline" is purely agent-side: the generated train.py maps a baseline
+# STRING to two flags (opsd_enabled, gate_type) inside train_one_run(baseline=...),
+# so emitting more baselines is GUIDANCE, not a harness change. The SDAR paper
+# reports FIVE (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD) but a typical run emits
+# only three (GRPO, GRPO+OPSD, SDAR), leaving the heaviest Method leaf
+# under-scored. This block instructs the agent to ALSO emit the three missing
+# ones — all on the SAME Search-QA env that already runs. It deliberately does
+# NOT touch ALFWorld / WebShop: activating an env that cannot yet learn turns
+# excluded leaves into counted zeros (the sequencing trap). Search-QA only.
+_SDAR_BASELINES_BLOCK = (
+    "\n\nSDAR BASELINE COVERAGE — emit ALL FIVE paper baselines (Search-QA only):\n"
+    "The SDAR paper reports five baselines; a typical run emits only three\n"
+    "(grpo, grpo_opsd, sdar). Emit the three MISSING ones so the full set is\n"
+    "{grpo, opsd, skill_sd, grpo_opsd, rlsd} (plus your headline `sdar`). A\n"
+    "baseline is JUST A STRING your train.py maps to (opsd_enabled, gate_type)\n"
+    "inside train_one_run(baseline=...): e.g.\n"
+    "  opsd_enabled = baseline in ('sdar', 'grpo_opsd', 'opsd', 'rlsd')\n"
+    "  gate_type    = 'sigmoid' if baseline == 'sdar' else 'ones'\n"
+    "Add one cell PER missing baseline to code/cells.json carrying that exact\n"
+    "`baseline` string; aggregate_cell_metrics then nests each result at\n"
+    "per_model[model][env][baseline]. Keep EVERY new cell on the Search-QA env\n"
+    "(env='searchqa' / 'search_qa') — do NOT add ALFWorld or WebShop cells here.\n"
+    "\n"
+    "RECIPE 1 — standalone OPSD (baseline='opsd') — NEAR-FREE, do this FIRST:\n"
+    "  OPSD self-distillation loss ONLY, with NO GRPO RL term. Set the GRPO\n"
+    "  weight to zero and keep the OPSD term: opsd_enabled=True, grpo_weight=0.0\n"
+    "  (i.e. total_loss = 0 * grpo_loss + LAMBDA * opsd_loss, LAMBDA=0.1). Use\n"
+    "  the OPSD gate (gate_type='ones'), NOT the sigmoid SDAR gate. The OPSD\n"
+    "  machinery already exists — this is a flag flip. Validate the cell→leaf\n"
+    "  plumbing with this one before the two below.\n"
+    "\n"
+    "RECIPE 2 — Skill-SD (baseline='skill_sd'):\n"
+    "  Self-distillation WITH a POPULATED skill_context prompt slot. Your\n"
+    "  build_prompt(question, skill_context) already accepts skill_context but\n"
+    "  it is normally EMPTY (''). For this baseline, retrieve a few relevant\n"
+    "  skills/exemplars (reuse your Search-QA retriever — e.g. the top-k E5\n"
+    "  passages, or a small fixed skill bank) and feed them as skill_context so\n"
+    "  the prompt actually contains them. opsd_enabled=True, gate_type='ones'.\n"
+    "  The ONLY structural difference from standalone OPSD is the non-empty\n"
+    "  skill_context — make sure build_prompt receives it.\n"
+    "\n"
+    "RECIPE 3 — RLSD (baseline='rlsd') — RL + self-distillation:\n"
+    "  Combine the GRPO RL term WITH self-distillation, a distinct\n"
+    "  (opsd_enabled, gate_type, schedule) combination from `sdar`: keep the\n"
+    "  GRPO RL term ON (grpo_weight=1.0) AND opsd_enabled=True with\n"
+    "  gate_type='ones' (constant gate, NOT the sigmoid SDAR gate) — this is\n"
+    "  the 'RL + SD without the learned sigmoid gate' point in the ablation. If\n"
+    "  you schedule the OPSD term, anneal it on a fixed schedule rather than the\n"
+    "  token-level sigmoid gap gate.\n"
+    "\n"
+    "Distinctness check (the leaf scorer reads the source): the five must be\n"
+    "MECHANICALLY different, not relabelled copies —\n"
+    "  grpo       : opsd_enabled=False, gate_type='ones'\n"
+    "  opsd       : opsd_enabled=True,  gate_type='ones', grpo_weight=0.0\n"
+    "  skill_sd   : opsd_enabled=True,  gate_type='ones', skill_context POPULATED\n"
+    "  grpo_opsd  : opsd_enabled=True,  gate_type='ones', grpo_weight=1.0\n"
+    "  rlsd       : opsd_enabled=True,  gate_type='ones', grpo_weight=1.0, scheduled SD\n"
+    "  sdar       : opsd_enabled=True,  gate_type='sigmoid'  (g_t = sigmoid(BETA*delta_t))\n"
+    "\n"
+    "PROVENANCE — cite the reference implementation:\n"
+    "  Emit an explicit link to the SDAR reference repository\n"
+    "  (https://github.com/ZJU-REAL/SDAR) in your run artifacts AND in the\n"
+    "  report (e.g. a `provenance` / `reference_repo` field in metrics.json and\n"
+    "  a 'Reference implementation: ZJU-REAL/SDAR' line in README.md).\n"
+    "\n"
+    "CURVES — write per-step curves, not just terminal scalars:\n"
+    "  In addition to metrics.json, write `curves.json` in OUTPUT_DIR holding\n"
+    "  PER-STEP series so the training dynamics are inspectable. At minimum log,\n"
+    "  every step (or every few steps), the four series:\n"
+    "    gate_mean  — mean of the SDAR gate g_t over the batch's tokens\n"
+    "    gap        — mean teacher-student gap delta_t (the gate's input)\n"
+    "    opsd_loss  — the OPSD self-distillation loss term that step\n"
+    "    reward     — mean episode/sequence reward that step\n"
+    "  Shape: curves.json = {\"step\": [...], \"gate_mean\": [...], \"gap\": [...],\n"
+    "  \"opsd_loss\": [...], \"reward\": [...]} (lists aligned by index), written\n"
+    "  with the same atomic write pattern as metrics.json.\n"
+)
+
+
 _EAGER_METRICS_BLOCK = (
     "\n\nEAGER METRICS EMISSION — always-on:\n"
     "Write `metrics.json` AS YOU GO, not just at the end.  Whenever a sub-experiment "
@@ -2092,6 +2176,16 @@ def _compute_constraint_guidance(
     import os as _os_scaffold
     if _os_scaffold.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         guidance += _RL_SCAFFOLD_BLOCK
+
+    # 5.86. SDAR baseline-coverage guidance — opt-in (REPROLAB_SDAR_BASELINES=1).
+    # BES Phase 1 (Coverage Completion). Tells the agent to ALSO emit the three
+    # missing SDAR baselines (standalone OPSD, Skill-SD, RLSD) so all five are
+    # present, plus provenance link + per-step curves.json. Search-QA only — it
+    # deliberately does NOT activate ALFWorld/WebShop env cells (the sequencing
+    # trap: an env that can't learn turns excluded leaves into counted zeros).
+    # DEFAULT OFF → not injected → guidance byte-identical to today.
+    if _os_scaffold.environ.get("REPROLAB_SDAR_BASELINES", "").strip().lower() in ("1", "true", "yes"):
+        guidance += _SDAR_BASELINES_BLOCK
 
     # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
     # metrics_shape, bind the agent to those exact paths. Injected after the
