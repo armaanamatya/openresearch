@@ -218,6 +218,24 @@ class Settings(BaseSettings):
     azure_gpu_usd_per_hour: float = Field(default=3.67, ge=0.0, description="Per-GPU $/hr for budget tracking (default = Standard_NC24ads_A100_v4 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
     azure_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
     azure_pending_timeout_seconds: int = Field(default=900, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted")
+    # Catalog short_names of the Azure GPU SKUs that are actually provisioned
+    # as AKS node pools (mirrors Terraform var.gpu_skus). The SKU resolver
+    # only selects from this list; the OOM escalation ladder (reused from
+    # dynamic_gpu_max_escalations — no new field) only advances within it.
+    # pydantic-settings 2.x parses this from a JSON array env var:
+    #   REPROLAB_AZURE_GPU_SKUS='["azure_a100_80","azure_a100_80x2"]'
+    # or from a comma-separated string via the built-in list coercion when
+    # a plain string is supplied (e.g. REPROLAB_AZURE_GPU_SKUS=azure_a100_80,azure_a100_80x2).
+    # Default = single A100-80 pool = one quota ask at cluster bootstrap.
+    azure_gpu_skus: list[str] = Field(
+        default_factory=lambda: ["azure_a100_80"],
+        description=(
+            "Catalog short_names of the Azure GPU SKUs that are actually provisioned "
+            "as node pools (Terraform var.gpu_skus). The resolver only selects from "
+            "these; the OOM ladder only escalates within these. "
+            "Default = single A100-80 pool = one quota ask."
+        ),
+    )
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
     # When the root model calls FINAL_VAR but the latest rubric overall_score

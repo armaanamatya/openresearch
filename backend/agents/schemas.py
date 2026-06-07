@@ -816,7 +816,7 @@ class GpuPlan(BaseModel):
     short_name: str = Field(description="Internal short name; matches gpu_catalog.GpuSku.short_name")
     vram_gb: int = Field(ge=1)
     gpu_count: int = Field(ge=1, le=8)
-    cloud_type: Literal["COMMUNITY", "SECURE"]
+    cloud_type: Literal["COMMUNITY", "SECURE", "ONDEMAND"]  # ONDEMAND = Azure on-demand tier
     sku_usd_per_hr: float = Field(ge=0.0, description="Per-GPU rate from catalog")
     total_usd_per_hr: float = Field(ge=0.0, description="sku_usd_per_hr * gpu_count")
     container_disk_gb: int = Field(ge=1)

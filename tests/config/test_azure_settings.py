@@ -45,6 +45,7 @@ _AZURE_ENVVARS = [
     "REPROLAB_AZURE_GPU_USD_PER_HOUR",
     "REPROLAB_AZURE_BOOT_TIMEOUT_SECONDS",
     "REPROLAB_AZURE_PENDING_TIMEOUT_SECONDS",
+    "REPROLAB_AZURE_GPU_SKUS",
 ]
 
 
@@ -75,6 +76,7 @@ def test_azure_fields_exist_with_defaults(clean_azure_env):
     assert s.azure_gpu_usd_per_hour == pytest.approx(3.67)
     assert s.azure_boot_timeout_seconds == 900
     assert s.azure_pending_timeout_seconds == 900
+    assert s.azure_gpu_skus == ["azure_a100_80"]
 
 
 def test_default_sandbox_literal_accepts_azure(clean_azure_env):
@@ -135,3 +137,24 @@ def test_existing_literal_values_still_valid(clean_azure_env):
     for val in ("", "auto", "local", "docker", "runpod"):
         s = Settings(_env_file=None, force_sandbox=val)
         assert s.force_sandbox == val
+
+
+def test_azure_gpu_skus_default(clean_azure_env):
+    """azure_gpu_skus must default to a single-element list containing 'a100_80'."""
+    s = Settings(_env_file=None)
+    assert s.azure_gpu_skus == ["azure_a100_80"]
+    assert isinstance(s.azure_gpu_skus, list)
+
+
+def test_azure_gpu_skus_json_env_override(monkeypatch):
+    """REPROLAB_AZURE_GPU_SKUS as a JSON array env var parses to the right list."""
+    monkeypatch.setenv("REPROLAB_AZURE_GPU_SKUS", '["azure_a100_80","azure_a100_80x2"]')
+    s = Settings(_env_file=None)
+    assert s.azure_gpu_skus == ["azure_a100_80", "azure_a100_80x2"]
+
+
+def test_azure_gpu_skus_single_element_override(monkeypatch):
+    """REPROLAB_AZURE_GPU_SKUS with a single SKU parses correctly."""
+    monkeypatch.setenv("REPROLAB_AZURE_GPU_SKUS", '["v100_32"]')
+    s = Settings(_env_file=None)
+    assert s.azure_gpu_skus == ["v100_32"]

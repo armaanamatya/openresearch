@@ -50,7 +50,7 @@ class GpuPriceEntry(BaseModel):
 
     usd_per_hour: float = Field(ge=0.0)
     last_audited_utc: str
-    cloud_type: Literal["COMMUNITY", "SECURE"]
+    cloud_type: Literal["COMMUNITY", "SECURE", "ONDEMAND"]
 
 
 class ApiCostBreakdown(BaseModel):

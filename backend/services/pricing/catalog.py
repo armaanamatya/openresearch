@@ -133,6 +133,27 @@ GPU_PRICING: dict[str, GpuPriceEntry] = {
         last_audited_utc=_AUDITED,
         cloud_type="SECURE",
     ),
+    # Azure SKUs — eastus on-demand list rates; refresh quarterly.
+    "azure_a10_24": GpuPriceEntry(
+        usd_per_hour=1.20,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "azure_a100_80": GpuPriceEntry(
+        usd_per_hour=3.67,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "azure_a100_80x2": GpuPriceEntry(
+        usd_per_hour=7.35,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "azure_a100_80x4": GpuPriceEntry(
+        usd_per_hour=14.69,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
 }
 
 
