@@ -106,6 +106,33 @@ def test_failsoft_when_no_eval_or_tree(tmp_path: Path):
     assert finalize_rescore(other) is None
 
 
+def test_gated_run_bails_no_ungate(tmp_path: Path):
+    # Codex blocker 2: if the persisted overall is materially BELOW the ungated raw
+    # roll-up (0.4 here), a gate was active at score time; finalize_rescore CANNOT
+    # reconstruct it and must bail (return None) rather than re-roll + inflate.
+    run = tmp_path / "gated"
+    run.mkdir()
+    (run / "rubric_tree.json").write_text(json.dumps(TREE), encoding="utf-8")
+    (run / "rubric_evaluation.json").write_text(
+        json.dumps({"overall_score": 0.0, "leaf_scores": RECORDS}), encoding="utf-8")
+    extra = {"exclusions": [{"item": "ALFWorld", "axis": "environment",
+                             "kind": "operator_scope", "verified": True, "reason": "r"}]}
+    assert finalize_rescore(run, extra_scope=extra) is None
+
+
+def test_corrupt_score_bails(tmp_path: Path):
+    # Codex should-fix: a corrupt non-null score makes the artifact unusable —
+    # bail rather than coerce to 0.0 (which would authoritatively lower the score).
+    run = tmp_path / "corrupt"
+    run.mkdir()
+    (run / "rubric_tree.json").write_text(json.dumps(TREE), encoding="utf-8")
+    (run / "rubric_evaluation.json").write_text(
+        json.dumps({"overall_score": 0.4,
+                    "leaf_scores": [{"id": "leaf_alf", "score": "NaNNN"},
+                                    {"id": "leaf_a", "score": 0.6}]}), encoding="utf-8")
+    assert finalize_rescore(run) is None
+
+
 def test_explicit_rubric_tree_arg_is_used(tmp_path: Path):
     # When no rubric_tree.json is on disk, an explicit tree arg still works.
     run = tmp_path / "run3"

@@ -609,8 +609,11 @@ def _detect_data_unavailable_leaves(
             _collect_gaps(report.get("scope") or {})
         except Exception:
             pass
-    if isinstance(extra_scope, dict):
-        _collect_gaps(extra_scope)
+    # NOTE (Codex blocker, 2026-06-07): an extra_scope override does NOT feed
+    # scope.gaps — gaps are honoured leniently ("declared out of scope before
+    # trying", no metric) and would BYPASS the environment-axis anti-gaming gate.
+    # A finalize-time env de-scope must arrive via environments_skipped/exclusions
+    # (gated above), never via a free gaps channel. Disk gaps are still read.
 
     if (not failed_datasets and not gap_texts and not gap_items
             and not failed_models and not failed_envs):
@@ -959,13 +962,20 @@ def finalize_rescore(
         records = evald.get("leaf_scores")
         if not isinstance(records, list) or not records:
             return None
+        import math as _math
         leaf_scores: dict[str, float] = {}
         for r in records:
-            if isinstance(r, dict) and r.get("id") is not None and r.get("score") is not None:
-                try:
-                    leaf_scores[str(r["id"])] = float(r.get("score", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    leaf_scores[str(r["id"])] = 0.0
+            if not isinstance(r, dict) or r.get("id") is None or r.get("score") is None:
+                continue
+            try:
+                _sc = float(r.get("score"))
+            except (TypeError, ValueError):
+                # Corrupt non-null score → treat the artifact as unusable rather
+                # than coerce to 0.0 (which would authoritatively LOWER the report).
+                return None
+            if not _math.isfinite(_sc):
+                return None
+            leaf_scores[str(r["id"])] = _sc
         if not leaf_scores:
             return None
         tree = rubric_tree if (isinstance(rubric_tree, dict) and rubric_tree) else None
@@ -985,6 +995,7 @@ def finalize_rescore(
         leaves = flatten_leaves(tree)
         if not leaves:
             return None
+        raw_no_excl = roll_up(tree, leaf_scores, frozenset())
         unavailable = _detect_data_unavailable_leaves(
             leaves,
             run_dir,
@@ -994,13 +1005,26 @@ def finalize_rescore(
         )
         skip_set = frozenset(unavailable)
         new_overall = roll_up(tree, leaf_scores, skip_set)
-        if new_overall is None:
+        if new_overall is None or raw_no_excl is None:
             return None
         prior = evald.get("overall_score")
         try:
             prior_f = float(prior) if prior is not None else None
         except (TypeError, ValueError):
             prior_f = None
+        # BLOCKER 2 (Codex, 2026-06-07): if the persisted (authoritative) score is
+        # materially BELOW the ungated raw roll-up of the SAME leaves, a gate/cap
+        # was applied at score time (a paper-hint invariant hard-gate, soft cap, or
+        # degraded ceiling) that finalize_rescore cannot reconstruct from the
+        # persisted artifact alone. Re-rolling the raw leaf scores would silently
+        # UN-gate and inflate the score. Bail (keep the gated score) rather than
+        # inflate. Existing exclusions make persisted >= raw_no_excl, so this only
+        # trips on a genuine downward gate.
+        if prior_f is not None and (raw_no_excl - prior_f) > 1e-6:
+            logger.info(
+                "finalize_rescore: gate/cap active (persisted %.4f < raw %.4f) — "
+                "keeping gated score, no re-roll", prior_f, raw_no_excl)
+            return None
         return {
             "overall_score": max(0.0, min(1.0, float(new_overall))),
             "prior_overall": prior_f,

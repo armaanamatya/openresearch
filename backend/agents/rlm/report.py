@@ -886,6 +886,15 @@ def build_final_report(
                 _r2["rescore_policy"] = _rescore["policy"]
                 _r2["rescore_excluded"] = _rescore["n_excluded"]
                 _r2.pop("best_of_run", None)  # superseded by the authoritative re-roll-up
+                # Keep meets_target consistent with the authoritative score (Codex
+                # should-fix). The verdict stays evidence-reconciled above — a
+                # re-roll number must NOT auto-upgrade the verdict.
+                _tgt = _r2.get("target_score")
+                try:
+                    if _tgt is not None:
+                        _r2["meets_target"] = bool(_rescore["overall_score"] >= float(_tgt))
+                except (TypeError, ValueError):
+                    pass
                 kwargs["rubric"] = _r2
                 logger.info(
                     "report: finalize re-roll-up → %.4f (prior=%s, excluded %d leaves, policy=%s)",
