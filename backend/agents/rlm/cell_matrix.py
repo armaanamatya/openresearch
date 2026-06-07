@@ -456,9 +456,12 @@ def aggregate_cell_metrics(
     For every cell in ``cells`` the matching ``matrix_result[cell["id"]]`` record
     decides the leaf:
 
-    * record ``status == "ok"`` → leaf = the cell's own ``metrics`` dict (or
-      ``{}``), forced to ``status="ok"`` with a ``metric`` key (null if absent).
-    * record ``status in {"oom_failed", "error"}`` OR the record is missing →
+    * record ``status in {"ok", "skipped"}`` → leaf = the cell's own ``metrics``
+      dict (or ``{}``), forced to ``status="ok"`` with a ``metric`` key (null if
+      absent).  ``"skipped"`` is the resume case — a prior ok cell reused
+      verbatim (``gpu_cell_runner`` Track B) — and aggregates identically to a
+      freshly-run ok cell.
+    * record ``status in {"oom_failed", "error", "timeout"}`` OR the record is missing →
       leaf = ``{"status": "failed", "metric": null, "error": <record error,
       truncated, or "no result">}``, with any partial ``metrics`` the failed
       cell wrote merged underneath.
@@ -530,12 +533,15 @@ def aggregate_cell_metrics(
         if not isinstance(cell_metrics, dict):
             cell_metrics = None
 
-        if status == "ok":
+        if status in ("ok", "skipped"):
+            # A "skipped" cell (resume: prior ok cell reused without re-launching,
+            # gpu_cell_runner Track B) carries valid prior metrics from its
+            # output_dir — it is an ok leaf for every downstream consumer.
             leaf = _build_ok_leaf(cell_metrics)
             models_with_ok.add(model_key)
             any_ok = True
         else:
-            # oom_failed / error / unknown / missing record → failed leaf.
+            # oom_failed / error / timeout / unknown / missing record → failed leaf.
             err = record.get("error") if record else None
             leaf = _build_failed_leaf(cell_metrics, err)
             any_failed = True

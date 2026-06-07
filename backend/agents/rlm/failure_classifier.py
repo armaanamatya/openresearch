@@ -55,6 +55,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
     "cell_execution_error",      # Phase 0C: all run cells errored (non-OOM); zero ok cells
+    "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
     "unknown",                   # falls-through
 )
 
@@ -156,6 +157,12 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
             "it names, and re-run the matrix. This is NOT a scope reduction and NOT an OOM "
             "— do not shrink the grid or de-scope a model/env; fix the code",
+        "nccl_timeout":
+            "a distributed collective (NCCL) timed out — one rank hung or died while the "
+            "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "
+            "SAME number of forward/backward steps (no per-rank early-exit or uneven batch "
+            "counts), set NCCL_P2P_DISABLE=1 on kernels that hang multi-GPU P2P, and check "
+            "whether an earlier rank crashed first (its trace is the real cause)",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -286,6 +293,34 @@ def classify_failure(result: dict) -> tuple[str, str]:
             or ("huggingface" in haystack and "404" in haystack)
         ):
             return ("missing_dataset", _suggest("missing_dataset"))
+
+        # Gated / auth-walled HF repo (401/403) — gated Qwen/Llama weights are the
+        # SDAR baseline scenario; surface the token/licence fix not an opaque trace (F-08)
+        if (
+            "gatedrepoerror" in haystack
+            or (
+                ("401 client error" in haystack or "403 forbidden" in haystack)
+                and ("huggingface" in haystack or "hf.co" in haystack)
+            )
+        ):
+            return (
+                "missing_dataset",
+                _suggest("missing_dataset", extra="gated/auth — set a valid HF token and accept the model licence"),
+            )
+
+        # NCCL collective hang — the FSDP rank-0 ~600s watchdog timeout (F-08)
+        if "nccl" in haystack and ("timeout" in haystack or "timed out" in haystack):
+            return ("nccl_timeout", _suggest("nccl_timeout"))
+
+        # Disk exhaustion — a mid-run pip/HF download that fills the disk crashes
+        # with a raw ENOSPC trace (no postflight preset). The class + fix already
+        # exist; this is the missing inline detector (F-07).
+        if (
+            "no space left on device" in haystack
+            or "errno 28" in haystack
+            or "disk quota exceeded" in haystack
+        ):
+            return ("disk_exhausted", _suggest("disk_exhausted"))
 
         # Contract violations only (set by rubric_contract.validate post-run)
         if result.get("contract_violations"):

@@ -547,7 +547,7 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
-def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> None:
+def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> str | None:
     """PR-π Module E — fail-fast gate for missing/degraded parsed_full_text.txt.
 
     Raises ``RuntimeError`` when ``allow_lossy=False`` and the parsed paper
@@ -558,11 +558,16 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
     This guard runs at the START of ``run_pipeline_rlm`` — before any RLM
     loop iteration — so the user gets an actionable failure message instead of
     a silent lossy-workspace fallback that defeats paper-grounding.
+
+    Returns the human-readable *degraded reason* when the run proceeds in lossy
+    mode, so the caller can surface it as an operator-visible warning in
+    ``demo_status.json`` (F-29) rather than only a buried log line; returns
+    ``None`` when the paper text is intact.
     """
     parsed_path = project_dir / "parsed_full_text.txt"
     degraded = not parsed_path.exists() or parsed_path.stat().st_size < 1024
     if not degraded:
-        return
+        return None
     if not allow_lossy:
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
@@ -574,6 +579,10 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "(parsed_full_text.txt missing or <1KB at %s)",
         parsed_path,
     )
+    return (
+        "paper text degraded — proceeding with lossy workspace fallback "
+        f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
+    )
 
 
 def _write_demo_status(
@@ -584,6 +593,7 @@ def _write_demo_status(
     primitive_provider: str = "real",  # T21 / review I8
     process_status: str | None = None,
     verdict: str | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -631,6 +641,11 @@ def _write_demo_status(
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
+    # Operator-visible warnings (e.g. degraded paper text, F-29). Merged via
+    # ``**existing`` on later writes, so a run-start warning survives the
+    # terminal write; only replaced when this call explicitly supplies one.
+    if warnings:
+        payload["warnings"] = list(warnings)
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
@@ -1260,7 +1275,7 @@ async def run_pipeline_rlm(
     # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
     _settings_for_gate = get_settings()
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
-    _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
+    _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);
@@ -1275,7 +1290,13 @@ async def run_pipeline_rlm(
 
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
-    _write_demo_status(project_dir, "running")
+    # Surface a degraded-paper-text warning here (F-29) so an operator sees the
+    # run is non-faithful; the merge in _write_demo_status carries it forward.
+    _write_demo_status(
+        project_dir,
+        "running",
+        warnings=[_paper_degraded_reason] if _paper_degraded_reason else None,
+    )
 
     # Local sandboxes have no /workspace volume — repoint the dataset root at a
     # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)

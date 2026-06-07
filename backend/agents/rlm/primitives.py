@@ -63,6 +63,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "permission_denied",
     "syntax_error",
     "scope_shape_violation",
+    "dockerfile_invalid",
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -93,6 +94,33 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
 # the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
 _METRICS_BEARING_REPAIRABLE_FAILURES = {
     "cell_execution_error",
+}
+
+_CODEX_HARD_ALLOWED_TASKS = {
+    "implementation_repair",
+    "test_debugging",
+    "dockerfile_repair",
+    "requirements_repair",
+    "traceback_explanation",
+}
+_CODEX_REJECTED_TASKS = {
+    "paper_summary",
+    "paper_navigation",
+    "rubric_judgment",
+    "final_report",
+    "broad_research",
+    "open-ended_planning",
+    "open_ended_planning",
+    "credential_inspection",
+    "secret_search",
+}
+_CODEX_AGENT_CORRECTABLE_FAILURES = {
+    "syntax_error",
+    "missing_module",
+    "requirements_not_found",
+    "dockerfile_invalid",
+    "contract_violation",
+    "scope_shape_violation",
 }
 
 # PR-ζ: transient-error retry policy for _execute_in_sandbox.
@@ -227,6 +255,74 @@ def _harvest_baseline_artifacts(
 
 def _failure_class_key(value: object) -> str:
     return str(value or "").strip().lower().replace("-", "_")
+
+
+def _codex_env_allowed_tasks(raw: str | None) -> set[str]:
+    return {
+        item.strip().lower().replace("-", "_")
+        for item in str(raw or "").split(",")
+        if item.strip()
+    }
+
+
+def _codex_repair_error(error_type: str, message: str, **extra: Any) -> dict:
+    payload = {
+        "ok": False,
+        "success": False,
+        "disabled": error_type == "disabled",
+        "timed_out": False,
+        "exit_code": None,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "changed_files": [],
+        "duration_s": 0.0,
+        "error_type": error_type,
+        "error": message,
+    }
+    payload.update(extra)
+    return _with_outcome(payload, PrimitiveOutcome.repairable)
+
+
+def _codex_failure_class(
+    failure_class: str | None,
+    repair_context: dict | None,
+) -> str:
+    if failure_class:
+        return _failure_class_key(failure_class)
+    if isinstance(repair_context, dict):
+        return _failure_class_key(repair_context.get("failure_class"))
+    return ""
+
+
+def _build_codex_prompt(
+    *,
+    task_type: str,
+    instructions: str,
+    test_command: str,
+    allowed_paths: list[str],
+    timeout_s: int,
+    failure_class: str,
+) -> str:
+    allowed = "\n".join(f"- {p}" for p in allowed_paths) if allowed_paths else "- Entire workspace"
+    return (
+        "You are a specialized ReproLab repo-editing repair subagent.\n"
+        "Do not perform paper navigation, paper summarization, rubric judgment, "
+        "final report writing, broad research, credential inspection, or secret search.\n\n"
+        f"Task type: {task_type}\n"
+        f"Failure class: {failure_class or 'not provided'}\n"
+        f"Exact task:\n{instructions.strip()}\n\n"
+        "Allowed files or workspace scope:\n"
+        f"{allowed}\n\n"
+        f"Test command to run:\n{test_command.strip()}\n\n"
+        f"Max time budget: {timeout_s} seconds.\n\n"
+        "Constraints:\n"
+        "- Touch only files needed for the targeted repair and do not touch unrelated files.\n"
+        "- Do not print secrets, environment variables, access tokens, credential files, or auth state.\n"
+        "- Do not read, print, parse, or copy ~/.codex/auth.json or any credential store.\n"
+        "- Run only the targeted test command above unless a smaller diagnostic command is necessary.\n"
+        "- Summarize changed files and tests run in your final response.\n"
+        "- Stop after the targeted fix; do not continue into open-ended cleanup or planning.\n"
+    )
 
 
 def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
@@ -464,6 +560,30 @@ def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
     if not stderr_tail:
         return False
     return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
+
+
+def _is_oom_escalation_trigger(result: dict, *, exit_code: int, stderr_tail: str) -> bool:
+    """True when a failed experiment should advance the GPU ladder due to OOM (F-04).
+
+    Two cases:
+      1. A direct CUDA OOM signal — delegated to ``_detect_cuda_oom`` (exit code
+         137/-9 or an OOM marker in the last ~4 KB ``stderr_tail``).
+      2. A stall-watchdog kill (``result['watchdog_killed']``) whose OOM marker is
+         buried earlier than ``stderr_tail``: the watchdog return dict surfaces no
+         ``exit_code`` (the gate defaults it to 1) and the marker can sit thousands
+         of lines before the tail, so case 1 alone misses it — scan the FULL
+         ``result['logs']`` for a marker.
+
+    The watchdog kills on *staleness* (no signal), NOT memory, so a watchdog kill
+    escalates ONLY when the full logs carry an explicit OOM marker; a genuine
+    no-signal stall (no marker) breaks the loop as before.
+    """
+    if _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        return True
+    if result.get("watchdog_killed"):
+        full_logs = result.get("logs") or ""
+        return any(marker in full_logs for marker in _CUDA_OOM_MARKERS)
+    return False
 
 
 def _cap_logs(text: str) -> str:
@@ -1946,6 +2066,143 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     return harvested
 
 
+def codex_repair(
+    task_type: str,
+    instructions: str,
+    test_command: str,
+    allowed_paths: list[str] | tuple[str, ...] | str | None = None,
+    repair_context: dict | None = None,
+    failure_class: str | None = None,
+    readonly: bool = False,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Deliberately invoke Codex CLI for bounded repo repair.
+
+    This primitive is default-off and gated by task type, failure class, and a
+    per-run call budget. It is not used by ``rlm_query`` and is not a provider
+    for paper navigation, summarization, rubric judgment, or final reports.
+    """
+    from pathlib import Path
+
+    from backend.config import get_settings
+    from backend.agents.rlm.codex_subagent import run_codex_subagent
+
+    settings = get_settings()
+    if not bool(getattr(settings, "codex_subagent", False)):
+        return _codex_repair_error(
+            "disabled",
+            "codex_repair is disabled; set REPROLAB_CODEX_SUBAGENT=1 to enable it.",
+        )
+
+    normalized_task = str(task_type or "").strip().lower().replace("-", "_")
+    if normalized_task in _CODEX_REJECTED_TASKS:
+        return _codex_repair_error(
+            "task_type_rejected",
+            f"codex_repair rejected task_type={task_type!r}; this route is only for repo repair.",
+        )
+    env_allowed = _codex_env_allowed_tasks(getattr(settings, "codex_allowed_tasks", ""))
+    if normalized_task not in _CODEX_HARD_ALLOWED_TASKS or normalized_task not in env_allowed:
+        return _codex_repair_error(
+            "task_type_not_allowed",
+            f"codex_repair task_type={task_type!r} is not enabled by REPROLAB_CODEX_ALLOWED_TASKS.",
+            allowed_tasks=sorted(env_allowed & _CODEX_HARD_ALLOWED_TASKS),
+        )
+
+    klass = _codex_failure_class(failure_class, repair_context)
+    if klass not in _CODEX_AGENT_CORRECTABLE_FAILURES:
+        return _codex_repair_error(
+            "failure_class_not_allowed",
+            (
+                "codex_repair requires a failed run_experiment repair_context or "
+                "failure_class in: "
+                + ", ".join(sorted(_CODEX_AGENT_CORRECTABLE_FAILURES))
+            ),
+            failure_class=klass or None,
+        )
+    if isinstance(repair_context, dict) and repair_context.get("success") is True:
+        return _codex_repair_error(
+            "experiment_not_failed",
+            "codex_repair only runs after a failed experiment result.",
+            failure_class=klass,
+        )
+
+    call_count = int(getattr(ctx, "_codex_subagent_calls", 0) or 0)
+    max_calls = int(getattr(settings, "codex_max_calls_per_run", 3) or 0)
+    if call_count >= max_calls:
+        return _codex_repair_error(
+            "max_calls_exceeded",
+            f"codex_repair call budget exhausted ({call_count}/{max_calls}).",
+            calls_used=call_count,
+            max_calls=max_calls,
+        )
+
+    if isinstance(allowed_paths, str):
+        allowed = [allowed_paths]
+    else:
+        allowed = [str(p) for p in (allowed_paths or [])]
+    allowed = [p.strip() for p in allowed if p and p.strip()]
+    instructions = str(instructions or "").strip()
+    test_command = str(test_command or "").strip()
+    if not instructions:
+        return _codex_repair_error("invalid_request", "codex_repair instructions must be non-empty.")
+    if not test_command:
+        return _codex_repair_error("invalid_request", "codex_repair test_command must be non-empty.")
+
+    timeout_s = int(getattr(settings, "codex_timeout_s", 900) or 900)
+    max_output_chars = int(getattr(settings, "codex_max_output_chars", 12000) or 12000)
+    profile = str(getattr(settings, "codex_profile", "") or "").strip() or None
+    prompt = _build_codex_prompt(
+        task_type=normalized_task,
+        instructions=instructions,
+        test_command=test_command,
+        allowed_paths=allowed,
+        timeout_s=timeout_s,
+        failure_class=klass,
+    )
+
+    def _event_sink(event_type: str, payload: dict) -> None:
+        _emit_dashboard_event(ctx, event_type=event_type, payload=payload)
+
+    setattr(ctx, "_codex_subagent_calls", call_count + 1)
+    result = run_codex_subagent(
+        prompt=prompt,
+        workspace=Path(ctx.project_dir),
+        timeout_s=timeout_s,
+        profile=profile,
+        readonly=bool(readonly),
+        task_type=normalized_task,
+        max_output_chars=max_output_chars,
+        event_sink=_event_sink,
+    )
+    payload = result.as_dict()
+    payload["success"] = result.ok
+    payload["task_type"] = normalized_task
+    payload["failure_class"] = klass
+    payload["calls_used"] = call_count + 1
+    payload["max_calls"] = max_calls
+
+    if allowed and result.changed_files:
+        allowed_prefixes = [p.rstrip("/") + "/" for p in allowed if not p.startswith("..")]
+        allowed_exact = {p.rstrip("/") for p in allowed if not p.startswith("..")}
+        outside = [
+            changed for changed in result.changed_files
+            if changed not in allowed_exact
+            and not any(changed.startswith(prefix) for prefix in allowed_prefixes)
+        ]
+        if outside:
+            payload["ok"] = False
+            payload["success"] = False
+            payload["error_type"] = "changed_files_outside_allowed_paths"
+            payload["error"] = "codex_repair changed files outside allowed_paths"
+            payload["outside_allowed_paths"] = outside
+
+    return _with_outcome(
+        payload,
+        PrimitiveOutcome.ok if payload.get("ok") else PrimitiveOutcome.repairable,
+    )
+
+
 def _backend_for_sandbox_mode(
     sandbox_mode: object,
     *,
@@ -3187,6 +3444,52 @@ async def _execute_in_sandbox(
     }
 
 
+def _manifest_enrichment(result: dict) -> None:
+    """P2 provenance manifest: enrich a run_experiment result IN PLACE with the
+    fields that bind a final metric to the artifact that produced it (invariant 2:
+    every final metric traces to a persisted artifact via a manifest).
+
+    Best-effort + fail-soft — observability must never break a run, so every
+    lookup degrades silently:
+      - ``sandbox_backend``: promoted from ``resource_limits`` so the manifest
+        names the backend without callers digging into nested limits.
+      - ``metrics_sha256``: sha256 of the canonical ``metrics.json`` artifact, so
+        a final-report metric can be tied to the exact bytes that produced it
+        (the trace that closes invariant 2 for the RLM path).
+    """
+    try:
+        _rl = result.get("resource_limits") or {}
+        _backend = _rl.get("sandbox_mode") or _rl.get("sandbox_backend")
+        if _backend:
+            result.setdefault("sandbox_backend", str(_backend))
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+    try:
+        _artifact_dir = result.get("artifact_dir")
+        if _artifact_dir and not result.get("metrics_sha256"):
+            import hashlib
+            from pathlib import Path as _Path
+
+            _mjson = _Path(str(_artifact_dir)) / "metrics.json"
+            if _mjson.exists():
+                result["metrics_sha256"] = hashlib.sha256(_mjson.read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+
+
+def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: list) -> None:
+    """P2 manifest: record the identifiers that bind a run_experiment result to
+    its run — ``experiment_run_id`` (the ``run_id`` used for this attempt's
+    artifacts, previously minted in the escalation loop and discarded),
+    ``env_id``, and the structured ``commands`` list. ``setdefault`` so a value an
+    earlier path already set is never clobbered; a non-dict result is a no-op."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault("experiment_run_id", run_id)
+    result.setdefault("env_id", env_id)
+    result.setdefault("commands", list(commands) if commands else [])
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3219,6 +3522,9 @@ def _persist_experiment_result(
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
     _with_outcome(result, _classify_run_experiment_outcome(result))
+
+    # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
+    _manifest_enrichment(result)
 
     if not result.get("success"):
         logger.warning(
@@ -3327,10 +3633,14 @@ _CODE_BUG_PHRASES = (
     "returned 0 rows",
     "must be a string or a real number",   # float(tuple) family
     "repository id must be",
-    "no such file or directory",           # FileNotFoundError without the class name
-    "errno 2",
-    "has no attribute",
 )
+
+# F-03: a bare OSError-style "no such file" / "errno 2" is a code bug only when a
+# config/source co-signal co-occurs (a missing base_config.yaml / *.py). Without
+# one, a missing DATA path is a provably-unobtainable dataset, not a code bug.
+# ("has no attribute" was dropped from _CODE_BUG_PHRASES — AttributeError /
+# FileNotFoundError are already caught by class name in _CODE_BUG_RE.)
+_CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
 
 
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
@@ -3381,7 +3691,16 @@ def _data_load_failure_is_code_bug(err: str) -> bool:
     low = (err or "").lower()
     if any(p in low for p in _CODE_BUG_PHRASES):
         return True
-    return bool(_CODE_BUG_RE.search(err or ""))
+    if _CODE_BUG_RE.search(err or ""):
+        return True
+    # Bare 'no such file'/'errno 2' is a code bug ONLY with a config/source
+    # co-signal (a missing base_config.yaml / *.py); a bare missing DATA path
+    # stays data-unavailable so it force-reduces on first sight (F-03).
+    if ("no such file or directory" in low or "errno 2" in low) and any(
+        c in low for c in _CONFIG_CODE_COSIGNALS
+    ):
+        return True
+    return False
 
 
 def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
@@ -3406,6 +3725,41 @@ def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
         if err and _data_load_failure_is_code_bug(err):
             masked.append(f"{name}: {err[:160]}")
     return ("code_bug", masked) if masked else None
+
+
+def _surface_masked_bug_on_failed_run(result: dict) -> dict | None:
+    """F-05: for an already-FAILED run with no specific ``failure_class``, surface a
+    masked code bug's precise message so the next repair targets the real loader/parse
+    bug instead of a vaguer error.
+
+    ``_reclassify_masked_code_bugs`` is metrics-based and success-agnostic, but its
+    call site only runs on SUCCESSFUL runs (to flip them to repairable). A run that
+    already failed for a vague reason can still carry a masked code bug in
+    ``metrics.data_load_failures``; promote that precise message into
+    ``error``/``suggested_fix`` and set the precise ``failure_class``.
+
+    Returns the fields to merge into ``result``, or None when not applicable. NEVER
+    flips ``success`` (the run is already failed) and never overrides an
+    already-specific ``failure_class``.
+    """
+    if result.get("success"):
+        return None
+    if _failure_class_key(result.get("failure_class")):
+        return None  # a specific class is already set — leave it
+    masked = _reclassify_masked_code_bugs(result)
+    if masked is None:
+        return None
+    _cls, _bugs = masked
+    msg = (
+        "code_bug: a loader/parse error was caught and masked as a data_load_failure "
+        "(it would be silently excluded from the rubric). These are CODE bugs to fix, "
+        "not missing data — " + "; ".join(_bugs[:5])
+    )
+    return {
+        "failure_class": _cls,
+        "error": msg,
+        "suggested_fix": result.get("suggested_fix") or msg,
+    }
 
 
 def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
@@ -3751,9 +4105,10 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     """
     import json
     import time as _time
+    from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_matrix, gpu_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -3782,10 +4137,13 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
 
-    # PREVENT — clamp to one-card budget, drop confirmed-dead datasets (fail-soft).
+    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
+    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    _gpus_per_cell = max(1, int(os.environ.get("REPROLAB_GPUS_PER_CELL", "1") or "1"))
+    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
     headroom = _dynamic_gpu_headroom()
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
-        all_cells, caps.per_gpu_vram_gb, headroom=headroom)
+        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
 
     gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
@@ -3825,14 +4183,32 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
     # run-level watchdog is the ultimate hang guard; this just lets the root score a
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
-    _n_gpus = max(1, len(gpus))
-    _waves = (len(kept) + _n_gpus - 1) // _n_gpus  # ceil(cells / gpus)
+    _n_slots = max(1, len(gpus) // _gpus_per_cell)
+    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Cell-level resume (Track B): compute each kept cell's content fingerprint so
+    # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
+    # REPROLAB_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
+    # REPROLAB_RESUME_FORCE_CELLS (CSV of cell ids the CLI builds from --rerun-env /
+    # --rerun-cell). All no-ops when resume is unset; fingerprints are always recorded.
+    _fingerprints = {
+        c["id"]: cell_fingerprint.compute_fingerprint(c, str(code))
+        for c in kept if isinstance(c, dict) and c.get("id")
+    }
+    _force_cells = {
+        cid.strip()
+        for cid in (os.environ.get("REPROLAB_RESUME_FORCE_CELLS", "") or "").split(",")
+        if cid.strip()
+    }
     matrix_result = gpu_cell_runner.run_matrix(
         kept, str(code / "train_cell.py"),
         output_root=str(artifact_root),
         gpus=gpus or None,
         per_cell_timeout_s=timeout_s,
         overall_timeout_s=timeout_s * max(1, _waves),
+        gpus_per_cell=_gpus_per_cell,
+        fingerprints=_fingerprints,
+        force_cells=_force_cells or None,
+        now_iso=datetime.now(timezone.utc).isoformat(),
     )
     wall = _time.monotonic() - _t0
 
@@ -4223,7 +4599,9 @@ def run_experiment(
         # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        # F-04: also catch a watchdog-killed OOM whose marker is buried earlier
+        # than the 4 KB stderr_tail (the watchdog dict carries no exit_code).
+        is_oom = _is_oom_escalation_trigger(result, exit_code=exit_code, stderr_tail=stderr_tail)
         is_infra = infra_error_kind is not None
         if not is_oom and not is_infra:
             break
@@ -4278,6 +4656,11 @@ def run_experiment(
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
+    # P2 manifest: the escalation loop has produced its final result — stamp the
+    # identifiers the persist chokepoint records. run_id/env_id/commands are in
+    # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
+    _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
+
     # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
     # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0
     # rows') and records it in metrics.data_load_failures, which the leaf scorer would
@@ -4300,6 +4683,17 @@ def run_experiment(
             logger.warning(
                 "run_experiment[%s]: reclassified %d masked code bug(s) as repairable: %s",
                 getattr(ctx, "run_id", "?"), len(_bugs), _bugs[:3],
+            )
+    else:
+        # F-05: the run already failed for a vague reason — still surface a masked
+        # code bug's precise message (never flipping success) so the next repair
+        # targets the real loader/parse bug instead of a vague error.
+        _surfaced = _surface_masked_bug_on_failed_run(result)
+        if _surfaced is not None:
+            result = {**result, **_surfaced}
+            logger.warning(
+                "run_experiment[%s]: surfaced masked code bug on a failed run (%s)",
+                getattr(ctx, "run_id", "?"), _surfaced.get("failure_class"),
             )
 
     # Training-health postflight (2026-05-29): a run that exited 0 but logged a
@@ -4471,12 +4865,89 @@ def run_experiment(
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
+def _leaf_status(score: object, state: object) -> str:
+    """Map a leaf (score, state) pair to a UI status string.
+
+    ``"unavailable"`` when the leaf was skipped (state contains ``skipped``) or
+    its score is ``None`` (PR-κ data-unavailable). Otherwise threshold the score:
+    ``pass`` (>=0.75) / ``partial`` (>=0.4) / ``fail``. Fail-soft: a malformed
+    score coerces to 0.0 → ``fail``.
+    """
+    if score is None or (isinstance(state, str) and "skipped" in state):
+        return "unavailable"
+    try:
+        s = float(score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "fail"
+    if s >= 0.75:
+        return "pass"
+    if s >= 0.4:
+        return "partial"
+    return "fail"
+
+
+def _enrich_area_leaves(area_node: dict, leaf_detail: dict[str, dict]) -> list[dict]:
+    """Build the per-area ``leaves`` list for one top-level rubric sub_task.
+
+    Walks the area's sub-tree via ``flatten_leaves`` to get the leaf nodes (which
+    carry the human-readable ``requirements`` label + ``id``), then joins each to
+    its scored record in ``leaf_detail`` (id -> {score, justification, state}).
+
+    Each emitted leaf: ``{id, label, score, status, why}`` where ``label`` is the
+    requirements text (≤140 chars), ``score`` is the leaf score (``None`` when
+    unavailable), ``status`` from :func:`_leaf_status`, and ``why`` the leaf
+    justification (≤280 chars, single line). Fail-soft per leaf: a malformed leaf
+    node is skipped rather than crashing the whole area.
+    """
+    from backend.evals.paperbench.leaf_scorer import flatten_leaves
+
+    out: list[dict] = []
+    try:
+        leaf_nodes = flatten_leaves(area_node)
+    except Exception:  # noqa: BLE001 — a malformed tree must not crash the area
+        return out
+    for node in leaf_nodes:
+        try:
+            if not isinstance(node, dict):
+                continue
+            lid = str(node.get("id", "") or "")
+            if not lid:
+                continue
+            label = " ".join(str(node.get("requirements") or "").split())[:140]
+            detail = leaf_detail.get(lid) or {}
+            raw_score = detail.get("score") if "score" in detail else None
+            state = detail.get("state")
+            status = _leaf_status(raw_score, state)
+            score_out: float | None = None
+            if status != "unavailable":
+                try:
+                    score_out = max(0.0, min(1.0, float(raw_score)))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    score_out = None
+            why = " ".join(str(detail.get("justification") or "").split())[:280]
+            out.append({
+                "id": lid,
+                "label": label,
+                "score": score_out,
+                "status": status,
+                "why": why,
+            })
+        except Exception:  # noqa: BLE001 — skip the one bad leaf, keep the rest
+            continue
+    return out
+
+
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
 
     Each top-level sub_task becomes one area entry:
-      {"name": <requirements text, truncated>, "score": <rolled-up float>,
-       "weight": <raw weight int/float>}
+      {"area": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>,
+       "leaves": [{id, label, score, status, why}, ...]}
+
+    The ``leaves`` list carries leaf-level detail (which criteria fail + why),
+    mapped to the area via the same rubric-tree structure that produces the
+    rollup (``flatten_leaves`` over the area sub-tree).
 
     This gives the root model named, scored areas it can include verbatim in
     the final report instead of fabricating blank placeholders.  Fail-soft:
@@ -4498,6 +4969,14 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         if isinstance(e, dict) and e.get("id") and e.get("score") is not None
     }
 
+    # Build a {leaf_id: full-record} map so per-area leaves can attach
+    # score + justification + state (the label/requirements come from the tree).
+    leaf_detail: dict[str, dict] = {
+        str(e["id"]): e
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
     areas: list[dict] = []
     for i, task in enumerate(sub_tasks):
         name = str(task.get("requirements") or "")[:120]
@@ -4505,8 +4984,72 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
             name = f"Area {i + 1}"
         score = _clamp01(roll_up(task, leaf_score_map))
         weight = task.get("weight")
-        areas.append({"area": name, "score": score, "weight": weight})
+        areas.append({
+            "area": name,
+            "score": score,
+            "weight": weight,
+            "leaves": _enrich_area_leaves(task, leaf_detail),
+        })
     return areas
+
+
+def _recent_experiment_errors(project_dir: "Path", limit: int = 3) -> list[dict]:
+    """Return the last ``limit`` failed ``run_experiment`` entries as UI rows.
+
+    Reads ``experiment_runs.jsonl`` in ``project_dir`` and selects the most
+    recent lines with ``success=False``. Each row: ``{kind, message, iteration}``
+    where ``kind`` is the classified ``failure_class`` (fallback ``cause_kind`` /
+    ``"unknown"``), ``message`` is the error string truncated to 200 chars
+    (falling back to a logs tail when ``error`` is absent — the real-world common
+    case), and ``iteration`` is the entry's iteration if recorded else ``None``.
+
+    Fail-soft: a missing/unreadable file or any malformed line yields ``[]`` (or
+    the rows parsed so far) — observability must never break the run.
+    """
+    import json as _json_re
+
+    path = project_dir / "experiment_runs.jsonl"
+    try:
+        if not path.exists():
+            return []
+        # Read the tail only — the file can grow large over a long run.
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+
+    out: list[dict] = []
+    # Walk newest-first so we collect the most recent failures.
+    for raw in reversed(lines):
+        if len(out) >= max(0, int(limit)):
+            break
+        raw = raw.strip()
+        if not raw or '"success"' not in raw:
+            continue
+        try:
+            entry = _json_re.loads(raw)
+        except Exception:  # noqa: BLE001 — skip a corrupt line
+            continue
+        if not isinstance(entry, dict) or entry.get("success") is not False:
+            continue
+        kind = str(
+            entry.get("failure_class")
+            or entry.get("cause_kind")
+            or "unknown"
+        )
+        # `error` is frequently None on real failures — the diagnostic lives in
+        # the logs tail (e.g. a ModuleNotFoundError traceback). Fall back so the
+        # UI row is actually informative.
+        message = entry.get("error")
+        if not message:
+            logs = str(entry.get("logs") or "")
+            message = logs[-200:] if logs else (entry.get("suggested_fix") or "")
+        message = " ".join(str(message).split())[:200]
+        iteration = entry.get("iteration")
+        if not isinstance(iteration, int):
+            iteration = None
+        out.append({"kind": kind, "message": message, "iteration": iteration})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -4804,6 +5347,21 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             [e for e in leaf_scores if isinstance(e, dict) and e.get("score") is not None],
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
+        # leaf_id -> top-level area name, so the UI can group each weak leaf under
+        # its area. Built from the SAME top-level sub_task structure as the area
+        # rollup. Fail-soft: a malformed tree yields an empty map (area="").
+        _leaf_area: dict[str, str] = {}
+        try:
+            from backend.evals.paperbench.leaf_scorer import flatten_leaves as _flat
+            for _i, _task in enumerate(
+                c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)
+            ):
+                _aname = str(_task.get("requirements") or "")[:120] or f"Area {_i + 1}"
+                for _ln in _flat(_task):
+                    if isinstance(_ln, dict) and _ln.get("id"):
+                        _leaf_area[str(_ln["id"])] = _aname
+        except Exception:  # noqa: BLE001 — area attribution is best-effort
+            _leaf_area = {}
 
         result = {
             "overall_score": overall_score,
@@ -4819,7 +5377,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
-                 "justification": e.get("justification", "")}
+                 "justification": e.get("justification", ""),
+                 "area": _leaf_area.get(str(e.get("id", "")), "")}
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
@@ -5368,6 +5927,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "heartbeat": heartbeat,
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
+    "codex_repair": codex_repair,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -5445,4 +6005,14 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "cloud_type, sku_usd_per_hr, total_usd_per_hr, source, ladder_remaining, ...}. "
         "Call ONCE per run after accumulating hardware clues from understand_section. "
         "Idempotent — subsequent calls return the cached plan.",
+    "codex_repair": "codex_repair(task_type, instructions, test_command, "
+        "allowed_paths=None, repair_context=None, failure_class=None, readonly=False) "
+        "-> dict — optional, default-off Codex CLI repo-editing subagent for "
+        "bounded software-engineering repairs only. Use only after a failed "
+        "run_experiment with an agent-correctable failure_class such as "
+        "syntax_error, missing_module, requirements_not_found, dockerfile_invalid, "
+        "contract_violation, or scope_shape_violation. Do NOT use for paper "
+        "navigation, paper summaries, rubric judgment, final reports, broad "
+        "research, credential inspection, secret search, or high-frequency "
+        "rlm_query calls.",
 }

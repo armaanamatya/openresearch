@@ -132,6 +132,13 @@ PAPER_HINTS: dict[str, PaperHint] = {
                 ],
             ),
         ],
+        blocked_resources=[
+            # The SDAR paper's own implementation — the PaperBench blacklist entry
+            # (mirrors third_party/paperbench/ftrl/blacklist.txt). The arXiv run
+            # loads no bundle, so this paper-hint entry is what guards it. trl and
+            # other framework deps are deliberately NOT listed.
+            "https://github.com/BartekCupial/finetuning-RL-as-CL",
+        ],
     ),
 }
 

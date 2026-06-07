@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import type { DemoSandboxMode } from "../../../lib/demo/demo-run-types";
 import type { PrimitiveCallView, RunWarning } from "../../../hooks/use-rlm-run";
 import { RunpodStatusChip } from "./runpod-status-chip";
@@ -241,6 +242,10 @@ export function RlmHeader({
               {rerunBusy ? "Starting…" : rerunLabel}
             </button>
           )}
+
+          <Link href="/leaderboard" className={styles.leaderboardLink} prefetch={false}>
+            Leaderboard
+          </Link>
         </div>
       </header>
 

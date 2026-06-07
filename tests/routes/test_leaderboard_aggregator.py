@@ -204,6 +204,8 @@ def test_leaderboard_row_schema_is_pinned(tmp_path: Path):
         "meets_target", "degraded",
         "cost_usd", "iterations", "wall_clock_s",
         "sandbox", "started_at", "completed_at", "verdict",
+        # β5: attempt-aware fields
+        "status", "attempts",
     }
     assert set(dumped.keys()) == expected_keys, (
         f"LeaderboardRow shape drifted. "

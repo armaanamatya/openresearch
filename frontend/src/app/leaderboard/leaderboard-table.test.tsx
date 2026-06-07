@@ -26,6 +26,8 @@ function row(overrides: Partial<LeaderboardRow> = {}): LeaderboardRow {
     started_at: "2026-05-23T04:10:00+00:00",
     completed_at: "2026-05-23T04:15:00+00:00",
     verdict: "partial",
+    status: "completed",
+    attempts: 1,
     ...overrides,
   };
 }

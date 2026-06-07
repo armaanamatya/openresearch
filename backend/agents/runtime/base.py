@@ -172,6 +172,7 @@ __all__ = [
     "AgentLimitExceeded",
     "AgentRuntime",
     "AgentRuntimeSpec",
+    "blocked_terms_from_env",
     "ProviderConfigurationError",
     "ProviderFeatureUnsupported",
     "ProviderName",
@@ -215,3 +216,28 @@ def _canonicalize_url_term(value: str) -> str:
 
 # Public alias: callers should prefer the explicit name.
 _normalize_guard_text = _canonicalize_url_term
+
+
+def blocked_terms_from_env(env_var: str = "REPROLAB_BLOCKED_TERMS_JSON") -> tuple[str, ...]:
+    """Parse the #7 benchmark-integrity blocklist from its JSON-list env var.
+
+    The single subprocess seam: ``cli.py`` unions the curated sources (bundle
+    ``blacklist.txt`` + ``--blacklist`` + ``paper_hints``) and sets the env var;
+    both ``RunContext`` and ``collect_agent_text`` read it through this one
+    parser so the ``RuntimeGuard`` is seeded identically everywhere. Returns a
+    tuple of non-empty, stripped terms. Never raises — a malformed value degrades
+    to an empty blocklist so a parse error can never crash a run.
+    """
+    import json as _json
+    import os as _os
+
+    raw = _os.environ.get(env_var, "").strip()
+    if not raw:
+        return ()
+    try:
+        parsed = _json.loads(raw)
+    except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(str(term).strip() for term in parsed if str(term).strip())
