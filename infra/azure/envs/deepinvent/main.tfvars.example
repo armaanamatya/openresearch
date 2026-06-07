@@ -1,0 +1,117 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# DeepInvent environment — Terraform variable overrides
+#
+# Usage:
+#   cp main.tfvars.example main.tfvars
+#   # Fill in every placeholder marked <...>
+#   terraform plan  -var-file=main.tfvars
+#   terraform apply -var-file=main.tfvars
+#
+# NEVER commit main.tfvars (contains subscription/tenant IDs and IP ranges).
+# It is listed in .gitignore.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Azure tenant / subscription ─────────────────────────────────────────────
+
+# Client's Azure subscription ID.
+subscription_id = "<DEEPINVENT_SUBSCRIPTION_ID>"
+
+# Client's Azure Active Directory tenant ID.
+tenant_id = "<DEEPINVENT_TENANT_ID>"
+
+# ─── Naming & region ─────────────────────────────────────────────────────────
+
+# Short prefix for all resource names. Keep ≤8 chars, lowercase, no hyphens
+# (ACR name strips hyphens automatically).
+prefix = "repro"
+
+# Azure region. Pick one where Standard_NC24ads_A100_v4 quota has been granted.
+# Common choices: eastus, westus3, swedencentral, northeurope.
+# Check availability: az vm list-skus --location <region> --size Standard_NC24ads_A100_v4 --query "[].restrictions"
+region = "<AZURE_REGION>"
+
+# Main resource group name.
+resource_group_name = "rg-reprolab"
+
+# Tags applied to every resource.
+tags = {
+  project     = "reprolab"
+  environment = "production"
+  client      = "deepinvent"
+}
+
+# ─── Networking ──────────────────────────────────────────────────────────────
+
+# VNet address space.
+vnet_cidr = "10.0.0.0/16"
+
+# AKS node subnet CIDR (must be within vnet_cidr).
+# /22 = 1024 IPs; sufficient for system + GPU pools at max scale.
+aks_subnet_cidr = "10.0.0.0/22"
+
+# Operator CIDR(s) permitted to reach the AKS public API server.
+# SECURITY: The API server is public (Phase 1 constraint — orchestrator is local).
+# Add every egress IP that will run `kubectl` or the Python orchestrator.
+# Confirm with DeepInvent's security team that a public API server is acceptable.
+# Example: ["203.0.113.10/32", "198.51.100.0/24"]
+authorized_ip_ranges = ["<OPERATOR_EGRESS_CIDR>"]
+
+# ─── AKS cluster ─────────────────────────────────────────────────────────────
+
+# Kubernetes version. Must be available in the chosen region.
+# Check: az aks get-versions --location <region> --query "orchestrators[].orchestratorVersion"
+kubernetes_version = "<K8S_VERSION>"
+
+# System (CPU) node pool SKU. D4s_v5 = 4 vCPU / 16 GiB, ≥1 always running.
+system_node_sku       = "Standard_D4s_v5"
+system_node_min_count = 1
+system_node_max_count = 3
+
+# Object ID of the operator's Entra (AAD) group.
+# Members receive Azure Kubernetes Service RBAC Cluster Admin on the cluster.
+# Find it: az ad group show --group "<group-name>" --query id -o tsv
+operator_entra_group_object_id = "<OPERATOR_ENTRA_GROUP_OBJECT_ID>"
+
+# ─── GPU node pool ────────────────────────────────────────────────────────────
+#
+# VM SKU: Standard_NC24ads_A100_v4 = 1 × A100-80GB = 24 vCPUs per node.
+#
+# !! QUOTA REQUIREMENT !!
+# Required A100 quota = 24 × gpu_max_nodes vCPUs in the NCADSA100v4 family.
+# A fresh subscription has 0 quota. File a support request BEFORE applying:
+#   az quota create --resource-name standardNCADSA100v4Family \
+#     --scope /subscriptions/<sub>/providers/Microsoft.Compute/locations/<region> \
+#     --limit-object value=<24*gpu_max_nodes>
+# Quota approval can take hours to days.
+#
+# Start with gpu_max_nodes = 1 (24 vCPUs). Scale up after validation.
+gpu_max_nodes = 1
+
+# ─── Container registry ──────────────────────────────────────────────────────
+
+acr_sku = "Standard"
+
+# ─── Storage ─────────────────────────────────────────────────────────────────
+
+# Globally unique storage account name (3-24 lowercase alphanum, no hyphens).
+# This account hosts BOTH the artifact Blob container and the Files share.
+storage_account_name = "<GLOBALLY_UNIQUE_STORAGE_ACCOUNT_NAME>"
+
+blob_container_name  = "reprolab-artifacts"
+files_share_name     = "reprolab-cache"
+
+# Azure Files share quota in GiB.
+# 512 GiB covers Qwen3-1.7B + Qwen2.5-3B + 7B weights plus pip caches.
+# Increase to 1024+ for larger model portfolios.
+files_share_quota_gb = 512
+
+# ─── Workload identity ────────────────────────────────────────────────────────
+# These MUST match the Helm L2 values in envs/deepinvent/helm-values.yaml.
+
+workload_identity_namespace       = "reprolab"
+workload_identity_service_account = "reprolab-sa"
+
+# ─── Remote state reference ───────────────────────────────────────────────────
+# Informational only — the actual backend is configured in backend.hcl.
+# Name of the storage account created by the bootstrap module.
+state_storage_account_name = "<BOOTSTRAP_STATE_STORAGE_ACCOUNT_NAME>"
