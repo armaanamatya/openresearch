@@ -414,12 +414,21 @@ async def _dispatch_competing_candidates(
     """
     from backend.agents.rdr.candidates import Candidate, select_best
     import dataclasses as _dc
+    import re as _re
+    import shutil as _shutil
 
     candidates_root = code_dir.parent / "candidates"
+    # Sanitize the cluster id used in the scratch path so a traversal-bearing id
+    # ('..', '/') can never escape candidates_root (Codex should-fix).
+    _safe_cluster = _re.sub(r"[^A-Za-z0-9_-]", "_", str(cluster.id))[:64] or "cluster"
     pool: list[Candidate] = []
     for i in range(n):
-        cid = f"{cluster.id}#{i}"
+        cid = f"{_safe_cluster}#{i}"
         cand_run_dir = candidates_root / cid
+        # Clear stale state from a prior attempt/resume so the snapshot + winner-merge
+        # only ever carry THIS candidate's files (Codex should-fix).
+        if cand_run_dir.exists():
+            _shutil.rmtree(cand_run_dir, ignore_errors=True)
         cand_code_dir = cand_run_dir / "code"
         cand_code_dir.mkdir(parents=True, exist_ok=True)
         cand_ctx = _dc.replace(agctx, candidate_code_dir=cand_code_dir)
@@ -907,10 +916,15 @@ async def run_rdr(
     _bes_score_fn: Callable | None = None
     if _bes_settings.bes_enabled and _bes_settings.bes_candidates_per_cluster > 1:
         def _bes_score_fn(cand_run_dir: Path, _cluster: WorkCluster, _rubric=rubric, _ctx=ctx) -> dict:
+            # degraded=False so the leaf scorer GRADES the candidate's code (Codex
+            # blocker): degraded short-circuits every leaf to 0.0 without reading the
+            # code, which ties all candidates and always picks #0. The candidate has
+            # no metrics.json yet, so this is a code-only static grade — the SELECT
+            # signal that discriminates competing candidates pre-GPU.
             return score_reproduction(
                 _rubric, cand_run_dir, _ctx.llm_client,
                 rubric_source=str((_rubric or {}).get("source") or "paperbench_bundle"),
-                degraded=True,
+                degraded=False,
             )
     clusters: list[WorkCluster] = decompose(
         rubric, max_leaves_per_cluster=max_leaves_per_cluster

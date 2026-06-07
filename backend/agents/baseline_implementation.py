@@ -1269,7 +1269,7 @@ _SDAR_BASELINES_BLOCK = (
     "{grpo, opsd, skill_sd, grpo_opsd, rlsd} (plus your headline `sdar`). A\n"
     "baseline is JUST A STRING your train.py maps to (opsd_enabled, gate_type)\n"
     "inside train_one_run(baseline=...): e.g.\n"
-    "  opsd_enabled = baseline in ('sdar', 'grpo_opsd', 'opsd', 'rlsd')\n"
+    "  opsd_enabled = baseline in ('sdar', 'grpo_opsd', 'opsd', 'skill_sd', 'rlsd')\n"
     "  gate_type    = 'sigmoid' if baseline == 'sdar' else 'ones'\n"
     "Add one cell PER missing baseline to code/cells.json carrying that exact\n"
     "`baseline` string; aggregate_cell_metrics then nests each result at\n"

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
+from pathlib import Path  # noqa: F401 — used by AgentContext.candidate_code_dir annotation (get_type_hints)
 
 # Canonical task-category dependency order: Code Development must precede Code
 # Execution, which must precede Result Analysis. The Decomposer sorts clusters

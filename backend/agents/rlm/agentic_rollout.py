@@ -230,6 +230,10 @@ def rollout_episode(
     # ``next_context_text is None`` is the turn-0 sentinel → use the whole opening
     # prompt; on later turns it is the prior step's observation (possibly "").
     next_context_text: str | None = None
+    # Phase 4A (Codex blocker): accumulate per-step INTERMEDIATE shaped rewards
+    # (0.0 unless REPROLAB_ALFWORLD_SHAPING is on) so reward shaping reaches the GRPO
+    # training return assembled below. Terminal reward/success stay separate (info).
+    shaped_sum: float = 0.0
 
     for _turn_idx in range(cap):
         # Defensive: if the env is already terminal (caller stepped it, or a prior
@@ -282,7 +286,12 @@ def rollout_episode(
         obs = getattr(result, "observation", "")
         next_context_text = obs if isinstance(obs, str) else ("" if obs is None else str(obs))
 
-        if getattr(result, "done", False) or getattr(env, "done", False):
+        _done = getattr(result, "done", False) or getattr(env, "done", False)
+        if not _done:
+            # Non-terminal shaped credit only — the terminal scalar is added once via
+            # episode_reward() below, so this never double-counts the terminal reward.
+            shaped_sum += float(getattr(result, "reward", 0.0) or 0.0)
+        if _done:
             break
 
     # --- assemble the trajectory --------------------------------------------
@@ -290,9 +299,15 @@ def rollout_episode(
     # e.g. it ran out of turns; matches the §2 max_turns-exhaustion contract when
     # the env's own ``step`` left reward at 0).
     try:
-        reward = float(env.episode_reward())
+        terminal_reward = float(env.episode_reward())
     except Exception:  # pragma: no cover - defensive
-        reward = 0.0
+        terminal_reward = 0.0
+    # Phase 4A (Codex blocker): the TRAINING return folds in the per-step shaped
+    # sub-goal rewards so shaping actually reaches GRPO. With shaping OFF every
+    # StepResult.reward is 0.0 ⇒ shaped_sum == 0.0 ⇒ reward == terminal_reward
+    # (byte-identical parity). The terminal scalar + success stay SEPARATE in info
+    # for the held-out terminal-success eval — shaped reward is never read as success.
+    reward = terminal_reward + shaped_sum
 
     # info = env.last_info merged with rollout stats.  Rollout stats are namespaced
     # plainly (``n_turns``) but env keys take precedence is avoided: we start from
@@ -302,6 +317,8 @@ def rollout_episode(
     info: dict[str, Any] = dict(env_info)
     info["n_turns"] = len(turns)
     info["response_lengths"] = response_lengths
+    info["terminal_reward"] = terminal_reward
+    info["shaped_reward"] = shaped_sum
 
     return Trajectory(
         turns=turns,

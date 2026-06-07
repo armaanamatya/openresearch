@@ -222,7 +222,7 @@ class Settings(BaseSettings):
     # bit-for-bit as today. See docs/superpowers/specs/2026-06-07-bes-integration/.
     bes_enabled: bool = Field(default=False, description="MASTER gate for BES-on-RDR; off => today's RDR path")
     bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8, description="N competing candidates per cluster; 1 = parity")
-    bes_select_metric: str = Field(default="cluster_score", pattern=r"^(cluster_score|failed_leaves)$", description="Candidate SELECT metric")
+    bes_select_metric: str = Field(default="cluster_score", description="Candidate SELECT metric (cluster_score | failed_leaves); an unknown value falls back to cluster_score at use-site, so it never aborts the default RDR path")
     bes_splice_enabled: bool = Field(default=False, description="Evolve/splice (v2, deferred) — no-op in v1")
 
     # --- Mode-agnostic RDR pre-run gate (Phase 2, default OFF) ---

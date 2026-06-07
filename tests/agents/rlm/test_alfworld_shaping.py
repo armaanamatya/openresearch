@@ -36,6 +36,11 @@ import pytest
 # identity for package modules into the rest of the session.
 _RLM_DIR = "/home/sww35/openresearch/backend/agents/rlm"
 sys.path.insert(0, _RLM_DIR)
+# A sibling test imports a bare ``alfworld_env`` / ``sdar_env_base`` from a DIFFERENT
+# worktree; in the full suite that caches a stale identity (without this change's
+# _SHAPING_FLAG) under the bare name. Drop it so THIS repo's edited modules load.
+for _stale in ("alfworld_env", "sdar_env_base"):
+    sys.modules.pop(_stale, None)
 try:
     import alfworld_env  # noqa: E402
     from alfworld_env import ALFWorldEnv  # noqa: E402

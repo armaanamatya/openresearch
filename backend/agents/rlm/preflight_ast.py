@@ -580,7 +580,21 @@ _OOM_EXCEPT_NAMES = frozenset({
 # Substrings that, when present in an assignment target's name, mean the handler is
 # shrinking the batch / loss scale / grad-accum (i.e. a real retry), so it must NOT
 # be flagged.
-_BATCH_SCALE_TOKENS = ("batch", "scale", "bs", "grad_accum", "micro")
+# Distinctive substrings (matched anywhere) vs short tokens (matched only as a
+# whole '_'-delimited word-part, so 'bs' matches 'bs'/'micro_bs' but NOT 'probs').
+_BATCH_SCALE_SUBSTR = ("batch", "scale", "grad_accum", "micro")
+_BATCH_SCALE_WORDS = ("bs", "mbs", "gas", "accum")
+
+
+def _iter_handler_nodes(node: ast.AST):
+    """Yield descendants of ``node`` WITHOUT descending into nested function/class/
+    lambda bodies — their statements belong to a different scope, so counting a
+    ``raise`` or a ``batch_size = …`` inside them causes false matches (Codex)."""
+    for child in ast.iter_child_nodes(node):
+        yield child
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield from _iter_handler_nodes(child)
 
 
 def _handler_catches_oom(handler: ast.ExceptHandler) -> bool:
@@ -604,13 +618,40 @@ def _handler_catches_oom(handler: ast.ExceptHandler) -> bool:
 
 
 def _handler_reraises(handler: ast.ExceptHandler) -> bool:
-    """True if the handler body re-raises anywhere (``raise`` / ``raise exc``)."""
-    return any(isinstance(n, ast.Raise) for n in ast.walk(handler))
+    """True if the handler body re-raises anywhere (``raise`` / ``raise exc``).
+
+    Scopes to the handler's own body (no nested function/class bodies)."""
+    return any(isinstance(n, ast.Raise) for n in _iter_handler_nodes(handler))
 
 
 def _name_is_batch_scale(ident: str) -> bool:
     low = ident.lower()
-    return any(tok in low for tok in _BATCH_SCALE_TOKENS)
+    if any(tok in low for tok in _BATCH_SCALE_SUBSTR):
+        return True
+    # short tokens match only as a whole '_'-delimited word-part (avoids 'probs').
+    return any(part in _BATCH_SCALE_WORDS for part in low.split("_"))
+
+
+def _target_is_batch_scale(tgt: ast.expr) -> bool:
+    """Whether an assignment target names a batch/scale var — handling bare Name,
+    Attribute, Tuple/List unpacking (``bs, retries = …``), and a string-keyed
+    Subscript (``cfg['batch_size'] //= 2``). (Codex should-fix.)"""
+    if isinstance(tgt, ast.Name):
+        return _name_is_batch_scale(tgt.id)
+    if isinstance(tgt, ast.Attribute):
+        return _name_is_batch_scale(tgt.attr)
+    if isinstance(tgt, (ast.Tuple, ast.List)):
+        return any(_target_is_batch_scale(e) for e in tgt.elts)
+    if isinstance(tgt, ast.Subscript):
+        sl = tgt.slice
+        # py3.9+: slice IS the Constant; py3.8: ast.Index wrapper around it.
+        const = sl if isinstance(sl, ast.Constant) else getattr(sl, "value", None)
+        if isinstance(const, ast.Constant):
+            const = const.value
+        if isinstance(const, str) and _name_is_batch_scale(const):
+            return True
+        return _target_is_batch_scale(tgt.value)
+    return False
 
 
 def _handler_mutates_batch_scale(handler: ast.ExceptHandler) -> bool:
@@ -622,7 +663,7 @@ def _handler_mutates_batch_scale(handler: ast.ExceptHandler) -> bool:
     (``self.batch_size``) — a name-substring match against
     ``_BATCH_SCALE_TOKENS`` means a real shrink-and-retry, so DON'T flag.
     """
-    for node in ast.walk(handler):
+    for node in _iter_handler_nodes(handler):
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign):
             targets = list(node.targets)
@@ -630,11 +671,8 @@ def _handler_mutates_batch_scale(handler: ast.ExceptHandler) -> bool:
             targets = [node.target]
         else:
             continue
-        for tgt in targets:
-            if isinstance(tgt, ast.Name) and _name_is_batch_scale(tgt.id):
-                return True
-            if isinstance(tgt, ast.Attribute) and _name_is_batch_scale(tgt.attr):
-                return True
+        if any(_target_is_batch_scale(tgt) for tgt in targets):
+            return True
     return False
 
 

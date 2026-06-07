@@ -29,8 +29,13 @@ import pytest
 # agent sandbox imports them out of ``code/``). Remove the flat dir right after
 # import so it does not leak into the rest of the session (a lingering entry gives
 # package modules like rubric_guard a second identity, breaking unrelated tests).
-_RLM_DIR = "/home/sww35/openresearch-fullscope/backend/agents/rlm"
+_RLM_DIR = "/home/sww35/openresearch/backend/agents/rlm"
 sys.path.insert(0, _RLM_DIR)
+# Drop any stale bare-name identity a sibling test cached from another worktree, so
+# this loads THIS repo's modules. (The merge brought alfworld_env.py into this repo;
+# the old hard-coded openresearch-fullscope path tested a stale pre-merge copy.)
+for _stale in ("alfworld_env", "sdar_env_base"):
+    sys.modules.pop(_stale, None)
 try:
     import alfworld_env  # noqa: E402
     from alfworld_env import ALFWorldEnv  # noqa: E402
