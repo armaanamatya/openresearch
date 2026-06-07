@@ -130,6 +130,10 @@ def test_runpod_defaults_when_plan_missing():
     assert cap.can_escalate is True
 
 
-def test_azure_is_documented_stub():
-    with pytest.raises(NotImplementedError):
-        gc.describe_capacity(_ctx(sandbox_mode="azure"))
+def test_azure_returns_gpu_capacity_not_stub():
+    # _describe_azure is now implemented (spec 2026-06-03-azure-aks-gpu-backend-design.md).
+    # It must return a GpuCapacity rather than raising NotImplementedError.
+    cap = gc.describe_capacity(_ctx(sandbox_mode="azure"))
+    assert cap.backend_kind == "azure"
+    assert cap.can_escalate is False
+    assert cap.num_gpus >= 1

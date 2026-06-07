@@ -1058,6 +1058,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "local sandbox: dependencies resolved on host venv; no image built",
         }, PrimitiveOutcome.ok)
+    if _sb_key == "azure":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
 
     import asyncio
     import concurrent.futures
@@ -2253,12 +2261,19 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.azure:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.aks_job_backend import AksJobBackend
+
+        _runtime.ensure_azure_available()
+        return AksJobBackend(run_budget=run_budget)
+
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker or --sandbox runpod for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -4108,7 +4123,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner, k8s_job_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -4199,17 +4214,39 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         for cid in (os.environ.get("REPROLAB_RESUME_FORCE_CELLS", "") or "").split(",")
         if cid.strip()
     }
-    matrix_result = gpu_cell_runner.run_matrix(
-        kept, str(code / "train_cell.py"),
-        output_root=str(artifact_root),
-        gpus=gpus or None,
-        per_cell_timeout_s=timeout_s,
-        overall_timeout_s=timeout_s * max(1, _waves),
-        gpus_per_cell=_gpus_per_cell,
-        fingerprints=_fingerprints,
-        force_cells=_force_cells or None,
-        now_iso=datetime.now(timezone.utc).isoformat(),
-    )
+    _sb_key_ecm = getattr(
+        getattr(ctx, "sandbox_mode", None), "value",
+        str(getattr(ctx, "sandbox_mode", None) or ""),
+    ).lower()
+    _run_budget_ecm = getattr(ctx, "run_budget", None)
+    _event_sink_ecm = getattr(ctx, "_event_sink", None)
+    if _sb_key_ecm == "azure":
+        with k8s_job_cell_runner.bind_run_context(
+            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm
+        ):
+            matrix_result = k8s_job_cell_runner.run_matrix(
+                kept, str(code / "train_cell.py"),
+                output_root=str(artifact_root),
+                gpus=gpus or None,
+                per_cell_timeout_s=timeout_s,
+                overall_timeout_s=timeout_s * max(1, _waves),
+                gpus_per_cell=_gpus_per_cell,
+                fingerprints=_fingerprints,
+                force_cells=_force_cells or None,
+                now_iso=datetime.now(timezone.utc).isoformat(),
+            )
+    else:
+        matrix_result = gpu_cell_runner.run_matrix(
+            kept, str(code / "train_cell.py"),
+            output_root=str(artifact_root),
+            gpus=gpus or None,
+            per_cell_timeout_s=timeout_s,
+            overall_timeout_s=timeout_s * max(1, _waves),
+            gpus_per_cell=_gpus_per_cell,
+            fingerprints=_fingerprints,
+            force_cells=_force_cells or None,
+            now_iso=datetime.now(timezone.utc).isoformat(),
+        )
     wall = _time.monotonic() - _t0
 
     metrics = cell_matrix.aggregate_cell_metrics(
@@ -4239,6 +4276,27 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             f"retries on the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB; the matrix "
             f"cannot fit one card — reduce model size/scope or use a larger GPU",
             metrics, logs)
+
+    # capacity_exhausted promotion: the K8s runner emits "capacity_exhausted:"-prefixed
+    # error strings for stuck-Pending cells (pool quota/stock exhausted). When EVERY
+    # errored cell carries that prefix (and no OOM, no ok), promote to terminal rather
+    # than allowing a pointless repair loop — the cluster, not the code, is the bottleneck.
+    # This branch is only reachable for azure runs (non-azure error strings never carry
+    # the prefix), so it leaves local/runpod/docker behavior byte-for-byte unchanged.
+    if n_ok == 0 and n_oom == 0 and n_err > 0:
+        _err_cells = [
+            (matrix_result.get(c["id"]) or {}) for c in kept
+            if (matrix_result.get(c["id"]) or {}).get("status") not in ("ok", "oom_failed")
+        ]
+        _all_cap_exhausted = all(
+            str((r.get("error") or "")).startswith("capacity_exhausted:")
+            for r in _err_cells
+        )
+        if _all_cap_exhausted:
+            _cap_msg = (f"all {n_err} run cell(s) failed: AKS node pool capacity exhausted "
+                        f"(stuck-Pending past timeout) — quota or stock unavailable; "
+                        f"try reducing azure_max_nodes or requesting a quota increase")
+            return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
     _persist_metrics(metrics)

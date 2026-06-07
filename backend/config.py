@@ -140,14 +140,14 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod"] = "runpod"
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set REPROLAB_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -197,6 +197,27 @@ class Settings(BaseSettings):
     # by the backend (the _owned_pod_ids allowlist enforces this even
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
+
+    # --- Azure AKS GPU backend (spec 2026-06-03, --sandbox azure) ---
+    # All fields default to empty/sensible stubs so importing Settings never
+    # requires Azure credentials to be present — the backend is lazy-imported
+    # and only instantiated when --sandbox azure is actually selected.
+    azure_resource_group: str = Field(default="", description="Azure resource group for the AKS cluster")
+    azure_region: str = Field(default="eastus", description="Azure region (e.g. eastus, westus2)")
+    azure_storage_account: str = Field(default="", description="Azure storage account name (Blob + Files)")
+    azure_blob_container: str = Field(default="reprolab-artifacts", description="Blob container for run artifacts")
+    azure_files_share: str = Field(default="reprolab-cache", description="Azure Files share for HF_HOME + pip cache")
+    azure_acr_login_server: str = Field(default="", description="ACR login server (e.g. myregistry.azurecr.io)")
+    azure_aks_cluster: str = Field(default="", description="AKS cluster name")
+    azure_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
+    azure_service_account: str = Field(default="reprolab-runner", description="K8s ServiceAccount annotated for workload identity")
+    azure_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
+    azure_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
+    azure_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    azure_base_image: str = Field(default="", description="Pre-baked ACR base image (build_environment no-op)")
+    azure_gpu_usd_per_hour: float = Field(default=3.67, ge=0.0, description="Per-GPU $/hr for budget tracking (default = Standard_NC24ads_A100_v4 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
+    azure_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
+    azure_pending_timeout_seconds: int = Field(default=900, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted")
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
     # When the root model calls FINAL_VAR but the latest rubric overall_score

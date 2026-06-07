@@ -174,12 +174,27 @@ def _describe_cloud(ctx: Any, kind: str) -> GpuCapacity:
 
 
 def _describe_azure(ctx: Any) -> GpuCapacity:
-    raise NotImplementedError(
-        "Azure GPU compute backend is not implemented (only the LLM is wired for "
-        "Azure). To add it, provide an adapter returning GpuCapacity("
-        "backend_kind='azure', num_gpus=<VM GPU count>, per_gpu_vram_gb=<VM GPU "
-        "VRAM GB>, free_gpu_ids=<indices>, can_escalate=True). See "
-        "docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md."
+    """Settings-driven Azure AKS GPU capacity descriptor.
+
+    Reads ``azure_max_nodes`` and ``azure_per_gpu_vram_gb`` from Settings to
+    describe the configured GPU node pool.  ``can_escalate=False`` because the
+    AKS backend uses a fixed SKU (single node-pool, no catalog ladder).
+    Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
+    """
+    from backend.config import get_settings
+
+    s = get_settings()
+    num_gpus = max(1, int(s.azure_max_nodes))
+    per_gpu_vram_gb = float(s.azure_per_gpu_vram_gb)
+    ids = tuple(str(i) for i in range(num_gpus))
+    return GpuCapacity(
+        "azure",
+        num_gpus=num_gpus,
+        per_gpu_vram_gb=per_gpu_vram_gb,
+        free_gpu_ids=ids,
+        can_escalate=False,
+        total_vram_gb=per_gpu_vram_gb * num_gpus,
+        detail={"node_pool": s.azure_node_pool_name},
     )
 
 
