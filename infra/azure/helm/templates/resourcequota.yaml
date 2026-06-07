@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: reprolab-gpu-quota
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+spec:
+  hard:
+    # ---------------------------------------------------------------------------
+    # GPU limits — prevent runaway cost from Jobs that accidentally omit the limit
+    # or from a bug that submits far more cells than the node-pool max.
+    # Both requests AND limits are capped independently.
+    # [tfvar: gpu_max_nodes] — not a TF output; set both to the node pool max (one GPU per Job).
+    # ---------------------------------------------------------------------------
+    requests.nvidia.com/gpu: {{ .Values.resourceQuota.maxGpu | quote }}
+    limits.nvidia.com/gpu: {{ .Values.resourceQuota.maxGpuLimits | quote }}
+
+    # ---------------------------------------------------------------------------
+    # Job count cap — prevents a loop bug from flooding the namespace.
+    # Distinct from the GPU cap: a CPU-stub Job or a failed-retrying Job counts
+    # toward this limit but not toward the GPU limit.
+    # ---------------------------------------------------------------------------
+    count/jobs.batch: {{ .Values.resourceQuota.maxJobs | quote }}
