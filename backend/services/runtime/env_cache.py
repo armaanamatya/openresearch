@@ -405,7 +405,17 @@ class EnvCacheManager:
         return EnvSetupResult(env=env or "", ok=True, detail="no environment to provision")
 
     def ensure_alfworld(self, *, display_name: str = _ALFWORLD) -> EnvSetupResult:
-        """Download ALFWorld once into the shared cache; reuse on later calls."""
+        """Download ALFWorld once into the shared cache; reuse on later calls.
+
+        BES Phase 4A (A1) note — two distinct "once" caches, do not conflate:
+        this method is the host-shared **game-data** cache (the multi-GB
+        ``alfworld-download``), idempotent across runs/cells. The per-cell **env
+        object** reuse (build ``AlfredTWEnv`` once and ``reset()`` it in place
+        across episodes, the ~82× reload tax) lives in
+        ``alfworld_env.ALFWorldEnv`` behind ``REPROLAB_ALFWORLD_ENV_REUSE`` — a
+        rollout-loop concern, not a data-cache one. The data cache that A1's env
+        reuse builds on top of is exactly this method's output.
+        """
         data_dir = self.cache_dir / "alfworld"
         try:
             with self._locked_state() as state:

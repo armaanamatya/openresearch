@@ -85,6 +85,64 @@ _ALL_TASK_TYPE_IDS = [1, 2, 3, 4, 5, 6]
 _MAX_ADMISSIBLE_COMMANDS = 50
 _MAX_ADMISSIBLE_CHARS = 1500
 
+#: BES Phase 4A env flags (spec ``2026-06-07-bes-integration/phase-4…``). Both
+#: default OFF — with neither set, this module is BYTE-IDENTICAL to the sparse
+#: terminal-``float(won)`` reward it shipped with.
+#:
+#: ``REPROLAB_ALFWORLD_ENV_REUSE`` (A1): construct the underlying TextWorld env
+#:   ONCE per :class:`ALFWorldEnv` instance and ``reset()`` it in place across
+#:   episodes instead of rebuilding ``AlfredTWEnv`` every :meth:`reset` (the ~82×
+#:   reload tax). Pure perf — semantics are identical; gated only so flag-off is
+#:   provably the original reconstruct-every-episode path.
+#: ``REPROLAB_ALFWORLD_SHAPING`` (A2): emit dense INTERMEDIATE
+#:   :attr:`StepResult.reward` for sub-goal progress (reaching the target object /
+#:   opening the correct receptacle). The terminal ``float(won)`` stays the
+#:   SEPARATE authoritative signal — shaping NEVER touches ``info["won"]`` nor the
+#:   terminal reward. Off ⇒ intermediate reward is exactly ``0.0``.
+_ENV_REUSE_FLAG = "REPROLAB_ALFWORLD_ENV_REUSE"
+_SHAPING_FLAG = "REPROLAB_ALFWORLD_SHAPING"
+
+#: Per-sub-goal shaped credit (only emitted when :data:`_SHAPING_FLAG` is on).
+#: Small relative to the terminal reward (1.0) so shaping can seed a non-zero
+#: GRPO advantage on cold-start small models without dominating real success.
+_SHAPE_REACH_TARGET = 0.10      # first arrival at the goal object's receptacle
+_SHAPE_OPEN_RECEPTACLE = 0.05   # first time the correct receptacle is opened
+
+
+def _flag_on(name: str) -> bool:
+    """True iff env var ``name`` is a truthy flag (``1``/``true``/``yes``/``on``)."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _extract_target_noun(goal: str) -> str:
+    """Best-effort pull of the manipulated-object noun from an ALFRED goal line.
+
+    ALFRED goals read ``Your task is to: put a cool apple in the countertop`` /
+    ``heat some egg and put it in the fridge``. The object the policy must reach is
+    the first concrete noun after the leading verb phrase. We take the last word of
+    the first noun-ish token run — cheap, deterministic, and only ever used to
+    decide whether to award *shaped* credit (never the terminal signal), so a miss
+    simply means no early credit, never a wrong ``won``. Returns "" when unknown.
+    """
+    if not goal:
+        return ""
+    text = goal.split(":", 1)[-1] if ":" in goal else goal
+    # Strip common leading verbs/articles to land on the object noun.
+    tokens = [t for t in "".join(c if c.isalnum() or c.isspace() else " " for c in text).split()]
+    _SKIP = {
+        "put", "place", "find", "get", "take", "bring", "move", "clean", "heat",
+        "cool", "examine", "look", "a", "an", "the", "some", "two", "to", "in",
+        "on", "into", "onto", "and", "then", "of", "with", "at", "it", "your",
+        "task", "is",
+    }
+    for tok in tokens:
+        low = tok.lower()
+        if low in _SKIP:
+            continue
+        return low
+    return ""
+
+
 #: Guidance prepended to the system prompt so the policy emits clean TextWorld
 #: commands instead of chat scaffolding (``> ...`` / ``action: ...``), and knows
 #: it may inspect the admissible-action list the env reports each turn.
@@ -297,6 +355,17 @@ class ALFWorldEnv(AgenticEnv):
         self._unavailable_reason: str | None = None
         self._won: bool = False
 
+        # A1 (construct-once): cache of the underlying TextWorld batched env so a
+        # later episode resets it in place rather than rebuilding AlfredTWEnv.
+        # Only populated/consumed when REPROLAB_ALFWORLD_ENV_REUSE is on.
+        self._tw_cache: Any | None = None
+        self._tw_cache_built: int = 0  # count of real constructions (for the A1 test)
+
+        # A2 (reward shaping): per-episode sub-goal credit bookkeeping. The goal
+        # noun is parsed at reset; each sub-goal pays out at most once per episode.
+        self._target_noun: str = ""
+        self._credited: set[str] = set()
+
     # --- availability ---------------------------------------------------------
 
     @classmethod
@@ -393,6 +462,9 @@ class ALFWorldEnv(AgenticEnv):
         self._won = False
         self._unavailable_reason = None
         self._env = None
+        # A2: clear per-episode sub-goal credit bookkeeping (no-op when shaping off).
+        self._target_noun = ""
+        self._credited = set()
         # Coerce the seed defensively: a bad seed (str/float/garbage) must never
         # raise out of reset() — the AgenticEnv contract is fail-soft. Bad input
         # degrades to the deterministic default (0), not a crash.
@@ -442,6 +514,9 @@ class ALFWorldEnv(AgenticEnv):
         self._infos = infos
 
         goal = _extract_goal(obs)
+        # A2: remember the goal object so step() can award sub-goal progress credit
+        # (only consulted when shaping is on; harmless otherwise).
+        self._target_noun = _extract_target_noun(goal)
         full_system = system if not goal else f"{system}\n\nGoal: {goal}"
         self._start_episode(system=full_system)
 
@@ -509,6 +584,9 @@ class ALFWorldEnv(AgenticEnv):
 
         if terminal:
             self._won = won
+            # Terminal reward is the SEPARATE authoritative signal: exactly
+            # ``float(won)``. Shaping (A2) never touches this branch — "learning"
+            # must be provable by terminal success, not shaped credit.
             reward = float(won)
             info = {
                 "success": bool(won),
@@ -519,7 +597,66 @@ class ALFWorldEnv(AgenticEnv):
             self._finish(reward, info=info)
             return StepResult(observation=observation, reward=reward, done=True, info=info)
 
+        # Non-terminal step: 0.0 unless reward shaping (A2) is enabled, in which
+        # case award one-time sub-goal-progress credit. With the flag OFF this is
+        # byte-identical to the original ``reward=0.0`` intermediate step.
+        shaped = self._shaped_step_reward(cleaned, observation)
+        if shaped > 0.0:
+            return StepResult(
+                observation=observation,
+                reward=shaped,
+                done=False,
+                info={"shaped": shaped, "won": False, "success": False},
+            )
         return StepResult(observation=observation, reward=0.0, done=False)
+
+    # --- A2 reward shaping (gated; default OFF) -------------------------------
+
+    def _shaped_step_reward(self, action: str, observation: str) -> float:
+        """Return dense sub-goal-progress credit for a non-terminal step.
+
+        Returns ``0.0`` unless :data:`_SHAPING_FLAG` is set, preserving exact
+        flag-off parity. When on, awards (once per episode) a small positive
+        reward for two sub-goals derived from the action + the env's observation:
+
+        * **reach target object** — the policy arrives at the receptacle holding
+          the goal object (the action ``go to``/``examine`` a place AND the new
+          observation mentions the goal noun parsed at reset);
+        * **open correct receptacle** — the action successfully ``open``s a
+          receptacle (observation acknowledges the open).
+
+        This is INTERMEDIATE credit only; the terminal ``float(won)`` and
+        ``info["won"]`` are untouched, so a held-out terminal-success evaluation
+        still measures real progress (the Codex constraint). Pure + defensive:
+        never raises, never double-pays a sub-goal.
+        """
+        if not _flag_on(_SHAPING_FLAG):
+            return 0.0
+        act = (action or "").lower()
+        obs = (observation or "").lower()
+        total = 0.0
+
+        # Sub-goal 1: reached the target object (goal noun now visible after a
+        # navigation/inspection action). Requires a known goal noun.
+        if (
+            "reach_target" not in self._credited
+            and self._target_noun
+            and self._target_noun in obs
+            and (act.startswith("go to") or act.startswith("examine") or act.startswith("open"))
+        ):
+            self._credited.add("reach_target")
+            total += _SHAPE_REACH_TARGET
+
+        # Sub-goal 2: opened the correct receptacle (open action acknowledged).
+        if (
+            "open_receptacle" not in self._credited
+            and act.startswith("open")
+            and ("you open" in obs or "is open" in obs or "now open" in obs)
+        ):
+            self._credited.add("open_receptacle")
+            total += _SHAPE_OPEN_RECEPTACLE
+
+        return total
 
     # --- observation recording (with admissible-command surfacing) -----------
 
@@ -557,7 +694,16 @@ class ALFWorldEnv(AgenticEnv):
         if self._tw_env_factory is not None:
             # The factory receives the seed (so it can build a seeded env); we
             # also best-effort ``.seed()`` the result so determinism is uniform
-            # across both seams and the real path below.
+            # across both seams and the real path below. A1: when env-reuse is on,
+            # the factory is invoked ONCE and its product cached + re-seeded on
+            # later resets — the same construct-once contract as the real path,
+            # which is what the A1 regression test exercises without alfworld data.
+            if _flag_on(_ENV_REUSE_FLAG):
+                if self._tw_cache is None:
+                    self._tw_cache = self._construct_via_factory(seed)
+                else:
+                    self._maybe_seed(self._tw_cache, seed)
+                return self._tw_cache
             return self._maybe_seed(self._tw_env_factory(seed), seed)
 
         # Real path. Gate on availability (reads the pre-import env var).
@@ -566,7 +712,29 @@ class ALFWorldEnv(AgenticEnv):
             self._unavailable_reason = reason
             return None
 
+        # A1 (construct-once): when env-reuse is on, build the heavy AlfredTWEnv
+        # exactly once per instance and re-seed the cached batched gym env on later
+        # resets — :meth:`reset` then calls ``.reset()`` on it in place (the next
+        # game in the seeded pool), killing the ~82× reload tax. With the flag OFF
+        # this is byte-identical to constructing a fresh env every reset.
+        if _flag_on(_ENV_REUSE_FLAG):
+            if self._tw_cache is None:
+                self._tw_cache = self._construct_real_tw_env(seed)
+            else:
+                self._maybe_seed(self._tw_cache, seed)
+            return self._tw_cache
+
         return self._construct_real_tw_env(seed)
+
+    def _construct_via_factory(self, seed: int) -> Any:
+        """Build one env from the injected ``tw_env_factory`` (counts the build).
+
+        Shares the ``_tw_cache_built`` construction counter with the real path so
+        the A1 regression test can assert single-construction over N episodes via
+        the factory seam (no alfworld data required).
+        """
+        self._tw_cache_built += 1
+        return self._maybe_seed(self._tw_env_factory(seed), seed)
 
     @staticmethod
     def _maybe_seed(env: Any, seed: int) -> Any:
@@ -600,6 +768,10 @@ class ALFWorldEnv(AgenticEnv):
           ``TextworldBatchGymEnv`` returned by ``init_env``.  Seeding ``alfred``
           was a silent no-op, so we seed the gym env after building it.
         """
+        # Count real constructions so the A1 regression test can assert the heavy
+        # AlfredTWEnv is built exactly ONCE across N episodes when env-reuse is on
+        # (and once-per-episode when it is off — proving flag-off parity).
+        self._tw_cache_built += 1
         data_dir = self._data_dir or os.environ.get("ALFWORLD_DATA")
         if self._data_dir:
             # Explicit root → hard-assign BEFORE importing alfworld so the

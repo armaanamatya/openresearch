@@ -108,8 +108,21 @@ class StepResult:
     reward for this step — most agentic envs are terminal-reward-only, so it
     stays ``0.0`` until the episode ends, at which point ``done`` is ``True`` and
     ``reward`` (== :meth:`AgenticEnv.episode_reward`) carries the episode score.
+
+    **Dense intermediate reward (BES Phase 4A, opt-in).** An env MAY emit a
+    positive ``reward`` on a *non-terminal* step as sub-goal-progress shaping (see
+    ``ALFWorldEnv`` behind ``REPROLAB_ALFWORLD_SHAPING``). When it does, the
+    contract is: the **terminal** step's ``reward`` and ``info["won"]`` remain the
+    SEPARATE authoritative success signal — shaping is intermediate credit only
+    and must never replace or contaminate the terminal ``float(won)``. A held-out
+    evaluation therefore still measures real terminal success, not shaped reward.
+    By default (flag off) the intermediate ``reward`` is exactly ``0.0`` and this
+    field behaves identically to the terminal-only contract above.
+
     ``info`` carries env-specific diagnostics (``{"success": True, "f1": 0.83,
-    "n_search": 2}``) that the trainer folds into the cell's ``metrics.json``.
+    "n_search": 2}``) that the trainer folds into the cell's ``metrics.json``; a
+    shaped non-terminal step additionally carries ``{"shaped": <credit>}`` so
+    shaped credit is never mistaken for terminal success.
     """
 
     observation: str
