@@ -45,6 +45,7 @@ class PrimitiveOutcome(str, Enum):
 
 _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
+    "cell_execution_error",   # Phase 0C: all run cells errored (non-OOM) → repair
     "degenerate_training",
     "disk_exhausted",
     "incomplete_metrics",
@@ -80,6 +81,18 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     "quota_exceeded",
     # Existing classifier label for the same fatal funding state.
     "runpod_balance_too_low",
+}
+
+# Phase 0C: failure classes whose run_experiment result carries a POPULATED
+# metrics dict (aggregate_cell_metrics always returns non-empty) yet represents an
+# all-cells-failed, fully-repairable code bug. These must engage the repair floor,
+# NOT be typed partial_evidence by the metrics-first short-circuit in
+# _classify_run_experiment_outcome. Keep this NARROW: only classes that are set
+# exclusively when ZERO cells succeeded, so a genuine some-ok/some-bug partial is
+# never reclassified as fully repairable. ``cell_execution_error`` is set only in
+# the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
+_METRICS_BEARING_REPAIRABLE_FAILURES = {
+    "cell_execution_error",
 }
 
 # PR-ζ: transient-error retry policy for _execute_in_sandbox.
@@ -221,11 +234,21 @@ def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
     if result.get("success") is True:
         return PrimitiveOutcome.ok
 
+    failure_class = _failure_class_key(result.get("failure_class"))
+
+    # Phase 0C: a few failure classes carry a populated metrics dict even though
+    # every run cell failed (aggregate_cell_metrics always returns non-empty, so
+    # the all-cells-errored ``cell_execution_error`` branch ships metrics). The
+    # metrics-first short-circuit below would mis-type those as partial_evidence
+    # and skip the repair-iteration floor (which fires only on ``repairable``).
+    # Consult the failure_class FIRST for these so a code-bug cell engages repair.
+    if failure_class in _METRICS_BEARING_REPAIRABLE_FAILURES:
+        return PrimitiveOutcome.repairable
+
     metrics = result.get("metrics")
     if isinstance(metrics, dict) and bool(metrics):
         return PrimitiveOutcome.partial_evidence
 
-    failure_class = _failure_class_key(result.get("failure_class"))
     if not failure_class:
         return PrimitiveOutcome.repairable
     if failure_class in _RUN_EXPERIMENT_REPAIRABLE_FAILURES:
@@ -4686,6 +4709,16 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
             ),
         )
+        # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
+        # (report → leaf_scorer.finalize_rescore) can recompute the score under a
+        # late-declared scope WITHOUT re-grading. Best-effort — finalize falls back
+        # to today's recorded score if this file is absent.
+        try:
+            (ctx.project_dir / "rubric_tree.json").write_text(
+                __import__("json").dumps(rubric, default=str), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 — persistence is best-effort, never fatal
+            pass
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable
         # on every batch. That is a real verification failure — never a "scored

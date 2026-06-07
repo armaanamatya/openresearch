@@ -54,6 +54,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
+    "cell_execution_error",      # Phase 0C: all run cells errored (non-OOM); zero ok cells
     "unknown",                   # falls-through
 )
 
@@ -149,6 +150,12 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "minutes). A smoke must never be the scored reproduction. Run the FULL training "
             "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
             "completion and record the measured eval metric for every model before finalizing",
+        "cell_execution_error":
+            "every training cell failed with a non-OOM error (a code bug in the per-cell "
+            "trainer — TypeError / AttributeError / bad arg / import error) and ZERO cells "
+            "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
+            "it names, and re-run the matrix. This is NOT a scope reduction and NOT an OOM "
+            "— do not shrink the grid or de-scope a model/env; fix the code",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }

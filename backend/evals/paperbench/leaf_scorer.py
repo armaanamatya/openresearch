@@ -361,6 +361,7 @@ def _detect_data_unavailable_leaves(
     metrics_shape: list[dict] | None = None,
     operator_skip_models: list[str] | None = None,
     operator_skip_environments: list[str] | None = None,
+    extra_scope: dict[str, Any] | None = None,
 ) -> set[str]:
     """Return the set of leaf ids that depend on a dataset declared unavailable.
 
@@ -444,6 +445,20 @@ def _detect_data_unavailable_leaves(
     _scope_obj = metrics_data.get("scope")
     if not isinstance(_scope_obj, dict):   # malformed/truthy-non-dict scope → ignore safely
         _scope_obj = {}
+    # Phase 0B: union an explicit FINAL-scope override (the verified scope assembled
+    # at finalize, carrying env/dataset skips + scope.gaps declared AFTER the last
+    # in-loop verify) with the on-disk scope, so finalize_rescore honours late
+    # declarations without depending on final_report.json write ordering. The env
+    # axis stays gated below — a non-operator-sanctioned override skip still stays
+    # scored. Additive: default None ⇒ unchanged behaviour.
+    if isinstance(extra_scope, dict) and extra_scope:
+        _merged_scope = dict(_scope_obj)
+        for _k in ("environments_skipped", "exclusions"):
+            _a = _scope_obj.get(_k) if isinstance(_scope_obj.get(_k), list) else []
+            _b = extra_scope.get(_k) if isinstance(extra_scope.get(_k), list) else []
+            if _a or _b:
+                _merged_scope[_k] = [*_a, *_b]
+        _scope_obj = _merged_scope
     _structured = _scope_obj.get("exclusions")
     has_structured_exclusions = isinstance(_structured, list) and len(_structured) > 0
     # Verified items collected from scope.exclusions — fed DIRECTLY into the leaf
@@ -594,6 +609,8 @@ def _detect_data_unavailable_leaves(
             _collect_gaps(report.get("scope") or {})
         except Exception:
             pass
+    if isinstance(extra_scope, dict):
+        _collect_gaps(extra_scope)
 
     if (not failed_datasets and not gap_texts and not gap_items
             and not failed_models and not failed_envs):
@@ -909,6 +926,91 @@ def _apply_invariant_gate(
     if has_soft:
         return min(overall_score, INVARIANT_SOFT_CAP), True
     return overall_score, False
+
+
+def finalize_rescore(
+    run_dir: Path,
+    *,
+    operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
+    extra_scope: dict[str, Any] | None = None,
+    rubric_tree: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Phase 0B — deterministic finalize-time re-roll-up of ALREADY-GRADED leaves.
+
+    Recovers rubric points the harness earned but failed to count when the agent
+    declared an env/dataset out of scope AFTER its last in-loop verify (so nothing
+    re-scored). Reuses the per-leaf scores persisted in ``rubric_evaluation.json``
+    — it does NOT re-grade (no LLM call, no grader variance) — and re-applies
+    ``_detect_data_unavailable_leaves`` + ``roll_up`` under the FINAL scope, routed
+    through the environment-axis anti-gaming gate (a self-declared, non-operator-
+    sanctioned env skip stays SCORED). Fully fail-soft: returns ``None`` (caller
+    keeps today's recorded score) whenever the persisted artifacts are missing or
+    unusable — NEVER re-grades, NEVER maxes across exclusion policies.
+
+    Returns ``{overall_score, prior_overall, n_excluded, excluded_leaf_ids,
+    policy}`` on success.
+    """
+    try:
+        eval_path = run_dir / "rubric_evaluation.json"
+        if not eval_path.exists():
+            return None
+        evald = json.loads(eval_path.read_text(encoding="utf-8"))
+        records = evald.get("leaf_scores")
+        if not isinstance(records, list) or not records:
+            return None
+        leaf_scores: dict[str, float] = {}
+        for r in records:
+            if isinstance(r, dict) and r.get("id") is not None and r.get("score") is not None:
+                try:
+                    leaf_scores[str(r["id"])] = float(r.get("score", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    leaf_scores[str(r["id"])] = 0.0
+        if not leaf_scores:
+            return None
+        tree = rubric_tree if (isinstance(rubric_tree, dict) and rubric_tree) else None
+        if tree is None:
+            for _name in ("rubric_tree.json", "generated_rubric.json"):
+                _p = run_dir / _name
+                if _p.exists():
+                    try:
+                        _loaded = json.loads(_p.read_text(encoding="utf-8"))
+                        if isinstance(_loaded, dict) and _loaded:
+                            tree = _loaded
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+        if tree is None:
+            return None
+        leaves = flatten_leaves(tree)
+        if not leaves:
+            return None
+        unavailable = _detect_data_unavailable_leaves(
+            leaves,
+            run_dir,
+            operator_skip_models=operator_skip_models,
+            operator_skip_environments=operator_skip_environments,
+            extra_scope=extra_scope,
+        )
+        skip_set = frozenset(unavailable)
+        new_overall = roll_up(tree, leaf_scores, skip_set)
+        if new_overall is None:
+            return None
+        prior = evald.get("overall_score")
+        try:
+            prior_f = float(prior) if prior is not None else None
+        except (TypeError, ValueError):
+            prior_f = None
+        return {
+            "overall_score": max(0.0, min(1.0, float(new_overall))),
+            "prior_overall": prior_f,
+            "n_excluded": len(skip_set),
+            "excluded_leaf_ids": sorted(skip_set),
+            "policy": "finalize_rescore",
+        }
+    except Exception:  # noqa: BLE001 — finalize re-score MUST never break the report
+        logger.exception("finalize_rescore: failed (non-fatal); keeping recorded score")
+        return None
 
 
 def score_reproduction(

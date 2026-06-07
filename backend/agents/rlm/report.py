@@ -854,6 +854,47 @@ def build_final_report(
             _r["best_of_run"] = True
             kwargs["rubric"] = _r
 
+    # Phase 0B — deterministic finalize re-roll-up (2026-06-07). When the agent
+    # declared an env/dataset out of scope AFTER its last in-loop verify, nothing
+    # re-scored to honour it (write_final_report_rlm only MERGES rubric_evaluation
+    # .json; _best_recorded_rubric_score is a high-water mark). Re-roll-up the
+    # ALREADY-GRADED leaves under the FINAL scope, routed through the env-axis
+    # anti-gaming gate (a non-operator-sanctioned env skip STAYS scored). No
+    # re-grade, no max() across exclusion policies — the re-roll-up is authoritative
+    # and supersedes the best-of-run high-water (which could preserve a gamed score).
+    try:
+        import os as _os
+        _rescore_on = _os.environ.get("REPROLAB_FINALIZE_RESCORE", "1").strip().lower() \
+            not in {"0", "false", "no", "off"}
+    except Exception:  # noqa: BLE001
+        _rescore_on = True
+    if _rescore_on:
+        try:
+            from backend.evals.paperbench.leaf_scorer import finalize_rescore as _finalize_rescore
+            _op_skip_env = list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
+            )
+            _rescore = _finalize_rescore(
+                ctx.project_dir,
+                operator_skip_models=_op_skip,
+                operator_skip_environments=_op_skip_env,
+                extra_scope=verified_scope,
+            )
+            if _rescore is not None:
+                _r2 = dict(kwargs.get("rubric") or {})
+                _r2["overall_score"] = _rescore["overall_score"]
+                _r2["rescore_policy"] = _rescore["policy"]
+                _r2["rescore_excluded"] = _rescore["n_excluded"]
+                _r2.pop("best_of_run", None)  # superseded by the authoritative re-roll-up
+                kwargs["rubric"] = _r2
+                logger.info(
+                    "report: finalize re-roll-up → %.4f (prior=%s, excluded %d leaves, policy=%s)",
+                    _rescore["overall_score"], _rescore.get("prior_overall"),
+                    _rescore["n_excluded"], _rescore["policy"],
+                )
+        except Exception:  # noqa: BLE001 — finalize re-score is best-effort, never fatal
+            logger.exception("report: finalize re-roll-up failed (non-fatal)")
+
     return RLMFinalReport(**kwargs)
 
 
