@@ -110,6 +110,25 @@ _CODEX_AGENT_CORRECTABLE_FAILURES = {
     "scope_shape_violation",
 }
 
+
+def _validate_dockerfile_shape(text: str) -> bool:
+    """Deterministic Dockerfile shape guard (BUG-NEW-042).
+
+    Returns True iff the first non-blank, non-comment line is a ``FROM`` or
+    ``ARG`` instruction (a leading ``# syntax=`` directive is allowed and
+    skipped). Rejects the common sub-agent failure mode of dumping prose /
+    markdown in place of a Dockerfile, which would otherwise be handed to
+    ``docker build`` and fail with an opaque parser error after wasting a build.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            # blank lines and comments (incl. the `# syntax=` directive) skip
+            continue
+        head = line.split(None, 1)[0].upper()
+        return head in ("FROM", "ARG")
+    return False  # empty / all-comment Dockerfile is not buildable
+
 # PR-ζ: transient-error retry policy for _execute_in_sandbox.
 # Three retries with exponential backoff: 5s, 10s, 20s.
 # Total retry budget is capped so it cannot blow through the primitive
@@ -1054,6 +1073,23 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "ok": False,
             "image_tag": "",
             "error": "env_spec.dockerfile is empty",
+            "attempts": 0,
+        }, PrimitiveOutcome.repairable)
+
+    # Deterministic shape guard (BUG-NEW-042): fail fast — before a wasted
+    # `docker build` — when the sub-agent dumped prose instead of a Dockerfile.
+    # failure_class=dockerfile_invalid is repairable, so the root re-derives.
+    if not _validate_dockerfile_shape(dockerfile):
+        return _with_outcome({
+            "ok": False,
+            "image_tag": "",
+            "error": (
+                "env_spec.dockerfile does not look like a Dockerfile: its first "
+                "non-blank/non-comment line is not FROM/ARG (looks like prose). "
+                "Emit a valid Dockerfile beginning with FROM."
+            ),
+            "error_code": "dockerfile_shape_guard",
+            "failure_class": "dockerfile_invalid",
             "attempts": 0,
         }, PrimitiveOutcome.repairable)
 
