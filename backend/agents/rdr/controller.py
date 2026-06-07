@@ -431,6 +431,16 @@ async def _dispatch_competing_candidates(
             _shutil.rmtree(cand_run_dir, ignore_errors=True)
         cand_code_dir = cand_run_dir / "code"
         cand_code_dir.mkdir(parents=True, exist_ok=True)
+        # Stage paper_full.md so the agent prompt's relative ``../paper_full.md``
+        # read/grep fallback resolves from the candidate's deeper code dir too — the
+        # inline cited sections are already in the prompt, but this restores the
+        # full-paper fallback for competing candidates (Codex should-fix).
+        _paper = code_dir.parent / "paper_full.md"
+        if _paper.exists():
+            try:
+                _shutil.copy2(_paper, cand_run_dir / "paper_full.md")
+            except Exception:  # noqa: BLE001 — paper staging is best-effort
+                pass
         cand_ctx = _dc.replace(agctx, candidate_code_dir=cand_code_dir)
         try:
             art_i = await asyncio.wait_for(
