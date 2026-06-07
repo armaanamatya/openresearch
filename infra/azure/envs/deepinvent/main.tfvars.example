@@ -72,20 +72,72 @@ system_node_max_count = 3
 # Find it: az ad group show --group "<group-name>" --query id -o tsv
 operator_entra_group_object_id = "<OPERATOR_ENTRA_GROUP_OBJECT_ID>"
 
-# ─── GPU node pool ────────────────────────────────────────────────────────────
+# ─── GPU node pools ───────────────────────────────────────────────────────────
 #
-# VM SKU: Standard_NC24ads_A100_v4 = 1 × A100-80GB = 24 vCPUs per node.
+# gpu_skus controls which AKS GPU node pools are provisioned.
+# Each entry creates ONE scale-to-zero pool labeled reprolab/sku=<short_name>.
+# Jobs target a pool with nodeSelector { reprolab/sku: <short_name> }.
 #
-# !! QUOTA REQUIREMENT !!
-# Required A100 quota = 24 × gpu_max_nodes vCPUs in the NCADSA100v4 family.
-# A fresh subscription has 0 quota. File a support request BEFORE applying:
+# AKS pool name formula: "<prefix><pool_suffix>" — must be ≤12 lowercase-alnum.
+#   With prefix="repro":  repro + a10080 = reproa10080 (11 chars) ✓
+#
+# !! QUOTA REQUIREMENT — one request per entry !!
+# Each entry requires vCPU quota in the corresponding Azure VM family.
+# File requests BEFORE applying; approval can take hours to days.
+#
+# Catalog:
+#   short_name        vm_size                       gpus  pool_suffix  quota/node
+#   azure_a10_24      Standard_NV36ads_A10_v5       1     a10          36 vCPUs  (StandardNVADSA10v5Family)
+#   azure_a100_80     Standard_NC24ads_A100_v4      1     a10080       24 vCPUs  (StandardNCADSA100v4Family)
+#   azure_a100_80x2   Standard_NC48ads_A100_v4      2     a100x2       48 vCPUs  (StandardNCADSA100v4Family)
+#   azure_a100_80x4   Standard_NC96ads_A100_v4      4     a100x4       96 vCPUs  (StandardNCADSA100v4Family)
+#
+# Example quota request for the default single A100-80 pool at max_nodes=1:
 #   az quota create --resource-name standardNCADSA100v4Family \
 #     --scope /subscriptions/<sub>/providers/Microsoft.Compute/locations/<region> \
-#     --limit-object value=<24*gpu_max_nodes>
-# Quota approval can take hours to days.
+#     --limit-object value=24
 #
-# Start with gpu_max_nodes = 1 (24 vCPUs). Scale up after validation.
-gpu_max_nodes = 1
+# START HERE: single A100-80 pool, max_nodes=1 (24 vCPUs) — ONE quota ask.
+# Increase max_nodes or add more entries after quota is approved.
+
+gpu_skus = [
+  {
+    short_name  = "azure_a100_80"
+    vm_size     = "Standard_NC24ads_A100_v4"
+    gpu_count   = 1
+    pool_suffix = "a10080"
+    max_nodes   = 1   # requires 24 StandardNCADSA100v4Family vCPUs
+  },
+
+  # ── Escalation ladder (uncomment after quota is granted) ───────────────────
+  #
+  # NC48 — 2 × A100-80GB per node; requires 48 StandardNCADSA100v4Family vCPUs per node
+  # {
+  #   short_name  = "azure_a100_80x2"
+  #   vm_size     = "Standard_NC48ads_A100_v4"
+  #   gpu_count   = 2
+  #   pool_suffix = "a100x2"
+  #   max_nodes   = 2   # requires 96 vCPUs quota
+  # },
+  #
+  # NC96 — 4 × A100-80GB per node; requires 96 StandardNCADSA100v4Family vCPUs per node
+  # {
+  #   short_name  = "azure_a100_80x4"
+  #   vm_size     = "Standard_NC96ads_A100_v4"
+  #   gpu_count   = 4
+  #   pool_suffix = "a100x4"
+  #   max_nodes   = 1   # requires 96 vCPUs quota
+  # },
+  #
+  # A10 (cost-optimised) — 1 × A10-24GB per node; separate StandardNVADSA10v5Family quota
+  # {
+  #   short_name  = "azure_a10_24"
+  #   vm_size     = "Standard_NV36ads_A10_v5"
+  #   gpu_count   = 1
+  #   pool_suffix = "a10"
+  #   max_nodes   = 4   # requires 144 StandardNVADSA10v5Family vCPUs quota
+  # },
+]
 
 # ─── Container registry ──────────────────────────────────────────────────────
 

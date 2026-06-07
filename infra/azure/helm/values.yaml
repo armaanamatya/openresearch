@@ -51,19 +51,40 @@ storage:
 
 # ---------------------------------------------------------------------------
 # GPU node pool — sourced from the `gpu_nodepool` Terraform module.
+#
+# With the parameterized gpu_skus design, every GPU pool shares:
+#   taintKey   = nvidia.com/gpu   (NoSchedule, tolerated by the device plugin)
+#   skuLabelKey = reprolab/sku    (the primary Job nodeSelector key)
+#
+# Job pods target a specific pool via:
+#   nodeSelector:
+#     reprolab/sku: <defaultSku>    (or the plan's short_name at runtime)
+#
+# [TF: gpu_pools output]  Use gpu_pools[<short_name>].sku_label for each pool.
 # ---------------------------------------------------------------------------
 gpu:
-  # The Kubernetes label KEY applied to GPU nodes by the gpu_nodepool module.
-  # [TF: gpu_node_pool_label_key]  constant: "reprolab/node-type"
-  nodePoolLabelKey: reprolab/node-type
-
-  # The value for the GPU node pool label.
-  # [TF: gpu_node_pool_label_value]  constant: "gpu"
-  nodePoolLabelValue: gpu
-
-  # The taint key applied to GPU nodes (value "present", effect NoSchedule).
+  # Taint key applied to ALL GPU-pool nodes (value "present", effect NoSchedule).
+  # The NVIDIA device-plugin DaemonSet tolerates this with operator: Exists,
+  # so it runs on every GPU pool regardless of SKU.
   # [TF: gpu_taint_key]  constant: "nvidia.com/gpu"
   taintKey: nvidia.com/gpu
+
+  # Label key used to identify the target GPU pool in Job nodeSelectors.
+  # Every GPU node pool is labeled reprolab/sku=<catalog short_name>.
+  # This is a constant written by the gpu_nodepool Terraform module.
+  skuLabelKey: reprolab/sku
+
+  # Default GPU SKU for smoke jobs and as the orchestrator fallback.
+  # Must match a short_name in var.gpu_skus (i.e. a provisioned pool).
+  # Override in envs/<env>/helm-values.yaml when additional pools are present.
+  # [TF: gpu_pools — first entry's sku_label]
+  defaultSku: azure_a100_80
+
+  # ── Legacy values — kept for any templates that still reference them ────────
+  # These now refer to 'reprolab/sku' (the new primary key).  Remove once all
+  # callers have migrated to skuLabelKey / defaultSku.
+  nodePoolLabelKey: reprolab/sku
+  nodePoolLabelValue: azure_a100_80   # matches defaultSku above
 
 # ---------------------------------------------------------------------------
 # RBAC — the orchestrator Entra group that is bound to the Job-management Role.

@@ -41,14 +41,20 @@ storage:
   pvcSize: "200Gi"
   reclaimPolicy: Retain
 
-# ── GPU node pool ─────────────────────────────────────────────────────────────
-# [TF: gpu_node_pool_label_key / gpu_node_pool_label_value / gpu_taint_key]
-# These are module constants surfaced as TF outputs; values are fixed by the
-# gpu_nodepool module and should not need changing unless the module is edited.
+# ── GPU node pools ────────────────────────────────────────────────────────────
+# With the parameterized gpu_skus design, every GPU pool shares the same taint
+# key (nvidia.com/gpu) and the device-plugin DaemonSet tolerates it cluster-wide.
+# Job nodeSelector uses the reprolab/sku label to target a specific pool.
+#
+# [TF: gpu_pools output]  Use `terraform output -json gpu_pools` to list pools.
+# The defaultSku must match a short_name provisioned in var.gpu_skus (main.tfvars).
 gpu:
-  nodePoolLabelKey: reprolab/node-type    # constant from gpu_nodepool/main.tf
-  nodePoolLabelValue: gpu                 # constant from gpu_nodepool/main.tf
-  taintKey: nvidia.com/gpu                # constant from gpu_nodepool/main.tf
+  taintKey: nvidia.com/gpu              # constant — same on all GPU pools
+  skuLabelKey: reprolab/sku             # constant — primary Job nodeSelector key
+  defaultSku: azure_a100_80            # must match a gpu_skus short_name in main.tfvars
+  # Legacy aliases — kept for any templates still using nodePoolLabelKey/Value.
+  nodePoolLabelKey: reprolab/sku        # = skuLabelKey
+  nodePoolLabelValue: azure_a100_80     # = defaultSku
 
 # ── RBAC ──────────────────────────────────────────────────────────────────────
 rbac:
@@ -64,10 +70,11 @@ image:
   aksCellBase: "<ACR_LOGIN_SERVER>/aks-cell-base:0.1.0"
 
 # ── ResourceQuota ─────────────────────────────────────────────────────────────
-# [tfvar: gpu_max_nodes]  Not a TF output — copy from main.tfvars.
-# Set maxGpu = maxGpuLimits = gpu_max_nodes for a 1:1 GPU-per-Job model.
+# Set maxGpu = sum of (gpu_count × max_nodes) across all gpu_skus entries.
+# For the default single A100-80 pool with max_nodes=1: maxGpu = 1.
+# Example: a10080 (1gpu × 1node=1) + a100x2 (2gpu × 2nodes=4) → maxGpu=5.
 resourceQuota:
-  maxGpu: 1           # set to gpu_max_nodes from main.tfvars
+  maxGpu: 1           # set to sum(gpu_count * max_nodes) across gpu_skus entries
   maxGpuLimits: 1     # same as maxGpu
   maxJobs: 64
 

@@ -23,16 +23,27 @@ spec:
         helm.sh/chart-version: {{ .Chart.Version | quote }}
     spec:
       # ---------------------------------------------------------------------------
-      # Run ONLY on GPU nodes in our dedicated pool.  The node selector targets the
-      # label applied by the `gpu_nodepool` Terraform module.
-      # [TF: gpu_node_pool_label_key / gpu_node_pool_label_value]  (root outputs, module constants)
+      # Run on EVERY GPU node across ALL SKU pools.
+      #
+      # With the parameterized gpu_skus design multiple pools exist
+      # (azure_a10_24, azure_a100_80, azure_a100_80x2 …), each labeled:
+      #   reprolab/node-type = gpu       ← shared by ALL pools
+      #   reprolab/sku       = <sku>     ← pool-specific (for Job nodeSelector)
+      #
+      # The nodeSelector below targets the shared label so the DaemonSet lands
+      # on every GPU pool node regardless of SKU.  The per-SKU label
+      # (reprolab/sku) is NOT used here — that key is for Job scheduling only.
+      #
+      # [TF: every gpu_nodepool module instance writes reprolab/node-type = "gpu"]
       # ---------------------------------------------------------------------------
       nodeSelector:
-        {{ .Values.gpu.nodePoolLabelKey }}: {{ .Values.gpu.nodePoolLabelValue | quote }}
+        reprolab/node-type: "gpu"
 
       tolerations:
-        # Tolerate the GPU taint applied to every GPU-pool node.
-        # This is the gate that PREVENTS the device plugin from landing on CPU nodes.
+        # Tolerate the shared GPU taint that is applied to EVERY GPU pool node.
+        # operator: Exists matches any taint value — this single toleration covers
+        # all SKU pools without needing to enumerate them.
+        # [TF: gpu_taint_key]  key = "nvidia.com/gpu", effect = NoSchedule
         - key: {{ .Values.gpu.taintKey | quote }}
           operator: Exists
           effect: NoSchedule

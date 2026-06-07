@@ -90,24 +90,60 @@ output "aks_subnet_id" {
   value       = module.network.aks_subnet_id
 }
 
-# ─── GPU node pool ───────────────────────────────────────────────────────────
+# ─── GPU node pools ───────────────────────────────────────────────────────────
+#
+# gpu_pools is the primary output for the orchestrator's k8s-runner.
+# Shape:
+#   {
+#     "azure_a100_80"   = { name = "reproa10080", sku_label = "azure_a100_80" }
+#     "azure_a100_80x2" = { name = "reproa100x2", sku_label = "azure_a100_80x2" }
+#     ...
+#   }
+#
+# Orchestrator usage:
+#   pool = gpu_pools[plan.short_name]
+#   nodeSelector = { "reprolab/sku": pool.sku_label }
+#
+# Helm usage (smoke jobs):
+#   terraform output -json gpu_pools | jq '."azure_a100_80".name'
+
+output "gpu_pools" {
+  description = <<-EOT
+    Map of provisioned GPU pools keyed by catalog short_name.
+    Each entry: { name = "<aks pool name>", sku_label = "<reprolab/sku value>" }.
+    The orchestrator's k8s_job_cell_runner uses sku_label as the Job nodeSelector
+    value for the 'reprolab/sku' label key.
+  EOT
+  value = {
+    for short_name, mod in module.gpu_nodepool :
+    short_name => {
+      name      = mod.pool_name
+      sku_label = mod.sku_label
+    }
+  }
+}
+
+# ── Legacy single-pool outputs (deprecated — use gpu_pools map above) ─────────
+# Kept for CI scripts / runbooks that reference the old output names.
+# These resolve to the FIRST entry in gpu_skus (by short_name sort order).
+# Will be removed once all callers are migrated to gpu_pools.
 
 output "gpu_nodepool_name" {
-  description = "Name of the GPU node pool. Set as REPROLAB_AZURE_NODE_POOL_NAME."
-  value       = module.gpu_nodepool.nodepool_name
+  description = "DEPRECATED. Name of the first GPU node pool. Use gpu_pools[<short_name>].name instead."
+  value       = values(module.gpu_nodepool)[0].pool_name
 }
 
 output "gpu_node_pool_label_key" {
-  description = "Kubernetes label key applied to GPU pool nodes. Use as nodeSelector key in Helm L2 (gpu.nodePoolLabelKey)."
-  value       = module.gpu_nodepool.node_label_key
+  description = "DEPRECATED. Node selector label key for GPU pools. Always 'reprolab/sku'."
+  value       = "reprolab/sku"
 }
 
 output "gpu_node_pool_label_value" {
-  description = "Kubernetes label value applied to GPU pool nodes (gpu.nodePoolLabelValue in Helm L2)."
-  value       = module.gpu_nodepool.node_label_value
+  description = "DEPRECATED. SKU label of the first GPU pool. Use gpu_pools[<short_name>].sku_label instead."
+  value       = values(module.gpu_nodepool)[0].sku_label
 }
 
 output "gpu_taint_key" {
-  description = "Taint key on GPU nodes (value 'present', effect NoSchedule). Use in Helm L2 tolerations (gpu.taintKey)."
-  value       = module.gpu_nodepool.taint_key
+  description = "Taint key on all GPU nodes (value 'present', effect NoSchedule). Helm device-plugin tolerates with operator: Exists."
+  value       = "nvidia.com/gpu"
 }

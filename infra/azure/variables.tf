@@ -84,10 +84,73 @@ variable "operator_entra_group_object_id" {
   type        = string
 }
 
-# ─── GPU node pool ───────────────────────────────────────────────────────────
+# ─── GPU node pools ──────────────────────────────────────────────────────────
+#
+# gpu_skus is the primary control surface.  Each entry provisions one
+# scale-to-zero AKS node pool, labeled reprolab/sku=<short_name>, so the
+# orchestrator can target it by catalog short_name.
+#
+# Catalog short_names and the AKS pool-name suffix derived from them:
+#   short_name        vm_size                        gpus  pool_suffix
+#   azure_a10_24      Standard_NV36ads_A10_v5        1     a10
+#   azure_a100_80     Standard_NC24ads_A100_v4       1     a10080
+#   azure_a100_80x2   Standard_NC48ads_A100_v4       2     a100x2
+#   azure_a100_80x4   Standard_NC96ads_A100_v4       4     a100x4
+#
+# Pool name formula: "<prefix><pool_suffix>" — must be ≤12 lowercase-alnum chars.
+# With the default prefix "repro" (5 chars) the suffixes above produce:
+#   repro + a10     = repoa10     (8 chars) ✓
+#   repro + a10080  = reproa10080 (11 chars) ✓
+#   repro + a100x2  = reproa100x2 (11 chars) ✓
+#   repro + a100x4  = reproa100x4 (11 chars) ✓
+#
+# QUOTA: Each entry requires its own vCPU quota in the corresponding VM family.
+#   azure_a10_24    → StandardNVADSA10v5Family   36 × max_nodes vCPUs
+#   azure_a100_80   → StandardNCADSA100v4Family  24 × max_nodes vCPUs
+#   azure_a100_80x2 → StandardNCADSA100v4Family  48 × max_nodes vCPUs
+#   azure_a100_80x4 → StandardNCADSA100v4Family  96 × max_nodes vCPUs
+# The default (single A100-80 pool, max_nodes=4) requires 96 A100 vCPUs.
+# Start with max_nodes=1 (24 vCPUs) until quota is granted.
+
+variable "gpu_skus" {
+  description = <<-EOT
+    List of GPU SKU objects — one AKS scale-to-zero node pool is created per entry.
+    Fields:
+      short_name  — catalog identifier; written to the 'reprolab/sku' node label
+                    and used by Job nodeSelector.  Must be unique within the list.
+      vm_size     — Azure VM SKU for the pool nodes.
+      gpu_count   — GPUs per node; written to the 'nvidia.com/gpu' node label.
+      pool_suffix — short suffix (≤7 chars, lowercase-alnum) appended to <prefix>
+                    to form the AKS pool name (≤12 chars total).
+      max_nodes   — maximum autoscaler node count for this pool. min is always 0.
+    Default: a single A100-80 pool — ONE quota ask.  Add NC48/NC96/A10 entries
+    (each needing separate quota) to enable the escalation ladder.
+  EOT
+  type = list(object({
+    short_name  = string
+    vm_size     = string
+    gpu_count   = number
+    pool_suffix = string
+    max_nodes   = number
+  }))
+  default = [
+    {
+      short_name  = "azure_a100_80"
+      vm_size     = "Standard_NC24ads_A100_v4"
+      gpu_count   = 1
+      pool_suffix = "a10080"
+      max_nodes   = 4
+    }
+  ]
+}
+
+# ─── DEPRECATED — kept for back-compatibility ────────────────────────────────
+# gpu_max_nodes was the pre-parameterization "max nodes for the single A100-80
+# pool" knob.  It is now IGNORED — set max_nodes inside the gpu_skus entry
+# instead.  This variable will be removed in a future release.
 
 variable "gpu_max_nodes" {
-  description = "Maximum GPU node count (each Standard_NC24ads_A100_v4 = 1 × A100-80GB = 24 vCPUs). Required A100 quota = 24 × gpu_max_nodes NCADSA100v4-family vCPUs. Start with 1; scale after quota grant."
+  description = "DEPRECATED. Set max_nodes inside the gpu_skus list entry instead. This variable is no longer wired to any module and exists only to prevent plan-time errors for tfvars files that still contain it."
   type        = number
   default     = 4
 }

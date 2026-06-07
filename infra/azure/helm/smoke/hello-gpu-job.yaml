@@ -34,8 +34,7 @@
 #   IMAGE            = terraform output -raw acr_login_server  (+ :0.1.0 tag)
 #   NAMESPACE        = the value of .Values.namespace
 #   SERVICE_ACCOUNT  = the value of .Values.serviceAccountName
-#   GPU_LABEL_KEY    = .Values.gpu.nodePoolLabelKey
-#   GPU_LABEL_VALUE  = .Values.gpu.nodePoolLabelValue
+#   GPU_SKU          = .Values.gpu.defaultSku  (e.g. "azure_a100_80")
 #   GPU_TAINT_KEY    = .Values.gpu.taintKey
 # ---------------------------------------------------------------------------
 apiVersion: batch/v1
@@ -65,13 +64,16 @@ spec:
       serviceAccountName: reprolab-orchestrator
       restartPolicy: Never
 
-      # Schedule ONLY on the GPU node pool.
-      # Replace with .Values.gpu.nodePoolLabelKey / .Values.gpu.nodePoolLabelValue
+      # Schedule on the specific GPU SKU pool.
+      # reprolab/sku targets exactly one pool (one VM size).
+      # Replace <GPU_SKU> with .Values.gpu.defaultSku (e.g. "azure_a100_80").
+      # [TF: gpu_pools — use gpu_pools[<sku>].sku_label]
       nodeSelector:
-        reprolab/node-type: gpu   # matches gpu_nodepool module constant (TF: gpu_node_pool_label_key/value)
+        reprolab/sku: azure_a100_80   # replace with .Values.gpu.defaultSku
 
       tolerations:
-        # Tolerate the GPU taint (NoSchedule) — required to land on the GPU pool.
+        # Tolerate the shared GPU NoSchedule taint (nvidia.com/gpu=present:NoSchedule).
+        # operator: Exists matches any taint value — no per-pool taint enumeration needed.
         # Replace taintKey with .Values.gpu.taintKey
         - key: nvidia.com/gpu
           operator: Exists

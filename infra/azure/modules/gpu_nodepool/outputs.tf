@@ -1,24 +1,36 @@
+output "pool_name" {
+  description = "Name of this GPU node pool (AKS resource name, ≤12 chars)."
+  value       = azurerm_kubernetes_cluster_node_pool.gpu.name
+}
+
+output "sku_label" {
+  description = "Value of the 'reprolab/sku' node label on this pool (catalog short_name, e.g. 'azure_a100_80'). Use as the nodeSelector value in Job pod templates."
+  value       = var.sku_label
+}
+
 output "nodepool_id" {
-  description = "Full Azure resource ID of the GPU node pool."
+  description = "Full Azure resource ID of this GPU node pool."
   value       = azurerm_kubernetes_cluster_node_pool.gpu.id
 }
 
+# ── Legacy outputs (kept for back-compat with any references in CI scripts) ──
+
 output "nodepool_name" {
-  description = "Name of the GPU node pool. Set as REPROLAB_AZURE_NODE_POOL_NAME in the orchestrator config."
+  description = "Alias for pool_name. Deprecated — prefer pool_name."
   value       = azurerm_kubernetes_cluster_node_pool.gpu.name
 }
 
 output "node_label_key" {
-  description = "Kubernetes label key applied to every GPU pool node. Use as nodeSelector key in Helm L2 and Job pod templates."
-  value       = "reprolab/node-type"
+  description = "Primary node selector label key for this pool. Always 'reprolab/sku'."
+  value       = "reprolab/sku"
 }
 
 output "node_label_value" {
-  description = "Kubernetes label value applied to every GPU pool node (pairs with node_label_key)."
-  value       = "gpu"
+  description = "Primary node selector label value for this pool (== sku_label)."
+  value       = var.sku_label
 }
 
 output "taint_key" {
-  description = "Taint key on GPU nodes. Value is 'present', effect is NoSchedule. Helm L2 adds the matching toleration."
+  description = "Taint key on GPU nodes. Value is 'present', effect is NoSchedule. Helm device-plugin DaemonSet tolerates with operator: Exists."
   value       = "nvidia.com/gpu"
 }

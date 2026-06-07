@@ -36,15 +36,39 @@ module "aks" {
   tags                 = var.tags
 }
 
-# ─── GPU node pool ───────────────────────────────────────────────────────────
+# ─── GPU node pools — one per gpu_skus entry ─────────────────────────────────
+#
+# for_each key = short_name (e.g. "azure_a100_80").
+# AKS pool name = "<prefix><pool_suffix>" — guaranteed ≤12 lowercase-alnum chars
+# by the pool_suffix values in gpu_skus (see variables.tf for the mapping table).
+#
+# Label contract (consumed by the k8s-runner orchestrator):
+#   reprolab/sku   = <short_name>   — Job nodeSelector key
+#   nvidia.com/gpu = <gpu_count>    — GPU count per node
+#
+# Taint on every GPU node: nvidia.com/gpu=present:NoSchedule
+#   → device-plugin DaemonSet tolerates with operator: Exists (all pools)
+#   → non-GPU workloads cannot land here
+#
+# locals trick: convert the list to a map keyed by short_name so for_each
+# can reference each entry by its catalog identifier.
+
+locals {
+  gpu_skus_map = { for sku in var.gpu_skus : sku.short_name => sku }
+}
 
 module "gpu_nodepool" {
-  source = "./modules/gpu_nodepool"
+  source   = "./modules/gpu_nodepool"
+  for_each = local.gpu_skus_map
 
   cluster_id    = module.aks.cluster_id
   subnet_id     = module.network.aks_subnet_id
   prefix        = var.prefix
-  gpu_max_nodes = var.gpu_max_nodes
+  pool_suffix   = each.value.pool_suffix
+  vm_size       = each.value.vm_size
+  gpu_count     = each.value.gpu_count
+  sku_label     = each.key
+  gpu_max_nodes = each.value.max_nodes
   tags          = var.tags
 }
 
