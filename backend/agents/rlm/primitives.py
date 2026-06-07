@@ -3540,7 +3540,16 @@ def _validate_scope_metrics(
                 f"'qwen2.5-3b': {{...}}}}}}."
             )
         present_keys = {_ck(k) for k in per_model}
-        missing = [m for m in models if _ck(m) not in present_keys]
+        # Models in scope.models_skipped are explicitly excluded (e.g. capacity-gated
+        # due to VRAM budget) — treat them as accounted for, not missing.
+        skipped_canonical = {
+            _ck(k)
+            for k in ((metrics.get("scope") or {}).get("models_skipped") or [])
+        }
+        missing = [
+            m for m in models
+            if _ck(m) not in present_keys and _ck(m) not in skipped_canonical
+        ]
         if missing:
             return (
                 f"per_model_incomplete: scope requires entries for {models}; "
