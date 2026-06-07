@@ -42,12 +42,38 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
     target_pdf.write_bytes(source_pdf.read_bytes())
 
 
+# Harness-owned, zero-non-stdlib-dep helper modules the agent's generated code
+# imports by name. Copied verbatim into code/ (2026-05-31 OOM/GPU remediation,
+# comp 2b) so the copy-and-paste import route always resolves inside any sandbox
+# — mirror of the rubric_guard.py "emit alongside train.py" pattern, but a real
+# file copy rather than a prompt instruction:
+#   * gpu_cell_runner.py — single-cell trainer references its env-var contract.
+#   * sdar_env_base.py   — every teacher/student *Env subclasses BaseEnv.
+_HARNESS_CODE_HELPERS: tuple[str, ...] = ("gpu_cell_runner.py", "sdar_env_base.py")
+
+
+def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
+    """Copy the stdlib-only harness helpers into ``code_dir`` (idempotent, fail-soft).
+
+    A failed copy must never abort code generation — the agent can still emit the
+    file itself from the prompt as a fallback, so we log and continue.
+    """
+    import shutil
+
+    src_dir = Path(__file__).parent / "rlm"
+    for helper in _HARNESS_CODE_HELPERS:
+        try:
+            shutil.copy2(src_dir / helper, code_dir / helper)
+        except OSError as exc:  # missing source / unwritable dest — non-fatal
+            logger.warning("could not copy harness helper %s into code/: %s", helper, exc)
+
+
 # ---------------------------------------------------------------------------
 # PPO CartPole-v1 implementation template
 # ---------------------------------------------------------------------------
 
 PPO_TRAIN_PY = '''\
-"""PPO CartPole-v1 Baseline — ReproLab generated implementation.
+"""PPO CartPole-v1 Baseline — OpenResearch generated implementation.
 
 This implements Proximal Policy Optimization (Schulman et al., 2017) on
 CartPole-v1 with all assumption decisions applied from the assumption ledger.
@@ -994,6 +1020,12 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
     "and 'Evaluation protocol and metric correctness' loses partial credit because the\n"
     "grader can't verify intermediate-step claims (e.g. 'BN reaches baseline's final\n"
     "acc 60% faster').  All five are cheap — make them all unconditional.\n"
+    "FAIL-SOFT the OPTIONAL / VISUALIZATION imports: wrap matplotlib / seaborn / wandb /\n"
+    "tensorboard imports AND the figure-writing calls in try/except so a MISSING viz or\n"
+    "logging library degrades to 'skip that figure', NEVER an ImportError that aborts the\n"
+    "whole training. metrics.json + config_used.json are MANDATORY; figures are best-effort.\n"
+    "(2026-06-01: an unguarded top-level `import matplotlib` aborted a full training run\n"
+    "with zero metrics — a one-line try/except would have saved the whole run.)\n"
 )
 
 
@@ -1030,6 +1062,175 @@ _RUBRIC_GUARD_BLOCK = (
     "The guard is unconditional — even when the run is a smoke-test, schema\n"
     "completeness must hold; a smoke-test that writes 1 sample is fine, a\n"
     "smoke-test that writes 0 keys is not.\n"
+)
+
+
+# Env interface contract (2026-05-31 OOM/GPU remediation, comp 2c). Self-gating:
+# only behaviourally relevant when the reproduction defines `*Env` classes.
+_SDAR_ENV_ABC_BLOCK = (
+    "\n\nINTERACTIVE ENVIRONMENT INTERFACE — when you define environment classes:\n"
+    "If your reproduction implements interactive RL environments (classes whose\n"
+    "names end in `Env`, e.g. ALFWorldEnv / WebShopEnv / SearchQAEnv), EACH ONE\n"
+    "MUST subclass the harness-provided BaseEnv:\n"
+    "  from sdar_env_base import BaseEnv\n"
+    "  class ALFWorldEnv(BaseEnv):\n"
+    "      def build_student_prompt(self, *args, **kwargs) -> str: ...\n"
+    "      def build_teacher_prompt(self, *args, **kwargs) -> str: ...\n"
+    "`sdar_env_base.py` is already copied into your code/ root (zero deps). BaseEnv\n"
+    "is an ABC: an env missing build_student_prompt / build_teacher_prompt raises\n"
+    "TypeError at CONSTRUCTION (cell start) instead of an AttributeError mid-grid —\n"
+    "the exact bug that zeroed the 2026-05-31 run's 18 ALFWorld cells. A pre-flight\n"
+    "AST check ALSO rejects any *Env defined without these methods and without the\n"
+    "BaseEnv base, so subclass it even if your trainer calls only one of the two.\n"
+)
+
+
+# GPU memory discipline (2026-05-31 OOM/GPU remediation, comp 3c) — ALWAYS-ON.
+# The ~20 GB fp32 full-vocab log_softmax blowup OOM'd even Qwen3-1.7B on a 24 GB
+# card; this is the single highest-leverage fix for "even the smallest model OOMs".
+_MEMORY_DISCIPLINE_BLOCK = (
+    "\n\nGPU MEMORY DISCIPLINE — always-on (the 2026-05-31 ~20 GB blowup that OOM'd even Qwen3-1.7B):\n"
+    "FORBIDDEN: materializing a full-vocab fp32 log-prob tensor. NEVER write\n"
+    "  logp = F.log_softmax(logits.float(), dim=-1)   # [B, T, vocab] in fp32 ~= 20 GB, kept in the autograd graph\n"
+    "Compute token log-probs WITHOUT the [B, T, vocab] materialization:\n"
+    "  - F.cross_entropy(logits.view(-1, V), labels.view(-1), reduction='none')  (negate -> token logp), OR\n"
+    "  - torch.gather on logits for the taken tokens + a CHUNKED logsumexp over the vocab dim.\n"
+    "Always: bf16 autocast (do NOT upcast logits to fp32), model.config.use_cache=False,\n"
+    "model.gradient_checkpointing_enable(), and per-device mini_batch <= 2 for models >= 3B.\n"
+    "When the harness sets OPENRESEARCH_CELL_BATCH_SCALE (a float in (0,1]) multiply your\n"
+    "per-device batch by it, and when it sets OPENRESEARCH_CELL_GRAD_CHECKPOINT=1 enable\n"
+    "gradient checkpointing — these are the harness's per-cell OOM-shrink retries.\n"
+)
+
+
+# Single-cell trainer + matrix manifest contract (comp 3b) — injected only on the
+# harness-owned cell path (local/docker GPU). Tells the agent to STOP writing a
+# monolithic cuda:0 coordinator and instead emit train_cell.py + cells.json.
+_CELL_CONTRACT_BLOCK = (
+    "\n\nSINGLE-CELL TRAINER CONTRACT — the harness owns the training matrix:\n"
+    "Do NOT write a monolithic coordinator that loops over models/baselines/envs on\n"
+    "cuda:0 in one process — that stacks the whole matrix onto one card and OOMs (the\n"
+    "2026-05-31 collapse). Instead write ONE script `train_cell.py` that trains exactly\n"
+    "ONE cell, and a manifest `cells.json` enumerating the full matrix. The harness runs\n"
+    "each cell as its own subprocess pinned to a single GPU (CUDA_VISIBLE_DEVICES=<one id>;\n"
+    "the cell sees only cuda:0) and runs min(free_gpus, num_cells) cells in parallel.\n"
+    "\n"
+    "train_cell.py MUST:\n"
+    "  - read its cell from env OPENRESEARCH_CELL_PARAMS (JSON of ONE cells.json entry) and\n"
+    "    OPENRESEARCH_CELL_OUTPUT_DIR, plus argv --cell-id / --output-dir;\n"
+    "  - train on cuda:0 only — NO torchrun, NO DDP/FSDP, NO device loop, NO 'cuda:1';\n"
+    "  - honor OPENRESEARCH_CELL_BATCH_SCALE / OPENRESEARCH_CELL_GRAD_CHECKPOINT (see memory discipline);\n"
+    "  - write metrics.json into the output dir as a FLAT leaf dict for THIS cell:\n"
+    '      {"status": "ok", "metric": <float>, "steps_run": <int>, "reward_mean": <float>}\n'
+    "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
+    "    do NOT write the per_model nesting yourself in a cell — emit only this cell's leaf.\n"
+    "\n"
+    "cells.json (a top-level file in code/) enumerates EVERY cell — it is the ONLY place the\n"
+    "baseline axis is declared (the harness scope is model x dataset x seed, with no baseline\n"
+    "axis), so the matrix is invisible to the harness without it:\n"
+    '  {"cells": [{"id": "qwen3_1_7b__sdar__search_qa__s42", "model_id": "Qwen/Qwen3-1.7B",\n'
+    '     "model_key": "qwen3_1_7b", "baseline": "sdar", "env": "search_qa", "seed": 42,\n'
+    '     "dataset_url": "https://...", "est_vram_gb": 14.0}, ...]}\n'
+    "Give est_vram_gb your honest full-FT estimate per cell. Before launching the grid the\n"
+    "harness auto-drops any cell whose est_vram_gb exceeds the per-GPU budget (-> scope.gaps)\n"
+    "and HEAD-probes each dataset_url (a confirmed 404 -> scope.gaps), so a too-big model or a\n"
+    "dead dataset becomes an honest rubric gap instead of an OOM/crash. You do NOT need a\n"
+    "commands.json when you provide cells.json + train_cell.py — the harness runs the matrix.\n"
+    "STICKY ACROSS ITERATIONS: this holds on EVERY iteration including repairs/improvements.\n"
+    "When you refine the method, EDIT train_cell.py + keep cells.json — do NOT collapse the\n"
+    "matrix back into a single monolithic train.py (that silently drops you onto the legacy\n"
+    "one-process path and forfeits the per-GPU-per-cell OOM safety).\n"
+)
+
+
+def _gpu_budget_brief_block(num_gpus: int, per_gpu_vram_gb: float) -> str:
+    """The 'you have N GPUs x M GB; per-cell budget = M GB' brief (comp 3a).
+
+    Emits a concrete numeric budget only when VRAM is known (>0); otherwise a
+    conservative note so the agent still scopes deliberately.
+    """
+    if per_gpu_vram_gb and per_gpu_vram_gb > 0:
+        return (
+            f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU, never shared/sharded):\n"
+            f"You have {num_gpus} GPU(s) x {per_gpu_vram_gb:.0f} GB. The per-cell budget is ONE GPU = "
+            f"{per_gpu_vram_gb:.0f} GB.\n"
+            f"A model that cannot FULL-fine-tune within {per_gpu_vram_gb:.0f} GB is OUT OF SCOPE: do not put\n"
+            f"it in cells.json; record it in scope.models_skipped + scope.gaps. On a ~24 GB card that\n"
+            f"means the smallest-two only (e.g. Qwen3-1.7B + Qwen2.5-3B) — NEVER the 7B (its optimizer\n"
+            f"state alone exceeds 24 GB). Scope it yourself so the rubric grades only what you intended;\n"
+            f"the harness's auto-drop is a backstop, not the plan.\n"
+        )
+    return (
+        f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU):\n"
+        f"You have {num_gpus} GPU(s) (per-card VRAM unknown). Size each cell to fit ONE card; prefer the\n"
+        f"smallest model variants the paper tests and record larger ones in scope.models_skipped +\n"
+        f"scope.gaps rather than risking an OOM that zeros the whole matrix.\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# RL Scaffold guidance block (opt-in: OPENRESEARCH_RL_SCAFFOLD=1)
+# ---------------------------------------------------------------------------
+_RL_SCAFFOLD_BLOCK = (
+    "\n\nRL SCAFFOLD — harness-owned GRPO + vLLM training scaffold:\n"
+    "The harness provides a copyable RL-training scaffold in\n"
+    "``backend/agents/rlm/rl_scaffold.py``.  Use it instead of writing raw\n"
+    "FSDP/generate() loops — it owns the distributed-RL infra so you only\n"
+    "inject the paper-specific reward function and custom-loss term.\n"
+    "\n"
+    "STEP 1 — copy the scaffold verbatim:\n"
+    "  Paste ``backend/agents/rlm/rl_scaffold.py`` as ``code/rl_scaffold.py``.\n"
+    "  Zero non-stdlib deps at module top-level; trl/vllm are lazy-imported.\n"
+    "\n"
+    "STEP 2 — emit a thin train.py:\n"
+    "  from rl_scaffold import GRPOScaffold, opsd_custom_loss_term, BETA, LAMBDA\n"
+    "  scaffold = GRPOScaffold(\n"
+    "      model_name=\"Qwen/Qwen3-1.7B\",  # paper's actual model\n"
+    "      ref_model_name=\"Qwen/Qwen3-1.7B\",  # teacher = student (self-distill)\n"
+    "      reward_fn=my_reward_fn,\n"
+    "      custom_loss_term=opsd_custom_loss_term,  # SDAR OPSD; None = plain GRPO\n"
+    "      vllm_server_host=os.environ.get('OPENRESEARCH_VLLM_HOST', 'localhost'),\n"
+    "      vllm_server_port=int(os.environ.get('OPENRESEARCH_VLLM_PORT', '8000')),\n"
+    "      num_trainer_gpus=int(os.environ.get('OPENRESEARCH_TRAINER_GPUS', '1')),\n"
+    "      output_dir=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'rl_output'),\n"
+    "      metrics_path=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'metrics.json'),\n"
+    "      model_tag='qwen3_1.7b',\n"
+    "  )\n"
+    "  scaffold.train(dataset)\n"
+    "  scaffold.finalize_metrics(\n"
+    "      final_eval={...},\n"
+    "      required_keys=['per_model', 'baselines_vs_sdar'],\n"
+    "      omitted=['alfworld', 'webshop', 'qwen2.5_7b'],\n"
+    "  )\n"
+    "\n"
+    "STEP 3 — emit rl_launch.py from ``rl_scaffold.RL_LAUNCH_TEMPLATE``:\n"
+    "  This orchestrator starts the vLLM server on GPU 0, then runs\n"
+    "  ``accelerate launch train.py`` on GPUs 1..N (FSDP1, bf16).\n"
+    "  When <= 1 GPU is visible it runs train.py directly.\n"
+    "\n"
+    "STEP 4 — commands.json entry MUST begin with the sentinel comment:\n"
+    "  # openresearch:rl-scaffold-owns-launch\n"
+    "  python rl_launch.py\n"
+    "  (This suppresses the harness's generic accelerate-launch rewriter,\n"
+    "  which would conflict with the scaffold's 2-tier launch.)\n"
+    "\n"
+    "STEP 5 — pin deps in requirements.txt:\n"
+    "  trl==0.16.1\n"
+    "  vllm==0.7.3\n"
+    "  torch==2.5.1+cu121\n"
+    "  fastapi uvicorn pydantic requests\n"
+    "\n"
+    "SDAR OPSD constants (literal — rubric reads the source):\n"
+    "  BETA = 10.0   # gate sharpness: g_t = sigmoid(BETA * delta_t)\n"
+    "  LAMBDA = 0.1  # composite:     total = grpo_loss + LAMBDA * opsd_loss\n"
+    "  Gate is DETACHED (stop-grad): g_t = sigmoid(...).detach()\n"
+    "  Divergence: reverse-KL (mode-seeking).\n"
+    "\n"
+    "Required SDAR metrics keys (emit in metrics.json, per_model shape):\n"
+    "  alfworld_success_rate_per_model, searchqa_em_per_model,\n"
+    "  webshop_score_per_model, per_model, baselines_vs_sdar, omitted.\n"
+    "  Smallest-two scope: Qwen3-1.7B + Qwen2.5-3B, Search-QA only.\n"
+    "  Declare ALFWorld / WebShop / 7B in omitted[].\n"
 )
 
 
@@ -1663,7 +1864,7 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
     supp = ("\n\nNotes per dataset:\n" + "\n".join(notes_lines)) if notes_lines else ""
 
     # PR-ξ: prepend a hard import contract for STRICT-severity recipes whose
-    # helper has already been written to _reprolab_curated.py. This makes the
+    # helper has already been written to _openresearch_curated.py. This makes the
     # contract structurally unavoidable rather than advisory-text-only.
     strict_contracts: list[str] = []
     for r in data_recipes:
@@ -1675,10 +1876,10 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
             strict_contracts.append(
                 f"  Dataset: {r.get('canonical_name', hn)}\n"
                 f"    In train.py you MUST write:\n"
-                f"        from _reprolab_curated import {hn}\n"
+                f"        from _openresearch_curated import {hn}\n"
                 f"    and CALL {hn}(...) to obtain the dataset. "
                 f"Do NOT inline the loader body.\n"
-                f"    The helper is already written at code_dir/_reprolab_curated.py.\n"
+                f"    The helper is already written at code_dir/_openresearch_curated.py.\n"
                 + (
                     f"    Banned literal patterns (will fail postflight if found in train.py):\n"
                     + "".join(f"        {b}\n" for b in banned)
@@ -1720,6 +1921,7 @@ def _compute_constraint_guidance(
     data_recipes: list[dict] | None = None,
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
+    gpu_cell_budget: dict | None = None,
 ) -> str:
     """Return capability-aware guidance for the implement_baseline agent.
 
@@ -1762,6 +1964,20 @@ def _compute_constraint_guidance(
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
     gpu_str = str(gpu_mode).lower() if gpu_mode else ""
 
+    # Harness-owned cell path (2026-05-31 OOM/GPU remediation, comp 3): active on a
+    # local/docker backend that exposes >=1 GPU. On this path the agent writes a
+    # single-cell train_cell.py + cells.json and the harness runs the matrix one
+    # GPU per cell — so the GPU-budget brief + cell contract are injected and the
+    # multi-GPU torchrun parallelism guidance is SUPPRESSED (it would tell the
+    # agent to shard one big job across cards, the opposite of one-cell-per-card).
+    _cell_budget = gpu_cell_budget or {}
+    _cell_num_gpus = int(_cell_budget.get("num_gpus", 0) or 0)
+    _cell_per_gpu_gb = float(_cell_budget.get("per_gpu_vram_gb", 0.0) or 0.0)
+    _cell_path_active = (
+        str(_cell_budget.get("backend_kind", "")).lower() in ("local", "docker")
+        and _cell_num_gpus >= 1
+    )
+
     # 1. NO-STUB block comes FIRST so the agent reads the anti-surrogate hard rule
     # before the runtime-detection nuance.
     # 2. RUNTIME COMPUTE DETECTION — always-on.
@@ -1792,6 +2008,13 @@ def _compute_constraint_guidance(
         _inject_budget = _is_cost_bearing
 
     guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
+    # comp 3c: memory discipline is always-on (the fp32 full-vocab logprob blowup
+    # OOMs regardless of backend). comp 3a/3b (budget brief + cell contract) ride
+    # the harness-owned cell path only.
+    guidance += _MEMORY_DISCIPLINE_BLOCK
+    if _cell_path_active:
+        guidance += _gpu_budget_brief_block(_cell_num_gpus, _cell_per_gpu_gb)
+        guidance += _CELL_CONTRACT_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
     # Lane AA — per-model block adapts to multi-env papers
@@ -1841,6 +2064,20 @@ def _compute_constraint_guidance(
     # whose text becomes the next iteration's repair_context — a loud, precise
     # failure signal before the grader runs.
     guidance += _RUBRIC_GUARD_BLOCK
+
+    # 5.82. Env interface contract — always-on, self-gating (only matters when
+    # the agent defines *Env classes). Pairs with sdar_env_base.BaseEnv (copied
+    # into code/) + the preflight_ast env-contract backstop.
+    guidance += _SDAR_ENV_ABC_BLOCK
+
+    # 5.85. RL scaffold guidance — opt-in (OPENRESEARCH_RL_SCAFFOLD=1).
+    # Tells the agent to copy rl_scaffold.py, write a thin train.py with
+    # GRPOScaffold + the OPSD custom-loss term, emit rl_launch.py, and pin
+    # trl/vllm/torch in requirements.txt.
+    # DEFAULT OFF → not injected → guidance byte-identical to today.
+    import os as _os_scaffold
+    if _os_scaffold.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+        guidance += _RL_SCAFFOLD_BLOCK
 
     # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
     # metrics_shape, bind the agent to those exact paths. Injected after the
@@ -1903,9 +2140,23 @@ def _compute_constraint_guidance(
 
     # 9. Parallelism policy — controls whether generated train.py uses
     #    DDP/FSDP/vLLM-TP (multi) or a single device (single/auto-single).
+    # comp 3: on the harness-owned cell path the matrix is parallelized BY THE
+    # HARNESS (one cell per GPU), so each cell is single-GPU and the torchrun /
+    # DDP / FSDP guidance below is actively wrong — emit the cell framing instead.
     _par = (gpu_parallelism or "auto").lower()
     _n = gpu_visible_count
-    if _par == "single" or (_n is not None and _n <= 1):
+    if _cell_path_active:
+        guidance += (
+            "\nPARALLELISM POLICY — harness-owned cell matrix (one GPU per cell):\n"
+            "  The harness runs your matrix as one subprocess PER CELL, each pinned to a single\n"
+            "  GPU (CUDA_VISIBLE_DEVICES=<one id>), min(free_gpus, num_cells) in parallel. So\n"
+            "  train_cell.py is SINGLE-GPU: train on cuda:0 only. Do NOT use torchrun / DDP /\n"
+            "  FSDP / tensor-parallel / a device loop / 'cuda:1' — cross-card sharding fights the\n"
+            "  per-cell pinning and re-creates the cuda:0 stacking that OOM'd the 2026-05-31 run.\n"
+            "  Multi-GPU throughput comes from many cells running concurrently, not from sharding\n"
+            "  one cell across cards.\n"
+        )
+    elif _par == "single" or (_n is not None and _n <= 1):
         guidance += (
             "\nPARALLELISM POLICY — single GPU:\n"
             "  Use a SINGLE GPU (or the CPU fallback when none is present). Do NOT "
@@ -1974,6 +2225,7 @@ async def run_with_sdk(
     data_recipes: list[dict] | None = None,
     gpu_parallelism: str | None = None,
     gpu_visible_count: int | None = None,
+    gpu_cell_budget: dict | None = None,
     on_event=None,  # Callable[[], None] | None — SDK-stream liveness hook, forwarded to collect_agent_text
 ) -> BaselineResult:
     """Full LLM-powered baseline implementation via the configured agent runtime.
@@ -1994,6 +2246,7 @@ async def run_with_sdk(
     code_dir = project_dir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
     _copy_source_pdf_to_code_root(Path(runs_root), project_id, code_dir)
+    _copy_harness_helpers_to_code_root(code_dir)
 
     # P0: prefer the explicit arxiv_id (threaded from RunContext.arxiv_id, which
     # was resolved from artifact_index.json / demo_status.json by run_pipeline_rlm)
@@ -2018,7 +2271,7 @@ async def run_with_sdk(
             if r is not None
         ] or None
 
-    # PR-ξ γ: knowledge channel — write _reprolab_curated.py + manifest before
+    # PR-ξ γ: knowledge channel — write _openresearch_curated.py + manifest before
     # the sub-agent is invoked. Facts are derived from the resolved data_recipes
     # so the channel is independent of whether plan_reproduction succeeded.
     from backend.agents import baseline_knowledge as _bk
@@ -2054,6 +2307,7 @@ async def run_with_sdk(
         data_recipes=_effective_data_recipes or [],
         gpu_parallelism=gpu_parallelism,
         gpu_visible_count=gpu_visible_count,
+        gpu_cell_budget=gpu_cell_budget,
     )
 
     if repair_context:

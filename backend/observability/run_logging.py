@@ -122,8 +122,8 @@ def configure_root_logger() -> Optional[Path]:
 
         # Tag so verify_run.py and follow-up Tier 2b code can find these
         # handlers without re-matching on path strings.
-        text_handler.set_name("reprolab.pipeline.log")
-        jsonl_handler.set_name("reprolab.pipeline.jsonl")
+        text_handler.set_name("openresearch.pipeline.log")
+        jsonl_handler.set_name("openresearch.pipeline.jsonl")
 
         root.addHandler(text_handler)
         root.addHandler(jsonl_handler)
@@ -332,7 +332,7 @@ class AgentTranscriptRecorder:
 # ----- contextvar plumbing ---------------------------------------------------
 
 _RECORDER_VAR: contextvars.ContextVar[Optional[AgentTranscriptRecorder]] = (
-    contextvars.ContextVar("reprolab_agent_recorder", default=None)
+    contextvars.ContextVar("openresearch_agent_recorder", default=None)
 )
 
 

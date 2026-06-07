@@ -11,7 +11,7 @@ import { readUserPrefs } from "@/lib/user-prefs";
 
 const MAX_DASHBOARD_EVENTS = 1000;
 const POLL_INTERVAL_MS = 3000;
-const LAST_RUN_KEY = "reprolab:lastRun";
+const LAST_RUN_KEY = "openresearch:lastRun";
 const PINNED_DASHBOARD_EVENTS = new Set([
   "run_complete",
   "rubric_score",

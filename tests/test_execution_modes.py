@@ -15,7 +15,7 @@ def test_execution_profile_efficient_caps_at_30_turns_and_80_tool_calls() -> Non
       * 20 minute wall-clock cap
 
     Hitting any of these raises AgentLimitExceeded with partial output
-    preserved (see learn.md 2026-05-09)."""
+    preserved (see docs/archive/learn.md 2026-05-09)."""
 
     profile = ExecutionProfile.from_mode("efficient")
 

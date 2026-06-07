@@ -5,7 +5,7 @@ Leases GPUs from the shared :class:`LocalGpuAllocator` (same allocator used by
 ``batch_reproduce.py``), so paper-reproduction runs automatically get the
 remaining cards while the accelerator server holds its own exclusive lease.
 
-The OpenAI-compatible endpoint emitted here is consumed by ReproLab when the
+The OpenAI-compatible endpoint emitted here is consumed by OpenResearch when the
 environment variable ``OPENRESEARCH_ACCELERATOR=local`` (or ``auto``) is set.
 Upstream code constructs an ``openai.OpenAI(base_url="http://{host}:{port}/v1",
 api_key=<api-key>)`` client and routes cheap accelerator calls through it
@@ -305,7 +305,7 @@ def _wait_for_readiness(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stand up a local vLLM OpenAI-compatible server for the ReproLab "
+            "Stand up a local vLLM OpenAI-compatible server for the OpenResearch "
             "accelerator tier. Leases GPUs via LocalGpuAllocator so paper runs "
             "get the remaining cards. Set OPENRESEARCH_ACCELERATOR=local (or auto) "
             "to route cheap RLM calls through this endpoint."

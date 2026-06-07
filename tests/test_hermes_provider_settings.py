@@ -164,15 +164,15 @@ def test_settings_picks_up_unprefixed_alias(monkeypatch: pytest.MonkeyPatch):
     assert settings.openai_api_key == "sk-from-shell-env"
 
 
-def test_settings_falls_back_to_reprolab_prefix(monkeypatch: pytest.MonkeyPatch):
+def test_settings_falls_back_to_openresearch_prefix(monkeypatch: pytest.MonkeyPatch):
     """Operators who have OPENAI_API_KEY reserved at the shell level for
     a different scope can use OPENRESEARCH_OPENAI_API_KEY without conflict."""
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENRESEARCH_OPENAI_API_KEY", "sk-reprolab-scoped")
+    monkeypatch.setenv("OPENRESEARCH_OPENAI_API_KEY", "sk-openresearch-scoped")
     settings = get_settings(_force_reload=True)
 
-    assert settings.openai_api_key == "sk-reprolab-scoped"
+    assert settings.openai_api_key == "sk-openresearch-scoped"
 
 
 def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPatch):

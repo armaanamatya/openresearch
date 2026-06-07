@@ -158,6 +158,7 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
                   >
                     {r.paper_title ?? r.paper_id}
                   </a>
+                  {r.title ? <div className={styles.runTitle}>{r.title}</div> : null}
                 </td>
                 <td><span className={styles.modeBadge}>{r.mode}</span></td>
                 <td>{r.execution_mode || <Dash />}</td>

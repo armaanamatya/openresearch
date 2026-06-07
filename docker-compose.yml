@@ -38,9 +38,9 @@ services:
       - ./.env:/app/.env:ro
     environment:
       # Tell anything that wants the venv interpreter where it lives.
-      - REPROLAB_PYTHON_BIN=/opt/venv/bin/python
+      - OPENRESEARCH_PYTHON_BIN=/opt/venv/bin/python
       # Persisted SQLite event store (volume above keeps it between restarts).
-      - REPROLAB_DATABASE_URL=sqlite:///app/runs/reprolab.db
+      - OPENRESEARCH_DATABASE_URL=sqlite:///app/runs/openresearch.db
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 15s

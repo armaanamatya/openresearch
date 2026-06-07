@@ -83,7 +83,7 @@ describe("LabShell", () => {
   });
 
   it("selects the first available model when saved preference is unavailable", async () => {
-    window.localStorage.setItem("reprolab:user-prefs", JSON.stringify({ model: "gpt-5" }));
+    window.localStorage.setItem("openresearch:user-prefs", JSON.stringify({ model: "gpt-5" }));
 
     render(
       <LabShell

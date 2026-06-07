@@ -24,7 +24,7 @@ export interface DragHandlerBundle {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = "reprolab:lab-workspace-sizes:v1";
+const STORAGE_KEY = "openresearch:lab-workspace-sizes:v1";
 
 const BOUNDS: Record<PanelKey, { min: number; max: number; default: number }> = {
   replRail:      { min: 180, max: 360, default: 240 },

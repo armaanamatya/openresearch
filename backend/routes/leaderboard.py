@@ -40,6 +40,7 @@ class LeaderboardRow(BaseModel):
     project_id: str
     paper_id: str
     paper_title: str | None
+    title: str | None = None
     mode: Literal["rlm", "rdr"] = "rlm"
     models: RoleModels = Field(default_factory=RoleModels)
     overall_score: float | None
@@ -141,6 +142,7 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         project_id=run_dir.name,
         paper_id=str(paper.get("id") or run_dir.name),
         paper_title=paper.get("title"),
+        title=data.get("title"),
         mode=data.get("mode", "rlm") if data.get("mode") in ("rlm", "rdr") else "rlm",
         models=RoleModels(
             planner=models.get("planner"),

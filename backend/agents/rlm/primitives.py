@@ -292,7 +292,7 @@ def _build_codex_prompt(
 ) -> str:
     allowed = "\n".join(f"- {p}" for p in allowed_paths) if allowed_paths else "- Entire workspace"
     return (
-        "You are a specialized ReproLab repo-editing repair subagent.\n"
+        "You are a specialized OpenResearch repo-editing repair subagent.\n"
         "Do not perform paper navigation, paper summarization, rubric judgment, "
         "final report writing, broad research, credential inspection, or secret search.\n\n"
         f"Task type: {task_type}\n"
@@ -539,6 +539,30 @@ def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
     return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
 
 
+def _is_oom_escalation_trigger(result: dict, *, exit_code: int, stderr_tail: str) -> bool:
+    """True when a failed experiment should advance the GPU ladder due to OOM (F-04).
+
+    Two cases:
+      1. A direct CUDA OOM signal — delegated to ``_detect_cuda_oom`` (exit code
+         137/-9 or an OOM marker in the last ~4 KB ``stderr_tail``).
+      2. A stall-watchdog kill (``result['watchdog_killed']``) whose OOM marker is
+         buried earlier than ``stderr_tail``: the watchdog return dict surfaces no
+         ``exit_code`` (the gate defaults it to 1) and the marker can sit thousands
+         of lines before the tail, so case 1 alone misses it — scan the FULL
+         ``result['logs']`` for a marker.
+
+    The watchdog kills on *staleness* (no signal), NOT memory, so a watchdog kill
+    escalates ONLY when the full logs carry an explicit OOM marker; a genuine
+    no-signal stall (no marker) breaks the loop as before.
+    """
+    if _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        return True
+    if result.get("watchdog_killed"):
+        full_logs = result.get("logs") or ""
+        return any(marker in full_logs for marker in _CUDA_OOM_MARKERS)
+    return False
+
+
 def _cap_logs(text: str) -> str:
     """Bound an unbounded log string to a head+tail window for LLM consumption."""
     if len(text) <= _MAX_LOG_CHARS:
@@ -549,7 +573,7 @@ def _cap_logs(text: str) -> str:
 
 
 _PLAN_REPRODUCTION_SYSTEM = (
-    "You are the Reproduction Planner for ReproLab. Given a paper's method "
+    "You are the Reproduction Planner for OpenResearch. Given a paper's method "
     "spec and a target environment spec, produce a ReproductionContract: what "
     "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
     "the expected output artifacts, a dataset plan, an evaluation plan, and a "
@@ -1050,7 +1074,7 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # run_experiment runs whichever image the tag last pointed at. Key the
         # tag to the Dockerfile so distinct environments get distinct images.
         digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
-        tag = f"reprolab/{ctx.project_id}:env-{digest}"
+        tag = f"openresearch/{ctx.project_id}:env-{digest}"
 
         # Three-layer "don't redo work" guard: content-addressed tag → Docker
         # layer cache → this existence check.  When the image is already
@@ -1705,6 +1729,22 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     # on EVERY streamed event, giving the poll loop a precise "SDK is alive and
     # producing" signal. _sdk_activity["last"] is written by the worker thread and read
     # by the main thread; a lone float write/read is atomic under the GIL.
+    # comp 3 (2026-05-31 OOM/GPU remediation): hand the code-writing agent its
+    # per-GPU budget + the single-cell contract when the backend exposes GPUs
+    # (local/docker). describe_capacity is fail-soft; on a failure or a CPU/cloud
+    # backend the budget is None and the guidance is byte-identical to before.
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity as _describe_capacity
+        _caps = _describe_capacity(ctx)
+        _gpu_cell_budget: dict | None = {
+            "backend_kind": _caps.backend_kind,
+            "num_gpus": _caps.num_gpus,
+            "per_gpu_vram_gb": _caps.per_gpu_vram_gb,
+        }
+    except Exception:  # noqa: BLE001 — a capacity probe must never block code-writing
+        logger.debug("implement_baseline: describe_capacity failed; no cell budget", exc_info=True)
+        _gpu_cell_budget = None
+
     import time as _time
     _sdk_activity = {"last": _time.time()}
 
@@ -1742,6 +1782,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
             gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
             gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            # comp 3: per-GPU budget + single-cell contract for the cell path.
+            gpu_cell_budget=_gpu_cell_budget,
             # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
             # stall watchdog distinguishes a working agent from a hung SDK.
             on_event=_note_sdk_event,
@@ -1781,6 +1823,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                 data_recipes=_data_recipes or None,
                 gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
                 gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+                gpu_cell_budget=_gpu_cell_budget,
             )
             # Isolate the SDK call in a fresh process so its aclose() async-gen
             # race can't poison this reproduction process. The driver runs on the
@@ -2599,7 +2642,7 @@ def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
             "  fsdp_sharding_strategy: FULL_SHARD\n"
             "  fsdp_use_orig_params: true\n"
         )
-    path = code_dir / "_reprolab_fsdp.yaml"
+    path = code_dir / "_openresearch_fsdp.yaml"
     try:
         path.write_text(cfg, encoding="utf-8")
     except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
@@ -2666,6 +2709,33 @@ def _resolve_distributed_launch(
     # Escape hatch — keep the agent's launch verbatim (operator override).
     if _os.environ.get("OPENRESEARCH_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
         logger.info("_resolve_distributed_launch[%s]: disabled via OPENRESEARCH_DISABLE_TORCHRUN_WRAP", run_id)
+        return commands
+    # RL-scaffold sentinel — the scaffold owns its own launch orchestration
+    # (vLLM server + accelerate trainer partition), so the harness rewriter
+    # must NOT wrap the launch command again.  Three detection surfaces:
+    #   1. Command-line marker: a command containing '# openresearch:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.openresearch_rl_scaffold exists
+    #   3. Environment var:     OPENRESEARCH_RL_SCAFFOLD=1
+    if _os.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — OPENRESEARCH_RL_SCAFFOLD=1 "
+            "(scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if (code_dir / ".openresearch_rl_scaffold").exists():
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — .openresearch_rl_scaffold "
+            "sentinel file present (scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if any("# openresearch:rl-scaffold-owns-launch" in cmd for cmd in commands):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — "
+            "'# openresearch:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            run_id,
+        )
         return commands
 
     out: list[str] = []
@@ -2885,7 +2955,7 @@ async def _execute_in_sandbox(
         # create those dirs FIRST so pip and HuggingFace can write to them.
         # Pre-pip step — must run before any other bootstrap.
         bootstrap_commands.append(
-            'mkdir -p ${OPENRESEARCH_BOOTSTRAP_MKDIRS:-/tmp/.reprolab_noop}'
+            'mkdir -p ${OPENRESEARCH_BOOTSTRAP_MKDIRS:-/tmp/.openresearch_noop}'
         )
         # Lane 1: auto-derive requirements.txt from the Dockerfile when the
         # agent forgot to write one. The local-docker sandbox path builds an
@@ -3302,6 +3372,52 @@ async def _execute_in_sandbox(
     }
 
 
+def _manifest_enrichment(result: dict) -> None:
+    """P2 provenance manifest: enrich a run_experiment result IN PLACE with the
+    fields that bind a final metric to the artifact that produced it (invariant 2:
+    every final metric traces to a persisted artifact via a manifest).
+
+    Best-effort + fail-soft — observability must never break a run, so every
+    lookup degrades silently:
+      - ``sandbox_backend``: promoted from ``resource_limits`` so the manifest
+        names the backend without callers digging into nested limits.
+      - ``metrics_sha256``: sha256 of the canonical ``metrics.json`` artifact, so
+        a final-report metric can be tied to the exact bytes that produced it
+        (the trace that closes invariant 2 for the RLM path).
+    """
+    try:
+        _rl = result.get("resource_limits") or {}
+        _backend = _rl.get("sandbox_mode") or _rl.get("sandbox_backend")
+        if _backend:
+            result.setdefault("sandbox_backend", str(_backend))
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+    try:
+        _artifact_dir = result.get("artifact_dir")
+        if _artifact_dir and not result.get("metrics_sha256"):
+            import hashlib
+            from pathlib import Path as _Path
+
+            _mjson = _Path(str(_artifact_dir)) / "metrics.json"
+            if _mjson.exists():
+                result["metrics_sha256"] = hashlib.sha256(_mjson.read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+
+
+def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: list) -> None:
+    """P2 manifest: record the identifiers that bind a run_experiment result to
+    its run — ``experiment_run_id`` (the ``run_id`` used for this attempt's
+    artifacts, previously minted in the escalation loop and discarded),
+    ``env_id``, and the structured ``commands`` list. ``setdefault`` so a value an
+    earlier path already set is never clobbered; a non-dict result is a no-op."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault("experiment_run_id", run_id)
+    result.setdefault("env_id", env_id)
+    result.setdefault("commands", list(commands) if commands else [])
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
@@ -3334,6 +3450,9 @@ def _persist_experiment_result(
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
     _with_outcome(result, _classify_run_experiment_outcome(result))
+
+    # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
+    _manifest_enrichment(result)
 
     if not result.get("success"):
         logger.warning(
@@ -3442,10 +3561,14 @@ _CODE_BUG_PHRASES = (
     "returned 0 rows",
     "must be a string or a real number",   # float(tuple) family
     "repository id must be",
-    "no such file or directory",           # FileNotFoundError without the class name
-    "errno 2",
-    "has no attribute",
 )
+
+# F-03: a bare OSError-style "no such file" / "errno 2" is a code bug only when a
+# config/source co-signal co-occurs (a missing base_config.yaml / *.py). Without
+# one, a missing DATA path is a provably-unobtainable dataset, not a code bug.
+# ("has no attribute" was dropped from _CODE_BUG_PHRASES — AttributeError /
+# FileNotFoundError are already caught by class name in _CODE_BUG_RE.)
+_CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
 
 
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
@@ -3496,7 +3619,16 @@ def _data_load_failure_is_code_bug(err: str) -> bool:
     low = (err or "").lower()
     if any(p in low for p in _CODE_BUG_PHRASES):
         return True
-    return bool(_CODE_BUG_RE.search(err or ""))
+    if _CODE_BUG_RE.search(err or ""):
+        return True
+    # Bare 'no such file'/'errno 2' is a code bug ONLY with a config/source
+    # co-signal (a missing base_config.yaml / *.py); a bare missing DATA path
+    # stays data-unavailable so it force-reduces on first sight (F-03).
+    if ("no such file or directory" in low or "errno 2" in low) and any(
+        c in low for c in _CONFIG_CODE_COSIGNALS
+    ):
+        return True
+    return False
 
 
 def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
@@ -3521,6 +3653,41 @@ def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
         if err and _data_load_failure_is_code_bug(err):
             masked.append(f"{name}: {err[:160]}")
     return ("code_bug", masked) if masked else None
+
+
+def _surface_masked_bug_on_failed_run(result: dict) -> dict | None:
+    """F-05: for an already-FAILED run with no specific ``failure_class``, surface a
+    masked code bug's precise message so the next repair targets the real loader/parse
+    bug instead of a vaguer error.
+
+    ``_reclassify_masked_code_bugs`` is metrics-based and success-agnostic, but its
+    call site only runs on SUCCESSFUL runs (to flip them to repairable). A run that
+    already failed for a vague reason can still carry a masked code bug in
+    ``metrics.data_load_failures``; promote that precise message into
+    ``error``/``suggested_fix`` and set the precise ``failure_class``.
+
+    Returns the fields to merge into ``result``, or None when not applicable. NEVER
+    flips ``success`` (the run is already failed) and never overrides an
+    already-specific ``failure_class``.
+    """
+    if result.get("success"):
+        return None
+    if _failure_class_key(result.get("failure_class")):
+        return None  # a specific class is already set — leave it
+    masked = _reclassify_masked_code_bugs(result)
+    if masked is None:
+        return None
+    _cls, _bugs = masked
+    msg = (
+        "code_bug: a loader/parse error was caught and masked as a data_load_failure "
+        "(it would be silently excluded from the rubric). These are CODE bugs to fix, "
+        "not missing data — " + "; ".join(_bugs[:5])
+    )
+    return {
+        "failure_class": _cls,
+        "error": msg,
+        "suggested_fix": result.get("suggested_fix") or msg,
+    }
 
 
 def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
@@ -3736,6 +3903,160 @@ def _persist_escalation_count(state_dir: "Path", count: int) -> None:
     tmp.replace(path)
 
 
+def _dynamic_gpu_headroom() -> float:
+    """OPENRESEARCH_DYNAMIC_GPU_HEADROOM (default 1.25) — the VRAM safety multiplier the
+    capacity gate clamps against. Matches the dynamic-GPU resolver's headroom."""
+    try:
+        h = float(os.environ.get("OPENRESEARCH_DYNAMIC_GPU_HEADROOM", "1.25") or "1.25")
+    except ValueError:
+        h = 1.25
+    return h if h > 0 else 1.25
+
+
+def _summarize_cell_logs(cells: list, matrix_result: dict, gpus: list) -> str:
+    """A clean per-cell status summary for ``result['logs']``.
+
+    Deliberately avoids the raw CUDA-OOM strings (``_OOM_LOG_MARKERS``) so a partial
+    cell run is NOT misread by ``_training_health_violation`` as a repairable
+    ``silent_oom`` — a shrink-exhausted cell OOM is terminal, surfaced via
+    ``stop_reason`` instead. Raw per-cell errors live in ``metrics`` (not scanned).
+    """
+    lines = [f"cell-matrix: {len(cells)} cell(s) across {len(gpus)} GPU(s)"]
+    for c in cells:
+        r = matrix_result.get(c.get("id", "")) or {}
+        st = r.get("status", "missing")
+        st_label = "oom-shrink-exhausted" if st == "oom_failed" else st
+        lines.append(
+            f"  {c.get('id','?')} -> {st_label} "
+            f"(gpu={r.get('gpu', '?')}, retries={r.get('retries', 0)})"
+        )
+    return "\n".join(lines)
+
+
+def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
+    """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
+
+    PREVENT → drop over-budget cells + dead datasets to honest ``scope.gaps``.
+    PLACEMENT → ``run_matrix`` pins one cell per GPU, ``min(free, cells)`` parallel,
+    per-cell OOM shrink-retry. AGGREGATE → the canonical
+    ``per_model[model_key][env][baseline]`` shape the scorer + postflight consume.
+    STOP → when every run cell OOM-fails after shrink-exhaustion (or all cells are
+    dropped) return a terminal ``stop_reason`` so the run reports instead of looping.
+
+    Returns a ``run_experiment``-shaped result dict. Never raises (fail-soft).
+    """
+    import json
+    import time as _time
+    from pathlib import Path
+
+    from backend.agents.rlm import cell_matrix, gpu_cell_runner
+
+    code = Path(code_path)
+    artifact_root = code / "outputs" / run_id
+
+    def _persist_metrics(m: dict) -> None:
+        """Write the aggregated metrics where the leaf scorer + final_report read
+        them (the per-cell metrics.json files are single-cell leaves; the scorer
+        needs the aggregated per_model shape)."""
+        try:
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            blob = json.dumps(m, indent=2, default=str)
+            (artifact_root / "metrics.json").write_text(blob, encoding="utf-8")
+            (code / "metrics.json").write_text(blob, encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001 — persistence failure must not crash the run
+            logger.warning("cell-matrix: failed to persist aggregated metrics.json: %s", exc)
+
+    try:
+        manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+        all_cells = [c for c in (manifest.get("cells") or []) if isinstance(c, dict) and c.get("id")]
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": f"cells.json unreadable: {type(exc).__name__}: {exc}",
+                "failure_class": "contract_guard"}
+    if not all_cells:
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": "cells.json present but enumerated no valid cells",
+                "failure_class": "contract_guard"}
+
+    # PREVENT — clamp to one-card budget, drop confirmed-dead datasets (fail-soft).
+    headroom = _dynamic_gpu_headroom()
+    kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
+        all_cells, caps.per_gpu_vram_gb, headroom=headroom)
+    kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
+
+    gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
+
+    def _terminal(kind: str, error: str, metrics: dict, logs: str) -> dict:
+        _persist_metrics(metrics)
+        try:
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": kind, "message": error,
+            })
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            logger.debug("run_experiment: cell-matrix stop event emit failed")
+        return {"success": False, "metrics": metrics, "logs": logs, "error": error,
+                "failure_class": kind,
+                "stop_reason": {"kind": kind, "detail": error,
+                                "per_gpu_vram_gb": caps.per_gpu_vram_gb,
+                                "models_skipped": models_skipped,
+                                "environments_skipped": envs_skipped,
+                                "gaps": (cap_gaps or []) + (ds_gaps or [])}}
+
+    # Everything dropped by the gates → nothing fits this backend → terminal.
+    if not kept:
+        metrics = cell_matrix.aggregate_cell_metrics(
+            {}, [], capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+            models_skipped=models_skipped, environments_skipped=envs_skipped)
+        return _terminal(
+            "capacity_exhausted",
+            f"every cell exceeds the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB "
+            f"(headroom {headroom}) or targets a dead dataset; nothing to run on this backend",
+            metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
+
+    _t0 = _time.monotonic()
+    matrix_result = gpu_cell_runner.run_matrix(
+        kept, str(code / "train_cell.py"),
+        output_root=str(artifact_root),
+        gpus=gpus or None,
+        per_cell_timeout_s=timeout_s,
+    )
+    wall = _time.monotonic() - _t0
+
+    metrics = cell_matrix.aggregate_cell_metrics(
+        matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+        models_skipped=models_skipped, environments_skipped=envs_skipped)
+    logs = _summarize_cell_logs(kept, matrix_result, gpus)
+
+    statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
+    n_ok = sum(s == "ok" for s in statuses)
+    n_oom = sum(s == "oom_failed" for s in statuses)
+    n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+
+    if n_ok > 0:
+        # At least one cell produced real metrics — partial or full success. Honest
+        # gaps (dropped/oom/err cells) are already in metrics.scope; flows to the
+        # SAME postflight guards + verify_against_rubric.
+        _persist_metrics(metrics)
+        return {"success": True, "metrics": metrics, "logs": logs, "wall_time_s": wall}
+
+    if n_err == 0:
+        # Every run cell OOM-failed after the shrink ladder — un-repairable by
+        # re-running the same config. STOP + report (do NOT reuse silent_oom).
+        return _terminal(
+            "oom_shrink_exhausted",
+            f"all {n_oom} run cell(s) OOM-failed after batch-scale shrink + grad-ckpt "
+            f"retries on the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB; the matrix "
+            f"cannot fit one card — reduce model size/scope or use a larger GPU",
+            metrics, logs)
+
+    # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
+    _persist_metrics(metrics)
+    return {"success": False, "metrics": metrics, "logs": logs,
+            "failure_class": "cell_execution_error",
+            "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs), "
+                      f"{n_oom} OOM-failed, 0 succeeded — fix the cell trainer and re-run")}
+
+
 def run_experiment(
     code_path: str | dict,
     env_id: str,
@@ -3814,7 +4135,10 @@ def run_experiment(
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
-    if not commands:
+    # comp 4: the harness-owned cell path runs code/train_cell.py via cells.json and
+    # needs no commands.json. Only fail when NEITHER manifest is present.
+    _cells_present = (Path(code_path) / "cells.json").is_file()
+    if not commands and not _cells_present:
         return _persist_experiment_result(ctx, {
             "success": False, "metrics": {},
             "error": f"no commands.json at {manifest}"}, model_id=model_id, eval_env=eval_env)
@@ -3933,12 +4257,41 @@ def run_experiment(
 
     result: dict = {}
 
+    # comp 4 (2026-05-31): harness-owned cell-runner route. When the backend exposes
+    # GPUs (local/docker) AND the agent emitted code/cells.json + train_cell.py, run
+    # the matrix one GPU per cell instead of the monolithic commands.json path — the
+    # fix for the cuda:0 matrix-stacking that OOM'd the 2026-05-31 run. Mutually
+    # exclusive with the legacy escalation loop below (and thus with
+    # _resolve_distributed_launch, which only fires inside _execute_in_sandbox).
+    # Fail-soft: any error here, or a missing manifest / no-GPU / cloud backend,
+    # falls through to the legacy monolithic path unchanged.
+    # Bound before the branch so the post-loop rubric-contract check (which reads
+    # outputs/<run_id>) is valid on BOTH paths; the legacy loop reassigns it per
+    # iteration, the cell route uses this value as its artifact root.
+    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    _cell_route_taken = False
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity
+        _caps = describe_capacity(ctx)
+        if (
+            _caps.backend_kind in ("local", "docker")
+            and not _caps.is_empty
+            and (Path(code_path) / "cells.json").is_file()
+            and (Path(code_path) / "train_cell.py").is_file()
+        ):
+            result = _execute_cell_matrix(ctx, code_path, _caps, timeout_s=timeout, run_id=run_id)
+            _cell_route_taken = True
+    except Exception:  # noqa: BLE001 — the cell route must never crash the run
+        logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
+        _cell_route_taken = False
+
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
     # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
     # persist the updated plan atomically, emit gpu_escalated, and retry.
     # Capped by max_escalations. Non-OOM/non-capacity failures and success exit
     # immediately. I12: explicit shutdown(wait=False) per iteration.
-    while True:
+    # comp 4: skipped entirely on the cell-runner route (`_cell_route_taken`).
+    while not _cell_route_taken:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
         infra_error_kind: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
@@ -4055,7 +4408,9 @@ def run_experiment(
         # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        # F-04: also catch a watchdog-killed OOM whose marker is buried earlier
+        # than the 4 KB stderr_tail (the watchdog dict carries no exit_code).
+        is_oom = _is_oom_escalation_trigger(result, exit_code=exit_code, stderr_tail=stderr_tail)
         is_infra = infra_error_kind is not None
         if not is_oom and not is_infra:
             break
@@ -4110,6 +4465,11 @@ def run_experiment(
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
+    # P2 manifest: the escalation loop has produced its final result — stamp the
+    # identifiers the persist chokepoint records. run_id/env_id/commands are in
+    # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
+    _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
+
     # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
     # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0
     # rows') and records it in metrics.data_load_failures, which the leaf scorer would
@@ -4132,6 +4492,17 @@ def run_experiment(
             logger.warning(
                 "run_experiment[%s]: reclassified %d masked code bug(s) as repairable: %s",
                 getattr(ctx, "run_id", "?"), len(_bugs), _bugs[:3],
+            )
+    else:
+        # F-05: the run already failed for a vague reason — still surface a masked
+        # code bug's precise message (never flipping success) so the next repair
+        # targets the real loader/parse bug instead of a vague error.
+        _surfaced = _surface_masked_bug_on_failed_run(result)
+        if _surfaced is not None:
+            result = {**result, **_surfaced}
+            logger.warning(
+                "run_experiment[%s]: surfaced masked code bug on a failed run (%s)",
+                getattr(ctx, "run_id", "?"), _surfaced.get("failure_class"),
             )
 
     # Training-health postflight (2026-05-29): a run that exited 0 but logged a
@@ -4585,6 +4956,12 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             # Paper-hint invariant gate (2026-05-29): thread invariants from
             # RunContext so the deterministic regex gate fires in-loop.
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
+            # Model-load-bug fix (2026-05-31): pass the operator's skip list so
+            # requested models whose load failed are not silently excluded from
+            # the rubric (only truly operator-skipped models are excluded).
+            operator_skip_models=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or []
+            ),
         )
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable

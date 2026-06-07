@@ -56,6 +56,13 @@ _PATCH_LOCK = threading.Lock()
 # the operator than no report at all.
 _WALL_CLOCK_FLOOR_S = 60.0
 
+# Terminal failure classes that must NOT be force-iterated.  A shrink-exhausted
+# OOM (gpu_cell_runner spent its per-cell batch-scale ladder) or an explicit
+# capacity-exhausted stop cannot be fixed by re-running the same config — the
+# only honest move is to stop and ship the structured stop report.  Refusing
+# FINAL_VAR here just re-OOMs the next iteration (the 2026-05-31 death spiral).
+_TERMINAL_FAILURE_CLASSES = frozenset({"oom_shrink_exhausted", "capacity_exhausted"})
+
 
 @dataclass
 class ForcedIterationPolicy:
@@ -111,6 +118,11 @@ class ForcedIterationPolicy:
     # the policy refuses FINAL_VAR, forcing the root to attempt another repair.
     _repair_iter_count: int = field(default=0, compare=False, repr=False)
     _last_repair_failure_class: str | None = field(default=None, compare=False, repr=False)
+    # Terminal stop signal — set by run_experiment (via note_terminal_failure)
+    # when an experiment failed un-repairably (shrink-exhausted OOM / capacity
+    # exhaustion). When in _TERMINAL_FAILURE_CLASSES, should_refuse ACCEPTS the
+    # next FINAL_VAR so the run stops cleanly instead of re-OOMing the same config.
+    _terminal_failure_class: str | None = field(default=None, compare=False, repr=False)
     # Optional separate callback for the repair-refusal path so the SSE event
     # can carry code="forced_repair_iteration" distinct from "forced_iteration".
     # Defaults to None; when None the existing on_refusal is used as fallback.
@@ -140,6 +152,16 @@ class ForcedIterationPolicy:
         self._repair_iter_count += 1
         self._last_repair_failure_class = failure_class
 
+    def note_terminal_failure(self, failure_class: str) -> None:
+        """Record an un-repairable terminal failure (e.g. ``oom_shrink_exhausted``).
+
+        Called from run.py when run_experiment returns a terminal capacity stop.
+        When ``failure_class`` is in :data:`_TERMINAL_FAILURE_CLASSES`,
+        :meth:`should_refuse` accepts the next FINAL_VAR so the run stops cleanly
+        and ships its structured stop report rather than looping on the same OOM.
+        """
+        self._terminal_failure_class = failure_class
+
     def should_refuse(self) -> tuple[bool, str | None]:
         """Return (refuse, message). When refuse=True, message is non-None.
 
@@ -165,6 +187,20 @@ class ForcedIterationPolicy:
         # to time out with nothing.
         remaining = self.remaining_s() if self.remaining_s is not None else None
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
+            return (False, None)
+
+        # 0.4. Terminal capacity exhaustion — a shrink-exhausted OOM (or an
+        # explicit capacity-exhausted stop) is NOT repairable by re-running the
+        # same config; refusing only re-OOMs. Accept FINAL_VAR so the run stops
+        # cleanly and ships its structured stop report (2026-05-31 remediation).
+        # Robust to both wiring styles: note_terminal_failure() OR a terminal
+        # class threaded through record_repair_attempt().
+        _terminal = self._terminal_failure_class or self._last_repair_failure_class
+        if _terminal in _TERMINAL_FAILURE_CLASSES:
+            logger.info(
+                "forced_iteration: terminal failure '%s' — accepting FINAL_VAR "
+                "(stop + report, no re-OOM loop)", _terminal,
+            )
             return (False, None)
 
         # 0.3. PR-ι.1 — per-run iteration budget cap.  When the iteration

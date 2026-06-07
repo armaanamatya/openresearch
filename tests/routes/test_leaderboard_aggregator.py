@@ -199,7 +199,7 @@ def test_leaderboard_row_schema_is_pinned(tmp_path: Path):
     assert len(rows) == 1
     dumped = rows[0].model_dump()
     expected_keys = {
-        "project_id", "paper_id", "paper_title", "mode", "models",
+        "project_id", "paper_id", "paper_title", "title", "mode", "models",
         "overall_score", "compute_adjusted_score", "execution_mode",
         "meets_target", "degraded",
         "cost_usd", "iterations", "wall_clock_s",

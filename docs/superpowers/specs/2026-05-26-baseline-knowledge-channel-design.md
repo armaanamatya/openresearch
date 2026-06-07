@@ -22,10 +22,10 @@ Bug family: fail-open curated knowledge delivery. Curated facts are treated as o
 
 Use a helper-module knowledge channel with a post-emit contract check. For every matched curated fact, `implement_baseline` writes generated files into the code directory before invoking the sub-agent:
 
-- `_reprolab_curated.py`: canonical helper functions and constants, for example `load_frey_face(...)`.
-- `_reprolab_curated_manifest.json`: recipe ids, aliases matched, required import/use patterns, and hashes of rendered helper bodies.
+- `_openresearch_curated.py`: canonical helper functions and constants, for example `load_frey_face(...)`.
+- `_openresearch_curated_manifest.json`: recipe ids, aliases matched, required import/use patterns, and hashes of rendered helper bodies.
 
-The prompt then requires `train.py` to import from `_reprolab_curated` rather than writing the loader body. After the sub-agent returns, `implement_baseline` runs a local postflight check over `train.py` and the helper manifest. If a required curated helper is missing, shadowed by a local function, or contradicted by a known-bad literal such as `cs.nyu.edu/~roweis/data/frey_rawface.mat`, the emission fails before `run_experiment`. This turns curated knowledge from advisory text into a file-level contract.
+The prompt then requires `train.py` to import from `_openresearch_curated` rather than writing the loader body. After the sub-agent returns, `implement_baseline` runs a local postflight check over `train.py` and the helper manifest. If a required curated helper is missing, shadowed by a local function, or contradicted by a known-bad literal such as `cs.nyu.edu/~roweis/data/frey_rawface.mat`, the emission fails before `run_experiment`. This turns curated knowledge from advisory text into a file-level contract.
 
 Comparison:
 
@@ -43,11 +43,11 @@ Curated knowledge is a resource policy: primary URL, mirrors, expected shape/che
 
 Optimizer/hyperparameter choice:
 
-Curated knowledge is a paper-specific training policy: optimizer family, learning rate, batch size, latent dimensions, epoch budget, and allowed smoke-test reductions. Enforcement is a generated config object or builder function in `_reprolab_curated.py`, for example `build_optimizer(model, params)` plus `CURATED_TRAINING_PLAN`. `train.py` imports that policy and may scale only through explicit helper APIs. Postflight checks for contradictory local optimizer construction when the manifest marks optimizer choice as locked.
+Curated knowledge is a paper-specific training policy: optimizer family, learning rate, batch size, latent dimensions, epoch budget, and allowed smoke-test reductions. Enforcement is a generated config object or builder function in `_openresearch_curated.py`, for example `build_optimizer(model, params)` plus `CURATED_TRAINING_PLAN`. `train.py` imports that policy and may scale only through explicit helper APIs. Postflight checks for contradictory local optimizer construction when the manifest marks optimizer choice as locked.
 
 Base-image/environment mismatch:
 
-Curated knowledge is a runtime compatibility policy: framework version, CUDA version, Python version, system packages, and known incompatible combinations. Enforcement has two parts: `build_environment` consumes the manifest package pins when building the image, and `_reprolab_curated.py` exposes `assert_runtime_environment()` for `train.py` to call at startup. Postflight verifies the call is present. Runtime assertion emits a structured failure before training if the image/framework does not match the curated policy.
+Curated knowledge is a runtime compatibility policy: framework version, CUDA version, Python version, system packages, and known incompatible combinations. Enforcement has two parts: `build_environment` consumes the manifest package pins when building the image, and `_openresearch_curated.py` exposes `assert_runtime_environment()` for `train.py` to call at startup. Postflight verifies the call is present. Runtime assertion emits a structured failure before training if the image/framework does not match the curated policy.
 
 The pattern is the same in all three cases: curated fact -> generated helper/constant/assertion -> required import/use contract -> postflight and runtime proof.
 
@@ -58,11 +58,11 @@ The run must prove curated knowledge was respected before expensive work starts.
 Post-emit proof:
 
 - Parse `train.py` after sub-agent emission.
-- Verify required imports from `_reprolab_curated`.
+- Verify required imports from `_openresearch_curated`.
 - Verify required helper calls are present.
 - Verify no local function shadows a required helper name.
 - Verify known-bad literals from the manifest are absent.
-- Verify `_reprolab_curated.py` helper body hashes match `_reprolab_curated_manifest.json`.
+- Verify `_openresearch_curated.py` helper body hashes match `_openresearch_curated_manifest.json`.
 
 Runtime proof:
 
@@ -88,7 +88,7 @@ Operator visibility:
   - Add fallback recipe recovery in `implement_baseline` from `paper_claim_map` and `environment_spec` when the reproduction contract is absent or failed, so curated knowledge is not solely coupled to a valid plan.
 
 - `backend/agents/baseline_implementation.py`
-  - Add a pre-agent step in `run_with_sdk()` after `code_dir` creation and context assembly (`backend/agents/baseline_implementation.py:1718`, `backend/agents/baseline_implementation.py:1719`, `backend/agents/baseline_implementation.py:1720`, `backend/agents/baseline_implementation.py:1723`) to write `_reprolab_curated.py` and `_reprolab_curated_manifest.json`.
+  - Add a pre-agent step in `run_with_sdk()` after `code_dir` creation and context assembly (`backend/agents/baseline_implementation.py:1718`, `backend/agents/baseline_implementation.py:1719`, `backend/agents/baseline_implementation.py:1720`, `backend/agents/baseline_implementation.py:1723`) to write `_openresearch_curated.py` and `_openresearch_curated_manifest.json`.
   - Replace `_data_recipes_binding_block()` table-only language with an import contract that names required helper imports. Keep the current table only as explanatory context (`backend/agents/baseline_implementation.py:1418`, `backend/agents/baseline_implementation.py:1479`, `backend/agents/baseline_implementation.py:1483`).
   - Add a post-agent step immediately after `collect_agent_text()` returns (`backend/agents/baseline_implementation.py:1798`, `backend/agents/baseline_implementation.py:1805`) to verify import/use/hash/banned-literal constraints before returning a `BaselineResult`.
 
@@ -99,7 +99,7 @@ Operator visibility:
 - Tests
   - Add dataset recipe tests for Frey capitalization, plural, whitespace, and false-positive behavior.
   - Add plan tests proving string-valued `compute_scope` is dropped and `data_recipes` still survives.
-  - Add emission tests proving `_reprolab_curated.py` is written, `train.py` must import the required helper, stale URLs are rejected, and helper hash mismatch fails.
+  - Add emission tests proving `_openresearch_curated.py` is written, `train.py` must import the required helper, stale URLs are rejected, and helper hash mismatch fails.
   - Add regression fixtures for the three observed train.py Frey loaders to prove the postflight checker flags all of them.
 
 ## 6. RISKS AND REJECTED OPTIONS

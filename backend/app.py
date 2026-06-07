@@ -326,7 +326,7 @@ async def _query_runpod_status(project_id: str, sandbox_mode: str | None, settin
             "api_error": str(exc),
         }
 
-    prefix = f"reprolab-{_safe_runpod_name_part(project_id)}-"
+    prefix = f"openresearch-{_safe_runpod_name_part(project_id)}-"
     matching = [
         pod
         for pod in pods
@@ -461,7 +461,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # captures the FULL story per-process so we can compare reloader vs
     # worker. backend.log only seems to capture stdout from one of them.
     print(
-        f"[reprolab] runs_root: settings={settings.runs_root!r} "
+        f"[openresearch] runs_root: settings={settings.runs_root!r} "
         f"env={env_runs_root!r} effective={effective_runs_root!r} "
         f"pid={_os.getpid()} cwd={_os.getcwd()!r}",
         flush=True,
@@ -488,7 +488,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     service = run_service or FileLiveRunService(runs_root=effective_runs_root)
 
     app = FastAPI(
-        title="ReproLab Agent",
+        title="OpenResearch Agent",
         version=__version__,
         debug=settings.debug,
         lifespan=_make_lifespan(),
@@ -575,7 +575,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                headers={"user-agent": "ReproLab/0.1 (+https://github.com/anthropics/openresearch)"},
+                headers={"user-agent": "OpenResearch/0.1 (+https://github.com/anthropics/openresearch)"},
             ) as client:
                 response = await client.get(fetch_url)
         except httpx.HTTPError as exc:

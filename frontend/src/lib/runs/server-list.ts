@@ -5,7 +5,13 @@ export interface RecentRunSummary {
   projectId: string;
   status: string;
   sourceLabel?: string;
+  startedAt?: string;
   updatedAt?: string;
+  paperTitle?: string;
+  paper?: { id?: string; title?: string } | null;
+  paperId?: string;
+  outputDir?: string;
+  runDir?: string;
 }
 
 /**
@@ -23,6 +29,10 @@ export interface RunSummary {
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
+  paperTitle?: string;
+  paper?: { id?: string; title?: string } | null;
+  paperId?: string;
+  outputDir?: string;
   benchmark?: {
     overallScore?: number;
     deltaValue?: number;
@@ -47,6 +57,10 @@ interface RawBackendRun {
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
+  paperTitle?: string;
+  paper?: { id?: string; title?: string } | null;
+  paperId?: string;
+  outputDir?: string;
   benchmark?: {
     overallScore?: number;
     deltaValue?: number;
@@ -82,6 +96,10 @@ function toRunSummary(raw: RawBackendRun): RunSummary | null {
     startedAt: raw.startedAt,
     updatedAt: raw.updatedAt,
     completedAt: raw.completedAt,
+    paperTitle: raw.paperTitle,
+    paper: raw.paper ?? undefined,
+    paperId: raw.paperId,
+    outputDir: raw.outputDir,
     benchmark: raw.benchmark ?? undefined,
     telemetry: rollupTelemetry(raw.telemetry)
   };

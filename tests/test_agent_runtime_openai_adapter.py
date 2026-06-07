@@ -122,13 +122,13 @@ def test_openai_runtime_normalizes_streamed_events(monkeypatch, tmp_path: Path) 
     assert captured_run["input"] == "task"
     assert captured_run["max_turns"] == 4
     assert configured_keys == ["sk-test"]
-    assert created_agents[-1].kwargs["name"] == "reprolab_artifact_x2d_discovery"
+    assert created_agents[-1].kwargs["name"] == "openresearch_artifact_x2d_discovery"
     assert created_agents[-1].kwargs["handoff_description"] == "artifact-discovery"
     assert created_agents[-1].kwargs["model"] == "gpt-test"
     assert len(created_agents[-1].kwargs["handoffs"]) == 1
     assert (
         created_agents[-1].kwargs["handoffs"][0].kwargs["name"]
-        == "reprolab_method_x2d_verifier"
+        == "openresearch_method_x2d_verifier"
     )
     assert any(isinstance(tool, WebSearchTool) for tool in created_agents[-1].kwargs["tools"])
 

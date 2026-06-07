@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dev-facing TUI for ReproLab runs (v3).
+"""Dev-facing TUI for OpenResearch runs (v3).
 
 Information-dense single-screen monitor for every signal a dev needs
 while debugging a paper-reproduction run.  Pure stdlib (no curses /
@@ -598,7 +598,7 @@ def _render(
     # Header
     burn = sum(float(p.get("costPerHr") or 0) for p in pods)
     out.append(
-        f"{BG_GRY}{B} ReproLab Dev Monitor "
+        f"{BG_GRY}{B} OpenResearch Dev Monitor "
         f"  {datetime.now().strftime('%H:%M:%S')}  "
         f"runs={len(projects)}  pods={len(pods)}  burn=${burn:.2f}/hr  Ctrl-C quits {R}"
     )

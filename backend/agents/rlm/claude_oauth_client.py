@@ -31,6 +31,124 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_S = 1800.0  # 30 minutes per completion — bounded
 
+# ---------------------------------------------------------------------------
+# Module-level root-usage sink (C3)
+# ---------------------------------------------------------------------------
+# Accumulates per-model token counts for ALL ClaudeOauthClient.completion()
+# calls made in this process since the last drain_root_usage() call.  Each
+# completion() call increments this dict IN ADDITION to its per-instance
+# counters so that run.py can ledger the root's cache tokens after
+# rlm.completion() finishes — without having access to the ClaudeOauthClient
+# instance (which is owned by the rlm library and not exposed).
+#
+# Thread safety: writes are protected by _ROOT_USAGE_LOCK; drain is atomic
+# (swap + reset under the lock).
+#
+# Structure: {model_name: {calls, input_tokens, output_tokens,
+#                           cache_creation_input_tokens, cache_read_input_tokens}}
+
+import threading as _threading
+
+_ROOT_USAGE_LOCK = _threading.Lock()
+_ROOT_USAGE: dict[str, dict[str, int]] = {}
+
+
+def drain_root_usage() -> dict[str, dict[str, int]]:
+    """Return and clear the accumulated root-model usage since the last drain.
+
+    Returns a dict of ``{model_name: {calls, input_tokens, output_tokens,
+    cache_creation_input_tokens, cache_read_input_tokens}}``.  The returned
+    snapshot is a fresh copy — the module-level accumulator is reset to empty.
+
+    Safe to call from any thread; uses a lock to ensure the swap is atomic.
+    """
+    global _ROOT_USAGE
+    with _ROOT_USAGE_LOCK:
+        snapshot = _ROOT_USAGE
+        _ROOT_USAGE = {}
+    return snapshot
+
+
+def _empty_root_turn_fallback() -> str:
+    """A parseable no-op REPL turn for when the root SDK call returns empty.
+
+    An EMPTY root completion ends the rlm loop: the library parses no ```repl
+    block and no ``FINAL_VAR`` (``rlm/utils/parsing.py`` matches
+    ``r"```repl\\s*\\n(.*?)\\n```"``), so it treats the turn as terminal and
+    ships a partial report mid-reproduction — exactly the 2026-05-30
+    ``prj_09047604e591d969`` iteration-1 death after the SDK aclose race
+    exhausted ``complete()``'s retries. Returning a single no-op ```repl block
+    instead keeps the loop alive for another iteration; it is still bounded by
+    the max-iteration / wall-clock / forced-iteration policies. Opt out with
+    ``OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK=0`` (then a true empty string is
+    returned, restoring the pre-2026-05-30 behavior).
+    """
+    import os
+
+    if os.environ.get("OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+    }:
+        return ""
+    return (
+        "```repl\n"
+        "# transient model-transport error — the previous turn was lost in the\n"
+        "# SDK teardown race and could not be recovered after retries. Continuing\n"
+        "# to the next iteration; re-issue your intended next step below.\n"
+        "pass\n"
+        "```"
+    )
+
+
+_CLI_DEFAULT_TIMEOUT_S = 600.0  # per-completion cap for the CLI subprocess
+
+
+def _claude_cli_bin() -> str:
+    """Resolve the ``claude`` CLI binary (override with ``OPENRESEARCH_CLAUDE_CLI_BIN``)."""
+    import os
+    import shutil
+
+    return (
+        os.environ.get("OPENRESEARCH_CLAUDE_CLI_BIN", "").strip()
+        or shutil.which("claude")
+        or "claude"
+    )
+
+
+def _root_transport() -> str:
+    """RLM-root completion transport: ``cli`` (default) | ``sdk`` | ``auto``.
+
+    ``cli``/``auto`` use the reliable ``claude`` CLI subprocess and fall back to
+    the legacy claude-agent-sdk path only if the CLI is unavailable or errors.
+    ``sdk`` forces the legacy path. Override with ``OPENRESEARCH_RLM_ROOT_TRANSPORT``.
+    """
+    import os
+
+    val = os.environ.get("OPENRESEARCH_RLM_ROOT_TRANSPORT", "cli").strip().lower()
+    return val if val in {"cli", "sdk", "auto"} else "cli"
+
+
+def _cli_timeout_s() -> float:
+    import os
+
+    raw = os.environ.get("OPENRESEARCH_RLM_CLI_TIMEOUT_S", "").strip()
+    if not raw:
+        return _CLI_DEFAULT_TIMEOUT_S
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return _CLI_DEFAULT_TIMEOUT_S
+
+
+# Tools disallowed for the root completion — the RLM root is a pure
+# text-generation task (mirrors the SDK path's ``tools=[]`` contract). Belt-and-
+# suspenders alongside the root system prompt's "emit a repl block" instruction.
+_ROOT_DISALLOWED_TOOLS = (
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+    "WebFetch", "WebSearch", "Task", "NotebookEdit",
+)
+
 
 def _empty_root_turn_fallback() -> str:
     """A parseable no-op REPL turn for when the root SDK call returns empty.
@@ -215,6 +333,25 @@ class ClaudeOauthClient(BaseLM):
                     "cache_read_input_tokens": cr_tok,
                     "reasoning_tokens": 0,
                 }
+                # Module-level sink: accumulate for post-completion ledgering in run.py
+                # (C3 — allows drain_root_usage() to capture root cache tokens without
+                # needing access to this instance).
+                with _ROOT_USAGE_LOCK:
+                    rec = _ROOT_USAGE.setdefault(
+                        resolved_model,
+                        {
+                            "calls": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
+                    )
+                    rec["calls"] += 1
+                    rec["input_tokens"] += in_tok
+                    rec["output_tokens"] += out_tok
+                    rec["cache_creation_input_tokens"] += cc_tok
+                    rec["cache_read_input_tokens"] += cr_tok
                 if (text or "").strip():
                     return text
                 return _empty_root_turn_fallback()
@@ -392,4 +529,4 @@ class ClaudeOauthClient(BaseLM):
         raise TypeError(f"Unsupported prompt type: {type(prompt).__name__}")
 
 
-__all__ = ["ClaudeOauthClient"]
+__all__ = ["ClaudeOauthClient", "drain_root_usage"]

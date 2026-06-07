@@ -27,7 +27,7 @@ runs/
 _test_logs/
 *.db
 *.db-*
-reprolab.db.*
+openresearch.db.*
 
 # Tooling / VCS
 .git/

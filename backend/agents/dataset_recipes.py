@@ -35,7 +35,7 @@ class DatasetRecipe:
     severity: str = "preferred"            # "strict" | "preferred" | "advisory"
     banned_literals: tuple[str, ...] = ()  # known-bad URL / import patterns
     helper_name: str = ""                  # python identifier for the curated loader
-    helper_body: str = ""                  # full def source; rendered into _reprolab_curated.py
+    helper_body: str = ""                  # full def source; rendered into _openresearch_curated.py
 
 
 DATASET_RECIPES: tuple[DatasetRecipe, ...] = (

@@ -227,7 +227,7 @@ run_rdr[pb_ftrl_1779576942]: cluster 45c909a4-75fc-4c43-94a6-9cfd055979e5 failed
 ### One canonical D3 syntax error from RunPod
 
 ```text
-File "/workspace/reprolab/pb-ftrl-1779576942/pb-ftrl-1779576942-f6ad9847/work/models.py", line 154
+File "/workspace/openresearch/pb-ftrl-1779576942/pb-ftrl-1779576942-f6ad9847/work/models.py", line 154
     """
     ^
 SyntaxError: unterminated triple-quoted string literal (detected at line 157)

@@ -8,7 +8,14 @@ from pathlib import Path
 
 from backend.agents.registry import AGENT_REGISTRY
 from backend.agents.resilience.cost import record_subagent_usage_to_path
-from backend.agents.runtime.base import AgentRuntime, ProviderName, StreamText, StreamToolCall, StreamUsage
+from backend.agents.runtime.base import (
+    AgentRuntime,
+    ProviderName,
+    StreamText,
+    StreamToolCall,
+    StreamUsage,
+    blocked_terms_from_env,
+)
 from backend.agents.runtime.factory import make_runtime
 from backend.agents.runtime.sdk_isolation import run_isolated
 from backend.agents.worker_reports import (
@@ -29,6 +36,7 @@ async def collect_agent_text(
     runtime: AgentRuntime | None = None,
     max_turns: int | None = None,
     on_event: Callable[[], None] | None = None,
+    blocked_terms: tuple[str, ...] = (),
 ) -> str:
     """Run one agent and return concatenated text output.
 
@@ -39,11 +47,20 @@ async def collect_agent_text(
     """
     selected_runtime = runtime or make_runtime(provider)
     started_at = datetime.now(timezone.utc).isoformat()
+    # #7 benchmark integrity: when the caller didn't pass an explicit blocklist,
+    # seed it from the curated env-var seam (OPENRESEARCH_BLOCKED_TERMS_JSON, set by
+    # cli.py). collect_agent_text is the single chokepoint EVERY agent flows
+    # through (baseline-implementation, rdr, patch-mode, future callers), so this
+    # makes the RuntimeGuard uniform and un-forgettable — no per-caller threading
+    # to forget. An explicit non-empty blocked_terms always wins.
+    if not blocked_terms:
+        blocked_terms = blocked_terms_from_env()
     spec = AGENT_REGISTRY[agent_id].to_runtime_spec(
         selected_runtime.provider_name,
         model_override=model,
         working_directory=project_dir,
         max_turns=max_turns,
+        blocked_terms=blocked_terms,
     )
     collected: list[str] = []
     tool_calls: list[dict[str, object]] = []

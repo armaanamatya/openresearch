@@ -21,7 +21,13 @@ import pytest
 
 from rlm.core.types import RLMChatCompletion, UsageSummary, ModelUsageSummary
 
-from backend.agents.rlm.report import RLMFinalReport, build_final_report, write_final_report_rlm
+from backend.agents.rlm.report import (
+    RLMFinalReport,
+    _latest_successful_experiment_record,
+    _metric_provenance_enabled,
+    build_final_report,
+    write_final_report_rlm,
+)
 from backend.agents.resilience.cost import CostLedgerEntry
 
 
@@ -684,3 +690,68 @@ def test_amend_final_report_overwrites_unscored_defaults_with_real_scores(tmp_pa
     assert post["rubric"]["meets_target"] is True  # 0.72 >= 0.60
     assert post["rubric"]["target_score"] == 0.60
     assert post["rubric"]["degraded"] is False
+
+
+class TestMetricProvenance:
+    """P3 §5b — baseline_metrics is PROJECTED from the canonical experiment
+    artifact (mirrors RDR), not the root's self-attested numbers. The existing
+    honesty guard is preserved as the fallback when no successful record exists."""
+
+    def test_projected_from_canonical_record(self, make_context, tmp_path):
+        ctx = _record_run_experiment(make_context(tmp_path))
+        # Canonical record measured 0.81; the root self-attests 0.92.
+        (ctx.project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({
+                "success": True,
+                "experiment_run_id": "prj-r1",
+                "metrics_sha256": "abc123",
+                "metrics": {"accuracy": 0.81},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        root_dict = {**_BASE_REPORT_DICT, "baseline_metrics": {"accuracy": 0.92}}
+        report = build_final_report(_make_result(json.dumps(root_dict)), ctx=ctx)
+        assert report.baseline_metrics == {"accuracy": 0.81}   # projected from the artifact
+        assert report.reported_metrics == {"accuracy": 0.92}   # root claim preserved, non-authoritative
+        assert report.experiment_run_id == "prj-r1"
+        assert report.metrics_sha256 == "abc123"
+
+    def test_hatch_off_keeps_root_metrics(self, make_context, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_METRIC_PROVENANCE", "false")
+        ctx = _record_run_experiment(make_context(tmp_path))
+        (ctx.project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "experiment_run_id": "r1", "metrics": {"accuracy": 0.81}}) + "\n",
+            encoding="utf-8",
+        )
+        report = build_final_report(_make_result(json.dumps(_BASE_REPORT_DICT)), ctx=ctx)
+        # Hatch off → fallback; run_experiment backed via the cost ledger → root's 0.92 kept.
+        assert report.baseline_metrics == {"accuracy": 0.92}
+
+    def test_no_record_preserves_honesty_guard(self, make_context, tmp_path):
+        """No successful experiment record → the existing honesty guard still
+        drops root metrics that run_experiment never backed (no regression)."""
+        ctx = make_context(tmp_path)  # NOT _record_run_experiment → run_experiment unbacked
+        report = build_final_report(_make_result(json.dumps(_BASE_REPORT_DICT)), ctx=ctx)
+        assert report.baseline_metrics == {}
+
+    def test_latest_successful_record_selection(self, tmp_path):
+        (tmp_path / "experiment_runs.jsonl").write_text(
+            "\n".join([
+                json.dumps({"success": True, "experiment_run_id": "r1", "metrics": {"a": 1}}),
+                json.dumps({"success": False, "experiment_run_id": "r2", "metrics": {"a": 2}}),
+                json.dumps({"success": True, "experiment_run_id": "r3", "metrics": {"a": 3}}),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        rec = _latest_successful_experiment_record(tmp_path)
+        assert rec is not None and rec["experiment_run_id"] == "r3" and rec["metrics"] == {"a": 3}
+
+    def test_latest_successful_record_none_when_absent(self, tmp_path):
+        assert _latest_successful_experiment_record(tmp_path) is None
+
+    def test_metric_provenance_hatch_parsing(self, monkeypatch):
+        monkeypatch.delenv("OPENRESEARCH_METRIC_PROVENANCE", raising=False)
+        assert _metric_provenance_enabled() is True
+        for off in ("false", "0", "no", "off"):
+            monkeypatch.setenv("OPENRESEARCH_METRIC_PROVENANCE", off)
+            assert _metric_provenance_enabled() is False, off

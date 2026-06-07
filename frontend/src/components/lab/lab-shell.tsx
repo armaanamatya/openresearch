@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 
 import type { AuthStatus, DemoAccelerator, DemoGpuParallelism, DemoModelChoice, DemoSandboxMode, LiveDemoRunState, RootProvider, SubagentAuth } from "@/lib/demo/demo-run-types";
 import type { RecentRunSummary } from "@/lib/runs/server-list";
+import { paperDisplayTitle } from "@/lib/runs/paper-title";
 import type { ModelChoice } from "@/lib/models/server-fetch";
 import type { LeaderboardRow } from "@/lib/leaderboard/types";
 import { RecentRunsPanel } from "./recent-runs-panel";
@@ -49,7 +50,7 @@ function WorkflowView({
   run: LiveDemoRunState;
 }) {
   const rlmEvents = dashboardEvents.filter(isRlmEvent);
-  const paperTitle = run.sourceLabel ?? "Untitled paper";
+  const paperTitle = paperDisplayTitle(run);
   const paperMeta = run.sourceNote ?? "";
   const isActive = run.status === "queued" || run.status === "running";
   return (
@@ -361,7 +362,7 @@ export function LabShell({
   );
 
   return (
-    <div className="reproLab">
+    <div className="openResearch">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
           <LabSidebar

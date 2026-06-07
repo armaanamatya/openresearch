@@ -22,7 +22,7 @@ from backend.agents.rlm.primitives import (
     _write_fsdp_accelerate_config,
 )
 
-_CFG = "_reprolab_fsdp.yaml"
+_CFG = "_openresearch_fsdp.yaml"
 _LAUNCH = f"accelerate launch --config_file {_CFG} "
 
 

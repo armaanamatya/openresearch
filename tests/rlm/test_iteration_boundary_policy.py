@@ -60,3 +60,50 @@ def test_iteration_boundary_history_resets_on_iteration_advance():
     # In a fresh iteration, history clean
     decision = p.should_refuse_final_var(current_score=0.9, iteration_count=2)
     assert decision.refuse is False
+
+
+def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
+    """F-06: on_iteration_advance must fire at each real REPL turn boundary
+    (OpenResearchRLMLogger.log), not only inside a FINAL_VAR refusal path.
+
+    Without it, one failing run_experiment in two DIFFERENT iterations
+    accumulates to len>=2 and falsely refuses the next legitimate FINAL_VAR —
+    the same 'guard wired but silently misfiring across the boundary' class as
+    the thread-local bug fixed in 6990d56.
+    """
+    from rlm.core.types import RLMIteration
+
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
+
+    p = _policy()
+
+    class _Ctx:
+        current_iteration = 0
+        _forced_iteration_policy = p
+
+    ctx = _Ctx()
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+
+    def _iter() -> RLMIteration:
+        return RLMIteration(
+            prompt={"role": "user", "content": "reproduce the paper"},
+            response="reasoning",
+            code_blocks=[],
+            final_answer=None,
+            iteration_time=1.0,
+        )
+
+    # Three real turns, each with exactly ONE failing run_experiment — never
+    # two-in-one-turn, so the guard must NOT refuse the FINAL_VAR in turn 3.
+    p.record_run_experiment(outcome="repairable")
+    logger.log(_iter())  # turn 1 boundary → reset
+    p.record_run_experiment(outcome="repairable")
+    logger.log(_iter())  # turn 2 boundary → reset
+    p.record_run_experiment(outcome="repairable")  # turn 3, one experiment so far
+
+    decision = p.should_refuse_final_var(current_score=0.9, iteration_count=3)
+    assert decision.refuse is False, (
+        "a single run_experiment per turn must not trip the two-in-one-turn guard"
+    )
+    # And ctx.current_iteration was still advanced (the seam didn't break logging).
+    assert ctx.current_iteration == 2

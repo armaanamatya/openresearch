@@ -289,7 +289,7 @@ step "5. End-to-end pod smoke test (this WILL spend money)"
 require_cmd ssh
 require_cmd ssh-keygen
 
-POD_NAME="reprolab-smoke-$(date +%s)"
+POD_NAME="openresearch-smoke-$(date +%s)"
 echo "Creating pod ${POD_NAME} with ${OPENRESEARCH_RUNPOD_GPU_TYPE}..."
 
 CREATE_PAYLOAD="$(

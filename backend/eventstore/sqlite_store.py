@@ -111,7 +111,7 @@ def _new_connection(path: str) -> sqlite3.Connection:
     ``synchronous=FULL`` is intentional: in WAL mode the default is NORMAL,
     which can leave the main DB file in an inconsistent state if a process
     is SIGKILL'd between the WAL write and the checkpoint. We've seen this
-    in practice (see ``learn.md`` 2026-05-09) — a killed
+    in practice (see ``docs/archive/learn.md`` 2026-05-09) — a killed
     ``backend.cli reproduce`` subprocess corrupted the event store and the
     next startup raised ``DatabaseError: database disk image is malformed``.
     FULL trades a small write throughput hit for crash safety, which is

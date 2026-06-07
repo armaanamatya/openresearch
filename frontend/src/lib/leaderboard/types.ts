@@ -2,6 +2,8 @@ export interface LeaderboardRow {
   project_id: string;
   paper_id: string;
   paper_title: string | null;
+  /** Human-readable per-run title (e.g. "SDAR full · 2026-05-31 19:05"). */
+  title?: string | null;
   mode: "rlm" | "rdr";
   models: {
     planner: string | null;

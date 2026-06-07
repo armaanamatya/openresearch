@@ -3,7 +3,7 @@
 #
 # Behavior:
 #   1. Defaults dashboard sandbox to "runpod" unless user overrides
-#      REPROLAB_DEFAULT_SANDBOX.
+#      OPENRESEARCH_DEFAULT_SANDBOX.
 #   2. Runs scripts/runpod_check.sh only when sandbox is "runpod"
 #      (or START_FORCE_RUNPOD_PREFLIGHT=1).
 #   3. Execs uvicorn for the FastAPI factory.
@@ -18,7 +18,7 @@
 #                                       # (cents-scale on RTX 4090). Use when
 #                                       # you want end-to-end confidence
 #                                       # before kicking off a long pipeline.
-#   REPROLAB_DEFAULT_SANDBOX=local ./start.sh
+#   OPENRESEARCH_DEFAULT_SANDBOX=local ./start.sh
 #                                       # temporarily force local dashboard default
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -44,23 +44,23 @@ env_value_from_file() {
 }
 
 # 1. Default sandbox for the dashboard. Honor explicit override.
-export REPROLAB_DEFAULT_SANDBOX="${REPROLAB_DEFAULT_SANDBOX:-runpod}"
-echo "[start.sh] Dashboard default sandbox: ${REPROLAB_DEFAULT_SANDBOX}"
+export OPENRESEARCH_DEFAULT_SANDBOX="${OPENRESEARCH_DEFAULT_SANDBOX:-runpod}"
+echo "[start.sh] Dashboard default sandbox: ${OPENRESEARCH_DEFAULT_SANDBOX}"
 
 # If the public key is missing but we have a private key, derive it so
 # preflight/startup remains stable with minimal .env setup.
-if [[ -z "${REPROLAB_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    if [[ -z "${REPROLAB_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-        REPROLAB_RUNPOD_SSH_KEY_PATH="$(env_value_from_file REPROLAB_RUNPOD_SSH_KEY_PATH "${ENV_FILE}" || true)"
-        export REPROLAB_RUNPOD_SSH_KEY_PATH
+if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
+    if [[ -z "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
+        OPENRESEARCH_RUNPOD_SSH_KEY_PATH="$(env_value_from_file OPENRESEARCH_RUNPOD_SSH_KEY_PATH "${ENV_FILE}" || true)"
+        export OPENRESEARCH_RUNPOD_SSH_KEY_PATH
     fi
-    if [[ -n "${REPROLAB_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-        ssh_key_path="$(eval echo "${REPROLAB_RUNPOD_SSH_KEY_PATH}")"
+    if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
+        ssh_key_path="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"
         if [[ -f "${ssh_key_path}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
             derived_pub="$(ssh-keygen -y -f "${ssh_key_path}" 2>/dev/null || true)"
             if [[ -n "${derived_pub}" ]]; then
-                export REPROLAB_RUNPOD_SSH_PUBLIC_KEY="${derived_pub}"
-                echo "[start.sh] Derived REPROLAB_RUNPOD_SSH_PUBLIC_KEY from ${ssh_key_path}."
+                export OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY="${derived_pub}"
+                echo "[start.sh] Derived OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY from ${ssh_key_path}."
             fi
         fi
     fi
@@ -68,7 +68,7 @@ fi
 
 # 2. Runpod preflight (when relevant, and skippable).
 runpod_preflight_needed=0
-if [[ "${REPROLAB_DEFAULT_SANDBOX}" == "runpod" ]]; then
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "runpod" ]]; then
     runpod_preflight_needed=1
 fi
 if [[ "${START_FORCE_RUNPOD_PREFLIGHT:-0}" == "1" ]]; then
@@ -107,7 +107,7 @@ if [[ "${runpod_preflight_needed}" == "1" ]]; then
         echo "[start.sh] START_SKIP_PREFLIGHT=1 — skipping Runpod preflight."
     fi
 else
-    echo "[start.sh] Runpod preflight not required for sandbox=${REPROLAB_DEFAULT_SANDBOX}."
+    echo "[start.sh] Runpod preflight not required for sandbox=${OPENRESEARCH_DEFAULT_SANDBOX}."
 fi
 
 # 3. Boot the API.

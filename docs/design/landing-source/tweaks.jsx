@@ -1,4 +1,4 @@
-/* ReproLab landing — Tweaks panel */
+/* OpenResearch landing — Tweaks panel */
 const { useEffect } = React;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{

@@ -1,4 +1,4 @@
-"""Agent registry — RLM-path ReproLab agent definitions.
+"""Agent registry — RLM-path OpenResearch agent definitions.
 
 Usage:
     from backend.agents.registry import get_agent_definitions
@@ -16,13 +16,13 @@ from backend.agents.prompts import (
     IMPROVEMENT_PATH_PROMPT,
     RUBRIC_VERIFIER_PROMPT,
 )
-from backend.agents.runtime.base import AgentRuntimeSpec, ProviderName, ToolSpec
+from backend.agents.runtime.base import AgentRuntimeSpec, ProviderName, RuntimeGuard, ToolSpec
 from backend.config import get_settings
 
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """Internal registry entry for a ReproLab agent."""
+    """Internal registry entry for a OpenResearch agent."""
 
     agent_id: str
     role: str
@@ -43,8 +43,15 @@ class AgentSpec:
         max_turns: int | None = None,
         working_directory: Path | None = None,
         sub_agents: tuple[AgentRuntimeSpec, ...] = (),
+        blocked_terms: tuple[str, ...] = (),
     ) -> AgentRuntimeSpec:
-        """Convert a registry entry into the provider-neutral runtime contract."""
+        """Convert a registry entry into the provider-neutral runtime contract.
+
+        ``blocked_terms`` (#7 benchmark integrity) seeds the spec's
+        ``RuntimeGuard`` so the agent cannot fetch the paper's own repo. It is
+        threaded from ``ctx.blocked_terms`` via ``collect_agent_text`` and
+        applies to ALL registry agents uniformly.
+        """
         settings = get_settings()
         configured_model = _model_override_from_settings(
             self.agent_id,
@@ -56,23 +63,34 @@ class AgentSpec:
             or configured_model
             or _default_model_for_provider(self, provider)
         )
+        # Fail-closed (invariant 3): a registered agent must declare at least one
+        # tool after dropping the meta "Agent" spawn capability. An empty list
+        # would silently fall through to the SDK "all defaults" path on the
+        # Claude adapter (allowed_tools omitted ⇒ every default tool) — the exact
+        # tool-access widening Gap A closes. Catch the misconfiguration here
+        # rather than letting it diverge across providers.
+        tools = tuple(
+            ToolSpec(name=tool_name, description=_TOOL_DESCRIPTIONS.get(tool_name, ""))
+            for tool_name in self.tools
+            if tool_name != "Agent"
+        )
+        if not tools:
+            raise ValueError(
+                f"Agent {self.agent_id!r} resolves to an empty tool list (after "
+                "excluding 'Agent'); refusing to build a spec that would silently "
+                "inherit all provider-default tools (invariant 3)."
+            )
         return AgentRuntimeSpec(
             name=self.agent_id,
             description=self.description,
             instructions=self.prompt,
             model=model,
-            tools=tuple(
-                ToolSpec(
-                    name=tool_name,
-                    description=_TOOL_DESCRIPTIONS.get(tool_name, ""),
-                )
-                for tool_name in self.tools
-                if tool_name != "Agent"
-            ),
+            tools=tools,
             sub_agents=sub_agents,
             max_turns=max_turns if max_turns is not None else self.max_turns,
             thinking_budget_tokens=self.thinking_budget_tokens,
             working_directory=working_directory,
+            guard=RuntimeGuard(blocked_terms=tuple(blocked_terms)),
         )
 
 

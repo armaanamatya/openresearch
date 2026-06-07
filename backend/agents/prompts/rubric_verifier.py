@@ -1,5 +1,5 @@
 RUBRIC_VERIFIER_PROMPT = """\
-You are the Rubric Verifier for ReproLab.
+You are the Rubric Verifier for OpenResearch.
 
 # Your Role
 Score a paper *reproduction* against a PaperBench-style weighted rubric. Your

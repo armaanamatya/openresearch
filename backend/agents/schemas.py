@@ -1,4 +1,4 @@
-"""Structured output schemas for all ReproLab agents.
+"""Structured output schemas for all OpenResearch agents.
 
 Every agent returns an AgentOutput envelope containing typed structured_outputs.
 These Pydantic models define the contract between agents.
@@ -1052,6 +1052,12 @@ class PaperHint(BaseModel):
     guidance: str = ""
     default_scope: ScopeSpec | None = None
     invariants: list[InvariantSpec] = Field(default_factory=list)
+    # #7 benchmark integrity: curated resources (the paper's OWN repo, etc.) that
+    # NO agent may fetch — seeds every agent's RuntimeGuard. arXiv runs load
+    # neither a PaperBench bundle nor --blacklist, so this is the curated source
+    # that protects them. List ONLY the paper's own artifacts; never framework
+    # deps (trl, etc.) the reproduction legitimately needs.
+    blocked_resources: list[str] = Field(default_factory=list)
     primitive_share: dict[str, float] | None = None
 
 

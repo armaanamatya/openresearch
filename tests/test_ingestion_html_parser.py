@@ -236,3 +236,47 @@ def test_html_parser_handles_deep_nesting_without_recursion_error(tmp_path: Path
         # Wrapped as ParseError — acceptable (cascade will handle it).
         pass
     # Any other exception (especially RecursionError) is a failure.
+
+
+# F-27: LaTeXML <math> equations carry the SDAR rubric invariants (g_t=σ(β·Δ_t),
+# λ=0.1, β=10). Dropping every <math> subtree strips those invariants from the
+# corpus. The parser must rescue the alttext LaTeX (or the unicode get_text
+# fallback) before the _DROP_TAGS decompose, mirroring the figcaption rescue.
+_MATH_HTML = f"""\
+<!DOCTYPE html>
+<html>
+<head><title>SDAR Paper</title></head>
+<body>
+  <article>
+  <section>
+    <h2>Method</h2>
+    <p>The sigmoid gate is defined as
+       <math alttext="g_t = \\sigma(\\beta \\cdot \\Delta_t)" display="inline"><mrow><mi>g</mi></mrow></math>
+       with a stop-gradient on the gate. {_BODY_FILLER}</p>
+    <p>We set the regularization coefficient
+       <math display="inline"><mrow><mi>&#955;</mi><mo>=</mo><mn>0.1</mn></mrow></math>
+       throughout all experiments. {_BODY_FILLER}</p>
+  </section>
+  </article>
+</body>
+</html>
+"""
+
+
+def test_html_parser_rescues_math_alttext(tmp_path: Path):
+    """LaTeXML <math alttext=...> equations survive as inline prose (F-27).
+
+    Without the rescue, <math> is in _DROP_TAGS and the whole subtree is
+    decomposed — stripping the SDAR invariants g_t=σ(β·Δ_t) and λ=0.1 from
+    the corpus the rubric is generated against.
+    """
+    html_path = _write_html(tmp_path, _MATH_HTML)
+    result = HtmlPaperParser().parse(project_id="prj_math", paper_path=html_path)
+
+    # alttext LaTeX (preferred) survives as prose.
+    assert "\\sigma" in result.full_text
+    assert "\\beta" in result.full_text
+    # get_text() fallback for the alttext-less math survives (λ = 0.1).
+    assert "0.1" in result.full_text
+    # surrounding prose is unaffected by the rescue.
+    assert "sigmoid gate" in result.full_text.lower()

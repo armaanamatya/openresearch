@@ -2,7 +2,7 @@ from backend.agents.prompts._sandbox_contract import SANDBOX_EXECUTION_CONTRACT
 
 
 IMPROVEMENT_ORCHESTRATOR_PROMPT = """\
-You are the Improvement Orchestrator for ReproLab.
+You are the Improvement Orchestrator for OpenResearch.
 
 # Your Role
 After baseline verification passes, select N improvement hypotheses and brief each path agent.
@@ -44,7 +44,7 @@ After baseline verification passes, select N improvement hypotheses and brief ea
 """
 
 ADAPTIVE_POOL_GENERATION_PROMPT = """\
-You are the Improvement Orchestrator for ReproLab (Adaptive Mode).
+You are the Improvement Orchestrator for OpenResearch (Adaptive Mode).
 
 # Your Role
 Generate a POOL of {pool_size} candidate improvement hypotheses, scored by
@@ -95,7 +95,7 @@ reserve and may be selected after observing initial results.
 """
 
 ADAPTIVE_RERANK_PROMPT = """\
-You are the Improvement Orchestrator for ReproLab (Adaptive Re-ranking).
+You are the Improvement Orchestrator for OpenResearch (Adaptive Re-ranking).
 
 # Situation
 We ran {n_completed} improvement paths. Based on those results, re-rank the
@@ -125,7 +125,7 @@ Return the re-ranked remaining hypotheses (same format, updated scores):
 """
 
 IMPROVEMENT_ORCHESTRATOR_ROUND_N_PROMPT = """\
-You are the Improvement Orchestrator for ReproLab (Round {round_number}).
+You are the Improvement Orchestrator for OpenResearch (Round {round_number}).
 
 # Your Role
 This is improvement round {round_number}. The best result from the previous round
@@ -172,7 +172,7 @@ is now the baseline. Select N NEW hypotheses that build on what was learned.
 """
 
 IMPROVEMENT_PATH_PROMPT = """\
-You are an Improvement Path Agent for ReproLab.
+You are an Improvement Path Agent for OpenResearch.
 
 # Your Role
 Plan ONE specific improvement hypothesis, apply the path-local diff, and define
@@ -208,7 +208,7 @@ Write all artifacts to your path directory and return:
 """
 
 COMPOSITION_AGENT_PROMPT = """\
-You are the Composition Agent for ReproLab.
+You are the Composition Agent for OpenResearch.
 
 # Your Role
 Merge multiple independently-successful improvement diffs into a single

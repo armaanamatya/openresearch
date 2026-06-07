@@ -1,0 +1,7 @@
+# Canonical author identity — folds the maintainer's aliases under one name.
+# Display-only (git log --use-mailmap, shortlog, GitHub contributor graph); NO history rewrite.
+lolout1 <appradhann@gmail.com> <sww35@sun.cs.txstate.edu>
+lolout1 <appradhann@gmail.com> <sww35@txstate.edu>
+lolout1 <appradhann@gmail.com> <lolout1@users.noreply.github.com>
+lolout1 <appradhann@gmail.com> Abheek Pradhan <163784642+lolout1@users.noreply.github.com>
+lolout1 <appradhann@gmail.com> Abheek Pradhan <appradhann@gmail.com>

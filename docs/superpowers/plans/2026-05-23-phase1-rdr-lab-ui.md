@@ -2028,7 +2028,7 @@ Spec acceptance: docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderbo
 - [ ] **Step 1: Start the backend + frontend dev servers**
 
 Terminal A: `.venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000`
-Terminal B: from `frontend/`: `REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run dev`
+Terminal B: from `frontend/`: `OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run dev`
 
 - [ ] **Step 2: Trigger a real `--mode rdr` run via the UI**
 

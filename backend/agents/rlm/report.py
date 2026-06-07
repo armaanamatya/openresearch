@@ -47,6 +47,16 @@ class RLMFinalReport(BaseModel):
         default_factory=dict,
         description="Measured metrics; may be {} until Phase 5.",
     )
+    # P2 provenance back-link (invariant 2): the canonical experiment record this
+    # report's metrics trace to, + the sha256 of that run's metrics.json artifact.
+    # None when no successful experiment ran. P3 projects baseline_metrics from
+    # this exact record (closing metric → experiment record → metrics.json hash).
+    experiment_run_id: str | None = None
+    metrics_sha256: str | None = None
+    # P3 §5b: the root's self-attested metrics — NON-AUTHORITATIVE. baseline_metrics
+    # is projected from the canonical experiment artifact; this preserves what the
+    # root reported for diffing/diagnostics, never fed to the scorer/leaderboard.
+    reported_metrics: dict = Field(default_factory=dict)
     paper_claims: dict = Field(default_factory=dict)
     # ── paper_claims coercer ──
     # The root model occasionally returns paper_claims as a LIST of claim
@@ -136,6 +146,15 @@ class RLMFinalReport(BaseModel):
         default=None,
         description="ISO-8601 UTC timestamp when the report was written.",
     )
+    title: str | None = Field(
+        default_factory=lambda: (os.environ.get("OPENRESEARCH_RUN_TITLE") or "").strip() or None,
+        description=(
+            "Human-readable run title (e.g. 'SDAR full · 2026-05-31 19:05'), "
+            "surfaced as the leaderboard row label so repeated runs of the same "
+            "paper are distinguishable. Sourced from OPENRESEARCH_RUN_TITLE at "
+            "report-construction time."
+        ),
+    )
 
     # --- Scope section (spec 2026-05-23-sdar-baseline-handoff §Lane 4)
     # Distinguishes "what the user / operator scoped the run to" from "what the
@@ -154,6 +173,16 @@ class RLMFinalReport(BaseModel):
             "CLI hint, default 'full paper'). `ran` = list of items actually "
             "executed (model names, dataset slices, seeds). `gaps` = list of "
             "items requested but not executed, with a short reason each."
+        ),
+    )
+    stop_reason: dict | None = Field(
+        default=None,
+        description=(
+            "Set when the run STOPPED on an un-recoverable capacity/OOM condition "
+            "rather than completing (2026-05-31): "
+            "{kind: 'oom_shrink_exhausted'|'capacity_exhausted', detail, "
+            "per_gpu_vram_gb, models_skipped, environments_skipped, gaps}. "
+            "None on a normally-completed run."
         ),
     )
 
@@ -264,7 +293,22 @@ def _reconcile_verdict_against_evidence(
     return verdict, None
 
 
-def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
+def _normalise_model_name(name: str) -> str:
+    """Lowercase + strip for case-insensitive model-name comparison."""
+    return name.strip().lower()
+
+
+def _operator_skip_set(operator_skip_models: list[str] | None) -> frozenset[str]:
+    """Return a normalised frozenset of operator-intended skip model names."""
+    if not operator_skip_models:
+        return frozenset()
+    return frozenset(_normalise_model_name(m) for m in operator_skip_models if m)
+
+
+def _collect_data_unavailable_gaps(
+    project_dir: Path,
+    operator_skip_models: list[str] | None = None,
+) -> list[str]:
     """Scan the run's emitted metrics for datasets AND models the agent recorded
     as unavailable, returning clear, deduped gap strings for ``scope.gaps``.
 
@@ -278,10 +322,26 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
     (numerator + denominator) rather than scored zero. So the run always reaches
     a final summary + rubric and only the failed pieces drop out (2026-05-30
     graceful-degradation mandate). Best-effort: [] when no metrics file is present.
+
+    ``operator_skip_models``: the operator-intended skip list from
+    ``ScopeSpec.skip_models``.  A model that appears in ``scope.models_skipped``
+    BUT is NOT in ``operator_skip_models`` was REQUESTED yet failed to load —
+    the agent's code caught a load exception (``TypeError``, architecture error,
+    ``unexpected keyword argument``, etc.) and silently laundered it into a
+    scope-reduction entry.  These are reported as "load failure (repairable code
+    bug)" and are NOT silently excluded from the rubric — they surface as
+    repair-context for the next iteration.  Only genuinely operator-intended
+    skips (present in ``operator_skip_models``) are tagged "scope reduction" and
+    excluded from scoring.
     """
     datasets: dict[str, str] = {}   # name(lower) -> reason
-    models: dict[str, str] = {}     # name(lower) -> reason
+    # models dict: name(lower) -> (reason, is_repairable_bug)
+    # is_repairable_bug=True  → requested model whose load failed (code bug)
+    # is_repairable_bug=False → operator-intended scope reduction (legitimate)
+    models: dict[str, tuple[str, bool]] = {}
     _MODEL_FAIL = {"model_load_failed", "failed", "skipped", "data_unavailable", "unavailable"}
+    op_skip = _operator_skip_set(operator_skip_models)
+
     outputs = project_dir / "code" / "outputs"
     for mpath in (sorted(outputs.rglob("metrics.json")) if outputs.exists() else []):
         try:
@@ -311,31 +371,64 @@ def _collect_data_unavailable_gaps(project_dir: Path) -> list[str]:
         # --- models ---
         for m, mv in (data.get("per_model") or {}).items():
             if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _MODEL_FAIL:
-                models.setdefault(str(m).strip().lower(), str(mv.get("reason") or mv.get("error") or "").strip())
+                key = _normalise_model_name(m)
+                reason = str(mv.get("reason") or mv.get("error") or "").strip()
+                # A per_model status failure is always a runtime failure, not an
+                # operator-intended skip.  These are repairable code bugs unless the
+                # operator explicitly de-scoped the model.
+                is_bug = key not in op_skip
+                models.setdefault(key, (reason, is_bug))
         for m in ((data.get("scope") or {}).get("models_skipped") or []):
             if isinstance(m, str) and m.strip():
-                models.setdefault(m.strip().lower(), "scope reduction")
+                key = _normalise_model_name(m)
+                # Distinguish: is this an operator-intended skip, or did the agent
+                # quietly dump a load failure into models_skipped to avoid scoring?
+                is_bug = key not in op_skip
+                models.setdefault(key, ("scope reduction" if not is_bug else "", is_bug))
         for entry in data.get("model_load_failures") or []:
             if isinstance(entry, dict) and (entry.get("model") or entry.get("name")):
-                models.setdefault(str(entry.get("model") or entry.get("name")).strip().lower(),
-                                  str(entry.get("error") or entry.get("reason") or "").strip())
+                key = _normalise_model_name(str(entry.get("model") or entry.get("name")))
+                reason = str(entry.get("error") or entry.get("reason") or "").strip()
+                is_bug = key not in op_skip
+                models.setdefault(key, (reason, is_bug))
             elif isinstance(entry, str) and entry.strip():
-                models.setdefault(entry.strip().lower(), "")
+                key = _normalise_model_name(entry)
+                is_bug = key not in op_skip
+                models.setdefault(key, ("", is_bug))
     gaps: list[str] = []
     for name, reason in sorted(datasets.items()):
         tail = f" ({reason[:160]})" if reason else ""
         gaps.append(f"{name}: dataset unobtainable{tail} — excluded from rubric score, not penalised")
-    for name, reason in sorted(models.items()):
-        tail = f" ({reason[:160]})" if reason else ""
-        gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
+    for name, (reason, is_repairable_bug) in sorted(models.items()):
+        if is_repairable_bug:
+            # Requested model whose load failed in agent code — surface as a
+            # repairable failure so the repair loop sees it, NOT as a silent
+            # scope-exclusion that would launder the bug into a 0.188 score.
+            tail = f" ({reason[:160]})" if reason else ""
+            gaps.append(
+                f"{name}: model load failure (repairable code bug){tail}"
+                f" — NOT excluded from rubric; fix the loader and re-run"
+            )
+        else:
+            # Operator-intended scope reduction — legitimately excluded.
+            tail = f" ({reason[:160]})" if reason else ""
+            gaps.append(f"{name}: model unavailable{tail} — excluded from rubric score, not penalised")
     return gaps
 
 
-def _merge_data_unavailable_gaps(scope: dict, project_dir: Path) -> dict:
+def _merge_data_unavailable_gaps(
+    scope: dict,
+    project_dir: Path,
+    operator_skip_models: list[str] | None = None,
+) -> dict:
     """Merge auto-collected data-unavailable gaps into ``scope.gaps`` (deduped by
     leading dataset token), so unobtainable datasets are reported even when the
-    root model did not declare them in scope.gaps itself."""
-    auto = _collect_data_unavailable_gaps(project_dir)
+    root model did not declare them in scope.gaps itself.
+
+    ``operator_skip_models`` is forwarded to ``_collect_data_unavailable_gaps``
+    so the intentional-skip vs repairable-code-bug distinction is preserved.
+    """
+    auto = _collect_data_unavailable_gaps(project_dir, operator_skip_models=operator_skip_models)
     if not auto:
         return scope
     existing = list((scope or {}).get("gaps") or [])
@@ -576,6 +669,59 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
+    """Return ``rubric`` with ``overall_score`` floored to the run's best recorded
+    rubric score (best-of-run; 2026-05-30, reordered for F-11).
+
+    A late regression or a degraded self-report can never bury a higher score the
+    run actually achieved. Applied BEFORE verdict reconciliation so the verdict
+    reflects the floored score, not the degraded self-reported one — F-11: the floor
+    used to run only AFTER reconciliation, leaving verdict and score inconsistent on
+    the no-amend path. No-op when no better score was recorded.
+    """
+    best = _best_recorded_rubric_score(project_dir)
+    if best is None:
+        return rubric
+    floored = dict(rubric or {})
+    cur = floored.get("overall_score")
+    try:
+        cur_f = float(cur) if cur is not None else None
+    except (TypeError, ValueError):
+        cur_f = None
+    if cur_f is None or best > cur_f:
+        floored["overall_score"] = best
+        floored["best_of_run"] = True
+    return floored
+
+
+def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
+    """Recover the last terminal ``stop_reason`` from ``experiment_runs.jsonl``.
+
+    Fail-soft fallback for when ``ctx._terminal_stop_reason`` is unavailable (e.g.
+    re-running the builder on a finalized run). Scans in order so the LAST recorded
+    terminal stop wins; returns None on any error or when none was recorded.
+    """
+    path = Path(project_dir) / "experiment_runs.jsonl"
+    if not path.is_file():
+        return None
+    found: dict | None = None
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "stop_reason" not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            for candidate in (entry, entry.get("result") if isinstance(entry, dict) else None):
+                if isinstance(candidate, dict) and isinstance(candidate.get("stop_reason"), dict):
+                    if candidate["stop_reason"].get("kind"):
+                        found = candidate["stop_reason"]
+    except OSError:
+        return None
+    return found
+
+
 def build_final_report(
     result: RLMChatCompletion,
     *,
@@ -628,30 +774,57 @@ def build_final_report(
     # authoritative ledger count, then enforce the honesty invariant: a result
     # section must be backed by the primitive that produces it.
     trace = _authoritative_primitive_trace(ctx)
-    baseline_metrics = parsed.get("baseline_metrics") or {}
     summary = str(parsed.get("reproduction_summary") or "")
-    if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
-        # The root reported metrics it never measured — run_experiment never
-        # ran. Drop them and say so; downgrade an over-claimed verdict.
-        logger.warning(
-            "report: dropping %d unbacked baseline metric(s) — run_experiment "
-            "never ran (root-fabricated)",
-            len(baseline_metrics),
-        )
-        baseline_metrics = {}
-        summary = (
-            summary
-            + "\n\n[honesty guard] Baseline metrics were dropped: the "
-            "run_experiment primitive never ran, so no metrics were measured."
-        ).strip()
-        if verdict == "reproduced":
-            verdict = "partial"
+    # §5b metric projection (OPENRESEARCH_METRIC_PROVENANCE, default true): the final
+    # baseline_metrics are PROJECTED from the canonical experiment artifact — the
+    # root no longer types ground-truth numbers (mirrors RDR, controller.py:1184
+    # `baseline_metrics=exp.get("metrics")`). The root's self-attested numbers are
+    # preserved non-authoritatively in `reported_metrics` (never scored).
+    reported_metrics = parsed.get("baseline_metrics") or {}
+    canonical_record = _latest_successful_experiment_record(ctx.project_dir)
+    if _metric_provenance_enabled() and canonical_record is not None:
+        # The record's existence proves run_experiment ran successfully, so the
+        # honesty drop-guard below is moot — project the measured metrics.
+        baseline_metrics = canonical_record.get("metrics") or {}
+        if reported_metrics and reported_metrics != baseline_metrics:
+            summary = (
+                summary
+                + "\n\n[metric provenance] baseline_metrics projected from the "
+                f"canonical experiment artifact (experiment_run_id="
+                f"{canonical_record.get('experiment_run_id')}); root-reported "
+                "numbers preserved non-authoritatively in reported_metrics."
+            ).strip()
+    else:
+        # Fallback (provenance disabled OR no successful experiment): keep the
+        # existing honesty guard — a metric the root typed but run_experiment
+        # never backed is dropped, and an over-claimed verdict downgraded.
+        baseline_metrics = reported_metrics
+        if baseline_metrics and not trace["by_primitive"].get("run_experiment"):
+            logger.warning(
+                "report: dropping %d unbacked baseline metric(s) — run_experiment "
+                "never ran (root-fabricated)",
+                len(baseline_metrics),
+            )
+            baseline_metrics = {}
+            summary = (
+                summary
+                + "\n\n[honesty guard] Baseline metrics were dropped: the "
+                "run_experiment primitive never ran, so no metrics were measured."
+            ).strip()
+            if verdict == "reproduced":
+                verdict = "partial"
+
+    # F-11: floor the rubric to the run's best-of-run score BEFORE reconciling the
+    # verdict, so a late regression / degraded self-report can't cap the verdict
+    # below what the run actually achieved. (The floor used to run only after this,
+    # leaving verdict and the displayed score inconsistent on the no-amend path.)
+    rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
 
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(
         verdict,
         baseline_metrics=baseline_metrics,
-        rubric=parsed.get("rubric") or {},
+        rubric=rubric_floored,
         primitive_trace=trace,
     )
     if downgrade_reason:
@@ -683,8 +856,14 @@ def build_final_report(
     # Surface datasets the agent recorded as unobtainable as explicit scope.gaps,
     # even if the root never declared them — they were EXCLUDED from the rubric
     # score (data-unavailable-aware grader), so the report must say so plainly.
+    # Pass the operator's skip_models so we can distinguish intentional scope
+    # reductions from model load failures the agent silently laundered into
+    # scope.models_skipped (a code bug that must NOT be auto-excluded).
+    _op_skip = list(getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or [])
     try:
-        verified_scope = _merge_data_unavailable_gaps(verified_scope, ctx.project_dir)
+        verified_scope = _merge_data_unavailable_gaps(
+            verified_scope, ctx.project_dir, operator_skip_models=_op_skip
+        )
     except Exception:  # noqa: BLE001 — gap surfacing augments the report, never fatal
         logger.exception("report: data-unavailable gap merge failed")
 
@@ -694,7 +873,7 @@ def build_final_report(
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
-        "rubric": parsed.get("rubric") or {
+        "rubric": rubric_floored or {
             "overall_score": None,
             "meets_target": None,
             "target_score": None,
@@ -708,24 +887,30 @@ def build_final_report(
         "iterations": _safe_int(parsed.get("iterations") or (result.metadata or {}).get("iterations")),
     }
 
-    # Best-of-run floor (2026-05-30): the RLM loop can over-iterate into a degraded
-    # final state and self-report a LOWER rubric than it actually achieved — the
-    # SDAR run reported 0.0 despite scoring ~0.18 mid-run. Surface the best
-    # overall_score the run recorded so a late regression can never bury a real
-    # result. Reads dashboard_events.jsonl, so re-running this builder also
-    # salvages an already-finalized degraded run.
-    _best = _best_recorded_rubric_score(ctx.project_dir)
-    if _best is not None:
-        _r = dict(kwargs.get("rubric") or {})
-        _cur = _r.get("overall_score")
-        try:
-            _cur_f = float(_cur) if _cur is not None else None
-        except (TypeError, ValueError):
-            _cur_f = None
-        if _cur_f is None or _best > _cur_f:
-            _r["overall_score"] = _best
-            _r["best_of_run"] = True
-            kwargs["rubric"] = _r
+    # comp 4b (2026-05-31): surface a terminal capacity/OOM stop so the report
+    # explains WHY the run ended early. Prefer the in-process signal stashed on
+    # ctx by run.py's tool wrapper; fall back to experiment_runs.jsonl so
+    # re-running this builder on a finalized run still recovers it.
+    _stop = getattr(ctx, "_terminal_stop_reason", None)
+    if not (isinstance(_stop, dict) and _stop.get("kind")):
+        _stop = _terminal_stop_reason_from_disk(ctx.project_dir)
+    if isinstance(_stop, dict) and _stop.get("kind"):
+        kwargs["stop_reason"] = _stop
+
+    # Best-of-run floor is applied via _apply_best_of_run_floor BEFORE the verdict
+    # reconciliation (rubric_floored above), so kwargs["rubric"] already carries the
+    # floored score and verdict + displayed score stay consistent on the no-amend
+    # path (F-11; the floor previously ran only here, after the reconcile).
+
+    # P2/P3 provenance: back-link the report to the canonical experiment record +
+    # its metrics.json hash (invariant 2 trace), and preserve the root's
+    # non-authoritative self-attested numbers. `_canonical_experiment_provenance`
+    # selects the same latest-successful record `baseline_metrics` was projected
+    # from above (§5b), so the back-link and the projected metrics name one run.
+    _prov = _canonical_experiment_provenance(ctx.project_dir)
+    kwargs["experiment_run_id"] = _prov.get("experiment_run_id")
+    kwargs["metrics_sha256"] = _prov.get("metrics_sha256")
+    kwargs["reported_metrics"] = reported_metrics
 
     return RLMFinalReport(**kwargs)
 
@@ -736,6 +921,64 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _latest_successful_experiment_record(project_dir: Path) -> dict | None:
+    """The canonical experiment record: the latest SUCCESSFUL
+    ``experiment_runs.jsonl`` row carrying an ``experiment_run_id`` (deterministic;
+    ``None`` when none / unreadable). Both the P3 §5b ``baseline_metrics``
+    projection and the P2 ``final_report`` provenance back-link derive from this
+    one record, so they always agree on "which run produced the reported result."
+    """
+    import json
+
+    exp_log = project_dir / "experiment_runs.jsonl"
+    if not exp_log.exists():
+        return None
+    chosen: dict | None = None
+    try:
+        for line in exp_log.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:  # noqa: BLE001 — tolerate a torn/partial line
+                continue
+            if isinstance(rec, dict) and rec.get("success") and rec.get("experiment_run_id"):
+                chosen = rec  # keep the latest successful
+    except OSError:
+        return None
+    return chosen
+
+
+def _canonical_experiment_provenance(project_dir: Path) -> dict:
+    """P2 back-link: return ``{experiment_run_id, metrics_sha256}`` for the
+    canonical record (see :func:`_latest_successful_experiment_record`) so the
+    final report points back to the exact artifact behind its metrics (invariant
+    2). ``{}`` when none — a run with no successful experiment has no metric to
+    trace."""
+    chosen = _latest_successful_experiment_record(project_dir)
+    if chosen is None:
+        return {}
+    out: dict = {"experiment_run_id": chosen["experiment_run_id"]}
+    if chosen.get("metrics_sha256"):
+        out["metrics_sha256"] = chosen["metrics_sha256"]
+    return out
+
+
+def _metric_provenance_enabled() -> bool:
+    """``OPENRESEARCH_METRIC_PROVENANCE`` (default true): project ``baseline_metrics``
+    from the canonical experiment artifact instead of trusting root-typed values
+    (§5b). Disable to fall back to the prior root-attested + honesty-guard path."""
+    import os
+
+    return os.environ.get("OPENRESEARCH_METRIC_PROVENANCE", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -838,10 +1081,14 @@ def write_final_report_rlm(
         except Exception:  # noqa: BLE001 — timing capture is best-effort
             logger.warning("report: timing.json write failed (non-fatal)")
 
-    # Update calibration priors only when explicitly requested. A single
-    # smoke/pre-flight run can otherwise overwrite the historical calibration
-    # corpus and poison future estimates.
-    if report.verdict != "failed" and os.environ.get("OPENRESEARCH_UPDATE_CALIBRATION", "").lower() == "true":
+    # C4 — Auto-recompute calibration priors at every finalize (best-effort,
+    # non-fatal).  Runs unconditionally on non-failed verdicts so each completed
+    # run tightens token estimates for the next one.  The env-var opt-out
+    # OPENRESEARCH_UPDATE_CALIBRATION=false disables the auto-update (useful in
+    # CI or when a single smoke run must not overwrite the historical corpus).
+    _update_cal = os.environ.get("OPENRESEARCH_UPDATE_CALIBRATION", "").lower()
+    _cal_enabled = _update_cal not in {"false", "0", "no", "off"}
+    if report.verdict != "failed" and _cal_enabled:
         try:
             from backend.services.pricing.calibration import recompute_calibration
             runs_root = project_dir.parent
@@ -1183,7 +1430,7 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
 
     # --- Footer ---
     lines.append("---")
-    lines.append("_Generated by ReproLab RLM orchestrator (Issue #60)._")
+    lines.append("_Generated by OpenResearch RLM orchestrator (Issue #60)._")
 
     return "\n".join(lines) + "\n"
 

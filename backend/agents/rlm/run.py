@@ -7,7 +7,7 @@
      ``binding.py`` if importable, else the deterministic stub provider,
   3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
   4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
-     iteration through :class:`ReproLabRLMLogger`,
+     iteration through :class:`OpenResearchRLMLogger`,
   5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
 
 Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
@@ -53,7 +53,7 @@ from backend.agents.rlm.report import (
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
-    ReproLabRLMLogger,
+    OpenResearchRLMLogger,
     build_run_complete_event,
     build_run_warning_event,
     make_emit,
@@ -73,6 +73,7 @@ from backend.agents.rlm._oauth_backend_patch import (
     apply_anthropic_caching_patch,
 )
 from backend.agents.rlm.forced_iteration import (
+    _TERMINAL_FAILURE_CLASSES,
     ForcedIterationPolicy,
     apply_forced_iteration_patch,
     forced_iteration_policy,
@@ -521,7 +522,7 @@ def _verdict_to_status(verdict: str) -> str:
     return "completed" if verdict == "reproduced" else verdict
 
 
-def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> None:
+def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> str | None:
     """PR-π Module E — fail-fast gate for missing/degraded parsed_full_text.txt.
 
     Raises ``RuntimeError`` when ``allow_lossy=False`` and the parsed paper
@@ -532,11 +533,16 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
     This guard runs at the START of ``run_pipeline_rlm`` — before any RLM
     loop iteration — so the user gets an actionable failure message instead of
     a silent lossy-workspace fallback that defeats paper-grounding.
+
+    Returns the human-readable *degraded reason* when the run proceeds in lossy
+    mode, so the caller can surface it as an operator-visible warning in
+    ``demo_status.json`` (F-29) rather than only a buried log line; returns
+    ``None`` when the paper text is intact.
     """
     parsed_path = project_dir / "parsed_full_text.txt"
     degraded = not parsed_path.exists() or parsed_path.stat().st_size < 1024
     if not degraded:
-        return
+        return None
     if not allow_lossy:
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
@@ -548,6 +554,10 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "(parsed_full_text.txt missing or <1KB at %s)",
         parsed_path,
     )
+    return (
+        "paper text degraded — proceeding with lossy workspace fallback "
+        f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
+    )
 
 
 def _write_demo_status(
@@ -558,6 +568,7 @@ def _write_demo_status(
     primitive_provider: str = "real",  # T21 / review I8
     process_status: str | None = None,
     verdict: str | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -605,6 +616,11 @@ def _write_demo_status(
         payload["completedAt"] = now
     if error is not None:
         payload["error"] = error
+    # Operator-visible warnings (e.g. degraded paper text, F-29). Merged via
+    # ``**existing`` on later writes, so a run-start warning survives the
+    # terminal write; only replaced when this call explicitly supplies one.
+    if warnings:
+        payload["warnings"] = list(warnings)
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
@@ -670,6 +686,37 @@ def _record_last_primitive_result_tools(
                         logger.exception(
                             "_record_last_primitive_result_tools: record_repair_attempt failed"
                         )
+                # comp 4b (2026-05-31): a terminal capacity/OOM stop is NOT repairable
+                # by re-running the same config — notify the policy so forced_iteration
+                # accepts the next FINAL_VAR (stop + report) instead of re-OOMing the
+                # same matrix. This is INDEPENDENT of the repairable branch above: a
+                # terminal cell-matrix result carries aggregated metrics, so it
+                # classifies as partial_evidence (not repairable), and the
+                # record_repair_attempt path would never fire for it.
+                if name == "run_experiment" and repair_policy_holder:
+                    _stop = result.get("stop_reason")
+                    _stop_kind = _stop.get("kind") if isinstance(_stop, dict) else None
+                    _terminal_class = _stop_kind or result.get("failure_class")
+                    if _terminal_class in _TERMINAL_FAILURE_CLASSES:
+                        policy = repair_policy_holder[0]
+                        # Stash for build_final_report so final_report.json carries
+                        # the structured stop_reason (done-criteria #3).
+                        setattr(
+                            ctx, "_terminal_stop_reason",
+                            _stop if isinstance(_stop, dict) and _stop.get("kind")
+                            else {"kind": str(_terminal_class)},
+                        )
+                        try:
+                            policy.note_terminal_failure(str(_terminal_class))
+                            logger.warning(
+                                "run_experiment returned terminal stop '%s' — accepting "
+                                "the next FINAL_VAR (stop + report, no re-OOM loop)",
+                                _terminal_class,
+                            )
+                        except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                            logger.exception(
+                                "_record_last_primitive_result_tools: note_terminal_failure failed"
+                            )
             return result
 
         _wrapped.__name__ = getattr(tool, "__name__", name)
@@ -694,7 +741,7 @@ def _fatal_primitive_result(ctx: RunContext | None) -> tuple[str, dict] | None:
     return (str(getattr(ctx, "_last_primitive_name", "unknown")), result)
 
 
-class _FatalBackendGateLogger(ReproLabRLMLogger):
+class _FatalBackendGateLogger(OpenResearchRLMLogger):
     """Logger hook that aborts before RLM appends fatal REPL output to history."""
 
     def log(self, iteration: Any) -> None:
@@ -1121,7 +1168,7 @@ async def run_pipeline_rlm(
     # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
     _settings_for_gate = get_settings()
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
-    _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
+    _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);
@@ -1136,7 +1183,18 @@ async def run_pipeline_rlm(
 
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
-    _write_demo_status(project_dir, "running")
+    # Surface a degraded-paper-text warning here (F-29) so an operator sees the
+    # run is non-faithful; the merge in _write_demo_status carries it forward.
+    _write_demo_status(
+        project_dir,
+        "running",
+        warnings=[_paper_degraded_reason] if _paper_degraded_reason else None,
+    )
+
+    # Local sandboxes have no /workspace volume — repoint the dataset root at a
+    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
+    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
+    _ensure_local_data_root(sandbox_mode, runs_root)
 
     # Local sandboxes have no /workspace volume — repoint the dataset root at a
     # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
@@ -1602,6 +1660,60 @@ async def run_pipeline_rlm(
                 return rlm.completion(context_dict, active_prompt)
 
         result_obj = await asyncio.to_thread(_run_completion_on_worker)
+
+        # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
+        # ledger cache tokens for the root reasoning turns.
+        #
+        # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
+        #
+        #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
+        #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
+        #   - final_report.cost.llm_usd is sourced from result.usage_summary
+        #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
+        #   - Therefore: adding a rlm_root row to the ledger with the full
+        #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
+        #     It does add these tokens to tokens_total.json, which is the desired
+        #     behaviour — the root's tokens were previously absent from tokens_total.
+        #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
+        #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
+        if root_model.rlm_backend == "anthropic-oauth":
+            try:
+                from backend.agents.rlm.claude_oauth_client import drain_root_usage
+                from backend.agents.resilience.cost import CostLedgerEntry
+
+                root_usage_by_model = drain_root_usage()
+                for _model, _u in root_usage_by_model.items():
+                    if _u.get("calls", 0) == 0:
+                        continue
+                    _entry = CostLedgerEntry.from_usage(
+                        agent_id="rlm_root",
+                        attempt_index=0,
+                        provider="anthropic",  # type: ignore[arg-type]
+                        model=_model,
+                        usage={
+                            "input_tokens": _u.get("input_tokens", 0),
+                            "output_tokens": _u.get("output_tokens", 0),
+                            "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
+                            "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
+                            "reasoning_tokens": 0,
+                        },
+                    )
+                    if ctx.cost_ledger is not None:
+                        ctx.cost_ledger.append(_entry)
+                    # Also write directly to the ledger file (mirrors
+                    # record_subagent_usage_to_path for resilience when
+                    # ctx.cost_ledger has no path attached).
+                    _ledger_path = project_dir / "cost_ledger.jsonl"
+                    if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                        import json as _json_ledger
+                        _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                        with _ledger_path.open("a", encoding="utf-8") as _fh:
+                            _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+                    else:
+                        ctx.cost_ledger.flush()
+            except Exception:  # noqa: BLE001 — ledgering is best-effort
+                logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc
         run_failed = True
