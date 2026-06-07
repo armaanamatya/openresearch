@@ -176,8 +176,8 @@ def check_projects(root: Path, c: Check) -> None:
             _check_agent_dirs(agents_dir, c, prefix=p.name)
         else:
             c.ok(
-                f"{p.name}: no agents/ (pre-Tier-2b code, or REPROLAB_LOG_DIR/"
-                "REPROLAB_RUNS_ROOT was unset when the pipeline ran)"
+                f"{p.name}: no agents/ (pre-Tier-2b code, or OPENRESEARCH_LOG_DIR/"
+                "OPENRESEARCH_RUNS_ROOT was unset when the pipeline ran)"
             )
 
 

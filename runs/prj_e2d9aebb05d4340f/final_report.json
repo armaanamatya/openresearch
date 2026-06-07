@@ -1,0 +1,226 @@
+{
+  "paper": {},
+  "verdict": "failed",
+  "reproduction_summary": "[unparseable response] You've hit your limit · resets 1:10pm (America/Chicago)",
+  "baseline_metrics": {},
+  "paper_claims": {},
+  "rubric": {
+    "overall_score": null,
+    "meets_target": null,
+    "target_score": null,
+    "degraded": null,
+    "areas": [],
+    "leaf_scores": [
+      {
+        "id": "445f4dc25e2645e1a624101a970c6d56",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fc8f5b8a9c524bb98efec4f60c5b057c",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "30842d803f3e4356935d142ce8f9e589",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "6416e0c05c2d42a292980c322ae8a0e8",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fae9712427b04008b700ad88f0bb1270",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c475046bc7dd42d3a2ff42e78c234a1a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f85bd7f71ac642a8b400e7dd74838b53",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e8b7d9cb8c964f5682f85d7da61891ac",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "04d9b872def04e0382e4b09e1c1d38e9",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "972998ce36804dedbee6910234c03d57",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fe85fcb850024a52bdae2e62d28c738c",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5adb2fba7fac4026b82e5c736608c895",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "bf2fe33d837f44bda8921e85548bf32e",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "cdc3c95f1b5846b7acd526ab0c3a31fe",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "60db8d0ff6644508b8a897345a6ffdd2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5fa0aaaf7cb64f5384532fbeee54dc6f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "310875b2ff314336a38ef9496db5122a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f8b02fa86391410fa4bf9bd04fe2c7ba",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "4ed7c0dcd9234db9992326cd64b403eb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9a3af551f4c340a18abef5151beb9b74",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c0f1f68e783f420d92d625b0966d790f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "98c64f7724be4c1c8550a2635d63ae6a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "3d283e0b3cd24abf9d792982042ce2e0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b22142dbfc0a4eb7af978b76263ab726",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e0ff49ca90c84713aa1c1965ddd833c4",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "04cbdebc52a544e199d0c1aa987b11cb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "798bb3f10c5e44f9a64f54f0d30e1cd0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "be2d499ff9ba4fc993e9c35b41848085",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "445f4dc25e2645e1a624101a970c6d56",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fc8f5b8a9c524bb98efec4f60c5b057c",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "30842d803f3e4356935d142ce8f9e589",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "6416e0c05c2d42a292980c322ae8a0e8",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fae9712427b04008b700ad88f0bb1270",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c475046bc7dd42d3a2ff42e78c234a1a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f85bd7f71ac642a8b400e7dd74838b53",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e8b7d9cb8c964f5682f85d7da61891ac",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "leaf_count": 28,
+    "graded": 0,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.0
+  },
+  "improvements": [],
+  "primitive_trace": {},
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 21,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": "claude-oauth",
+    "grader": "claude-oauth"
+  },
+  "started_at": "2026-06-02T14:14:27.754011+00:00",
+  "completed_at": "2026-06-02T16:03:55.030309+00:00",
+  "scope": {
+    "requested": "",
+    "ran": [],
+    "gaps": []
+  }
+}

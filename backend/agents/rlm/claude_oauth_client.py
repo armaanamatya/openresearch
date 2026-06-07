@@ -43,12 +43,12 @@ def _empty_root_turn_fallback() -> str:
     exhausted ``complete()``'s retries. Returning a single no-op ```repl block
     instead keeps the loop alive for another iteration; it is still bounded by
     the max-iteration / wall-clock / forced-iteration policies. Opt out with
-    ``REPROLAB_RLM_EMPTY_TURN_FALLBACK=0`` (then a true empty string is
+    ``OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK=0`` (then a true empty string is
     returned, restoring the pre-2026-05-30 behavior).
     """
     import os
 
-    if os.environ.get("REPROLAB_RLM_EMPTY_TURN_FALLBACK", "1").strip().lower() in {
+    if os.environ.get("OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK", "1").strip().lower() in {
         "0",
         "false",
         "no",
@@ -68,12 +68,12 @@ _CLI_DEFAULT_TIMEOUT_S = 600.0  # per-completion cap for the CLI subprocess
 
 
 def _claude_cli_bin() -> str:
-    """Resolve the ``claude`` CLI binary (override with ``REPROLAB_CLAUDE_CLI_BIN``)."""
+    """Resolve the ``claude`` CLI binary (override with ``OPENRESEARCH_CLAUDE_CLI_BIN``)."""
     import os
     import shutil
 
     return (
-        os.environ.get("REPROLAB_CLAUDE_CLI_BIN", "").strip()
+        os.environ.get("OPENRESEARCH_CLAUDE_CLI_BIN", "").strip()
         or shutil.which("claude")
         or "claude"
     )
@@ -84,18 +84,18 @@ def _root_transport() -> str:
 
     ``cli``/``auto`` use the reliable ``claude`` CLI subprocess and fall back to
     the legacy claude-agent-sdk path only if the CLI is unavailable or errors.
-    ``sdk`` forces the legacy path. Override with ``REPROLAB_RLM_ROOT_TRANSPORT``.
+    ``sdk`` forces the legacy path. Override with ``OPENRESEARCH_RLM_ROOT_TRANSPORT``.
     """
     import os
 
-    val = os.environ.get("REPROLAB_RLM_ROOT_TRANSPORT", "cli").strip().lower()
+    val = os.environ.get("OPENRESEARCH_RLM_ROOT_TRANSPORT", "cli").strip().lower()
     return val if val in {"cli", "sdk", "auto"} else "cli"
 
 
 def _cli_timeout_s() -> float:
     import os
 
-    raw = os.environ.get("REPROLAB_RLM_CLI_TIMEOUT_S", "").strip()
+    raw = os.environ.get("OPENRESEARCH_RLM_CLI_TIMEOUT_S", "").strip()
     if not raw:
         return _CLI_DEFAULT_TIMEOUT_S
     try:

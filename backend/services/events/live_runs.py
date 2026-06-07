@@ -438,7 +438,7 @@ async def _stderr_watchdog(
 
 
 def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> StartRunRequest:
-    """Force the sandbox mode for all runs when REPROLAB_FORCE_SANDBOX is set.
+    """Force the sandbox mode for all runs when OPENRESEARCH_FORCE_SANDBOX is set.
 
     Deployments without a GPU or Docker daemon (e.g. Railway) must pin every
     run to ``local`` regardless of what the client requested. An empty force
@@ -450,7 +450,7 @@ def apply_sandbox_override(request: StartRunRequest, force_sandbox: str) -> Star
 
 
 def apply_provider_override(request: StartRunRequest, force_provider: str) -> StartRunRequest:
-    """Force the LLM provider for all runs when REPROLAB_FORCE_LLM_PROVIDER is set.
+    """Force the LLM provider for all runs when OPENRESEARCH_FORCE_LLM_PROVIDER is set.
 
     The UI hard-codes ``provider="anthropic"`` in its start-run requests; on
     deployments where the operator only has credentials for the other side,
@@ -487,8 +487,8 @@ class FileLiveRunService:
         env: dict[str, str] = {**os.environ}
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
-        # REPROLAB_* keys in .env are always authoritative: a stale shell
-        # export from a previous login (e.g. REPROLAB_RUNPOD_SSH_KEY_PATH
+        # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
+        # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
         # pointing to a different user's home) must not override the
         # project-level .env which reflects the operator's deliberate config.
         # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
@@ -503,9 +503,9 @@ class FileLiveRunService:
                     if "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip()
-                        # REPROLAB_ settings: .env wins over stale process env.
+                        # OPENRESEARCH_ settings: .env wins over stale process env.
                         # Everything else: only add if not already in env.
-                        if k and (k.startswith("REPROLAB_") or k not in env):
+                        if k and (k.startswith("OPENRESEARCH_") or k not in env):
                             env[k] = v
             except OSError:
                 pass
@@ -519,14 +519,14 @@ class FileLiveRunService:
                     env["PATH"] = local_bin + os.pathsep + env.get("PATH", "")
 
         # Thread run-specific vars
-        env["REPROLAB_GPU_MODE"] = request.gpuMode
+        env["OPENRESEARCH_GPU_MODE"] = request.gpuMode
         if request.gpu_parallelism:
-            env["REPROLAB_GPU_PARALLELISM"] = request.gpu_parallelism
+            env["OPENRESEARCH_GPU_PARALLELISM"] = request.gpu_parallelism
         if request.accelerator:
-            env["REPROLAB_ACCELERATOR"] = request.accelerator
-        env["REPROLAB_LLM_PROVIDER"] = request.provider
+            env["OPENRESEARCH_ACCELERATOR"] = request.accelerator
+        env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
-            env["REPROLAB_VERIFICATION_PROVIDER"] = request.verificationProvider
+            env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider
 
         # Bring-your-own credentials — these override .env (and process env)
         # for the subprocess only, because the user explicitly typed them

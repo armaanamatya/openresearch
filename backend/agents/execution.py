@@ -237,7 +237,7 @@ def resolve_sandbox_mode(
     """Resolve auto sandbox policy from the high-level pipeline mode.
 
     Resolution order for "auto":
-      1. REPROLAB_FORCE_SANDBOX env override wins (applied upstream at the HTTP
+      1. OPENRESEARCH_FORCE_SANDBOX env override wins (applied upstream at the HTTP
          layer, but also checked here for CLI / direct callers).
       2. On WSL where docker is NOT verifiably reachable → "local"
          (avoids Docker Desktop dependency for local dev).
@@ -247,8 +247,8 @@ def resolve_sandbox_mode(
     right gate when the user has consciously chosen docker.
     """
     # Allow a direct env override for callers that bypass the HTTP layer
-    # (e.g. the CLI).  REPROLAB_FORCE_SANDBOX is the canonical knob.
-    force = os.environ.get("REPROLAB_FORCE_SANDBOX", "").strip()
+    # (e.g. the CLI).  OPENRESEARCH_FORCE_SANDBOX is the canonical knob.
+    force = os.environ.get("OPENRESEARCH_FORCE_SANDBOX", "").strip()
     if force:
         return SandboxMode(force)
 
@@ -261,7 +261,7 @@ def resolve_sandbox_mode(
     if _is_wsl() and not _docker_reachable():
         logger.info(
             "resolve_sandbox_mode: WSL detected without reachable docker — "
-            "preferring 'local' (set REPROLAB_DEFAULT_SANDBOX=docker to override)"
+            "preferring 'local' (set OPENRESEARCH_DEFAULT_SANDBOX=docker to override)"
         )
         return SandboxMode.local
 
@@ -288,7 +288,7 @@ def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
 
 
 def _gpu_environment(mode: GpuMode) -> dict[str, str]:
-    env = {"REPROLAB_GPU_MODE": mode.value}
+    env = {"OPENRESEARCH_GPU_MODE": mode.value}
     if mode is GpuMode.off:
         env["CUDA_VISIBLE_DEVICES"] = ""
         return env

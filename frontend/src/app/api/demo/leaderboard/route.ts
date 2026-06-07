@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 function backendBaseUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  return (process.env.OPENRESEARCH_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 }
 
 /**

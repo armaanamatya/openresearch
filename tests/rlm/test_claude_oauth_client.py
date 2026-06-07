@@ -17,7 +17,7 @@ def _force_sdk_transport(monkeypatch):
     client caching, exception propagation), which is now the *fallback*
     transport. The reliable CLI primary path is covered by
     tests/agents/rlm/test_claude_oauth_cli_transport.py."""
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "sdk")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", "sdk")
 
 
 # ---------------------------------------------------------------------------

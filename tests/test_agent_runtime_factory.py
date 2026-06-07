@@ -18,7 +18,7 @@ from backend.agents.runtime import (
 
 
 def test_selected_provider_accepts_aliases(monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_LLM_PROVIDER", raising=False)
 
     assert selected_provider("anthropic") == "anthropic"
     assert selected_provider("claude") == "anthropic"
@@ -27,7 +27,7 @@ def test_selected_provider_accepts_aliases(monkeypatch) -> None:
 
 
 def test_selected_provider_reads_env(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENRESEARCH_LLM_PROVIDER", "openai")
 
     assert selected_provider() == "openai"
 

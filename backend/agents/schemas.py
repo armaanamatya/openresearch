@@ -1035,7 +1035,7 @@ class PaperHint(BaseModel):
     """Built-in paper-specific extras applied via ``--paper-hint <id>``.
 
     Three independent layers combine when a paper hint is applied to a run:
-      - ``guidance``: free-text appended to REPROLAB_BASELINE_EXTRA_GUIDANCE
+      - ``guidance``: free-text appended to OPENRESEARCH_BASELINE_EXTRA_GUIDANCE
         (with a "[paper-hint <id>] " prefix) so it composes with operator-set
         guidance via the existing env-var hook in baseline_implementation.py.
       - ``default_scope``: a ScopeSpec providing rubric-default models / datasets

@@ -363,7 +363,7 @@ class TestWriteFinalReport:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         report = self._build_report()
-        monkeypatch.delenv("REPROLAB_UPDATE_CALIBRATION", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_UPDATE_CALIBRATION", raising=False)
 
         def fail_recompute(*args, **kwargs):
             raise AssertionError("calibration recompute should be opt-in")

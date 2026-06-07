@@ -192,23 +192,23 @@ def test_reward_helpers():
 # ── FIX 3: disk guard ────────────────────────────────────────────────────────
 
 def test_disk_floor_violation_trips_below_floor(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "999999")  # force a violation
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "999999")  # force a violation
     out = _disk_floor_violation([str(tmp_path)])
     assert out is not None and out[0] == "disk_exhausted"
 
 
 def test_disk_floor_ok_when_above(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "0.000001")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "0.000001")
     assert _disk_floor_violation([str(tmp_path)]) is None
 
 
 def test_disk_floor_disabled_at_zero(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "0")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "0")
     assert _disk_floor_violation([str(tmp_path)]) is None
 
 
 def test_disk_floor_ignores_bad_paths(monkeypatch):
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "15")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "15")
     assert _disk_floor_violation(["", "/nonexistent/zzz"]) is None  # unresolvable → skipped
 
 

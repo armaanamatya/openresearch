@@ -81,7 +81,7 @@ def test_pre_emit_stall_returns_repairable_after_threshold(
     must return a repairable result whose error mentions pre-emit stall.
     """
     # Set a very short stall threshold so the test finishes quickly.
-    monkeypatch.setenv("REPROLAB_PRE_EMIT_STALL_S", "1")
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_STALL_S", "1")
 
     ctx = _make_ctx(tmp_path)
     plan = _make_plan(ctx)
@@ -146,7 +146,7 @@ def test_pre_emit_progress_resets_timer(
     We write train.py from a side-thread at 0.3s, then check at 1.5s total
     that the primitive has NOT escalated with a stall error.
     """
-    monkeypatch.setenv("REPROLAB_PRE_EMIT_STALL_S", "2")
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_STALL_S", "2")
 
     ctx = _make_ctx(tmp_path)
     plan = _make_plan(ctx)
@@ -209,12 +209,12 @@ def test_pre_emit_env_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """REPROLAB_PRE_EMIT_STALL_S=1 overrides the 120s default.
+    """OPENRESEARCH_PRE_EMIT_STALL_S=1 overrides the 120s default.
 
     With threshold=1s and a blocking future, the primitive must escalate
     after ~1s of silence.
     """
-    monkeypatch.setenv("REPROLAB_PRE_EMIT_STALL_S", "1")
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_STALL_S", "1")
 
     ctx = _make_ctx(tmp_path)
     plan = _make_plan(ctx)

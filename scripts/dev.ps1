@@ -10,7 +10,7 @@
 #       frontend.log     # Next.js dev combined stdout+stderr
 #     prj_<id>/...       # per-pipeline-run workspaces (unchanged contract)
 #
-# REPROLAB_RUNS_ROOT is exported as a Windows path so the Windows Python
+# OPENRESEARCH_RUNS_ROOT is exported as a Windows path so the Windows Python
 # inside .venv\Scripts\python.exe resolves it correctly. (The bash launcher
 # under WSL hands Python a /mnt/c/... path that Windows can't parse, which
 # silently regresses the runs_root contract — see docs/design.)
@@ -57,10 +57,10 @@ New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
 
 # ---------- env ----------
 # Windows-native absolute path — the Windows Python understands this directly.
-$env:REPROLAB_RUNS_ROOT = $logDir
+$env:OPENRESEARCH_RUNS_ROOT = $logDir
 $env:PYTHONUTF8         = "1"
 $env:PYTHONIOENCODING   = "utf-8"
-$env:REPROLAB_BACKEND_URL = "http://127.0.0.1:8000"
+$env:OPENRESEARCH_BACKEND_URL = "http://127.0.0.1:8000"
 
 $gitSha = "unknown"
 try {
@@ -68,7 +68,7 @@ try {
     if ($LASTEXITCODE -eq 0 -and $maybeSha) { $gitSha = $maybeSha.Trim() }
 } catch {}
 
-$sandbox  = if ($env:REPROLAB_DEFAULT_SANDBOX) { $env:REPROLAB_DEFAULT_SANDBOX } else { "docker" }
+$sandbox  = if ($env:OPENRESEARCH_DEFAULT_SANDBOX) { $env:OPENRESEARCH_DEFAULT_SANDBOX } else { "docker" }
 $startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 # ---------- venv python ----------
@@ -128,12 +128,12 @@ function Write-CmdShim {
     # PowerShell-to-cmd quoting layer that made earlier attempts fail with
     # "The filename, directory name, or volume label syntax is incorrect."
     #
-    # Also bakes REPROLAB_RUNS_ROOT and friends into the .cmd body. In
+    # Also bakes OPENRESEARCH_RUNS_ROOT and friends into the .cmd body. In
     # principle PowerShell's $env:X should propagate through Start-Process
     # to a cmd.exe child, but in practice (verified on Windows 11 / PS 5.1)
     # the inheritance is unreliable: a backend launched via this shim
     # observed self.runs_root resolved to .\runs instead of the launcher's
-    # logs\<TS>\ even though the parent PowerShell had $env:REPROLAB_RUNS_ROOT
+    # logs\<TS>\ even though the parent PowerShell had $env:OPENRESEARCH_RUNS_ROOT
     # set. Setting the vars inside the shim removes that whole class of bug
     # and makes the .cmd a fully self-describing artifact.
     param(
@@ -143,7 +143,7 @@ function Write-CmdShim {
         [string]$LogPath
     )
     $env_block = ""
-    foreach ($name in @('REPROLAB_RUNS_ROOT','PYTHONUTF8','PYTHONIOENCODING','REPROLAB_BACKEND_URL')) {
+    foreach ($name in @('OPENRESEARCH_RUNS_ROOT','PYTHONUTF8','PYTHONIOENCODING','OPENRESEARCH_BACKEND_URL')) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value -and $value -ne '') {
             # cmd `set "VAR=value"` quoting handles spaces and special chars
@@ -170,7 +170,7 @@ function Write-Meta {
         ended_reason  = $EndedReason
         git_sha       = $gitSha
         sandbox_mode  = $sandbox
-        runs_root     = $env:REPROLAB_RUNS_ROOT
+        runs_root     = $env:OPENRESEARCH_RUNS_ROOT
         label         = $Label
         backend_pid   = $BackendPid
         frontend_pid  = $FrontendPid
@@ -203,7 +203,7 @@ if ($Keep -gt 0) { Prune-OldLogs -KeepN $Keep }
 
 Write-Output ('[dev.ps1] logs    -> {0}' -f $logDir)
 Write-Output ('[dev.ps1] sandbox -> {0}' -f $sandbox)
-Write-Output ('[dev.ps1] runs    -> {0}' -f $env:REPROLAB_RUNS_ROOT)
+Write-Output ('[dev.ps1] runs    -> {0}' -f $env:OPENRESEARCH_RUNS_ROOT)
 
 # ---------- launch ----------
 # Use cmd.exe /c to merge stdout+stderr into a single .log file (matches the

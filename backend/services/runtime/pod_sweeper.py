@@ -97,7 +97,7 @@ class SweepReport:
 
 
 def _api_key_from_env() -> str | None:
-    return os.environ.get("REPROLAB_RUNPOD_API_KEY") or os.environ.get("RUNPOD_API_KEY")
+    return os.environ.get("OPENRESEARCH_RUNPOD_API_KEY") or os.environ.get("RUNPOD_API_KEY")
 
 
 def _parse_age_seconds(created_at: str | None) -> int | None:
@@ -139,7 +139,7 @@ def _parse_age_seconds(created_at: str | None) -> int | None:
 def list_pods(api_key: str | None = None, *, timeout: float = 10.0) -> list[PodInfo]:
     """Return every pod owned by the account behind ``api_key``.
 
-    Falls back to ``REPROLAB_RUNPOD_API_KEY`` / ``RUNPOD_API_KEY`` env.
+    Falls back to ``OPENRESEARCH_RUNPOD_API_KEY`` / ``RUNPOD_API_KEY`` env.
     Returns an empty list if the API key is missing (silent — the sweeper
     is harmless without credentials).
     """
@@ -268,7 +268,7 @@ def sweep_stale_pods(
 def _cli() -> None:
     import argparse
     parser = argparse.ArgumentParser(
-        description="Sweep stale RunPod pods owned by REPROLAB_RUNPOD_API_KEY.",
+        description="Sweep stale RunPod pods owned by OPENRESEARCH_RUNPOD_API_KEY.",
     )
     parser.add_argument(
         "--max-age-seconds", type=int, default=DEFAULT_MAX_AGE_SECONDS,

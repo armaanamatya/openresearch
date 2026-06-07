@@ -24,7 +24,7 @@ class EnrichmentTimeoutError extends Error {
 }
 
 function backendBaseUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  return (process.env.OPENRESEARCH_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 }
 
 function hashJson(json: string): string {

@@ -95,9 +95,9 @@ def main() -> int:
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)   # force clean claude-oauth (CLAUDE.md pitfall)
     env.pop("OPENAI_API_KEY", None)
-    env["REPROLAB_DISABLE_TORCHRUN_WRAP"] = "1"
-    env["REPROLAB_MIN_TRAIN_WALL_S"] = "120"
-    env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
+    env["OPENRESEARCH_DISABLE_TORCHRUN_WRAP"] = "1"
+    env["OPENRESEARCH_MIN_TRAIN_WALL_S"] = "120"
+    env["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
 
     cmd = [
         str(VENV_PY), str(REPO / "scripts/batch_reproduce.py"), "2605.15155",

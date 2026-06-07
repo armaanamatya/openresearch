@@ -1,0 +1,24 @@
+{
+  "paperId": "mechanistic-understanding",
+  "paperTitle": "mechanistic-understanding",
+  "paper": {
+    "id": "mechanistic-understanding",
+    "title": "mechanistic-understanding"
+  },
+  "projectId": "pb_mechanistic-understanding_1780068083",
+  "outputDir": "/Volumes/CS_Stuff/openresearch/runs/pb_mechanistic-understanding_1780068083",
+  "runMode": "rlm",
+  "status": "completed",
+  "startedAt": "2026-05-29T15:21:23.163184Z",
+  "updatedAt": "2026-05-29T15:47:53.044623+00:00",
+  "primitiveProvider": "real",
+  "cost_summary": {
+    "usd_total": 0.0,
+    "usd_this_iter": 0.0,
+    "iter_count": 0,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-05-29T15:47:23.820787+00:00"
+  },
+  "killReason": "BUG-NEW-043 sub-RLM recursion \u2014 killed for patch deploy",
+  "completedAt": "2026-05-29T15:47:53.044623+00:00"
+}

@@ -841,7 +841,7 @@ def write_final_report_rlm(
     # Update calibration priors only when explicitly requested. A single
     # smoke/pre-flight run can otherwise overwrite the historical calibration
     # corpus and poison future estimates.
-    if report.verdict != "failed" and os.environ.get("REPROLAB_UPDATE_CALIBRATION", "").lower() == "true":
+    if report.verdict != "failed" and os.environ.get("OPENRESEARCH_UPDATE_CALIBRATION", "").lower() == "true":
         try:
             from backend.services.pricing.calibration import recompute_calibration
             runs_root = project_dir.parent

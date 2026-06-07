@@ -50,8 +50,8 @@ class RunContext:
                              # than assuming docker = CPU-only. (2026-05-23 user mandate:
                              # "sandbox shouldn't be cpu only it should be dynamic since
                              # we can use runpod etc.")
-    gpu_device_ids: tuple[str, ...] = ()  # host GPU UUIDs leased to this run (local sandbox); set from REPROLAB_GPU_DEVICE_IDS
-    gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from REPROLAB_GPU_PARALLELISM
+    gpu_device_ids: tuple[str, ...] = ()  # host GPU UUIDs leased to this run (local sandbox); set from OPENRESEARCH_GPU_DEVICE_IDS
+    gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from OPENRESEARCH_GPU_PARALLELISM
     gpu_visible_count: int | None = None  # GPUs visible to this run (from CUDA_VISIBLE_DEVICES / lease); hints the code-writing agent
     run_budget: Any = None   # RunBudget — threaded from --max-pod-seconds / --max-usd etc.
     current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
@@ -59,7 +59,7 @@ class RunContext:
     emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements
     scope_spec: Any = None  # ScopeSpec — typed via Any to avoid a top-level import cycle;
-                            # set by run.py / rdr/run.py from REPROLAB_SCOPE_SPEC_JSON.
+                            # set by run.py / rdr/run.py from OPENRESEARCH_SCOPE_SPEC_JSON.
     arxiv_id: str | None = None  # Bare arXiv ID (e.g. "2605.15155") when known; set by
                                  # run_pipeline_rlm from artifact_index.json / demo_status.json
                                  # so implement_baseline can route docs/papers/<id>.yaml even
@@ -76,7 +76,7 @@ class RunContext:
     reproduction_contract: Any = None  # ReproductionContract | None
 
     # Paper-hint invariants (2026-05-29): list[InvariantSpec] from
-    # PaperHint.invariants — loaded from REPROLAB_PAPER_HINT_INVARIANTS_JSON at
+    # PaperHint.invariants — loaded from OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON at
     # run start by run.py (mirrors the scope_spec env-var pattern).  Typed as
     # Any to avoid a top-level import cycle (schemas.InvariantSpec).
     # None / [] means no paper-hint was supplied or the hint has no invariants.
@@ -93,10 +93,10 @@ class RunContext:
     latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
 
     def __post_init__(self) -> None:
-        """Auto-load paper_hint_invariants from REPROLAB_PAPER_HINT_INVARIANTS_JSON
+        """Auto-load paper_hint_invariants from OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON
         when not already set by the caller.
 
-        This env-var path mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py
+        This env-var path mirrors the OPENRESEARCH_SCOPE_SPEC_JSON pattern: cli.py
         serialises PaperHint.invariants to JSON and sets the env var before the
         subprocess is spawned, so every RunContext picks them up automatically
         without requiring a change to run.py.
@@ -105,7 +105,7 @@ class RunContext:
         if self.paper_hint_invariants:
             # Caller already set them (e.g. tests) — don't override.
             return
-        _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
+        _inv_json = _os.environ.get("OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON", "").strip()
         if not _inv_json:
             return
         try:

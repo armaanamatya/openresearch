@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 #
 # Intentionally EXCLUDES ``implement_baseline`` and ``run_experiment`` — both
 # have existing, separately-designed caps (4h aclose watchdog and
-# REPROLAB_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
+# OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
 # The default for any primitive NOT in the table is 1800 s (30 min).
 # ---------------------------------------------------------------------------
 

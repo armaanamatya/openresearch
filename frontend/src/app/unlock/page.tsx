@@ -1,7 +1,7 @@
 "use client";
 
 // NOTE: Do NOT import demo-gate.ts here — it is server-only and reads
-// REPROLAB_DEMO_SECRET, which must never reach the client bundle.
+// OPENRESEARCH_DEMO_SECRET, which must never reach the client bundle.
 
 import { useState } from "react";
 

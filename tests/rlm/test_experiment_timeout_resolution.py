@@ -8,7 +8,7 @@ from backend.agents.rlm.primitives import resolve_experiment_timeout_s, EXPERIME
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
-    monkeypatch.delenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
 
 def _ctx(*, remaining_s=math.inf, execution_mode="efficient"):
     ctx = MagicMock()
@@ -17,11 +17,11 @@ def _ctx(*, remaining_s=math.inf, execution_mode="efficient"):
     return ctx
 
 def test_env_override_wins():
-    os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"] = "1234"
+    os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"] = "1234"
     try:
         assert resolve_experiment_timeout_s(_ctx(execution_mode="efficient")) == 1234
     finally:
-        del os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"]
+        del os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"]
 
 def test_efficient_mode_default():
     assert resolve_experiment_timeout_s(_ctx(execution_mode="efficient")) == 7200
@@ -42,9 +42,9 @@ def test_does_not_clamp_to_infinite_remaining():
     assert resolve_experiment_timeout_s(_ctx(remaining_s=math.inf, execution_mode="max")) == 21600
 
 def test_env_override_also_clamped_to_finite_remaining():
-    os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"] = "100000"
+    os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"] = "100000"
     try:
         result = resolve_experiment_timeout_s(_ctx(remaining_s=3600.0, execution_mode="efficient"))
         assert result == 3600
     finally:
-        del os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"]
+        del os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"]

@@ -202,7 +202,7 @@ def test_research_workspace_summary_combines_phase2_state(db, tmp_path: Path):
 def test_phase2_fastapi_endpoints(monkeypatch, tmp_path: Path):
     from starlette.testclient import TestClient
 
-    monkeypatch.setenv("REPROLAB_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
+    monkeypatch.setenv("OPENRESEARCH_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
     from backend.config import get_settings
 
     get_settings(_force_reload=True)

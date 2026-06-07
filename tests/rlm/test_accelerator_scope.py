@@ -1,4 +1,4 @@
-"""Guardrail for REPROLAB_ACCELERATOR_SCOPE — the grader/navigator split.
+"""Guardrail for OPENRESEARCH_ACCELERATOR_SCOPE — the grader/navigator split.
 
 The accelerator must, by default, serve only context-navigation; the rubric grader
 (ctx.llm_client) stays on the strong root model so a small accelerator never decides

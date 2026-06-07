@@ -53,7 +53,7 @@ def populated_run(tmp_path: Path) -> tuple[Path, str]:
 
 def test_reports_route_populated(populated_run: tuple[Path, str], monkeypatch: pytest.MonkeyPatch) -> None:
     runs_root, project_id = populated_run
-    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
 
     from backend.app import create_app
     app = create_app()
@@ -69,7 +69,7 @@ def test_reports_route_populated(populated_run: tuple[Path, str], monkeypatch: p
 def test_reports_route_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
 
     from backend.app import create_app
     app = create_app()

@@ -307,11 +307,11 @@ _POD_FIRST_SEEN: dict[str, float] = {}
 
 
 def _api_key_from_env() -> str:
-    k = os.environ.get("REPROLAB_RUNPOD_API_KEY", "") or os.environ.get("RUNPOD_API_KEY", "")
+    k = os.environ.get("OPENRESEARCH_RUNPOD_API_KEY", "") or os.environ.get("RUNPOD_API_KEY", "")
     if k: return k
     try:
         for line in Path(".env").read_text().splitlines():
-            if line.startswith("REPROLAB_RUNPOD_API_KEY="):
+            if line.startswith("OPENRESEARCH_RUNPOD_API_KEY="):
                 return line.split("=", 1)[1].strip()
     except (OSError, FileNotFoundError):
         pass
