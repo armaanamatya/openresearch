@@ -37,7 +37,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -46,6 +45,17 @@ import time
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
+
+from backend.agents.rlm.cell_scheduler import (
+    CELL_MANIFEST_NAME,
+    CellResult,
+    clamp_cell_timeout,
+    deadline_from_timeout,
+    is_resume_armed,
+    load_cell_manifest,
+    should_skip_cell,
+    write_cell_manifest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,51 +74,15 @@ __all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_mat
 
 
 # ---------------------------------------------------------------------------
-# Data types
+# Backward-compat aliases for any code that imported private names directly.
+# (Tests import _headline_metric, _load_cell_manifest, _should_skip_cell,
+# _write_cell_manifest only from test_gpu_cell_runner_resume.py — those tests
+# reference public-facing run_matrix, not the private helpers, so no alias
+# needed.  These are kept as thin aliases only for internal use in this module.)
 # ---------------------------------------------------------------------------
 
-class CellResult:
-    """Result record for a single training cell.
-
-    Attributes:
-        cell_id:  Identifier matching the input ``cells`` entry.
-        status:   ``"ok"`` | ``"oom_failed"`` | ``"timeout"`` | ``"error"`` |
-                  ``"skipped"`` (resume: prior ok cell reused without launching).
-        metrics:  Dict loaded from the cell's ``metrics.json``, or ``None``.
-        gpu:      Physical GPU id the cell ran on (last attempt).
-        retries:  Number of OOM retries attempted (0 = first attempt succeeded
-                  or failed with a non-OOM error).
-        error:    Stderr snippet / exception message, or ``None`` on success.
-    """
-
-    __slots__ = ("cell_id", "status", "metrics", "gpu", "retries", "error")
-
-    def __init__(
-        self,
-        *,
-        cell_id: str,
-        status: str,
-        metrics: dict[str, Any] | None,
-        gpu: str,
-        retries: int,
-        error: str | None,
-    ) -> None:
-        self.cell_id = cell_id
-        self.status = status
-        self.metrics = metrics
-        self.gpu = gpu
-        self.retries = retries
-        self.error = error
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "metrics": self.metrics,
-            "gpu": self.gpu,
-            "retries": self.retries,
-            "error": self.error,
-        }
-
+# (No external importers of these private names were found in the test suite;
+# the helpers are simply replaced by the cell_scheduler imports above.)
 
 # ---------------------------------------------------------------------------
 # GPU discovery
@@ -179,107 +153,9 @@ def _load_metrics(output_dir: Path) -> dict[str, Any] | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Cell manifest — the authoritative, harness-owned per-cell resume record
-# ---------------------------------------------------------------------------
-
-# File name of the per-cell resume manifest, written into each cell's output_dir.
-CELL_MANIFEST_NAME = "cell_manifest.json"
-
-
-def _headline_metric(metrics: dict[str, Any] | None) -> Any:
-    """Extract a single headline scalar from a cell's flat ``metrics.json``.
-
-    Prefers an explicit ``"metric"`` key; falls back to ``"reward_mean"`` then
-    ``"accuracy"``.  Returns the value only when it is a real number (``int`` /
-    ``float`` but not ``bool``); otherwise ``None``.  Never raises.
-    """
-    if not isinstance(metrics, dict):
-        return None
-    for key in ("metric", "reward_mean", "accuracy"):
-        val = metrics.get(key)
-        if isinstance(val, bool):
-            continue
-        if isinstance(val, (int, float)):
-            return val
-    return None
-
-
-def _load_cell_manifest(output_dir: Path) -> dict[str, Any] | None:
-    """Load ``cell_manifest.json`` from ``output_dir``, None on any failure."""
-    mf = output_dir / CELL_MANIFEST_NAME
-    if not mf.is_file():
-        return None
-    try:
-        data = json.loads(mf.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _should_skip_cell(
-    cell_id: str,
-    output_dir: Path,
-    fingerprints: dict[str, str],
-    force_cells: set[str],
-) -> bool:
-    """Return True iff a prior run's manifest authorises skipping this cell.
-
-    Skip iff the prior ``cell_manifest.json`` exists with ``status == "ok"`` AND
-    its stored ``fingerprint`` equals the current ``fingerprints[cell_id]`` AND
-    the cell is not force-listed.  A cell with no current fingerprint, a missing
-    or non-ok manifest, a fingerprint mismatch, or a force-list membership is
-    NOT skipped (it re-runs).  Pure / fail-soft — never raises.
-    """
-    if cell_id in force_cells:
-        return False
-    current_fp = fingerprints.get(cell_id)
-    if not current_fp:
-        # No fingerprint to compare → cannot safely assert the cell is unchanged.
-        return False
-    manifest = _load_cell_manifest(output_dir)
-    if not manifest or manifest.get("status") != "ok":
-        return False
-    return manifest.get("fingerprint") == current_fp
-
-
-def _write_cell_manifest(
-    output_dir: Path,
-    *,
-    cell_id: str,
-    status: str,
-    fingerprint: str | None,
-    metrics: dict[str, Any] | None,
-    retries: int,
-    now_iso: str | None,
-) -> None:
-    """Write the authoritative per-cell ``cell_manifest.json`` (fail-soft).
-
-    The manifest is the harness-owned record of a cell's terminal outcome — the
-    sole input to the resume skip predicate on a later run.  ``completed_at`` is
-    omitted entirely when ``now_iso`` is None (this module supplies no clock of
-    its own).  A write failure is logged and swallowed: a missing manifest just
-    means the cell re-runs next time, which is the safe default.
-    """
-    manifest: dict[str, Any] = {
-        "cell_id": cell_id,
-        "status": status,
-        "fingerprint": fingerprint,
-        "metric": _headline_metric(metrics),
-        "retries": retries,
-    }
-    if now_iso is not None:
-        manifest["completed_at"] = now_iso
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / CELL_MANIFEST_NAME).write_text(
-            json.dumps(manifest, indent=2, default=str), encoding="utf-8"
-        )
-    except OSError as exc:
-        logger.warning(
-            "gpu_cell_runner: could not write %s for cell=%s: %s",
-            CELL_MANIFEST_NAME, cell_id, exc,
-        )
+# (CELL_MANIFEST_NAME, CellResult, load_cell_manifest, should_skip_cell,
+# write_cell_manifest, and the headline_metric helper are now provided by
+# cell_scheduler — imported at the top of this module.)
 
 
 # ---------------------------------------------------------------------------
@@ -510,16 +386,12 @@ def run_matrix(
     # Resume (Track B): armed by REPROLAB_RESUME_CELLS. When armed, a cell whose
     # prior manifest is status=ok + fingerprint-matched + not force-listed is
     # skipped without launching a subprocess. Unset → every cell always runs.
-    _resume_armed = bool(os.environ.get("REPROLAB_RESUME_CELLS", "").strip())
+    _resume_armed = is_resume_armed()
     _fingerprints: dict[str, str] = fingerprints or {}
     _force_cells: set[str] = force_cells or set()
 
     # Overall-matrix deadline (monotonic), or None for no overall bound.
-    overall_deadline: float | None = (
-        time.monotonic() + overall_timeout_s
-        if overall_timeout_s is not None and overall_timeout_s > 0
-        else None
-    )
+    overall_deadline: float | None = deadline_from_timeout(overall_timeout_s)
 
     resolved_gpus: list[str] = gpus if gpus is not None else discover_visible_gpus()
     if not resolved_gpus:
@@ -586,7 +458,7 @@ def run_matrix(
             # when resume is armed, a prior ok+fingerprint-matched+not-forced cell
             # is reused WITHOUT launching a subprocess. retry_idx>0 means an OOM
             # retry already in flight — never skip those.
-            if _resume_armed and retry_idx == 0 and _should_skip_cell(
+            if _resume_armed and retry_idx == 0 and should_skip_cell(
                 cell_id, output_dir, _fingerprints, _force_cells
             ):
                 with results_lock:
@@ -619,8 +491,8 @@ def run_matrix(
                         retries=retry_idx,
                         error="overall matrix timeout — cell not launched",
                     )
-                _write_cell_manifest(
-                    output_dir, cell_id=cell_id, status="timeout",
+                write_cell_manifest(
+                    output_dir, caller="gpu_cell_runner", cell_id=cell_id, status="timeout",
                     fingerprint=_fingerprints.get(cell_id), metrics=_tmo_metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
@@ -643,14 +515,7 @@ def run_matrix(
 
             # Clamp this cell's timeout to the time left in the overall budget so a
             # single in-flight cell can't overrun the matrix deadline either.
-            eff_timeout = per_cell_timeout_s
-            if overall_deadline is not None:
-                remaining = overall_deadline - time.monotonic()
-                eff_timeout = (
-                    max(1.0, remaining)
-                    if per_cell_timeout_s is None
-                    else max(1.0, min(per_cell_timeout_s, remaining))
-                )
+            eff_timeout = clamp_cell_timeout(per_cell_timeout_s, overall_deadline)
 
             returncode, output = _run_cell_subprocess(
                 cell=cell,
@@ -680,8 +545,8 @@ def run_matrix(
                         retries=retry_idx,
                         error=None,
                     )
-                _write_cell_manifest(
-                    output_dir, cell_id=cell_id, status="ok",
+                write_cell_manifest(
+                    output_dir, caller="gpu_cell_runner", cell_id=cell_id, status="ok",
                     fingerprint=_fingerprints.get(cell_id), metrics=metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
@@ -715,8 +580,8 @@ def run_matrix(
                         retries=retry_idx,
                         error=error_snippet,
                     )
-                _write_cell_manifest(
-                    output_dir, cell_id=cell_id, status=status,
+                write_cell_manifest(
+                    output_dir, caller="gpu_cell_runner", cell_id=cell_id, status=status,
                     fingerprint=_fingerprints.get(cell_id), metrics=_fail_metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
