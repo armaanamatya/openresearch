@@ -554,3 +554,152 @@ def test_meaningful_event_alongside_run_warning_is_still_fresh(tmp_path: Path) -
     # SSE has a recent real event → fresh signal → verdict ok.
     assert report.verdict == "ok"
     assert report.freshest_signal == "sse_event"
+
+
+# ---------------------------------------------------------------------------
+# Compute-liveness (Pillar 2b, spec 2026-06-08): GPU/CPU-aware kill veto
+# ---------------------------------------------------------------------------
+
+
+def test_compute_liveness_fields_default_empty() -> None:
+    """New WatchdogConfig fields default empty so from_env is unchanged."""
+    c = rw.WatchdogConfig()
+    assert c.gpu_device_ids == ()
+    assert c.heartbeat_json_path is None
+    # from_env must not populate them either (caller sets post-construction).
+    e = rw.WatchdogConfig.from_env()
+    assert e.gpu_device_ids == ()
+    assert e.heartbeat_json_path is None
+
+
+def test_compute_liveness_fields_settable_via_replace() -> None:
+    """The documented wiring: dataclasses.replace sets the new fields."""
+    import dataclasses
+
+    base = rw.WatchdogConfig.from_env()
+    cfg = dataclasses.replace(
+        base, gpu_device_ids=("3", "4"), heartbeat_json_path="/tmp/.exec_heartbeat.json",
+    )
+    assert cfg.gpu_device_ids == ("3", "4")
+    assert cfg.heartbeat_json_path == "/tmp/.exec_heartbeat.json"
+    # Other fields preserved.
+    assert cfg.kill_after_seconds == base.kill_after_seconds
+
+
+def test_read_heartbeat_pid(tmp_path: Path) -> None:
+    import json
+
+    p = tmp_path / ".exec_heartbeat.json"
+    p.write_text(json.dumps({"pid": 4242, "lines": 3, "command": "python train.py"}))
+    assert rw._read_heartbeat_pid(str(p)) == 4242
+
+
+def test_read_heartbeat_pid_failsoft() -> None:
+    # None path, missing file, no pid key, junk → all None (never raise).
+    assert rw._read_heartbeat_pid(None) is None
+    assert rw._read_heartbeat_pid("/no/such/file.json") is None
+
+
+def test_read_heartbeat_pid_missing_key(tmp_path: Path) -> None:
+    import json
+
+    p = tmp_path / "hb.json"
+    p.write_text(json.dumps({"lines": 1}))
+    assert rw._read_heartbeat_pid(str(p)) is None
+
+
+def test_compute_liveness_gpu_busy(monkeypatch) -> None:
+    """GPU > threshold on a pinned card → alive, regardless of CPU."""
+    import backend.services.runtime.local_process as lp
+
+    monkeypatch.setattr(lp, "_gpu_busy_blocking", lambda ids: True)
+    monkeypatch.setattr(lp, "_proc_tree_cpu_seconds", lambda pid: None)
+    cfg = rw.WatchdogConfig(gpu_device_ids=("3",))
+    alive, _cpu = rw._compute_liveness(cfg, last_cpu_seconds=None)
+    assert alive is True
+
+
+def test_compute_liveness_cpu_advancing(monkeypatch) -> None:
+    """No GPU signal but process-tree CPU increased → alive."""
+    import backend.services.runtime.local_process as lp
+
+    monkeypatch.setattr(lp, "_gpu_busy_blocking", lambda ids: False)
+    monkeypatch.setattr(lp, "_proc_tree_cpu_seconds", lambda pid: 200.0)
+    cfg = rw.WatchdogConfig(heartbeat_json_path="x")  # pid read is monkeypatched downstream
+    monkeypatch.setattr(rw, "_read_heartbeat_pid", lambda p: 1234)
+    # First poll establishes baseline only — no increase claimable yet.
+    alive1, cpu1 = rw._compute_liveness(cfg, last_cpu_seconds=None)
+    assert alive1 is False
+    assert cpu1 == 200.0
+    # Second poll with a higher reading → advancing → alive.
+    monkeypatch.setattr(lp, "_proc_tree_cpu_seconds", lambda pid: 250.0)
+    alive2, cpu2 = rw._compute_liveness(cfg, last_cpu_seconds=cpu1)
+    assert alive2 is True
+    assert cpu2 == 250.0
+
+
+def test_compute_liveness_cpu_flat_not_alive(monkeypatch) -> None:
+    """CPU reading that does NOT increase → not computing (genuine hang)."""
+    import backend.services.runtime.local_process as lp
+
+    monkeypatch.setattr(lp, "_gpu_busy_blocking", lambda ids: False)
+    monkeypatch.setattr(lp, "_proc_tree_cpu_seconds", lambda pid: 100.0)
+    monkeypatch.setattr(rw, "_read_heartbeat_pid", lambda p: 1234)
+    cfg = rw.WatchdogConfig(heartbeat_json_path="x")
+    alive, cpu = rw._compute_liveness(cfg, last_cpu_seconds=100.0)
+    assert alive is False
+    assert cpu == 100.0
+
+
+def test_compute_liveness_no_signals_failsoft(monkeypatch) -> None:
+    """No GPU ids + no heartbeat path → no compute signal, never raises."""
+    import backend.services.runtime.local_process as lp
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("nvidia-smi exploded")
+
+    monkeypatch.setattr(lp, "_gpu_busy_blocking", _boom)
+    monkeypatch.setattr(lp, "_proc_tree_cpu_seconds", _boom)
+    cfg = rw.WatchdogConfig()  # empty fields
+    alive, cpu = rw._compute_liveness(cfg, last_cpu_seconds=None)
+    assert alive is False
+    assert cpu is None
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_kill_vetoed_by_compute(tmp_path, monkeypatch) -> None:
+    """A would-be kill is suppressed when real compute is detected."""
+    artifact_root = tmp_path / "artifacts"
+    project_dir = tmp_path / "proj"
+    artifact_root.mkdir()
+    project_dir.mkdir()
+
+    # All signals very stale → collect_staleness would say "kill".
+    now = time.time()
+    p = artifact_root / "exec.log"
+    p.write_text("x")
+    os.utime(p, (now, now - 99999))
+
+    # Force compute-liveness to report "alive".
+    monkeypatch.setattr(rw, "_compute_liveness", lambda cfg, last: (True, 5.0))
+
+    killed = asyncio.Event()
+
+    async def _on_kill(_report):
+        killed.set()
+        return rw.KillVerdict.DESTROY
+
+    cfg = rw.WatchdogConfig(
+        warn_after_seconds=1, kill_after_seconds=1, poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(rw.run_watchdog(
+        artifact_root=artifact_root, project_dir=project_dir, config=cfg,
+        on_kill=_on_kill,
+    ))
+    await asyncio.sleep(0.1)  # several poll cycles
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert not killed.is_set(), "kill should have been vetoed by compute-liveness"
