@@ -91,6 +91,19 @@ for r in sorted(roots):
     if not r or r in _local or r == "__future__":
         continue
     probed.append(r)
+    if r == "backend":
+        # In-repo harness import (`from backend.agents.rlm... import X`): the sandbox is
+        # FLAT, so `backend` is not importable. The copied helpers live next to train.py
+        # — import them BARE: `from provenance import emit_provenance`, `from rubric_guard
+        # import assert_metrics_schema`, `from cell_scheduler import ...`.
+        failures.append({
+            "module": "backend",
+            "error_type": "SandboxImportError",
+            "error": ("in-repo 'backend.*' import is unavailable in the flat sandbox; "
+                      "rewrite to a bare import of the copied helper, e.g. 'from provenance "
+                      "import emit_provenance' (NOT 'from backend.agents.rlm.provenance import ...')"),
+        })
+        continue
     try:
         importlib.import_module(r)
     except BaseException as exc:  # catch SystemExit/KeyboardInterrupt from odd deps too

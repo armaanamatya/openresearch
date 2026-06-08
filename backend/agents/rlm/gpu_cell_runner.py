@@ -46,16 +46,28 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
-from backend.agents.rlm.cell_scheduler import (
-    CELL_MANIFEST_NAME,
-    CellResult,
-    clamp_cell_timeout,
-    deadline_from_timeout,
-    is_resume_armed,
-    load_cell_manifest,
-    should_skip_cell,
-    write_cell_manifest,
-)
+try:  # sandbox-flat: cell_scheduler.py is copied next to this file (see _HARNESS_CODE_HELPERS).
+    from cell_scheduler import (
+        CELL_MANIFEST_NAME,
+        CellResult,
+        clamp_cell_timeout,
+        deadline_from_timeout,
+        is_resume_armed,
+        load_cell_manifest,
+        should_skip_cell,
+        write_cell_manifest,
+    )
+except ImportError:  # in-repo import path (running inside the harness package).
+    from backend.agents.rlm.cell_scheduler import (
+        CELL_MANIFEST_NAME,
+        CellResult,
+        clamp_cell_timeout,
+        deadline_from_timeout,
+        is_resume_armed,
+        load_cell_manifest,
+        should_skip_cell,
+        write_cell_manifest,
+    )
 
 logger = logging.getLogger(__name__)
 

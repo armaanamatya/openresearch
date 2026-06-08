@@ -11,6 +11,20 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-06-07 — A faithful run scored an honest 0.0 because the agent's `torch` re-pin downgraded the harness cu121 build → `libcupti` wouldn't load → every experiment died at import
+
+**Symptom.** The All-Conv-Net run scored 0.0/`partial`. Both experiments died at import-preflight with `libcupti.so.12: cannot open shared object file` before training a single step — no metrics, so an honest zero, NOT a scorer bug (the opposite of the Adam-0.69 stinginess problem).
+
+**Root cause.** The local per-run venv (`runs/<id>/.venv`) is `--system-site-packages` + a `_reprolab_base_inherit.pth` to the repo `.venv`, so it starts with a coherent cu121 torch shared from the base. The agent's `requirements.txt` pinned `torch==2.2.0` ≠ the base's 2.5.1, so `pip install -r requirements.txt` installed 2.2.0 into the per-run venv's OWN site-packages (which shadows the base on `sys.path`), dragging in a mismatched cu12 nvidia wheel stack; `libcupti.so.12` never materialized and `import torch` failed. `env_pin.py` was built to prevent exactly this (`torch_redundancy` class) but had never been wired into the bootstrap.
+
+**Fix.** Five layers, ALL `local`-sandbox-scoped (runpod/docker bytes-for-byte untouched). (A) **Wire env_pin** — `primitives._local_core_bootstrap_commands` installs the harness's cu121 torch/vision/audio FIRST and strips the agent's conflicting core re-pin into `requirements.hardened.txt`. (B) **`LD_LIBRARY_PATH`** — `LocalProcessBackend` prepends the venv's bundled CUDA lib dirs so a system CUDA path can't shadow them, *following the per-run venv's `.pth` to the base `.venv`* where the shared torch physically lives (after A strips the re-pin the per-run venv has NO torch of its own — a naive glob of it finds nothing; the Codex-review Q1 gap). (C) **`cuda_shlib_load`** failure class — was an un-actionable `unknown`; now repairable with a "remove the torch re-pin" hint. (D) ship `cell_scheduler.py` into `code/` + guard `gpu_cell_runner`'s bare import (a latent flat-sandbox `import backend` break). (E) preflight smoke flags an agent `import backend` with the bare-import rewrite hint. Escape hatch for a paper needing a non-cu121/older torch: `REPROLAB_DISABLE_ENV_PIN=1` or empty `REPROLAB_LOCAL_TORCH_INDEX_URL`.
+
+**Lesson.** When a per-run venv SHARES a coherent core stack from a base venv, the agent's `requirements.txt` must never re-pin that core — one `torch==X` line silently downgrades the whole CUDA stack into incoherence, and it surfaces as an opaque `dlopen` error three layers from the cause. The harness must OWN the core pins. Corollary: any code locating a venv's libs must follow `.pth` indirection — `--system-site-packages` + a base-inherit `.pth` puts the libs in the BASE prefix, not the per-run dir.
+
+**Guardrail.** `tests/rlm/test_env_reliability_fixes.py` (19) — env_pin strips the re-pin / disable-flag→legacy / no-index→raw; `_venv_cuda_lib_dirs` finds torch+nvidia, follows the base-inherit `.pth`, ranks own-venv first, skips executable `.pth` lines; `cuda_shlib_load` classified + repairable; `cell_scheduler.py` shipped + `gpu_cell_runner` guarded; preflight flags `import backend`. Reviewed by background Codex (Q1 blocker = the `.pth` gap above, fixed; Q2/Q3/Q5 verified safe).
+
+---
+
 ## 2026-05-30 — Multi-GPU "shard" was really DDP *replication*; replaced the torchrun-wrap with a harness accelerate+FSDP2 launcher
 
 **Symptom.** The 3B SDAR model OOMed a 24 GB card every time, and the "fix" kept being single-GPU + gradient-checkpointing + tiny batches — a band-aid that re-OOMed under any memory pressure. The multi-GPU attempts that came before (`torchrun`) either stalled (per-rank setup duplication — the 4-rank ALFWorld hang) or still OOMed.

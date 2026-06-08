@@ -962,6 +962,19 @@ def build_final_report(
         except Exception:  # noqa: BLE001 — finalize re-score is best-effort, never fatal
             logger.exception("report: finalize re-roll-up failed (non-fatal)")
 
+    # D4 plumbing fix: mirror the authoritative (post-rescore) rubric score to the
+    # TOP-LEVEL report fields. report.py builds `rubric` but never set top-level
+    # `overall_score`/`meets_target`, so final_report.json::overall_score stayed at
+    # its None default while rubric.overall_score carried the real number — the
+    # watcher and any leaderboard reader keying on top-level overall_score saw None
+    # for a fully-scored run (the Adam 0.69 run exhibited exactly this). This is the
+    # primary completion-write path; amend_final_report mirrors them on the rescore
+    # path. Keep them in lock-step with kwargs["rubric"].
+    _final_rubric = kwargs.get("rubric")
+    if isinstance(_final_rubric, dict):
+        kwargs["overall_score"] = _final_rubric.get("overall_score")
+        kwargs["meets_target"] = _final_rubric.get("meets_target")
+
     return RLMFinalReport(**kwargs)
 
 

@@ -54,6 +54,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "missing_module",
     "torch_redundancy",
     "cuda_oom",
+    "cuda_shlib_load",        # incoherent CUDA stack (libcupti/… won't load) → strip torch re-pin
     "oom_killed",
     "requirements_not_found",
     "missing_dataset",
@@ -83,6 +84,64 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     # Existing classifier label for the same fatal funding state.
     "runpod_balance_too_low",
 }
+
+
+def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) -> list[str]:
+    """pip-install commands for the local-sandbox bootstrap, hardened by env_pin.
+
+    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST, then the
+    agent's requirements with any conflicting core re-pin stripped (writing
+    ``requirements.hardened.txt`` next to ``requirements.txt``). This is the fix for the
+    2026-06-07 All-Conv-Net collapse, where the agent's ``torch==2.2.0`` re-pin
+    DOWNGRADED the cu121 build and left an incoherent CUDA stack (``libcupti.so.12``
+    failed to dlopen → every experiment died at import).
+
+    Fail-soft: env_pin off (``REPROLAB_DISABLE_ENV_PIN``) / no torch index / unknown tag
+    / any error → legacy bare-``torch`` install + raw ``requirements.txt``. Returns the
+    ordered command list (the caller appends ``accelerate`` afterwards).
+    """
+    core_install_cmd: str | None = None
+    requirements_target = "requirements.txt"
+    env_pin_on = bool(torch_index) and os.environ.get(
+        "REPROLAB_DISABLE_ENV_PIN", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+    if env_pin_on:
+        try:
+            from backend.agents.rlm import env_pin
+
+            tag = env_pin.base_tag_for("local", None)  # → "cu121"
+            specs = env_pin.pin_install_specs(tag)
+            kept, dropped = env_pin.harden_requirements(
+                requirements_path.read_text(encoding="utf-8").splitlines(),
+                base_tag=tag,
+            )
+            if specs:
+                core_install_cmd = (
+                    f"python -m pip install {' '.join(specs)} "
+                    f"--index-url {torch_index} || true"
+                )
+            if dropped:
+                hardened = requirements_path.with_name("requirements.hardened.txt")
+                hardened.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                requirements_target = hardened.name
+                logger.info(
+                    "_local_core_bootstrap_commands: env_pin stripped %d core re-pin(s) "
+                    "%s; harness installs the pinned cu121 stack", len(dropped), dropped,
+                )
+        except Exception:  # noqa: BLE001 — env_pin must never block the run
+            logger.exception(
+                "_local_core_bootstrap_commands: env_pin hardening failed; raw requirements.txt"
+            )
+            core_install_cmd, requirements_target = None, "requirements.txt"
+
+    cmds: list[str] = []
+    if core_install_cmd is not None:
+        cmds.append(core_install_cmd)
+    elif torch_index:
+        cmds.append(f"python -m pip install torch --index-url {torch_index} || true")
+    cmds.append(f"python -m pip install -r {requirements_target} || true")
+    return cmds
+
 
 # Phase 0C: failure classes whose run_experiment result carries a POPULATED
 # metrics dict (aggregate_cell_metrics always returns non-empty) yet represents an
@@ -3120,12 +3179,14 @@ async def _execute_in_sandbox(
             "REPROLAB_LOCAL_TORCH_INDEX_URL",
             "https://download.pytorch.org/whl/cu121",
         ).strip()
-        if _torch_index:
-            bootstrap_commands.append(
-                f"python -m pip install torch --index-url {_torch_index} || true"
-            )
-        bootstrap_commands.append(
-            "python -m pip install -r requirements.txt || true"
+        # env_pin (D6a) — the harness OWNS the cu121 core (torch/vision/audio); the
+        # agent's conflicting re-pin is stripped before install. This is the fix for the
+        # 2026-06-07 All-Conv-Net collapse, where `torch==2.2.0` DOWNGRADED the cu121
+        # build and left an incoherent CUDA stack (libcupti.so.12 failed to dlopen →
+        # every experiment died at import). See _local_core_bootstrap_commands. Fail-soft;
+        # opt out with REPROLAB_DISABLE_ENV_PIN=1 (or REPROLAB_LOCAL_TORCH_INDEX_URL="").
+        bootstrap_commands.extend(
+            _local_core_bootstrap_commands(requirements_path, _torch_index)
         )
         # Harness owns the multi-GPU launcher (`accelerate launch` + FSDP2) —
         # ensure Accelerate is in the per-run venv regardless of requirements.txt.
@@ -3147,6 +3208,30 @@ async def _execute_in_sandbox(
             bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
     except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
         logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
+
+    # Layer 1 execution smoke: when REPROLAB_EXECUTION_SMOKE is on, run the agent's
+    # entry script for 1 step per experiment on tiny data (REPROLAB_SMOKE_STEPS=1) with
+    # CUDA_LAUNCH_BLOCKING=1 — AFTER the import smoke, BEFORE the full training. A runtime
+    # crash (e.g. a VAE device-side assert from a data/shape bug) surfaces at the real
+    # line in seconds, short-circuits the GPU training, and becomes repair_context — the
+    # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
+    # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
+    try:
+        from backend.agents.rlm import execution_smoke as _execution_smoke
+        if _execution_smoke.is_enabled():
+            _entry = next(
+                (e for e in ("train.py", "train_cell.py", "main.py", "run.py")
+                 if (code_dir / e).exists()),
+                None,
+            )
+            if _entry is not None:
+                bootstrap_commands.append(
+                    _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                )
+            else:
+                logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
+    except Exception:  # noqa: BLE001 — execution smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: execution smoke wiring failed")
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -3334,6 +3419,7 @@ async def _execute_in_sandbox(
                 )
 
             from backend.agents.rlm.preflight_smoke import MARKER as _SMOKE_MARKER
+            from backend.agents.rlm import execution_smoke as _exec_smoke
             for command in (*bootstrap_commands, *commands):
                 _cmd_res = await service.execute(
                     ExecuteCommand(sandbox=sandbox, command=command,
@@ -3348,6 +3434,21 @@ async def _execute_in_sandbox(
                         "_execute_in_sandbox: preflight import smoke FAILED — skipping "
                         "remaining commands (no GPU training); see preflight_smoke_result.json")
                     break
+                # Layer 1: the EXECUTION smoke (1-step dry-run) blocks ONLY on a REAL
+                # crash, NOT on a timeout-kill (exit 124 = the script ignored the step
+                # cap → not necessarily broken → soft pass). Use the exit code to make
+                # that distinction; if it's unavailable, fail-soft (do NOT block — a
+                # false block costs more than a missed catch).
+                if _exec_smoke.MARKER in command:
+                    _code = getattr(_cmd_res, "exit_code", None)
+                    if _code is not None:
+                        _status, _blocking = _exec_smoke.interpret_exit(int(_code))
+                        if _blocking:
+                            logger.warning(
+                                "_execute_in_sandbox: execution smoke CRASH (%s) — skipping "
+                                "remaining commands (no GPU training). The real traceback is "
+                                "in the smoke output (CUDA_LAUNCH_BLOCKING=1).", _status)
+                            break
         except _WatchdogKilled as exc:
             # Surface as a fail-soft error dict so the caller's outer escalation
             # loop treats it like an OOM (advance ladder / repair_context).

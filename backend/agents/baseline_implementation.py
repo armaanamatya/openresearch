@@ -47,22 +47,29 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
 # for the agentic full-scope envs) so the copy-and-paste import route always
 # resolves inside any sandbox — mirror of the rubric_guard.py "emit alongside
 # train.py" pattern, but a real file copy rather than a prompt instruction:
+#   * cell_scheduler.py  — pure-stdlib resume/placement helpers; gpu_cell_runner imports
+#                          it BARE, so it must be copied alongside (else the flat-sandbox
+#                          `from cell_scheduler import …` falls back to an in-repo
+#                          `backend.*` import that doesn't resolve — the bug that zeroed
+#                          an SDAR matrix at import on 2026-06-07).
 #   * gpu_cell_runner.py — single-cell trainer references its env-var contract.
 #   * sdar_env_base.py   — BaseEnv (single-turn) + AgenticEnv (multi-turn) bases.
 #   * agentic_rollout.py — multi-turn episode → (sequence_ids, response_mask, reward).
 #   * search_qa_env.py   — real retrieval QA env (dense E5 / BM25 / overlap).
 #   * alfworld_env.py    — real ALFWorld TextWorld agentic env.
 #   * webshop_env.py     — real WebShop agentic env.
-# The first two are zero-non-stdlib-dep; the three agentic envs lazy-import their
+# The first three are zero-non-stdlib-dep; the three agentic envs lazy-import their
 # heavy deps (rank_bm25 / sentence-transformers / faiss / alfworld), so the COPY +
 # bare ``import`` always work and the deps load only when an env is actually used.
 _HARNESS_CODE_HELPERS: tuple[str, ...] = (
+    "cell_scheduler.py",
     "gpu_cell_runner.py",
     "sdar_env_base.py",
     "agentic_rollout.py",
     "search_qa_env.py",
     "alfworld_env.py",
     "webshop_env.py",
+    "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
 )
 
 
@@ -1069,6 +1076,53 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
 )
 
 
+_PROVENANCE_BLOCK = (
+    "\n\nPROVENANCE MANIFEST (makes your run legible to the TEXT-ONLY grader):\n"
+    "The rubric grader cannot SEE your figures and reads only a bounded slice of code, so a\n"
+    "faithful run gets docked for details it actually has ('45-epoch not confirmed', 'batch\n"
+    "size only an assumption', 'log-axis not verifiable'). Fix this by emitting a machine-\n"
+    "readable manifest. The helper `provenance.py` is ALREADY in your code dir:\n"
+    "  from provenance import emit_provenance, emit_figure_sidecar\n"
+    "  emit_provenance(OUTPUT_DIR, experiments={\n"
+    "    '<exp_id>': {'model_key':..., 'baseline':..., 'seed':..., 'epochs':..., 'steps':...,\n"
+    "      'batch_size':..., 'per_optimizer': {'adam': {'lr':..., 'betas':...}, ...},\n"
+    "      'hardware':..., 'framework_versions': {'torch': torch.__version__},\n"
+    "      'convergence': {'iteration':[...], '<metric>':[...]}}})\n"
+    "  # for EACH fig_*.png you save, also emit its sidecar so the grader knows the axes:\n"
+    "  emit_figure_sidecar(png_path, shows='val accuracy vs epoch (log-x)',\n"
+    "    axis={'x': {'label':'epoch','scale':'log'}, 'y': {'label':'accuracy','scale':'linear'}},\n"
+    "    series={'adam': {'x':[...], 'y':[...]}})\n"
+    "emit_provenance auto-summarizes long convergence arrays (no byte-budget risk). Wrap both\n"
+    "calls in try/except (FAIL-SOFT, exactly like the figures). This is the single biggest\n"
+    "lever on the 'Artifact completeness', 'Evaluation protocol', and 'Experiment execution'\n"
+    "rubric areas.\n"
+)
+
+
+_SMOKE_BLOCK = (
+    "\n\nEXECUTION SMOKE — honor REPROLAB_SMOKE_STEPS (a FREE pre-run crash check):\n"
+    "Before the full run the harness may launch your entry script with REPROLAB_SMOKE_STEPS\n"
+    "set (e.g. =1) and CUDA_LAUNCH_BLOCKING=1. When it is set, run a MINIMAL dry-run:\n"
+    "construct EVERY model/experiment you would run for real (especially the riskiest — a\n"
+    "VAE, a custom loss) and take that many optimizer steps on a TINY data slice (≈2\n"
+    "batches), then sys.exit(0). Skip full epochs, heavy downloads, and figure/metrics\n"
+    "writing. Pattern:\n"
+    "  import os, sys\n"
+    "  SMOKE = int(os.environ.get('REPROLAB_SMOKE_STEPS', '0') or 0)\n"
+    "  ...\n"
+    "  for step, batch in enumerate(loader):\n"
+    "      train_step(batch)\n"
+    "      if SMOKE and step + 1 >= SMOKE: break\n"
+    "  ...\n"
+    "  if SMOKE: sys.exit(0)   # every experiment constructed + stepped without crashing\n"
+    "This runs in SECONDS and catches runtime crashes — e.g. a VAE `CUDA error: device-side\n"
+    "assert` from feeding non-[0,1] data to a Bernoulli/BCE loss (binarize or [0,1]-scale\n"
+    "the VAE's input; do NOT reuse the classifier's mean/std Normalize) — at the REAL line\n"
+    "BEFORE the expensive run, so the traceback becomes your repair_context. Ignoring the\n"
+    "env var just times the smoke out and skips it, but you LOSE the free crash check.\n"
+)
+
+
 _RUBRIC_GUARD_BLOCK = (
     "\n\nSELF-VALIDATING RUBRIC GUARD — always-on:\n"
     "At the END of train.py (after writing metrics.json) call:\n"
@@ -1693,6 +1747,19 @@ def _rubric_checklist_block(project_dir: Path) -> str:
             req = req[:247] + "..."
         lines.append(f"  [w={weight:.2f}] {req}")
 
+    # Completeness nudge (Layer 1, lite): the agent already SEES the leaves, but a
+    # prior run still skipped a complex component (SFO, a second-order optimizer) by
+    # choice and reported only training loss. A simplified-but-present implementation
+    # earns partial credit; an OMITTED component scores 0. So push best-effort coverage
+    # of EVERY leaf + the evaluation metrics the leaves ask for, not just training loss.
+    lines.append(
+        "\nCOVER EVERY LEAF: implement a best-effort version of each item above — do NOT "
+        "skip one just because it's complex (a basic correct version of a hard component, "
+        "e.g. a second-order optimizer, beats absence: partial credit vs 0). Report the "
+        "TEST/validation metrics the leaves name (accuracy, ELBO, etc.), not only training "
+        "loss. If you must reduce scope, reduce SIZE (fewer epochs/steps), never OMIT a "
+        "whole experiment or baseline a leaf asks for."
+    )
     return "\n".join(lines)
 
 
@@ -2181,6 +2248,15 @@ def _compute_constraint_guidance(
     # to nail. Asks for README, figures, config_used.json, per-step curves.
     guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
+    guidance += _PROVENANCE_BLOCK
+    # Layer 1: only ask the agent to write smoke-aware code when the execution smoke
+    # is actually enabled — keeps the prompt lean otherwise (flag default-OFF).
+    try:
+        from backend.agents.rlm import execution_smoke as _exec_smoke
+        if _exec_smoke.is_enabled():
+            guidance += _SMOKE_BLOCK
+    except Exception:  # noqa: BLE001 — guidance assembly must never fail the run
+        pass
 
     # 5.8. Self-validating rubric guard — always-on. The agent's own train.py
     # imports `rubric_guard.assert_metrics_schema` and calls it at the end of
