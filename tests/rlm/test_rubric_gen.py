@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from backend.agents.rlm.rubric_gen import generate_rubric_tree
+from backend.agents.rlm.rubric_gen import generate_rubric_tree, _is_placeholder_requirement
 from backend.evals.paperbench.leaf_scorer import flatten_leaves, roll_up
 
 # ---------------------------------------------------------------------------
@@ -286,3 +286,104 @@ def test_partial_weights_filled_not_zeroed():
     assert abs(sum(leaf_weights) - 1.0) < 1e-9
     # valid weights 0.4 and 0.4 → mean 0.4 fills the gap → all three equal.
     assert all(abs(w - 1 / 3) < 1e-9 for w in leaf_weights)
+
+
+# ---------------------------------------------------------------------------
+# Test 8: placeholder leaves are rejected by _is_placeholder_requirement and
+#         silently dropped by _clean_categories
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_leaves_rejected():
+    """Leaves with empty-parenthetical placeholders are dropped.
+
+    Regression for the SDAR leaf "hyperparameters (, ) correctly set" that
+    had empty placeholders because the LLM failed to extract concrete values.
+    """
+    # Unit-level: _is_placeholder_requirement catches known patterns
+    from backend.agents.rlm.rubric_gen import _is_placeholder_requirement
+
+    # Only a genuinely empty / comma-only parenthetical is a placeholder
+    # (F-32): the regex is the last-resort net for truly empty templates.
+    bad_patterns = [
+        "The hyperparameters (, ) are correctly set as described in Section 4.1.",
+        "The values ( ) are used.",
+        "The coefficients (,) need setting.",
+    ]
+    for pattern in bad_patterns:
+        assert _is_placeholder_requirement(pattern), (
+            f"expected placeholder detection for: {pattern!r}"
+        )
+
+    good_patterns = [
+        "Sets β=10 and λ=0.1 as described in Section 3.3.",
+        "train.py implements g_t = σ(β·Δ_t) with stop-gradient (Section 3.3).",
+        "The GRU encoder uses hidden size 256 (Section 3.1).",
+        "GRPO and OPSD baselines use Qwen2.5-7B-Instruct backbone (Section 4.1).",
+        # F-32: concrete leaves the old over-broad regex wrongly dropped — a
+        # percent unit, a method call (inner () ), and a Greek-only argument.
+        "Reports the task success rate (%).",
+        "Applies the stop-gradient operator (gate.detach()) to the gate.",
+        "Implements the importance ratio r_t(θ) = π_θ(a|s) / π_old(a|s).",
+        # Greek-symbol lists are no longer regex-dropped (F-32 — "explicitly NOT
+        # Greek letters"); the system-prompt vague-phrase prohibition, not this
+        # last-resort net, is responsible for vague-but-non-empty leaves.
+        "Sets (β, λ) as described.",
+        "Uses (, λ) from the paper.",
+    ]
+    for pattern in good_patterns:
+        assert not _is_placeholder_requirement(pattern), (
+            f"wrongly flagged as placeholder: {pattern!r}"
+        )
+
+    # Integration: placeholder leaves are silently dropped; valid leaves survive.
+    response = json.dumps({
+        "categories": [
+            {
+                "name": "Method fidelity",
+                "weight": 0.5,
+                "leaves": [
+                    # Placeholder — should be dropped
+                    {"requirements": "The hyperparameters (, ) are correctly set.", "weight": 0.3},
+                    # Valid concrete leaf — should survive
+                    {"requirements": "Sets β=10 and λ=0.1 in train.py (Section 3.3).", "weight": 0.4},
+                    # F-32: method-call leaf — the inner () must NOT count as a placeholder
+                    {"requirements": "Applies stop-gradient via (gate.detach()).", "weight": 0.3},
+                ],
+            },
+            {
+                # F-32: a whole category built of (%) metric leaves must survive —
+                # the old regex dropped every (%) leaf, deleting this category.
+                "name": "Evaluation protocol",
+                "weight": 0.2,
+                "leaves": [
+                    {"requirements": "Reports task success rate (%) on ALFWorld.", "weight": 0.5},
+                    {"requirements": "Reports Score and Acc (%) on WebShop.", "weight": 0.5},
+                ],
+            },
+            {
+                "name": "Experiment execution",
+                "weight": 0.3,
+                "leaves": [
+                    {"requirements": "train.py runs GRPO baseline to completion.", "weight": 1.0},
+                ],
+            },
+        ]
+    })
+    tree = generate_rubric_tree(_LONG_PAPER, _FixedClient(response))
+
+    assert tree is not None
+    leaves = flatten_leaves(tree)
+    reqs = [lf["requirements"] for lf in leaves]
+
+    # Placeholder must not appear
+    assert not any("(, )" in r for r in reqs), "placeholder leaf must be dropped"
+    # Concrete leaf must survive
+    assert any("β=10" in r for r in reqs), "concrete leaf with β=10 must survive"
+    # F-32: the method-call leaf and BOTH (%) metric leaves must survive — the
+    # latter proves the all-(%) Evaluation protocol category was not dropped.
+    assert any("gate.detach()" in r for r in reqs), "method-call leaf must survive"
+    assert any("success rate (%)" in r for r in reqs), "(%) metric leaf must survive"
+    assert any("Score and Acc (%)" in r for r in reqs), "(%) metric leaf must survive"
+    # 2 method (β=10 + detach) + 2 eval (%) + 1 experiment = 5 surviving leaves.
+    assert len(leaves) == 5

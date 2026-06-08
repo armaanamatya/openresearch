@@ -102,3 +102,37 @@ def test_helper_does_not_raise_on_oserror(tmp_path: Path, monkeypatch) -> None:
 
     # Must not raise.
     _mark_demo_status_failed(tmp_path, project_id, reason="x")
+
+
+def test_writes_terminal_final_report_when_missing(tmp_path: Path) -> None:
+    """A crash before _finalize leaves demo_status=running but no report. The
+    helper must also drop a minimal terminal final_report.json (verdict=failed)
+    so the leaderboard/aggregator can represent the crashed run."""
+    project_id = "prj_test"
+    project_dir = tmp_path / project_id
+    _write_status(project_dir, status="running", projectId=project_id)
+    assert not (project_dir / "final_report.json").exists()
+
+    _mark_demo_status_failed(tmp_path, project_id, reason="early setup boom")
+
+    fr = project_dir / "final_report.json"
+    assert fr.exists()
+    report = json.loads(fr.read_text(encoding="utf-8"))
+    assert report["verdict"] == "failed"
+    assert report["reproduction_summary"] == "early setup boom"
+
+
+def test_does_not_overwrite_existing_final_report(tmp_path: Path) -> None:
+    """A real _finalize / scorer write always wins — the helper must NOT
+    clobber an existing final_report.json with its minimal failed payload."""
+    project_id = "prj_test"
+    project_dir = tmp_path / project_id
+    _write_status(project_dir, status="running", projectId=project_id)
+    fr = project_dir / "final_report.json"
+    sentinel = {"verdict": "reproduced", "reproduction_summary": "real report"}
+    fr.write_text(json.dumps(sentinel), encoding="utf-8")
+
+    _mark_demo_status_failed(tmp_path, project_id, reason="late crash")
+
+    # Untouched: the pre-existing report is preserved verbatim.
+    assert json.loads(fr.read_text(encoding="utf-8")) == sentinel

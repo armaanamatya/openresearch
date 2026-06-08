@@ -15,6 +15,21 @@ from backend.routes.leaderboard import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_leaderboard_cache():
+    # leaderboard_cache._cache is a process-global keyed by project_id with
+    # mtime-based invalidation. These tests reuse project_ids ("a"/"b") across
+    # different tmp_paths; with coarse filesystem mtime the staleness check can
+    # collide and return a STALE cross-test row, so a different test fails on
+    # each run (timing-dependent flakiness). clear() before+after each test —
+    # using the cache's own test-isolation hook — makes the suite deterministic.
+    from backend.services.events import leaderboard_cache
+
+    leaderboard_cache.clear()
+    yield
+    leaderboard_cache.clear()
+
+
 def _write_run(
     runs_root: Path,
     project_id: str,
@@ -184,11 +199,13 @@ def test_leaderboard_row_schema_is_pinned(tmp_path: Path):
     assert len(rows) == 1
     dumped = rows[0].model_dump()
     expected_keys = {
-        "project_id", "paper_id", "paper_title", "mode", "models",
+        "project_id", "paper_id", "paper_title", "title", "mode", "models",
         "overall_score", "compute_adjusted_score", "execution_mode",
         "meets_target", "degraded",
         "cost_usd", "iterations", "wall_clock_s",
         "sandbox", "started_at", "completed_at", "verdict",
+        # β5: attempt-aware fields
+        "status", "attempts",
     }
     assert set(dumped.keys()) == expected_keys, (
         f"LeaderboardRow shape drifted. "

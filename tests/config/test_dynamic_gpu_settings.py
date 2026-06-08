@@ -22,8 +22,20 @@ def _isolate_settings_cache():
         _reset_settings_cache()
 
 
-def test_default_values_match_spec():
-    s = Settings()
+def test_default_values_match_spec(monkeypatch):
+    # A pytest plugin (deepeval) calls load_dotenv() on the repo .env, leaking
+    # its values into os.environ for the whole session — which shadows the code
+    # defaults this test verifies (e.g. .env sets REPROLAB_DYNAMIC_GPU_ENABLED=
+    # false, and env > .env > default). Clear the asserted vars from os.environ
+    # AND disable the .env file so we assert the true Field defaults, hermetically.
+    for _k in (
+        "REPROLAB_DYNAMIC_GPU_ENABLED", "REPROLAB_FORCE_SINGLE_GPU",
+        "REPROLAB_MAX_GPU_USD_PER_HOUR", "REPROLAB_MAX_RUN_GPU_USD",
+        "REPROLAB_DYNAMIC_GPU_HEADROOM", "REPROLAB_DYNAMIC_GPU_FALLBACK_VRAM_GB",
+        "REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS",
+    ):
+        monkeypatch.delenv(_k, raising=False)
+    s = Settings(_env_file=None)
     assert s.dynamic_gpu_enabled is True
     assert s.force_single_gpu is True
     assert s.max_gpu_usd_per_hour == pytest.approx(10.0)

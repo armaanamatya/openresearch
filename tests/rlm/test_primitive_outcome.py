@@ -42,6 +42,15 @@ def test_primitive_outcome_enum_has_expected_values():
             {"success": False, "metrics": {}, "logs": "", "failure_class": "balance_too_low"},
             PrimitiveOutcome.fatal,
         ),
+        # Phase 0C: an all-cells-errored code bug carries a POPULATED metrics dict
+        # (aggregate_cell_metrics always returns non-empty) yet must be repairable —
+        # it engages the repair floor instead of being mis-typed partial_evidence.
+        (
+            {"success": False,
+             "metrics": {"status": "failed", "per_model": {"qwen3-1.7b": {"status": "failed"}}},
+             "logs": "", "failure_class": "cell_execution_error"},
+            PrimitiveOutcome.repairable,
+        ),
     ],
 )
 def test_run_experiment_maps_outcomes(make_context, tmp_path, monkeypatch, sandbox_result, expected):
@@ -107,3 +116,44 @@ def test_record_candidate_outcome_missing_candidate_id_is_repairable(make_contex
     assert result["success"] is False
     assert result["outcome"] == PrimitiveOutcome.repairable.value
     assert result["error"] == "candidate_id missing — pass the most recent proposed candidate"
+
+
+def test_cell_execution_error_with_metrics_is_repairable_not_partial():
+    """Phase 0C: an all-cells-errored code-bug result carries a populated metrics
+    dict (aggregate_cell_metrics always returns non-empty), but must classify as
+    ``repairable`` so it engages the repair-iteration floor — NOT partial_evidence
+    (the metrics-first short-circuit would otherwise skip the floor)."""
+    result = {
+        "success": False,
+        "metrics": {"status": "failed", "per_model": {"qwen3-1.7b": {"status": "failed"}}},
+        "failure_class": "cell_execution_error",
+        "error": "3 cells failed with non-OOM errors",
+    }
+    assert (
+        primitives._classify_run_experiment_outcome(result)
+        is PrimitiveOutcome.repairable
+    )
+
+
+def test_genuine_partial_with_metrics_stays_partial_evidence():
+    """Phase 0C regression: the fix must stay NARROW — a partial result whose
+    failure_class is NOT a metrics-bearing-repairable class (or has none) keeps its
+    partial_evidence typing so some-ok/some-bug runs are not over-repaired."""
+    # No failure_class, has metrics → partial_evidence (today's behaviour).
+    r1 = {"success": False, "metrics": {"accuracy": 0.42}, "logs": ""}
+    assert primitives._classify_run_experiment_outcome(r1) is PrimitiveOutcome.partial_evidence
+    # A non-cell_execution_error soft class with metrics → still partial_evidence.
+    r2 = {"success": False, "metrics": {"accuracy": 0.4}, "failure_class": "insufficient_train_steps"}
+    assert primitives._classify_run_experiment_outcome(r2) is PrimitiveOutcome.partial_evidence
+
+
+def test_cell_execution_error_in_repairable_and_classifier_sets():
+    """Phase 0C: the class is registered everywhere the repair machinery looks."""
+    from backend.agents.rlm.failure_classifier import FAILURE_CLASSES, classify_failure
+    assert "cell_execution_error" in primitives._RUN_EXPERIMENT_REPAIRABLE_FAILURES
+    assert "cell_execution_error" in primitives._METRICS_BEARING_REPAIRABLE_FAILURES
+    assert "cell_execution_error" in FAILURE_CLASSES
+    # The canonical suggested_fix is wired (classify_failure honours a preset class).
+    klass, fix = classify_failure({"success": False, "failure_class": "cell_execution_error"})
+    assert klass == "cell_execution_error"
+    assert fix and "non-OOM" in fix
