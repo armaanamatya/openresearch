@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+    app: nvidia-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-device-plugin
+      {{- include "reprolab-aks.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nvidia-device-plugin
+        {{- include "reprolab-aks.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Ensure the DaemonSet rolls when the chart version changes.
+        helm.sh/chart-version: {{ .Chart.Version | quote }}
+    spec:
+      # ---------------------------------------------------------------------------
+      # Run on EVERY GPU node across ALL SKU pools.
+      #
+      # With the parameterized gpu_skus design multiple pools exist
+      # (azure_a10_24, azure_a100_80, azure_a100_80x2 …), each labeled:
+      #   reprolab/node-type = gpu       ← shared by ALL pools
+      #   reprolab/sku       = <sku>     ← pool-specific (for Job nodeSelector)
+      #
+      # The nodeSelector below targets the shared label so the DaemonSet lands
+      # on every GPU pool node regardless of SKU.  The per-SKU label
+      # (reprolab/sku) is NOT used here — that key is for Job scheduling only.
+      #
+      # [TF: every gpu_nodepool module instance writes reprolab/node-type = "gpu"]
+      # ---------------------------------------------------------------------------
+      nodeSelector:
+        reprolab/node-type: "gpu"
+
+      tolerations:
+        # Tolerate the shared GPU taint that is applied to EVERY GPU pool node.
+        # operator: Exists matches any taint value — this single toleration covers
+        # all SKU pools without needing to enumerate them.
+        # [TF: gpu_taint_key]  key = "nvidia.com/gpu", effect = NoSchedule
+        - key: {{ .Values.gpu.taintKey | quote }}
+          operator: Exists
+          effect: NoSchedule
+        # Standard AKS node-not-ready / unreachable tolerations for DaemonSets.
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+
+      priorityClassName: system-node-critical
+
+      containers:
+        - name: nvidia-device-plugin
+          image: {{ .Values.devicePlugin.repository }}:{{ .Values.devicePlugin.version }}
+          imagePullPolicy: IfNotPresent
+          args:
+            # Expose all GPU UUIDs as individual allocatable nvidia.com/gpu resources.
+            - --mig-strategy=none
+            - --pass-device-specs=false
+            - --fail-on-init-error=true
+            - --device-list-strategy=envvar
+          env:
+            - name: PASS_DEVICE_SPECS
+              value: "false"
+          securityContext:
+            # The device plugin must be privileged to access /dev/nvidiaX devices.
+            privileged: true
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+      volumes:
+        - name: device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins

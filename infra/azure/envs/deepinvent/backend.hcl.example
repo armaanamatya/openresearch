@@ -1,0 +1,28 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Partial backend configuration for the DeepInvent environment.
+#
+# Usage:
+#   cp backend.hcl.example backend.hcl
+#   # Fill in the placeholders below
+#   terraform init -backend-config=envs/deepinvent/backend.hcl
+#
+# The storage account and container must be created by the bootstrap module
+# BEFORE running terraform init here.
+#
+# NEVER commit backend.hcl (contains subscription-specific names).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Azure subscription that owns the state storage account.
+subscription_id = "<DEEPINVENT_SUBSCRIPTION_ID>"
+
+# Name of the resource group created by the bootstrap module.
+resource_group_name = "rg-reprolab-tfstate"
+
+# Name of the storage account created by the bootstrap module.
+storage_account_name = "<BOOTSTRAP_STATE_STORAGE_ACCOUNT_NAME>"
+
+# Name of the blob container inside the state storage account.
+container_name = "tfstate"
+
+# State file name for this environment.
+key = "deepinvent/terraform.tfstate"

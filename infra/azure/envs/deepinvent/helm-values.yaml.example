@@ -1,0 +1,86 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Helm L2 values for the DeepInvent environment.
+#
+# Fill placeholders from `terraform output` after L1 apply, then:
+#   cp helm-values.yaml.example helm-values.yaml
+#   helm upgrade --install reprolab-aks infra/azure/helm/ \
+#     -f infra/azure/envs/deepinvent/helm-values.yaml
+#
+# NEVER commit helm-values.yaml (contains tenant-specific IDs).
+#
+# Key names here MUST match infra/azure/helm/values.yaml exactly.
+# Sources marked [TF: <output>] come from `terraform output -raw <output>`.
+# Sources marked [tfvar: <var>] come directly from main.tfvars.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Namespace & ServiceAccount ───────────────────────────────────────────────
+# [tfvar: workload_identity_namespace]  Must match main.tfvars and the federated
+# credential subject in the identity module.
+namespace: reprolab
+
+# [tfvar: workload_identity_service_account]  Must match main.tfvars and the
+# federated credential subject `system:serviceaccount:<namespace>:<serviceAccountName>`.
+serviceAccountName: reprolab-sa
+
+# ── Workload Identity ────────────────────────────────────────────────────────
+workloadIdentity:
+  # [TF: workload_identity_client_id]
+  # Populate from: terraform output -raw workload_identity_client_id
+  clientId: "<WORKLOAD_IDENTITY_CLIENT_ID>"
+
+# ── Azure storage ────────────────────────────────────────────────────────────
+storage:
+  # [TF: storage_account_name]
+  # Populate from: terraform output -raw storage_account_name
+  accountName: "<STORAGE_ACCOUNT_NAME>"
+
+  # [TF: files_share_name]
+  # Populate from: terraform output -raw files_share_name
+  fileShareName: "reprolab-cache"
+
+  pvcSize: "200Gi"
+  reclaimPolicy: Retain
+
+# ── GPU node pools ────────────────────────────────────────────────────────────
+# With the parameterized gpu_skus design, every GPU pool shares the same taint
+# key (nvidia.com/gpu) and the device-plugin DaemonSet tolerates it cluster-wide.
+# Job nodeSelector uses the reprolab/sku label to target a specific pool.
+#
+# [TF: gpu_pools output]  Use `terraform output -json gpu_pools` to list pools.
+# The defaultSku must match a short_name provisioned in var.gpu_skus (main.tfvars).
+gpu:
+  taintKey: nvidia.com/gpu              # constant — same on all GPU pools
+  skuLabelKey: reprolab/sku             # constant — primary Job nodeSelector key
+  defaultSku: azure_a100_80            # must match a gpu_skus short_name in main.tfvars
+  # Legacy aliases — kept for any templates still using nodePoolLabelKey/Value.
+  nodePoolLabelKey: reprolab/sku        # = skuLabelKey
+  nodePoolLabelValue: azure_a100_80     # = defaultSku
+
+# ── RBAC ──────────────────────────────────────────────────────────────────────
+rbac:
+  # [tfvar: operator_entra_group_object_id]  Not a TF output — copy directly
+  # from main.tfvars (or: az ad group show --group "<name>" --query id -o tsv).
+  operatorGroupObjectId: "<OPERATOR_ENTRA_GROUP_OBJECT_ID>"
+
+# ── ACR / image ───────────────────────────────────────────────────────────────
+image:
+  # [TF: acr_login_server]
+  # Populate from: terraform output -raw acr_login_server
+  # Append the image name and tag: "<acr_login_server>/aks-cell-base:0.1.0"
+  aksCellBase: "<ACR_LOGIN_SERVER>/aks-cell-base:0.1.0"
+
+# ── ResourceQuota ─────────────────────────────────────────────────────────────
+# Set maxGpu = sum of (gpu_count × max_nodes) across all gpu_skus entries.
+# For the default single A100-80 pool with max_nodes=1: maxGpu = 1.
+# Example: a10080 (1gpu × 1node=1) + a100x2 (2gpu × 2nodes=4) → maxGpu=5.
+resourceQuota:
+  maxGpu: 1           # set to sum(gpu_count * max_nodes) across gpu_skus entries
+  maxGpuLimits: 1     # same as maxGpu
+  maxJobs: 64
+
+# ── NVIDIA device plugin ─────────────────────────────────────────────────────
+devicePlugin:
+  # Pin to a specific version; update deliberately.
+  # Latest: https://github.com/NVIDIA/k8s-device-plugin/releases
+  version: "v0.16.2"
+  repository: nvcr.io/nvidia/k8s-device-plugin
