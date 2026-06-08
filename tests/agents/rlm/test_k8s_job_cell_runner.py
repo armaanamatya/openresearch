@@ -2060,3 +2060,265 @@ class TestEmptyBaseImageError:
         )
         assert manifest["spec"]["template"]["spec"]["containers"][0]["image"] == \
             "myregistry.io/image:v1"
+
+
+# ---------------------------------------------------------------------------
+# 28. P0-scale-1 — watch loop pod-list call count is bounded (not per-poll)
+# ---------------------------------------------------------------------------
+
+class _CountingCore:
+    """FakeK8sCore that counts list_namespaced_pod calls."""
+
+    def __init__(
+        self,
+        pods: list[_FakePod] | None = None,
+        log_text: str = "ok\n",
+    ) -> None:
+        self._pods = pods or []
+        self._log_text = log_text
+        self.list_pod_call_count = 0
+
+    def list_namespaced_pod(self, namespace: str, label_selector: str = "") -> _FakePodList:
+        self.list_pod_call_count += 1
+        return _FakePodList(self._pods)
+
+    def read_namespaced_pod_log(self, name: str, namespace: str, **kwargs: Any) -> str:
+        return self._log_text
+
+
+class TestWatchLoopPodListCount:
+    """P0-scale-1: list_namespaced_pod must NOT be called on every poll of a running job."""
+
+    def test_healthy_job_pod_list_bounded_not_per_poll(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A job that runs for N polls then completes must call list_namespaced_pod
+        a SMALL number of times (for terminal info collection only), not once per poll.
+
+        We use 5 'running' polls then 1 terminal poll.  With the old code that would
+        be 5*2 + 1*1 = 11+ list calls.  With the fix it should be ≤ 2 (one for
+        _collect_pod_info at terminal time, possibly one for Pending check on poll 1
+        before active>0 is seen — but once active>0 no more pod-list calls).
+        """
+        cells = [{"id": "sc1"}]
+
+        # Build a job sequence: 5 polls with active=1 (running), then terminal.
+        running_status = _FakeJobStatus(succeeded=0, failed=0)
+        # Patch active counter — the fake class doesn't have it by default so we add it.
+        running_status.active = 1  # type: ignore[attr-defined]
+
+        terminal_status = _FakeJobStatus(conditions=[_FakeJobCondition("Complete")])
+        terminal_status.active = 0  # type: ignore[attr-defined]
+
+        running_job = _FakeJob(running_status)
+        terminal_job = _FakeJob(terminal_status)
+
+        n_running_polls = 5
+        job_sequence = [running_job] * n_running_polls + [terminal_job]
+
+        batch = FakeK8sBatch(job_sequence)
+        counting_core = _CountingCore(pods=[_FakePod(exit_code=0, phase="Running")])
+        k8s = _K8sClients(batch=batch, core=counting_core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        # Fast poll interval so the test doesn't take too long.
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_watch_poll_interval_s": 0.001,
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+        }.get(name, default))
+
+        results = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert results["sc1"]["status"] == "ok", (
+            f"expected ok, got {results['sc1']['status']!r}"
+        )
+        # The key assertion: pod-list call count must be <= 2 (terminal collection
+        # + at most one Pending check on the very first poll before active>0 is seen).
+        # It must NOT be >= n_running_polls (which the old code would produce).
+        assert counting_core.list_pod_call_count <= 2, (
+            f"P0-scale-1: list_namespaced_pod called {counting_core.list_pod_call_count} times "
+            f"for {n_running_polls} running polls + 1 terminal poll; "
+            f"expected ≤ 2 (terminal collection only, no per-poll pod listing)"
+        )
+
+    def test_pending_timeout_still_uses_pod_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When the job is truly stuck (active=0, succeeded=0, failed=0), the watch loop
+        MUST call list_namespaced_pod to check the pod phase for Pending-timeout.
+        This verifies the stuck-Pending path is not accidentally skipped.
+        """
+        cells = [{"id": "sc_pend"}]
+
+        # All polls: no active/succeeded/failed — pod is stuck Pending.
+        empty_status = _FakeJobStatus(succeeded=0, failed=0)
+        empty_status.active = 0  # type: ignore[attr-defined]
+        pending_job = _FakeJob(empty_status)
+
+        job_sequence = [pending_job] * 50
+        batch = FakeK8sBatch(job_sequence)
+        # Core returns a Pending pod.
+        counting_core = _CountingCore(pods=[_FakePod(phase="Pending", exit_code=None)])
+        k8s = _K8sClients(batch=batch, core=counting_core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_watch_poll_interval_s": 0.001,
+            "azure_pending_timeout_seconds": 0.05,  # 50ms → fires quickly
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+        }.get(name, default))
+
+        results = run_matrix(
+            cells,
+            tmp_path / "train_cell.py",
+            output_root=tmp_path / "out",
+            per_cell_timeout_s=30.0,
+        )
+
+        r = results["sc_pend"]
+        assert r["status"] == "error", f"expected error, got {r['status']!r}"
+        assert r["error"] is not None and "capacity_exhausted" in r["error"], (
+            f"expected capacity_exhausted prefix, got {r['error']!r}"
+        )
+        # Pending detection MUST have called list_namespaced_pod at least once.
+        assert counting_core.list_pod_call_count >= 1, (
+            "P0-scale-1: Pending-timeout detection must use list_namespaced_pod"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 29. P0-scale-2 — ContainerClient built at most once per run_matrix
+# ---------------------------------------------------------------------------
+
+class TestContainerClientReuse:
+    """P0-scale-2: _make_blob_client must be called at most once per run_matrix invocation,
+    even when multiple cells share the same matrix call.
+    """
+
+    def test_blob_client_constructed_once_for_multi_cell_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A 3-cell run must call _make_blob_client exactly once."""
+        n_cells = 3
+        cells = [{"id": f"cl{i}"} for i in range(n_cells)]
+
+        jobs = [_FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Complete")])) for _ in range(n_cells * 2)]
+        k8s = _make_k8s(job_sequence=jobs, pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.3})
+
+        # Replace _make_blob_client with a counter; return a fake client object.
+        construction_count = [0]
+        fake_client = object()  # sentinel — any object will do
+
+        def _fake_make_blob_client(account_name: str, container_name: str) -> Any:
+            construction_count[0] += 1
+            return fake_client
+
+        monkeypatch.setattr(kjcr, "_make_blob_client", _fake_make_blob_client)
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_watch_poll_interval_s": 0.001,
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "myacct",
+            "azure_blob_container": "myctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+        }.get(name, default))
+
+        results = run_matrix(
+            cells, tmp_path / "train_cell.py", output_root=tmp_path / "out",
+            max_parallel=n_cells,
+        )
+
+        # All cells should succeed.
+        for i in range(n_cells):
+            assert results[f"cl{i}"]["status"] == "ok", (
+                f"cl{i}: expected ok, got {results[f'cl{i}']['status']!r}"
+            )
+
+        # The factory must have been called exactly once, regardless of cell count.
+        assert construction_count[0] == 1, (
+            f"P0-scale-2: _make_blob_client called {construction_count[0]} times "
+            f"for {n_cells} cells; expected exactly 1 (shared client)"
+        )
+
+    def test_blob_client_none_still_works(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """When _make_blob_client returns None (storage unconfigured), run_matrix
+        must still succeed — the helpers fall back to constructing their own client
+        or handling the error gracefully.
+        """
+        cells = [{"id": "cl_none"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.7})
+
+        # Force client to be None (storage not configured).
+        monkeypatch.setattr(kjcr, "_make_blob_client", lambda a, c: None)
+
+        results = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+        assert results["cl_none"]["status"] == "ok", (
+            f"expected ok with None blob client, got {results['cl_none']['status']!r}"
+        )
+
+    def test_blob_client_factory_called_with_correct_args(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """_make_blob_client must receive the configured account_name and container_name."""
+        cells = [{"id": "cl_args"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        received_args: list[tuple[str, str]] = []
+
+        def _capturing_factory(account_name: str, container_name: str) -> None:
+            received_args.append((account_name, container_name))
+            return None
+
+        monkeypatch.setattr(kjcr, "_make_blob_client", _capturing_factory)
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_watch_poll_interval_s": 0.001,
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "correct-account",
+            "azure_blob_container": "correct-container",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+        }.get(name, default))
+
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert len(received_args) == 1, f"expected 1 factory call, got {len(received_args)}"
+        assert received_args[0] == ("correct-account", "correct-container"), (
+            f"P0-scale-2: factory called with wrong args: {received_args[0]!r}"
+        )

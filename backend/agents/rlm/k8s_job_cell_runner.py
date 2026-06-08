@@ -300,6 +300,46 @@ def _blob_download_artifact(
 
 
 # ---------------------------------------------------------------------------
+# Azure Blob ContainerClient factory — monkeypatchable for tests
+# ---------------------------------------------------------------------------
+
+def _make_blob_client(
+    account_name: str,
+    container_name: str,
+) -> Any | None:
+    """Build one ``ContainerClient`` using ``DefaultAzureCredential``.
+
+    **Scale fix (P0-scale-2):** called ONCE per ``run_matrix`` invocation so
+    that all cells share a single authenticated connection rather than each
+    ``_try_download_*`` / ``_try_reconcile_status`` call constructing its own
+    client (and triggering a fresh MSI credential probe each time).
+
+    Returns ``None`` when:
+    * ``account_name`` is empty (storage not configured — local/test path).
+    * The azure SDK is absent (test environments without the extra dep).
+
+    Tests monkeypatch this symbol via ``kjcr._make_blob_client = …`` to return
+    a fake ContainerClient (or None) without touching the azure SDK at all.
+    The ``_try_*`` helpers gracefully forward ``None`` to the azure_blob layer,
+    which then also receives ``client=None`` and tries its own construction —
+    but those helpers already catch all exceptions, so the worst case is a
+    logged debug warning.
+    """
+    if not account_name:
+        return None
+    try:
+        from backend.services.runtime import azure_blob  # type: ignore[import]
+        return azure_blob._make_container_client(account_name, container_name)
+    except Exception as exc:
+        logger.debug(
+            "k8s_job_cell_runner: could not build ContainerClient "
+            "(account=%s container=%s): %s",
+            account_name, container_name, exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Settings helper
 # ---------------------------------------------------------------------------
 
@@ -577,6 +617,21 @@ def _watch_job(
 ) -> dict[str, Any]:
     """Watch a K8s Job until terminal or timeout.
 
+    **Scale fix (P0-scale-1):** The common path — a job that is actively
+    running — makes exactly ONE API call per poll
+    (``read_namespaced_job_status``).  ``list_namespaced_pod`` is called only
+    when genuinely needed:
+
+    * **Pending-timeout detection**: only while the job has reported zero
+      active, succeeded, *and* failed pods — i.e. the scheduler has not yet
+      placed the pod.  Once any of those counters is non-zero the job is past
+      Pending and we stop querying pod phase entirely.
+    * **Terminal log/exit-code collection**: once at the point we decide the
+      job has completed (succeeded or failed), via ``_collect_pod_info``.
+
+    With P parallel cells this reduces calls from 3P/poll to 1P/poll during
+    normal execution.
+
     Returns a dict with keys:
         ``status``  — ``"succeeded"`` | ``"failed"`` | ``"deadline"``
                       | ``"overall_timeout"`` | ``"pending_timeout"``
@@ -588,7 +643,6 @@ def _watch_job(
     """
     job_deadline = time.monotonic() + active_deadline_seconds
     pending_since: float | None = None
-    last_phase: str = "Pending"
 
     while True:
         now = time.monotonic()
@@ -601,7 +655,7 @@ def _watch_job(
         if now >= job_deadline:
             return _watch_result("deadline")
 
-        # Poll Job status.
+        # --- Single API call: read Job status ---
         _poll_interval: float = _setting("azure_watch_poll_interval_s", 5.0)
         try:
             job = k8s.batch.read_namespaced_job_status(job_name, namespace)
@@ -613,13 +667,16 @@ def _watch_job(
         status = getattr(job, "status", None)
         # P1-fix-7: guard against status being None in transitional states.
         if status is None:
-            time.sleep(_setting("azure_watch_poll_interval_s", 5.0))
+            time.sleep(_poll_interval)
             continue
         conditions = getattr(status, "conditions", None) or []
         succeeded = getattr(status, "succeeded", 0) or 0
         failed = getattr(status, "failed", 0) or 0
+        active = getattr(status, "active", 0) or 0
 
-        # Check for terminal condition.
+        # --- Terminal detection from Job-level fields only (no pod list) ---
+
+        # Check for terminal condition first (most reliable signal).
         for cond in conditions:
             ctype = getattr(cond, "type", "")
             cstatus = getattr(cond, "status", "")
@@ -640,23 +697,37 @@ def _watch_job(
                     log=log,
                 )
 
+        # Counters-based terminal detection (no conditions yet from the
+        # controller, but the counts are definitive).
         if succeeded:
             node, exit_code, log = _collect_pod_info(k8s, job_name, namespace)
             return _watch_result("succeeded", exit_code=exit_code, node_name=node, log=log)
-        if failed and not _has_active_pods(k8s, job_name, namespace):
+
+        # failed>0 and active==0 means all pods have exited and none are still
+        # running — the job is done.  We derive this from Job-level counters
+        # alone (no list_namespaced_pod) to avoid the per-poll thundering herd.
+        if failed and active == 0:
             node, exit_code, log = _collect_pod_info(k8s, job_name, namespace)
             return _watch_result("failed", exit_code=exit_code, node_name=node, log=log)
 
-        # Pending timeout check.
-        phase = _get_pod_phase(k8s, job_name, namespace)
-        if phase in ("Pending", None):
-            if pending_since is None:
-                pending_since = time.monotonic()
-            elif time.monotonic() - pending_since >= pending_timeout_s:
-                return _watch_result("pending_timeout")
+        # --- Pending-timeout: pod-list query ONLY when no pods are active yet ---
+        # If active>0 or succeeded>0 or failed>0, the pod was scheduled — skip.
+        if active == 0 and succeeded == 0 and failed == 0:
+            # Job has no activity at all → still in Pending or pre-scheduling.
+            # Use a single list_namespaced_pod call to confirm/deny Pending.
+            phase = _get_pod_phase(k8s, job_name, namespace)
+            if phase in ("Pending", None):
+                if pending_since is None:
+                    pending_since = time.monotonic()
+                elif time.monotonic() - pending_since >= pending_timeout_s:
+                    return _watch_result("pending_timeout")
+            else:
+                # Pod moved past Pending (Running/Succeeded/Failed) — counters
+                # will catch the terminal state on the next poll.
+                pending_since = None
         else:
-            pending_since = None  # reset once past Pending
-            last_phase = phase or last_phase
+            # Pod is or was active — no longer in Pending limbo.
+            pending_since = None
 
         # P1-fix-8: poll interval from settings.
         time.sleep(_poll_interval)
@@ -758,8 +829,13 @@ def _try_download_metrics(
     account_name: str,
     container_name: str,
     output_dir: Path,
+    client: Any | None = None,
 ) -> dict[str, Any] | None:
     """Download ``metrics.json`` from Blob into ``output_dir/<cell_id>/metrics.json``.
+
+    ``client`` is the shared ``ContainerClient`` built once per ``run_matrix``
+    invocation (P0-scale-2).  Passing it here avoids a fresh MSI credential
+    probe on each call.
 
     Returns the parsed dict, or None on any failure.
     """
@@ -769,6 +845,7 @@ def _try_download_metrics(
             blob_name,
             account_name=account_name,
             container_name=container_name,
+            client=client,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         metrics_path = output_dir / "metrics.json"
@@ -789,14 +866,19 @@ def _try_download_log(
     container_name: str,
     log_path: Path,
     fallback_log: str,
+    client: Any | None = None,
 ) -> None:
-    """Download pod log from Blob (best-effort); fall back to ``fallback_log``."""
+    """Download pod log from Blob (best-effort); fall back to ``fallback_log``.
+
+    ``client`` is the shared ``ContainerClient`` (P0-scale-2).
+    """
     blob_name = f"{output_blob_prefix}/{cell_id}/logs/attempt-0.log"
     try:
         data = _blob_download_bytes(
             blob_name,
             account_name=account_name,
             container_name=container_name,
+            client=client,
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_bytes(data)
@@ -817,14 +899,19 @@ def _try_reconcile_status(
     output_blob_prefix: str,
     account_name: str,
     container_name: str,
+    client: Any | None = None,
 ) -> dict[str, Any] | None:
-    """Fetch Blob ``status.json`` to reconcile a TTL-deleted Job."""
+    """Fetch Blob ``status.json`` to reconcile a TTL-deleted Job.
+
+    ``client`` is the shared ``ContainerClient`` (P0-scale-2).
+    """
     blob_name = f"{output_blob_prefix}/{cell_id}/status.json"
     try:
         data = _blob_download_bytes(
             blob_name,
             account_name=account_name,
             container_name=container_name,
+            client=client,
         )
         return json.loads(data.decode("utf-8"))
     except Exception:
@@ -901,8 +988,15 @@ def _run_cell_job(
     now_iso: str | None,
     run_id: str,
     gpu_plan: Any | None = None,
+    blob_client: Any | None = None,
 ) -> CellResult:
-    """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult."""
+    """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
+
+    ``blob_client`` is the shared ``ContainerClient`` built once per
+    ``run_matrix`` invocation (P0-scale-2).  When ``None`` the helpers fall
+    back to constructing their own client (pre-fix behaviour — tolerated in
+    tests and for any call site that does not supply one).
+    """
     cell_id: str = cell.get("id", f"cell_{id(cell)}")
     job_name = _job_name(cell_id, run_id)
     output_dir = output_root / cell_id
@@ -1003,6 +1097,7 @@ def _run_cell_job(
             output_blob_prefix=output_blob_prefix,
             account_name=storage_account,
             container_name=blob_container,
+            client=blob_client,
         )
 
     status, error, retries = _map_status(watch, cell_id=cell_id, blob_status=blob_status)
@@ -1016,6 +1111,7 @@ def _run_cell_job(
             account_name=storage_account,
             container_name=blob_container,
             output_dir=output_dir,
+            client=blob_client,
         )
 
     # Persist log.
@@ -1026,6 +1122,7 @@ def _run_cell_job(
         container_name=blob_container,
         log_path=log_path,
         fallback_log=watch.get("log", ""),
+        client=blob_client,
     )
 
     # Write local resume manifest.
@@ -1251,6 +1348,13 @@ def run_matrix(
             for i, cell in enumerate(cells)
         }
 
+    # P0-scale-2: build ONE shared ContainerClient for all per-cell blob calls
+    # (metrics, log, status.json).  This avoids a fresh DefaultAzureCredential
+    # MSI probe on every download across potentially 16+ cells.  Falls back to
+    # None (each helper constructs its own client) when storage is unconfigured
+    # or the azure SDK is absent.
+    shared_blob_client: Any | None = _make_blob_client(storage_account, blob_container)
+
     # Budget tracking: sum of reserved GPU-seconds for active + completed cells.
     reserved_gpu_seconds = 0.0
     budget_lock = threading.Lock()
@@ -1377,6 +1481,8 @@ def run_matrix(
                 # P0-fix-2: use the (possibly suffixed) run_id for Job naming.
                 run_id=current_run_id,
                 gpu_plan=current_plan,
+                # P0-scale-2: shared client avoids per-call MSI probe.
+                blob_client=shared_blob_client,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
