@@ -492,6 +492,21 @@ _OPTIONAL_HINTS_SECTION = _TRIAGE_INSTRUCTION + _DECISION_ADVISOR_SECTION
 # ---------------------------------------------------------------------------
 
 
+_CONTEXT_MAP_SECTION = (
+    "═══════════════════════════════════════════════════════════════\n"
+    "  CONTEXT MAP (orientation cache)\n"
+    "═══════════════════════════════════════════════════════════════\n\n"
+    "An intra-run context map accumulates facts you already derived via "
+    "understand_section, extract_hyperparameters, and detect_environment "
+    "(datasets, metrics, hyperparameters, hardware, environment). BEFORE "
+    "re-deriving any such fact, call read_context_map() and reuse what is "
+    "already there — it saves a full primitive round-trip. The map is a "
+    "NAVIGATION AID ONLY: never cite it as evidence in the final report "
+    "(re-confirm from the corpus or an experiment result for anything that "
+    "must appear in the report).\n"
+)
+
+
 def build_system_prompt(
     *,
     context_metadata: dict,
@@ -536,6 +551,14 @@ def build_system_prompt(
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
     ]
+
+    # PEEK-lite (OPENRESEARCH_CONTEXT_MAP): only when enabled, tell the root to
+    # consult the orientation cache before re-deriving known facts.
+    import os as _os
+    if _os.environ.get("OPENRESEARCH_CONTEXT_MAP", "").strip().lower() in (
+        "on", "1", "true", "yes",
+    ):
+        parts.append(_CONTEXT_MAP_SECTION)
 
     if include_hints:
         parts.append(_OPTIONAL_HINTS_SECTION)

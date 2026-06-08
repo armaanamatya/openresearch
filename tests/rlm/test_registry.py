@@ -9,6 +9,7 @@ EXPECTED = {
     "heartbeat", "recommend_next_tool",
     "resolve_gpu_requirements",  # dynamic-GPU spec 2026-05-23
     "codex_repair",  # optional Codex CLI repo-editing subagent, default off
+    "read_context_map",  # PEEK-lite intra-run context map, OPENRESEARCH_CONTEXT_MAP
 }
 
 

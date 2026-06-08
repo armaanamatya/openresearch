@@ -511,6 +511,14 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             else:
                 # --- Phase 6 (Task 13): post-success supplemental event emission ---
                 _emit_supplemental(name, result, ctx, _emit_extra)
+                # PEEK-lite (OPENRESEARCH_CONTEXT_MAP): union orientation-primitive
+                # outputs into rlm_state/context_map.json. Flag-gated + fail-soft
+                # inside update_context_map; no-op for non-orientation primitives.
+                try:
+                    from backend.agents.rlm.context_map import update_context_map
+                    update_context_map(ctx.project_dir, name, result)
+                except Exception:  # noqa: BLE001 — orientation cache must never break a call
+                    pass
             return result
         finally:
             # Finalize the worker report if one was opened

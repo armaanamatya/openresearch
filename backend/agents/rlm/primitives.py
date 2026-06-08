@@ -5574,6 +5574,19 @@ def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
     return _with_outcome({"alive": True, "counter": counter, "note": note}, PrimitiveOutcome.ok)
 
 
+def read_context_map(*, ctx: "RunContext") -> dict:
+    """Return the PEEK-lite intra-run context map (OPENRESEARCH_CONTEXT_MAP).
+
+    A free, deterministic orientation cache unioning the structured outputs of
+    understand_section / extract_hyperparameters / detect_environment into
+    rlm_state/context_map.json. Returns ``{}`` when the flag is off or nothing
+    has been recorded yet. NAVIGATION AID ONLY — never cite it as report
+    evidence (the evidence gate remains the backstop).
+    """
+    from backend.agents.rlm.context_map import read_context_map as _read
+    return _read(ctx.project_dir)
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -5591,6 +5604,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
     "codex_repair": codex_repair,
+    "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -5678,4 +5692,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "navigation, paper summaries, rubric judgment, final reports, broad "
         "research, credential inspection, secret search, or high-frequency "
         "rlm_query calls.",
+    "read_context_map": "read_context_map() -> dict — PEEK-lite orientation "
+        "cache (enabled by OPENRESEARCH_CONTEXT_MAP). Returns already-derived "
+        "datasets/metrics/hardware/env facts unioned from understand_section, "
+        "extract_hyperparameters, and detect_environment so you can avoid "
+        "re-deriving them. Returns {} when disabled or empty. NAVIGATION ONLY — "
+        "never cite as report evidence.",
 }
