@@ -41,6 +41,8 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "requirements_not_found",    # pip CWD vs requirements.txt path mismatch
     "missing_dataset",           # HuggingFace datasets URI failure / dataset 404
     "exec_timeout",              # Per-command 4h cap hit
+    "exec_stalled",              # killed for no liveness (no output/ckpt/GPU/CPU) — a hang
+    "partial_timeout",           # timed-out/stalled but completed families recovered + scored
     "watchdog_killed",           # Lane E watchdog tripped
     "preflight_blocked",         # Lane F+I caught a scope / surrogate violation
     "permission_denied",         # File ownership / FS perm
@@ -100,6 +102,19 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "exec_timeout":
             "the per-command 4h cap fired; reduce train.py epochs OR set "
             "REPROLAB_RUN_EXPERIMENT_TIMEOUT_S higher",
+        "exec_stalled":
+            "the run was killed because it produced NO output, no checkpoint write, and no "
+            "GPU/CPU activity for the stall window (REPROLAB_EXPERIMENT_STALL_S) — a genuine "
+            "hang, likely a deadlocked dataloader / distributed collective or a frozen "
+            "download. Make the step emit periodic progress (a print or a checkpoint write), "
+            "avoid an un-timed blocking call (add a timeout to downloads / collectives), and "
+            "if it is a real long-but-quiet phase raise REPROLAB_EXPERIMENT_STALL_S",
+        "partial_timeout":
+            "the experiment timed out but the families that completed were preserved and "
+            "scored (not zeroed) — finish the rest by bounding the long pole: emit cells.json "
+            "+ train_cell.py (one cell per config, each independently timed) OR cap/stream the "
+            "sweep smallest-config-first, writing metrics.json atomically after each family, "
+            "then re-run so the remaining families complete",
         "watchdog_killed":
             "no exec.log / heartbeat / SSE-event activity for 10 min — agent or pod was "
             "wedged; next iteration starts fresh against the persistent pod",
@@ -239,6 +254,13 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # Timeout sentinels
         if "timed out after" in haystack and "run_experiment" in haystack:
             return ("exec_timeout", _suggest("exec_timeout"))
+
+        # Stall sentinel — killed for zero liveness (no stdout/stderr, no checkpoint mtime
+        # bump, no GPU-util, no CPU-util) over the stall window: a genuine hang (deadlocked
+        # dataloader / NCCL desync / frozen download), distinct from exec_timeout which hit
+        # the hard wall-clock while actively computing.
+        if cause_kind.endswith("exec_stalled") or "stalled: no output" in haystack:
+            return ("exec_stalled", _suggest("exec_stalled"))
 
         # CUDA OOM
         if (

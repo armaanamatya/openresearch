@@ -109,10 +109,12 @@ _POLL_ENV_VAR: str = "REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS"
 # Rationale:
 #   - implement_baseline: Sonnet code-writing agent; can legitimately take
 #     up to 4h per the existing timeout in primitives.py. Match that cap.
-#   - run_experiment: GPU training on RunPod; legitimately takes 2-3h on
-#     large models. Adam v8 sat 25 min idle in implement_baseline while
-#     heartbeat kept SSE fresh — the real risk is pod NCCL deadlock, which
-#     stops heartbeat too; 2h is generous enough to cover real training.
+#   - run_experiment: GPU training; legitimately takes hours. Set to 4h so
+#     this file-mtime/SSE idle threshold is >= the new 60-min inner stall
+#     window in local_process (Pillar 2, spec 2026-06-08) — the watchdog
+#     must NEVER pre-empt the GPU/CPU-aware inner stall. The real in-process
+#     hang signal is GPU/CPU util (see compute-liveness check below), not a
+#     short file-mtime idle. Mirrors the implement_baseline 4h rationale.
 #   - build_environment: Docker image build; up to 30 min is plausible on
 #     a cold node with many pip deps.
 #   - All other primitives (understand_section, extract_hyperparameters,
@@ -120,7 +122,7 @@ _POLL_ENV_VAR: str = "REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS"
 #     are LLM-driven with < 5 min expected latency; 30 min is generous.
 PRIMITIVE_IDLE_BASELINE_S: dict[str, float] = {
     "implement_baseline": 14400.0,  # 4 h — matches existing timeout in primitives.py
-    "run_experiment": 7200.0,       # 2 h — GPU training legitimately takes hours
+    "run_experiment": 14400.0,      # 4 h — >= inner stall window; util is the real hang signal
     "build_environment": 1800.0,    # 30 min — Docker build on cold node
 }
 _DEFAULT_IDLE_BASELINE_S: float = 1800.0  # 30 min for any other primitive
@@ -174,6 +176,26 @@ class WatchdogConfig:
     heartbeat_filename: str = ".heartbeat"
     exec_log_filename: str = "exec.log"
     dashboard_events_filename: str = "dashboard_events.jsonl"
+
+    # --- Compute-liveness (Pillar 2b, spec 2026-06-08) ---------------------
+    # OPTIONAL, default-empty so ``from_env`` is unchanged and every existing
+    # positional/keyword construction stays valid. The caller (primitives.py,
+    # the ``_run_watchdog(...)`` site) sets these POST-construction via
+    # ``dataclasses.replace(cfg, gpu_device_ids=..., heartbeat_json_path=...)``
+    # once it knows the pinned cards + sidecar path for the run.
+    #
+    # When populated, the watchdog consults REAL compute before emitting a
+    # kill verdict: a run that looks file-mtime/SSE stale but is still burning
+    # GPU (>5% util on a pinned card) or advancing process-tree CPU time is
+    # treated as alive. This is the signal that survives the dumb ``.heartbeat``
+    # daemon being gone (an in-process hang sits at ~0% on both).
+    #
+    # ``gpu_device_ids`` — the pinned PHYSICAL GPU ids for this run (never the
+    #   remapped ``cuda:0..N``; concurrent batch runs lease disjoint cards).
+    # ``heartbeat_json_path`` — path to the Pillar-1 sidecar
+    #   ``<code>/.exec_heartbeat.json`` (a JSON dict carrying ``"pid"``).
+    gpu_device_ids: tuple[str, ...] = ()
+    heartbeat_json_path: str | None = None
 
     @classmethod
     def from_env(cls) -> "WatchdogConfig":
@@ -468,6 +490,87 @@ def _detect_active_primitive(sse_log_path: Path, max_lookback_lines: int = 100) 
     return None
 
 
+def _read_heartbeat_pid(heartbeat_json_path: Optional[str]) -> Optional[int]:
+    """Return the ``pid`` from the Pillar-1 ``.exec_heartbeat.json`` sidecar.
+
+    The sidecar is a JSON dict ``{last_output_at, last_line, lines, pid, command}``
+    written by ``LocalProcessBackend.exec``. We only need ``pid`` to walk the
+    process tree's CPU-time.
+
+    Fail-soft: missing/unset path, missing file, unparseable JSON, or a
+    non-integer ``pid`` all return ``None`` (no CPU signal this poll).
+    """
+    if not heartbeat_json_path:
+        return None
+    try:
+        import json as _json
+
+        with open(heartbeat_json_path, encoding="utf-8") as fh:
+            data = _json.load(fh)
+        pid = data.get("pid")
+        if pid is None:
+            return None
+        return int(pid)
+    except Exception:  # noqa: BLE001 — sidecar read must never crash the watchdog
+        return None
+
+
+def _compute_liveness(
+    config: "WatchdogConfig", last_cpu_seconds: Optional[float],
+) -> tuple[bool, Optional[float]]:
+    """Consult REAL compute (GPU util + process-tree CPU delta). Fail-soft.
+
+    Returns ``(is_computing, cpu_seconds_now)``:
+
+      * ``is_computing`` is True when EITHER a pinned physical GPU is busy
+        (>5% util, instantaneous) OR the process-tree CPU-time has INCREASED
+        since the previous poll (``last_cpu_seconds``). On the first poll
+        (``last_cpu_seconds is None``) a CPU reading establishes the baseline
+        only — no "increase" can be claimed yet — so CPU alone never trips
+        liveness on the very first sample.
+      * ``cpu_seconds_now`` is the CPU reading to carry into the next poll
+        (``None`` when unmeasurable), so the caller updates its running state.
+
+    Lazy import of the ``local_process`` helpers avoids an import cycle
+    (``primitives.py`` imports this module; ``local_process`` is a runtime
+    backend). ANY exception in either compute check is swallowed and treated
+    as "no compute signal" — the caller then falls back to file/SSE staleness.
+    """
+    try:
+        from backend.services.runtime.local_process import (
+            _gpu_busy_blocking,
+            _proc_tree_cpu_seconds,
+        )
+    except Exception:  # noqa: BLE001 — import failure → no compute signal
+        return (False, last_cpu_seconds)
+
+    # 1. GPU busy on a pinned PHYSICAL card (instantaneous >5% util check).
+    try:
+        if config.gpu_device_ids and _gpu_busy_blocking(tuple(config.gpu_device_ids)):
+            # Still take a CPU reading so the running baseline stays current.
+            try:
+                cpu_now = _proc_tree_cpu_seconds(_read_heartbeat_pid(config.heartbeat_json_path))
+            except Exception:  # noqa: BLE001
+                cpu_now = last_cpu_seconds
+            return (True, cpu_now if cpu_now is not None else last_cpu_seconds)
+    except Exception:  # noqa: BLE001 — GPU poll must never crash the watchdog
+        pass
+
+    # 2. CPU advancing: process-tree CPU-time delta since the previous poll.
+    cpu_now: Optional[float] = last_cpu_seconds
+    try:
+        pid = _read_heartbeat_pid(config.heartbeat_json_path)
+        reading = _proc_tree_cpu_seconds(pid)
+        if reading is not None:
+            cpu_now = reading
+            if last_cpu_seconds is not None and reading > last_cpu_seconds:
+                return (True, cpu_now)
+    except Exception:  # noqa: BLE001 — CPU poll must never crash the watchdog
+        cpu_now = last_cpu_seconds
+
+    return (False, cpu_now)
+
+
 WarnCallback = Callable[[StalenessReport], Awaitable[None]]
 # Lane N: on_kill MAY return ``KillVerdict.RECOVERED`` to ask the watchdog
 # to keep polling.  Returning ``None`` (or anything else) defaults to
@@ -509,6 +612,10 @@ async def run_watchdog(
     cfg = config or WatchdogConfig.from_env()
     interval = cfg.poll_interval_seconds
     warn_emitted_at: float | None = None
+    # Pillar 2b — running process-tree CPU-seconds baseline for the compute
+    # delta check. None until the first measurable reading; carried across
+    # polls so a kill verdict can be vetoed by genuine forward compute.
+    last_cpu_seconds: float | None = None
 
     logger.info(
         "watchdog: armed (warn_after=%.0fs kill_after=%.0fs poll=%.0fs)",
@@ -535,7 +642,25 @@ async def run_watchdog(
                 logger.exception("watchdog: collect_staleness raised — skipping cycle")
                 continue
 
+            # Pillar 2b — consult REAL compute every poll so the running CPU
+            # baseline stays current (a kill could otherwise be vetoed by a
+            # stale baseline). Fully fail-soft inside _compute_liveness.
+            is_computing, last_cpu_seconds = _compute_liveness(cfg, last_cpu_seconds)
+
             if report.verdict == "kill":
+                # File-mtime/SSE staleness says "kill", but a quiet-but-computing
+                # run (big matmul, kernel compile, CPU preprocess) is NOT wedged.
+                # Treat it as alive and skip the kill; only a run that is silent
+                # on ALL of {output, SSE, GPU, CPU} is genuinely hung.
+                if is_computing:
+                    logger.info(
+                        "watchdog: KILL verdict suppressed (stale=%.0fs freshest=%s) — "
+                        "real compute detected (gpu_busy or cpu advancing); run is alive",
+                        report.stale_seconds or 0.0, report.freshest_signal or "?",
+                    )
+                    # Reset warn de-dup so the next genuinely-stale cycle reports cleanly.
+                    warn_emitted_at = None
+                    continue
                 logger.warning(
                     "watchdog: KILL verdict (stale=%.0fs freshest=%s) — invoking on_kill",
                     report.stale_seconds or 0.0, report.freshest_signal or "?",

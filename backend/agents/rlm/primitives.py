@@ -596,6 +596,15 @@ _EXEC_TIMEOUT_SECONDS = 14400  # 4 hr — generous per-command cap so long-runni
                                 # in run_experiment if a single run truly needs
                                 # a tighter bound.
 
+# Execution-reliability redesign (2026-06-08, local-scoped): the LOCAL inner exec
+# OWNS the experiment deadline (we pass the resolved timeout as its per-command cap),
+# so its stall/timeout fires FIRST and process-group-kills the train subprocess
+# cleanly (no GPU-burning orphan). The outer thread-pool .result() then becomes a
+# generous BACKSTOP = resolved + this buffer (covers bootstrap + cleanup). On
+# non-local backends the inner cap stays _EXEC_TIMEOUT_SECONDS and the outer stays
+# the resolved timeout (runpod/docker byte-for-byte unchanged).
+_OUTER_TIMEOUT_BUFFER_S = 1800  # 30 min generous backstop over the inner deadline (local only)
+
 # CUDA OOM detection: markers observed in PyTorch / cuBLAS logs (spec 2026-05-23 §OOM).
 # Pattern set is intentionally tight to avoid false positives on unrelated CUDA errors.
 _CUDA_OOM_MARKERS: tuple[str, ...] = (
@@ -2930,6 +2939,7 @@ async def _execute_in_sandbox(
     gpu_plan: object = None,
     gpu_mode: object = None,
     gpu_device_ids: tuple[str, ...] = (),
+    per_command_timeout: int | None = None,
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -3064,11 +3074,14 @@ async def _execute_in_sandbox(
     # Backgrounded via ``nohup ... &`` so it doesn't block subsequent commands.
     try:
         from backend.agents.rlm.run_watchdog import heartbeat_daemon_command, is_enabled as _watchdog_enabled
-        if _watchdog_enabled():
-            # Local sandbox: /artifacts is not the real artifact dir — use the
-            # per-run artifact_root so the heartbeat file is actually writable.
-            _hb_dir = str(artifact_root) if _mode_str_local == "local" else "/artifacts"
-            bootstrap_commands.append(heartbeat_daemon_command(_hb_dir))
+        # Local: do NOT inject the dumb heartbeat daemon — it touches .heartbeat every 30 s
+        # regardless of progress, which would mask an in-process hang from the watchdog (the
+        # 2026-06-08 Adam silence). On local the real liveness comes from the Pillar-1 streaming
+        # live-log + experiment_progress SSE + the GPU/CPU-aware inner stall, and the watchdog
+        # now does its own GPU/CPU compute check. Keep the daemon for runpod/docker (it detects
+        # genuine pod-level wedges where exec.log goes flat but the pod is alive).
+        if _watchdog_enabled() and _mode_str_local != "local":
+            bootstrap_commands.append(heartbeat_daemon_command("/artifacts"))
     except Exception:  # noqa: BLE001 — instrumentation MUST NOT block the run
         logger.exception("_execute_in_sandbox: heartbeat-daemon injection failed")
 
@@ -3254,6 +3267,19 @@ async def _execute_in_sandbox(
     _MAX_SOFT_RECOVERIES = int(_os_env_wd.environ.get("REPROLAB_WATCHDOG_MAX_SOFT_RECOVERIES", "3"))
 
     _wd_cfg = _WatchdogConfig.from_env()
+    # Feed the GPU/CPU compute-liveness signals into the watchdog (2026-06-08, decision #2): the
+    # pinned PHYSICAL GPU ids + the Pillar-1 heartbeat sidecar (carries the train pid) so a
+    # quiet-but-computing run is never killed and a genuine 0%-util hang is caught even when the
+    # dumb daemon is gone. The sidecar lives at project_root (== code_dir) / .exec_heartbeat.json.
+    try:
+        import dataclasses as _dataclasses
+        _wd_cfg = _dataclasses.replace(
+            _wd_cfg,
+            gpu_device_ids=tuple(gpu_device_ids or ()),
+            heartbeat_json_path=str(code_dir / ".exec_heartbeat.json"),
+        )
+    except Exception:  # noqa: BLE001 — watchdog compute-liveness wiring must never break the run
+        logger.debug("_execute_in_sandbox: watchdog GPU/CPU-liveness wiring skipped")
 
     # PR-ζ: transient-error retry loop.
     # Wraps the entire create→execute→destroy lifecycle. The bootstrap_commands
@@ -3423,7 +3449,7 @@ async def _execute_in_sandbox(
             for command in (*bootstrap_commands, *commands):
                 _cmd_res = await service.execute(
                     ExecuteCommand(sandbox=sandbox, command=command,
-                                   timeout=_EXEC_TIMEOUT_SECONDS))
+                                   timeout=per_command_timeout or _EXEC_TIMEOUT_SECONDS))
                 results.append(_cmd_res)
                 # Phase 2B: a failed preflight IMPORT smoke means the training command
                 # would crash on the same missing dep — skip it (and the rest) so the bug
@@ -3788,13 +3814,45 @@ _CODE_BUG_PHRASES = (
 _CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
 
 
+def _dir_footprint_gb(root: "Path", cap_gb: float = 8.0) -> float:
+    """Approximate on-disk footprint (GB) of ``root``, short-circuiting once it exceeds
+    ``cap_gb`` so a big tree can't make the disk check slow. Skips the harness per-run
+    ``.venv`` (it is harness-owned, not the agent's download footprint). Fail-soft → 0.0.
+    """
+    import os as _os
+
+    cap_bytes = cap_gb * 1e9
+    total = 0
+    try:
+        for dirpath, dirnames, filenames in _os.walk(str(root)):
+            dirnames[:] = [d for d in dirnames if d not in (".venv", "__pycache__", ".git")]
+            for fn in filenames:
+                try:
+                    total += _os.path.getsize(_os.path.join(dirpath, fn))
+                except OSError:
+                    continue
+            if total >= cap_bytes:
+                return round(total / 1e9, 2)
+    except Exception:  # noqa: BLE001 — footprint estimation must never break the run
+        return round(total / 1e9, 2)
+    return round(total / 1e9, 2)
+
+
 def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
     """Return a repairable ``disk_exhausted`` violation if free disk on ANY of
     ``paths`` is below ``REPROLAB_DISK_FLOOR_GB`` (default 15; 0 disables). Never
-    raises. Used as a pre-check (don't start a doomed run) and a post-check (the
-    experiment ate the shared disk → tell the next iteration to stream/slice).
+    raises. Used as a pre-check (don't start a doomed run) and a post-check.
+
+    Honest attribution (2026-06-08): when the volume is full but THIS run's footprint is
+    small, the cause is OTHER runs' caches, not this run's downloads — say so (GC advice)
+    instead of telling the agent to slice its (already tiny) dataset. The 2026-06-08 Adam
+    failure breached the floor with a 332 KB run footprint while the shared ``/home`` was
+    full of other runs' caches; the floor fired correctly but the message blamed Adam.
+    ``paths[0]`` is the run dir (``ctx.project_dir``); its ``code/`` subtree is the agent's
+    controllable footprint.
     """
     import shutil
+    from pathlib import Path as _Path
 
     try:
         floor_gb = float(os.environ.get("REPROLAB_DISK_FLOOR_GB", "15") or "15")
@@ -3802,8 +3860,14 @@ def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
         floor_gb = 15.0
     if floor_gb <= 0:
         return None
+    try:
+        small_gb = float(os.environ.get("REPROLAB_RUN_SMALL_FOOTPRINT_GB", "5") or "5")
+    except ValueError:
+        small_gb = 5.0
+
+    run_dir = str(paths[0]) if paths else ""
     seen: set[str] = set()
-    for p in paths:
+    for idx, p in enumerate(paths):
         if not p or p in seen:
             continue
         seen.add(p)
@@ -3811,16 +3875,153 @@ def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
             free_gb = shutil.disk_usage(p).free / 1e9
         except Exception:  # noqa: BLE001 — a bad path must not break the run
             continue
-        if free_gb < floor_gb:
+        if free_gb >= floor_gb:
+            continue
+        # Attribute: how big is THIS run's own footprint? (code/ if present, else run dir.)
+        footprint_gb = 0.0
+        if run_dir:
+            _root = _Path(run_dir) / "code"
+            if not _root.exists():
+                _root = _Path(run_dir)
+            footprint_gb = _dir_footprint_gb(_root, cap_gb=floor_gb)
+        if footprint_gb < small_gb:
+            # This run is NOT the cause — the shared volume is full of other runs' data.
             return (
                 "disk_exhausted",
-                f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} "
-                "GB). A dataset/model download has ballooned the shared disk. Stream + slice "
-                "datasets (NEVER a full natural_questions-style download), use lighter "
-                "variants (e.g. nq_open not natural_questions), or lower REPROLAB_DISK_FLOOR_GB "
-                "if the footprint is legitimately large.",
+                f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} GB), "
+                f"but THIS run's footprint is just {footprint_gb:.2f} GB — the shared volume is "
+                f"full of OTHER runs' data, not this run's downloads. Reclaim space by GC'ing the "
+                f"re-downloadable caches (`rm -rf runs/.cache/data runs/.cache/envs`) or stale run "
+                f"outputs, then retry. If this run legitimately needs large data, lower "
+                f"REPROLAB_DISK_FLOOR_GB.",
             )
+        return (
+            "disk_exhausted",
+            f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} GB) and "
+            f"this run's footprint is {footprint_gb:.1f}+ GB — a dataset/model download has "
+            f"ballooned the disk. Stream + slice datasets, use a lighter variant, or lower "
+            f"REPROLAB_DISK_FLOOR_GB if the footprint is legitimately large.",
+        )
     return None
+
+
+def _finalize_timeout_result(
+    ctx: "RunContext", code_path: str, run_id: str, result: dict, *, reason: str
+) -> dict:
+    """Finalize-on-timeout (2026-06-08): score the completed work instead of zeroing it.
+
+    When ``run_experiment`` times out (the outer thread-pool backstop) or the inner exec
+    returns ``exec_timeout``/``exec_stalled``, the 4-of-5-families-already-trained case
+    (the 2026-06-08 Adam failure) must NOT degrade every rubric leaf to 0. Load the newest
+    results-bearing ``metrics.json`` from disk (the same ``(has_results, mtime)`` ranking the
+    leaf scorer uses); if ≥ 1 family carries a MEASURED value, attach it and flag
+    ``partial_timeout`` (repairable) with a repair_context naming done vs missing families —
+    the partial is preserved + scored, and the next iteration is told to bound the long pole.
+    A truly empty placeholder is left as the empty-fail (tagged ``exec_stalled``/``exec_timeout``
+    so it still classifies). Fail-soft: any error returns ``result`` unchanged.
+    """
+    try:
+        import json as _json
+
+        from backend.evals.paperbench.leaf_scorer import _latest_metrics_path
+
+        loaded: dict = {}
+        try:
+            mpath = _latest_metrics_path(ctx.project_dir)
+        except Exception:  # noqa: BLE001
+            mpath = None
+        if mpath is not None:
+            try:
+                # _latest_metrics_path already returns a Path (Path is imported locally in
+                # run_experiment, not at module scope — don't re-wrap it here).
+                d = _json.loads(mpath.read_text(encoding="utf-8"))
+                if isinstance(d, dict):
+                    loaded = d
+            except Exception:  # noqa: BLE001
+                loaded = {}
+
+        per_model = loaded.get("per_model") if isinstance(loaded, dict) else None
+        measured: list[str] = []
+        if isinstance(per_model, dict) and per_model:
+            measured = [
+                m for m, mv in per_model.items()
+                if _per_model_has_measured_value(mv if isinstance(mv, dict) else {})
+            ]
+        cause = str(result.get("cause_kind") or "")
+        empty_class = "exec_stalled" if "stall" in cause.lower() else "exec_timeout"
+        if not measured:
+            # Nothing recoverable — keep the empty-fail, but make sure it classifies.
+            return {**result, "failure_class": result.get("failure_class") or empty_class}
+
+        missing = [m for m in per_model if m not in measured]
+        msg = (
+            f"partial_timeout: the experiment ended early ({reason}) but "
+            f"{len(measured)} model/family result(s) were already written to disk and are "
+            f"PRESERVED + scored ({', '.join(map(str, measured[:6]))}). "
+            + (
+                f"{len(missing)} did not finish ({', '.join(map(str, missing[:6]))}). "
+                if missing else ""
+            )
+            + "To complete the rest without re-burning the finished work: bound the long pole "
+            "— emit cells.json + train_cell.py (one cell per config, each independently timed) "
+            "OR cap/stream the sweep smallest-config-first — and write metrics.json atomically "
+            "after each family, then re-run."
+        )
+        return {
+            **result,
+            "success": False,
+            "metrics": loaded,
+            "failure_class": "partial_timeout",
+            "partial_timeout": True,
+            "error": msg,
+        }
+    except Exception:  # noqa: BLE001 — finalize must never break the run
+        logger.exception("run_experiment: finalize-on-timeout failed; leaving result unchanged")
+        return result
+
+
+def _emit_experiment_progress_loop(ctx, code_path, stop_event, *, interval_s: float = 30.0) -> None:
+    """Background tailer (local only): every ~``interval_s`` read the ``.exec_heartbeat.json``
+    sidecar LocalProcessBackend writes and emit a sanitized ``experiment_progress`` dashboard
+    event, so a long ``run_experiment`` is observable in the UI/dashboard while it runs (and the
+    real-output timestamp feeds the watchdog's SSE liveness). Pure file-read + event-emit; fully
+    fail-soft. Exits when ``stop_event`` is set. Emits only when the sidecar advances (new output)
+    so it never masks a hang the way the dumb heartbeat daemon did.
+    """
+    import json as _json
+    import time as _time
+    from pathlib import Path as _Path
+
+    hb = _Path(code_path) / ".exec_heartbeat.json"
+    start = _time.time()
+    last_lines = -1
+    while not stop_event.wait(interval_s):
+        try:
+            if not hb.exists():
+                continue
+            data = _json.loads(hb.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            lines = int(data.get("lines", 0) or 0)
+            advanced = lines != last_lines
+            last_lines = lines
+            # Emit ONLY when output actually advanced (the first poll counts) so
+            # experiment_progress is a genuine-liveness signal, not a periodic heartbeat that
+            # would mask a hang from the watchdog the way the dumb .heartbeat daemon did. A
+            # quiet-but-computing phase is kept alive by the watchdog's GPU/CPU check + the
+            # inner stall, not by this event.
+            if not advanced:
+                continue
+            _emit_dashboard_event(ctx, event_type="experiment_progress", payload={
+                "last_output_at": str(data.get("last_output_at", "")),
+                "last_line": str(data.get("last_line", ""))[:200],
+                "lines": lines,
+                "pid": data.get("pid"),
+                "command": str(data.get("command", ""))[:200],
+                "elapsed_s": round(_time.time() - start, 1),
+            })
+        except Exception:  # noqa: BLE001 — progress emission must never break the run
+            continue
 
 
 def _data_load_failure_is_code_bug(err: str) -> bool:
@@ -4618,6 +4819,14 @@ def run_experiment(
     # clamped to ctx.remaining_s() when finite.
     timeout = resolve_experiment_timeout_s(ctx)
 
+    # Inner-owns-deadline (2026-06-08, local only): give the inner exec the resolved
+    # timeout as its per-command cap so its stall/timeout fires FIRST and process-group-
+    # kills the train subprocess cleanly (no GPU-burning orphan); the outer thread-pool
+    # .result() is a generous backstop = resolved + buffer. Non-local keeps the inner
+    # _EXEC_TIMEOUT_SECONDS cap and outer == resolved (runpod/docker byte-for-byte).
+    _per_command_timeout = timeout if _is_local_sb else None
+    _outer_timeout = (timeout + _OUTER_TIMEOUT_BUFFER_S) if _is_local_sb else timeout
+
     # Load cached gpu_plan if present (written by resolve_gpu_requirements).
     from backend.agents.schemas import GpuPlan as _GpuPlan
     from backend.config import get_settings
@@ -4647,6 +4856,30 @@ def run_experiment(
             "success": False, "error": _disk_pre[1], "failure_class": _disk_pre[0],
         }, model_id=model_id, eval_env=eval_env)
 
+    # Pre-download guard (2026-06-08, Pillar 5): the pre-check passed, but if headroom over the
+    # floor is thin a single bulk dataset/model download could still breach it mid-run (otherwise
+    # caught only by the post-check, after the wasted download). The harness can't intercept the
+    # agent's download, so warn up front to stream/slice. Advisory + fail-soft; 0 disables.
+    try:
+        import shutil as _shutil_pre
+        _headroom_gb = float(os.environ.get("REPROLAB_DISK_PREFLIGHT_HEADROOM_GB", "30") or "30")
+        _floor_gb = float(os.environ.get("REPROLAB_DISK_FLOOR_GB", "15") or "15")
+        if _headroom_gb > 0:
+            _free_gb = _shutil_pre.disk_usage(str(ctx.project_dir)).free / 1e9
+            if _free_gb < _floor_gb + _headroom_gb:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "disk_headroom_thin",
+                    "message": (
+                        f"disk headroom is thin: {_free_gb:.1f} GB free, only "
+                        f"{_free_gb - _floor_gb:.1f} GB above the {_floor_gb:.0f} GB floor. A bulk "
+                        f"dataset/model download could breach it mid-run — STREAM + slice datasets "
+                        f"(e.g. load_dataset(..., streaming=True), .take(N)), use lighter variants, "
+                        f"and avoid full natural_questions-scale downloads. GC runs/.cache/data to free space."
+                    ),
+                })
+    except Exception:  # noqa: BLE001 — the pre-download guard must never break the run
+        pass
+
     result: dict = {}
 
     # comp 4 (2026-05-31): harness-owned cell-runner route. When the backend exposes
@@ -4662,6 +4895,20 @@ def run_experiment(
     # iteration, the cell route uses this value as its artifact root.
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     _cell_route_taken = False
+    # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the
+    # .exec_heartbeat.json sidecar so a long run is observable in the UI while it runs (and the
+    # real-output signal feeds the watchdog's SSE liveness). Daemon thread; stopped once the exec
+    # work returns. Fail-soft — never blocks or breaks the run.
+    import threading as _threading
+    _progress_stop = _threading.Event()
+    _progress_thread = None
+    if _is_local_sb:
+        _progress_thread = _threading.Thread(
+            target=_emit_experiment_progress_loop,
+            args=(ctx, code_path, _progress_stop),
+            daemon=True,
+        )
+        _progress_thread.start()
     try:
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
@@ -4700,8 +4947,9 @@ def run_experiment(
                         gpu_plan=gpu_plan,
                         gpu_mode=getattr(ctx, "gpu_mode", None),
                         gpu_device_ids=tuple(getattr(ctx, "gpu_device_ids", ()) or ()),
+                        per_command_timeout=_per_command_timeout,
                     ),
-                ).result(timeout=timeout)
+                ).result(timeout=_outer_timeout)
             except concurrent.futures.TimeoutError:
                 # _execute_in_sandbox was cancelled before it could return its
                 # _combine_command_output(results) — recover whatever the
@@ -4713,15 +4961,24 @@ def run_experiment(
                     log_path = artifact_root / "exec.log"
                     if log_path.exists():
                         recovered_logs = log_path.read_text(encoding="utf-8", errors="replace")[-32000:]
+                    # Local backend streams to <code>/.exec_live.log (not outputs/<id>/exec.log);
+                    # fall back to it so a human + the agent still see what was running.
+                    if not recovered_logs:
+                        live_log = Path(code_path) / ".exec_live.log"
+                        if live_log.exists():
+                            recovered_logs = live_log.read_text(encoding="utf-8", errors="replace")[-32000:]
                 except OSError:
                     pass
                 result = {
                     "success": False,
                     "metrics": {},
                     "logs": recovered_logs,
+                    # Tag the cause so the post-loop finalize-on-timeout fires (it loads the
+                    # on-disk partial metrics and scores them instead of zeroing the run).
+                    "cause_kind": "exec_timeout",
                     "error": (
-                        f"run_experiment: timed out after {timeout:.0f} s"
-                        if timeout is not None
+                        f"run_experiment: timed out after {_outer_timeout:.0f} s (outer backstop)"
+                        if _outer_timeout is not None
                         else "run_experiment: timed out (run-budget deadline reached)"
                     ),
                 }
@@ -4857,10 +5114,28 @@ def run_experiment(
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
+    # Stop the progress tailer — the exec work is done, no more progress to stream.
+    _progress_stop.set()
+    if _progress_thread is not None:
+        _progress_thread.join(timeout=2)
+
     # P2 manifest: the escalation loop has produced its final result — stamp the
     # identifiers the persist chokepoint records. run_id/env_id/commands are in
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
     _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
+
+    # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
+    # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
+    # mid-VAE, every rubric leaf scored 0). Both the inner exec_timeout/exec_stalled return
+    # and the outer pool-timeout handler tag cause_kind; load the newest on-disk partial
+    # metrics and preserve them as a repairable partial_timeout. Runs BEFORE the
+    # success-gated guards (which are skipped while success is False) so the partial survives.
+    if not result.get("success") and str(result.get("cause_kind") or "") in (
+        "exec_timeout", "exec_stalled",
+    ):
+        result = _finalize_timeout_result(
+            ctx, code_path, run_id, result, reason=str(result.get("cause_kind"))
+        )
 
     # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
     # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0

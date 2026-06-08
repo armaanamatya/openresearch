@@ -42,7 +42,10 @@ def _config(kill_after: float = 1500.0) -> rw.WatchdogConfig:
 def test_effective_threshold_run_experiment() -> None:
     threshold = rw.effective_idle_threshold("run_experiment", _config())
     assert threshold == rw.PRIMITIVE_IDLE_BASELINE_S["run_experiment"]
-    assert threshold == 7200.0
+    # 4 h (2026-06-08 execution-reliability redesign, §A decision #2): the
+    # run_experiment file-mtime/SSE idle threshold must be >= the 60-min inner
+    # stall window so the watchdog never pre-empts the GPU/CPU-aware inner stall.
+    assert threshold == 14400.0
 
 
 def test_effective_threshold_implement_baseline() -> None:

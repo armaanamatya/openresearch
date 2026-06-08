@@ -21,6 +21,7 @@ class RuntimeCauseKind(str, Enum):
     network_unavailable = "network_unavailable"
     oom_killed = "oom_killed"
     exec_timeout = "exec_timeout"
+    exec_stalled = "exec_stalled"  # no output/checkpoint/GPU activity for the stall window
     signal_terminated = "signal_terminated"
     build_failed = "build_failed"
     copy_failed = "copy_failed"

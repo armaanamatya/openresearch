@@ -31,6 +31,7 @@ _RESPONSE_MAX_CHARS: int = 4_000
 _STDOUT_PREFIX_MAX_CHARS: int = 200
 _PROMPT_PREVIEW_MAX_CHARS: int = 200
 _SENTINEL_LEN: int = 200  # chars from each corpus value used as a leak sentinel
+_PROGRESS_LINE_MAX_CHARS: int = 200  # bound the last_line/command preview on experiment_progress
 
 # Thresholds for rubric area status derivation in build_rubric_score_event.
 # score >= RUBRIC_AREA_PASS_THRESHOLD    → "pass"
@@ -800,6 +801,60 @@ def build_iteration_heartbeat_event(
     }
 
 
+def build_experiment_progress_event(
+    *,
+    last_output_at: str | None,
+    last_line: str,
+    lines: int,
+    pid: int | None,
+    command: str,
+    elapsed_s: float | None,
+    sentinels: list[str] | None = None,
+) -> dict:
+    """Build an ``experiment_progress`` dashboard event.
+
+    Emitted periodically (~30 s) by ``run_experiment`` on the ``local`` sandbox
+    while a long training subprocess runs, so the UI / ``dashboard_events.jsonl``
+    show that the experiment is *ongoing* (mirrors the ``.exec_heartbeat.json``
+    sidecar that ``LocalProcessBackend`` streams to ``code/.exec_live.log``).
+
+    This is a liveness/progress event in the same family as
+    :func:`build_iteration_heartbeat_event`: it carries only PII-safe execution
+    *metadata* — never REPL locals or the paper corpus. The free-text
+    ``last_line`` (tail of the subprocess stdout/stderr) and ``command`` fields
+    are bounded to ``_PROGRESS_LINE_MAX_CHARS`` and, when *sentinels* are
+    supplied, run through :func:`redact_corpus` (M-REDACT / A1-M2) so a line that
+    happened to echo corpus content can never leak at egress.
+
+    Args:
+        last_output_at: ISO-8601 timestamp of the most recent subprocess output
+                        line, or ``None`` when nothing has been emitted yet.
+        last_line:      Tail of the most recent stdout/stderr line; bounded.
+        lines:          Cumulative count of output lines streamed so far.
+        pid:            OS process id of the running subprocess, or ``None``.
+        command:        The shell command being executed; bounded.
+        elapsed_s:      Seconds elapsed since the subprocess started, or ``None``.
+        sentinels:      Optional corpus sentinels for the M-REDACT egress pass on
+                        ``last_line``/``command``.
+    """
+    _sentinels = sentinels or []
+    last_line_out = (last_line or "")[:_PROGRESS_LINE_MAX_CHARS]
+    command_out = (command or "")[:_PROGRESS_LINE_MAX_CHARS]
+    if _sentinels:
+        last_line_out = redact_corpus(last_line_out, _sentinels)
+        command_out = redact_corpus(command_out, _sentinels)
+    return {
+        "event": "experiment_progress",
+        "timestamp": _now_iso(),
+        "last_output_at": last_output_at,
+        "last_line": last_line_out,
+        "lines": lines,
+        "pid": pid,
+        "command": command_out,
+        "elapsed_s": elapsed_s,
+    }
+
+
 def build_run_warning_event(
     *,
     level: str = "warn",
@@ -836,6 +891,7 @@ __all__ = [
     "build_cluster_started",
     "build_candidate_outcome_event",
     "build_candidate_proposed_event",
+    "build_experiment_progress_event",
     "build_iteration_heartbeat_event",
     "build_repair_dispatched",
     "build_rubric_score_event",
