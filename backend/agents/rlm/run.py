@@ -1870,6 +1870,16 @@ def _finalize(
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
+    # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
+    # agent-correctable failures from experiment_runs.jsonl into
+    # runs/_lessons/<arxiv_id>.json for the next run of the same paper.
+    # Flag-gated + fail-soft; no-op when arxiv_id is unknown.
+    try:
+        from backend.agents.rlm.lesson_distiller import mine_lessons
+        mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
+    except Exception:  # noqa: BLE001 — lesson bookkeeping must never break finalize
+        logger.debug("_finalize: mine_lessons raised", exc_info=True)
+
     # Write worker reports summary at run finalization
     try:
         from backend.agents.worker_reports import write_summary_report

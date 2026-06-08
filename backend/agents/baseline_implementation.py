@@ -2020,6 +2020,17 @@ def _compute_constraint_guidance(
     # Lane AA — per-model block adapts to multi-env papers
     # by nesting per_dataset under each model. Arxiv id drives the lookup.
     guidance += _per_model_metrics_block(arxiv_id=arxiv_id)
+    # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS):
+    # advisory failure memory mined from prior runs of this arxiv_id. Flag-gated
+    # + fail-soft; returns "" when off / paper unknown / nothing promoted.
+    if project_dir is not None and arxiv_id:
+        try:
+            from backend.agents.rlm.lesson_distiller import negative_lessons_block
+            _neg = negative_lessons_block(Path(project_dir).parent, arxiv_id)
+            if _neg:
+                guidance += "\n\n" + _neg + "\n"
+        except Exception:  # noqa: BLE001 — advisory memory must never break the prompt
+            pass
     # Lane Q — minimize-compute substitution rules + scope.declared_reductions
     # contract. Only injected when the user opted in via the CLI flag or the
     # lab UI checkbox; strict reproduction stays the default.
