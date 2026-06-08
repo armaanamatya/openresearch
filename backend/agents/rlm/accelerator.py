@@ -373,9 +373,19 @@ def _resolve_endpoint(*, explicit: bool) -> AcceleratorEndpoint | None:
             )
         return None
 
-    api_key = os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+    # ACC-2: the documented gpt-5-mini route points BASE_URL at api.openai.com.
+    # Honor the doc's "uses OPENAI_API_KEY automatically" — when the operator
+    # did NOT set OPENRESEARCH_ACCELERATOR_API_KEY and the host is the OpenAI
+    # API, fall back to OPENAI_API_KEY (instead of sending "Bearer local" -> 401).
+    # Any other host keeps the "local" default.
+    api_key = os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY")
+    if api_key is None:
+        if "api.openai.com" in base_url:
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip() or "local"
+        else:
+            api_key = "local"
 
-    if not probe_endpoint(base_url):
+    if not probe_endpoint(base_url, api_key=api_key):
         if explicit:
             raise AcceleratorError(
                 f"Accelerator endpoint {base_url!r} did not respond to a health probe. "
@@ -548,8 +558,23 @@ def build_accelerator_client(ep: AcceleratorEndpoint) -> object:
 
     from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
+    # ACC-1: honor OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S (was documented but read
+    # nowhere). Unset → keep OpenAILlmClient's 300s default (no behavior change);
+    # the CLAUDE.md opt-in example sets it to 120 and now takes effect.
+    kwargs: dict[str, object] = {}
+    _timeout_raw = os.environ.get("OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S")
+    if _timeout_raw:
+        try:
+            kwargs["timeout"] = float(_timeout_raw)
+        except ValueError:
+            _log.warning(
+                "ignoring non-numeric OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S=%r",
+                _timeout_raw,
+            )
+
     return OpenAILlmClient(
         model=ep.model,
         api_key=ep.api_key,
         base_url=ep.base_url,
+        **kwargs,
     )
