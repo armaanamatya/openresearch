@@ -21,8 +21,8 @@ Contains the placement-independent logic that both cell runners need identically
 Stdlib-only — no third-party imports, no LLM calls, no I/O beyond the local
 filesystem.  Mirror of ``cell_matrix.py``'s purity guarantee.
 
-Both runners import from here; ``k8s_job_cell_runner`` will adopt it in a
-follow-up step.  Do NOT add provider-specific or placement-specific logic here.
+Both ``gpu_cell_runner`` and ``k8s_job_cell_runner`` import from here.  Do NOT
+add provider-specific or placement-specific logic here.
 """
 
 from __future__ import annotations

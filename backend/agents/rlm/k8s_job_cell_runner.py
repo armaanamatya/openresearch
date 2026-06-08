@@ -105,7 +105,8 @@ _BLOB_CELLS_PREFIX = "cells"
 # Sentinel outcome written by the wrapper when OOM ladder is exhausted.
 _SENTINEL_OOM_OUTCOME = "oom_shrink_exhausted"
 
-# Default fallback values for settings that may not exist yet (W2 adds them).
+# Default fallback values used when a settings attribute is absent (defensive,
+# so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
@@ -243,7 +244,7 @@ def _k8s_factory() -> _K8sClients:
 
 
 # ---------------------------------------------------------------------------
-# Azure Blob helpers (code-against-contract; W1-A owns the real file)
+# Azure Blob helpers (thin wrappers over backend.services.runtime.azure_blob)
 # ---------------------------------------------------------------------------
 
 def _blob_upload_prefix(

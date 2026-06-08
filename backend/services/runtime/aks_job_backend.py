@@ -47,7 +47,8 @@ _log = logging.getLogger(__name__)
 # Job name prefix (DNS-safe, matches reprolab-* conventions).
 _JOB_PREFIX = "reprolab-exec"
 
-# Default values used when settings are absent (defensive: W2 adds the block later).
+# Default values used when settings are absent (defensive fallback so the module
+# imports + tests run even if an azure_* field is missing from a partial config).
 _DEFAULT_NAMESPACE = "reprolab"
 _DEFAULT_PENDING_TIMEOUT_S = 900
 _DEFAULT_TTL_AFTER_FINISHED_S = 3600
@@ -158,7 +159,7 @@ def _blob_artifact_key(project_id: str, run_id: str, path: str) -> str:
 
 
 def _settings_get(settings: Any, attr: str, default: Any = None) -> Any:
-    """Defensively read a settings attribute (W2 may not have added it yet)."""
+    """Defensively read a settings attribute, falling back when it is absent."""
     return getattr(settings, attr, default)
 
 
@@ -524,7 +525,8 @@ class AksJobBackend(RuntimeBackend):
                 client=self._get_blob_client(),
             )
         except ImportError:
-            # azure_blob not yet available (W1-A not merged); no-op best-effort.
+            # azure_blob's optional SDK deps are absent (e.g. test env without
+            # azure-storage-blob installed) — degrade to a best-effort no-op.
             _log.warning(
                 "AKS backend: azure_blob module not available; skipping code upload (test/stub mode)."
             )
