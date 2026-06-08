@@ -49,6 +49,7 @@ def resolve(
     fallback_vram_gb: int,
     cloud_types: tuple[str, ...] = ("COMMUNITY",),
     provider: str = "runpod",
+    provisioned_skus: tuple[str, ...] | None = None,
 ) -> GpuPlan:
     """Resolve requirements to a GpuPlan. Pure function — no I/O.
 
@@ -58,6 +59,20 @@ def resolve(
             identical to the pre-azure behaviour.  "azure" uses Azure ONDEMAND rows
             and selects by *effective* capacity (vram_gb * gpu_count) so that
             multi-GPU VM sizes (NC48/NC96) are considered when needed.
+        provisioned_skus: Optional allowlist of ``short_name`` values that are
+            actually provisioned in the deployment (e.g. from
+            ``settings.azure_gpu_skus``).  When supplied, *both* the primary SKU
+            selection and ``ladder_remaining`` are restricted to SKUs whose
+            ``short_name`` appears in this tuple.  ``None`` (the default) means no
+            extra filter — the RunPod path and all existing callers are completely
+            unaffected.  Only meaningful for ``provider="azure"``; the RunPod path
+            ignores this parameter.
+
+            Caller note: ``resolve_gpu_requirements`` (``primitives.py``) should
+            pass ``settings.azure_gpu_skus`` here when ``provider="azure"`` to
+            prevent the resolver from proposing an unprovisioned SKU that would
+            leave a Kubernetes Job Pending until timeout.  Wiring that call site is
+            a follow-up step (do NOT edit ``primitives.py`` in this change).
 
     Returns:
         GpuPlan with source in {"paper", "fallback", "manual", "informational"}.
@@ -77,6 +92,7 @@ def resolve(
             force_single_gpu=force_single_gpu,
             max_gpu_usd_per_hour=max_gpu_usd_per_hour,
             headroom_multiplier=headroom_multiplier,
+            provisioned_skus=provisioned_skus,
         )
     return _resolve_runpod(
         requirements=requirements,
@@ -186,6 +202,7 @@ def _resolve_azure(
     force_single_gpu: bool,
     max_gpu_usd_per_hour: float | None,
     headroom_multiplier: float,
+    provisioned_skus: tuple[str, ...] | None = None,
 ) -> GpuPlan:
     """Azure resolution path.
 
@@ -194,6 +211,14 @@ def _resolve_azure(
 
     force_single_gpu: when True, only single-GPU SKUs (gpu_count == 1) are
     considered — same semantic as the RunPod path.
+
+    provisioned_skus: when not None, restricts BOTH primary selection and
+    ``ladder_remaining`` to SKUs whose ``short_name`` ∈ provisioned_skus.  This
+    prevents the resolver from proposing a SKU that is not in the AKS node pool,
+    which would cause the resulting Kubernetes Job to hang Pending until timeout.
+    Pass ``settings.azure_gpu_skus`` from the caller (do NOT import settings here —
+    the resolver is pure).  None = no restriction (default; existing callers are
+    byte-identical).
 
     The returned GpuPlan.runpod_id carries the Azure VM size string (e.g.
     "Standard_NC24ads_A100_v4") — the opaque provider identifier in both providers.
@@ -215,7 +240,8 @@ def _resolve_azure(
         sku = _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
         full_ladder = _azure_ladder(min_effective_vram=sku.vram_gb * sku.gpu_count,
                                     max_per_gpu_usd=None,
-                                    force_single_gpu=force_single_gpu)
+                                    force_single_gpu=force_single_gpu,
+                                    provisioned_skus=provisioned_skus)
         remaining = tuple(s.short_name for s in full_ladder
                           if s.short_name != sku.short_name)
         return _build_plan(sku, gpu_count=sku.gpu_count, source="fallback",
@@ -227,13 +253,15 @@ def _resolve_azure(
     # Build the azure ladder filtered by effective capacity and optionally single-GPU.
     ladder = _azure_ladder(min_effective_vram=needed_vram,
                            max_per_gpu_usd=max_gpu_usd_per_hour,
-                           force_single_gpu=force_single_gpu)
+                           force_single_gpu=force_single_gpu,
+                           provisioned_skus=provisioned_skus)
 
     if not ladder:
         # Diagnose: would lifting the cap help?
         unconstrained = _azure_ladder(min_effective_vram=needed_vram,
                                       max_per_gpu_usd=None,
-                                      force_single_gpu=force_single_gpu)
+                                      force_single_gpu=force_single_gpu,
+                                      provisioned_skus=provisioned_skus)
         if unconstrained:
             cheapest = unconstrained[0]
             raise GpuResolutionError(
@@ -280,6 +308,7 @@ def _azure_ladder(
     min_effective_vram: int,
     max_per_gpu_usd: float | None,
     force_single_gpu: bool,
+    provisioned_skus: tuple[str, ...] | None = None,
 ) -> list[GpuSku]:
     """Return Azure SKUs sorted by (effective_vram_gb ASC, approx_usd_per_hr ASC).
 
@@ -289,6 +318,7 @@ def _azure_ladder(
         - effective_vram_gb(sku) >= min_effective_vram
         - if force_single_gpu: only gpu_count == 1 rows
         - if max_per_gpu_usd: per-GPU rate <= cap
+        - if provisioned_skus is not None: only SKUs whose short_name ∈ provisioned_skus
     """
     from backend.services.runtime.gpu_catalog import CATALOG
     cap = max_per_gpu_usd if max_per_gpu_usd and max_per_gpu_usd > 0 else None
@@ -299,6 +329,7 @@ def _azure_ladder(
         and effective_vram_gb(sku) >= min_effective_vram
         and (not force_single_gpu or sku.gpu_count == 1)
         and (cap is None or sku.approx_usd_per_hr <= cap)
+        and (provisioned_skus is None or sku.short_name in provisioned_skus)
     ]
     return sorted(filtered, key=lambda s: (effective_vram_gb(s), s.approx_usd_per_hr))
 

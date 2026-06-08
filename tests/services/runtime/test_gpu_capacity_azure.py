@@ -73,7 +73,15 @@ def test_describe_azure_per_gpu_vram_equals_azure_per_gpu_vram_gb(monkeypatch):
 
 
 def test_describe_azure_can_escalate_false():
-    """can_escalate must be False (single node-pool, no catalog ladder)."""
+    """can_escalate must be False for the azure backend.
+
+    Rationale: can_escalate guards the *run_experiment monolithic SKU-ladder
+    escalation loop* used by the RunPod backend to advance through
+    gpu_plan.ladder_remaining on OOM.  That loop does NOT apply to AKS — the
+    azure K8s runner dispatches Jobs with a node-pool SKU selected at dispatch
+    time and escalates through a separate mechanism.  Setting True would cause
+    the RunPod escalation loop to fire incorrectly on azure pods.
+    """
     result = _describe_azure(_azure_ctx())
     assert result.can_escalate is False
 

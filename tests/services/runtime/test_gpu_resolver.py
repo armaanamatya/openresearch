@@ -384,3 +384,96 @@ def test_resolve_azure_runpod_rows_not_mixed_in():
     assert runpod_plan.cloud_type in ("COMMUNITY", "SECURE")
     # They must differ.
     assert azure_plan.runpod_id != runpod_plan.runpod_id
+
+
+# ---------------------------------------------------------------------------
+# provisioned_skus filter tests (P1 fix)
+# ---------------------------------------------------------------------------
+
+def test_provisioned_skus_filters_primary_and_ladder():
+    """provisioned_skus=("azure_a100_80",) → primary must be azure_a100_80,
+    and x2/x4 must NOT appear in primary or ladder_remaining."""
+    plan = resolve(
+        _azure_req(vram=70),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=False,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.0,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=("azure_a100_80",),
+    )
+    assert plan.short_name == "azure_a100_80"
+    assert "azure_a100_80x2" not in plan.ladder_remaining
+    assert "azure_a100_80x4" not in plan.ladder_remaining
+
+
+def test_provisioned_skus_none_unchanged_behavior():
+    """provisioned_skus=None → identical behaviour to calling without the param (regression)."""
+    kwargs = dict(
+        dynamic_gpu_enabled=True,
+        force_single_gpu=False,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.0,
+        fallback_vram_gb=24,
+        provider="azure",
+    )
+    req = _azure_req(vram=70)
+    plan_no_param = resolve(req, **kwargs)
+    plan_none = resolve(req, **kwargs, provisioned_skus=None)
+    assert plan_no_param.short_name == plan_none.short_name
+    assert plan_no_param.ladder_remaining == plan_none.ladder_remaining
+    assert plan_no_param.source == plan_none.source
+
+
+def test_provisioned_skus_runpod_path_unaffected():
+    """provisioned_skus has no effect on the RunPod path (byte-identical result)."""
+    req = _req(vram=40)
+    kwargs = dict(
+        dynamic_gpu_enabled=True,
+        force_single_gpu=True,
+        max_gpu_usd_per_hour=10.0,
+        headroom_multiplier=1.25,
+        fallback_vram_gb=24,
+        cloud_types=("COMMUNITY",),
+        provider="runpod",
+    )
+    plan_without = resolve(req, **kwargs)
+    # provisioned_skus is ignored for RunPod — must return identical SKU/ladder.
+    plan_with = resolve(req, **kwargs, provisioned_skus=("azure_a100_80",))
+    assert plan_without.short_name == plan_with.short_name
+    assert plan_without.ladder_remaining == plan_with.ladder_remaining
+
+
+def test_provisioned_skus_single_entry_ladder_empty():
+    """With only one provisioned SKU and it is the primary, ladder_remaining is empty."""
+    plan = resolve(
+        _azure_req(vram=70),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=False,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.0,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=("azure_a100_80",),
+    )
+    assert plan.short_name == "azure_a100_80"
+    assert plan.ladder_remaining == ()
+
+
+def test_provisioned_skus_low_confidence_fallback_filters_ladder():
+    """Even on the fallback path, provisioned_skus restricts ladder_remaining."""
+    plan = resolve(
+        _azure_req(vram=80, conf=0.2),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=False,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.0,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=("azure_a10_24", "azure_a100_80"),
+    )
+    assert plan.source == "fallback"
+    # x2/x4 are not in provisioned_skus → must not appear in ladder
+    assert "azure_a100_80x2" not in plan.ladder_remaining
+    assert "azure_a100_80x4" not in plan.ladder_remaining

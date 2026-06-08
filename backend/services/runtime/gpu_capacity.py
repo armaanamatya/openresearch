@@ -10,13 +10,13 @@ can I escalate to a bigger one?*  Consumers:
 
 Per-backend providers (``describe_capacity`` dispatches on ``ctx.sandbox_mode``):
 
-==================  =========================================  =============
+==================  =========================================  ============
 backend             capacity source                            can_escalate
-==================  =========================================  =============
+==================  =========================================  ============
 local / docker      local_gpu_allocator.discover_gpus()        False
 runpod / brev       provisioned pod SKU (ctx.gpu_plan)          True
-azure               ADAPTER STUB (raises NotImplementedError)   True (future)
-==================  =========================================  =============
+azure               AKS settings + gpu_plan.json (plan-aware)  False (see _describe_azure)
+==================  =========================================  ============
 
 The descriptor reports **raw physical** capacity; the headroom multiplier
 (``REPROLAB_DYNAMIC_GPU_HEADROOM``) is applied by the capacity *gate*, not here,
@@ -187,8 +187,17 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
 
     ``num_gpus`` always comes from ``azure_max_nodes`` (the AKS node-pool
     concurrency cap) — the plan's ``gpu_count`` is a per-node count and the
-    azure runner scales horizontally, not per-GPU.  ``can_escalate=False``
-    because AKS uses a fixed SKU node-pool (no catalog ladder).
+    azure runner scales horizontally, not per-GPU.
+
+    ``can_escalate=False``: the field specifically guards the *run_experiment
+    monolithic SKU-ladder escalation loop* (the per-cell OOM retry path that
+    advances through ``gpu_plan.ladder_remaining`` inside the RunPod backend).
+    That loop does NOT apply to AKS — the azure runner dispatches Kubernetes Jobs
+    that self-escalate via a different mechanism (node-pool SKU selection at Job
+    dispatch time).  Setting ``can_escalate=True`` here would mislead that RunPod
+    loop into attempting ladder escalation on an azure pod, which would fail.
+    The azure runner's own SKU escalation operates independently and is correct
+    regardless of this flag.
 
     Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
     """
