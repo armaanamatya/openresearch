@@ -10,6 +10,16 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+  /* Lane (2026-05-31): this panel stacks ABOVE the workspace band in the
+   * vertical flex shell. On a fully-scored run the cluster grid + leaf-score
+   * list can grow tall enough to squeeze the flex:1 ConstellationCanvas to
+   * near-zero height, "covering up" the graph. Cap the band and scroll its
+   * own content so the canvas always keeps a visible region. Mirrors the
+   * PrimitiveHistoryBar `max-height + overflow-y:auto` idiom. flex-shrink:0
+   * makes the cap a hard ceiling within the column flex. */
+  flex-shrink: 0;
+  max-height: 32vh;
+  overflow-y: auto;
 }
 
 /* ── Cluster grid ───────────────────────────────────────────── */

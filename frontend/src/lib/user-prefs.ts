@@ -1,3 +1,5 @@
+import type { DemoAccelerator, DemoGpuParallelism } from "@/lib/demo/demo-run-types";
+
 const KEY = "reprolab:user-prefs";
 // Provider selection is stored under its own key (D3) so it doesn't
 // collide with the existing user-prefs shape.
@@ -22,6 +24,8 @@ export interface ProviderPrefs {
   // schedules for modern fast equivalents and annotates the substitutions
   // in scope.declared_reductions.
   minimize_compute?: boolean;
+  gpu_parallelism?: DemoGpuParallelism;
+  accelerator?: DemoAccelerator;
 }
 
 export function readProviderPrefs(): ProviderPrefs {

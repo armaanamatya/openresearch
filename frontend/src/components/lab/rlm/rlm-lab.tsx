@@ -13,6 +13,7 @@ import { RlmHeader } from "./rlm-header";
 import { LiveActivityStrip } from "./live-activity-strip";
 import { PipelinePhaseStrip } from "./pipeline-phase-strip";
 import { RubricStrip } from "./rubric-strip";
+import { RubricDetail } from "./rubric-detail";
 import { ReplStateRail } from "./repl-state-rail";
 import { ConstellationCanvas } from "./constellation-canvas";
 import { ReportRail } from "./report-rail";
@@ -327,6 +328,13 @@ export function RlmLab({
           paperTitle={runMeta.paperTitle}
         />
       )}
+
+      {/* Band 2.6 — expandable rubric breakdown: which leaves fail, why, and the
+       *  specific recent errors. Self-guards (renders nothing when there are no
+       *  scored areas and no errors); collapsible + height-bounded so it never
+       *  occludes the ConstellationCanvas. Degrades gracefully when the
+       *  rubric_score event carries no per-leaf detail. */}
+      <RubricDetail rubric={state.rubric} />
 
       {/* RDR/RLM artifact panel — cluster grid, leaf scores, repair history */}
       {(runMode === "rlm" || runMode === "rdr" || runMode === "rlm-pure") && (

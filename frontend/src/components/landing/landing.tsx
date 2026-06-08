@@ -43,6 +43,7 @@ function Nav(): React.JSX.Element {
         <div className={styles["nav-links"]}>
           <a href="#pipeline">How it works</a>
           <a href="#benchmarks">Benchmarks</a>
+          <Link href="/leaderboard">Leaderboard</Link>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
         </div>
         <Link href="/lab" className={styles["nav-cta"]}>
