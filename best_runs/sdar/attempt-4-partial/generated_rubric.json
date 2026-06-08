@@ -1,0 +1,271 @@
+{
+  "id": "6b72465f6c234de1bf4875d738ea8218",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "40453382786a4c67bc0580e5a5c9153f",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.38,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "802a99b42010418496e41eef5e85f7b4",
+          "requirements": "train.py implements the sigmoid gap gate g_t = \u03c3(\u03b2 \u00b7 \u0394_t) where \u0394_t is the detached teacher-student log-probability gap on the student-sampled token (\u0394_t = log \u03c0_teacher(y_t|...) \u2212 log \u03c0_student(y_t|...)), with \u03b2=10 as specified in Section 3 (Hyperparameters) and Section 2.3.",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "400c911490f341c292cbaaea7c6a75e0",
+          "requirements": "The code applies a stop-gradient (detach) to both \u03c0_teacher and the gate g_t so gradients flow exclusively through the student log-probability, matching Proposition 1 and Section 2.3 (sg[\u00b7] operator).",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "09cfd06bfb58462fb18e7e492cd0d186",
+          "requirements": "The overall loss is implemented as L_total = L_GRPO + \u03bb \u00b7 L_OPSD with \u03bb=0.1 (Section 3 Hyperparameters), where L_GRPO is the standard clipped GRPO objective with group-relative advantages and L_OPSD is the token-level gated reverse-KL surrogate per Section 2.2\u20132.3.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5e6cb59b724e4bba9254cc05c219c64e",
+          "requirements": "GRPO baseline (Algorithm 2) is implemented with the clipped surrogate objective and group-relative advantages from Equation 2, including the importance sampling ratio and reference-policy KL penalty \u03b1_KL as listed in Table 3 of Appendix A.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "4dde5e2c46cd4e96b2bae4ef1f6bba3b",
+          "requirements": "The three alternative gating strategies from Section 2.3 are implemented and selectable: entropy gating \u03c3(\u03b2\u00b7H_t), gap gating \u03c3(\u03b2\u00b7\u0394_t), and soft-OR gating \u03c3(\u03b2\u00b7H_t)+\u03c3(\u03b2\u00b7\u0394_t)\u2212\u03c3(\u03b2\u00b7H_t)\u00b7\u03c3(\u03b2\u00b7\u0394_t), with gap gating as the default.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "39e798b732994fae828695d0f3417d4a",
+          "requirements": "The hybrid baselines GRPO+OPSD (Algorithm 5), Skill-SD (Algorithm 4), RLSD (Algorithm 6) and standalone OPSD (Algorithm 3) are re-implemented per Appendix A, all using the same Qwen backbone as SDAR so Table 1 comparisons are apples-to-apples.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "277b07d61060469b9873e3b992faa2a7",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.14,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "e1acc62ec3d34fdc830a27c4a5510e22",
+          "requirements": "ALFWorld data uses the training split from GiGPO (Feng et al. 2025) covering the six task categories Pick, Look, Clean, Heat, Cool, Pick2 with 3,827 task instances, as stated in Section 3.",
+          "weight": 0.3,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9b6f6fef791f418ab62306f57817a6ed",
+          "requirements": "Search-QA training data is drawn from NQ and HotpotQA (in-domain) with TriviaQA, PopQA, 2Wiki, MuSiQue and Bamboogle held out for out-of-domain evaluation, using E5 (Wang et al. 2022) as the retriever, matching the Search-R1 setup (Section 3).",
+          "weight": 0.3,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e0515c40ace1416e8b2f1fe4a76a38f7",
+          "requirements": "WebShop uses 1000 training tasks and 128 fixed validation tasks aligned with Feng et al. 2025 (Section 3).",
+          "weight": 0.2,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "d2c1a0a8f8ac4fe2995b9299be50ebff",
+          "requirements": "Skill library is the SkillBank from SkillRL (Xia et al. 2026) for all three environments, and the four retrieval strategies (UCB, Keyword Matching, Full Retrieval, Random Retrieval) are implemented per Section 2.1, with KM as the default skill retrieval strategy (Table 3).",
+          "weight": 0.2,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "54b6ae7cb03c4d51bf63855c2842ebc8",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.18,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "6d1b8d3b2d524771a579ae7419d67e23",
+          "requirements": "Training is executed for 150 steps on the Qwen2.5-Instruct and Qwen3-Instruct backbones used in the paper (Qwen2.5-3B-Instruct, Qwen2.5-7B-Instruct, Qwen3-1.7B-Instruct), as specified in Section 3.",
+          "weight": 0.3,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "1b7c8f27ca1a46c2badb8de819a95645",
+          "requirements": "ALFWorld training uses batch size 16 tasks \u00d7 8 rollouts per prompt with maximum prompt length 2,048 tokens (Section 3).",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "6521a0eb79c141cfbb79bffbf4e15c3d",
+          "requirements": "Search-QA training uses batch size 128 tasks with maximum prompt length 4,096 tokens (Section 3).",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "ba5901d62d254e78a95319b4cc883b2f",
+          "requirements": "WebShop training uses batch size 16 tasks \u00d7 8 rollouts per prompt with maximum prompt length 4,096 tokens (Section 3).",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "da13a7df394f4889b682128d0e894127",
+          "requirements": "Training hardware/runtime configuration matches the paper's '8 H800 GPUs' setup or a documented equivalent multi-GPU configuration, and the run executes the complete training-to-evaluation pipeline (Section 3).",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "21d6207da1174af9957d04b00e6fd6fe",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.15,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "bed9749b57d74a24931e089f1549b175",
+          "requirements": "At inference time SDAR is evaluated without retrieved skills (the {skill_context} prompt slot is left empty per Appendix C), while Skill-GRPO* and other *-marked baselines are evaluated with skill context, matching the * convention in Table 1.",
+          "weight": 0.3846153846153846,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5b717e4f904447dbb9af022cb357f113",
+          "requirements": "Evaluation prompt templates for ALFWorld, Search-QA, and WebShop follow the exact templates in Figures 15\u201317 of Appendix C, with {skill_context} populated during training and empty during inference.",
+          "weight": 0.3076923076923077,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "ddd545002e2b4beda5352fec185553ee",
+          "requirements": "Training-dynamics diagnostics from Figures 10\u201314 are logged per run: Gate Active Ratio (fraction where g_t>0.5), Gate Mean, OPSD Loss, Teacher-Student Gap (mean \u0394_t), and Reward Curve.",
+          "weight": 0.3076923076923077,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "c8636140a964492d8ce334a7954625dc",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.1,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "b78dce6eab014b7b8f526096388f37f7",
+          "requirements": "On Qwen2.5-3B with ALFWorld, the reproduced SDAR success rate is within a small tolerance of the paper's 84.4% and shows the reported +9.4% improvement over GRPO (75.0% \u2192 84.4%) reported in Table 1 and Section 3.2.",
+          "weight": 0.3,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9ce7abf4b7ac469bbdf6dadbe856b87b",
+          "requirements": "On Qwen2.5-3B with Search-QA, the reproduced SDAR accuracy reflects the reported +7.0% improvement over GRPO (Table 1, Section 3.2).",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9bf5f1fa91194142bd1db6148e4b7e1a",
+          "requirements": "On WebShop, the reproduced SDAR WebShop-Acc reflects the reported +10.2% gain on 7B and +4.7% gain on 3B over GRPO (Section 1, Section 3.2).",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "272c4c09a02842ffbfc7513e76634149",
+          "requirements": "On Qwen3-1.7B with ALFWorld, the reproduced SDAR success rate approaches 53.9% and exceeds RLSD (42.2%), GRPO+OPSD (32.0%), and GRPO (46.1%) as reported in Table 1 and Section 3.2.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "918a757c793746b1b2e1af56a33346aa",
+          "requirements": "The reproduction confirms qualitative findings: GRPO+OPSD collapses on Qwen3-1.7B (\u224832.0 vs GRPO 46.1), standalone OPSD collapses on Search-QA (near zero), and SDAR avoids these instabilities as shown in Figures 1\u20132 and Section 3.2.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "d07830693ae540988dc91896df0fa8ce",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.05,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "c9239cbabf6e46c3af4a5c27f79652b4",
+          "requirements": "Repository contains a runnable train.py / training entrypoint plus per-environment configs for ALFWorld, WebShop and Search-QA, along with documented commands to reproduce each row of Table 1.",
+          "weight": 0.4,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "41f414bf75e44f308e4e7145ccb90c89",
+          "requirements": "Hyperparameter file or config records the exact Table 3 values (\u03b2=10, \u03bb=0.1, group size G, PPO clip ratio \u03b5, learning rate \u03b7, \u03b1_KL, skill retrieval strategy = KM) for SDAR and each baseline.",
+          "weight": 0.3,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "08e3c5c52ca946b793d601ace9723932",
+          "requirements": "Logs and checkpoints include the five diagnostic curves from Figures 10\u201314 (gate active ratio, gate mean, OPSD loss, teacher-student gap, reward) and the final per-task metrics that populate Table 1, with provenance traceable to the original SDAR repo (https://github.com/ZJU-REAL/SDAR).",
+          "weight": 0.3,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

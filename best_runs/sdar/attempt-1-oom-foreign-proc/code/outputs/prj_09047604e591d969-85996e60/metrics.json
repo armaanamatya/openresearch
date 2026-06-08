@@ -1,0 +1,281 @@
+{
+  "status": "partial",
+  "per_model": {
+    "qwen3_1_7b": {
+      "search_qa": {
+        "sdar": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 786.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 509.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.72 GiB memory in use. Of the allocated memory 22.35 GiB is allocated by PyTorch, and 128.32 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 5.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.22 GiB memory in use. Of the allocated memory 22.86 GiB is allocated by PyTorch, and 110.17 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 12.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 11.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.21 GiB memory in use. Of the allocated memory 22.87 GiB is allocated by PyTorch, and 91.61 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 12.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 11.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.21 GiB memory in use. Of the allocated memory 22.87 GiB is allocated by PyTorch, and 98.37 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 16.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 15.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.21 GiB memory in use. Of the allocated memory 22.78 GiB is allocated by PyTorch, and 183.42 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 630.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 343.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.89 GiB memory in use. Of the allocated memory 22.53 GiB is allocated by PyTorch, and 115.44 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        }
+      },
+      "alfworld": {
+        "sdar": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        }
+      }
+    },
+    "qwen2_5_3b": {
+      "search_qa": {
+        "sdar": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 594.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 241.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.99 GiB memory in use. Of the allocated memory 22.30 GiB is allocated by PyTorch, and 442.42 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.58 GiB. GPU 0 has a total capacity of 23.68 GiB of which 713.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.53 GiB memory in use. Of the allocated memory 22.16 GiB is allocated by PyTorch, and 107.34 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.66 GiB. GPU 0 has a total capacity of 23.68 GiB of which 1.48 GiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 21.74 GiB memory in use. Of the allocated memory 21.39 GiB is allocated by PyTorch, and 99.03 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.57 GiB. GPU 0 has a total capacity of 23.68 GiB of which 751.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.49 GiB memory in use. Of the allocated memory 22.14 GiB is allocated by PyTorch, and 93.28 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.68 GiB. GPU 0 has a total capacity of 23.68 GiB of which 1.69 GiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 21.53 GiB memory in use. Of the allocated memory 21.16 GiB is allocated by PyTorch, and 117.00 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.66 GiB. GPU 0 has a total capacity of 23.68 GiB of which 1.51 GiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 21.71 GiB memory in use. Of the allocated memory 21.37 GiB is allocated by PyTorch, and 82.65 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        }
+      },
+      "alfworld": {
+        "sdar": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        }
+      }
+    },
+    "qwen2_5_7b": {
+      "search_qa": {
+        "sdar": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 130.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 105.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.12 GiB memory in use. Of the allocated memory 22.66 GiB is allocated by PyTorch, and 203.80 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.58 GiB. GPU 0 has a total capacity of 23.68 GiB of which 27.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 23.20 GiB memory in use. Of the allocated memory 22.64 GiB is allocated by PyTorch, and 304.83 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.03 GiB. GPU 0 has a total capacity of 23.68 GiB of which 807.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.43 GiB memory in use. Of the allocated memory 21.88 GiB is allocated by PyTorch, and 308.54 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1.03 GiB. GPU 0 has a total capacity of 23.68 GiB of which 807.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.43 GiB memory in use. Of the allocated memory 21.88 GiB is allocated by PyTorch, and 308.65 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 1004.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 807.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.43 GiB memory in use. Of the allocated memory 21.88 GiB is allocated by PyTorch, and 309.83 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "CUDA OOM: CUDA out of memory. Tried to allocate 938.00 MiB. GPU 0 has a total capacity of 23.68 GiB of which 807.06 MiB is free. Process 2612630 has 458.00 MiB memory in use. Including non-PyTorch memory, this process has 22.43 GiB memory in use. Of the allocated memory 21.87 GiB is allocated by PyTorch, and 311.36 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+          "metric": null
+        }
+      },
+      "alfworld": {
+        "sdar": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "skill_sd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "grpo_opsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        },
+        "rlsd": {
+          "status": "failed",
+          "error": "AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'",
+          "metric": null
+        }
+      }
+    }
+  },
+  "per_env": {},
+  "per_baseline": {},
+  "baselines_vs_sdar": {},
+  "retrieval_comparison": {},
+  "gate_dynamics": {},
+  "scope": {
+    "models_run": [
+      "qwen3_1_7b",
+      "qwen2_5_3b",
+      "qwen2_5_7b"
+    ],
+    "environments_run": [
+      "search_qa",
+      "alfworld"
+    ],
+    "gaps": [
+      {
+        "component": "webshop",
+        "reason": "HTTPError: HTTP Error 404: Not Found"
+      }
+    ]
+  },
+  "config": {
+    "BETA": 10.0,
+    "LAMBDA": 0.1,
+    "steps": 150,
+    "batch_size": {
+      "search_qa": 4,
+      "alfworld": 2,
+      "webshop": 4
+    },
+    "max_new_tokens": {
+      "search_qa": 512,
+      "alfworld": 64,
+      "webshop": 64
+    },
+    "retrieval_default": "KM",
+    "eval_with_skills": {
+      "sdar": false,
+      "grpo": false,
+      "opsd": false,
+      "skill_sd": false,
+      "grpo_opsd": false,
+      "rlsd": false
+    },
+    "scale_note": "Trained on 1\u00d7RTX A5000 (25.4 GB). Paper used 8\u00d7H800. batch_size reduced from paper: search_qa 128\u219216, alfworld 16\u21924, webshop 16\u21928."
+  },
+  "wall_time_seconds": 439.5502178668976,
+  "data_load_failures": [
+    {
+      "dataset": "webshop",
+      "loader": "http",
+      "error": "HTTPError: HTTP Error 404: Not Found"
+    }
+  ],
+  "sdar": {
+    "alfworld": {
+      "success_rate": 0.0,
+      "final_reward": 0.0
+    },
+    "webshop": {
+      "score": 0.0,
+      "final_reward": 0.0
+    }
+  },
+  "grpo": {
+    "alfworld": {
+      "success_rate": 0.0,
+      "final_reward": 0.0
+    },
+    "webshop": {
+      "score": 0.0,
+      "final_reward": 0.0
+    }
+  },
+  "comparisons": {
+    "sdar_minus_grpo_alfworld_success": 0.0
+  }
+}

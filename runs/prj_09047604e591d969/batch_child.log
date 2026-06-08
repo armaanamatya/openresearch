@@ -1,0 +1,20 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[full-scope] ALFWorld + WebShop + Search-QA active in scope — appended agentic-env (AgenticEnv + shipped modules) guidance for the agent.
+[archive] Moved 24 prior-attempt artifact(s) to /home/sww35/openresearch-fullscope/runs/prj_09047604e591d969/attempts/20260602T050215-642057-4e753f
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'Reported metrics are computed correctly: success rate (%) on ALFWorld, accuracy (%) on Search-QA, and Score/Acc (%) on t'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 78991 is closed

@@ -1,13 +1,16 @@
 # Best runs
 
-Two end-to-end reproductions from the OpenResearch agent. PDF in, scored reproduction out, no human in the loop on the coding side.
+End-to-end reproductions from the OpenResearch agent — two clean single runs (Adam, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
+| [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
 
 Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
+
+The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-back attempts from 2026-05-31→06-01 — three infrastructure failures (GPU contention, a launch crash, a dead dataset endpoint) and one scored `partial` — each with its own run logs and token-usage logs. See [`sdar/README.md`](sdar/README.md) for the per-attempt breakdown and the campaign token table.
 
 ---
 

@@ -1,0 +1,12 @@
+alfworld>=0.3.5
+textworld>=1.5.0
+pyyaml>=6.0
+sentence-transformers>=2.2.0
+transformers>=4.51.0  # Qwen3-1.7B requires 4.51+; our local venv has 5.9.0
+accelerate>=0.26.0
+datasets>=2.18.0
+torch>=2.0.0
+tqdm>=4.64.0
+numpy>=1.24.0
+matplotlib>=3.6.0
+scipy>=1.10.0

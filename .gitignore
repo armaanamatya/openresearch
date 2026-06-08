@@ -56,9 +56,25 @@ Thumbs.db
 
 # Local run outputs (anchored to repo root — must not match nested
 # source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/
-# or backend/services/runs/)
-/runs/
-/runs
+# or backend/services/runs/).
+# Policy (2026-05-30): IGNORE the heavy run artifacts (per-run .venv/, code/,
+# rlm_state/ checkpoints, weight caches, .heartbeat) but TRACK the small,
+# high-value per-run diagnostic logs so results + failure trails live in git.
+# Whitelist idiom: ignore everything under /runs/, then re-include the per-run
+# dirs (so git descends ONE level — it never walks code/ or .venv/) plus the
+# specific key logs.
+/runs/**
+!/runs/*/
+!/runs/*/final_report.json
+!/runs/*/final_report.md
+!/runs/*/demo_status.json
+!/runs/*/batch_child.log
+!/runs/*/experiment_runs.jsonl
+!/runs/*/cost_ledger.jsonl
+!/runs/*/tokens_total.json
+# (dashboard_events.jsonl is the full SSE firehose — can be large; track it
+#  per-run on demand with `git add -f runs/<id>/dashboard_events.jsonl`.)
+runs/_archive/
 # Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
 /logs/
 /logs
@@ -111,6 +127,15 @@ reprolab.db-wal
 # Playwright MCP screenshot artifacts
 .playwright-mcp
 .playwright-mcp/
+
+# Terraform state — MUST NOT be committed (can carry resource metadata / secrets).
+# Bootstrap state is written to infra/azure/bootstrap/terraform.tfstate after
+# `terraform apply`; both it and any root-level state must stay local or in the
+# remote backend configured via backend.hcl, never in git.
+infra/azure/bootstrap/terraform.tfstate
+*.tfstate
+*.tfstate.backup
+infra/azure/**/.terraform/
 
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval

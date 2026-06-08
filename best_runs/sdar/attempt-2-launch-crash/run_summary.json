@@ -1,0 +1,24 @@
+{
+  "source_run_dir": "runs/prj_09047604e591d969__20260531-232147",
+  "status": "failed",
+  "started_at": "2026-05-31T23:10:52.761687+00:00",
+  "completed_at": null,
+  "verdict": "no_final_report",
+  "estimated_cost_usd": {
+    "total": 0.0,
+    "rlm_root": 0.0,
+    "baseline_subagents": 0.0,
+    "note": "estimated API-equivalent; run used claude-oauth subscription so actual LLM cash cost is ~$0"
+  },
+  "outcome": "failed at launch \u2014 asyncio event-loop closed during pipeline start; no LLM work performed",
+  "packaged_files": [
+    "batch_child.log",
+    "cost_ledger.jsonl",
+    "dashboard_events.jsonl",
+    "demo_status.json",
+    "environment_spec.json",
+    "generated_rubric.json",
+    "worker_reports.jsonl"
+  ],
+  "code_files_copied": 2
+}

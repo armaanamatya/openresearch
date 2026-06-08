@@ -1,0 +1,33 @@
+======================================================================
+SDAR Reproduction Summary
+Paper: arXiv 2605.15155 — Self-Distilled Agentic Reinforcement Learning
+======================================================================
+
+SCALE DEVIATION NOTE:
+  Paper: 8×H800 GPUs, batch_size=128 (Search-QA), 16 (ALFWorld/WebShop)
+  This run: 1×RTX A5000 (25.4 GB), batch_size=16/4/8
+  Both use real Qwen weights and real datasets.
+
+KEY INVARIANTS IMPLEMENTED:
+  BETA=10.0, LAMBDA=0.1
+  gate g_t = sigmoid(BETA * delta_t).detach()  [stop-gradient]
+  delta_t = logp_teacher(y_t) - logp_student(y_t)
+  loss = grpo_loss + LAMBDA * opsd_loss
+  Teacher = same model weights + retrieved skill context
+  Student = same model weights, no skill context
+  SDAR eval: empty {skill_context} (no skills at inference)
+
+SCOPE:
+  Models trained: qwen3_1_7b, qwen2_5_3b, qwen2_5_7b
+  Environments:   search_qa, alfworld
+  Scope gaps:
+    - webshop: HTTPError: HTTP Error 404: Not Found
+
+RESULTS (primary metric per method×env×model):
+
+CONTRACT METRICS (metrics.json paths):
+  sdar.alfworld.success_rate:  N/A
+  sdar.webshop.score:           N/A
+  grpo.alfworld.success_rate:  N/A
+  grpo.webshop.score:           N/A
+  comparisons.sdar_minus_grpo_alfworld_success: N/A

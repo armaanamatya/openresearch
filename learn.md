@@ -11,6 +11,150 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-06-07 — A faithful run scored an honest 0.0 because the agent's `torch` re-pin downgraded the harness cu121 build → `libcupti` wouldn't load → every experiment died at import
+
+**Symptom.** The All-Conv-Net run scored 0.0/`partial`. Both experiments died at import-preflight with `libcupti.so.12: cannot open shared object file` before training a single step — no metrics, so an honest zero, NOT a scorer bug (the opposite of the Adam-0.69 stinginess problem).
+
+**Root cause.** The local per-run venv (`runs/<id>/.venv`) is `--system-site-packages` + a `_reprolab_base_inherit.pth` to the repo `.venv`, so it starts with a coherent cu121 torch shared from the base. The agent's `requirements.txt` pinned `torch==2.2.0` ≠ the base's 2.5.1, so `pip install -r requirements.txt` installed 2.2.0 into the per-run venv's OWN site-packages (which shadows the base on `sys.path`), dragging in a mismatched cu12 nvidia wheel stack; `libcupti.so.12` never materialized and `import torch` failed. `env_pin.py` was built to prevent exactly this (`torch_redundancy` class) but had never been wired into the bootstrap.
+
+**Fix.** Five layers, ALL `local`-sandbox-scoped (runpod/docker bytes-for-byte untouched). (A) **Wire env_pin** — `primitives._local_core_bootstrap_commands` installs the harness's cu121 torch/vision/audio FIRST and strips the agent's conflicting core re-pin into `requirements.hardened.txt`. (B) **`LD_LIBRARY_PATH`** — `LocalProcessBackend` prepends the venv's bundled CUDA lib dirs so a system CUDA path can't shadow them, *following the per-run venv's `.pth` to the base `.venv`* where the shared torch physically lives (after A strips the re-pin the per-run venv has NO torch of its own — a naive glob of it finds nothing; the Codex-review Q1 gap). (C) **`cuda_shlib_load`** failure class — was an un-actionable `unknown`; now repairable with a "remove the torch re-pin" hint. (D) ship `cell_scheduler.py` into `code/` + guard `gpu_cell_runner`'s bare import (a latent flat-sandbox `import backend` break). (E) preflight smoke flags an agent `import backend` with the bare-import rewrite hint. Escape hatch for a paper needing a non-cu121/older torch: `REPROLAB_DISABLE_ENV_PIN=1` or empty `REPROLAB_LOCAL_TORCH_INDEX_URL`.
+
+**Lesson.** When a per-run venv SHARES a coherent core stack from a base venv, the agent's `requirements.txt` must never re-pin that core — one `torch==X` line silently downgrades the whole CUDA stack into incoherence, and it surfaces as an opaque `dlopen` error three layers from the cause. The harness must OWN the core pins. Corollary: any code locating a venv's libs must follow `.pth` indirection — `--system-site-packages` + a base-inherit `.pth` puts the libs in the BASE prefix, not the per-run dir.
+
+**Guardrail.** `tests/rlm/test_env_reliability_fixes.py` (19) — env_pin strips the re-pin / disable-flag→legacy / no-index→raw; `_venv_cuda_lib_dirs` finds torch+nvidia, follows the base-inherit `.pth`, ranks own-venv first, skips executable `.pth` lines; `cuda_shlib_load` classified + repairable; `cell_scheduler.py` shipped + `gpu_cell_runner` guarded; preflight flags `import backend`. Reviewed by background Codex (Q1 blocker = the `.pth` gap above, fixed; Q2/Q3/Q5 verified safe).
+
+---
+
+## 2026-05-30 — Multi-GPU "shard" was really DDP *replication*; replaced the torchrun-wrap with a harness accelerate+FSDP2 launcher
+
+**Symptom.** The 3B SDAR model OOMed a 24 GB card every time, and the "fix" kept being single-GPU + gradient-checkpointing + tiny batches — a band-aid that re-OOMed under any memory pressure. The multi-GPU attempts that came before (`torchrun`) either stalled (per-rank setup duplication — the 4-rank ALFWorld hang) or still OOMed.
+
+**Root cause.** Two conflated mistakes. (1) The prior multi-GPU path *replicated* rather than *sharded*. `torchrun`/DDP puts a full copy of the model on every card, so a 3B student + frozen teacher + fp32 Adam (~36 GB of optimizer state alone) still doesn't fit one 24 GB card — replication does NOTHING for OOM. Only **sharding** (FSDP/ZeRO splits params+grads+optimizer across cards) fixes it. (2) The torchrun-wrap re-launched the *whole* agent script per rank, so un-rank-guarded setup (pip / dataset download / env init) ran on every rank → the hang. We retreated to single-GPU, which is exactly why we kept OOMing.
+
+**Fix.** The harness now OWNS a correct sharded launch. `primitives._resolve_distributed_launch` (replacing `_maybe_torchrun_wrap`) rewrites a plain `python train.py` to `accelerate launch --config_file <harness FSDP2 yaml> --num_processes <ngpu> --main_process_port <free>` whenever >1 GPU is leased and the script carries FSDP/accelerate markers. The harness writes the FSDP config (FSDP1 by default on this host — see **Validated** below), `pip install -U accelerate` in bootstrap, and prefixes the launch with NCCL-safety env. It is **dynamic**: ≤1 GPU → run verbatim (FSDP on one card is pure all-gather overhead, and this is the graceful 1-GPU/CPU fallback); a free rendezvous port avoids collisions across concurrent batch runs. The agent writes only the minimal Accelerate API (`accelerator.prepare(model, optimizer)` + `is_main_process`-guarded setup); the SDAR algorithm stays hand-written and legible to the rubric. Guidance (general `baseline_implementation._RUNTIME_DETECTION_BLOCK` + the SDAR file) now mandates Accelerate and forbids DDP/DataParallel for a model that doesn't fit one card.
+
+**Lesson.** "Use multiple GPUs" is ambiguous: replication (DDP) scales throughput but NOT memory; sharding (FSDP/ZeRO) is the only thing that fixes OOM. Make the harness own the *correct* distributed launch — don't hope the agent hand-writes FSDP, and never conflate the two parallelism kinds.
+
+**Guardrail.** `tests/agents/rlm/test_distributed_launch.py` (accelerate+FSDP rewrite on multi-GPU; version-aware config v1/v2; NCCL-safety prefix; free-port probe; no-op for ≤1 GPU / non-distributed / already-launched / missing-script / disable-toggle).
+
+**Validated 2026-05-30 (fast FSDP smoke on the real Qwen-3B, before committing to a 3h run).** Three distinct blockers surfaced in ~15 min, each of which would have killed the full run — the smoke is the loop-sharpener. (1) `accelerate launch` with `fsdp_version: 2` raises `FSDP2 requires PyTorch >= 2.6.0`; this host is torch 2.5.1 (cu121 wheels, CUDA-12.2 driver), so the harness config defaults to **FSDP1** (`fsdp_version: 1` + FULL_SHARD + use_orig_params), with `REPROLAB_FSDP_VERSION=2` to opt in on torch≥2.6. (2) The 3B (full Adam + the FSDP fp32 upcast) OOMs at `optimizer.step()` across only **2** cards (23.6/23.7 GiB) — it needs **≥4**; 4-way FSDP1 lands at ~15.5 GiB/rank. So `--gpus-per-run 4` is the floor for a 3B on 24 GB cards. (3) The first NCCL collective (a setup BROADCAST) **hangs the full 600 s timeout at >2 GPUs** on this kernel (5.4.0 < torch's recommended 5.5.0); `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1` fixes it instantly — almost certainly the real cause of the earlier "multi-GPU runs stall" we'd misattributed to the SDK. The harness now prefixes the launch with those NCCL vars (`_nccl_env_prefix`, default-on, overridable for NVLink boxes).
+
+---
+
+## 2026-05-29 — FSDP/multi-GPU training silently collapsed to one GPU because the launch was `python`, not `torchrun`
+
+**Symptom.** A run allocated 4 GPUs but trained on only GPU 0 (the other three idle); larger models then OOMed. The agent-generated `train.py` was full of correct FSDP code (`init_process_group`, `FullyShardedDataParallel`, gradient checkpointing in the right order).
+
+**Root cause.** `commands.json` was `["python train.py"]`. A plain `python` launch runs single-process — `WORLD_SIZE=1` — so `FSDP(...)` wraps with world size 1 and shards nothing; every layer stays on GPU 0. The multi-GPU guidance told the agent to "use torchrun" but never mandated that the *launch command* be `torchrun --nproc_per_node=N`, and `commands_to_run` was hardcoded to `python train.py`.
+
+**Fix.** Two layers. (1) The multi-GPU guidance now MANDATES the commands.json training entry be `torchrun --standalone --nproc_per_node=<N> train.py`. (2) A runtime safety net `primitives._maybe_torchrun_wrap` (in `_execute_in_sandbox`): when >1 GPU is allocated and the train script carries distributed markers but is launched as plain `python <script>.py`, it re-launches via torchrun — fixing even already-broken agent code.
+
+**Lesson.** Distributed *code* is inert without a distributed *launch*. Whenever the agent can write FSDP/DDP, the harness must guarantee the matching `torchrun`/`accelerate` entrypoint — guidance alone isn't enough, so enforce it at the execution layer too.
+
+**Guardrail.** `tests/agents/rlm/test_distributed_launch.py` (the torchrun-era `test_torchrun_wrap.py` was replaced 2026-05-30).
+
+**Superseded 2026-05-30.** `_maybe_torchrun_wrap` → `_resolve_distributed_launch`, and bare `torchrun` → `accelerate launch` + FSDP2 (sharding, not DDP replication). See the entry above — replication was the deeper bug.
+
+---
+
+## 2026-05-29 — A training run that OOMed every step exited 0 and was accepted as success
+
+**Symptom.** A reproduction ground for hours producing all-0-reward metrics. `training.log`: `Loss/backward OOM: CUDA out of memory` caught + a WARNING logged + the step skipped, ~20 min/step, for hours. The RLM loop treated it as `partial_evidence` (non-empty metrics) and never repaired.
+
+**Root cause.** The agent's `train.py` wrapped `loss.backward()` in `try/except RuntimeError: continue`. Each step's OOM was swallowed (no gradient update), the script exited 0, and `run_experiment` set `success = all(exit_code==0)` → success with all-zero metrics. RubricGuard checks key/artifact *presence* (zeros pass); the failure classifier's `cuda_oom`/`oom_killed` detectors need a propagated error or exit -9/137, neither of which a caught OOM produces.
+
+**Fix.** A postflight `_training_health_violation` in `run_experiment`: if a success-with-metrics result's logs carry a CUDA-OOM marker, flip it to a repairable `silent_oom` failure with a concrete fix hint (reduce memory / shard with torchrun+FSDP / don't catch+skip the backward). Plus an opt-in `insufficient_train_steps` check (`REPROLAB_MIN_TRAIN_STEPS`). New failure classes registered; guidance tells the agent never to try/except+continue a backward OOM.
+
+**Lesson.** Exit code 0 is not "it worked" for training — a caught OOM is indistinguishable from success unless you inspect the *logs and the metric values*. Swallowed exceptions (here and the `/workspace` env-load below) are the recurring villain: surface them, never accept silence as health.
+
+**Guardrail.** `tests/agents/rlm/test_training_health.py` (silent-OOM from logs; min-steps opt-in; classifier respects the preset class).
+
+---
+
+## 2026-05-29 — The local accelerator's tokens were logged as zero (OpenAI-compatible client never read `usage`)
+
+**Symptom.** `cost_ledger.jsonl` recorded every Qwen-via-vLLM accelerator call with 0 input/output tokens; only vLLM `/metrics` had the real counts, so per-run accelerator accounting was blind.
+
+**Root cause.** `OpenAILlmClient.complete()` (and the Azure variant) returned `resp.choices[0].message.content` but never read `resp.usage`, so `ctx.llm_client._last_usage` (what `binding._ledger` records) stayed at its zero default. `ClaudeLlmClient` captured usage correctly; the OpenAI-compatible clients — which the accelerator routes through — did not.
+
+**Fix.** A shared `_usage_from_response()` (prompt→input, completion→output, `prompt_tokens_details.cached_tokens`→cache_read; robust to omitted fields) stored into `_last_usage` on every `complete()` in both clients.
+
+**Lesson.** Every LLM client behind the same ledger seam must populate the same `_last_usage` shape — a silent zero in one client makes a whole cost tier invisible. When adding a provider, mirror the usage-capture, not just the completion call.
+
+**Guardrail.** `tests/services/test_openai_client_usage.py` (extracts tokens incl. cache; None→zero; tolerates missing details; client captures on complete).
+
+---
+
+## 2026-05-29 — Every local SDAR algorithm reported `env_load_failed` with zero reward because the dataset root was the RunPod-only `/workspace`
+
+**Symptom.** A local 8×A5000 SDAR run trained nothing: `metrics.json` showed `qwen3_1.7b/alfworld` failing all six algorithms with `status: "env_load_failed"` (reward 0.0) and `webshop/sdar` `training_failed`, the GPUs assigned to the experiment sat at 1 MiB, and `data_load_failures` carried **empty error strings**. A fresh `.heartbeat` (a `while true` keepalive the agent's code spawned) masked the stall from the watchdog.
+
+**Root cause.** The baseline DATASET-SETUP guidance (`baseline_implementation._DATASET_SETUP_BLOCK`) and `config.runpod_volume_mount_path` both hardcode `/workspace` as the data root. `/workspace` is a RunPod *volume* — it does not exist on a local host and is not creatable without root. So the agent's generated `os.makedirs('/workspace/data/alfworld')` raised `PermissionError`; the env loader caught it but recorded only the *status*, discarding the message → an unrecoverable, undiagnosable `env_load_failed`. The guidance was RunPod-specific yet applied to **every** sandbox.
+
+**Fix.** Make the data root sandbox-aware. `run._ensure_local_data_root` repoints `REPROLAB_RUNPOD_VOLUME_MOUNT_PATH` at a writable, **shared** (download-once) cache (`runs/.cache/data`) for local sandboxes, before any primitive reads it; runpod/docker keep the real `/workspace`, and an explicit operator override wins. `_DATASET_SETUP_BLOCK` became `_dataset_setup_block(data_root)` + `_resolve_data_root()`, so the guidance interpolates the active sandbox's writable root (and respects a pre-set `HF_HOME`) instead of hardcoding `/workspace/data/<env>`.
+
+**Lesson.** Cloud-shaped path conventions (`/workspace`, container WORKDIRs) must never leak into a local sandbox as if writable — resolve the writable root *per sandbox* at one seam and thread it everywhere the agent is told where data lives. And an env loader that swallows the exception text turns a one-line `PermissionError` into a silent death-spiral: **always surface `str(e)` into the failure record**, never just a status enum.
+
+**Guardrail.** `tests/agents/rlm/test_local_data_root.py` (local sets a writable root under runs_root; bare `/workspace` is replaced; explicit override respected; runpod untouched; enum `.value` handled) + `test_baseline_implementation_sandbox_aware.py::TestDatasetSetupBlock::test_dataset_setup_uses_writable_root_for_local` (the prompt uses the writable root and `/workspace/data` does NOT leak into a local run).
+
+---
+
+## 2026-05-29 — A timed-out vLLM boot left orphaned tensor-parallel workers at 100% CPU, starving every later boot
+
+**Symptom.** The 32B accelerator boot (`serve_local_llm.py --tp 4`) timed out at the 600 s `--max-wait`; the retry was pathologically slow — weights never became GPU-resident after 8+ min, the leased GPUs sat idle while CPU was saturated.
+
+**Root cause.** vLLM's tensor-parallel workers are `spawn` multiprocessing subprocesses (grandchildren of the serve script). `_terminate_child` signalled only the direct child (the api_server) via `proc.terminate()/kill()`. On the first timeout the SIGKILLed parent left its 3 workers **orphaned (reparented to init), each spinning at 100% CPU**; the next boot's workers then fought them for starved cores. An earlier `ps | grep vllm` missed the orphans because spawn workers show as `python -c from multiprocessing.spawn import spawn_main`, not `vllm`.
+
+**Fix.** Launch vLLM with `start_new_session=True` (the parent becomes a process-group leader) and have `_terminate_child` `os.killpg(getpgid, SIGTERM→SIGKILL)` the **whole group**, so no worker survives. Also: `--max-wait` must scale with model size — 32B needs ≥ 2400 s on this contended disk; the 600 s default silently fails it.
+
+**Lesson.** When you SIGKILL a process that spawned its own subprocesses, signal the **process group**, not the PID — orphaned compute workers don't just leak memory, they steal CPU from everything after them. And audit by the *actual* worker cmdline (`spawn_main`), not the package name, or your "no stray procs" check lies.
+
+**Guardrail.** `tests/test_serve_local_llm.py::test_terminate_child_signals_process_group_not_just_pid` (mocks `os.killpg`, asserts the group is signalled and `proc.terminate` is not). Operational check after any restart: `ps -u $USER -o cmd | grep spawn_main` must be empty.
+
+---
+
+## 2026-05-29 — The local vLLM accelerator served fine but was never *detected* ready, and hung on a cached model's DNS
+
+**Symptom.** `serve_local_llm.py` waited the full `--max-wait` then gave up even though `curl -H "Authorization: Bearer local" :8001/v1/models` returned 200; separately, a boot looped on `NameResolutionError/MaxRetryError` for `huggingface.co` on a model already in the cache.
+
+**Root cause.** Two independent defects. (1) The readiness probe did a bare `urlopen(/v1/models)` with **no `Authorization` header**, but vLLM runs with `--api-key`, so every probe got 401 → "not ready" → the serve timed out and SIGKILLed a healthy server. (2) vLLM resolves `config.json` from huggingface.co on boot even when the snapshot is cached; a flaky DNS then blocked the engine indefinitely.
+
+**Fix.** (1) `_probe_server` sends `Authorization: Bearer <api_key>` and treats 401/403 as "up" (port bound ⇒ model loaded), threaded through `_wait_for_readiness` + the idempotent start-probe. (2) `_build_child_env` sets `HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1` when `try_to_load_from_cache(model, "config.json")` hits, so a cached model boots from disk with no network. Mirrors `backend/agents/rlm/accelerator.py::probe_endpoint`.
+
+**Lesson.** A health probe must speak the server's auth, and "reachable" for readiness means *any* HTTP response (even 401), not only 200. And a cached artifact must never depend on the network — detect the cache and force offline, or a DNS blip wedges the boot.
+
+**Guardrail.** `tests/test_serve_local_llm.py` — `test_probe_401_counts_as_up`, `test_probe_200_is_ready`, `test_probe_connection_refused_is_not_ready`, `test_cached_model_forces_offline_env`, `test_uncached_model_stays_online`.
+
+---
+
+## 2026-05-29 — The CLI passed `process_status`/`verdict` to a `_write_demo_status` that rejected them
+
+**Symptom.** `backend/cli.py`'s reproduce + sanity paths call `_write_demo_status(..., process_status=..., verdict=...)`, but the function only accepted `error`/`primitive_provider` — a latent `TypeError: unexpected keyword argument 'process_status'` on every CLI status write (and 4 red tests).
+
+**Root cause.** A caller (cli.py, commit e6248d0) grew kwargs the callee (run.py) never did. Tests + CLI both expected the richer schema; only the function lagged — and the function's own unit tests exercised the *old* signature, so the gap stayed invisible.
+
+**Fix.** `_write_demo_status` now accepts `process_status` + `verdict`, derived from `RunStatus` when omitted (`completed` for terminal states else `running`; `failed` for a failed status else `unknown`), and writes both into `demo_status.json`. `LiveRunState` ignores the extra keys (pydantic `extra='ignore'`).
+
+**Lesson.** When a function and its callers live in different modules, a new kwarg at a call site is a runtime bomb until the signature follows — and a callee-only unit test won't catch it. Test the *caller's* path, not just the function in isolation.
+
+**Guardrail.** `tests/rlm/test_run.py::TestWriteDemoStatus` (3) + `tests/test_cli_sanity_mode.py::test_cmd_reproduce_sanity_writes_stable_artifacts`.
+
+---
+
+## 2026-05-29 — Two non-deterministic test failures: a plugin's load_dotenv, and a process-global cache
+
+**Symptom.** `test_default_values_match_spec` failed asserting `dynamic_gpu_enabled is True`; and `test_leaderboard_aggregator` failed on a *different* test each run — flaky even with a fixed `PYTHONHASHSEED`.
+
+**Root cause.** (1) The `deepeval` pytest plugin calls `load_dotenv()` at session start, leaking the repo `.env` (`REPROLAB_DYNAMIC_GPU_ENABLED=false`) into `os.environ` — which beats both `.env` and `_env_file=None`, shadowing the code default. (2) `leaderboard_cache._cache` is a process-global keyed by `project_id` with mtime invalidation; the tests reuse project_ids `"a"/"b"` across different `tmp_path`s, and coarse filesystem mtime let a stale cross-test row survive — which test lost depended on timing.
+
+**Fix.** (1) The defaults test clears the asserted vars from `os.environ` *and* passes `_env_file=None`. (2) An autouse fixture calls `leaderboard_cache.clear()` (the cache's own test-isolation hook) before + after each test.
+
+**Lesson.** A pytest plugin can mutate `os.environ` for the whole session — a "hermetic" Settings test must clear env, not just disable `.env`. And any process-global cache needs a per-test reset, or a key collision across `tmp_path`s makes tests fail by timing, not logic.
+
+**Guardrail.** Both fixes are themselves the guardrails (hermetic construction + autouse `clear()`); the leaderboard file is now green 3× consecutively.
+
+---
+
 ## 2026-05-23 (late evening) — A run wrote `final_report.json` cleanly but `demo_status.json` was stuck on `running` forever because atexit hung
 
 **Symptom.** `prj_6b9acbfd8afcd789` ran 18 min, produced `final_report.json` with rubric 0.244, printed the success JSON to stdout — but `demo_status.json::status` stayed `"running"` indefinitely (12+ hours). UI showed the run as in-flight forever even though the work was done.

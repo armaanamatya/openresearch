@@ -1,0 +1,241 @@
+{
+  "status": "completed",
+  "scope": {
+    "models_run": [
+      "qwen2_5_3b",
+      "qwen3_1_7b"
+    ],
+    "models_skipped": [
+      "qwen2_5_7b"
+    ],
+    "environments_skipped": [
+      "alfworld",
+      "webshop"
+    ],
+    "gaps": [
+      {
+        "item": "qwen2_5_7b",
+        "reason": "out-of-scope per operator (budget/VRAM)"
+      },
+      {
+        "item": "alfworld",
+        "reason": "out-of-scope: Search-QA only run"
+      },
+      {
+        "item": "webshop",
+        "reason": "out-of-scope: Search-QA only run"
+      },
+      {
+        "item": "triviaqa",
+        "reason": "extra Search-QA eval dataset, out of scope"
+      },
+      {
+        "item": "popqa",
+        "reason": "extra Search-QA eval dataset, out of scope"
+      },
+      {
+        "item": "2wiki",
+        "reason": "extra Search-QA eval dataset, out of scope"
+      },
+      {
+        "item": "musique",
+        "reason": "extra Search-QA eval dataset, out of scope"
+      },
+      {
+        "item": "bamboogle",
+        "reason": "extra Search-QA eval dataset, out of scope"
+      },
+      {
+        "item": "e5 retriever",
+        "reason": "Search-R1 retrieval not used; closed-book QA"
+      },
+      {
+        "item": "skill retrieval",
+        "reason": "SkillRL skill retrieval out of scope"
+      },
+      {
+        "item": "skillbank",
+        "reason": "SkillBank out of scope"
+      },
+      {
+        "item": "skill sd",
+        "reason": "Skill-SD baseline out of scope"
+      },
+      {
+        "item": "rlsd",
+        "reason": "RLSD baseline out of scope"
+      },
+      {
+        "item": "entropy gating",
+        "reason": "alternative gate strategy; SDAR uses gap gating"
+      },
+      {
+        "item": "soft or gating",
+        "reason": "alternative gate strategy out of scope"
+      }
+    ]
+  },
+  "data_load_failures": [],
+  "per_env": {
+    "alfworld": {
+      "sdar": {
+        "mean_final_reward": null
+      },
+      "grpo": {
+        "mean_final_reward": null
+      },
+      "grpo_opsd": {
+        "mean_final_reward": null
+      },
+      "sdar_minus_grpo": null
+    },
+    "webshop": {
+      "sdar": {
+        "mean_final_reward": null
+      },
+      "grpo": {
+        "mean_final_reward": null
+      },
+      "grpo_opsd": {
+        "mean_final_reward": null
+      },
+      "sdar_minus_grpo": null
+    },
+    "searchqa": {
+      "sdar": {
+        "mean_final_reward": 0.04071834118773643
+      },
+      "grpo": {
+        "mean_final_reward": 0.1231675160827616
+      },
+      "grpo_opsd": {
+        "mean_final_reward": 0.09947916666666666
+      },
+      "sdar_minus_grpo": -0.08244917489502517
+    }
+  },
+  "stability": {
+    "grpo_opsd_cross_seed_std": 0.09947916666666666,
+    "sdar_cross_seed_std": 0.017978905311249117
+  },
+  "gate": {
+    "sdar_mean_g_t": 0.38635221114382146
+  },
+  "per_model": {
+    "qwen3_1_7b": {
+      "sdar_f1": 0.022739435876487312,
+      "sdar_reward": 0.022739435876487312,
+      "sdar_gate_mean": 0.41234011184424163,
+      "sdar_gate_active_ratio": 0.32023645625449715,
+      "sdar_delta_t_mean": -0.2076606241791228,
+      "grpo_f1": 0.16392742498282556,
+      "grpo_reward": 0.16392742498282556,
+      "grpo_opsd_f1": 0.19895833333333332,
+      "grpo_opsd_reward": 0.19895833333333332,
+      "sdar_minus_grpo_f1": -0.14118798910633826,
+      "search_qa": {
+        "sdar": {
+          "status": "ok",
+          "metric": 0.022739435876487312,
+          "reward_mean": 0.022739435876487312,
+          "gate_mean": 0.41234011184424163,
+          "gate_active": 0.32023645625449715,
+          "delta_t_mean": -0.2076606241791228,
+          "zero_shot_f1": 0.020871013635339195,
+          "steps_run": 150,
+          "wall_time_s": 839.5714976787567,
+          "cell_id": "qwen3_1_7b__sdar__search_qa__s42"
+        },
+        "grpo": {
+          "status": "ok",
+          "metric": 0.16392742498282556,
+          "reward_mean": 0.16392742498282556,
+          "gate_mean": 0.0,
+          "gate_active": 0.0,
+          "delta_t_mean": 0.0,
+          "zero_shot_f1": 0.07242277298850575,
+          "steps_run": 150,
+          "wall_time_s": 794.2714076042175,
+          "cell_id": "qwen3_1_7b__grpo__search_qa__s42"
+        },
+        "grpo_opsd": {
+          "status": "ok",
+          "metric": 0.19895833333333332,
+          "reward_mean": 0.19895833333333332,
+          "gate_mean": 0.9999999936670065,
+          "gate_active": 0.9999999936670065,
+          "delta_t_mean": -0.5076160169007384,
+          "zero_shot_f1": 0.0869786866359447,
+          "steps_run": 150,
+          "wall_time_s": 866.3973579406738,
+          "cell_id": "qwen3_1_7b__grpo_opsd__search_qa__s42"
+        }
+      }
+    },
+    "qwen2_5_3b": {
+      "sdar_f1": 0.05869724649898554,
+      "sdar_reward": 0.05869724649898554,
+      "sdar_gate_mean": 0.36036431044340134,
+      "sdar_gate_active_ratio": 0.17004044926725329,
+      "sdar_delta_t_mean": -0.2535142484395368,
+      "grpo_f1": 0.08240760718269763,
+      "grpo_reward": 0.08240760718269763,
+      "grpo_opsd_f1": 0.0,
+      "grpo_opsd_reward": 0.0,
+      "sdar_minus_grpo_f1": -0.023710360683712087,
+      "search_qa": {
+        "sdar": {
+          "status": "ok",
+          "metric": 0.05869724649898554,
+          "reward_mean": 0.05869724649898554,
+          "gate_mean": 0.36036431044340134,
+          "gate_active": 0.17004044926725329,
+          "delta_t_mean": -0.2535142484395368,
+          "zero_shot_f1": 0.019906924736696967,
+          "steps_run": 150,
+          "wall_time_s": 888.811690568924,
+          "cell_id": "qwen2_5_3b__sdar__search_qa__s42"
+        },
+        "grpo": {
+          "status": "ok",
+          "metric": 0.08240760718269763,
+          "reward_mean": 0.08240760718269763,
+          "gate_mean": 0.0,
+          "gate_active": 0.0,
+          "delta_t_mean": 0.0,
+          "zero_shot_f1": 0.016162660887838194,
+          "steps_run": 150,
+          "wall_time_s": 887.734395980835,
+          "cell_id": "qwen2_5_3b__grpo__search_qa__s42"
+        },
+        "grpo_opsd": {
+          "status": "ok",
+          "metric": 0.0,
+          "reward_mean": 0.0,
+          "gate_mean": 0.9999999895691871,
+          "gate_active": 0.9999999895691871,
+          "delta_t_mean": -4.341556156953676,
+          "zero_shot_f1": 0.03201088212432512,
+          "steps_run": 150,
+          "wall_time_s": 863.6701028347015,
+          "cell_id": "qwen2_5_3b__grpo_opsd__search_qa__s42"
+        }
+      }
+    }
+  },
+  "comparison": {
+    "qwen3_1_7b": {
+      "sdar_f1": 0.022739435876487312,
+      "grpo_f1": 0.16392742498282556,
+      "delta": -0.14118798910633826
+    },
+    "qwen2_5_3b": {
+      "sdar_f1": 0.05869724649898554,
+      "grpo_f1": 0.08240760718269763,
+      "delta": -0.023710360683712087
+    }
+  },
+  "training_curves": "training_curves.json",
+  "n_cells": 6,
+  "wall_time_seconds": 1780283632.2095623
+}

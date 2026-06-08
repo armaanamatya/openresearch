@@ -1,0 +1,230 @@
+{
+  "iteration": 0,
+  "overall_score": 0.0,
+  "target_score": 0.6,
+  "meets_target": false,
+  "leaf_count": 27,
+  "graded": 0,
+  "rubric_source": "paperbench_bundle",
+  "degraded": true,
+  "compute_adjusted_score": 0.0,
+  "compute_scope": null,
+  "coverage_pct": 1.0,
+  "areas": [
+    {
+      "area": "Method and code fidelity to the paper",
+      "score": 0.0,
+      "weight": 0.33898305084745767,
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Data and preprocessing fidelity",
+      "score": 0.0,
+      "weight": 0.1271186440677966,
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Experiment execution and reproducibility",
+      "score": 0.0,
+      "weight": 0.16949152542372883,
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Evaluation protocol and metric correctness",
+      "score": 0.0,
+      "weight": 0.1271186440677966,
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Result match versus the paper's reported targets",
+      "score": 0.0,
+      "weight": 0.16949152542372883,
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Artifact completeness and provenance",
+      "score": 0.0,
+      "weight": 0.06779661016949153,
+      "compute_adjusted_score": 0.0
+    }
+  ],
+  "leaf_scores": [
+    {
+      "id": "dcc241bc1bef414e907fb0d1d6207b4d",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "c10b7f5e2dfa43f5944e90a7f8832fcc",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "300a67a8bc874ee98bb0e1aec1a0f489",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "1e7ef5a8ed314e839c8a3db94b0b7f10",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "a4954e4d43434e43a8097f406726b32d",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "2dd5cf1e990f440a91432f10c88a2dd3",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "f7216a7f93f04f40a11922f82d0b7246",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "33ffef11c35e4f69915a56c689e661fe",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "192fe7774ccc419ab594b9a51eb89c5d",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "459e48f8a06941bfb38144ec1787dcea",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "6c13ef51dfd444c59c8d5aa757f73d80",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "042fae7ed9e742cd9933aa1f5c6f8bb8",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "ad6969fdb545450fa53e75220e6e7a20",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "9ce8eba10ec64d399d0e6b152d36755f",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "78ad7a11846748eab1f18d74e990cc9a",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "ba52b2e00c33421190847bb0de1632b1",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "0b1684bfc6b34cac9317683c048d5725",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "a17a668c1a754c0c99a592e635b3ad73",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "ad27579733bf4d75a58e2df3a2f1f4a7",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "58614eaef60d427ab6a5a4742909d180",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "b65cb286878648db93578b9dc0dd232c",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "5fef402b046840b19dbae7ba126e0499",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "1545fae58a05465fbf6b4df816a5b8bb",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "d811f47717a84084a285f58d9e5a586e",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "ecee28468f534e49bf1aea5f25a4c86b",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "71a48e22dbb54c40979e760bcbeedbaf",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "6c25cb40c4e2449a86ba2c7995b28a12",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    }
+  ],
+  "weak_leaves": [
+    {
+      "id": "dcc241bc1bef414e907fb0d1d6207b4d",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "c10b7f5e2dfa43f5944e90a7f8832fcc",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "300a67a8bc874ee98bb0e1aec1a0f489",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "1e7ef5a8ed314e839c8a3db94b0b7f10",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "a4954e4d43434e43a8097f406726b32d",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "2dd5cf1e990f440a91432f10c88a2dd3",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "f7216a7f93f04f40a11922f82d0b7246",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    },
+    {
+      "id": "33ffef11c35e4f69915a56c689e661fe",
+      "score": 0.0,
+      "justification": "degraded_no_metrics"
+    }
+  ]
+}

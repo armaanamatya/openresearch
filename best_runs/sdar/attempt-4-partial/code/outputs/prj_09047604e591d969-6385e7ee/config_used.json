@@ -1,0 +1,33 @@
+{
+  "paper_ref": "SDAR: Self-Distilled Agentic Reinforcement Learning (arXiv 2605.15155)",
+  "upstream_repo": "https://github.com/ZJU-REAL/SDAR",
+  "BETA": 10.0,
+  "LAMBDA": 0.1,
+  "CLIP_EPS": 0.2,
+  "ALPHA_KL": 0.01,
+  "GROUP_SIZE": 8,
+  "LR": 1e-05,
+  "STEPS": 150,
+  "MAX_NEW_TOKENS": 128,
+  "MAX_PROMPT_LEN": 4096,
+  "MAX_SEQ_LEN": 4224,
+  "BATCH_QUESTIONS": 1,
+  "skill_retrieval": "KM",
+  "gating_strategy": "gap",
+  "device": "cuda",
+  "framework": "pytorch",
+  "torch_version": "2.5.1+cu121",
+  "models": [
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen2.5-3B-Instruct"
+  ],
+  "models_skipped": [
+    "Qwen/Qwen2.5-7B-Instruct"
+  ],
+  "datasets": [
+    "nq_open",
+    "hotpotqa/hotpot_qa"
+  ],
+  "seed": 42,
+  "note": "Sequential single-GPU training per model variant (one model loaded at a time); Adafactor optimizer (memory-efficient vs AdamW for 3B); Closed-book QA (no E5 retriever) with token-F1 reward (SQuAD-style); SDAR gate: g_t = sigma(beta*delta_t).detach() with beta=10, lambda=0.1; OPSD loss: L = -(gate * logp_student * mask).sum() / n_tok (student-sampled tokens); Teacher = frozen copy of student (same architecture, no skill context in this scope)"
+}

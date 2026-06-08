@@ -1,0 +1,263 @@
+{
+  "id": "0d534b9f76fd4ff7b8fca9a4e257344e",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "4855b015ec8b4fd3aac348eb0d4edfa3",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.33333333333333337,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "d3e3ff469118409b8580149393bc66b8",
+          "requirements": "train.py (or equivalent) implements the SDAR token-level gap gate g_t = \u03c3(\u03b2 \u00b7 \u0394_t) where \u0394_t = log \u03c0_teacher(y_t|\u00b7) \u2212 log \u03c0_student(y_t|\u00b7) is the detached single-sample reverse-KL-aligned Teacher-Student log-probability gap on the student-sampled token, as defined in Section 2.3 and Appendix A.",
+          "weight": 0.35714285714285715,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "1aff44206bf240c485c8ca118ac786ff",
+          "requirements": "The overall training objective combines GRPO policy loss with the SDAR auxiliary loss as L = L_GRPO + \u03bb \u00b7 L_OPSD with \u03bb=0.1 and sigmoid sharpness \u03b2=10 (Section 3.1 'we set \u03bb=0.1 and \u03b2=10' and Table 3).",
+          "weight": 0.2142857142857143,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e4c2a8b6baf241c782292333a823f68d",
+          "requirements": "All five baselines are re-implemented under the same Qwen backbones: GRPO (Algorithm 2), OPSD (Algorithm 3), Skill-SD with importance-weighted f-divergence + KM skill retrieval (Algorithm 4), GRPO+OPSD additive auxiliary (Algorithm 5), and RLSD which re-weights GRPO advantages by the self-teacher gap (Algorithm 6), as specified in Appendix A.",
+          "weight": 0.2142857142857143,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "b95167c1b05942e08045bd43c93e42d2",
+          "requirements": "Three gating strategies from Section 2.3 are selectable in code: Entropy gate g_t=\u03c3(\u03b2\u00b7H_t), Gap gate g_t=\u03c3(\u03b2\u00b7\u0394_t), and Soft-OR gate g_t=\u03c3(\u03b2\u00b7H_t)+\u03c3(\u03b2\u00b7\u0394_t)\u2212\u03c3(\u03b2\u00b7H_t)\u00b7\u03c3(\u03b2\u00b7\u0394_t), with gap gating as the default per Section 3.3.",
+          "weight": 0.2142857142857143,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "16383fe8d0064789900ece8a784d78e4",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.125,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "3473bf06f82a4cc3a96c6057ab196605",
+          "requirements": "ALFWorld environment is set up with the 3,827 task instances spanning the six categories Pick, Look, Clean, Heat, Cool, Pick2, using the training data split from GiGPO (Feng et al. 2025), as described in Section 3.",
+          "weight": 0.3,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2cee560324a64be288774c1a2191800a",
+          "requirements": "Search-QA setup follows Search-R1 (Jin et al. 2025) using E5 (Wang et al. 2022) as the retriever, with NQ + HotpotQA as in-domain training data and TriviaQA, PopQA, 2Wiki, MuSiQue, Bamboogle as out-of-domain evaluation, per Section 3.",
+          "weight": 0.3,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2afe36c63d464545848a0b6d54047b0f",
+          "requirements": "WebShop training uses 1000 selected training tasks and evaluation uses the 128 fixed validation tasks aligned with Feng et al. 2025, as stated in Section 3.",
+          "weight": 0.2,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "15195b5d5480469db967ead4c56b2831",
+          "requirements": "Skill retrieval uses the SkillBank from SkillRL (Xia et al. 2026) across all three environments and implements the four retrieval strategies: UCB (Equation 1), Keyword Matching (KM), Full Retrieval, and Random Retrieval, per Section 2.1 and Section 3.",
+          "weight": 0.2,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "b4e8df8700bd4e57aeee76f0118cd2ee",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.15,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "dca3e0267a62420783b3e71b7b106064",
+          "requirements": "Training is executed for 150 steps on the Qwen2.5-Instruct and Qwen3-Instruct families (Qwen2.5-3B-Instruct, Qwen2.5-7B-Instruct, Qwen3-1.7B-Instruct) as specified in Section 3.",
+          "weight": 0.25,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "3769312cecc048a886d8d95098f3d843",
+          "requirements": "ALFWorld training uses batch of 16 tasks \u00d7 8 rollouts per prompt with max prompt length 2,048 tokens (Section 3).",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "20fac4ac63eb4228a79fa50bc4c9131a",
+          "requirements": "Search-QA training uses batch of 128 tasks with max prompt length 4,096 tokens (Section 3).",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "3bc94b3e8ed6498c92f3412050b69a5f",
+          "requirements": "WebShop training uses batch of 16 tasks \u00d7 8 rollouts per prompt with max prompt length 4,096 tokens (Section 3).",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "dd81fbb887fc43b88bf40838b7c392d1",
+          "requirements": "Run scripts target the 8\u00d7 H800 GPU hardware spec from Section 3 (or a documented equivalent), with seeds and full command line recorded so the SDAR runs for each (model, environment) pair are reproducible.",
+          "weight": 0.2,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "9c32b925deb24632b6fda98a4abd1c13",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.1416666666666667,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "96f68a2e3f634941b9121a1c1b2c74df",
+          "requirements": "Inference-time evaluation of SDAR uses prompts with the {skill_context} field LEFT EMPTY (no skills at test time), matching the design that SDAR 'requires no external skills during inference' in Section 3.2 and Figures 15\u201317.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "857d7571f0b94400becc4be97037237a",
+          "requirements": "Diagnostic metrics during training include the Teacher-Student gap mean \u0394\u0304, gate activation ratio (fraction with g_t > 0.5), gate mean, OPSD loss, and reward curve, as plotted in Figures 5 and 10\u201314.",
+          "weight": 0.5,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "9b7bb53724864f0988cee03138784938",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.18333333333333335,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "11cc2d98d1544fa2852df5898c4ea012",
+          "requirements": "SDAR on Qwen2.5-3B achieves ALFWorld success rate \u2248 84.4% (vs. GRPO 75.0%, a +9.4% gain) as reported in Section 3.2 and Table 1.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c4c4d3f2f8624bf387c73b8f24577534",
+          "requirements": "SDAR on Qwen2.5-7B achieves the reported +7.0% Search-QA and +10.2% WebShop-Acc improvements over GRPO, per the Abstract and Section 3.2.",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "684c4b9d8118490cafd2b04d7c2d2c69",
+          "requirements": "SDAR on Qwen3-1.7B reaches the highest reported ALFWorld score of 53.9% (vs. GRPO 46.1%, Skill-GRPO 21.1%, RLSD 42.2%), per Section 3.2 and Table 1.",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c16a213aef2f44a48c167c97c5e15905",
+          "requirements": "Reproduced naive GRPO+OPSD exhibits the documented catastrophic instability \u2014 degrading to ~32.0 on Qwen3-1.7B ALFWorld vs. GRPO's 46.1, and standalone OPSD collapses to near-zero on Search-QA \u2014 as described in Section 3.2 and Table 1.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "630f01373a9449a1adb55b84307c5293",
+          "requirements": "Ablation: \u03bb=0.1 with \u03b2=10 outperforms \u03bb=1.0 and \u03bb=0.01, and \u03b2=10 outperforms \u03b2\u2208{1,5,50,\u221e} (no-gate uniform distillation), reproducing the trends in Figures 7\u20139 of Section 3.3.",
+          "weight": 0.1,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "249b58bd8d844e0cae81c9364951b884",
+          "requirements": "Robustness: across the four retrieval tiers (UCB, KM, Full, Random) all four outperform the pure GRPO baseline on ALFWorld / WebShop-Score / WebShop-Acc, matching Table 2 in Section 3.2.",
+          "weight": 0.1,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "5b99e333ebee41f89f4d0c6cd7a819b2",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.06666666666666667,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "b433b13419824da4a2b1470401080f69",
+          "requirements": "Repository contains the SDAR Algorithm 1 implementation plus the five baseline algorithms (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD) corresponding to Algorithms 2\u20136 in Appendix A, with code organized so each is runnable.",
+          "weight": 0.35,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "3b3e97bc65b4460491f0e14e5ff38277",
+          "requirements": "The ALFWorld, Search-QA, and WebShop prompt templates from Figures 15\u201317 are included verbatim with the {skill_context} placeholder, supporting both training-time skill injection and inference-time empty-skill runs.",
+          "weight": 0.25,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "5008740c5a7e4ca6b31019d4cc01595a",
+          "requirements": "Hyperparameter configuration files reproduce Table 3 (\u03b7, G, \u03b5, \u03bb=0.1, \u03b2=10, \u03b1_KL, SRS=KM) for each method \u00d7 environment combination.",
+          "weight": 0.2,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "80247bf65193486a8be1ad0146c9aa83",
+          "requirements": "A final_report / metrics artifact is produced reporting numbers in the same Table 1 layout (ALFWorld success %, Search-QA accuracy %, WebShop Score/Acc %), with provenance pointing to the public code at https://github.com/ZJU-REAL/SDAR.",
+          "weight": 0.2,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

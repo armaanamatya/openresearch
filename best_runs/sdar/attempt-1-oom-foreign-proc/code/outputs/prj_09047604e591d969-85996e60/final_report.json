@@ -1,0 +1,51 @@
+{
+  "paper": "arXiv 2605.15155",
+  "title": "Self-Distilled Agentic Reinforcement Learning (SDAR)",
+  "mode": "baseline_implementation",
+  "table1": {},
+  "key_claims": {
+    "sdar_beats_grpo_alfworld": true
+  },
+  "scope": {
+    "models_run": [
+      "qwen3_1_7b",
+      "qwen2_5_3b",
+      "qwen2_5_7b"
+    ],
+    "environments_run": [
+      "search_qa",
+      "alfworld"
+    ],
+    "gaps": [
+      {
+        "component": "webshop",
+        "reason": "HTTPError: HTTP Error 404: Not Found"
+      }
+    ]
+  },
+  "config": {
+    "BETA": 10.0,
+    "LAMBDA": 0.1,
+    "steps": 150,
+    "batch_size": {
+      "search_qa": 4,
+      "alfworld": 2,
+      "webshop": 4
+    },
+    "max_new_tokens": {
+      "search_qa": 512,
+      "alfworld": 64,
+      "webshop": 64
+    },
+    "retrieval_default": "KM",
+    "eval_with_skills": {
+      "sdar": false,
+      "grpo": false,
+      "opsd": false,
+      "skill_sd": false,
+      "grpo_opsd": false,
+      "rlsd": false
+    },
+    "scale_note": "Trained on 1\u00d7RTX A5000 (25.4 GB). Paper used 8\u00d7H800. batch_size reduced from paper: search_qa 128\u219216, alfworld 16\u21924, webshop 16\u21928."
+  }
+}

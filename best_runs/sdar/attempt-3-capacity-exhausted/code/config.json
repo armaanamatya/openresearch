@@ -1,0 +1,41 @@
+{
+  "paper_id": "2605.15155",
+  "paper_title": "Self-Distilled Agentic Reinforcement Learning (SDAR)",
+  "scope": {
+    "environments": ["search_qa"],
+    "models": ["Qwen/Qwen3-1.7B", "Qwen/Qwen2.5-3B-Instruct"],
+    "baselines": ["sdar", "grpo"]
+  },
+  "hyperparameters": {
+    "BETA": 10.0,
+    "LAMBDA": 0.1,
+    "training_steps": 150,
+    "group_size": 4,
+    "batch_size_1_7b": 4,
+    "batch_size_3b": 2,
+    "max_new_tokens": 64,
+    "max_prompt_length": 256,
+    "learning_rate": 1e-5,
+    "optimizer": "Adafactor",
+    "dtype": "bfloat16",
+    "gradient_checkpointing": true,
+    "clip_grad_norm": 1.0
+  },
+  "datasets": {
+    "in_domain_train_eval": ["nq_open", "hotpotqa/hotpot_qa"],
+    "out_of_scope": ["triviaqa", "popqa", "2wiki", "musique", "bamboogle"]
+  },
+  "reward_function": {
+    "type": "token_f1",
+    "description": "SQuAD-style token-F1, max over all gold aliases",
+    "normalization": "lowercase, strip articles/punctuation, split on whitespace"
+  },
+  "sdar_algorithm": {
+    "gate": "g_t = sigmoid(BETA * delta_t).detach()",
+    "delta_t": "log pi_teacher(y_t) - log pi_student(y_t)",
+    "opsd_loss": "mean_t(g_t * delta_t)",
+    "combined_loss": "grpo_loss + LAMBDA * opsd_loss",
+    "teacher": "frozen copy of student initial weights",
+    "student": "trainable policy updated by Adafactor"
+  }
+}
