@@ -20,6 +20,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -44,11 +45,16 @@ class PrimitiveOutcome(str, Enum):
 
 _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
+    "cell_execution_error",   # Phase 0C: all run cells errored (non-OOM) → repair
+    "degenerate_training",
+    "disk_exhausted",
+    "incomplete_metrics",
     "contract_violation",
     # Existing classifier labels that require agent-side repair.
     "missing_module",
     "torch_redundancy",
     "cuda_oom",
+    "cuda_shlib_load",        # incoherent CUDA stack (libcupti/… won't load) → strip torch re-pin
     "oom_killed",
     "requirements_not_found",
     "missing_dataset",
@@ -77,6 +83,76 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     "quota_exceeded",
     # Existing classifier label for the same fatal funding state.
     "runpod_balance_too_low",
+}
+
+
+def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) -> list[str]:
+    """pip-install commands for the local-sandbox bootstrap, hardened by env_pin.
+
+    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST, then the
+    agent's requirements with any conflicting core re-pin stripped (writing
+    ``requirements.hardened.txt`` next to ``requirements.txt``). This is the fix for the
+    2026-06-07 All-Conv-Net collapse, where the agent's ``torch==2.2.0`` re-pin
+    DOWNGRADED the cu121 build and left an incoherent CUDA stack (``libcupti.so.12``
+    failed to dlopen → every experiment died at import).
+
+    Fail-soft: env_pin off (``REPROLAB_DISABLE_ENV_PIN``) / no torch index / unknown tag
+    / any error → legacy bare-``torch`` install + raw ``requirements.txt``. Returns the
+    ordered command list (the caller appends ``accelerate`` afterwards).
+    """
+    core_install_cmd: str | None = None
+    requirements_target = "requirements.txt"
+    env_pin_on = bool(torch_index) and os.environ.get(
+        "REPROLAB_DISABLE_ENV_PIN", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+    if env_pin_on:
+        try:
+            from backend.agents.rlm import env_pin
+
+            tag = env_pin.base_tag_for("local", None)  # → "cu121"
+            specs = env_pin.pin_install_specs(tag)
+            kept, dropped = env_pin.harden_requirements(
+                requirements_path.read_text(encoding="utf-8").splitlines(),
+                base_tag=tag,
+            )
+            if specs:
+                core_install_cmd = (
+                    f"python -m pip install {' '.join(specs)} "
+                    f"--index-url {torch_index} || true"
+                )
+            if dropped:
+                hardened = requirements_path.with_name("requirements.hardened.txt")
+                hardened.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                requirements_target = hardened.name
+                logger.info(
+                    "_local_core_bootstrap_commands: env_pin stripped %d core re-pin(s) "
+                    "%s; harness installs the pinned cu121 stack", len(dropped), dropped,
+                )
+        except Exception:  # noqa: BLE001 — env_pin must never block the run
+            logger.exception(
+                "_local_core_bootstrap_commands: env_pin hardening failed; raw requirements.txt"
+            )
+            core_install_cmd, requirements_target = None, "requirements.txt"
+
+    cmds: list[str] = []
+    if core_install_cmd is not None:
+        cmds.append(core_install_cmd)
+    elif torch_index:
+        cmds.append(f"python -m pip install torch --index-url {torch_index} || true")
+    cmds.append(f"python -m pip install -r {requirements_target} || true")
+    return cmds
+
+
+# Phase 0C: failure classes whose run_experiment result carries a POPULATED
+# metrics dict (aggregate_cell_metrics always returns non-empty) yet represents an
+# all-cells-failed, fully-repairable code bug. These must engage the repair floor,
+# NOT be typed partial_evidence by the metrics-first short-circuit in
+# _classify_run_experiment_outcome. Keep this NARROW: only classes that are set
+# exclusively when ZERO cells succeeded, so a genuine some-ok/some-bug partial is
+# never reclassified as fully repairable. ``cell_execution_error`` is set only in
+# the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
+_METRICS_BEARING_REPAIRABLE_FAILURES = {
+    "cell_execution_error",
 }
 
 _CODEX_HARD_ALLOWED_TASKS = {
@@ -114,7 +190,21 @@ _MAX_TRANSIENT_RETRIES: int = 3
 _BACKOFF_BASE_S: float = 5.0
 _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 
-_DEFAULT_PRE_EMIT_STALL_S = 240.0
+# Pre-emit stall threshold: how long implement_baseline tolerates NO new file in
+# code_dir before declaring an SDK hang. The signal is coarse — file mtimes only
+# update when the Write tool COMPLETES a file, so a sub-agent that plans for several
+# minutes or generates a large file (e.g. a 43 KB train.py) legitimately shows no
+# code_dir activity mid-work and looks "stalled".
+# Measured 2026-05-29 (SDAR + --paper-hint, sun.cs.txstate.edu, non-WSL): the agent's
+# FIRST file landed at ~+593 s and the gap while generating train.py was ~402 s, yet
+# it produced a complete, correct implementation. The old 240 s false-killed that
+# healthy, productive agent 3× (→ no experiment, verdict=failed). 900 s comfortably
+# covers large-file generation + planning on complex papers; a genuine SDK hang still
+# surfaces, just later — an acceptable trade for an unbounded reproduction where a
+# FALSE stall (which aborts the whole run) is far costlier than slow hang-detection.
+# Override with REPROLAB_PRE_EMIT_STALL_S. (Follow-up: make progress SDK-stream/liveness
+# aware rather than code_dir-mtime-only, so the threshold matters less.)
+_DEFAULT_PRE_EMIT_STALL_S = 900.0
 
 
 class PreEmitStallError(RuntimeError):
@@ -299,11 +389,21 @@ def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
     if result.get("success") is True:
         return PrimitiveOutcome.ok
 
+    failure_class = _failure_class_key(result.get("failure_class"))
+
+    # Phase 0C: a few failure classes carry a populated metrics dict even though
+    # every run cell failed (aggregate_cell_metrics always returns non-empty, so
+    # the all-cells-errored ``cell_execution_error`` branch ships metrics). The
+    # metrics-first short-circuit below would mis-type those as partial_evidence
+    # and skip the repair-iteration floor (which fires only on ``repairable``).
+    # Consult the failure_class FIRST for these so a code-bug cell engages repair.
+    if failure_class in _METRICS_BEARING_REPAIRABLE_FAILURES:
+        return PrimitiveOutcome.repairable
+
     metrics = result.get("metrics")
     if isinstance(metrics, dict) and bool(metrics):
         return PrimitiveOutcome.partial_evidence
 
-    failure_class = _failure_class_key(result.get("failure_class"))
     if not failure_class:
         return PrimitiveOutcome.repairable
     if failure_class in _RUN_EXPERIMENT_REPAIRABLE_FAILURES:
@@ -519,6 +619,30 @@ def _detect_cuda_oom(*, exit_code: int, stderr_tail: str) -> bool:
     if not stderr_tail:
         return False
     return any(marker in stderr_tail for marker in _CUDA_OOM_MARKERS)
+
+
+def _is_oom_escalation_trigger(result: dict, *, exit_code: int, stderr_tail: str) -> bool:
+    """True when a failed experiment should advance the GPU ladder due to OOM (F-04).
+
+    Two cases:
+      1. A direct CUDA OOM signal — delegated to ``_detect_cuda_oom`` (exit code
+         137/-9 or an OOM marker in the last ~4 KB ``stderr_tail``).
+      2. A stall-watchdog kill (``result['watchdog_killed']``) whose OOM marker is
+         buried earlier than ``stderr_tail``: the watchdog return dict surfaces no
+         ``exit_code`` (the gate defaults it to 1) and the marker can sit thousands
+         of lines before the tail, so case 1 alone misses it — scan the FULL
+         ``result['logs']`` for a marker.
+
+    The watchdog kills on *staleness* (no signal), NOT memory, so a watchdog kill
+    escalates ONLY when the full logs carry an explicit OOM marker; a genuine
+    no-signal stall (no marker) breaks the loop as before.
+    """
+    if _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail):
+        return True
+    if result.get("watchdog_killed"):
+        full_logs = result.get("logs") or ""
+        return any(marker in full_logs for marker in _CUDA_OOM_MARKERS)
+    return False
 
 
 def _cap_logs(text: str) -> str:
@@ -891,11 +1015,38 @@ def resolve_gpu_requirements(
         req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
 
     settings = get_settings()
-    cloud_types: tuple[str, ...] = (
-        ("COMMUNITY", "SECURE")
-        if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-        else ("COMMUNITY",)
-    )
+
+    # Select the cloud provider from the run's sandbox_mode: azure → azure SKUs
+    # (ONDEMAND tier, multi-GPU VM-size aware); everything else → runpod (default,
+    # byte-for-byte identical to the pre-azure behaviour).
+    from backend.agents.execution import SandboxMode as _SandboxMode
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    try:
+        _sb_enum = _SandboxMode(_sb_mode) if _sb_mode is not None else None
+    except (ValueError, TypeError):
+        _sb_enum = None
+    _is_azure = _sb_enum is _SandboxMode.azure
+
+    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
+    # so the primary pick + OOM escalation ladder can never name a pool that does
+    # not exist (which would otherwise hang the cell Pending until the
+    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # byte-for-byte unchanged.
+    if _is_azure:
+        _provider = "azure"
+        cloud_types: tuple[str, ...] = ("ONDEMAND",)
+        _provisioned_skus: tuple[str, ...] | None = tuple(
+            getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
+    else:
+        _provider = "runpod"
+        cloud_types = (
+            ("COMMUNITY", "SECURE")
+            if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
+            else ("COMMUNITY",)
+        )
+        _provisioned_skus = None
 
     from backend.agents.schemas import GpuPlan as _GpuPlan
     plan: "_GpuPlan" = gpu_resolver.resolve(
@@ -906,6 +1057,8 @@ def resolve_gpu_requirements(
         headroom_multiplier=settings.dynamic_gpu_headroom,
         fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
         cloud_types=cloud_types,
+        provider=_provider,
+        provisioned_skus=_provisioned_skus,
     )
 
     # ---- Persist atomically.
@@ -979,6 +1132,29 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     - A2-M1: the repair LLM call also uses a per-attempt timeout via the same
       pool (it's synchronous so we submit it and bound .result()).
     """
+    # Local sandbox is docker-free: dependencies are resolved on the host
+    # (per-run venv), so there is no image to build. Short-circuit BEFORE any
+    # docker client is touched — otherwise build_environment raises
+    # SandboxRuntimeError(backend_unavailable) on hosts without a daemon.
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    _sb_key = getattr(_sb_mode, "value", str(_sb_mode) if _sb_mode is not None else None)
+    if _sb_key == "local":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "local sandbox: dependencies resolved on host venv; no image built",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "azure":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
+
     import asyncio
     import concurrent.futures
     import hashlib
@@ -1298,6 +1474,90 @@ def _run_baseline_with_sdk(project_id, runs_root, pcm, env, contract, artifact_i
     return run_with_sdk(project_id, runs_root, pcm, env, contract, artifact_index, **kw)
 
 
+def _baseline_subprocess_enabled() -> bool:
+    """Run the baseline SDK call in an isolated child process (OPT-IN, default off).
+
+    Set ``REPROLAB_BASELINE_SUBPROCESS=1`` to isolate the claude-agent-sdk call in
+    a fresh process so its ``aclose()`` async-gen race crashes only that child and
+    can't poison the reproduction process. Default OFF: the in-process path is the
+    long-standing behavior the unit tests mock (``run_with_sdk`` patched in-process
+    is bypassed by the spawn child), and the isolation only covers
+    ``implement_baseline`` — the *root* model uses the same SDK, so this is a
+    partial mitigation, kept opt-in until a full root-level fix lands.
+    """
+    return os.environ.get("REPROLAB_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
+
+
+def _drive_baseline_child(
+    *,
+    heartbeat_path: str,
+    project_id: str,
+    runs_root: "Path",
+    pcm,
+    env,
+    contract,
+    artifact_index,
+    kwargs: dict,
+    sdk_activity: dict,
+    child_holder: dict,
+):
+    """Run the baseline SDK call in a fresh ``multiprocessing`` (spawn) process.
+
+    Runs on the implement_baseline worker thread. Spawns the child, parks its
+    handle in ``child_holder`` (so the caller's stall/timeout/finally path can
+    terminate it), and while it runs forwards the child's heartbeat-file mtime
+    into ``sdk_activity['last']`` so the EXISTING file+stream stall watchdog works
+    unchanged. Returns an object exposing ``commands_to_run`` / ``diff_summary`` /
+    ``assumptions_applied`` on success; raises on child failure so the caller's
+    ``except`` path harvests artifacts and marks the attempt repairable — and the
+    *next* attempt gets a brand-new, un-poisoned process.
+    """
+    import multiprocessing as _mp
+    from types import SimpleNamespace as _NS
+
+    from backend.agents.rlm.baseline_runner import run_baseline_in_child
+
+    hb = Path(heartbeat_path)
+    try:
+        hb.touch()
+    except Exception:  # noqa: BLE001
+        pass
+    ctxmp = _mp.get_context("spawn")
+    result_q = ctxmp.Queue()
+    proc = ctxmp.Process(
+        target=run_baseline_in_child,
+        args=(result_q, str(hb), project_id, str(runs_root), pcm, env, contract, artifact_index, kwargs),
+        daemon=False,
+    )
+    proc.start()
+    child_holder["p"] = proc
+    while proc.is_alive():
+        proc.join(timeout=2.0)
+        try:
+            if hb.exists():
+                sdk_activity["last"] = max(sdk_activity["last"], hb.stat().st_mtime)
+        except Exception:  # noqa: BLE001
+            pass
+    # Child exited — collect the result (empty queue ⇒ hard crash, e.g. the race).
+    payload = None
+    try:
+        payload = result_q.get_nowait()
+    except Exception:  # noqa: BLE001
+        payload = None
+    if payload is None:
+        raise RuntimeError(
+            f"baseline child exited (code={proc.exitcode}) without a result — "
+            "likely the claude-agent-sdk aclose race; a fresh child will retry"
+        )
+    if not payload.get("ok"):
+        raise RuntimeError(f"baseline child failed: {payload.get('error', 'unknown')}")
+    return _NS(
+        commands_to_run=payload.get("commands_to_run", []),
+        diff_summary=payload.get("diff_summary", ""),
+        assumptions_applied=payload.get("assumptions_applied", []),
+    )
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -1580,6 +1840,36 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             if r is not None
         ]
 
+    # SDK-stream liveness signal for robust stall detection. The code-writing sub-agent
+    # runs in a worker thread (pool.submit below); the main thread polls code_dir for
+    # progress, but file mtimes only change when a Write COMPLETES — so a model that
+    # reasons for minutes or streams a large file looks "stalled" to a file-only
+    # watchdog (the 2026-05-29 false-stall). collect_agent_text calls _note_sdk_event()
+    # on EVERY streamed event, giving the poll loop a precise "SDK is alive and
+    # producing" signal. _sdk_activity["last"] is written by the worker thread and read
+    # by the main thread; a lone float write/read is atomic under the GIL.
+    # comp 3 (2026-05-31 OOM/GPU remediation): hand the code-writing agent its
+    # per-GPU budget + the single-cell contract when the backend exposes GPUs
+    # (local/docker). describe_capacity is fail-soft; on a failure or a CPU/cloud
+    # backend the budget is None and the guidance is byte-identical to before.
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity as _describe_capacity
+        _caps = _describe_capacity(ctx)
+        _gpu_cell_budget: dict | None = {
+            "backend_kind": _caps.backend_kind,
+            "num_gpus": _caps.num_gpus,
+            "per_gpu_vram_gb": _caps.per_gpu_vram_gb,
+        }
+    except Exception:  # noqa: BLE001 — a capacity probe must never block code-writing
+        logger.debug("implement_baseline: describe_capacity failed; no cell budget", exc_info=True)
+        _gpu_cell_budget = None
+
+    import time as _time
+    _sdk_activity = {"last": _time.time()}
+
+    def _note_sdk_event() -> None:
+        _sdk_activity["last"] = _time.time()
+
     async def _run():
         # ctx.agent_model is the per-invocation model_override — it is the only
         # knob that beats the agent registry's heavier default for the
@@ -1608,6 +1898,14 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
             # λ: pass canonical dataset loader recipes so the Sonnet agent uses
             # the correct loader verbatim (e.g. stanfordnlp/imdb not bare 'imdb').
             data_recipes=_data_recipes or None,
+            # GPU parallelism policy — controls DDP/FSDP/vLLM-TP vs single GPU.
+            gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
+            gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+            # comp 3: per-GPU budget + single-cell contract for the cell path.
+            gpu_cell_budget=_gpu_cell_budget,
+            # Liveness hook: bumps _sdk_activity on every streamed SDK event so the
+            # stall watchdog distinguishes a working agent from a hung SDK.
+            on_event=_note_sdk_event,
         )
 
     # Generous 4 h cap for implement_baseline (the sub-agent that writes code).
@@ -1629,8 +1927,42 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
+    _child_holder: dict = {}
     try:
-        future = pool.submit(asyncio.run, _run())
+        if _baseline_subprocess_enabled():
+            _sub_kwargs = dict(
+                model=ctx.agent_model,
+                repair_context=repair_context,
+                sandbox_mode=ctx.sandbox_mode,
+                gpu_mode=getattr(ctx, "gpu_mode", None),
+                arxiv_id=getattr(ctx, "arxiv_id", None),
+                remaining_s=ctx.remaining_s(),
+                minimize_compute=getattr(ctx, "minimize_compute", False),
+                metrics_shape=_metrics_shape or None,
+                data_recipes=_data_recipes or None,
+                gpu_parallelism=getattr(ctx, "gpu_parallelism", None),
+                gpu_visible_count=getattr(ctx, "gpu_visible_count", None),
+                gpu_cell_budget=_gpu_cell_budget,
+            )
+            # Isolate the SDK call in a fresh process so its aclose() async-gen
+            # race can't poison this reproduction process. The driver runs on the
+            # worker thread and feeds the child's heartbeat into the existing
+            # stall watchdog; child_holder lets the finally terminate it.
+            future = pool.submit(
+                _drive_baseline_child,
+                heartbeat_path=str(code_dir / ".sdk_heartbeat"),
+                project_id=ctx.project_id,
+                runs_root=ctx.runs_root,
+                pcm=pcm,
+                env=env,
+                contract=contract,
+                artifact_index=artifact_index,
+                kwargs=_sub_kwargs,
+                sdk_activity=_sdk_activity,
+                child_holder=_child_holder,
+            )
+        else:
+            future = pool.submit(asyncio.run, _run())
         import time as _time
         deadline_abs = _time.monotonic() + timeout
         _stall_start: float | None = None
@@ -1691,7 +2023,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0.0,
                 )
-                if latest_mtime > _pre_emit_stall_start:
+                # Progress = a file write OR live SDK-stream activity. The latter is the
+                # robust signal: a sub-agent reasoning or generating a large file emits
+                # stream events continuously even before any file lands, so a healthy
+                # agent never trips the stall. Only TRUE silence (no file AND no stream
+                # event since the timer start) is treated as a genuine SDK hang.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if latest_progress > _pre_emit_stall_start:
                     _pre_emit_stall_start = _time.time()
                     continue
                 pre_emit_elapsed = _time.time() - _pre_emit_stall_start
@@ -1730,8 +2068,13 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                     (f.stat().st_mtime for f in code_dir.iterdir() if f.is_file()),
                     default=0,
                 )
-                if now - latest_mtime > _POLL_S:
-                    # No file changes — start or continue the stall timer
+                # Same robust signal as the pre-emit path: live SDK-stream activity
+                # (e.g. the agent still streaming its worker-report) counts as progress,
+                # so a genuine aclose hang (stream ended, code on disk) is still caught
+                # while a still-streaming agent is not falsely declared hung.
+                latest_progress = max(latest_mtime, _sdk_activity["last"])
+                if now - latest_progress > _POLL_S:
+                    # No file changes AND no SDK activity — start/continue the stall timer
                     if _stall_start is None:
                         _stall_start = _time.time()
                         logger.info(
@@ -1765,6 +2108,14 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=_err)
         return _err
     finally:
+        # Terminate any still-running isolated baseline child (stall/timeout path).
+        _p = _child_holder.get("p")
+        if _p is not None:
+            try:
+                _p.terminate()
+                _p.join(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
         pool.shutdown(wait=False, cancel_futures=True)
 
     # run_with_sdk writes the generated code to runs_root/project_id/code;
@@ -1987,6 +2338,10 @@ def _backend_for_sandbox_mode(
     if mode is SandboxMode.docker:
         return LocalDockerBackend()
 
+    if mode is SandboxMode.local:
+        from backend.services.runtime.local_process import LocalProcessBackend
+        return LocalProcessBackend()
+
     if mode is SandboxMode.runpod:
         import backend.services.runtime as _runtime
         from backend.services.runtime.runpod_backend import RunpodBackend
@@ -1994,12 +2349,19 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
-    # All other modes (local, auto, brev, simulate) are not yet wired
+    if mode is SandboxMode.azure:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.aks_job_backend import AksJobBackend
+
+        _runtime.ensure_azure_available()
+        return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
+    # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker or --sandbox runpod for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -2022,6 +2384,540 @@ def _combine_command_output(results: list) -> str:
     return "\n".join(parts)
 
 
+# Scalar fields that unambiguously mean "completed optimizer steps" (NOT a target
+# and NOT a per-step list — those are handled separately by the curve extractor).
+_STEP_COUNT_KEYS = frozenset({
+    "train_steps", "global_step", "optimizer_steps", "steps_completed", "completed_steps",
+})
+
+
+def _max_train_steps(metrics: dict) -> int | None:
+    """Largest completed-step count recorded anywhere in a metrics tree (or None).
+
+    Keys on any of :data:`_STEP_COUNT_KEYS` (agents name the field freely) so the
+    convergence-floor and degeneracy checks don't silently no-op on a paper that
+    emits ``global_step`` instead of ``train_steps``.
+    """
+    best: int | None = None
+
+    def _walk(obj: object) -> None:
+        nonlocal best
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in _STEP_COUNT_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    best = int(v) if best is None else max(best, int(v))
+                else:
+                    _walk(v)
+        elif isinstance(obj, (list, tuple)):
+            for x in obj:
+                _walk(x)
+
+    _walk(metrics)
+    return best
+
+
+_OOM_LOG_MARKERS = (
+    "cuda out of memory",
+    "torch.cuda.outofmemoryerror",
+    "outofmemoryerror",
+    "backward oom",
+    "loss/backward oom",
+)
+
+# A per-model status the agent uses to claim the model trained successfully.
+_OK_STATUSES = frozenset({"ok", "success", "completed", "complete", "done"})
+
+
+def _reward_curve(mv: dict) -> list[float]:
+    """The reward time-series from a per-model metrics dict (for variance checks)."""
+    tc = mv.get("training_curves") if isinstance(mv, dict) else None
+    raw: object = []
+    if isinstance(tc, dict):
+        raw = tc.get("reward") or tc.get("rewards") or tc.get("mean_reward") or []
+    elif isinstance(tc, list):
+        raw = [d.get("reward") for d in tc if isinstance(d, dict)]
+    if not raw and isinstance(mv, dict) and isinstance(mv.get("reward_history"), list):
+        raw = mv["reward_history"]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [float(x) for x in raw if isinstance(x, (int, float)) and not isinstance(x, bool)]
+
+
+def _scalar_rewards(mv: dict) -> list[float]:
+    """Scalar OUTCOME reward values in a per-model subtree — keys ENDING in 'reward'
+    (searchqa_reward / mean_reward / final_reward …), excluding stat/config fields
+    (reward_std / reward_scale / reward_clip / baseline_reward, which don't end in
+    'reward' or carry a 'baseline' marker) so config constants can't fake a signal."""
+    out: list[float] = []
+
+    def _w(o: object) -> None:
+        if isinstance(o, dict):
+            for k, v in o.items():
+                kl = str(k).lower()
+                if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and kl.endswith("reward") and "baseline" not in kl):
+                    out.append(float(v))
+                else:
+                    _w(v)
+        elif isinstance(o, (list, tuple)):
+            for x in o:
+                _w(x)
+
+    _w(mv)
+    return out
+
+
+def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> tuple[str, str] | None:
+    """Flag a model the agent marked succeeded that shows NO learning signal.
+
+    Conservative (a false-positive wrongly FAILS a healthy run, so only the
+    unambiguous cases fire), per-model so a mixed run names the offender:
+      (1) status=ok but an EXPLICIT 0 optimizer steps — 'completed' without training;
+      (2) status=ok but EVERY recorded reward MAGNITUDE is ~0 (|reward| <= epsilon
+          across the whole curve + scalar reward fields) — broken matching / no signal.
+    Uses ``abs`` so a legitimately NEGATIVE reward (step/length/KL penalties are
+    normal in RL) is NOT mistaken for "no reward"; and does NOT flag a constant but
+    non-zero curve (that can be a converged plateau, not degeneracy). Only judges
+    models whose status is in :data:`_OK_STATUSES`.
+    """
+    per_model = metrics.get("per_model")
+    if not isinstance(per_model, dict):
+        return None
+    for m, mv in per_model.items():
+        if not isinstance(mv, dict) or str(mv.get("status", "")).lower() not in _OK_STATUSES:
+            continue
+        # (1) claimed success but explicitly zero optimizer steps.
+        if _max_train_steps(mv) == 0:
+            return ("degenerate_training",
+                    f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
+                    "— it 'completed' without training. Ensure the loop runs optimizer.step() "
+                    "and records steps/reward.")
+        # (2) every recorded reward magnitude ~0 — no signal at all.
+        rewards = _reward_curve(mv) + _scalar_rewards(mv)
+        if rewards and max(abs(x) for x in rewards) <= epsilon:
+            return ("degenerate_training",
+                    f"degenerate_training: model {m!r} status=ok but EVERY recorded reward "
+                    f"is ~0 ({len(rewards)} value(s)) — training produced no signal. Fix the "
+                    "reward/answer-matching so it is non-zero BEFORE the RL loop (extract the "
+                    "answer span; token-F1 over the full gold-alias list; print zero-shot "
+                    "accuracy first), and confirm optimizer.step() actually runs.")
+    return None
+
+
+_NON_TERMINAL_STATUSES = frozenset(
+    {"running", "in_progress", "in-progress", "pending", "started", "queued", "init", "initializing"}
+)
+
+
+def _per_model_has_measured_value(mv: dict) -> bool:
+    """True iff a per-model metrics entry carries ANY measured numeric value.
+
+    Reuses the reward value-walkers; also accepts any finite numeric leaf
+    (accuracy, loss, steps, return, …) nested anywhere in the entry. An empty
+    ``{}`` placeholder → False.
+    """
+    if not isinstance(mv, dict) or not mv:
+        return False
+    if _reward_curve(mv) or _scalar_rewards(mv):
+        return True
+
+    def _any_number(o) -> bool:
+        if isinstance(o, bool):
+            return False
+        if isinstance(o, (int, float)):
+            return True
+        if isinstance(o, dict):
+            return any(_any_number(v) for v in o.values())
+        if isinstance(o, (list, tuple)):
+            return any(_any_number(v) for v in o)
+        return False
+
+    return _any_number(mv)
+
+
+def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
+    """Detect a ``success=True`` run whose metrics are a placeholder / unpopulated.
+
+    Every other postflight guard keys on presence/shape/exit-code; this one keys
+    on whether measured VALUES exist. A ``train.py`` that writes
+    ``{status:"running", per_model:{m:{}}}`` and exits 0 otherwise sails through
+    (``success`` is exit-code-only; the placeholder is non-empty so ``degraded``
+    stays False) and the rubric grades a half-finished experiment ~0 on
+    eval/result/execution. Catching it here flips it to a repairable failure so
+    the loop must re-run to REAL measured numbers before it can score or finalize.
+    Opt out with ``REPROLAB_METRICS_COMPLETENESS_CHECK=0``. Returns
+    ``(failure_class, message)`` or ``None``. See
+    docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
+    """
+    import os as _os
+
+    if _os.environ.get("REPROLAB_METRICS_COMPLETENESS_CHECK", "1").strip().lower() in ("0", "false", "no"):
+        return None
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        return None  # genuinely-empty metrics → handled by the degraded/empty path
+
+    # (1) Non-terminal top-level status → a placeholder written before results landed.
+    status = str(metrics.get("status") or "").strip().lower()
+    if status in _NON_TERMINAL_STATUSES:
+        return (
+            "incomplete_metrics",
+            f"incomplete_metrics: metrics.json status={status!r} is non-terminal — the "
+            "training script wrote a placeholder and exited before measuring results, so "
+            "the rubric scores eval/result/execution ~0. Run training to completion and at "
+            "the END set a terminal status and populate per_model[<model>] with the "
+            "measured eval metric(s) for every model you ran.",
+        )
+
+    # (2) per_model present but EVERY entry is an empty placeholder (no measured value).
+    per_model = metrics.get("per_model")
+    if isinstance(per_model, dict) and per_model:
+        measured = [
+            m for m, mv in per_model.items()
+            if _per_model_has_measured_value(mv if isinstance(mv, dict) else {})
+        ]
+        if not measured:
+            keys = ", ".join(map(str, list(per_model.keys())[:4]))
+            return (
+                "incomplete_metrics",
+                f"incomplete_metrics: per_model has {len(per_model)} model key(s) ({keys}) "
+                "but NONE carry a measured value — the entries are empty placeholders. "
+                "Populate per_model[<model>] with the measured eval metric (e.g. accuracy) "
+                "and reward/loss for every model that actually ran; an empty {} entry is "
+                "treated as 'not measured'.",
+            )
+    return None
+
+
+def _training_health_violation(result: dict) -> tuple[str, str] | None:
+    """Detect an experiment that exited 0 but did not really train.
+
+    (1) ``silent_oom`` — the script logged a CUDA OOM yet exited 0: it caught the
+        backward OOM and skipped the step, so no gradients were applied and the
+        metrics are meaningless (the 2026-05-29 SDAR hours-of-grinding failure).
+    (2) ``insufficient_train_steps`` — fewer optimizer steps than
+        ``REPROLAB_MIN_TRAIN_STEPS`` (opt-in; default 0 = disabled).
+
+    Returns ``(failure_class, message)`` or None. The message becomes repair_context
+    so the next implement_baseline reduces memory / trains longer.
+    """
+    import os as _os
+
+    low = (result.get("logs") or "").lower()
+    if any(m in low for m in _OOM_LOG_MARKERS):
+        return (
+            "silent_oom",
+            "silent_oom: the training script logged a CUDA out-of-memory but exited 0 "
+            "(it caught the backward OOM and skipped the step), so NO gradient updates "
+            "happened and the metrics are meaningless. If multiple GPUs are leased this "
+            "means your training did NOT shard — wrap the model with HuggingFace "
+            "Accelerate (`accelerator.prepare(model, optimizer)`); the harness launches "
+            "you under `accelerate launch` with an FSDP2 config when >1 GPU is leased, so "
+            "params/grads/optimizer shard across the cards. Otherwise reduce per-step "
+            "memory (smaller batch, fewer rollouts, gradient_checkpointing). Do NOT "
+            "catch+skip a backward OOM — let it fail loudly so it can be repaired.",
+        )
+
+    try:
+        min_steps = int(_os.environ.get("REPROLAB_MIN_TRAIN_STEPS", "0") or "0")
+    except ValueError:
+        min_steps = 0
+    if min_steps > 0:
+        steps = _max_train_steps(result.get("metrics") or {})
+        if steps is not None and steps < min_steps:
+            return (
+                "insufficient_train_steps",
+                f"insufficient_train_steps: training ran only {steps} optimizer step(s) "
+                f"(< REPROLAB_MIN_TRAIN_STEPS={min_steps}). Sparse-reward tasks cannot "
+                f"learn in so few steps — increase epochs/steps so total updates "
+                f">= {min_steps}.",
+            )
+
+    # (2b) insufficient_training (NO-SMOKES) — exited 0 with metrics but ran far too
+    # briefly to be REAL training. A seconds-long smoke (CPU stub / surrogate / no real
+    # weights) must never be the scored reproduction; loading the paper's real models and
+    # running the RL loop takes minutes, not seconds. Opt-in like the step floor above:
+    # REPROLAB_MIN_TRAIN_WALL_S (seconds; default 0 = disabled) is the minimum plausible
+    # wall-clock for a real training of THIS paper — a wall-time floor is inherently
+    # paper-specific (an inference-only paper legitimately finishes in seconds), so it is
+    # opt-in per run, never a global default. A run shorter than the floor BUT showing
+    # substantial optimizer progress (>= REPROLAB_MIN_REAL_TRAIN_STEPS, default 5) is
+    # exempted, so a genuinely fast-but-real run can never be false-flagged. Motivated by
+    # the 2026-05-29 SDAR failure that scored a 2 s smoke after real FSDP training crashed.
+    try:
+        wall_floor = float(_os.environ.get("REPROLAB_MIN_TRAIN_WALL_S", "0") or "0")
+    except ValueError:
+        wall_floor = 0.0
+    wall = result.get("wall_time_s")
+    health_metrics = result.get("metrics")
+    if (
+        wall_floor > 0
+        and isinstance(wall, (int, float))
+        and not isinstance(wall, bool)
+        and wall < wall_floor
+        and isinstance(health_metrics, dict)
+        and health_metrics
+    ):
+        try:
+            step_exempt = int(_os.environ.get("REPROLAB_MIN_REAL_TRAIN_STEPS", "5") or "5")
+        except ValueError:
+            step_exempt = 5
+        wall_steps = _max_train_steps(health_metrics)
+        if not (wall_steps is not None and wall_steps >= step_exempt):
+            _steps_phrase = (
+                f"{wall_steps} optimizer step(s)"
+                if wall_steps is not None
+                else "no recorded optimizer steps"
+            )
+            return (
+                "insufficient_training",
+                f"insufficient_training: the experiment exited 0 with metrics but ran only "
+                f"{wall:.1f}s wall-clock ({_steps_phrase}) — below the "
+                f"REPROLAB_MIN_TRAIN_WALL_S={wall_floor:.0f}s floor for a REAL training of this "
+                f"paper's models. That is a SMOKE / trivial run, not a faithful reproduction, and "
+                f"MUST NOT be scored. Run the FULL training — real pretrained weights, real "
+                f"episodes, optimizer.step() each iteration — to completion and record the measured "
+                f"eval metric for every model before finalizing. (A run with >= {step_exempt} "
+                f"optimizer steps is exempt from this floor.)",
+            )
+
+    # (3) degenerate_training — exited 0, status=ok, but no learning signal (constant
+    # / all-zero reward or 0 steps). Opt-in (default on); disable with =0.
+    if _os.environ.get("REPROLAB_DEGENERATE_TRAINING_CHECK", "1").strip().lower() not in ("0", "false", "no"):
+        try:
+            _deg_eps = float(_os.environ.get("REPROLAB_DEGENERATE_REWARD_EPSILON", "1e-6") or "1e-6")
+        except ValueError:
+            _deg_eps = 1e-6
+        _deg = _degenerate_training_violation(result.get("metrics") or {}, epsilon=_deg_eps)
+        if _deg is not None:
+            return _deg
+    return None
+
+
+_DISTRIBUTED_MARKERS = (
+    "FullyShardedDataParallel",
+    "DistributedDataParallel",
+    "init_process_group",
+    "torch.distributed",
+    "fully_shard",       # FSDP2 (torch.distributed.fsdp.fully_shard)
+    "from accelerate",   # HuggingFace Accelerate API
+    "import accelerate",
+    "Accelerator(",
+)
+
+
+def _free_tcp_port() -> int:
+    """Return an OS-assigned free TCP port for the accelerate rendezvous.
+
+    Concurrent reproductions on the same host (``batch_reproduce`` over several
+    papers) each launch their own ``accelerate launch``; without a distinct
+    ``--main_process_port`` they collide on the default 29500 and the second run
+    hangs the rendezvous. Binding to port 0 and reading the assigned port back
+    guarantees disjoint endpoints.
+    """
+    import socket as _socket
+
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        s.bind(("", 0))
+        return int(s.getsockname()[1])
+    finally:
+        s.close()
+
+
+def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
+    """Write a harness-owned FSDP ``accelerate`` config into the run's code dir.
+
+    Defaults to **FSDP1** (FULL_SHARD): it shards params/grads/optimizer
+    identically to FSDP2 for our purpose and runs on torch >= 1.12, whereas
+    FSDP2 (``fsdp_version: 2``) requires **torch >= 2.6** — this host is pinned to
+    torch 2.5.1 by the cu121 wheel index (CUDA-12.2 driver), so FSDP2 errors at
+    launch (validated 2026-05-30). Set ``REPROLAB_FSDP_VERSION=2`` on a
+    torch>=2.6 environment (e.g. a newer RunPod image) to use the per-parameter
+    FSDP2 API. Either way the harness owns the sharding policy (full shard, bf16,
+    transformer auto-wrap — Qwen exposes ``_no_split_modules`` so the layer class
+    is auto-detected, no CPU offload) so a *correct* shard engages regardless of
+    how the agent wired its loop; the agent only calls
+    ``accelerator.prepare(model, optimizer)``. Consumed relative to ``code_dir``
+    (the execution cwd).
+    """
+    import os as _os
+
+    version = (_os.environ.get("REPROLAB_FSDP_VERSION", "1") or "1").strip()
+    if version not in ("1", "2"):
+        version = "1"
+    cfg = (
+        "compute_environment: LOCAL_MACHINE\n"
+        "distributed_type: FSDP\n"
+        "mixed_precision: bf16\n"
+        "use_cpu: false\n"
+        "machine_rank: 0\n"
+        "num_machines: 1\n"
+        f"num_processes: {nproc}\n"
+        "fsdp_config:\n"
+        f"  fsdp_version: {version}\n"
+        "  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP\n"
+        "  fsdp_offload_params: false\n"
+        "  fsdp_state_dict_type: SHARDED_STATE_DICT\n"
+        "  fsdp_cpu_ram_efficient_loading: true\n"
+    )
+    if version == "2":
+        cfg += "  fsdp_reshard_after_forward: true\n"
+    else:
+        cfg += (
+            "  fsdp_sharding_strategy: FULL_SHARD\n"
+            "  fsdp_use_orig_params: true\n"
+        )
+    path = code_dir / "_reprolab_fsdp.yaml"
+    try:
+        path.write_text(cfg, encoding="utf-8")
+    except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
+        logger.exception("_write_fsdp_accelerate_config: write failed")
+    return path
+
+
+def _nccl_env_prefix() -> str:
+    """Inline NCCL env that prevents the first-collective BROADCAST hang on
+    older-kernel multi-GPU hosts.
+
+    On this 8xA5000 box (kernel 5.4.0, below torch's recommended 5.5.0) the first
+    NCCL collective during FSDP setup hangs for the full 600s timeout at >2 GPUs
+    unless P2P is disabled (validated 2026-05-30 — likely the real cause of the
+    earlier "multi-GPU runs stall"). Defaults on; override per-var with
+    ``REPROLAB_NCCL_P2P_DISABLE=0`` / ``REPROLAB_NCCL_IB_DISABLE=0`` on a
+    well-connected box (e.g. NVLink RunPod) where P2P is fast and reliable.
+    """
+    import os as _os
+
+    def _on(name: str) -> bool:
+        return (_os.environ.get(name, "1") or "1").strip().lower() not in ("0", "false", "no")
+
+    parts: list[str] = []
+    if _on("REPROLAB_NCCL_P2P_DISABLE"):
+        parts.append("NCCL_P2P_DISABLE=1")
+    if _on("REPROLAB_NCCL_IB_DISABLE"):
+        parts.append("NCCL_IB_DISABLE=1")
+    return (" ".join(parts) + " ") if parts else ""
+
+
+def _resolve_distributed_launch(
+    commands: list[str], code_dir: "Path", ngpu: int, run_id: str = ""
+) -> list[str]:
+    """Dynamically re-launch a plain ``python <script>.py`` under
+    ``accelerate launch`` + a harness FSDP2 config when >1 GPU is allocated and
+    the script carries distributed/accelerate markers.
+
+    Dynamic by design — the launch strategy is resolved at runtime from the
+    *actually-leased* GPU count, never hardcoded:
+
+    * ``ngpu <= 1`` → run verbatim (plain ``python`` / CPU). FSDP on a single
+      card is pure all-gather overhead with zero memory benefit, so we never pay
+      it; this is also the graceful fallback on a 1-GPU / no-GPU host.
+    * ``ngpu >= 2`` + the script uses FSDP/accelerate → rewrite to
+      ``accelerate launch --config_file <fsdp2.yaml> --num_processes <ngpu>`` so
+      params/grads/optimizer shard across the leased cards (the 3B/7B that OOM a
+      single 24 GB card fit comfortably sharded). ``accelerate launch`` is a
+      strict superset of ``torchrun`` for launching: a raw ``torch.distributed``
+      script still gets a correct process group; an accelerate-API script also
+      gets the harness FSDP2 policy.
+
+    No-op when the command is already a distributed launcher, when the script has
+    no distributed markers, or when disabled via the escape-hatch toggle. The
+    per-model fit choice (run the small model on one card, shard the big ones) is
+    expressed in the agent's training code + run guidance; this seam only
+    guarantees the *launch* is correct whenever the agent wrote shardable code.
+    """
+    import os as _os
+    import re as _re
+
+    if ngpu <= 1:
+        return commands
+    # Escape hatch — keep the agent's launch verbatim (operator override).
+    if _os.environ.get("REPROLAB_DISABLE_TORCHRUN_WRAP", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("_resolve_distributed_launch[%s]: disabled via REPROLAB_DISABLE_TORCHRUN_WRAP", run_id)
+        return commands
+    # RL-scaffold sentinel — the scaffold owns its own launch orchestration
+    # (vLLM server + accelerate trainer partition), so the harness rewriter
+    # must NOT wrap the launch command again.  Three detection surfaces:
+    #   1. Command-line marker: a command containing '# reprolab:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.reprolab_rl_scaffold exists
+    #   3. Environment var:     REPROLAB_RL_SCAFFOLD=1
+    if _os.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — REPROLAB_RL_SCAFFOLD=1 "
+            "(scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if (code_dir / ".reprolab_rl_scaffold").exists():
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — .reprolab_rl_scaffold "
+            "sentinel file present (scaffold owns launch)",
+            run_id,
+        )
+        return commands
+    if any("# reprolab:rl-scaffold-owns-launch" in cmd for cmd in commands):
+        logger.info(
+            "_resolve_distributed_launch[%s]: skipping rewrite — "
+            "'# reprolab:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            run_id,
+        )
+        return commands
+
+    out: list[str] = []
+    changed = False
+    cfg_rel: str | None = None
+    for cmd in commands:
+        # Already a distributed launcher → leave alone.
+        if _re.match(r"^\s*(accelerate\s+launch|torchrun|deepspeed)\b", cmd):
+            out.append(cmd)
+            continue
+        m = _re.match(r"^\s*python3?\s+(\S+\.py)(\s.*)?$", cmd)
+        if not m:
+            out.append(cmd)
+            continue
+        script, rest = m.group(1), (m.group(2) or "")
+        script_path = code_dir / script
+        try:
+            text = (
+                script_path.read_text(encoding="utf-8", errors="replace")
+                if script_path.exists()
+                else ""
+            )
+        except Exception:  # noqa: BLE001
+            text = ""
+        if any(marker in text for marker in _DISTRIBUTED_MARKERS):
+            if cfg_rel is None:
+                cfg_rel = _write_fsdp_accelerate_config(code_dir, ngpu).name
+            port = _free_tcp_port()
+            out.append(
+                f"{_nccl_env_prefix()}accelerate launch --config_file {cfg_rel} "
+                f"--num_processes {ngpu} --num_machines 1 "
+                f"--main_process_port {port} {script}{rest}"
+            )
+            changed = True
+            logger.warning(
+                "_resolve_distributed_launch[%s]: %s carries distributed/accelerate "
+                "markers but was launched single-process (`%s`); re-launching via "
+                "`accelerate launch --num_processes %d` (FSDP2) so params/grads/"
+                "optimizer shard across the %d leased GPUs.",
+                run_id, script, cmd.strip(), ngpu, ngpu,
+            )
+        else:
+            out.append(cmd)
+            # Proactive guard: multi-GPU leased but the script has no FSDP/accelerate
+            # markers → it will run on one card and likely OOM a large model. The
+            # OOM postflight additionally steers the repair toward accelerate+FSDP.
+            logger.warning(
+                "_resolve_distributed_launch[%s]: %d GPUs leased but `%s` has no "
+                "FSDP/accelerate markers — it will use a single card and may OOM a "
+                "large model. The training script should call "
+                "`accelerator.prepare(model, optimizer)`.",
+                run_id, ngpu, script,
+            )
+    return out if changed else commands
+
+
 async def _execute_in_sandbox(
     code_path: str,
     env_id: str,
@@ -2033,6 +2929,7 @@ async def _execute_in_sandbox(
     run_budget: object = None,
     gpu_plan: object = None,
     gpu_mode: object = None,
+    gpu_device_ids: tuple[str, ...] = (),
 ) -> dict:
     """Run `commands` in a container started from the prebuilt image `env_id`.
 
@@ -2093,6 +2990,17 @@ async def _execute_in_sandbox(
         if gpu_mode is not None
         else "auto"
     )
+    # A4(a): When running local with a per-run venv, inject the venv's bin
+    # directory at the front of PATH so the experiment subprocess uses that
+    # interpreter and its installed packages rather than the system Python.
+    import os as _os
+    _exp_env_extra: dict[str, str] = {}
+    _mode_str_local = str(getattr(sandbox_mode, "value", sandbox_mode) or "").lower()
+    _venv = (_os.environ.get("REPROLAB_EXPERIMENT_VENV") or "").strip()
+    if _mode_str_local == "local" and _venv:
+        _exp_env_extra["VIRTUAL_ENV"] = _venv
+        _exp_env_extra["PATH"] = f"{_venv}/bin:" + _os.environ.get("PATH", "")
+
     config = SandboxConfig(
         project_id=project_id,
         run_id=run_id,
@@ -2100,6 +3008,7 @@ async def _execute_in_sandbox(
         project_root=code_dir,
         artifact_root=artifact_root,
         gpu_mode=_gpu_mode_str,
+        gpu_device_ids=tuple(gpu_device_ids or ()),
         dockerfile_path=None,   # prebuilt image — no rebuild (design decision D1)
         build_context=None,
         # Bug C: paper reproduction must fetch pretrained weights and datasets
@@ -2109,10 +3018,15 @@ async def _execute_in_sandbox(
         # corpus-leak vector. Scoped here; the global default stays disabled.
         network_disabled=False,
         environment={
-            "OUTPUT_DIR": "/artifacts",
-            "REPROLAB_ARTIFACT_DIR": "/artifacts",
-            "MPLCONFIGDIR": "/artifacts/.matplotlib",
+            # Local sandbox: /artifacts doesn't exist on most hosts and can't be
+            # created without root.  Point OUTPUT_DIR straight at artifact_root
+            # so train.py doesn't need to fall back via directory introspection.
+            # Docker/RunPod: /artifacts is the container-mounted volume — keep it.
+            "OUTPUT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "REPROLAB_ARTIFACT_DIR": str(artifact_root) if _mode_str_local == "local" else "/artifacts",
+            "MPLCONFIGDIR": str(artifact_root / ".matplotlib") if _mode_str_local == "local" else "/artifacts/.matplotlib",
             "PYTHONUNBUFFERED": "1",
+            **_exp_env_extra,
         },
     )
     resource_limits = {
@@ -2151,7 +3065,10 @@ async def _execute_in_sandbox(
     try:
         from backend.agents.rlm.run_watchdog import heartbeat_daemon_command, is_enabled as _watchdog_enabled
         if _watchdog_enabled():
-            bootstrap_commands.append(heartbeat_daemon_command("/artifacts"))
+            # Local sandbox: /artifacts is not the real artifact dir — use the
+            # per-run artifact_root so the heartbeat file is actually writable.
+            _hb_dir = str(artifact_root) if _mode_str_local == "local" else "/artifacts"
+            bootstrap_commands.append(heartbeat_daemon_command(_hb_dir))
     except Exception:  # noqa: BLE001 — instrumentation MUST NOT block the run
         logger.exception("_execute_in_sandbox: heartbeat-daemon injection failed")
 
@@ -2204,6 +3121,117 @@ async def _execute_in_sandbox(
             bootstrap_commands.append(
                 "python -m pip install -r requirements.txt"
             )
+            # The harness launches multi-GPU training via `accelerate launch`
+            # (FSDP2); ensure a modern Accelerate is present regardless of the
+            # agent's requirements.txt.
+            bootstrap_commands.append(
+                "python -m pip install -U accelerate"
+            )
+
+    # A4(b): Local sandbox — auto-install requirements.txt into the per-run
+    # venv (PATH already points there via _exp_env_extra). Mirrors the runpod
+    # block above: same command string, same position (prepended before the
+    # agent's commands via the (*bootstrap_commands, *commands) loop at line
+    # ~2183). Safe to run even if the venv is absent — pip will use the
+    # active Python. bootstrap_commands feeds into service.execute() for ALL
+    # backends through the unified loop, so this path is genuine for local.
+    #
+    # NOTE: On this host `python` is not in PATH (only `python3`), so we use
+    # `|| true` to prevent non-zero exit codes from causing `success=False`
+    # in the all(r.succeeded) check. The commands.json entry handles the
+    # actual package install via an explicit PATH-export bash -c command.
+    # Phase 2A (2026-06-07): synthesize requirements.txt on the LOCAL sandbox too.
+    # Previously ONLY the runpod block above called ensure_requirements_txt, while the
+    # local path gated on the file already existing — so a local run whose agent forgot
+    # requirements.txt installed nothing and died at the first third-party import (the
+    # matplotlib ModuleNotFoundError class). Mirror the runpod synthesis so the local
+    # install block + the commands.json install have a file to install.
+    if "local" in _mode_str and not requirements_path.exists():
+        try:
+            from backend.agents.rlm.requirements_derive import ensure_requirements_txt
+            _project_dir_local = code_dir.parent if code_dir.name == "code" else code_dir
+            ensure_requirements_txt(
+                code_dir,
+                dockerfile_path=_project_dir_local / "Dockerfile",
+                base_image=env_id,
+            )
+            if requirements_path.exists():
+                logger.info(
+                    "_execute_in_sandbox: synthesized requirements.txt for local sandbox "
+                    "(%d bytes)", requirements_path.stat().st_size,
+                )
+        except Exception:  # noqa: BLE001 — synthesis must never block the run
+            logger.exception("_execute_in_sandbox: local requirements.txt auto-derive failed")
+
+    if "local" in _mode_str and requirements_path.exists():
+        bootstrap_commands.append(
+            "python -m pip install --upgrade pip wheel setuptools || true"
+        )
+        # CUDA-build pin (local sandbox): the host driver caps the usable CUDA toolkit.
+        # e.g. driver 535 / CUDA 12.2 CANNOT run torch's DEFAULT cu130 wheels — torch
+        # imports but torch.cuda.is_available() is False ("driver too old"), so real
+        # training silently falls back to CPU (useless for Qwen). Install a
+        # driver-compatible torch FIRST from the matching PyTorch wheel index; the
+        # agent's requirements.txt (torch>=…) is then satisfied by it and won't pull an
+        # incompatible build. cu121 matches this 8×A5000 host (driver 12.2) and the vLLM
+        # stack. Override via REPROLAB_LOCAL_TORCH_INDEX_URL; set it empty to disable.
+        _torch_index = _os.environ.get(
+            "REPROLAB_LOCAL_TORCH_INDEX_URL",
+            "https://download.pytorch.org/whl/cu121",
+        ).strip()
+        # env_pin (D6a) — the harness OWNS the cu121 core (torch/vision/audio); the
+        # agent's conflicting re-pin is stripped before install. This is the fix for the
+        # 2026-06-07 All-Conv-Net collapse, where `torch==2.2.0` DOWNGRADED the cu121
+        # build and left an incoherent CUDA stack (libcupti.so.12 failed to dlopen →
+        # every experiment died at import). See _local_core_bootstrap_commands. Fail-soft;
+        # opt out with REPROLAB_DISABLE_ENV_PIN=1 (or REPROLAB_LOCAL_TORCH_INDEX_URL="").
+        bootstrap_commands.extend(
+            _local_core_bootstrap_commands(requirements_path, _torch_index)
+        )
+        # Harness owns the multi-GPU launcher (`accelerate launch` + FSDP2) —
+        # ensure Accelerate is in the per-run venv regardless of requirements.txt.
+        bootstrap_commands.append(
+            "python -m pip install -U accelerate || true"
+        )
+
+    # Phase 2B — preflight IMPORT smoke (the executing half of preflight "TDD").
+    # When REPROLAB_PREFLIGHT_SMOKE is on, emit a stdlib-only probe into code/ and run
+    # it as the LAST bootstrap step (after deps install, before the training commands).
+    # It imports every third-party dependency on CPU (GPU hidden) — NOT the agent's own
+    # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
+    # seconds; the command loop then short-circuits the GPU training and the import
+    # error becomes the next iteration's repair_context.
+    try:
+        from backend.agents.rlm import preflight_smoke as _preflight_smoke
+        if _preflight_smoke.is_enabled():
+            _preflight_smoke.emit(code_dir)
+            bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+    except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
+
+    # Layer 1 execution smoke: when REPROLAB_EXECUTION_SMOKE is on, run the agent's
+    # entry script for 1 step per experiment on tiny data (REPROLAB_SMOKE_STEPS=1) with
+    # CUDA_LAUNCH_BLOCKING=1 — AFTER the import smoke, BEFORE the full training. A runtime
+    # crash (e.g. a VAE device-side assert from a data/shape bug) surfaces at the real
+    # line in seconds, short-circuits the GPU training, and becomes repair_context — the
+    # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
+    # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
+    try:
+        from backend.agents.rlm import execution_smoke as _execution_smoke
+        if _execution_smoke.is_enabled():
+            _entry = next(
+                (e for e in ("train.py", "train_cell.py", "main.py", "run.py")
+                 if (code_dir / e).exists()),
+                None,
+            )
+            if _entry is not None:
+                bootstrap_commands.append(
+                    _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                )
+            else:
+                logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
+    except Exception:  # noqa: BLE001 — execution smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: execution smoke wiring failed")
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -2380,10 +3408,47 @@ async def _execute_in_sandbox(
                     on_kill=_emit_kill_real,
                 ))
 
+            # Distributed-launch safety net: if >1 GPU is allocated and the train
+            # script uses FSDP/accelerate but is launched as plain `python`,
+            # re-launch it via `accelerate launch` + a harness FSDP2 config so
+            # params/grads/optimizer actually shard across the leased cards (else
+            # only one card is used → large models OOM). Dynamic + no-op otherwise.
+            if len(gpu_device_ids) > 1:
+                commands = _resolve_distributed_launch(
+                    list(commands), code_dir, len(gpu_device_ids), run_id
+                )
+
+            from backend.agents.rlm.preflight_smoke import MARKER as _SMOKE_MARKER
+            from backend.agents.rlm import execution_smoke as _exec_smoke
             for command in (*bootstrap_commands, *commands):
-                results.append(await service.execute(
+                _cmd_res = await service.execute(
                     ExecuteCommand(sandbox=sandbox, command=command,
-                                   timeout=_EXEC_TIMEOUT_SECONDS)))
+                                   timeout=_EXEC_TIMEOUT_SECONDS))
+                results.append(_cmd_res)
+                # Phase 2B: a failed preflight IMPORT smoke means the training command
+                # would crash on the same missing dep — skip it (and the rest) so the bug
+                # surfaces in CPU-seconds, not after the GPU spins up. Only the marked
+                # smoke command triggers this; every other command runs exactly as before.
+                if _SMOKE_MARKER in command and not _cmd_res.succeeded:
+                    logger.warning(
+                        "_execute_in_sandbox: preflight import smoke FAILED — skipping "
+                        "remaining commands (no GPU training); see preflight_smoke_result.json")
+                    break
+                # Layer 1: the EXECUTION smoke (1-step dry-run) blocks ONLY on a REAL
+                # crash, NOT on a timeout-kill (exit 124 = the script ignored the step
+                # cap → not necessarily broken → soft pass). Use the exit code to make
+                # that distinction; if it's unavailable, fail-soft (do NOT block — a
+                # false block costs more than a missed catch).
+                if _exec_smoke.MARKER in command:
+                    _code = getattr(_cmd_res, "exit_code", None)
+                    if _code is not None:
+                        _status, _blocking = _exec_smoke.interpret_exit(int(_code))
+                        if _blocking:
+                            logger.warning(
+                                "_execute_in_sandbox: execution smoke CRASH (%s) — skipping "
+                                "remaining commands (no GPU training). The real traceback is "
+                                "in the smoke output (CUDA_LAUNCH_BLOCKING=1).", _status)
+                            break
         except _WatchdogKilled as exc:
             # Surface as a fail-soft error dict so the caller's outer escalation
             # loop treats it like an OOM (advance ladder / repair_context).
@@ -2514,7 +3579,60 @@ async def _execute_in_sandbox(
         "exit_code": failed_exit_code if failed_exit_code is not None else last_exit_code,
         "cause_kind": cause_kind,
         "resource_limits": resource_limits,
+        # Total wall-clock across every command in this experiment (weight download
+        # + training + eval). Consumed by the no-smokes postflight guard
+        # (_training_health_violation) so a seconds-long smoke cannot be the scored
+        # artifact, and surfaced in experiment_runs.jsonl as a diagnostic.
+        "wall_time_s": round(
+            sum(float(getattr(r, "duration_seconds", 0.0) or 0.0) for r in results), 3
+        ),
     }
+
+
+def _manifest_enrichment(result: dict) -> None:
+    """P2 provenance manifest: enrich a run_experiment result IN PLACE with the
+    fields that bind a final metric to the artifact that produced it (invariant 2:
+    every final metric traces to a persisted artifact via a manifest).
+
+    Best-effort + fail-soft — observability must never break a run, so every
+    lookup degrades silently:
+      - ``sandbox_backend``: promoted from ``resource_limits`` so the manifest
+        names the backend without callers digging into nested limits.
+      - ``metrics_sha256``: sha256 of the canonical ``metrics.json`` artifact, so
+        a final-report metric can be tied to the exact bytes that produced it
+        (the trace that closes invariant 2 for the RLM path).
+    """
+    try:
+        _rl = result.get("resource_limits") or {}
+        _backend = _rl.get("sandbox_mode") or _rl.get("sandbox_backend")
+        if _backend:
+            result.setdefault("sandbox_backend", str(_backend))
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+    try:
+        _artifact_dir = result.get("artifact_dir")
+        if _artifact_dir and not result.get("metrics_sha256"):
+            import hashlib
+            from pathlib import Path as _Path
+
+            _mjson = _Path(str(_artifact_dir)) / "metrics.json"
+            if _mjson.exists():
+                result["metrics_sha256"] = hashlib.sha256(_mjson.read_bytes()).hexdigest()
+    except Exception:  # noqa: BLE001 — manifest enrichment never blocks a run
+        pass
+
+
+def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: list) -> None:
+    """P2 manifest: record the identifiers that bind a run_experiment result to
+    its run — ``experiment_run_id`` (the ``run_id`` used for this attempt's
+    artifacts, previously minted in the escalation loop and discarded),
+    ``env_id``, and the structured ``commands`` list. ``setdefault`` so a value an
+    earlier path already set is never clobbered; a non-dict result is a no-op."""
+    if not isinstance(result, dict):
+        return
+    result.setdefault("experiment_run_id", run_id)
+    result.setdefault("env_id", env_id)
+    result.setdefault("commands", list(commands) if commands else [])
 
 
 def _persist_experiment_result(
@@ -2549,6 +3667,9 @@ def _persist_experiment_result(
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
     _with_outcome(result, _classify_run_experiment_outcome(result))
+
+    # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
+    _manifest_enrichment(result)
 
     if not result.get("success"):
         logger.warning(
@@ -2620,6 +3741,249 @@ def _persist_experiment_result(
     return result
 
 
+def _scope_violation_key(hint: str) -> str:
+    """Stable signature of a scope-shape violation — the missing element(s).
+
+    The hint names ONE model + the missing datasets, e.g. "per_dataset_incomplete:
+    model 'qwen3_1_7b' missing datasets ['WebShop'] …". The model named varies across
+    experiments, but the missing piece (the last bracketed list) is the stable
+    "what is unobtainable" signature we count toward a tolerated scope reduction.
+    """
+    import re
+
+    brackets = re.findall(r"\[([^\]]*)\]", hint or "")
+    if brackets:
+        return brackets[-1].strip().lower()
+    return (hint or "").strip().lower()[:120]
+
+
+# A named Python exception in a recorded error string means the agent CAUGHT a code
+# bug and masked it as a data failure. DatasetNotFoundError is deliberately excluded
+# (ambiguous: a typo'd id vs a genuinely-removed dataset → default to data-unavailable).
+# Only UNAMBIGUOUS exception names — ones that essentially never appear in a genuine
+# data-unavailability message. ValueError/RuntimeError/KeyError/IndexError are
+# DELIBERATELY excluded (HF datasets raises ValueError/RuntimeError for real
+# unavailability — "Unknown split", config-not-found, connection); those are caught
+# instead via the specific phrases below so a 404/config error isn't mis-flagged.
+_CODE_BUG_RE = re.compile(
+    r"\b(TypeError|AttributeError|ImportError|ModuleNotFoundError|NameError|"
+    r"UnboundLocalError|AssertionError|FileNotFoundError|HfUriError|HFValidationError)\b"
+)
+# Phrases that are code/config bugs even without an unambiguous exception class name.
+_CODE_BUG_PHRASES = (
+    "cannot re-initialize cuda",
+    "broken pipe",
+    "is not a valid model identifier",
+    "invalid hf uri",
+    "returned 0 rows",
+    "must be a string or a real number",   # float(tuple) family
+    "repository id must be",
+)
+
+# F-03: a bare OSError-style "no such file" / "errno 2" is a code bug only when a
+# config/source co-signal co-occurs (a missing base_config.yaml / *.py). Without
+# one, a missing DATA path is a provably-unobtainable dataset, not a code bug.
+# ("has no attribute" was dropped from _CODE_BUG_PHRASES — AttributeError /
+# FileNotFoundError are already caught by class name in _CODE_BUG_RE.)
+_CONFIG_CODE_COSIGNALS = (".yaml", ".yml", ".cfg", ".toml", ".ini", ".py", "config")
+
+
+def _disk_floor_violation(paths: list[str]) -> tuple[str, str] | None:
+    """Return a repairable ``disk_exhausted`` violation if free disk on ANY of
+    ``paths`` is below ``REPROLAB_DISK_FLOOR_GB`` (default 15; 0 disables). Never
+    raises. Used as a pre-check (don't start a doomed run) and a post-check (the
+    experiment ate the shared disk → tell the next iteration to stream/slice).
+    """
+    import shutil
+
+    try:
+        floor_gb = float(os.environ.get("REPROLAB_DISK_FLOOR_GB", "15") or "15")
+    except ValueError:
+        floor_gb = 15.0
+    if floor_gb <= 0:
+        return None
+    seen: set[str] = set()
+    for p in paths:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        try:
+            free_gb = shutil.disk_usage(p).free / 1e9
+        except Exception:  # noqa: BLE001 — a bad path must not break the run
+            continue
+        if free_gb < floor_gb:
+            return (
+                "disk_exhausted",
+                f"disk_exhausted: only {free_gb:.1f} GB free on {p} (< floor {floor_gb:.0f} "
+                "GB). A dataset/model download has ballooned the shared disk. Stream + slice "
+                "datasets (NEVER a full natural_questions-style download), use lighter "
+                "variants (e.g. nq_open not natural_questions), or lower REPROLAB_DISK_FLOOR_GB "
+                "if the footprint is legitimately large.",
+            )
+    return None
+
+
+def _data_load_failure_is_code_bug(err: str) -> bool:
+    """True when a recorded ``data_load_failure`` error is actually a CODE bug (a
+    caught Python exception / bad id / parse error) rather than genuine
+    data-unavailability (404/403/licence/removed dataset).
+
+    Default for ambiguous cases is data-unavailable (safe: a false-repairable wastes
+    one iteration, a false-exclude is the existing behaviour). DatasetNotFoundError is
+    NOT in the exception regex, so a bare "dataset doesn't exist on the Hub" stays
+    data-unavailable unless a bad-id/URI phrase co-occurs.
+    """
+    low = (err or "").lower()
+    if any(p in low for p in _CODE_BUG_PHRASES):
+        return True
+    if _CODE_BUG_RE.search(err or ""):
+        return True
+    # Bare 'no such file'/'errno 2' is a code bug ONLY with a config/source
+    # co-signal (a missing base_config.yaml / *.py); a bare missing DATA path
+    # stays data-unavailable so it force-reduces on first sight (F-03).
+    if ("no such file or directory" in low or "errno 2" in low) and any(
+        c in low for c in _CONFIG_CODE_COSIGNALS
+    ):
+        return True
+    return False
+
+
+def _reclassify_masked_code_bugs(result: dict) -> tuple[str, list[str]] | None:
+    """Scan ``metrics.data_load_failures`` for code bugs the agent caught and masked
+    as data-unavailability. Returns ``("code_bug", [summaries])`` if any, else None.
+
+    Genuine data-unavailability entries are LEFT in place (the leaf scorer still
+    excludes their leaves); only code-bug entries force the experiment back into the
+    repair loop, so a real bug can't silently ship a degenerate, leaf-excluded run.
+    """
+    _metrics = result.get("metrics") or {}
+    failures = list(_metrics.get("data_load_failures") or []) + list(_metrics.get("model_load_failures") or [])
+    masked: list[str] = []
+    for entry in failures:
+        if isinstance(entry, dict):
+            err = str(entry.get("error") or entry.get("reason") or "")
+            name = str(entry.get("dataset") or entry.get("env") or entry.get("model") or entry.get("name") or "?")
+        elif isinstance(entry, str):
+            err, name = entry, "?"
+        else:
+            continue
+        if err and _data_load_failure_is_code_bug(err):
+            masked.append(f"{name}: {err[:160]}")
+    return ("code_bug", masked) if masked else None
+
+
+def _surface_masked_bug_on_failed_run(result: dict) -> dict | None:
+    """F-05: for an already-FAILED run with no specific ``failure_class``, surface a
+    masked code bug's precise message so the next repair targets the real loader/parse
+    bug instead of a vaguer error.
+
+    ``_reclassify_masked_code_bugs`` is metrics-based and success-agnostic, but its
+    call site only runs on SUCCESSFUL runs (to flip them to repairable). A run that
+    already failed for a vague reason can still carry a masked code bug in
+    ``metrics.data_load_failures``; promote that precise message into
+    ``error``/``suggested_fix`` and set the precise ``failure_class``.
+
+    Returns the fields to merge into ``result``, or None when not applicable. NEVER
+    flips ``success`` (the run is already failed) and never overrides an
+    already-specific ``failure_class``.
+    """
+    if result.get("success"):
+        return None
+    if _failure_class_key(result.get("failure_class")):
+        return None  # a specific class is already set — leave it
+    masked = _reclassify_masked_code_bugs(result)
+    if masked is None:
+        return None
+    _cls, _bugs = masked
+    msg = (
+        "code_bug: a loader/parse error was caught and masked as a data_load_failure "
+        "(it would be silently excluded from the rubric). These are CODE bugs to fix, "
+        "not missing data — " + "; ".join(_bugs[:5])
+    )
+    return {
+        "failure_class": _cls,
+        "error": msg,
+        "suggested_fix": result.get("suggested_fix") or msg,
+    }
+
+
+def _gap_in_load_failures(hint: str, metrics: dict) -> bool:
+    """True when the scope element named in ``hint`` is covered by the agent's own
+    ``metrics.data_load_failures`` — i.e. the agent tried to obtain it and failed.
+
+    That is a PROVABLY-uncontrollable absence (per the soft-failure dataset
+    convention in baseline_implementation.py), so we tolerate the reduction on
+    first sight rather than waiting for K identical misses. Matching is by token
+    subset: every token of the missing-element key must appear among the recorded
+    failed-dataset names, so "webshop" matches a failure of dataset "webshop" but
+    a two-element gap is only force-reduced when BOTH are recorded failures.
+    """
+    import re
+
+    key_tokens = {t for t in re.split(r"[^a-z0-9]+", _scope_violation_key(hint)) if t}
+    if not key_tokens:
+        return False
+    failure_tokens: set[str] = set()
+    for entry in (metrics or {}).get("data_load_failures") or []:
+        if isinstance(entry, dict):
+            name = str(entry.get("dataset") or entry.get("name") or "")
+            err = str(entry.get("error") or entry.get("reason") or "")
+        elif isinstance(entry, str):
+            name, err = entry, entry
+        else:
+            name, err = "", ""
+        # A code bug masquerading as a data failure must NOT force-reduce a scope gap
+        # (FIX-1 already flips those to repairable, but guard here too so a MISSED code
+        # bug can't be laundered into a tolerated 'unobtainable' scope reduction).
+        if err and _data_load_failure_is_code_bug(err):
+            continue
+        failure_tokens |= {t for t in re.split(r"[^a-z0-9]+", name.lower()) if t}
+    return bool(failure_tokens) and key_tokens <= failure_tokens
+
+
+def _scope_reduce_or_fail(
+    result: dict, hint: str, counts: dict, max_repeats: int, *, force_reduce: bool = False
+) -> tuple[dict, bool]:
+    """Decide whether a scope-shape violation is a repairable failure (first K-1
+    times) or a tolerated SCOPE REDUCTION (Kth+ time the SAME element is missing,
+    OR ``force_reduce`` — a provably-uncontrollable absence recorded in
+    data_load_failures, tolerated on first sight).
+
+    ``counts`` is the per-run {element_key: miss_count} map; it is mutated. Returns
+    ``(updated_result, tolerated)``. Tolerated → keep ``success`` and record the gap
+    in metrics.scope_gaps so the rubric downweights it (not 0) and the run converges.
+    Otherwise → flip to a repairable ``scope_shape_violation`` so the agent can add it.
+    """
+    key = _scope_violation_key(hint)
+    counts[key] = counts.get(key, 0) + 1
+    if force_reduce or (max_repeats > 0 and counts[key] >= max_repeats):
+        gaps = sorted({*((result.get("metrics") or {}).get("scope_gaps") or []), key})
+        return (
+            {**result, "scope_reduced": True,
+             "metrics": {**(result.get("metrics") or {}), "scope_gaps": gaps}},
+            True,
+        )
+    return ({**result, "success": False, "error": hint, "scope_shape_violation": True}, False)
+
+
+def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool:
+    """True when the rubric score has stopped meaningfully improving.
+
+    Looks at the last ``window`` recorded ``overall_score`` values; returns True
+    only when there are at least ``window`` samples AND their spread
+    (max − min) is ``<= epsilon`` — i.e. the score has flatlined. A genuinely
+    improving run (later scores rising above earlier ones by more than epsilon)
+    is never flagged: this detects *stuck*, not *slow*. The rubric score is the
+    one true objective, so keying convergence off it — not off experiment shape
+    — never false-positives on a run that is making real progress on some other
+    axis while a scope element stays permanently unobtainable.
+    """
+    if window <= 1 or epsilon < 0 or len(history) < window:
+        return False
+    recent = history[-window:]
+    return (max(recent) - min(recent)) <= epsilon
+
+
 def _validate_scope_metrics(
     scope_spec: object,
     metrics: dict,
@@ -2656,6 +4020,15 @@ def _validate_scope_metrics(
     dataset_ids_fn = getattr(scope_spec, "dataset_ids", None)
     datasets = dataset_ids_fn() if callable(dataset_ids_fn) else []
 
+    # Compare scope entries to metrics keys on a separator-free canonical key, so a
+    # scope display name ("Qwen3-1.7B-Instruct", "Search-QA") matches the agent's
+    # sanitized metrics key ("qwen3_1_7b", "searchqa"). Without this a correctly-run
+    # model/dataset is falsely flagged per_model_incomplete (2026-05-29 SDAR run).
+    from backend.agents.rlm.paper_invariants import canonical_model_key
+
+    def _ck(name: object) -> str:
+        return canonical_model_key(str(name)).replace("_", "")
+
     if is_multi_model:
         per_model = metrics.get("per_model")
         if not isinstance(per_model, dict) or not per_model:
@@ -2665,7 +4038,17 @@ def _validate_scope_metrics(
                 f"id, e.g. {{'per_model': {{'qwen3-1.7b': {{...}}, "
                 f"'qwen2.5-3b': {{...}}}}}}."
             )
-        missing = [m for m in models if m not in per_model]
+        present_keys = {_ck(k) for k in per_model}
+        # Models in scope.models_skipped are explicitly excluded (e.g. capacity-gated
+        # due to VRAM budget) — treat them as accounted for, not missing.
+        skipped_canonical = {
+            _ck(k)
+            for k in ((metrics.get("scope") or {}).get("models_skipped") or [])
+        }
+        missing = [
+            m for m in models
+            if _ck(m) not in present_keys and _ck(m) not in skipped_canonical
+        ]
         if missing:
             return (
                 f"per_model_incomplete: scope requires entries for {models}; "
@@ -2675,12 +4058,19 @@ def _validate_scope_metrics(
             for model_id, model_metrics in per_model.items():
                 pd = (model_metrics or {}).get("per_dataset") if isinstance(model_metrics, dict) else None
                 if not isinstance(pd, dict) or not pd:
+                    # Accept env-keyed nesting too: agents commonly write
+                    # per_model[model][env] directly rather than wrapping it in a
+                    # "per_dataset" dict. Treat the model's own keys as the dataset
+                    # set so a correctly-structured run isn't flagged per_dataset_required.
+                    pd = model_metrics if isinstance(model_metrics, dict) else None
+                if not isinstance(pd, dict) or not pd:
                     return (
                         f"per_dataset_required: scope is multi-dataset {datasets}. "
-                        f"Each per_model entry MUST carry a per_dataset dict; "
+                        f"Each per_model entry MUST carry per-dataset metrics; "
                         f"model {model_id!r} has none."
                     )
-                missing_ds = [d for d in datasets if d not in pd]
+                present_ds = {_ck(x) for x in pd}
+                missing_ds = [d for d in datasets if _ck(d) not in present_ds]
                 if missing_ds:
                     return (
                         f"per_dataset_incomplete: model {model_id!r} missing "
@@ -2737,6 +4127,326 @@ def _persist_escalation_count(state_dir: "Path", count: int) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(_json.dumps({"escalations_used": count}), encoding="utf-8")
     tmp.replace(path)
+
+
+def _dynamic_gpu_headroom() -> float:
+    """REPROLAB_DYNAMIC_GPU_HEADROOM (default 1.25) — the VRAM safety multiplier the
+    capacity gate clamps against. Matches the dynamic-GPU resolver's headroom."""
+    try:
+        h = float(os.environ.get("REPROLAB_DYNAMIC_GPU_HEADROOM", "1.25") or "1.25")
+    except ValueError:
+        h = 1.25
+    return h if h > 0 else 1.25
+
+
+def _summarize_cell_logs(cells: list, matrix_result: dict, gpus: list) -> str:
+    """A clean per-cell status summary for ``result['logs']``.
+
+    Deliberately avoids the raw CUDA-OOM strings (``_OOM_LOG_MARKERS``) so a partial
+    cell run is NOT misread by ``_training_health_violation`` as a repairable
+    ``silent_oom`` — a shrink-exhausted cell OOM is terminal, surfaced via
+    ``stop_reason`` instead. Raw per-cell errors live in ``metrics`` (not scanned).
+    """
+    lines = [f"cell-matrix: {len(cells)} cell(s) across {len(gpus)} GPU(s)"]
+    for c in cells:
+        r = matrix_result.get(c.get("id", "")) or {}
+        st = r.get("status", "missing")
+        st_label = "oom-shrink-exhausted" if st == "oom_failed" else st
+        lines.append(
+            f"  {c.get('id','?')} -> {st_label} "
+            f"(gpu={r.get('gpu', '?')}, retries={r.get('retries', 0)})"
+        )
+    return "\n".join(lines)
+
+
+def _operator_scope_exclusions(ctx: "RunContext") -> list:
+    """Verified ``operator_scope`` Exclusions from the run's ScopeSpec.
+
+    ``skip_models`` → model-axis exclusions; ``skip_datasets`` → environment-axis
+    exclusions. Both are ``verified=True``: the operator's ``--scope-spec`` is the
+    evidence that the de-scope was a deliberate human decision (not an agent
+    laundering a failure into a free scope reduction), so the rubric EXCLUDES
+    their leaves rather than scoring them 0. Empty list when there is no
+    scope_spec. Never raises.
+    """
+    from backend.agents.rlm import exclusion as _excl
+
+    spec = getattr(ctx, "scope_spec", None)
+    if spec is None:
+        return []
+    evidence = "operator ScopeSpec (--scope-spec)"
+    out: list = []
+    pairs = (
+        (getattr(spec, "skip_models", None) or [], _excl.AXIS_MODEL, "skip_models"),
+        (getattr(spec, "skip_datasets", None) or [], _excl.AXIS_ENVIRONMENT, "skip_datasets"),
+    )
+    for items, axis, field in pairs:
+        for it in items:
+            name = str(it).strip()
+            if not name:
+                continue
+            try:
+                out.append(_excl.Exclusion(
+                    item=name, axis=axis, kind=_excl.KIND_OPERATOR_SCOPE,
+                    reason=f"{name} de-scoped by operator ({field})",
+                    verified=True, evidence=evidence,
+                ))
+            except ValueError:
+                logger.debug("operator-scope: skipped malformed exclusion %r", name)
+    return out
+
+
+def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
+    """Fold verified operator_scope + recovered gate exclusions into metrics.scope.
+
+    Rewrites ``metrics['scope']`` so it carries (a) a structured ``exclusions``
+    list spanning the capacity/dataset gate gaps AND the operator's
+    ``skip_models`` / ``skip_datasets``, and (b) legacy ``environments_skipped`` /
+    ``models_skipped`` / ``gaps`` derived from the VERIFIED subset only
+    (anti-gaming). Idempotent and fail-soft — any error leaves the original
+    metrics untouched so scope enrichment can never break the run.
+    """
+    if not isinstance(metrics, dict):
+        return metrics
+    op_excls = _operator_scope_exclusions(ctx)
+    # Verified env-setup failures from run-start provisioning (an ALFWorld/WebShop
+    # the host could not stand up) are excluded on the SAME fairness footing as an
+    # operator de-scope — both are outside the agent's control, both verified.
+    env_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+    all_excls = op_excls + env_excls
+    if not all_excls:
+        return metrics
+    try:
+        from backend.agents.rlm import exclusion as _excl
+
+        scope = metrics.get("scope") if isinstance(metrics, dict) else None
+        existing = dict(scope) if isinstance(scope, dict) else {}
+        # Recover the capacity/dataset gate gaps as structured exclusions so the
+        # final ``exclusions`` list is complete; clear ``gaps`` so
+        # build_scope_block regenerates ONE deduped list from the structured set.
+        recovered = _excl.exclusions_from_gaps(existing.get("gaps") or [])
+        existing["gaps"] = []
+        metrics["scope"] = _excl.build_scope_block(
+            recovered + all_excls,
+            models_run=existing.get("models_run"),
+            existing=existing,
+        )
+    except Exception:  # noqa: BLE001 — scope enrichment must never break the run
+        logger.warning("cell-matrix: operator-scope exclusion merge failed", exc_info=True)
+    return metrics
+
+
+def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
+    """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
+
+    PREVENT → drop over-budget cells + dead datasets to honest ``scope.gaps``.
+    PLACEMENT → ``run_matrix`` pins one cell per GPU, ``min(free, cells)`` parallel,
+    per-cell OOM shrink-retry. AGGREGATE → the canonical
+    ``per_model[model_key][env][baseline]`` shape the scorer + postflight consume.
+    STOP → when every run cell OOM-fails after shrink-exhaustion (or all cells are
+    dropped) return a terminal ``stop_reason`` so the run reports instead of looping.
+
+    Returns a ``run_experiment``-shaped result dict. Never raises (fail-soft).
+    """
+    import json
+    import time as _time
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner, k8s_job_cell_runner
+
+    code = Path(code_path)
+    artifact_root = code / "outputs" / run_id
+
+    def _persist_metrics(m: dict) -> None:
+        """Write the aggregated metrics where the leaf scorer + final_report read
+        them (the per-cell metrics.json files are single-cell leaves; the scorer
+        needs the aggregated per_model shape)."""
+        try:
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            blob = json.dumps(m, indent=2, default=str)
+            (artifact_root / "metrics.json").write_text(blob, encoding="utf-8")
+            (code / "metrics.json").write_text(blob, encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001 — persistence failure must not crash the run
+            logger.warning("cell-matrix: failed to persist aggregated metrics.json: %s", exc)
+
+    try:
+        manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+        all_cells = [c for c in (manifest.get("cells") or []) if isinstance(c, dict) and c.get("id")]
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": f"cells.json unreadable: {type(exc).__name__}: {exc}",
+                "failure_class": "contract_guard"}
+    if not all_cells:
+        return {"success": False, "metrics": {}, "logs": "",
+                "error": "cells.json present but enumerated no valid cells",
+                "failure_class": "contract_guard"}
+
+    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
+    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    _gpus_per_cell = max(1, int(os.environ.get("REPROLAB_GPUS_PER_CELL", "1") or "1"))
+    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
+    headroom = _dynamic_gpu_headroom()
+    kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
+        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
+    kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
+
+    gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
+
+    def _terminal(kind: str, error: str, metrics: dict, logs: str) -> dict:
+        _persist_metrics(metrics)
+        try:
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": kind, "message": error,
+            })
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            logger.debug("run_experiment: cell-matrix stop event emit failed")
+        return {"success": False, "metrics": metrics, "logs": logs, "error": error,
+                "failure_class": kind,
+                "stop_reason": {"kind": kind, "detail": error,
+                                "per_gpu_vram_gb": caps.per_gpu_vram_gb,
+                                "models_skipped": models_skipped,
+                                "environments_skipped": envs_skipped,
+                                "gaps": (cap_gaps or []) + (ds_gaps or [])}}
+
+    # Everything dropped by the gates → nothing fits this backend → terminal.
+    if not kept:
+        metrics = cell_matrix.aggregate_cell_metrics(
+            {}, [], capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+            models_skipped=models_skipped, environments_skipped=envs_skipped)
+        metrics = _apply_operator_scope(metrics, ctx)
+        return _terminal(
+            "capacity_exhausted",
+            f"every cell exceeds the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB "
+            f"(headroom {headroom}) or targets a dead dataset; nothing to run on this backend",
+            metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
+
+    _t0 = _time.monotonic()
+    # Bound the WHOLE matrix as a backstop, but GENEROUSLY: cells run in waves of
+    # min(free_gpus, cells), so each sequential wave must get a full per-cell budget
+    # — capping the whole matrix at ONE cell's budget would silently drop every cell
+    # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
+    # run-level watchdog is the ultimate hang guard; this just lets the root score a
+    # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
+    _n_slots = max(1, len(gpus) // _gpus_per_cell)
+    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Cell-level resume (Track B): compute each kept cell's content fingerprint so
+    # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
+    # REPROLAB_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
+    # REPROLAB_RESUME_FORCE_CELLS (CSV of cell ids the CLI builds from --rerun-env /
+    # --rerun-cell). All no-ops when resume is unset; fingerprints are always recorded.
+    _fingerprints = {
+        c["id"]: cell_fingerprint.compute_fingerprint(c, str(code))
+        for c in kept if isinstance(c, dict) and c.get("id")
+    }
+    _force_cells = {
+        cid.strip()
+        for cid in (os.environ.get("REPROLAB_RESUME_FORCE_CELLS", "") or "").split(",")
+        if cid.strip()
+    }
+    _sb_key_ecm = getattr(
+        getattr(ctx, "sandbox_mode", None), "value",
+        str(getattr(ctx, "sandbox_mode", None) or ""),
+    ).lower()
+    _run_budget_ecm = getattr(ctx, "run_budget", None)
+    _event_sink_ecm = getattr(ctx, "_event_sink", None)
+
+    # Load the cached gpu_plan (written by resolve_gpu_requirements) so the K8s
+    # runner can target the resolved SKU/node-pool.  Mirror run_experiment's load;
+    # fail-soft to None so a missing plan never blocks the cell-matrix route.
+    _ecm_gpu_plan = None
+    try:
+        _ecm_plan_path = Path(ctx.project_dir) / "rlm_state" / "gpu_plan.json"
+        if _ecm_plan_path.exists():
+            from backend.agents.schemas import GpuPlan as _ECMGpuPlan
+            _ecm_gpu_plan = _ECMGpuPlan(**json.loads(_ecm_plan_path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
+        logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
+
+    if _sb_key_ecm == "azure":
+        with k8s_job_cell_runner.bind_run_context(
+            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
+        ):
+            matrix_result = k8s_job_cell_runner.run_matrix(
+                kept, str(code / "train_cell.py"),
+                output_root=str(artifact_root),
+                gpus=gpus or None,
+                per_cell_timeout_s=timeout_s,
+                overall_timeout_s=timeout_s * max(1, _waves),
+                gpus_per_cell=_gpus_per_cell,
+                fingerprints=_fingerprints,
+                force_cells=_force_cells or None,
+                now_iso=datetime.now(timezone.utc).isoformat(),
+            )
+    else:
+        matrix_result = gpu_cell_runner.run_matrix(
+            kept, str(code / "train_cell.py"),
+            output_root=str(artifact_root),
+            gpus=gpus or None,
+            per_cell_timeout_s=timeout_s,
+            overall_timeout_s=timeout_s * max(1, _waves),
+            gpus_per_cell=_gpus_per_cell,
+            fingerprints=_fingerprints,
+            force_cells=_force_cells or None,
+            now_iso=datetime.now(timezone.utc).isoformat(),
+        )
+    wall = _time.monotonic() - _t0
+
+    metrics = cell_matrix.aggregate_cell_metrics(
+        matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
+        models_skipped=models_skipped, environments_skipped=envs_skipped)
+    metrics = _apply_operator_scope(metrics, ctx)
+    logs = _summarize_cell_logs(kept, matrix_result, gpus)
+
+    statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
+    n_ok = sum(s == "ok" for s in statuses)
+    n_oom = sum(s == "oom_failed" for s in statuses)
+    n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+
+    if n_ok > 0:
+        # At least one cell produced real metrics — partial or full success. Honest
+        # gaps (dropped/oom/err cells) are already in metrics.scope; flows to the
+        # SAME postflight guards + verify_against_rubric.
+        _persist_metrics(metrics)
+        return {"success": True, "metrics": metrics, "logs": logs, "wall_time_s": wall}
+
+    if n_err == 0:
+        # Every run cell OOM-failed after the shrink ladder — un-repairable by
+        # re-running the same config. STOP + report (do NOT reuse silent_oom).
+        return _terminal(
+            "oom_shrink_exhausted",
+            f"all {n_oom} run cell(s) OOM-failed after batch-scale shrink + grad-ckpt "
+            f"retries on the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB; the matrix "
+            f"cannot fit one card — reduce model size/scope or use a larger GPU",
+            metrics, logs)
+
+    # capacity_exhausted promotion: the K8s runner emits "capacity_exhausted:"-prefixed
+    # error strings for stuck-Pending cells (pool quota/stock exhausted). When EVERY
+    # errored cell carries that prefix (and no OOM, no ok), promote to terminal rather
+    # than allowing a pointless repair loop — the cluster, not the code, is the bottleneck.
+    # This branch is only reachable for azure runs (non-azure error strings never carry
+    # the prefix), so it leaves local/runpod/docker behavior byte-for-byte unchanged.
+    if n_ok == 0 and n_oom == 0 and n_err > 0:
+        _err_cells = [
+            (matrix_result.get(c["id"]) or {}) for c in kept
+            if (matrix_result.get(c["id"]) or {}).get("status") not in ("ok", "oom_failed")
+        ]
+        _all_cap_exhausted = all(
+            str((r.get("error") or "")).startswith("capacity_exhausted:")
+            for r in _err_cells
+        )
+        if _all_cap_exhausted:
+            _cap_msg = (f"all {n_err} run cell(s) failed: AKS node pool capacity exhausted "
+                        f"(stuck-Pending past timeout) — quota or stock unavailable; "
+                        f"try reducing azure_max_nodes or requesting a quota increase")
+            return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
+
+    # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
+    _persist_metrics(metrics)
+    return {"success": False, "metrics": metrics, "logs": logs,
+            "failure_class": "cell_execution_error",
+            "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs), "
+                      f"{n_oom} OOM-failed, 0 succeeded — fix the cell trainer and re-run")}
 
 
 def run_experiment(
@@ -2817,7 +4527,10 @@ def run_experiment(
 
     manifest = Path(code_path) / "commands.json"
     commands = json.loads(manifest.read_text()) if manifest.exists() else []
-    if not commands:
+    # comp 4: the harness-owned cell path runs code/train_cell.py via cells.json and
+    # needs no commands.json. Only fail when NEITHER manifest is present.
+    _cells_present = (Path(code_path) / "cells.json").is_file()
+    if not commands and not _cells_present:
         return _persist_experiment_result(ctx, {
             "success": False, "metrics": {},
             "error": f"no commands.json at {manifest}"}, model_id=model_id, eval_env=eval_env)
@@ -2841,11 +4554,23 @@ def run_experiment(
                     f"failed: {build.get('error')}"
                 ),
             }, model_id=model_id, eval_env=eval_env)
-        env_id = build["image_tag"]
+        # Local-sandbox build returns image_tag="" (skipped=True) because there
+        # is no Docker daemon.  Use the sentinel "__local__" so downstream code
+        # has a non-empty value while _execute_in_sandbox (which routes on
+        # sandbox_mode, not env_id) ignores it safely.
+        env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from) before attempting any Docker work.
-    if not env_id or not str(env_id).strip():
+    # to rebuild from AND the build was not skipped for local-sandbox mode).
+    # We exempt the local-sandbox path: build_environment deliberately returns
+    # image_tag="" there (see build_environment local-short-circuit above), and
+    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
+    # env_id irrelevant.
+    _is_local_sb = (
+        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
+    )
+    if not _is_local_sb and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -2911,14 +4636,54 @@ def run_experiment(
     # A2: load the cross-call persisted counter so the per-run cap is honoured
     # even when the RLM repair loop calls run_experiment multiple times.
     escalations = _load_escalation_count(ctx.project_dir / "rlm_state")
+
+    # Disk pre-check (2026-05-30): fail fast if the shared disk is already below the
+    # floor — starting a run that then exhausts it starves other users and crashes.
+    _disk_pre = _disk_floor_violation([
+        str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+    ])
+    if _disk_pre is not None:
+        return _persist_experiment_result(ctx, {
+            "success": False, "error": _disk_pre[1], "failure_class": _disk_pre[0],
+        }, model_id=model_id, eval_env=eval_env)
+
     result: dict = {}
+
+    # comp 4 (2026-05-31): harness-owned cell-runner route. When the backend exposes
+    # GPUs (local/docker) AND the agent emitted code/cells.json + train_cell.py, run
+    # the matrix one GPU per cell instead of the monolithic commands.json path — the
+    # fix for the cuda:0 matrix-stacking that OOM'd the 2026-05-31 run. Mutually
+    # exclusive with the legacy escalation loop below (and thus with
+    # _resolve_distributed_launch, which only fires inside _execute_in_sandbox).
+    # Fail-soft: any error here, or a missing manifest / no-GPU / cloud backend,
+    # falls through to the legacy monolithic path unchanged.
+    # Bound before the branch so the post-loop rubric-contract check (which reads
+    # outputs/<run_id>) is valid on BOTH paths; the legacy loop reassigns it per
+    # iteration, the cell route uses this value as its artifact root.
+    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    _cell_route_taken = False
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity
+        _caps = describe_capacity(ctx)
+        if (
+            _caps.backend_kind in ("local", "docker")
+            and not _caps.is_empty
+            and (Path(code_path) / "cells.json").is_file()
+            and (Path(code_path) / "train_cell.py").is_file()
+        ):
+            result = _execute_cell_matrix(ctx, code_path, _caps, timeout_s=timeout, run_id=run_id)
+            _cell_route_taken = True
+    except Exception:  # noqa: BLE001 — the cell route must never crash the run
+        logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
+        _cell_route_taken = False
 
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
     # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
     # persist the updated plan atomically, emit gpu_escalated, and retry.
     # Capped by max_escalations. Non-OOM/non-capacity failures and success exit
     # immediately. I12: explicit shutdown(wait=False) per iteration.
-    while True:
+    # comp 4: skipped entirely on the cell-runner route (`_cell_route_taken`).
+    while not _cell_route_taken:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
         infra_error_kind: str | None = None
         # I12: explicit shutdown(wait=False) so a wedged worker cannot block cleanup.
@@ -2934,6 +4699,7 @@ def run_experiment(
                         run_budget=ctx.run_budget,
                         gpu_plan=gpu_plan,
                         gpu_mode=getattr(ctx, "gpu_mode", None),
+                        gpu_device_ids=tuple(getattr(ctx, "gpu_device_ids", ()) or ()),
                     ),
                 ).result(timeout=timeout)
             except concurrent.futures.TimeoutError:
@@ -3034,7 +4800,9 @@ def run_experiment(
         # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
-        is_oom = _detect_cuda_oom(exit_code=exit_code, stderr_tail=stderr_tail)
+        # F-04: also catch a watchdog-killed OOM whose marker is buried earlier
+        # than the 4 KB stderr_tail (the watchdog dict carries no exit_code).
+        is_oom = _is_oom_escalation_trigger(result, exit_code=exit_code, stderr_tail=stderr_tail)
         is_infra = infra_error_kind is not None
         if not is_oom and not is_infra:
             break
@@ -3089,6 +4857,77 @@ def run_experiment(
         # the same run start from the correct escalation budget offset.
         _persist_escalation_count(ctx.project_dir / "rlm_state", escalations)
 
+    # P2 manifest: the escalation loop has produced its final result — stamp the
+    # identifiers the persist chokepoint records. run_id/env_id/commands are in
+    # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
+    _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
+
+    # Masked-code-bug reclassification (2026-05-30): the agent frequently CATCHES a
+    # Python exception (TypeError/AttributeError/HfUriError/bad model id/'returned 0
+    # rows') and records it in metrics.data_load_failures, which the leaf scorer would
+    # then EXCLUDE from the rubric — silently shipping a degenerate run as success. A
+    # code bug is repairable, not data-unavailability: flip it back into the repair
+    # loop. Runs BEFORE scope-reduce/training-health (which gate on success) so a code
+    # bug can't be tolerated as a scope gap. Genuine 404/licence entries are untouched.
+    if result.get("success"):
+        _masked = _reclassify_masked_code_bugs(result)
+        if _masked is not None:
+            _cls, _bugs = _masked
+            result = {
+                **result, "success": False, "failure_class": _cls,
+                "error": (
+                    "code_bug: a loader/parse error was caught and masked as a "
+                    "data_load_failure (it would be silently excluded from the rubric). "
+                    "These are CODE bugs to fix, not missing data — " + "; ".join(_bugs[:5])
+                ),
+            }
+            logger.warning(
+                "run_experiment[%s]: reclassified %d masked code bug(s) as repairable: %s",
+                getattr(ctx, "run_id", "?"), len(_bugs), _bugs[:3],
+            )
+    else:
+        # F-05: the run already failed for a vague reason — still surface a masked
+        # code bug's precise message (never flipping success) so the next repair
+        # targets the real loader/parse bug instead of a vague error.
+        _surfaced = _surface_masked_bug_on_failed_run(result)
+        if _surfaced is not None:
+            result = {**result, **_surfaced}
+            logger.warning(
+                "run_experiment[%s]: surfaced masked code bug on a failed run (%s)",
+                getattr(ctx, "run_id", "?"), _surfaced.get("failure_class"),
+            )
+
+    # Training-health postflight (2026-05-29): a run that exited 0 but logged a
+    # caught CUDA OOM (backward skipped → no gradient updates) or trained far below
+    # the convergence floor produced metrics yet learned nothing. Flip it to a
+    # repairable failure so the next implement_baseline reduces memory / trains
+    # longer instead of the loop accepting 0-reward metrics as success.
+    if result.get("success"):
+        _health = _training_health_violation(result)
+        if _health is not None:
+            _hcls, _hmsg = _health
+            result = {**result, "success": False, "error": _hmsg, "failure_class": _hcls}
+
+    # Metrics-completeness postflight (2026-05-30): a run that exited 0 but wrote a
+    # placeholder / unpopulated metrics.json (status:"running", empty per_model)
+    # measured NOTHING, yet every other guard keys on presence/shape/exit-code and
+    # lets it through — so the rubric grades a half-finished experiment and scores
+    # eval/result/execution ~0. Flip it to a repairable failure so the loop re-runs
+    # to REAL measured metrics before it can score/finalize, and emit a descriptive
+    # warning so the failure is never silent.
+    if result.get("success"):
+        _complete = _metrics_completeness_violation(result)
+        if _complete is not None:
+            _ccls, _cmsg = _complete
+            result = {**result, "success": False, "error": _cmsg, "failure_class": _ccls}
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "metrics_incomplete", "message": _cmsg,
+                })
+            except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                logger.debug("run_experiment: metrics_incomplete event emit failed")
+            logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _cmsg)
+
     # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
     # require metrics.json to carry the expected per_model / per_dataset
     # structure. A successful run with the wrong shape is a fail-soft error
@@ -3096,12 +4935,52 @@ def run_experiment(
     if result.get("success") and result.get("metrics"):
         hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
         if hint is not None:
-            result = {
-                **result,
-                "success": False,
-                "error": hint,
-                "scope_shape_violation": True,
-            }
+            # Self-healing scope reduction (2026-05-30): the first few times the
+            # metrics are shape-incomplete, treat it as a repairable failure so the
+            # agent can add the missing dataset/model. But if the SAME piece is
+            # missing K times running, it is demonstrably unobtainable (e.g. WebShop
+            # needs an external server) — TOLERATE the reduction: keep the partial,
+            # record the gap so the rubric downweights it (not 0), and let the run
+            # CONVERGE to its best achievable result instead of looping forever.
+            import os as _os
+
+            _counts = getattr(ctx, "_scope_violation_counts", None)
+            if not isinstance(_counts, dict):
+                _counts = {}
+                try:
+                    ctx._scope_violation_counts = _counts
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                _maxr = int(_os.environ.get("REPROLAB_MAX_SCOPE_FAILURE_REPEATS", "2") or "2")
+            except ValueError:
+                _maxr = 2
+            # A gap the agent recorded in data_load_failures is provably
+            # uncontrollable — tolerate on first sight, don't make it loop K times.
+            _forced = _gap_in_load_failures(hint, result.get("metrics") or {})
+            result, _tolerated = _scope_reduce_or_fail(
+                result, hint, _counts, _maxr, force_reduce=_forced
+            )
+            if _tolerated:
+                _k = _scope_violation_key(hint)
+                logger.warning(
+                    "run_experiment[%s]: scope element %r unobtainable (%s) — "
+                    "tolerating a SCOPE REDUCTION (partial credit) instead of looping.",
+                    getattr(ctx, "run_id", "?"), _k,
+                    "recorded data_load_failure" if _forced else f"{_counts.get(_k, 0)} misses",
+                )
+
+    # Disk post-check (2026-05-30): the experiment may have ballooned the HF cache and
+    # left the shared disk below the floor even though it "succeeded". Surface it as
+    # repairable so the next iteration streams/slices instead of downloading again.
+    if result.get("success"):
+        _disk_post = _disk_floor_violation([
+            str(ctx.project_dir), os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", ""),
+        ])
+        if _disk_post is not None:
+            result = {**result, "success": False, "error": _disk_post[1], "failure_class": _disk_post[0]}
+            logger.warning("run_experiment[%s]: disk floor breached post-run — %s",
+                           getattr(ctx, "run_id", "?"), _disk_post[1][:120])
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
     # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
@@ -3187,12 +5066,89 @@ def run_experiment(
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
+def _leaf_status(score: object, state: object) -> str:
+    """Map a leaf (score, state) pair to a UI status string.
+
+    ``"unavailable"`` when the leaf was skipped (state contains ``skipped``) or
+    its score is ``None`` (PR-κ data-unavailable). Otherwise threshold the score:
+    ``pass`` (>=0.75) / ``partial`` (>=0.4) / ``fail``. Fail-soft: a malformed
+    score coerces to 0.0 → ``fail``.
+    """
+    if score is None or (isinstance(state, str) and "skipped" in state):
+        return "unavailable"
+    try:
+        s = float(score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "fail"
+    if s >= 0.75:
+        return "pass"
+    if s >= 0.4:
+        return "partial"
+    return "fail"
+
+
+def _enrich_area_leaves(area_node: dict, leaf_detail: dict[str, dict]) -> list[dict]:
+    """Build the per-area ``leaves`` list for one top-level rubric sub_task.
+
+    Walks the area's sub-tree via ``flatten_leaves`` to get the leaf nodes (which
+    carry the human-readable ``requirements`` label + ``id``), then joins each to
+    its scored record in ``leaf_detail`` (id -> {score, justification, state}).
+
+    Each emitted leaf: ``{id, label, score, status, why}`` where ``label`` is the
+    requirements text (≤140 chars), ``score`` is the leaf score (``None`` when
+    unavailable), ``status`` from :func:`_leaf_status`, and ``why`` the leaf
+    justification (≤280 chars, single line). Fail-soft per leaf: a malformed leaf
+    node is skipped rather than crashing the whole area.
+    """
+    from backend.evals.paperbench.leaf_scorer import flatten_leaves
+
+    out: list[dict] = []
+    try:
+        leaf_nodes = flatten_leaves(area_node)
+    except Exception:  # noqa: BLE001 — a malformed tree must not crash the area
+        return out
+    for node in leaf_nodes:
+        try:
+            if not isinstance(node, dict):
+                continue
+            lid = str(node.get("id", "") or "")
+            if not lid:
+                continue
+            label = " ".join(str(node.get("requirements") or "").split())[:140]
+            detail = leaf_detail.get(lid) or {}
+            raw_score = detail.get("score") if "score" in detail else None
+            state = detail.get("state")
+            status = _leaf_status(raw_score, state)
+            score_out: float | None = None
+            if status != "unavailable":
+                try:
+                    score_out = max(0.0, min(1.0, float(raw_score)))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    score_out = None
+            why = " ".join(str(detail.get("justification") or "").split())[:280]
+            out.append({
+                "id": lid,
+                "label": label,
+                "score": score_out,
+                "status": status,
+                "why": why,
+            })
+        except Exception:  # noqa: BLE001 — skip the one bad leaf, keep the rest
+            continue
+    return out
+
+
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
 
     Each top-level sub_task becomes one area entry:
-      {"name": <requirements text, truncated>, "score": <rolled-up float>,
-       "weight": <raw weight int/float>}
+      {"area": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>,
+       "leaves": [{id, label, score, status, why}, ...]}
+
+    The ``leaves`` list carries leaf-level detail (which criteria fail + why),
+    mapped to the area via the same rubric-tree structure that produces the
+    rollup (``flatten_leaves`` over the area sub-tree).
 
     This gives the root model named, scored areas it can include verbatim in
     the final report instead of fabricating blank placeholders.  Fail-soft:
@@ -3214,6 +5170,14 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         if isinstance(e, dict) and e.get("id") and e.get("score") is not None
     }
 
+    # Build a {leaf_id: full-record} map so per-area leaves can attach
+    # score + justification + state (the label/requirements come from the tree).
+    leaf_detail: dict[str, dict] = {
+        str(e["id"]): e
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
     areas: list[dict] = []
     for i, task in enumerate(sub_tasks):
         name = str(task.get("requirements") or "")[:120]
@@ -3221,8 +5185,72 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
             name = f"Area {i + 1}"
         score = _clamp01(roll_up(task, leaf_score_map))
         weight = task.get("weight")
-        areas.append({"area": name, "score": score, "weight": weight})
+        areas.append({
+            "area": name,
+            "score": score,
+            "weight": weight,
+            "leaves": _enrich_area_leaves(task, leaf_detail),
+        })
     return areas
+
+
+def _recent_experiment_errors(project_dir: "Path", limit: int = 3) -> list[dict]:
+    """Return the last ``limit`` failed ``run_experiment`` entries as UI rows.
+
+    Reads ``experiment_runs.jsonl`` in ``project_dir`` and selects the most
+    recent lines with ``success=False``. Each row: ``{kind, message, iteration}``
+    where ``kind`` is the classified ``failure_class`` (fallback ``cause_kind`` /
+    ``"unknown"``), ``message`` is the error string truncated to 200 chars
+    (falling back to a logs tail when ``error`` is absent — the real-world common
+    case), and ``iteration`` is the entry's iteration if recorded else ``None``.
+
+    Fail-soft: a missing/unreadable file or any malformed line yields ``[]`` (or
+    the rows parsed so far) — observability must never break the run.
+    """
+    import json as _json_re
+
+    path = project_dir / "experiment_runs.jsonl"
+    try:
+        if not path.exists():
+            return []
+        # Read the tail only — the file can grow large over a long run.
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+
+    out: list[dict] = []
+    # Walk newest-first so we collect the most recent failures.
+    for raw in reversed(lines):
+        if len(out) >= max(0, int(limit)):
+            break
+        raw = raw.strip()
+        if not raw or '"success"' not in raw:
+            continue
+        try:
+            entry = _json_re.loads(raw)
+        except Exception:  # noqa: BLE001 — skip a corrupt line
+            continue
+        if not isinstance(entry, dict) or entry.get("success") is not False:
+            continue
+        kind = str(
+            entry.get("failure_class")
+            or entry.get("cause_kind")
+            or "unknown"
+        )
+        # `error` is frequently None on real failures — the diagnostic lives in
+        # the logs tail (e.g. a ModuleNotFoundError traceback). Fall back so the
+        # UI row is actually informative.
+        message = entry.get("error")
+        if not message:
+            logs = str(entry.get("logs") or "")
+            message = logs[-200:] if logs else (entry.get("suggested_fix") or "")
+        message = " ".join(str(message).split())[:200]
+        iteration = entry.get("iteration")
+        if not isinstance(iteration, int):
+            iteration = None
+        out.append({"kind": kind, "message": message, "iteration": iteration})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3452,7 +5480,13 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         has_experiment_result = "success" in results or "metrics" in results
         metrics_present = bool(results.get("metrics") or {})
         degraded = has_experiment_result and (
-            (results.get("success") is False) and (not metrics_present)
+            ((results.get("success") is False) and (not metrics_present))
+            # Defense-in-depth (2026-05-30): placeholder/unpopulated metrics (a
+            # non-terminal status, or per_model entries all empty) measured nothing
+            # too — engage the honesty ceiling so a half-finished experiment can't
+            # score unbounded even if the run_experiment completeness guard was
+            # bypassed (e.g. near the wall-clock).
+            or (_metrics_completeness_violation(results) is not None)
         )
         scored = score_reproduction(
             rubric_tree=rubric,
@@ -3460,7 +5494,33 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             llm_client=ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
+            # Paper-hint invariant gate (2026-05-29): thread invariants from
+            # RunContext so the deterministic regex gate fires in-loop.
+            invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
+            # Model-load-bug fix (2026-05-31): pass the operator's skip list so
+            # requested models whose load failed are not silently excluded from
+            # the rubric (only truly operator-skipped models are excluded).
+            operator_skip_models=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or []
+            ),
+            # 2026-06-01: the operator's de-scoped environments (skip_datasets,
+            # e.g. ALFWorld/WebShop on a Search-QA-only run) gate the environment
+            # axis the same way skip_models gates the model axis — verified
+            # operator scope is excluded; an agent-laundered env skip stays scored.
+            operator_skip_environments=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
+            ),
         )
+        # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
+        # (report → leaf_scorer.finalize_rescore) can recompute the score under a
+        # late-declared scope WITHOUT re-grading. Best-effort — finalize falls back
+        # to today's recorded score if this file is absent.
+        try:
+            (ctx.project_dir / "rubric_tree.json").write_text(
+                __import__("json").dumps(rubric, default=str), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 — persistence is best-effort, never fatal
+            pass
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable
         # on every batch. That is a real verification failure — never a "scored
@@ -3488,6 +5548,21 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             [e for e in leaf_scores if isinstance(e, dict) and e.get("score") is not None],
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
+        # leaf_id -> top-level area name, so the UI can group each weak leaf under
+        # its area. Built from the SAME top-level sub_task structure as the area
+        # rollup. Fail-soft: a malformed tree yields an empty map (area="").
+        _leaf_area: dict[str, str] = {}
+        try:
+            from backend.evals.paperbench.leaf_scorer import flatten_leaves as _flat
+            for _i, _task in enumerate(
+                c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)
+            ):
+                _aname = str(_task.get("requirements") or "")[:120] or f"Area {_i + 1}"
+                for _ln in _flat(_task):
+                    if isinstance(_ln, dict) and _ln.get("id"):
+                        _leaf_area[str(_ln["id"])] = _aname
+        except Exception:  # noqa: BLE001 — area attribution is best-effort
+            _leaf_area = {}
 
         result = {
             "overall_score": overall_score,
@@ -3503,10 +5578,16 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
-                 "justification": e.get("justification", "")}
+                 "justification": e.get("justification", ""),
+                 "area": _leaf_area.get(str(e.get("id", "")), "")}
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
+            # Paper-hint invariant gate (2026-05-29): surface per-invariant
+            # pass/fail so the root model can see which invariants tripped and
+            # target repairs on the next iteration.
+            "invariant_results": scored.get("invariant_results", []),
+            "invariant_gate_applied": bool(scored.get("invariant_gate_applied", False)),
         }
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},
@@ -3581,6 +5662,60 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             # Ensure always-emit fields are present even on failure.
             result.setdefault("compute_adjusted_score", result.get("overall_score", 0.0))
             result.setdefault("compute_scope", None)
+
+        # No-progress convergence detector. The rubric score is the one true
+        # objective, so we measure convergence off IT — never off experiment
+        # shape (which false-positives a run that is improving on some axis while
+        # a scope element stays permanently unobtainable). When the score has
+        # flatlined across the last `window` verifications AND the iteration
+        # floor is satisfied AND we are still below target, attach a
+        # `convergence_note` directing the root to ship its best partial instead
+        # of looping. Purely advisory — the hard ceiling is the iteration cap +
+        # wall-clock watchdog; this just lets a stuck run converge sooner.
+        try:
+            import os as _os
+            _hist = getattr(ctx, "_rubric_score_history", None)
+            if not isinstance(_hist, list):
+                _hist = []
+                try:
+                    ctx._rubric_score_history = _hist
+                except Exception:  # noqa: BLE001
+                    pass
+            _hist.append(float(overall_score))
+            try:
+                _win = int(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_WINDOW", "3") or "3")
+            except ValueError:
+                _win = 3
+            try:
+                _eps = float(_os.environ.get("REPROLAB_RUBRIC_PLATEAU_EPSILON", "0.005") or "0.005")
+            except ValueError:
+                _eps = 0.005
+            try:
+                _floor = int(_os.environ.get("REPROLAB_MIN_RUBRIC_ITERATIONS", "2") or "2")
+            except ValueError:
+                _floor = 2
+            _cur_iter = int(getattr(ctx, "current_iteration", 0) or 0)
+            if (
+                not meets_target
+                and _cur_iter >= _floor
+                and _rubric_plateaued(_hist, _win, _eps)
+            ):
+                result["convergence_note"] = (
+                    f"NO-PROGRESS: rubric overall_score has held at ~{overall_score:.3f} "
+                    f"(< target {target:.3f}) across the last {_win} verifications. You have "
+                    "plateaued — re-running the same configuration will not move the score. "
+                    "If the remaining gap is unobtainable scope (see scope_gaps / "
+                    "data_load_failures), record it in the final report's scope.gaps and call "
+                    "FINAL_VAR now with this best partial; otherwise change the APPROACH "
+                    "(a materially different hypothesis), not the same experiment again."
+                )
+                logger.info(
+                    "verify_against_rubric[%s]: rubric plateaued at %.3f over %d iters — "
+                    "attached convergence_note.",
+                    getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), overall_score, _win,
+                )
+        except Exception:  # noqa: BLE001 — convergence hint is augmenting, never fatal
+            logger.exception("verify_against_rubric: plateau detection failed")
 
         result = _with_outcome(result, PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "verify_against_rubric", payload=_payload, result=result)

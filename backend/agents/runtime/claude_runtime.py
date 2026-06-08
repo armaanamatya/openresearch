@@ -71,7 +71,7 @@ class ClaudeAgentRuntime:
             sub_agent.name: AgentDefinition(
                 description=sub_agent.description or sub_agent.instructions[:200],
                 prompt=_with_guard_prompt(sub_agent.instructions, sub_agent),
-                tools=_tools_for_sub_agent(sub_agent, mcp_tool_extensions),
+                tools=_tools_for_agent(sub_agent, mcp_tool_extensions),
                 model=sub_agent.model or None,
                 maxTurns=sub_agent.max_turns,
                 permissionMode=sub_agent.permission_mode,
@@ -80,14 +80,8 @@ class ClaudeAgentRuntime:
         }
 
         options = ClaudeAgentOptions(
-            model=agent.model or None,
-            permission_mode=agent.permission_mode,
-            max_turns=agent.max_turns,
             agents=sub_agents,
-            cwd=str(agent.working_directory) if agent.working_directory else None,
-            system_prompt=_with_guard_prompt(agent.instructions, agent),
-            max_thinking_tokens=agent.thinking_budget_tokens,
-            **({"mcp_servers": mcp_servers} if mcp_servers else {}),
+            **_agent_options_kwargs(agent, mcp_servers, mcp_tool_extensions),
         )
 
         async for message in query(prompt=user_input, options=options):
@@ -196,20 +190,76 @@ def _resolve_mcp_servers() -> tuple[dict[str, Any], dict[str, list[str]]]:
     return servers, extensions
 
 
-def _tools_for_sub_agent(
-    sub_agent: Any,
+def _tools_for_agent(
+    agent: Any,
     extensions: dict[str, list[str]],
 ) -> list[str] | None:
-    """Compute the tools list for a sub-agent, merging MCP extras.
+    """Compute the explicit tools list for an agent (root OR sub-agent), merging
+    MCP extras. Shared so the Claude **root** enforces ``allowed_tools`` exactly
+    like sub-agents already did — closing invariant 3 (the root previously
+    inherited ALL default SDK tools while OpenAI restricted both providers).
 
-    Returns ``None`` when there are no tools at all (SDK convention for
-    "agent inherits parent tools"), preserving prior behavior. When MCP
-    tools apply, they are appended to the explicit registry list.
+    Returns ``None`` when there are no tools at all (SDK convention for "inherit
+    all default tools"). The registry fail-closed guard (``to_runtime_spec``)
+    ensures registered agents are never empty, so in practice this is non-None
+    and the root is always restricted. MCP tools are appended to the registry list.
     """
-    base = [tool.name for tool in sub_agent.tools]
-    mcp_extras = extensions.get(sub_agent.name, [])
+    base = [tool.name for tool in agent.tools]
+    mcp_extras = extensions.get(agent.name, [])
     merged = base + [name for name in mcp_extras if name not in base]
     return merged or None
+
+
+def _hermetic_enabled() -> bool:
+    """``REPROLAB_SDK_HERMETIC`` (default true). When on, the SDK runs hermetically
+    — no ambient ``CLAUDE.md`` / ``.claude/settings.json`` / discovered-MCP
+    leakage (``setting_sources=[]`` + ``strict_mcp_config=True``). Disable only
+    for local debugging. Note this gates ONLY the hermetic config; the
+    ``allowed_tools`` restriction is always on (a hatch would re-open invariant 3).
+    """
+    import os
+
+    return os.environ.get("REPROLAB_SDK_HERMETIC", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _agent_options_kwargs(
+    agent: AgentRuntimeSpec,
+    mcp_servers: dict[str, Any],
+    mcp_tool_extensions: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Build the ``ClaudeAgentOptions`` kwargs for the root agent (Gap A).
+
+    Extracted as a pure function so the parity / permission-mode / hermetic
+    contract is directly testable without the SDK. ``agents=sub_agents`` is added
+    by the caller (it needs the SDK ``AgentDefinition`` type).
+    """
+    kwargs: dict[str, Any] = {
+        "model": agent.model or None,
+        # KEEP bypassPermissions: headless runs have no approver; the real
+        # controls are allowed_tools + sandbox + RuntimeGuard (invariant 4 targets
+        # a future external-CLI shell-out, not the harness's own sub-agents).
+        "permission_mode": agent.permission_mode,
+        "max_turns": agent.max_turns,
+        "cwd": str(agent.working_directory) if agent.working_directory else None,
+        "system_prompt": _with_guard_prompt(agent.instructions, agent),
+        "max_thinking_tokens": agent.thinking_budget_tokens,
+        # Always explicit (even {}) so MCP config is deterministic + strict.
+        "mcp_servers": mcp_servers,
+    }
+    # Restrict the root to its declared tools (MCP-merged). Always on — no hatch.
+    allowed_tools = _tools_for_agent(agent, mcp_tool_extensions)
+    if allowed_tools:
+        kwargs["allowed_tools"] = allowed_tools
+    # Hermetic isolation — gated by REPROLAB_SDK_HERMETIC (default true).
+    if _hermetic_enabled():
+        kwargs["setting_sources"] = []
+        kwargs["strict_mcp_config"] = True
+    return kwargs
 
 
 __all__ = ["ClaudeAgentRuntime"]

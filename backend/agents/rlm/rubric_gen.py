@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Protocol
@@ -33,6 +34,18 @@ that paper. The rubric grades only concrete reproduction artifacts — source
 code, the environment, executed runs, produced metrics and plots — never
 process, effort, or how the reproduction was carried out.
 
+BEFORE writing any leaf, mentally extract from the paper text:
+  • Every named algorithm, method variant, and baseline (e.g. "GRPO", "OPSD",
+    "SDAR", "Skill-SD") — use their exact names in leaf text.
+  • Every equation-level detail the code must implement (e.g. "g_t = σ(β·Δ_t)",
+    "stop-gradient on the gate", "token-level KL divergence").
+  • Every exact numeric hyperparameter and its value (e.g. "β=10", "λ=0.1",
+    "learning rate 1e-4", "batch size 64", "hidden size 256").
+  • Every exact model name (e.g. "Qwen2.5-7B-Instruct", "Qwen3-1.7B") and
+    dataset name (e.g. "ALFWorld", "WebShop", "Search-QA").
+  • Every reported numeric result (e.g. "+9.4% on ALFWorld", "Score/Acc 72.3").
+Use only specifics found in the paper text; do NOT invent values.
+
 Organize the rubric under these six categories. The weight of each category
 should fall in the range shown (weights are relative — they need not sum to
 exactly 1):
@@ -44,15 +57,34 @@ exactly 1):
   Result match versus the paper's reported targets  0.15 - 0.30
   Artifact completeness and provenance              0.05 - 0.10
 
-For each category write 2 to 5 leaf criteria. Each leaf is ONE concrete,
-independently checkable requirement, specific to THIS paper: name the actual
-model component, dataset, hyperparameter, equation, training detail, metric, or
-reported result it refers to. A grader must be able to score it from the
-reproduction's artifacts alone.
+For each category write 2 to 5 leaf criteria. Each leaf MUST:
+  1. Name the EXACT paper-specific item it checks (algorithm, equation,
+     hyperparameter value, model name, dataset name, or numeric result).
+  2. Quote the section number where it is described (e.g. "Section 3.2").
+  3. Be independently checkable from artifacts alone.
 
-Good leaf:  "train.py implements the two-layer bidirectional GRU encoder with
-            hidden size 256 described in Section 3.1."
-Weak leaf:  "The model is implemented correctly."
+STRICT PROHIBITION — a leaf requirement string must NEVER contain:
+  • Empty parentheses or placeholders: "(, )", "( )", "(β, λ)", "(, λ)",
+    "(α, β, learning rate, etc.)" or any other unfilled template.
+  • Vague phrases with no values: "the hyperparameters are correctly set",
+    "the model is implemented correctly", "the training follows the paper".
+  Every such leaf is INVALID and must be rewritten with the actual values
+  extracted from the paper before you produce the JSON.
+
+GOOD leaf examples (these show the required level of specificity):
+  "train.py implements the sigmoid gate g_t = σ(β·Δ_t) with β=10 and a
+   stop-gradient applied to the gate, as described in Section 3.3."
+  "The GRPO and OPSD baselines are re-implemented with the same Qwen2.5-7B-
+   Instruct backbone as the proposed SDAR model (Section 4.1)."
+  "Sets λ=0.1 for the self-distillation loss weight and batch size 64 in
+   train.py, matching Section 4.1 Table 2 hyper-parameters."
+  "train.py implements the two-layer bidirectional GRU encoder with
+   hidden size 256 described in Section 3.1."
+
+WEAK leaf examples (NEVER produce these):
+  "The model is implemented correctly."
+  "The hyperparameters (, ) are correctly set as described in Section 4.1."
+  "Training follows the methodology described in the paper."
 
 Give every leaf a relative weight within its category.
 
@@ -64,7 +96,7 @@ Return ONLY this JSON object and nothing else:
       "name": "Method and code fidelity to the paper",
       "weight": 0.40,
       "leaves": [
-        {"requirements": "<concrete paper-specific criterion>", "weight": 0.3}
+        {"requirements": "<concrete paper-specific criterion with exact values>", "weight": 0.3}
       ]
     }
   ]
@@ -155,6 +187,26 @@ def _extract_json_object(raw: str) -> dict | None:
         return None
 
 
+def _is_placeholder_requirement(req: str) -> bool:
+    """Return True only for a genuinely empty / comma-only parenthetical.
+
+    This regex is the *last-resort* net for a truly empty template the model
+    forgot to fill — "(, )", "( )", "(,)". The primary defense against vague
+    leaves is the system prompt's concrete-value requirement; this net must
+    never over-drop a concrete leaf.
+
+    The earlier net ``\\(\\s*[^)0-9A-Za-z"\\']*\\s*\\)`` over-dropped real
+    metric/equation leaves whose parenthetical merely lacked an ASCII char —
+    "success rate (%)", "(gate.detach())" (inner ()), "r_t(θ)" (Greek) — which
+    stripped the SDAR rubric invariants from the tree (F-32). So it fires only
+    on an empty/comma-only paren, and never on a method-call paren (one
+    immediately preceded by a word char, e.g. ``detach()``).
+    """
+    if re.search(r'(?<!\w)\(\s*(?:,\s*)*\)', req):
+        return True
+    return False
+
+
 def _clean_categories(raw_categories: list) -> list[dict]:
     """Drop malformed categories and leaves; return a clean list."""
     cleaned: list[dict] = []
@@ -165,12 +217,19 @@ def _clean_categories(raw_categories: list) -> list[dict]:
         if not isinstance(name, str) or not name.strip():
             continue
         raw_leaves = cat.get("leaves") or []
-        good_leaves = [
-            lf for lf in raw_leaves
-            if isinstance(lf, dict)
-            and isinstance(lf.get("requirements", ""), str)
-            and lf.get("requirements", "").strip()
-        ]
+        good_leaves = []
+        for lf in raw_leaves:
+            if not isinstance(lf, dict):
+                continue
+            req = lf.get("requirements", "")
+            if not isinstance(req, str) or not req.strip():
+                continue
+            if _is_placeholder_requirement(req):
+                logger.warning(
+                    "generate_rubric_tree: dropped placeholder leaf: %r", req[:120]
+                )
+                continue
+            good_leaves.append(lf)
         if not good_leaves:
             continue
         cleaned.append({"name": name.strip(), "weight": cat.get("weight"), "leaves": good_leaves})

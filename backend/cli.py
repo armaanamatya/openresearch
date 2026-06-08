@@ -112,6 +112,115 @@ _ARXIV_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Claim-map titles that are placeholders/section headers, NOT the paper's real
+# title. A title equal (case-insensitively, trimmed) to any of these is rejected
+# so demo_status.json never renders junk. "paper_text" is the big one: the
+# workspace claim map hardcodes it as the first-entry title (see
+# `_build_workspace_claim_map._one_entry`), so the lossy-parse fallback would
+# otherwise surface "paper_text" as the paper title in the UI.
+_NOISE_TITLES = frozenset({
+    "abstract", "introduction", "1 introduction", "1. introduction",
+    "summary", "overview",
+    "paper_text", "paper text", "untitled", "untitled paper", "title",
+    # 'document' is the no-heading HTML-parser fallback section title (F-30).
+    "document",
+})
+
+
+def _is_noise_title(title: str) -> bool:
+    """True when ``title`` is a placeholder/section header, not a real title."""
+    return (not title) or title.strip().lower() in _NOISE_TITLES
+
+
+def _first_meaningful_line(text: str) -> str:
+    """Return the first title-like line of pre-extracted paper text.
+
+    Skips blank lines and obvious non-title lines (bare arXiv ids, "arXiv:…"
+    lines, and lines that are entirely digits/punctuation/whitespace), then
+    returns the first remaining line stripped — but only if it looks like a
+    title (3–200 chars and contains at least one letter). Returns "" otherwise.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        # Skip "arXiv:2605.15155" style provenance headers and bare arXiv ids.
+        if low.startswith("arxiv:") or _ARXIV_RE.fullmatch(line):
+            continue
+        # Skip lines with no letters at all (page numbers, rule lines, etc.).
+        if not any(ch.isalpha() for ch in line):
+            continue
+        if 3 <= len(line) <= 200:
+            return line
+        # A first line that has letters but is out-of-range (e.g. a giant
+        # wrapped paragraph) is not a title — stop looking, fall through.
+        return ""
+    return ""
+
+
+def _derive_paper_title(
+    source_kind: str,
+    paper_id: str,
+    claim_map_first_title: str = "",
+    paper_text_first_line: str = "",
+) -> str:
+    """Derive a human-readable paper title for demo_status.json.
+
+    Precedence:
+      1. ``paper_text_first_line`` (the first meaningful line of the
+         pre-extracted full paper text, via ``REPROLAB_PAPER_TEXT_PATH``) when
+         it looks like a title — this is the most authoritative real title.
+      2. ``claim_map_first_title`` when it is NOT a placeholder/section header
+         (see ``_is_noise_title``).
+      3. A readable fallback from ``paper_id`` keyed on ``source_kind``:
+         ``arxiv`` → ``arXiv:<id>``; ``doi`` → ``doi:<id>``; ``pdf`` → the
+         filename stem with separators normalized to spaces.
+
+    Pure / side-effect-free so it can be unit-tested in isolation. It never
+    returns the "paper_text" placeholder.
+    """
+    candidate = (paper_text_first_line or "").strip()
+    if candidate and not _is_noise_title(candidate) and any(
+        ch.isalpha() for ch in candidate
+    ) and 3 <= len(candidate) <= 200:
+        return candidate
+
+    claim = (claim_map_first_title or "").strip()
+    if claim and not _is_noise_title(claim):
+        return claim
+
+    pid = (paper_id or "").strip()
+    if source_kind == "arxiv":
+        return f"arXiv:{pid}" if pid else "arXiv paper"
+    if source_kind == "doi":
+        return f"doi:{pid}" if pid else "doi paper"
+    if source_kind == "pdf":
+        return pid.replace("_", " ").replace("-", " ").strip() or pid or "paper"
+    return pid or "paper"
+
+
+def _read_paper_text_first_line(path_str: str | None) -> str:
+    """Fail-soft read of the first meaningful line from a paper-text file.
+
+    ``path_str`` is typically ``os.environ["REPROLAB_PAPER_TEXT_PATH"]``. Reads
+    only a bounded prefix (the title lives in the first lines). Any error —
+    missing file, permission, decode — yields "" so ingest never crashes.
+    """
+    if not path_str:
+        return ""
+    try:
+        p = Path(path_str)
+        if not p.is_file():
+            return ""
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(8192)
+        return _first_meaningful_line(head)
+    except OSError:
+        return ""
+    except Exception:  # noqa: BLE001 — title rendering must not block the run
+        return ""
+
 
 def _build_workspace_claim_map(
     variables: dict, project_id: str, runs_root: Path | None = None
@@ -285,6 +394,31 @@ def _mark_demo_status_failed(
             "error": reason,
         }
         _atomic_write_json(path, merged)
+        # Also leave a terminal final_report.json so the leaderboard/aggregator
+        # can represent this crashed run. A crash before the run's try/finally
+        # reached `_finalize` (e.g. an early setup exception) flips demo_status
+        # to failed above but writes no report — leaving the run report-less.
+        # Best-effort + nested try: this must never raise (mirrors the outer
+        # contract) and must NEVER overwrite an existing report (a real
+        # _finalize / scorer write always wins).
+        try:
+            fr = runs_root / project_id / "final_report.json"
+            if not fr.exists():
+                from backend.agents.rlm.report import (
+                    RLMFinalReport,
+                    write_final_report_rlm,
+                )
+
+                write_final_report_rlm(
+                    RLMFinalReport(
+                        verdict="failed",
+                        reproduction_summary=reason,
+                        iterations=0,
+                    ),
+                    runs_root / project_id,
+                )
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -974,6 +1108,238 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     return 0 if success else 2
 
 
+def _build_resume_force_cells(
+    all_cells: list[dict],
+    rerun_envs: list[str] | None,
+    rerun_cell_ids: list[str] | None,
+) -> set[str]:
+    """Build the forced-rerun cell-id set from --rerun-env + --rerun-cell.
+
+    ``--rerun-env`` expands to EVERY cell id whose ``env`` matches; ``--rerun-cell``
+    adds explicit ids verbatim (kept even if not present in ``all_cells`` so a typo
+    is a harmless no-op rather than a silent drop).  Pure — unit-tested in
+    isolation so the selection logic is verifiable without a live run.
+    """
+    envs = {e.strip().lower() for e in (rerun_envs or []) if e and e.strip()}
+    forced: set[str] = set()
+    if envs:
+        for cell in all_cells:
+            if not isinstance(cell, dict):
+                continue
+            cid = cell.get("id")
+            cenv = str(cell.get("env", "") or "").strip().lower()
+            if isinstance(cid, str) and cenv in envs:
+                forced.add(cid)
+    for cid in (rerun_cell_ids or []):
+        if cid and cid.strip():
+            forced.add(cid.strip())
+    return forced
+
+
+def _select_cells_needing_rerun(
+    all_cells: list[dict],
+    code_dir: "Path",
+    force_cells: set[str],
+) -> dict[str, str]:
+    """Return ``{cell_id: reason}`` for every cell the resume would re-run.
+
+    A diagnostic preview of the re-run predicate (it does NOT execute anything):
+    a cell re-runs iff forced, OR it has no prior ok ``cell_manifest.json``, OR
+    its current fingerprint differs from the manifest's stored one.  Unchanged ok
+    cells are omitted (they will be skipped).  Pure + unit-tested in isolation.
+    """
+    from backend.agents.rlm import cell_fingerprint
+
+    selected: dict[str, str] = {}
+    for cell in all_cells:
+        if not isinstance(cell, dict):
+            continue
+        cid = cell.get("id")
+        if not isinstance(cid, str):
+            continue
+        if cid in force_cells:
+            selected[cid] = "forced"
+            continue
+        fp = cell_fingerprint.compute_fingerprint(cell, str(code_dir))
+        # The authoritative manifest lives in the cell's output_dir, namespaced by
+        # run id (outputs/<run_id>/<cell_id>/); a resume may use a fresh run id, so
+        # we scan all prior outputs/* and take the newest matching manifest.
+        prior = _load_any_cell_manifest(Path(code_dir), cid)
+        if not prior or prior.get("status") != "ok":
+            selected[cid] = "no_prior_ok"
+        elif prior.get("fingerprint") != fp:
+            selected[cid] = "fingerprint_changed"
+        # else: unchanged ok → skipped (omitted from selection)
+    return selected
+
+
+def _load_any_cell_manifest(code_dir: "Path", cell_id: str) -> dict | None:
+    """Find a cell's most-recent cell_manifest.json under code/outputs/*/<cell_id>/.
+
+    Cell outputs are namespaced by run id (``outputs/<run_id>/<cell_id>/``), and a
+    resume may target a fresh run id, so we scan all prior ``outputs/*`` dirs and
+    return the newest matching manifest.  Returns None when none exists.
+    """
+    import json as _json
+
+    from backend.agents.rlm.gpu_cell_runner import CELL_MANIFEST_NAME
+
+    outputs = Path(code_dir) / "outputs"
+    if not outputs.is_dir():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    for run_dir in outputs.iterdir():
+        mf = run_dir / cell_id / CELL_MANIFEST_NAME
+        if mf.is_file():
+            try:
+                candidates.append((mf.stat().st_mtime, mf))
+            except OSError:
+                continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    try:
+        data = _json.loads(candidates[0][1].read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _cmd_reproduce_resume_cells(args: argparse.Namespace, runs_root: Path) -> int:
+    """Cell-level resume short-circuit (Track B): re-run only changed/failed cells.
+
+    Skips ingest / understand / plan / implement entirely.  Refreshes the vendored
+    helpers in the prior ``code/`` (unless --force-regen, which is handled by the
+    caller falling through to the normal pipeline), computes each cell's
+    fingerprint, builds the forced-rerun set from --rerun-env / --rerun-cell,
+    arms ``REPROLAB_RESUME_CELLS``, and invokes ``run_experiment`` directly on the
+    existing ``code_dir`` — the SAME public entry the root loop uses, whose
+    cell-route gate (cells.json + train_cell.py + GPU backend) computes per-cell
+    fingerprints and skips unchanged ok cells inside ``_execute_cell_matrix``.
+
+    Returns 0 when at least one cell produced metrics (success/partial), else 2.
+    """
+    import os as _os
+
+    from backend.agents.baseline_implementation import refresh_harness_helpers
+    from backend.agents.dashboard_emitter import DashboardEmitter
+    from backend.agents.execution import ensure_sandbox_mode_available, resolve_sandbox_mode
+    from backend.agents.resilience import RunBudget
+    from backend.agents.resilience.cost import RunCostLedger
+    from backend.agents.rlm.context import RunContext
+    from backend.agents.rlm.primitives import run_experiment
+    from backend.agents.rlm.run import _parse_gpu_device_ids, _write_demo_status
+    from backend.agents.rlm.sse_bridge import make_emit
+    from backend.services.runtime import SandboxRuntimeError
+
+    source = str(getattr(args, "source", ""))
+    project_id = getattr(args, "project_id", None) or project_id_for(
+        _source_from_cli(source, getattr(args, "source_kind", None))
+    )
+    project_dir = runs_root / project_id
+    code_dir = project_dir / "code"
+    cells_path = code_dir / "cells.json"
+    train_cell_path = code_dir / "train_cell.py"
+
+    if not (cells_path.is_file() and train_cell_path.is_file()):
+        print(
+            f"[resume-cells] no prior cell matrix at {code_dir} "
+            f"(need cells.json + train_cell.py) — cannot resume; "
+            f"re-run without --resume-cells to start fresh.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        manifest = json.loads(cells_path.read_text(encoding="utf-8"))
+        all_cells = [c for c in (manifest.get("cells") or []) if isinstance(c, dict) and c.get("id")]
+    except Exception as exc:
+        print(f"[resume-cells] cells.json unreadable: {exc}", file=sys.stderr)
+        return 2
+    if not all_cells:
+        print("[resume-cells] cells.json present but enumerated no cells.", file=sys.stderr)
+        return 2
+
+    # Refresh vendored helpers for $0 (a warm retry leaves stale copies; resume
+    # needs current bytes so a fixed env helper actually re-runs its cells).
+    refresh_harness_helpers(code_dir)
+
+    # Build forced-rerun set + arm resume via env vars the cell route consumes.
+    force_cells = _build_resume_force_cells(
+        all_cells, getattr(args, "rerun_env", None), getattr(args, "rerun_cell", None)
+    )
+    _os.environ["REPROLAB_RESUME_CELLS"] = "1"
+    if force_cells:
+        _os.environ["REPROLAB_RESUME_FORCE_CELLS"] = ",".join(sorted(force_cells))
+    else:
+        _os.environ.pop("REPROLAB_RESUME_FORCE_CELLS", None)
+
+    # Diagnostic preview of what will re-run vs skip (does not execute anything).
+    to_rerun = _select_cells_needing_rerun(all_cells, code_dir, force_cells)
+    n_skip = len(all_cells) - len(to_rerun)
+    print(
+        f"[resume-cells] {len(all_cells)} cell(s): re-run {len(to_rerun)} "
+        f"(forced={len(force_cells)}), skip {n_skip} unchanged-ok.",
+        file=sys.stderr,
+    )
+
+    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
+    try:
+        ensure_sandbox_mode_available(sandbox_mode)
+    except SandboxRuntimeError as exc:
+        print(f"[resume-cells] sandbox preflight failed: {exc}", file=sys.stderr)
+        return 2
+
+    run_budget = RunBudget(
+        max_usd=getattr(args, "max_usd", None),
+        max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+        max_pod_seconds=_resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None)),
+        max_run_gpu_usd=getattr(args, "max_run_gpu_usd", None),
+    )
+    dashboard = DashboardEmitter(project_id, runs_root)
+    ctx = RunContext(
+        project_id=project_id,
+        project_dir=project_dir,
+        runs_root=runs_root,
+        dashboard=dashboard,
+        emit=make_emit(dashboard),
+        cost_ledger=RunCostLedger.load_jsonl(
+            project_dir / "cost_ledger.jsonl",
+            project_id=project_id,
+            attach_path=True,
+        ),
+        llm_client=None,
+        provider="none",
+        model="resume-cells",
+        sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
+        arxiv_id=source,
+        gpu_device_ids=_parse_gpu_device_ids(),
+    )
+    _write_demo_status(
+        project_dir, "running", primitive_provider="resume-cells",
+        process_status="running", verdict="unknown",
+    )
+
+    # run_experiment's cell-route gate fires on (local|docker GPU backend +
+    # cells.json + train_cell.py); _execute_cell_matrix computes per-cell
+    # fingerprints and honours REPROLAB_RESUME_CELLS / REPROLAB_RESUME_FORCE_CELLS.
+    result = run_experiment(
+        str(code_dir), "", model_id="resume", eval_env="resume", ctx=ctx,
+    )
+    success = bool(result.get("success")) and bool(result.get("metrics"))
+    _write_demo_status(
+        project_dir, "completed" if success else "failed",
+        error=None if success else result.get("error", "resume-cells: no cell produced metrics"),
+        primitive_provider="resume-cells", process_status="completed",
+        verdict="reproduced" if success else "failed",
+    )
+    ctx.cost_ledger.flush()
+    print(f"[resume-cells] project_id: {project_id}", file=sys.stderr)
+    print(f"[resume-cells] result    : {'ok' if success else 'failed'}", file=sys.stderr)
+    return 0 if success else 2
+
+
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     # BUG-LR-014: warn early if shell API-key vars shadow .env — see
@@ -1009,6 +1375,10 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     if getattr(args, "vram_gb", None) is not None:
         _os.environ["REPROLAB_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+    if getattr(args, "gpu_parallelism", None) is not None:
+        _os.environ["REPROLAB_GPU_PARALLELISM"] = args.gpu_parallelism
+    if getattr(args, "accelerator", None) is not None:
+        _os.environ["REPROLAB_ACCELERATOR"] = args.accelerator
     _max_rlm_iter = getattr(args, "max_rlm_iterations", None)
     if _max_rlm_iter is not None and _max_rlm_iter > 0:
         _os.environ["REPROLAB_MAX_RLM_ITERATIONS"] = str(_max_rlm_iter)
@@ -1046,6 +1416,69 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             f"[paper-hint] No built-in hint for {args.paper_hint!r}; continuing without one.",
             file=sys.stderr,
         )
+
+    # Full-scope env guidance (2026-06-01): when the EFFECTIVE scope keeps any of the
+    # SDAR paper environments active, tell the agent to use the shipped AGENTIC env
+    # modules (real ALFWorld / WebShop / dense-retrieval Search-QA) and train at paper
+    # depth — never fake them. Search-QA is included so even a Search-QA-only run gets
+    # the real-retrieval guidance (the 2026-05-31 closed-book surrogate floored it);
+    # an env the operator de-scopes drops out of _active_envs and is simply not named.
+    _active_envs = {d.normalized_id().strip().lower() for d in _effective_scope.datasets}
+    _full_scope_envs = [
+        e for e in ("ALFWorld", "WebShop", "Search-QA") if e.lower() in _active_envs
+    ]
+    if _full_scope_envs:
+        from backend.services.runtime.env_cache import FULL_SCOPE_ENV_GUIDANCE
+        _fs_text = FULL_SCOPE_ENV_GUIDANCE.format(envs=" + ".join(_full_scope_envs))
+        _existing_fs = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_existing_fs}\n\n{_fs_text}" if _existing_fs else _fs_text
+        )
+        print(
+            f"[full-scope] {' + '.join(_full_scope_envs)} active in scope — appended "
+            f"agentic-env (AgenticEnv + shipped modules) guidance for the agent.",
+            file=sys.stderr,
+        )
+
+    # Paper-hint invariants → env var so the spawned subprocess's RunContext
+    # picks them up via __post_init__ without requiring run.py changes.
+    # Serialise as a JSON array of InvariantSpec dicts.  Empty/unset when the
+    # hint has no invariants — the env var being absent is safe (RunContext
+    # __post_init__ treats a missing/empty value as "no invariants").
+    if _paper_hint_obj is not None and _paper_hint_obj.invariants:
+        import json as _json_mod
+        _os.environ["REPROLAB_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
+            [inv.model_dump() for inv in _paper_hint_obj.invariants]
+        )
+    else:
+        # No hint (or hint with empty invariants list) — ensure any stale env var
+        # from a previous run in the same process is cleared.
+        _os.environ.pop("REPROLAB_PAPER_HINT_INVARIANTS_JSON", None)
+
+    # #7 benchmark integrity: paper-hint blocked_resources ∪ operator --blacklist
+    # → REPROLAB_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
+    # ctx.blocked_terms → every agent spec's RuntimeGuard (Unit A). Curated
+    # sources only (the regex auto-derivation was rejected — it would block
+    # framework deps like trl). The arXiv path loads no bundle, so the paper-hint
+    # list is what guards the canonical SDAR run.
+    _blocked_terms = _resolve_blocked_terms(getattr(args, "blacklist", None), _paper_hint_obj)
+    if _blocked_terms:
+        import json as _json_bl
+        _os.environ["REPROLAB_BLOCKED_TERMS_JSON"] = _json_bl.dumps(_blocked_terms)
+        print(
+            f"[benchmark-guard] {len(_blocked_terms)} blocked resource(s) active — "
+            "the RuntimeGuard refuses agent access to them.",
+            file=sys.stderr,
+        )
+    else:
+        _os.environ.pop("REPROLAB_BLOCKED_TERMS_JSON", None)
+        if getattr(args, "paper_hint", None) or getattr(args, "blacklist", None):
+            print(
+                "[benchmark-guard] WARNING: this benchmark/hint run resolved an "
+                "EMPTY blocklist — the paper's own repo is NOT guarded. Add a "
+                "paper_hints blocked_resources entry or pass --blacklist.",
+                file=sys.stderr,
+            )
     if getattr(args, "scope_spec", None):
         print(
             f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "
@@ -1056,6 +1489,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     if getattr(args, "sanity", False):
         return _cmd_reproduce_sanity(args, runs_root)
+
+    # Cell-level resume short-circuit (Track B): re-run only changed/failed cells
+    # of a prior matrix, skipping ingest/understand/plan/implement entirely.
+    # --force-regen opts OUT (falls through to a full codegen pass so cells.json /
+    # train_cell.py themselves are regenerated, not just the env helpers).
+    if getattr(args, "resume_cells", False) and not getattr(args, "force_regen", False):
+        return _cmd_reproduce_resume_cells(args, runs_root)
 
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
@@ -1168,29 +1608,33 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             except (json.JSONDecodeError, OSError):
                 _existing = {}
         _paper_id = ""
-        _paper_title = ""
+        _source_kind = ""
         if isinstance(source, ArxivId):
             _paper_id = source.arxiv_id
-            _paper_title = f"arXiv:{source.arxiv_id}"
+            _source_kind = "arxiv"
         elif isinstance(source, PdfPath):
-            _stem = Path(source.path).stem
-            _paper_id = _stem
-            _paper_title = _stem.replace("_", " ").replace("-", " ").strip() or _stem
+            _paper_id = Path(source.path).stem
+            _source_kind = "pdf"
         elif isinstance(source, DoiRef):
             _paper_id = source.doi
-            _paper_title = f"doi:{source.doi}"
-        # Try to upgrade _paper_title from the workspace claim map (the
-        # parser may have extracted the real title into the first section).
+            _source_kind = "doi"
+        # First-entry title from the workspace claim map (the parser may have
+        # extracted the real title there). Note this is "paper_text" whenever
+        # the claim map resolved via the full-text/paper_text tiers, so it is
+        # rejected as noise inside _derive_paper_title.
         _entries = (workspace_claim_map or {}).get("entries") or []
         _first_title = (_entries[0].get("title") if _entries else "") or ""
-        # Reject the noise titles the bundle path produces ("Abstract",
-        # "Introduction", "1 Introduction"). Anything else is probably real.
-        _is_noise = (not _first_title) or _first_title.strip().lower() in {
-            "abstract", "introduction", "1 introduction", "1. introduction",
-            "summary", "overview",
-        }
-        if not _is_noise:
-            _paper_title = _first_title.strip()
+        # Highest-priority real title: the first meaningful line of the
+        # pre-extracted full paper text (REPROLAB_PAPER_TEXT_PATH). Fail-soft.
+        _text_first_line = _read_paper_text_first_line(
+            os.environ.get("REPROLAB_PAPER_TEXT_PATH")
+        )
+        _paper_title = _derive_paper_title(
+            _source_kind,
+            _paper_id,
+            claim_map_first_title=_first_title,
+            paper_text_first_line=_text_first_line,
+        )
         _existing.update({
             "paperId": _paper_id,
             "paperTitle": _paper_title,
@@ -1218,7 +1662,9 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     # --- Phase 2: Agent Pipeline ---
     user_hints = [h.strip() for h in args.hints.split(",")] if args.hints else None
-    blacklist_terms = _blacklist_entries_from_arg(args.blacklist)
+    # (#7) The blacklist is resolved + published to REPROLAB_BLOCKED_TERMS_JSON in
+    # the paper-hint env block above (this was a dead `blacklist_terms` line that
+    # computed the value and discarded it — the benchmark-integrity bug #7 fixes).
     from backend.agents.execution import (
         ExecutionProfile,
         ensure_sandbox_mode_available,
@@ -1472,10 +1918,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod"),
+        choices=("auto", "local", "docker", "runpod", "azure"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
+            "azure dispatches training cells as AKS Jobs on Azure GPU nodes; "
             "runpod uses a remote GPU Pod; docker is isolated local Docker; "
             "local runs commands on the host; auto resolves to the configured default."
         ),
@@ -1495,6 +1942,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "GPU policy for experiment sandboxes: off disables CUDA visibility; "
             "auto records intent without forcing GPUs; prefer/max request Docker GPUs when available."
+        ),
+    )
+    reproduce.add_argument(
+        "--gpu-parallelism",
+        choices=("auto", "single", "multi"),
+        default=None,
+        help=(
+            "Multi-GPU policy for the generated train.py: "
+            "auto (use multi-GPU when the paper benefits and >1 visible) | "
+            "single | multi. Default auto."
+        ),
+    )
+    reproduce.add_argument(
+        "--accelerator",
+        choices=("off", "auto", "local", "runpod", "azure", "endpoint"),
+        default=None,
+        help=(
+            "Route cheap RLM calls to a fast accelerator endpoint: "
+            "off|auto|local(vLLM on local GPUs)|runpod|azure|endpoint. Default off."
         ),
     )
     reproduce.add_argument(
@@ -1754,6 +2220,52 @@ def _build_parser() -> argparse.ArgumentParser:
             "fall back to paper defaults."
         ),
     )
+    reproduce.add_argument(
+        "--resume-cells",
+        dest="resume_cells",
+        action="store_true",
+        default=False,
+        help=(
+            "(rlm mode) cell-level resume: when a prior runs/<id>/code/ with "
+            "cells.json + train_cell.py exists, SKIP ingest/understand/plan/implement "
+            "and re-run ONLY the training cells whose status != ok or whose "
+            "fingerprint changed (env-helper bytes / cell params / behaviour flags). "
+            "Unchanged ok cells are reused for $0. Refreshes vendored helpers first."
+        ),
+    )
+    reproduce.add_argument(
+        "--rerun-env",
+        dest="rerun_env",
+        action="append",
+        choices=["alfworld", "search_qa", "webshop"],
+        default=None,
+        help=(
+            "(with --resume-cells) force re-run of every cell of this env even if "
+            "unchanged. Repeatable (e.g. --rerun-env alfworld --rerun-env webshop)."
+        ),
+    )
+    reproduce.add_argument(
+        "--rerun-cell",
+        dest="rerun_cell",
+        action="append",
+        default=None,
+        metavar="CELL_ID",
+        help=(
+            "(with --resume-cells) force re-run of a specific cell id "
+            "(e.g. qwen2_5_7b__sdar__alfworld__s42) even if unchanged. Repeatable."
+        ),
+    )
+    reproduce.add_argument(
+        "--force-regen",
+        dest="force_regen",
+        action="store_true",
+        default=False,
+        help=(
+            "(with --resume-cells) fall through to a full codegen pass instead of "
+            "only refreshing vendored helpers — use when train_cell.py / cells.json "
+            "themselves must be regenerated, not just the env helpers."
+        ),
+    )
     reproduce.set_defaults(func=cmd_reproduce)
 
     from backend.cli_paperbench import add_paperbench_subparser
@@ -1925,6 +2437,28 @@ def _blacklist_entries_from_arg(raw: str | None) -> tuple[str, ...]:
             if line.strip() and not line.lstrip().startswith("#")
         )
     return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _resolve_blocked_terms(blacklist_arg: str | None, paper_hint) -> list[str]:
+    """Union the #7 benchmark-integrity blocklist from its CURATED sources.
+
+    Two curated sources, deduped + order-preserving: the operator ``--blacklist``
+    (a file path or comma-list, via :func:`_blacklist_entries_from_arg`) and the
+    paper-hint's ``blocked_resources`` (the paper's own repo, etc.). The regex
+    auto-derivation from discovered github repos was rejected by design — it would
+    sweep up legitimate framework deps (``huggingface/trl``). ``paper_hint`` is
+    duck-typed (a :class:`PaperHint` or ``None``) to avoid an import cycle.
+    """
+    terms: list[str] = []
+    for term in _blacklist_entries_from_arg(blacklist_arg):
+        if term and term not in terms:
+            terms.append(term)
+    if paper_hint is not None:
+        for term in getattr(paper_hint, "blocked_resources", ()) or ():
+            term = (term or "").strip()
+            if term and term not in terms:
+                terms.append(term)
+    return terms
 
 
 def _load_scope_spec_arg(raw: str | None):

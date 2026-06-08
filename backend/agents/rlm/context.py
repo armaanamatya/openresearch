@@ -50,6 +50,9 @@ class RunContext:
                              # than assuming docker = CPU-only. (2026-05-23 user mandate:
                              # "sandbox shouldn't be cpu only it should be dynamic since
                              # we can use runpod etc.")
+    gpu_device_ids: tuple[str, ...] = ()  # host GPU UUIDs leased to this run (local sandbox); set from REPROLAB_GPU_DEVICE_IDS
+    gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from REPROLAB_GPU_PARALLELISM
+    gpu_visible_count: int | None = None  # GPUs visible to this run (from CUDA_VISIBLE_DEVICES / lease); hints the code-writing agent
     run_budget: Any = None   # RunBudget — threaded from --max-pod-seconds / --max-usd etc.
     current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
@@ -72,6 +75,30 @@ class RunContext:
     # Typed as Any to avoid a top-level import cycle (schemas.ReproductionContract).
     reproduction_contract: Any = None  # ReproductionContract | None
 
+    # Paper-hint invariants (2026-05-29): list[InvariantSpec] from
+    # PaperHint.invariants — loaded from REPROLAB_PAPER_HINT_INVARIANTS_JSON at
+    # run start by run.py (mirrors the scope_spec env-var pattern).  Typed as
+    # Any to avoid a top-level import cycle (schemas.InvariantSpec).
+    # None / [] means no paper-hint was supplied or the hint has no invariants.
+    paper_hint_invariants: list[Any] = field(default_factory=list)
+
+    # Benchmark-integrity blocklist (2026-05-31, #7): canonical PaperBench
+    # blacklist terms (the paper's own repo, etc.) that NO agent may fetch.
+    # Threaded into every agent spec's RuntimeGuard via collect_agent_text →
+    # to_runtime_spec. Auto-loaded from REPROLAB_BLOCKED_TERMS_JSON at run start
+    # (cli.py unions bundle.blacklist_entries() + --blacklist + the arXiv-keyed
+    # paper_hints blocklist, then sets the env var — mirrors the scope_spec /
+    # paper_hint_invariants pattern). Empty () means no blocklist resolved → the
+    # RuntimeGuard is a no-op.
+    blocked_terms: tuple[str, ...] = ()
+    # Verified env-setup exclusions (2026-06-01 full-scope): VERIFIED
+    # ``env_setup_failed`` Exclusions from provision_scope at run start (an
+    # ALFWorld/WebShop the host could not stand up). Folded into
+    # ``metrics.json::scope`` by primitives._apply_operator_scope so the rubric
+    # EXCLUDES (not zeroes) those env leaves — the fairness principle. Typed as
+    # Any to avoid importing exclusion.Exclusion at the module top.
+    env_setup_exclusions: list[Any] = field(default_factory=list)
+
     # --- Forced-iteration policy state (Lane H, spec 2026-05-24) ---
     # The most recent verify_against_rubric result the root has observed.
     # Set by binding._emit_supplemental on every successful rubric event so
@@ -81,6 +108,40 @@ class RunContext:
     latest_rubric_score: float | None = None
     latest_rubric_target: float | None = None
     latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
+
+    def __post_init__(self) -> None:
+        """Auto-load env-var-backed run config when not already set by the caller.
+
+        Mirrors the REPROLAB_SCOPE_SPEC_JSON pattern: cli.py serialises values to
+        JSON and sets the env var before the subprocess is spawned, so every
+        RunContext picks them up automatically without a change to run.py. An
+        env-var parse failure must never crash a run, so each block is guarded.
+        Each field is loaded independently — a caller-supplied invariants list
+        must not suppress the blocked_terms autoload (and vice versa).
+        """
+        import json as _json
+        import os as _os
+
+        # paper_hint_invariants ← REPROLAB_PAPER_HINT_INVARIANTS_JSON
+        if not self.paper_hint_invariants:
+            _inv_json = _os.environ.get("REPROLAB_PAPER_HINT_INVARIANTS_JSON", "").strip()
+            if _inv_json:
+                try:
+                    from backend.agents.schemas import InvariantSpec as _InvariantSpec
+                    _raw = _json.loads(_inv_json)
+                    if isinstance(_raw, list):
+                        self.paper_hint_invariants = [
+                            _InvariantSpec.model_validate(item) if isinstance(item, dict) else item
+                            for item in _raw
+                        ]
+                except Exception:  # noqa: BLE001 — env-var parse failure must never crash a run
+                    pass
+
+        # blocked_terms ← REPROLAB_BLOCKED_TERMS_JSON (#7) via the shared parser,
+        # so RunContext and collect_agent_text seed the RuntimeGuard identically.
+        if not self.blocked_terms:
+            from backend.agents.runtime.base import blocked_terms_from_env
+            self.blocked_terms = blocked_terms_from_env()
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

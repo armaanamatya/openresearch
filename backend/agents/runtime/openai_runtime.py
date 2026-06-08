@@ -21,7 +21,24 @@ from backend.agents.runtime.base import (
 
 
 class OpenAiAgentRuntime:
-    """AgentRuntime implementation backed by ``openai-agents``."""
+    """AgentRuntime implementation backed by ``openai-agents``.
+
+    With no args it runs against OpenAI's API (Responses). Pass ``base_url`` to
+    point it at a custom OpenAI-compatible endpoint (e.g. a local vLLM server
+    serving Qwen) in chat-completions mode — used by the executor tier so
+    ``implement_baseline`` can run on Qwen instead of Sonnet.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        use_chat_completions: bool = True,
+    ) -> None:
+        self._base_url = base_url
+        self._api_key = api_key
+        self._use_chat_completions = use_chat_completions
 
     @property
     def provider_name(self) -> ProviderName:
@@ -45,13 +62,36 @@ class OpenAiAgentRuntime:
         Runner = agents_module.Runner
         WebSearchTool = getattr(agents_module, "WebSearchTool", None)
         function_tool = agents_module.function_tool
-        configure_openai_agents_sdk_credentials(
-            getattr(agents_module, "set_default_openai_key", None)
-        )
+
+        custom_client = None
+        chat_model_cls = None
+        if self._base_url:
+            from openai import AsyncOpenAI
+
+            custom_client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key or "local")
+            chat_model_cls = getattr(agents_module, "OpenAIChatCompletionsModel", None)
+            # The SDK would POST traces to api.openai.com with the local key → 401 noise.
+            _set_td = getattr(agents_module, "set_tracing_disabled", None)
+            if _set_td is not None:
+                _set_td(True)
+        else:
+            configure_openai_agents_sdk_credentials(
+                getattr(agents_module, "set_default_openai_key", None)
+            )
+
+        def _model_for(spec: AgentRuntimeSpec) -> Any:
+            # Bind the model to the custom (vLLM) client via OpenAIChatCompletionsModel —
+            # this bypasses the SDK's "<prefix>/<model>" string parsing, which otherwise
+            # rejects ids like "Qwen/Qwen2.5-Coder-…" with "Unknown prefix: Qwen".
+            if chat_model_cls is not None and custom_client is not None:
+                return chat_model_cls(model=spec.model, openai_client=custom_client)
+            return spec.model or None
 
         root = (agent.working_directory or Path.cwd()).resolve()
         handoffs = [
-            _build_openai_agent(sub_agent, root, Agent, function_tool, WebSearchTool)
+            _build_openai_agent(
+                sub_agent, root, Agent, function_tool, WebSearchTool, model=_model_for(sub_agent)
+            )
             for sub_agent in agent.sub_agents
         ]
         openai_agent = _build_openai_agent(
@@ -61,6 +101,7 @@ class OpenAiAgentRuntime:
             function_tool,
             WebSearchTool,
             handoffs=handoffs,
+            model=_model_for(agent),
         )
 
         run_kwargs = {"input": user_input}
@@ -108,12 +149,13 @@ def _build_openai_agent(
     web_search_tool_cls: type | None,
     *,
     handoffs: list[Any] | None = None,
+    model: Any = None,
 ) -> Any:
     return agent_cls(
         name=_openai_safe_name(spec.name),
         handoff_description=spec.description or spec.name,
         instructions=spec.instructions,
-        model=spec.model or None,
+        model=model if model is not None else (spec.model or None),
         tools=_build_tools(spec, root, function_tool, web_search_tool_cls),
         handoffs=handoffs or [],
     )

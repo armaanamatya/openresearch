@@ -20,6 +20,14 @@ WHAT BLOCKS:
   * Import-from of a locally-defined symbol that doesn't exist — ``from .models
     import VAE`` but no class or function named ``VAE`` in models.py.
 
+WHAT WARNS (``soft`` — surfaced but never short-circuits the run):
+  * Swallowed-backward-OOM — a ``try: loss.backward()/optimizer.step()`` whose
+    handler catches the OOM (``RuntimeError`` / ``torch.cuda.OutOfMemoryError`` /
+    bare ``Exception``) and skips the step WITHOUT re-raising or shrinking a
+    batch/scale variable, so the run swallows the OOM and exits 0. Kept ``soft``
+    because the legitimate catch-OOM-shrink-and-retry pattern is structurally
+    similar (BES Phase 2 Component C, spec 2026-06-07).
+
 WHAT DOES NOT BLOCK (conservative — avoid false positives):
   * Dynamic attribute access — ``setattr(model, "reparameterize", ...)`` BEFORE the
     call → skip. ``__setattr__`` override / ``**kwargs``-driven ``__init__`` → skip.
@@ -542,6 +550,396 @@ def _check_local_import_from(
 
 
 # ---------------------------------------------------------------------------
+# Swallowed-backward-OOM check (BES Phase 2 Component C, spec 2026-06-07)
+# ---------------------------------------------------------------------------
+#
+# The anti-pattern: a training step wraps ``loss.backward()`` / ``optimizer.step()``
+# in a ``try`` whose handler catches the OOM (``RuntimeError`` /
+# ``torch.cuda.OutOfMemoryError`` / bare ``Exception``) and then SKIPS the step
+# (``continue`` / ``pass`` / ``break``) WITHOUT either re-raising or shrinking a
+# batch/scale variable. The script swallows the OOM and exits 0 — today this is
+# only caught POSTflight by a log scan (``_OOM_LOG_MARKERS`` in primitives.py),
+# i.e. after the GPU run already burned. This static check surfaces the shape
+# before sandbox dispatch.
+#
+# FP-tight by design (the spec demands ``soft``, never ``hard``): the legitimate
+# catch-OOM-shrink-and-retry pattern looks structurally similar, so a handler that
+# re-raises OR mutates a batch/scale/grad-accum/micro variable is explicitly NOT
+# flagged. The except-type names mirror ``_OOM_LOG_MARKERS`` semantics (this is a
+# STATIC AST match, not the runtime log scan).
+
+# Exception class names whose catch (alone) qualifies as "could be swallowing the
+# OOM". Mirrors the marker semantics of primitives.py ``_OOM_LOG_MARKERS`` but as
+# a static AST type match. A bare ``except:`` (handler.type is None) also catches
+# OOM and qualifies.
+_OOM_EXCEPT_NAMES = frozenset({
+    "RuntimeError",          # CUDA OOM raises a RuntimeError on most torch builds
+    "OutOfMemoryError",      # torch.cuda.OutOfMemoryError (modern torch)
+    "Exception",             # bare/broad catch swallows the OOM too
+})
+# Substrings that, when present in an assignment target's name, mean the handler is
+# shrinking the batch / loss scale / grad-accum (i.e. a real retry), so it must NOT
+# be flagged.
+# Distinctive substrings (matched anywhere) vs short tokens (matched only as a
+# whole '_'-delimited word-part, so 'bs' matches 'bs'/'micro_bs' but NOT 'probs').
+_BATCH_SCALE_SUBSTR = ("batch", "scale", "grad_accum", "micro")
+_BATCH_SCALE_WORDS = ("bs", "mbs", "gas", "accum")
+
+
+def _iter_handler_nodes(node: ast.AST):
+    """Yield descendants of ``node`` WITHOUT descending into nested function/class/
+    lambda bodies — their statements belong to a different scope, so counting a
+    ``raise`` or a ``batch_size = …`` inside them causes false matches (Codex)."""
+    for child in ast.iter_child_nodes(node):
+        yield child
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield from _iter_handler_nodes(child)
+
+
+def _handler_catches_oom(handler: ast.ExceptHandler) -> bool:
+    """True if this ``except`` clause catches an OOM-shaped exception.
+
+    Qualifies on a bare ``except:`` (``handler.type is None``), or a clause naming
+    ``RuntimeError`` / ``OutOfMemoryError`` (incl. ``torch.cuda.OutOfMemoryError``
+    via attribute ``.attr``) / ``Exception`` — directly or inside a tuple
+    ``except (RuntimeError, ValueError):``.
+    """
+    etype = handler.type
+    if etype is None:
+        return True  # bare ``except:`` swallows everything, OOM included
+    candidates = etype.elts if isinstance(etype, ast.Tuple) else [etype]
+    for cand in candidates:
+        if isinstance(cand, ast.Name) and cand.id in _OOM_EXCEPT_NAMES:
+            return True
+        if isinstance(cand, ast.Attribute) and cand.attr in _OOM_EXCEPT_NAMES:
+            return True
+    return False
+
+
+def _handler_reraises(handler: ast.ExceptHandler) -> bool:
+    """True if the handler body re-raises anywhere (``raise`` / ``raise exc``).
+
+    Scopes to the handler's own body (no nested function/class bodies)."""
+    return any(isinstance(n, ast.Raise) for n in _iter_handler_nodes(handler))
+
+
+def _name_is_batch_scale(ident: str) -> bool:
+    low = ident.lower()
+    if any(tok in low for tok in _BATCH_SCALE_SUBSTR):
+        return True
+    # short tokens match only as a whole '_'-delimited word-part (avoids 'probs').
+    return any(part in _BATCH_SCALE_WORDS for part in low.split("_"))
+
+
+def _target_is_batch_scale(tgt: ast.expr) -> bool:
+    """Whether an assignment target names a batch/scale var — handling bare Name,
+    Attribute, Tuple/List unpacking (``bs, retries = …``), and a string-keyed
+    Subscript (``cfg['batch_size'] //= 2``). (Codex should-fix.)"""
+    if isinstance(tgt, ast.Name):
+        return _name_is_batch_scale(tgt.id)
+    if isinstance(tgt, ast.Attribute):
+        return _name_is_batch_scale(tgt.attr)
+    if isinstance(tgt, (ast.Tuple, ast.List)):
+        return any(_target_is_batch_scale(e) for e in tgt.elts)
+    if isinstance(tgt, ast.Subscript):
+        sl = tgt.slice
+        # py3.9+: slice IS the Constant; py3.8: ast.Index wrapper around it.
+        const = sl if isinstance(sl, ast.Constant) else getattr(sl, "value", None)
+        if isinstance(const, ast.Constant):
+            const = const.value
+        if isinstance(const, str) and _name_is_batch_scale(const):
+            return True
+        return _target_is_batch_scale(tgt.value)
+    return False
+
+
+def _handler_mutates_batch_scale(handler: ast.ExceptHandler) -> bool:
+    """True if the handler assigns to a batch/scale/grad-accum/micro variable.
+
+    Covers plain ``x = ...`` (``ast.Assign``), augmented ``x //= 2``
+    (``ast.AugAssign``), and annotated ``x: int = ...`` (``ast.AnnAssign``). The
+    target may be a bare ``Name`` (``batch_size``) or an ``Attribute``
+    (``self.batch_size``) — a name-substring match against
+    ``_BATCH_SCALE_TOKENS`` means a real shrink-and-retry, so DON'T flag.
+    """
+    for node in _iter_handler_nodes(handler):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        else:
+            continue
+        if any(_target_is_batch_scale(tgt) for tgt in targets):
+            return True
+    return False
+
+
+def _try_body_has_backward_step(node: ast.Try) -> int:
+    """Return the line of the first ``.backward()`` / ``.step()`` call in the
+    ``try`` BODY (not handlers / orelse / finalbody), or 0 if none.
+
+    Attribute-call match: ``<expr>.backward(...)`` or ``<expr>.step(...)`` — the
+    optimizer/scaler step the OOM swallow skips. We scope to the body so a
+    ``.step()`` inside the handler (e.g. a scheduler) does not count.
+    """
+    for stmt in node.body:
+        for sub in ast.walk(stmt):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if isinstance(func, ast.Attribute) and func.attr in ("backward", "step"):
+                return getattr(sub, "lineno", 0) or getattr(node, "lineno", 0)
+    return 0
+
+
+def _check_swallowed_backward_oom(
+    tree: ast.AST,
+    path: Path,
+    out: list[PreflightViolation],
+) -> None:
+    """Flag the swallow-and-skip OOM anti-pattern (BES Phase 2 Component C).
+
+    Emits a ``soft`` violation for an ``ast.Try`` whose BODY calls
+    ``.backward()`` / ``.step()`` and that has at least one handler which:
+      * catches an OOM-shaped exception (``RuntimeError`` /
+        ``torch.cuda.OutOfMemoryError`` / ``OutOfMemoryError`` / bare
+        ``except:`` / ``Exception``), AND
+      * does NOT re-raise, AND
+      * does NOT mutate a batch/scale/grad-accum/micro variable.
+
+    Such a handler skips the optimizer step and lets the run exit 0 — masking an
+    OOM. A legitimate catch-OOM-shrink-and-retry (re-raises OR shrinks a
+    batch/scale var) is deliberately NOT flagged (FP-tight). Always ``soft`` — the
+    spec keeps this report-not-block because the shrink pattern is similar.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        step_line = _try_body_has_backward_step(node)
+        if not step_line:
+            continue
+        for handler in node.handlers:
+            if not _handler_catches_oom(handler):
+                continue
+            if _handler_reraises(handler):
+                continue  # re-raises → not swallowed
+            if _handler_mutates_batch_scale(handler):
+                continue  # shrink-and-retry → legitimate, not swallowed
+            # Swallow confirmed: OOM-shaped catch that neither re-raises nor shrinks.
+            lineno = getattr(handler, "lineno", 0) or step_line
+            etype = (
+                "except:" if handler.type is None
+                else getattr(handler.type, "id", None)
+                or getattr(handler.type, "attr", "Exception")
+            )
+            out.append(PreflightViolation(
+                file=path.name,
+                line=lineno,
+                class_name=None,
+                missing_attr=None,
+                suggested_fix=(
+                    f"The `except {etype}` around the backward/optimizer step in "
+                    f"`{path.name}` skips the step on OOM (no re-raise, no batch/scale "
+                    f"shrink) — the run swallows the OOM and exits 0. Either re-raise so "
+                    f"the orchestrator's OOM shrink-retry handles it, or shrink a "
+                    f"batch/scale/grad_accum variable inside the handler and retry the step."
+                ),
+                severity="soft",
+                detail=(
+                    f"{path.name}:{lineno}: `.backward()`/`.step()` (line {step_line}) is "
+                    f"wrapped in a try whose `{etype}` handler neither re-raises nor "
+                    f"shrinks a batch/scale variable — a swallowed-OOM skip-the-step "
+                    f"pattern that exits 0 (silent_oom). Re-raise or shrink-and-retry."
+                ),
+            ))
+            break  # one violation per Try is enough
+
+
+# ---------------------------------------------------------------------------
+# SDAR teacher/student env interface contract
+# ---------------------------------------------------------------------------
+#
+# The 2026-05-31 failure (`prj_09047604e591d969`): every `alfworld` cell of the
+# SDAR matrix died mid-grid with::
+#
+#     AttributeError: 'ALFWorldEnv' object has no attribute 'build_student_prompt'
+#
+# The agent's trainer called ``env.build_student_prompt(...)`` on an ``ALFWorldEnv``
+# that neither defined the method nor subclassed ``BaseEnv`` (the ABC in
+# ``sdar_env_base.py`` that would have turned this into a loud construction-time
+# ``TypeError``). The bug slipped past pre-flight because the SDAR envs live at
+# ``code/sdar/envs/*.py`` — two levels deep — and the other checks only glob one
+# level (``code_dir/*.py``). This check walks RECURSIVELY.
+#
+# Self-scoping (conservative — avoid false positives on unrelated ``*Env`` classes
+# in non-SDAR papers): the contract is only "in play" when the code actually uses
+# the teacher/student surface (imports ``sdar_env_base`` / names ``BaseEnv`` / calls
+# or accesses ``build_student_prompt`` / ``build_teacher_prompt`` somewhere). When no
+# such signal is present, the check returns immediately and flags nothing.
+
+_REQUIRED_ENV_METHODS = ("build_student_prompt", "build_teacher_prompt")
+_BASE_ENV_NAME = "BaseEnv"
+_AGENTIC_ENV_NAME = "AgenticEnv"
+_BASE_ENV_MODULE = "sdar_env_base"
+# Bases that already satisfy the teacher/student contract: BaseEnv (the ABC) and
+# AgenticEnv (which subclasses BaseEnv and ships concrete prompt builders), plus
+# the harness-shipped concrete agentic envs the agent is told to use directly.
+# A ``class FooEnv(<any of these>)`` cannot AttributeError on the contract.
+_VALID_ENV_BASES = frozenset({
+    _BASE_ENV_NAME, _AGENTIC_ENV_NAME,
+    "SearchQAEnv", "ALFWorldEnv", "WebShopEnv",
+})
+# Names whose mere presence means the SDAR env contract is "in play".
+_ENV_CONTRACT_NAMES = frozenset({_BASE_ENV_NAME, _AGENTIC_ENV_NAME})
+
+
+def _file_uses_env_contract(tree: ast.AST) -> bool:
+    """Return True if this file imports/names the SDAR env contract surface.
+
+    Signals (any one is enough):
+      * ``import sdar_env_base`` / ``from sdar_env_base import ...``
+      * the bare name ``BaseEnv`` referenced anywhere (import, base class, …)
+      * a reference (call or attribute access) to ``build_student_prompt`` /
+        ``build_teacher_prompt``
+    """
+    for node in ast.walk(tree):
+        # ``import sdar_env_base`` (possibly dotted / aliased).
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == _BASE_ENV_MODULE:
+                    return True
+        # ``from sdar_env_base import BaseEnv`` (or relative ``from .sdar_env_base``).
+        if isinstance(node, ast.ImportFrom):
+            module_stem = (node.module or "").lstrip(".")
+            if module_stem.split(".")[0] == _BASE_ENV_MODULE:
+                return True
+            for alias in node.names:
+                if alias.name in _ENV_CONTRACT_NAMES:
+                    return True
+        # Bare name ``BaseEnv`` / ``AgenticEnv`` referenced anywhere.
+        if isinstance(node, ast.Name) and node.id in _ENV_CONTRACT_NAMES:
+            return True
+        # Attribute access of the form ``module.BaseEnv`` / ``module.AgenticEnv``.
+        if isinstance(node, ast.Attribute) and node.attr in _ENV_CONTRACT_NAMES:
+            return True
+        # Reference to one of the required methods — either ``obj.build_student_prompt``
+        # (attribute access / call) or the bare name (e.g. passed around).
+        if isinstance(node, ast.Attribute) and node.attr in _REQUIRED_ENV_METHODS:
+            return True
+        if isinstance(node, ast.Name) and node.id in _REQUIRED_ENV_METHODS:
+            return True
+    return False
+
+
+def _base_is_valid_env_base(base: ast.expr) -> bool:
+    """Return True if an ``ast`` base-class expression names a contract-satisfying
+    base — ``BaseEnv``, ``AgenticEnv``, or a harness-shipped concrete env.
+
+    Matches both ``class Foo(AgenticEnv):`` (``ast.Name``) and
+    ``class Foo(mod.AgenticEnv):`` (``ast.Attribute``).
+    """
+    if isinstance(base, ast.Name):
+        return base.id in _VALID_ENV_BASES
+    if isinstance(base, ast.Attribute):
+        return base.attr in _VALID_ENV_BASES
+    return False
+
+
+def _check_env_interface_contract(
+    code_dir: Path,
+    out: list[PreflightViolation],
+) -> None:
+    """Catch a ``*Env`` that will ``AttributeError`` on the SDAR teacher/student
+    contract BEFORE the training grid runs.
+
+    Walks ``code_dir`` RECURSIVELY (the existing per-file checks only glob one
+    level; the SDAR envs live at ``code/sdar/envs/*.py``).
+
+    Step 1 — self-scope: if no file in the tree uses the env contract (imports
+    ``sdar_env_base`` / names ``BaseEnv`` / references ``build_student_prompt`` /
+    ``build_teacher_prompt``), return immediately and flag nothing. This keeps
+    unrelated ``*Env`` classes in non-SDAR papers from being flagged.
+
+    Step 2 — flag: for every ``ClassDef`` whose name ends in ``"Env"`` (and is not
+    ``BaseEnv`` itself) that defines NEITHER required method AND does not directly
+    subclass ``BaseEnv``, emit a ``hard`` violation. A class that subclasses
+    ``BaseEnv`` is left alone: the ABC enforces the methods at construction (a
+    loud, named ``TypeError``), so the AST backstop only needs to catch the
+    non-subclassing escape hatch.
+
+    Fail-soft per file (try/except) — never raises from pre-flight.
+    """
+    py_files: list[Path] = sorted(
+        p for p in code_dir.rglob("*.py") if p.is_file()
+    )
+    if not py_files:
+        return
+
+    # Parse every file once (fail-soft per file), keeping the tree for re-use.
+    parsed: list[tuple[Path, ast.AST]] = []
+    for path in py_files:
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if not source.strip():
+                continue
+            tree = ast.parse(source, filename=str(path))
+        except Exception:  # noqa: BLE001 — syntax errors are caught elsewhere
+            continue
+        parsed.append((path, tree))
+
+    if not parsed:
+        return
+
+    # Step 1: self-scope — is the teacher/student contract actually in play?
+    if not any(_file_uses_env_contract(tree) for _path, tree in parsed):
+        return  # this paper does not use the contract — skip entirely.
+
+    # Step 2: flag non-subclassing, non-implementing ``*Env`` classes.
+    for path, tree in parsed:
+        try:
+            rel = path.relative_to(code_dir).as_posix()
+        except ValueError:
+            rel = path.name
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            name = node.name
+            if not name.endswith("Env") or name == _BASE_ENV_NAME:
+                continue
+            # Does it directly subclass BaseEnv? If so, the ABC enforces the
+            # methods at construction — don't flag.
+            if any(_base_is_valid_env_base(base) for base in node.bases):
+                continue
+            # Does it define the methods itself (incl. same-file inheritance)?
+            members = _collect_all_class_members_with_inheritance(tree, name)
+            if any(m in members for m in _REQUIRED_ENV_METHODS):
+                continue
+            lineno = getattr(node, "lineno", 0)
+            out.append(PreflightViolation(
+                file=rel,
+                line=lineno,
+                class_name=name,
+                missing_attr="build_student_prompt/build_teacher_prompt",
+                suggested_fix=(
+                    f"Make `{name}` subclass BaseEnv (single-turn) or AgenticEnv "
+                    f"(multi-turn) from sdar_env_base: `from sdar_env_base import "
+                    f"AgenticEnv` then `class {name}(AgenticEnv): ...` (implement "
+                    f"reset/step) — or import a shipped env (search_qa_env, "
+                    f"alfworld_env, webshop_env). The harness copies these into code/."
+                ),
+                severity="hard",
+                detail=(
+                    f"{rel}:{lineno}: `{name}` neither subclasses BaseEnv nor "
+                    f"defines build_student_prompt/build_teacher_prompt — the SDAR "
+                    f"trainer calls build_student_prompt/build_teacher_prompt on "
+                    f"every env, so this AttributeErrors mid-grid."
+                ),
+            ))
+
+
+# ---------------------------------------------------------------------------
 # Syntax error (surfaced via parse)
 # ---------------------------------------------------------------------------
 
@@ -609,15 +1007,19 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
     if not code_dir.is_dir():
         return []
 
+    violations: list[PreflightViolation] = []
+
     # Collect all .py files — we inspect agent-written code, not vendored libraries.
     # Walk one level deep: train.py, models.py, utils.py etc.
+    #
+    # NOTE: an empty one-level glob is NOT an early return. The SDAR envs live two
+    # levels deep (``code/sdar/envs/*.py``) with nothing at the top level, so a
+    # ``return []`` here would shadow the recursive env-contract check below — the
+    # exact blind spot that let the 2026-05-31 AttributeError slip past pre-flight.
     py_files: list[Path] = sorted(
         p for p in code_dir.glob("*.py") if p.is_file()
     )
-    if not py_files:
-        return []
 
-    violations: list[PreflightViolation] = []
     trees: dict[Path, ast.AST] = {}
 
     # Parse phase — collect syntax errors first.
@@ -652,6 +1054,20 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
             _check_local_import_from(tree, path, code_dir, violations)
         except Exception:  # noqa: BLE001
             logger.debug("preflight_ast: _check_local_import_from failed on %s", path.name)
+
+        try:
+            _check_swallowed_backward_oom(tree, path, violations)
+        except Exception:  # noqa: BLE001
+            logger.debug("preflight_ast: _check_swallowed_backward_oom failed on %s", path.name)
+
+    # SDAR teacher/student env interface contract — needs its OWN recursive walk
+    # (``rglob``), independent of ``py_files`` above which only globs one level.
+    # The SDAR envs live at ``code/sdar/envs/*.py``, which is how the 2026-05-31
+    # AttributeError slipped past pre-flight.
+    try:
+        _check_env_interface_contract(code_dir, violations)
+    except Exception:  # noqa: BLE001 — never raise from pre-flight
+        logger.debug("preflight_ast: _check_env_interface_contract failed")
 
     return violations
 
