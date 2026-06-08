@@ -47,7 +47,7 @@ import sys
 import tempfile
 import time
 import traceback
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -379,6 +379,15 @@ def download_prefix_to_dir(
     for blob in cc.list_blobs(name_starts_with=blob_prefix):
         name: str = blob.name
         relative = name[len(blob_prefix):].lstrip("/")
+        # Defense-in-depth: a blob name is an external boundary — never let it
+        # escape local_dir via ".." or an absolute path. The upload side
+        # (azure_blob._validate_blob_name) already rejects these; the download
+        # side must validate too, or a poisoned blob name could write outside the
+        # cell's code dir. Skip the unsafe entry (don't fail the whole pull).
+        rel = PurePosixPath(relative)
+        if not relative or rel.is_absolute() or ".." in rel.parts:
+            logger.warning("download_prefix_to_dir: skipping unsafe blob name %r", name)
+            continue
         dest = local_dir / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         data: bytes = cc.download_blob(name).readall()

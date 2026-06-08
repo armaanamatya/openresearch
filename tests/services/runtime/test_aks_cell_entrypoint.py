@@ -814,3 +814,33 @@ class TestPlanAttemptsEnvOverride:
         assert attempts[1]["batch_scale"] == 0.4, (
             "explicit batch_scale_step1 kwarg must override env var"
         )
+
+
+# ---------------------------------------------------------------------------
+# download_prefix_to_dir — path-traversal defense (security watch item)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadPrefixPathSafety:
+    """A poisoned blob name must never write outside local_dir on download."""
+
+    def test_traversal_blob_name_skipped(self, ep, tmp_path):
+        client = FakeBlobClient()
+        prefix = "runs/r1/code/"
+        # One safe file, one "../"-escaping name, one absolute-path name.
+        client.seed_blob(prefix + "train_cell.py", b"safe")
+        client.seed_blob(prefix + "../../../../tmp/evil.py", b"pwned")
+        client.seed_blob(prefix + "sub/ok.txt", b"also-safe")
+        local = tmp_path / "code"
+
+        downloaded = ep.download_prefix_to_dir(
+            prefix, local, account_name="a", container_name="c", client=client
+        )
+
+        # Safe files landed under local; the traversal blob was skipped.
+        assert (local / "train_cell.py").read_bytes() == b"safe"
+        assert (local / "sub" / "ok.txt").read_bytes() == b"also-safe"
+        assert prefix + "../../../../tmp/evil.py" not in downloaded
+        # Nothing escaped local_dir.
+        assert not (tmp_path.parent / "evil.py").exists()
+        assert not Path("/tmp/evil.py").exists() or Path("/tmp/evil.py").read_bytes() != b"pwned"
