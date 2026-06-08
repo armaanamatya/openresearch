@@ -332,6 +332,8 @@ def _mark_demo_status_stopped(
                 existing = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 existing = {}
+        if existing.get("status") in ("completed", "failed", "killed"):
+            return  # a terminal status (esp. SIGTERM "killed") already won
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -383,8 +385,8 @@ def _mark_demo_status_failed(
                 existing = {}
         except Exception:
             existing = {}  # corrupt; overwrite with a fresh failed payload
-        if existing.get("status") in ("completed", "failed", "stopped"):
-            return  # something else (probably _finalize) already wrote terminal status
+        if existing.get("status") in ("completed", "failed", "stopped", "killed"):
+            return  # something else (probably _finalize or the SIGTERM handler) already wrote terminal status
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -396,6 +398,83 @@ def _mark_demo_status_failed(
         _atomic_write_json(path, merged)
     except Exception:
         return
+
+
+# --- CLI termination handling (STAB-3 / BUG-NEW-041) -------------------------
+# SIGTERM/SIGHUP (e.g. `kill <pid>`, terminal hangup, `kill_and_restart.sh`)
+# would otherwise leave demo_status.json reading "running" forever. We install
+# handlers that atomically flip the active run to status="killed" (with a
+# killReason), then re-raise SIGINT so the existing KeyboardInterrupt path runs
+# the graceful teardown. SIGKILL stays unhandleable by design.
+_ACTIVE_PROJECT_ID: str | None = None
+_ACTIVE_RUNS_ROOT: Path | None = None
+
+
+def _set_active_project_id(project_id: str | None, runs_root: Path | None = None) -> None:
+    """Record the in-flight run so the termination handler knows what to flip."""
+    global _ACTIVE_PROJECT_ID, _ACTIVE_RUNS_ROOT
+    _ACTIVE_PROJECT_ID = project_id
+    if runs_root is not None:
+        _ACTIVE_RUNS_ROOT = runs_root
+
+
+def _mark_demo_status_killed(
+    runs_root: Path,
+    project_id: str,
+    *,
+    kill_reason: str = "Process terminated (SIGTERM/SIGHUP)",
+) -> None:
+    """Atomically flip demo_status.json to status=killed. Terminal: once written,
+    _mark_demo_status_stopped/_failed will not overwrite it. Silent on failure."""
+    try:
+        path = runs_root / project_id / "demo_status.json"
+        existing: dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            except Exception:
+                existing = {}
+        if existing.get("status") in ("completed", "failed", "killed"):
+            return
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        merged = {
+            **existing,
+            "status": "killed",
+            "killReason": kill_reason,
+            "updatedAt": now_iso,
+            "completedAt": now_iso,
+            "error": kill_reason,
+        }
+        _atomic_write_json(path, merged)
+    except Exception:
+        return
+
+
+def _install_termination_handlers() -> None:
+    """Install SIGTERM/SIGHUP handlers that mark the active run killed, then
+    re-raise SIGINT so the graceful KeyboardInterrupt teardown runs."""
+    import signal
+
+    def _handler(signum, _frame):
+        name = signal.Signals(signum).name
+        if _ACTIVE_PROJECT_ID and _ACTIVE_RUNS_ROOT is not None:
+            _mark_demo_status_killed(
+                _ACTIVE_RUNS_ROOT,
+                _ACTIVE_PROJECT_ID,
+                kill_reason=f"Process terminated ({name})",
+            )
+        # Hand off to the graceful path (KeyboardInterrupt) for teardown.
+        signal.raise_signal(signal.SIGINT)
+
+    for _sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _handler)
+            except (ValueError, OSError):
+                # Not on the main thread, or unsupported on this platform.
+                pass
 
 
 def _make_services(
@@ -1102,6 +1181,10 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
     runs_root = Path(args.runs_root)
+    # STAB-3: install SIGTERM/SIGHUP handlers so an out-of-band kill flips the
+    # active run's demo_status to "killed" instead of leaving it "running".
+    _set_active_project_id(None, runs_root)
+    _install_termination_handlers()
 
     # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
@@ -1274,6 +1357,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     if getattr(args, "project_id", None):
         project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
+    # STAB-3: register the in-flight run so a SIGTERM/SIGHUP marks it "killed".
+    _set_active_project_id(project_id, runs_root)
 
     print("[ingest 2/6] Fetching paper", file=sys.stderr)
     if not intake.fetch_paper(FetchPaper(project_id=project_id)):
