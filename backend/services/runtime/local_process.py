@@ -22,6 +22,66 @@ from backend.services.runtime.interface import (
 )
 
 
+def _venv_cuda_lib_dirs(env: dict[str, str]) -> list[str]:
+    """CUDA shared-library dirs bundled INSIDE the experiment venv, for LD_LIBRARY_PATH.
+
+    torch ships its CUDA runtime libs (``libcupti.so.*``, ``libcudart``, ``libnvrtc``,
+    …) under ``site-packages/{torch/lib, nvidia/*/lib}``. An inherited
+    ``LD_LIBRARY_PATH`` (e.g. ``/usr/local/cuda/lib64``) can SHADOW them and break
+    ``import torch`` with "libcupti.so.12: cannot open shared object file" — the
+    2026-06-07 All-Conv-Net failure. Returning these dirs (the caller PREPENDS them)
+    makes the venv's own libs win.
+
+    The batch per-run venv (``scripts/batch_reproduce.py``) is created
+    ``--system-site-packages`` and ships a ``_reprolab_base_inherit.pth`` pointing at the
+    repo ``.venv``'s site-packages — where the shared, coherent cu121 torch + nvidia
+    wheels PHYSICALLY live. After ``env_pin`` strips the agent's torch re-pin, the per-run
+    venv has no torch of its OWN, so we must follow that ``.pth`` to find the active
+    torch's libs — globbing only the per-run venv would miss them entirely (2026-06-07
+    Codex-review Q1). Own-venv dirs rank first (they shadow the base on ``sys.path``).
+
+    Fail-soft: no venv / glob error → ``[]``. Only ever returns torch/nvidia lib dirs
+    found inside a venv site-packages (the per-run venv or a ``.pth``-referenced base
+    venv) — never a bare system CUDA path — so it cannot break an already-working torch.
+    """
+    venv = (env.get("OPENRESEARCH_EXPERIMENT_VENV") or env.get("VIRTUAL_ENV") or "").strip()
+    if not venv:
+        return []
+    try:
+        # Site dirs to scan, in sys.path precedence order: the per-run venv's OWN
+        # site-packages first, then any dir a ``.pth`` adds to the import path (the
+        # base ``.venv`` for batch runs). Skip comment + executable (``import …``)
+        # ``.pth`` lines — only filesystem path lines name a site dir.
+        site_dirs: list[Path] = []
+        for site in Path(venv).glob("lib/python*/site-packages"):
+            site_dirs.append(site)
+            for pth in sorted(site.glob("*.pth")):
+                try:
+                    for raw in pth.read_text(encoding="utf-8").splitlines():
+                        line = raw.strip()
+                        if not line or line.startswith(("#", "import ")):
+                            continue
+                        added = Path(line)
+                        if added.is_dir():
+                            site_dirs.append(added)
+                except OSError:
+                    continue
+        dirs: list[str] = []
+        for site in site_dirs:
+            torch_lib = site / "torch" / "lib"
+            if torch_lib.is_dir():
+                dirs.append(str(torch_lib))
+            nvidia = site / "nvidia"
+            if nvidia.is_dir():
+                for libdir in sorted(nvidia.glob("*/lib")):
+                    if libdir.is_dir():
+                        dirs.append(str(libdir))
+        seen: set[str] = set()
+        return [d for d in dirs if not (d in seen or seen.add(d))]
+    except Exception:  # noqa: BLE001 — env augmentation must never break exec
+        return []
+
+
 class LocalProcessBackend(RuntimeBackend):
     async def create_sandbox(self, config: SandboxConfig) -> Sandbox:
         project_root = config.project_root.resolve()
@@ -48,6 +108,17 @@ class LocalProcessBackend(RuntimeBackend):
         if sandbox.config.gpu_device_ids:
             env["CUDA_VISIBLE_DEVICES"] = ",".join(sandbox.config.gpu_device_ids)
             env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+        # Make the experiment venv's bundled CUDA libs loadable: PREPEND them to
+        # LD_LIBRARY_PATH so an inherited system CUDA path can't shadow libcupti.so.*
+        # (the 2026-06-07 "cannot open shared object file" import death). Fail-soft —
+        # no venv / no dirs → unchanged.
+        _cuda_dirs = _venv_cuda_lib_dirs(env)
+        if _cuda_dirs:
+            _prev_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = (
+                os.pathsep.join([*_cuda_dirs, _prev_ld]) if _prev_ld
+                else os.pathsep.join(_cuda_dirs)
+            )
         try:
             process = await asyncio.create_subprocess_shell(
                 command,

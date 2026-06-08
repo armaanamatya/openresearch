@@ -304,3 +304,67 @@ def test_empty_and_missing_dir_are_noops(tmp_path: Path) -> None:
         Path("/tmp/__no_such_dir_env_contract_test__"), out
     )
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# Case 5 (2026-06-01): AgenticEnv subclasses + shipped concrete envs are valid
+# bases. A *Env subclassing AgenticEnv (or a shipped env) inherits the prompt
+# builders, so it must NOT be flagged even though it never defines them itself.
+# ---------------------------------------------------------------------------
+
+
+def test_agentic_env_subclass_not_flagged(tmp_path: Path) -> None:
+    """`class SearchEnv(AgenticEnv):` implementing only reset/step is complete —
+    AgenticEnv ships build_student_prompt/build_teacher_prompt. With the contract
+    in play (the import + a trainer reference), there must be NO violation."""
+    _write(tmp_path, "sdar/envs/search.py", """\
+from sdar_env_base import AgenticEnv, StepResult
+
+
+class SearchEnv(AgenticEnv):
+    max_turns = 6
+
+    def reset(self, *, seed=None, task=None) -> str:
+        self._start_episode(system="search")
+        self._record_obs("q")
+        return "q"
+
+    def step(self, action: str) -> StepResult:
+        self._record_act(action)
+        self._finish(1.0)
+        return StepResult(observation="done", reward=1.0, done=True)
+""")
+    _write(tmp_path, "sdar/train.py", """\
+def train(env):
+    return env.build_student_prompt(), env.build_teacher_prompt()
+""")
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(tmp_path, out)
+    assert _env_contract_hits(out) == [], (
+        f"AgenticEnv subclass implements the contract by inheritance: {out}"
+    )
+    assert _env_contract_hits(scan_code_dir(tmp_path)) == []
+
+
+def test_subclass_of_shipped_env_not_flagged(tmp_path: Path) -> None:
+    """A `*Env` subclassing a harness-shipped concrete env (SearchQAEnv /
+    ALFWorldEnv / WebShopEnv) is not flagged — those bases already satisfy the
+    contract. The contract is in play via the build_student_prompt reference."""
+    _write(tmp_path, "sdar/envs/custom.py", """\
+from search_qa_env import SearchQAEnv
+
+
+class MySearchQAEnv(SearchQAEnv):
+    pass
+""")
+    _write(tmp_path, "sdar/train.py", """\
+def train(env):
+    return env.build_student_prompt()
+""")
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(tmp_path, out)
+    assert _env_contract_hits(out) == [], (
+        f"Subclass of a shipped env must not be flagged: {out}"
+    )

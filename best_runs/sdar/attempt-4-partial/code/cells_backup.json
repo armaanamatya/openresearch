@@ -1,0 +1,64 @@
+{
+  "cells": [
+    {
+      "id": "qwen3_1_7b__sdar__search_qa__s42",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "model_key": "qwen3_1_7b",
+      "baseline": "sdar",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 14.0
+    },
+    {
+      "id": "qwen3_1_7b__grpo__search_qa__s42",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "model_key": "qwen3_1_7b",
+      "baseline": "grpo",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 8.0
+    },
+    {
+      "id": "qwen3_1_7b__grpo_opsd__search_qa__s42",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "model_key": "qwen3_1_7b",
+      "baseline": "grpo_opsd",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 14.0
+    },
+    {
+      "id": "qwen2_5_3b__sdar__search_qa__s42",
+      "model_id": "Qwen/Qwen2.5-3B-Instruct",
+      "model_key": "qwen2_5_3b",
+      "baseline": "sdar",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 22.0
+    },
+    {
+      "id": "qwen2_5_3b__grpo__search_qa__s42",
+      "model_id": "Qwen/Qwen2.5-3B-Instruct",
+      "model_key": "qwen2_5_3b",
+      "baseline": "grpo",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 12.0
+    },
+    {
+      "id": "qwen2_5_3b__grpo_opsd__search_qa__s42",
+      "model_id": "Qwen/Qwen2.5-3B-Instruct",
+      "model_key": "qwen2_5_3b",
+      "baseline": "grpo_opsd",
+      "env": "search_qa",
+      "seed": 42,
+      "dataset_url": "https://huggingface.co/datasets/nq_open",
+      "est_vram_gb": 22.0
+    }
+  ]
+}

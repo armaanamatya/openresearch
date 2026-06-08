@@ -10,13 +10,13 @@ can I escalate to a bigger one?*  Consumers:
 
 Per-backend providers (``describe_capacity`` dispatches on ``ctx.sandbox_mode``):
 
-==================  =========================================  =============
+==================  =========================================  ============
 backend             capacity source                            can_escalate
-==================  =========================================  =============
+==================  =========================================  ============
 local / docker      local_gpu_allocator.discover_gpus()        False
 runpod / brev       provisioned pod SKU (ctx.gpu_plan)          True
-azure               ADAPTER STUB (raises NotImplementedError)   True (future)
-==================  =========================================  =============
+azure               AKS settings + gpu_plan.json (plan-aware)  False (see _describe_azure)
+==================  =========================================  ============
 
 The descriptor reports **raw physical** capacity; the headroom multiplier
 (``OPENRESEARCH_DYNAMIC_GPU_HEADROOM``) is applied by the capacity *gate*, not here,
@@ -174,12 +174,74 @@ def _describe_cloud(ctx: Any, kind: str) -> GpuCapacity:
 
 
 def _describe_azure(ctx: Any) -> GpuCapacity:
-    raise NotImplementedError(
-        "Azure GPU compute backend is not implemented (only the LLM is wired for "
-        "Azure). To add it, provide an adapter returning GpuCapacity("
-        "backend_kind='azure', num_gpus=<VM GPU count>, per_gpu_vram_gb=<VM GPU "
-        "VRAM GB>, free_gpu_ids=<indices>, can_escalate=True). See "
-        "docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md."
+    """Plan-aware Azure AKS GPU capacity descriptor.
+
+    Tries to load the resolved ``gpu_plan.json`` from
+    ``<ctx.project_dir>/rlm_state/gpu_plan.json`` (same fail-soft pattern as
+    ``run_experiment``).  When the plan is present *and* is an Azure plan
+    (``cloud_type == "ONDEMAND"`` or ``short_name.startswith("azure_")``),
+    ``per_gpu_vram_gb`` is taken from ``plan.vram_gb``.  In all other cases
+    (no plan, unreadable file, non-azure plan, missing ctx attribute) the
+    settings defaults are used so capacity queries made before
+    ``resolve_gpu_requirements`` runs are still valid.
+
+    ``num_gpus`` always comes from ``azure_max_nodes`` (the AKS node-pool
+    concurrency cap) — the plan's ``gpu_count`` is a per-node count and the
+    azure runner scales horizontally, not per-GPU.
+
+    ``can_escalate=False``: the field specifically guards the *run_experiment
+    monolithic SKU-ladder escalation loop* (the per-cell OOM retry path that
+    advances through ``gpu_plan.ladder_remaining`` inside the RunPod backend).
+    That loop does NOT apply to AKS — the azure runner dispatches Kubernetes Jobs
+    that self-escalate via a different mechanism (node-pool SKU selection at Job
+    dispatch time).  Setting ``can_escalate=True`` here would mislead that RunPod
+    loop into attempting ladder escalation on an azure pod, which would fail.
+    The azure runner's own SKU escalation operates independently and is correct
+    regardless of this flag.
+
+    Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
+    """
+    import json
+    from pathlib import Path
+
+    from backend.config import get_settings
+
+    s = get_settings()
+    num_gpus = max(1, int(s.azure_max_nodes))
+    per_gpu_vram_gb = float(s.azure_per_gpu_vram_gb)
+
+    # Try to load the resolved gpu_plan and refine per_gpu_vram_gb from it.
+    try:
+        project_dir = getattr(ctx, "project_dir", None)
+        if project_dir is not None:
+            plan_path = Path(project_dir) / "rlm_state" / "gpu_plan.json"
+            if plan_path.exists():
+                raw = json.loads(plan_path.read_text(encoding="utf-8"))
+                short_name = raw.get("short_name", "") or ""
+                cloud_type = raw.get("cloud_type", "") or ""
+                is_azure_plan = (
+                    cloud_type == "ONDEMAND"
+                    or (isinstance(short_name, str) and short_name.startswith("azure_"))
+                )
+                if is_azure_plan:
+                    plan_vram = raw.get("vram_gb")
+                    if plan_vram is not None:
+                        per_gpu_vram_gb = float(plan_vram)
+    except Exception:  # noqa: BLE001 — capacity probe must never raise
+        logger.warning(
+            "_describe_azure: gpu_plan.json present but unreadable; using settings defaults",
+            exc_info=True,
+        )
+
+    ids = tuple(str(i) for i in range(num_gpus))
+    return GpuCapacity(
+        "azure",
+        num_gpus=num_gpus,
+        per_gpu_vram_gb=per_gpu_vram_gb,
+        free_gpu_ids=ids,
+        can_escalate=False,
+        total_vram_gb=per_gpu_vram_gb * num_gpus,
+        detail={"node_pool": s.azure_node_pool_name},
     )
 
 

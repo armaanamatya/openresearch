@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "metric": 0.0,
+  "reward_mean": 0.0,
+  "gate_mean": 0.9999999970197677,
+  "gate_active": 0.9999999970197677,
+  "zero_shot_f1": 0.13094478401824727,
+  "steps_run": 150,
+  "wall_time_s": 300.95970487594604,
+  "cell_id": "qwen3_1_7b__grpo_opsd__search_qa__s42"
+}

@@ -1,0 +1,193 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# DeepInvent environment — Terraform variable overrides
+#
+# Usage:
+#   cp main.tfvars.example main.tfvars
+#   # Fill in every placeholder marked <...>
+#   terraform plan  -var-file=main.tfvars
+#   terraform apply -var-file=main.tfvars
+#
+# NEVER commit main.tfvars (contains subscription/tenant IDs and IP ranges).
+# It is listed in .gitignore.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Azure tenant / subscription ─────────────────────────────────────────────
+
+# Client's Azure subscription ID.
+subscription_id = "<DEEPINVENT_SUBSCRIPTION_ID>"
+
+# Client's Azure Active Directory tenant ID.
+tenant_id = "<DEEPINVENT_TENANT_ID>"
+
+# ─── Naming & region ─────────────────────────────────────────────────────────
+
+# Short prefix for all resource names. Keep ≤8 chars, lowercase, no hyphens
+# (ACR name strips hyphens automatically).
+prefix = "repro"
+
+# Azure region. Pick one where Standard_NC24ads_A100_v4 quota has been granted.
+# Common choices: eastus, westus3, swedencentral, northeurope.
+# Check availability: az vm list-skus --location <region> --size Standard_NC24ads_A100_v4 --query "[].restrictions"
+region = "<AZURE_REGION>"
+
+# Main resource group name.
+resource_group_name = "rg-reprolab"
+
+# Tags applied to every resource.
+tags = {
+  project     = "reprolab"
+  environment = "production"
+  client      = "deepinvent"
+}
+
+# ─── Networking ──────────────────────────────────────────────────────────────
+
+# VNet address space.
+vnet_cidr = "10.0.0.0/16"
+
+# AKS node subnet CIDR (must be within vnet_cidr).
+# /22 = 1024 IPs; sufficient for system + GPU pools at max scale.
+aks_subnet_cidr = "10.0.0.0/22"
+
+# Operator CIDR(s) permitted to reach the AKS public API server.
+# SECURITY: The API server is public (Phase 1 constraint — orchestrator is local).
+# Add every egress IP that will run `kubectl` or the Python orchestrator.
+# Confirm with DeepInvent's security team that a public API server is acceptable.
+# Example: ["203.0.113.10/32", "198.51.100.0/24"]
+authorized_ip_ranges = ["<OPERATOR_EGRESS_CIDR>"]
+
+# ─── AKS cluster ─────────────────────────────────────────────────────────────
+
+# Kubernetes version. Must be available in the chosen region.
+# Check: az aks get-versions --location <region> --query "orchestrators[].orchestratorVersion"
+kubernetes_version = "<K8S_VERSION>"
+
+# System (CPU) node pool SKU. D4s_v5 = 4 vCPU / 16 GiB, ≥1 always running.
+system_node_sku       = "Standard_D4s_v5"
+system_node_min_count = 1
+system_node_max_count = 3
+
+# Object ID of the operator's Entra (AAD) group.
+# Members receive Azure Kubernetes Service RBAC Cluster Admin on the cluster.
+# Find it: az ad group show --group "<group-name>" --query id -o tsv
+operator_entra_group_object_id = "<OPERATOR_ENTRA_GROUP_OBJECT_ID>"
+
+# ─── GPU node pools ───────────────────────────────────────────────────────────
+#
+# gpu_skus controls which AKS GPU node pools are provisioned.
+# Each entry creates ONE scale-to-zero pool labeled reprolab/sku=<short_name>.
+# Jobs target a pool with nodeSelector { reprolab/sku: <short_name> }.
+#
+# AKS pool name formula: "<prefix><pool_suffix>" — must be ≤12 lowercase-alnum.
+#   With prefix="repro":  repro + a10080 = reproa10080 (11 chars) ✓
+#
+# !! QUOTA REQUIREMENT — one request per entry !!
+# Each entry requires vCPU quota in the corresponding Azure VM family.
+# File requests BEFORE applying; approval can take hours to days.
+#
+# Catalog:
+#   short_name        vm_size                       gpus  pool_suffix  quota/node
+#   azure_a10_24      Standard_NV36ads_A10_v5       1     a10          36 vCPUs  (StandardNVADSA10v5Family)
+#   azure_a100_80     Standard_NC24ads_A100_v4      1     a10080       24 vCPUs  (StandardNCADSA100v4Family)
+#   azure_a100_80x2   Standard_NC48ads_A100_v4      2     a100x2       48 vCPUs  (StandardNCADSA100v4Family)
+#   azure_a100_80x4   Standard_NC96ads_A100_v4      4     a100x4       96 vCPUs  (StandardNCADSA100v4Family)
+#
+# Example quota request for the default single A100-80 pool at max_nodes=1:
+#   az quota create --resource-name standardNCADSA100v4Family \
+#     --scope /subscriptions/<sub>/providers/Microsoft.Compute/locations/<region> \
+#     --limit-object value=24
+#
+# START HERE: single A100-80 pool, max_nodes=1 (24 vCPUs) — ONE quota ask.
+# Increase max_nodes or add more entries after quota is approved.
+
+gpu_skus = [
+  {
+    short_name  = "azure_a100_80"
+    vm_size     = "Standard_NC24ads_A100_v4"
+    gpu_count   = 1
+    pool_suffix = "a10080"
+    max_nodes   = 1   # requires 24 StandardNCADSA100v4Family vCPUs
+  },
+
+  # ── Escalation ladder (uncomment after quota is granted) ───────────────────
+  #
+  # NC48 — 2 × A100-80GB per node; requires 48 StandardNCADSA100v4Family vCPUs per node
+  # {
+  #   short_name  = "azure_a100_80x2"
+  #   vm_size     = "Standard_NC48ads_A100_v4"
+  #   gpu_count   = 2
+  #   pool_suffix = "a100x2"
+  #   max_nodes   = 2   # requires 96 vCPUs quota
+  # },
+  #
+  # NC96 — 4 × A100-80GB per node; requires 96 StandardNCADSA100v4Family vCPUs per node
+  # {
+  #   short_name  = "azure_a100_80x4"
+  #   vm_size     = "Standard_NC96ads_A100_v4"
+  #   gpu_count   = 4
+  #   pool_suffix = "a100x4"
+  #   max_nodes   = 1   # requires 96 vCPUs quota
+  # },
+  #
+  # A10 (cost-optimised) — 1 × A10-24GB per node; separate StandardNVADSA10v5Family quota
+  # {
+  #   short_name  = "azure_a10_24"
+  #   vm_size     = "Standard_NV36ads_A10_v5"
+  #   gpu_count   = 1
+  #   pool_suffix = "a10"
+  #   max_nodes   = 4   # requires 144 StandardNVADSA10v5Family vCPUs quota
+  # },
+]
+
+# ─── Container registry ──────────────────────────────────────────────────────
+
+acr_sku = "Standard"
+
+# ─── Storage ─────────────────────────────────────────────────────────────────
+
+# Globally unique storage account name (3-24 lowercase alphanum, no hyphens).
+# This account hosts the artifact Blob container AND the Files share when
+# files_premium = false (the default).
+storage_account_name = "<GLOBALLY_UNIQUE_STORAGE_ACCOUNT_NAME>"
+
+blob_container_name  = "reprolab-artifacts"
+files_share_name     = "reprolab-cache"
+
+# Azure Files share quota in GiB.
+# 512 GiB covers Qwen3-1.7B + Qwen2.5-3B + 7B weights plus pip caches.
+# Increase to 1024+ for larger model portfolios.
+files_share_quota_gb = 512
+
+# ── Azure Files tier selection ────────────────────────────────────────────────
+#
+# files_premium = false  (DEFAULT — Standard Files on the existing account)
+#   IOPS: ~1 000 IOPS shared across all concurrent mounts.
+#   Cost: consumption-based (~$0.02/GiB/month in eastus).
+#   Best for: ≤8 concurrent cells, sequential or low-parallelism workloads.
+#
+# files_premium = true   (Premium Files — dedicated FileStorage account)
+#   IOPS: ~100 000 IOPS provisioned, eliminating pip-install bootstrap contention
+#         when many cells start concurrently on fresh AKS nodes.
+#   Cost: provisioned/GiB (~$0.10/GiB/month in eastus) — e.g. $51/month for
+#         512 GiB, regardless of how much data is stored.
+#   Best for: ≥8–16 concurrent cells or tightly-packed multi-run sprints.
+#
+# Leave both lines commented out to keep the Standard default.
+
+# files_premium = false
+
+# Required only when files_premium = true: a globally unique name for the
+# dedicated Premium FileStorage account (3-24 lowercase alphanum, no hyphens).
+# Convention: append "prem" to your base name.
+# files_premium_storage_account_name = "<GLOBALLY_UNIQUE_STORAGE_ACCOUNT_NAME>prem"
+
+# ─── Workload identity ────────────────────────────────────────────────────────
+# These MUST match the Helm L2 values in envs/deepinvent/helm-values.yaml.
+
+workload_identity_namespace       = "reprolab"
+workload_identity_service_account = "reprolab-sa"
+
+# ─── Remote state reference ───────────────────────────────────────────────────
+# Informational only — the actual backend is configured in backend.hcl.
+# Name of the storage account created by the bootstrap module.
+state_storage_account_name = "<BOOTSTRAP_STATE_STORAGE_ACCOUNT_NAME>"

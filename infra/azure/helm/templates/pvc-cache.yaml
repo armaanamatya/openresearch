@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reprolab-cache
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+  annotations:
+    # This PVC binds to the Azure Files share provisioned by Terraform.
+    # It is mounted by every GPU Job pod at /mnt/reprolab-cache to provide a
+    # shared, persistent HF_HOME and pip cache across the training matrix.
+    # Multiple Job pods on different nodes can mount it simultaneously (RWX).
+spec:
+  accessModes:
+    - ReadWriteMany   # RWX — multiple concurrent GPU Job pods across nodes
+  storageClassName: {{ .Values.namespace }}-azurefiles-wi
+  resources:
+    requests:
+      storage: {{ .Values.storage.pvcSize }}

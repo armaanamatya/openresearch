@@ -187,8 +187,9 @@ def _is_degraded_run(run_dir: Path) -> bool:
 # Evidence gathering
 # ---------------------------------------------------------------------------
 
-_MAX_FILE_BYTES = 6 * 1024          # 6 KB per file
-_MAX_TOTAL_EVIDENCE_BYTES = 40 * 1024  # 40 KB total
+_MAX_FILE_BYTES = 32 * 1024          # 32 KB per file (D2: 6 KB truncated models.py/optimizers.py and docked faithful runs)
+_MAX_TOTAL_EVIDENCE_BYTES = 200 * 1024  # 200 KB total (the default Sonnet/Opus grader handles this comfortably)
+_MAX_PROVENANCE_BYTES = 16 * 1024    # 16 KB for the provenance manifest (already series-summarized by provenance.py)
 
 
 def _latest_metrics_path(run_dir: Path) -> Path | None:
@@ -235,6 +236,61 @@ def _latest_metrics_path(run_dir: Path) -> Path | None:
     return max(cands, key=_rank)
 
 
+def _provenance_paths(run_dir: Path) -> list[Path]:
+    """Provenance manifests (``provenance.json``), newest first.
+
+    The agent (monolithic path) writes ``code/provenance.json`` or
+    ``code/outputs/<run_id>/provenance.json``; the cell path promotes one to the
+    aggregated ``outputs/<run_id>/`` level (D2). Newest-first so the freshest wins.
+    """
+    code_dir = run_dir / "code"
+    if not code_dir.exists():
+        return []
+    cands = [
+        p
+        for p in (
+            list(code_dir.glob("provenance.json"))
+            + list(code_dir.glob("outputs/*/provenance.json"))
+        )
+        if p.is_file()
+    ]
+    cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands
+
+
+def _gather_figure_sidecars(run_dir: Path) -> str:
+    """Concatenate per-figure JSON sidecars (``fig_*.json``) under ``code/`` (D2).
+
+    The grader is text-only and never sees the PNGs; the sidecar carries the axis
+    scale (log vs linear) + what each figure shows + its series — exactly what the
+    "axis not directly verifiable" docks need. Bounded by ``_MAX_PROVENANCE_BYTES``;
+    fail-soft (a missing/garbled sidecar is skipped, never raised).
+    """
+    code_dir = run_dir / "code"
+    if not code_dir.exists():
+        return ""
+    seen: set[str] = set()
+    chunks: list[str] = []
+    total = 0
+    for sc in sorted(code_dir.rglob("fig_*.json")):
+        if not sc.is_file() or sc.name in seen:
+            continue
+        seen.add(sc.name)
+        try:
+            body = sc.read_text(encoding="utf-8")[:4096]
+        except Exception:
+            continue
+        chunk = (
+            f"=== figure sidecar {sc.name} "
+            f"(axis + series; the grader cannot see the PNG) ===\n{body}\n"
+        )
+        if total + len(chunk) > _MAX_PROVENANCE_BYTES:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return "".join(chunks)
+
+
 def _gather_evidence(run_dir: Path) -> str:
     """Gather bounded reproduction evidence from a run directory."""
     parts: list[str] = []
@@ -277,6 +333,30 @@ def _gather_evidence(run_dir: Path) -> str:
             total += len(text)
         except Exception as exc:
             logger.warning("Could not read latest metrics.json: %s", exc)
+
+    # Provenance manifest (D2): the agent-emitted, machine-written run record — epochs,
+    # batch sizes, per-optimizer hyperparameters, seeds, convergence-series SUMMARIES.
+    # This is what answers "45-epoch not confirmed / batch=128 only an assumption" without
+    # forcing the grader to infer from prose. Read newest-first; first manifest wins.
+    for prov_path in _provenance_paths(run_dir):
+        try:
+            prov = prov_path.read_text(encoding="utf-8")[:_MAX_PROVENANCE_BYTES]
+            text = (
+                "=== provenance.json (machine-written run record — epochs, batch, "
+                f"hyperparameters, convergence summaries) ===\n{prov}\n"
+            )
+            parts.append(text)
+            total += len(text)
+            break
+        except Exception as exc:
+            logger.warning("Could not read provenance manifest: %s", exc)
+
+    # Per-figure JSON sidecars (D2): the text-only grader cannot SEE the PNGs, so these
+    # carry the axis scale (log vs linear) + what each figure shows + the series.
+    sidecar_text = _gather_figure_sidecars(run_dir)
+    if sidecar_text:
+        parts.append(sidecar_text)
+        total += len(sidecar_text)
 
     # code/ directory listing
     code_dir = run_dir / "code"
@@ -360,6 +440,8 @@ def _detect_data_unavailable_leaves(
     run_dir: Path,
     metrics_shape: list[dict] | None = None,
     operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
+    extra_scope: dict[str, Any] | None = None,
 ) -> set[str]:
     """Return the set of leaf ids that depend on a dataset declared unavailable.
 
@@ -430,6 +512,62 @@ def _detect_data_unavailable_leaves(
         except Exception:
             pass
 
+    # --- Structured verified exclusions (2026-06-01) ---
+    # The cell route writes ``scope.exclusions`` — Exclusion records carrying a
+    # ``verified`` flag. When present they are the AUTHORITATIVE skip source: a
+    # verified exclusion is honoured (its leaves excluded) regardless of the
+    # operator_skip_* params AND regardless of whether the legacy
+    # environments_skipped/models_skipped lists were co-populated; and — critically
+    # — an UNVERIFIED exclusion is NOT honoured (anti-gaming: an agent cannot
+    # launder a failure into a free scope reduction). Legacy runs without
+    # ``scope.exclusions`` keep the prior behaviour.
+    op_skip_env = _operator_skip_set(operator_skip_environments)
+    _scope_obj = metrics_data.get("scope")
+    if not isinstance(_scope_obj, dict):   # malformed/truthy-non-dict scope → ignore safely
+        _scope_obj = {}
+    # Phase 0B: union an explicit FINAL-scope override (the verified scope assembled
+    # at finalize, carrying env/dataset skips + scope.gaps declared AFTER the last
+    # in-loop verify) with the on-disk scope, so finalize_rescore honours late
+    # declarations without depending on final_report.json write ordering. The env
+    # axis stays gated below — a non-operator-sanctioned override skip still stays
+    # scored. Additive: default None ⇒ unchanged behaviour.
+    if isinstance(extra_scope, dict) and extra_scope:
+        _merged_scope = dict(_scope_obj)
+        for _k in ("environments_skipped", "exclusions"):
+            _a = _scope_obj.get(_k) if isinstance(_scope_obj.get(_k), list) else []
+            _b = extra_scope.get(_k) if isinstance(extra_scope.get(_k), list) else []
+            if _a or _b:
+                _merged_scope[_k] = [*_a, *_b]
+        _scope_obj = _merged_scope
+    _structured = _scope_obj.get("exclusions")
+    has_structured_exclusions = isinstance(_structured, list) and len(_structured) > 0
+    # Verified items collected from scope.exclusions — fed DIRECTLY into the leaf
+    # token-match sets below (so a structured record is SELF-SUFFICIENT even when
+    # the legacy skip lists are empty, e.g. a Part B env_setup_failed Exclusion)
+    # AND used to steer the legacy-list gate.
+    _struct_env_items: list[str] = []    # environment / dataset / baseline axes
+    _struct_model_items: list[str] = []  # model axis
+    if has_structured_exclusions:
+        for _ex in _structured:
+            if not isinstance(_ex, dict) or not _ex.get("verified"):
+                continue
+            _axis = str(_ex.get("axis", "")).lower()
+            _item = str(_ex.get("item", "") or "")
+            if not _item:
+                continue
+            if _axis == "model":
+                op_skip = op_skip | {_normalise_model_name(_item)}
+                _struct_model_items.append(_item)
+            else:
+                # environment / dataset / baseline → env-style token matching + gate.
+                # An unknown-but-verified axis is matched, never silently dropped.
+                op_skip_env = op_skip_env | {_normalise_model_name(_item)}
+                _struct_env_items.append(_item)
+    # Enforce the environment anti-gaming gate when the caller passed an explicit
+    # env skip list OR the run carries structured exclusions; otherwise keep the
+    # legacy lenient env behaviour (env skips honoured unconditionally).
+    enforce_env_gate = has_structured_exclusions or (operator_skip_environments is not None)
+
     # Signal 1b: failed / skipped MODELS.
     #
     # INTENTIONAL operator de-scope (present in op_skip) → excluded from rubric
@@ -485,16 +623,42 @@ def _detect_data_unavailable_leaves(
             repairable_models,
         )
 
-    # Signal 1c: environments_skipped — the agent's structured declaration that an
-    # environment (e.g. ALFWorld / WebShop for a Search-QA-only run) is out of
-    # scope.  Mirrors models_skipped: its leaves are excluded from numerator AND
-    # denominator exactly like a skipped model (2026-05-31 fix — previously only
-    # models_skipped was honoured, so honestly de-scoped environments scored 0.0
-    # and dragged the overall score down).
+    # Signal 1c: environments_skipped — a de-scoped environment (e.g. ALFWorld /
+    # WebShop for a Search-QA-only run).  Its leaves are excluded from numerator
+    # AND denominator exactly like a skipped model.  Anti-gaming (2026-06-01):
+    # when the env gate is enforced (structured exclusions present, or an explicit
+    # operator_skip_environments list), an env is honoured ONLY when it is
+    # operator-de-scoped / verified — an env the agent dumped into
+    # environments_skipped without operator/harness corroboration is treated as a
+    # repairable failure and STAYS scored (mirrors the model-axis logic, closing
+    # the hole where a broad ``except`` could launder a failure into a free skip).
     failed_envs: list[str] = []
-    for _e in ((metrics_data.get("scope") or {}).get("environments_skipped") or []):
-        if isinstance(_e, str) and _e:
+    repairable_envs: list[str] = []
+    for _e in (_scope_obj.get("environments_skipped") or []):
+        if not isinstance(_e, str) or not _e:
+            continue
+        if not enforce_env_gate or _normalise_model_name(_e) in op_skip_env:
             failed_envs.append(_e)
+        else:
+            repairable_envs.append(_e)
+    if repairable_envs:
+        logger.warning(
+            "_detect_data_unavailable_leaves: %d environment(s) in environments_skipped "
+            "were NOT operator-de-scoped/verified — treating as repairable, NOT scope "
+            "reductions: %s",
+            len(repairable_envs),
+            repairable_envs,
+        )
+
+    # Self-sufficiency (review SHOULD-FIX #1): a VERIFIED structured exclusion
+    # excludes its leaves even when the legacy environments_skipped/models_skipped
+    # lists were not co-populated (e.g. a Part B env_setup_failed Exclusion that
+    # only lands in scope.exclusions). These items are verified-only (filtered in
+    # the structured loop above), so this adds zero anti-gaming surface. Duplicates
+    # vs the gated legacy lists are harmless — both feed an order-insensitive,
+    # set-superset token match.
+    failed_envs.extend(_struct_env_items)
+    failed_models.extend(_struct_model_items)
 
     # Signal 2: scope.gaps — read from BOTH metrics.json::scope (where the agent
     # writes structured scope, mirroring where models_skipped is already read) AND
@@ -525,6 +689,11 @@ def _detect_data_unavailable_leaves(
             _collect_gaps(report.get("scope") or {})
         except Exception:
             pass
+    # NOTE (Codex blocker, 2026-06-07): an extra_scope override does NOT feed
+    # scope.gaps — gaps are honoured leniently ("declared out of scope before
+    # trying", no metric) and would BYPASS the environment-axis anti-gaming gate.
+    # A finalize-time env de-scope must arrive via environments_skipped/exclusions
+    # (gated above), never via a free gaps channel. Disk gaps are still read.
 
     if (not failed_datasets and not gap_texts and not gap_items
             and not failed_models and not failed_envs):
@@ -644,6 +813,64 @@ def _detect_data_unavailable_leaves(
 
 
 # ---------------------------------------------------------------------------
+# Layer 3 — leaf-applicability: theory-only leaf exclusion (2026-06-07)
+# ---------------------------------------------------------------------------
+# A code reproduction can faithfully reproduce a paper's EXPERIMENTS but cannot
+# reproduce a mathematical PROOF (a convergence/regret theorem, a lemma). Scoring
+# such a leaf 0.0 penalizes the reproduction for something inherently outside its
+# medium — as unfair as penalizing it for an unavailable dataset. So, like
+# data-unavailable leaves, theory-only leaves are excluded from BOTH numerator and
+# denominator of the roll-up (added to the skip_set), not scored 0.0.
+#
+# Detection is on the rubric leaf TEXT only — the graded party cannot change the
+# rubric, so there is NO gaming surface (unlike grading the agent's own output).
+# Conservative: fire only on UNAMBIGUOUS proof language, and NEVER when the leaf
+# also asks for an empirical artifact (code/metrics/figure), since a leaf like
+# "verify the convergence claim empirically via the loss curve" IS gradeable.
+# Flag-gated (OPENRESEARCH_EXCLUDE_THEORY_LEAVES, default OFF) + fail-soft.
+_THEORY_MARKERS: tuple[str, ...] = (
+    "theorem", "regret bound", "regret analysis", "convergence proof",
+    "proof of", "prove that", "proof that", "lemma", "corollary",
+    "regret guarantee", "convergence guarantee", "o(\\sqrt", "o(√", "o(sqrt",
+)
+_EMPIRICAL_MARKERS: tuple[str, ...] = (
+    "metrics.json", "plot", "figure", "fig_", "accuracy", "loss curve",
+    "training curve", "implement", "code", "dataset", "checkpoint",
+    "epoch", "trains", "training run", "wall-clock", "wall clock",
+)
+
+
+def _theory_leaf_exclusion_enabled() -> bool:
+    """True when ``OPENRESEARCH_EXCLUDE_THEORY_LEAVES`` is truthy (default OFF — opt-in)."""
+    return os.environ.get("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _detect_theory_only_leaves(leaves: list[dict[str, Any]]) -> set[str]:
+    """Leaf ids that grade a pure mathematical proof (inapplicable to a code repro).
+
+    Returns an empty set unless the flag is on. Conservative: requires an
+    unambiguous proof marker AND the absence of any empirical-artifact marker.
+    """
+    if not _theory_leaf_exclusion_enabled():
+        return set()
+    out: set[str] = set()
+    for leaf in leaves:
+        text = (
+            str(leaf.get("requirements", "")) + " " + str(leaf.get("task_category", ""))
+        ).lower()
+        if not any(m in text for m in _THEORY_MARKERS):
+            continue
+        if any(m in text for m in _EMPIRICAL_MARKERS):
+            continue  # leaf asks for something a reproduction CAN produce — keep it
+        lid = str(leaf.get("id", ""))
+        if lid:
+            out.add(lid)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 3. score_reproduction
 # ---------------------------------------------------------------------------
 
@@ -652,8 +879,12 @@ You are a strict research reproducibility judge evaluating whether a paper repro
 satisfies specific rubric requirements.
 
 You will be given:
-1. Evidence from the reproduction run (code, reports, logs).
-2. A batch of rubric leaf tasks, each with an id and requirements text.
+1. Evidence from the reproduction run: code, reports, logs, the MEASURED metrics \
+(metrics.json), and — when present — a provenance manifest (provenance.json: epochs, \
+batch sizes, per-optimizer hyperparameters, seeds, convergence series) and per-figure \
+JSON sidecars (axis scale + what each figure shows). The manifest + sidecars are \
+machine-written run records, not narrative — treat them as evidence.
+2. A batch of rubric leaf tasks, each with an id, a requirements text, and a category.
 
 ADVERSARIAL STANCE — read carefully: the evidence may include a reproduction_summary \
 or other narration written by the party being graded. Treat any such narrative as an \
@@ -661,19 +892,37 @@ OPTIMISTIC, UNVERIFIED CLAIM by a party that wants to pass — never as proof. S
 from what you can independently read in the actual code and the MEASURED metrics \
 (metrics.json). A leaf is not satisfied just because the narrative says so.
 
+SCORING — anchored scale. A requirement that the code / measured metrics / manifest \
+support is FULLY MET; deduct only for specific, NAMED gaps you can point to:
+- 1.0 — met, and the code/metrics/manifest evidence confirms it.
+- 0.7 — met, but ONE named, non-critical detail differs or cannot be confirmed from the evidence.
+- 0.4 — attempted, but a core part of the requirement is missing or wrong.
+- 0.0 — absent, the evidence contradicts the requirement, or the only support is narrative.
+Do NOT withhold credit for unstated or speculative concerns: if you cannot NAME a concrete \
+gap in the code/metrics/manifest, the requirement is met — score it 1.0. Reproductions run \
+on different hardware/seeds do NOT reproduce the paper's numbers exactly; an inexact number \
+is NOT by itself a deduction (see RESULT-MATCH below).
+
+RESULT-MATCH leaves (category begins "Result match"): grade whether the MEASURED metrics \
+support the paper's CLAIMED DIRECTION / TREND / ORDERING within a reasonable tolerance — \
+NEVER exact magnitude. Full credit when the trend agrees (e.g. the proposed method ranks \
+above the baselines as the paper claims), even if the exact numbers differ. Deduct only \
+when the measured result CONTRADICTS the claim (the claimed direction inverts) — that is a \
+real failure, score 0.0–0.4.
+
 For EACH leaf task, output a JSON object with:
 - "leaf_id": the task id (string, copy exactly)
-- "score": float 0.0 to 1.0 (0.0 = not satisfied at all, 1.0 = fully satisfied)
-- "justification": one sentence explaining the score. For ANY score above 0.0 this MUST \
-cite the concrete evidence you relied on — a file path (with line/symbol if known) or a \
-metric key from metrics.json. If you cannot point to concrete code or a measured metric, \
-you have no evidence: score it 0.0.
+- "score": float 0.0 to 1.0 per the anchored scale above
+- "deductions": array of strings — each a SPECIFIC, named gap that lowered the score below \
+1.0 (empty array when score is 1.0). Any score below 1.0 MUST list at least one concrete deduction.
+- "justification": one sentence. For ANY score above 0.0 this MUST cite the concrete \
+evidence you relied on — a file path (with line/symbol if known) or a metric key from \
+metrics.json / the provenance manifest. If you cannot point to concrete code, a measured \
+metric, or a manifest field, you have no evidence: score it 0.0. Narrative alone never \
+raises a score.
 
 Output ONLY a JSON array of these objects, no other text. Example:
-[{"leaf_id": "abc-123", "score": 0.8, "justification": "model.py:142 implements the gate g_t=sigmoid(beta*delta); dropout absent."}]
-
-Be conservative: score 0.0 when there is no evidence either way, and never let the \
-narrative alone raise a score.
+[{"leaf_id": "abc-123", "score": 0.7, "deductions": ["dropout layer absent from model.py"], "justification": "model.py:142 implements the gate g_t=sigmoid(beta*delta); dropout absent."}]
 """
 
 _USER_TEMPLATE = """\
@@ -852,6 +1101,114 @@ def _apply_invariant_gate(
     return overall_score, False
 
 
+def finalize_rescore(
+    run_dir: Path,
+    *,
+    operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
+    extra_scope: dict[str, Any] | None = None,
+    rubric_tree: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Phase 0B — deterministic finalize-time re-roll-up of ALREADY-GRADED leaves.
+
+    Recovers rubric points the harness earned but failed to count when the agent
+    declared an env/dataset out of scope AFTER its last in-loop verify (so nothing
+    re-scored). Reuses the per-leaf scores persisted in ``rubric_evaluation.json``
+    — it does NOT re-grade (no LLM call, no grader variance) — and re-applies
+    ``_detect_data_unavailable_leaves`` + ``roll_up`` under the FINAL scope, routed
+    through the environment-axis anti-gaming gate (a self-declared, non-operator-
+    sanctioned env skip stays SCORED). Fully fail-soft: returns ``None`` (caller
+    keeps today's recorded score) whenever the persisted artifacts are missing or
+    unusable — NEVER re-grades, NEVER maxes across exclusion policies.
+
+    Returns ``{overall_score, prior_overall, n_excluded, excluded_leaf_ids,
+    policy}`` on success.
+    """
+    try:
+        eval_path = run_dir / "rubric_evaluation.json"
+        if not eval_path.exists():
+            return None
+        evald = json.loads(eval_path.read_text(encoding="utf-8"))
+        records = evald.get("leaf_scores")
+        if not isinstance(records, list) or not records:
+            return None
+        import math as _math
+        leaf_scores: dict[str, float] = {}
+        for r in records:
+            if not isinstance(r, dict) or r.get("id") is None or r.get("score") is None:
+                continue
+            try:
+                _sc = float(r.get("score"))
+            except (TypeError, ValueError):
+                # Corrupt non-null score → treat the artifact as unusable rather
+                # than coerce to 0.0 (which would authoritatively LOWER the report).
+                return None
+            if not _math.isfinite(_sc):
+                return None
+            leaf_scores[str(r["id"])] = _sc
+        if not leaf_scores:
+            return None
+        tree = rubric_tree if (isinstance(rubric_tree, dict) and rubric_tree) else None
+        if tree is None:
+            for _name in ("rubric_tree.json", "generated_rubric.json"):
+                _p = run_dir / _name
+                if _p.exists():
+                    try:
+                        _loaded = json.loads(_p.read_text(encoding="utf-8"))
+                        if isinstance(_loaded, dict) and _loaded:
+                            tree = _loaded
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+        if tree is None:
+            return None
+        leaves = flatten_leaves(tree)
+        if not leaves:
+            return None
+        raw_no_excl = roll_up(tree, leaf_scores, frozenset())
+        unavailable = _detect_data_unavailable_leaves(
+            leaves,
+            run_dir,
+            operator_skip_models=operator_skip_models,
+            operator_skip_environments=operator_skip_environments,
+            extra_scope=extra_scope,
+        )
+        # Layer 3: theory-only leaves are inapplicable to a code repro — exclude them
+        # from the re-roll-up too (no-op unless OPENRESEARCH_EXCLUDE_THEORY_LEAVES is on).
+        skip_set = frozenset(set(unavailable) | _detect_theory_only_leaves(leaves))
+        new_overall = roll_up(tree, leaf_scores, skip_set)
+        if new_overall is None or raw_no_excl is None:
+            return None
+        prior = evald.get("overall_score")
+        try:
+            prior_f = float(prior) if prior is not None else None
+        except (TypeError, ValueError):
+            prior_f = None
+        # BLOCKER 2 (Codex, 2026-06-07): if the persisted (authoritative) score is
+        # materially BELOW the ungated raw roll-up of the SAME leaves, a gate/cap
+        # was applied at score time (a paper-hint invariant hard-gate, soft cap, or
+        # degraded ceiling) that finalize_rescore cannot reconstruct from the
+        # persisted artifact alone. Re-rolling the raw leaf scores would silently
+        # UN-gate and inflate the score. Bail (keep the gated score) rather than
+        # inflate. Existing exclusions make persisted >= raw_no_excl, so this only
+        # trips on a genuine downward gate.
+        if prior_f is not None and (raw_no_excl - prior_f) > 1e-6:
+            logger.info(
+                "finalize_rescore: gate/cap active (persisted %.4f < raw %.4f) — "
+                "keeping gated score, no re-roll", prior_f, raw_no_excl)
+            return None
+        return {
+            "overall_score": max(0.0, min(1.0, float(new_overall))),
+            "prior_overall": prior_f,
+            "n_excluded": len(skip_set),
+            "excluded_leaf_ids": sorted(skip_set),
+            "policy": "finalize_rescore",
+        }
+    except Exception:  # noqa: BLE001 — finalize re-score MUST never break the report
+        logger.exception("finalize_rescore: failed (non-fatal); keeping recorded score")
+        return None
+
+
 def score_reproduction(
     rubric_tree: dict[str, Any],
     run_dir: Path,
@@ -863,6 +1220,7 @@ def score_reproduction(
     metrics_shape: list[dict] | None = None,
     invariants: list[Any] | None = None,
     operator_skip_models: list[str] | None = None,
+    operator_skip_environments: list[str] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
@@ -987,8 +1345,14 @@ def score_reproduction(
     # Pass operator_skip_models so requested-but-load-failed models are NOT
     # silently excluded (they stay in scoring as code bugs, not scope gaps).
     unavailable_ids: set[str] = _detect_data_unavailable_leaves(
-        leaves, run_dir, metrics_shape, operator_skip_models=operator_skip_models
+        leaves, run_dir, metrics_shape,
+        operator_skip_models=operator_skip_models,
+        operator_skip_environments=operator_skip_environments,
     )
+    # Layer 3: also exclude theory-only leaves (a code repro can't prove a theorem).
+    # Same skip_set treatment as data-unavailable; no-op unless the flag is on.
+    theory_ids: set[str] = _detect_theory_only_leaves(leaves)
+    unavailable_ids |= theory_ids
     skip_set: frozenset[str] = frozenset(unavailable_ids)
 
     eligible_count = len(leaves) - len(unavailable_ids)
@@ -1007,7 +1371,18 @@ def score_reproduction(
     def _grade_batch(batch_num: int, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Build prompt, call LLM, parse response for one batch. Thread-safe."""
         tasks_payload = [
-            {"leaf_id": str(leaf.get("id", "")), "requirements": str(leaf.get("requirements", ""))}
+            {
+                "leaf_id": str(leaf.get("id", "")),
+                "requirements": str(leaf.get("requirements", "")),
+                # D5: surface the category so the grader can apply trend-not-magnitude
+                # grading to "Result match …" leaves. Falls back to the finegrained
+                # category, then empty (older rubrics may carry neither).
+                "category": str(
+                    leaf.get("task_category")
+                    or leaf.get("finegrained_task_category")
+                    or ""
+                ),
+            }
             for leaf in batch
         ]
         user_msg = _USER_TEMPLATE.format(
@@ -1149,7 +1524,19 @@ def _parse_batch_response(
                 except (TypeError, ValueError):
                     score = 0.0
                 justification = str(item.get("justification", ""))
-                results[lid] = {"id": lid, "score": score, "justification": justification, "_graded": True}
+                raw_deductions = item.get("deductions")
+                deductions = (
+                    [str(d) for d in raw_deductions][:8]
+                    if isinstance(raw_deductions, list)
+                    else []
+                )
+                results[lid] = {
+                    "id": lid,
+                    "score": score,
+                    "justification": justification,
+                    "deductions": deductions,
+                    "_graded": True,
+                }
     except (ValueError, json.JSONDecodeError) as exc:
         logger.warning("Could not parse batch response as JSON: %s", exc)
 
@@ -1222,6 +1609,14 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
         "invariant_results": score.get("invariant_results", []),
         "invariant_gate_applied": bool(score.get("invariant_gate_applied", False)),
     }
+
+    # D4 plumbing fix: mirror the authoritative rubric score to the TOP-LEVEL report
+    # fields. Without this, final_report.json::overall_score stays None — the watcher
+    # and any leaderboard reader keying on top-level overall_score saw None for a fully
+    # scored run (the Adam 0.831 run exhibited exactly this). Keep them in lock-step with
+    # report["rubric"]["overall_score"].
+    report["overall_score"] = score["overall_score"]
+    report["meets_target"] = meets_target
 
     # Reconcile the self-reported verdict against the authoritative leaf score.
     # Symptom: the `ftrl` run wrote verdict="reproduced" at overall_score=0.0.

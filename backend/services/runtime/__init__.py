@@ -39,6 +39,7 @@ from backend.services.runtime.local_docker import (
 from backend.services.runtime.local_process import LocalProcessBackend
 from backend.services.runtime.brev_backend import BrevBackend, ensure_brev_available
 from backend.services.runtime.runpod_backend import RunpodBackend, ensure_runpod_available
+from backend.services.runtime.aks_job_backend import AksJobBackend, ensure_azure_available
 from backend.services.runtime.service import (
     CreateSandbox,
     DestroySandbox,
@@ -47,6 +48,7 @@ from backend.services.runtime.service import (
 )
 
 __all__ = [
+    "AksJobBackend",
     "BrevBackend",
     "CommandExecuted",
     "CommandFailed",
@@ -74,6 +76,7 @@ __all__ = [
     "SandboxState",
     "append_command_log",
     "build_image",
+    "ensure_azure_available",
     "ensure_brev_available",
     "ensure_local_docker_available",
     "ensure_runpod_available",

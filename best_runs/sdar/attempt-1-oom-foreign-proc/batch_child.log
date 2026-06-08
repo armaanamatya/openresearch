@@ -1,0 +1,33 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct', 'Qwen2.5-7B-Instruct'], datasets=['Search-QA', 'ALFWorld', 'WebShop'], seeds=[42, 43, 44].
+[archive] Moved 4 prior-attempt artifact(s) to /home/sww35/openresearch/runs/prj_09047604e591d969/attempts/20260531T190549-295171-68e5d5
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'ALFWorld is evaluated by success rate (%) reported per category and overall, Search-QA by exact-match accuracy (%) on NQ'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2612784 is closed
+{
+  "project_id": "prj_09047604e591d969",
+  "status": "failed",
+  "output_dir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "iterations": 3,
+  "rubric_score": 0.0,
+  "cost_usd": 0.7763505,
+  "final_report_path": "/home/sww35/openresearch/runs/prj_09047604e591d969/final_report.json",
+  "execution_mode": "max",
+  "sandbox": "local"
+}

@@ -27,6 +27,11 @@ dependencies = [
 dev = [
     "pytest>=8,<9",
 ]
+azure = [
+    "azure-identity>=1.16,<2",
+    "azure-storage-blob>=12.19,<13",
+    "kubernetes>=29,<32",
+]
 hermes = [
     "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git",
 ]

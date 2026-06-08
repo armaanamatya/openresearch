@@ -36,11 +36,44 @@ export interface IterationView {
   timing: number | null;
 }
 
+/**
+ * A single rubric leaf — the finest-grained criterion the grader inspects.
+ * Populated from `event.areas[i].leaves` when the backend enriches the
+ * rubric_score event; absent on older/live events (degrade gracefully).
+ */
+export interface LeafDetail {
+  id: string;
+  label: string;
+  /** Leaf score 0–1, or `null` when `status === "unavailable"`. */
+  score: number | null;
+  status: "pass" | "partial" | "fail" | "unavailable";
+  /** Justification for the leaf's score (grader/model text). */
+  why: string;
+}
+
 export interface RubricArea {
   area: string;
   score: number;
   weight: number;
   status: "pass" | "partial" | "fail";
+  /** Per-leaf breakdown — present only on enriched rubric_score events. */
+  leaves?: LeafDetail[];
+}
+
+/** A weakest-leaf digest entry — the grader's "what to fix next" hint. */
+export interface WeakLeaf {
+  id: string;
+  /** Leaf score 0–1, or `null` when the leaf had no numeric score. */
+  score: number | null;
+  why: string;
+  area: string;
+}
+
+/** A recent execution error surfaced near the rubric score. */
+export interface RecentError {
+  kind: string;
+  message: string;
+  iteration: number;
 }
 
 export interface PrimitiveCallView {
@@ -169,6 +202,13 @@ export interface RlmRunState {
   rubric: {
     current: number | null;
     baseline: number | null; // first rubric_score
+    /** The HIGHEST score over the whole run (max of `series`), or null before
+     * any rubric_score. The honest headline number: a failed final attempt
+     * should not erase the best result the run actually achieved. Computed in
+     * the reducer from `series`, so it works on existing data with no backend
+     * change. OPTIONAL on the type so pre-existing rubric literals (e.g. test
+     * fixtures) stay valid; the reducer + INITIAL_RLM_STATE always set it. */
+    best?: number | null;
     target: number | null;
     series: Array<{ iteration: number; score: number }>; // sparkline / timeline
     areas: RubricArea[]; // latest breakdown
@@ -186,6 +226,23 @@ export interface RlmRunState {
       title: string;
       outcome: TreeNode["outcome"] | null;
     } | null;
+    /**
+     * The grader's weakest-leaf digest from the latest enriched rubric_score
+     * event, or `undefined` when the event carried no `weak_leaves`. Used by
+     * RubricDetail to surface "what to fix next".
+     */
+    weakLeaves?: WeakLeaf[];
+    /**
+     * Recent execution errors for the breakdown's "Recent errors" section.
+     * Prefer the backend-enriched `recent_errors` when present; otherwise this
+     * is back-filled from the EXISTING stream (run_warning failures +
+     * primitive_call errors) so specific failures show even before the
+     * enrichment ships. Newest last; capped at the last few. Empty array when
+     * nothing has failed (honest empty-state). OPTIONAL on the type so
+     * pre-existing rubric literals stay valid; the reducer + INITIAL_RLM_STATE
+     * always set it (consumers treat `undefined` as "no errors").
+     */
+    recentErrors?: RecentError[];
   };
 
   variables: Record<
@@ -257,11 +314,14 @@ export const INITIAL_RLM_STATE: RlmRunState = {
   rubric: {
     current: null,
     baseline: null,
+    best: null,
     target: null,
     series: [],
     areas: [],
     previousAreas: [],
     attributableCandidate: null,
+    weakLeaves: undefined,
+    recentErrors: [],
   },
   variables: {},
   iterations: [],
@@ -307,6 +367,46 @@ const NON_VISUALIZED_PRIMITIVES = new Set([
   "record_candidate_outcome",
   "iteration_heartbeat",
 ]);
+
+/** How many recent errors to retain for the rubric breakdown's error section. */
+const MAX_RECENT_ERRORS = 3;
+
+/**
+ * Append an error to the bounded recentErrors ring, keeping only the most
+ * recent MAX_RECENT_ERRORS. De-dupes on (kind, message) against the current
+ * tail so a primitive that retries the same failure doesn't spam the list.
+ * Pure: returns a new array.
+ */
+function pushRecentError(
+  errors: RecentError[] | undefined,
+  next: RecentError
+): RecentError[] {
+  const base = errors ?? [];
+  const tail = base[base.length - 1];
+  if (tail && tail.kind === next.kind && tail.message === next.message) {
+    return base;
+  }
+  const appended = [...base, next];
+  return appended.length > MAX_RECENT_ERRORS
+    ? appended.slice(appended.length - MAX_RECENT_ERRORS)
+    : appended;
+}
+
+/**
+ * run_warning codes that denote an actual failure (vs. a benign notice).
+ * A code matches when it contains one of these substrings (case-insensitive).
+ * Kept broad so new failure codes surface without a code change; the
+ * forced_iteration warning is explicitly EXCLUDED — it is a policy notice
+ * ("do more work"), not an execution failure.
+ */
+const FAILURE_WARNING_SUBSTRINGS = ["fail", "error", "oom", "deadlock", "crash", "timeout"];
+
+function isFailureWarning(ev: RunWarningEvent): boolean {
+  if (ev.level === "error") return true;
+  const code = (ev.code || "").toLowerCase();
+  if (code.includes("forced_iteration")) return false;
+  return FAILURE_WARNING_SUBSTRINGS.some((s) => code.includes(s));
+}
 
 /**
  * Map a primitive name to its PrimitivePhase for the constellation view.
@@ -549,11 +649,28 @@ function foldPrimitiveCall(
     tree = [...tree, primitiveNode];
   }
 
+  // Fallback enrichment: a primitive that errored is a concrete failure signal.
+  // Fold it into recentErrors so the rubric breakdown can name the specific
+  // failure (e.g. "run_experiment: ModuleNotFoundError ...") before the backend
+  // enriches rubric_score. The result_summary is value-free metadata already.
+  let rubric = state.rubric;
+  if (ev.status === "error") {
+    const recentErrors = pushRecentError(state.rubric.recentErrors, {
+      kind: ev.primitive,
+      message: ev.result_summary?.trim() || "primitive raised an exception",
+      iteration: ev.iteration ?? state.iterationCount,
+    });
+    if (recentErrors !== state.rubric.recentErrors) {
+      rubric = { ...state.rubric, recentErrors };
+    }
+  }
+
   return {
     ...state,
     status: state.status === "queued" ? "running" : state.status,
     tree,
     primitiveCalls: [...state.primitiveCalls, call],
+    rubric,
   };
 }
 
@@ -597,19 +714,71 @@ function foldRubricScore(
     }
   }
 
+  const series = [...state.rubric.series, { iteration: ev.iteration, score: ev.score }];
+  // best-of-run: the honest headline. max over the full trajectory so a failed
+  // final attempt reads as a transient dip, not a regression.
+  const best = series.reduce((m, p) => Math.max(m, p.score), ev.score);
+
+  // Per-leaf detail rides through when the backend enriched the event; older
+  // events have areas[i].leaves === undefined, which we preserve as-is.
+  const areas: RubricArea[] = ev.areas.map((a) => ({
+    area: a.area,
+    score: a.score,
+    weight: a.weight,
+    status: a.status,
+    leaves: a.leaves ? a.leaves.map((l) => ({ ...l })) : undefined,
+  }));
+
+  // weakLeaves: prefer the event's pre-computed digest. When absent, derive a
+  // fallback from any leaves present on the areas (lowest-scoring first) so the
+  // "what to fix" hint still works on partially-enriched events. Leave it
+  // undefined when there is nothing to show.
+  let weakLeaves: WeakLeaf[] | undefined;
+  if (ev.weak_leaves && ev.weak_leaves.length > 0) {
+    weakLeaves = ev.weak_leaves.map((w) => ({ ...w }));
+  } else {
+    const derived: WeakLeaf[] = [];
+    for (const a of ev.areas) {
+      for (const l of a.leaves ?? []) {
+        if (l.status === "fail" || l.status === "partial") {
+          derived.push({ id: l.id, score: l.score, why: l.why, area: a.area });
+        }
+      }
+    }
+    if (derived.length > 0) {
+      // Lowest score first; treat a null score as the weakest (sorts to front).
+      const rank = (s: number | null) => (s == null ? -Infinity : s);
+      derived.sort((x, y) => rank(x.score) - rank(y.score));
+      weakLeaves = derived.slice(0, 5);
+    }
+  }
+
+  // recentErrors: when the event carries an explicit list, it WINS (the backend
+  // knows best). Otherwise keep the stream-derived accumulator untouched (it is
+  // back-filled from run_warning / primitive_call errors elsewhere).
+  let recentErrors = state.rubric.recentErrors;
+  if (ev.recent_errors && ev.recent_errors.length > 0) {
+    recentErrors = ev.recent_errors
+      .map((e) => ({ kind: e.kind, message: e.message, iteration: e.iteration }))
+      .slice(-MAX_RECENT_ERRORS);
+  }
+
   return {
     ...state,
     tree,
     rubric: {
       baseline: isFirst ? ev.score : state.rubric.baseline,
       current: ev.score,
+      best,
       target: ev.target,
-      series: [...state.rubric.series, { iteration: ev.iteration, score: ev.score }],
+      series,
       // §4.2: snapshot the prior areas array BEFORE overwriting so the strip
       // can detect status flips (fail->partial->pass) at render time.
       previousAreas: state.rubric.areas.map((a) => ({ ...a })),
-      areas: ev.areas.map((a) => ({ ...a })),
+      areas,
       attributableCandidate: state.rubric.attributableCandidate,
+      weakLeaves,
+      recentErrors,
     },
   };
 }
@@ -837,7 +1006,22 @@ function foldRunWarning(
     message: ev.message,
     timestamp: ev.timestamp,
   };
-  return { ...state, warnings: [...state.warnings, warning] };
+  // Fallback enrichment: surface failure-coded warnings in the rubric
+  // breakdown's "Recent errors" section even before the backend ships
+  // recent_errors on the rubric_score event. Benign notices (e.g.
+  // forced_iteration) are filtered out by isFailureWarning.
+  let rubric = state.rubric;
+  if (isFailureWarning(ev)) {
+    const recentErrors = pushRecentError(state.rubric.recentErrors, {
+      kind: ev.code || ev.level,
+      message: ev.message,
+      iteration: state.iterationCount,
+    });
+    if (recentErrors !== state.rubric.recentErrors) {
+      rubric = { ...state.rubric, recentErrors };
+    }
+  }
+  return { ...state, warnings: [...state.warnings, warning], rubric };
 }
 
 function foldGpuResolved(

@@ -94,6 +94,17 @@ export interface CandidateOutcomeEvent {
   rubric_delta: number | null; // score change this candidate produced, if measured
 }
 
+/** A single rubric leaf — the finest-grained criterion the grader inspects. */
+export interface RubricLeafDetail {
+  id: string;
+  label: string;
+  /** Leaf score 0–1, or `null` when the leaf is `unavailable` (skipped / no score). */
+  score: number | null;
+  status: "pass" | "partial" | "fail" | "unavailable";
+  /** Free-form justification: why this leaf scored as it did. Model/grader text. */
+  why: string;
+}
+
 export interface RubricScoreEvent {
   event: "rubric_score";
   timestamp: string;
@@ -105,7 +116,23 @@ export interface RubricScoreEvent {
     score: number;
     weight: number;
     status: "pass" | "partial" | "fail";
+    /**
+     * Per-leaf breakdown — OPTIONAL. Present once the backend enriches the
+     * event (2026-06-01). Older/live events omit it; the UI degrades to an
+     * area-only view in that case.
+     */
+    leaves?: RubricLeafDetail[];
   }>;
+  /**
+   * The lowest-scoring leaves across all areas — OPTIONAL backend enrichment.
+   * A pre-computed "what to fix next" digest so the UI need not re-derive it.
+   */
+  weak_leaves?: Array<{ id: string; score: number | null; why: string; area: string }>;
+  /**
+   * Recent execution errors surfaced alongside the score — OPTIONAL backend
+   * enrichment (e.g. a missing module that blocked a leaf from passing).
+   */
+  recent_errors?: Array<{ kind: string; message: string; iteration: number }>;
 }
 
 // ─── Union type + discriminant helpers ───────────────────────────────────────

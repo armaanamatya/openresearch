@@ -816,7 +816,7 @@ class GpuPlan(BaseModel):
     short_name: str = Field(description="Internal short name; matches gpu_catalog.GpuSku.short_name")
     vram_gb: int = Field(ge=1)
     gpu_count: int = Field(ge=1, le=8)
-    cloud_type: Literal["COMMUNITY", "SECURE"]
+    cloud_type: Literal["COMMUNITY", "SECURE", "ONDEMAND"]  # ONDEMAND = Azure on-demand tier
     sku_usd_per_hr: float = Field(ge=0.0, description="Per-GPU rate from catalog")
     total_usd_per_hr: float = Field(ge=0.0, description="sku_usd_per_hr * gpu_count")
     container_disk_gb: int = Field(ge=1)
@@ -874,11 +874,22 @@ class ScopeSpec(BaseModel):
     items are removed from ``models`` so the agent never sees a contradicting
     pair (paper default lists Qwen-7B; operator skips it → effective models
     list is the smaller two without 7B).
+
+    ``datasets`` and ``skip_datasets`` mirror that pair for the
+    dataset/environment axis (2026-06-01). ``skip_datasets`` is the *verified*
+    operator-scope source for environments: its entries are removed from
+    ``datasets`` and become ``operator_scope`` rubric exclusions so out-of-scope
+    environments (e.g. ALFWorld/WebShop on a Search-QA-only run) are excluded
+    from the rubric — numerator AND denominator — instead of scored 0. When the
+    operator narrows ``datasets`` to a subset of the paper default, the dropped
+    paper datasets are folded into ``skip_datasets`` automatically by
+    :meth:`merge_with_paper_default` (the narrowing IS the operator decision).
     """
 
     models: list[str] = Field(default_factory=list)
     skip_models: list[str] = Field(default_factory=list)
     datasets: list[DatasetSlice] = Field(default_factory=list)
+    skip_datasets: list[str] = Field(default_factory=list)
     seeds: list[int] = Field(default_factory=list)
     eval_slice: dict[str, int] = Field(default_factory=dict)
     budget_per_model: dict[str, float] = Field(default_factory=dict)
@@ -945,6 +956,7 @@ class ScopeSpec(BaseModel):
                 models=self.models or paper_default.models,
                 skip_models=list({*self.skip_models, *paper_default.skip_models}),
                 datasets=self.datasets or paper_default.datasets,
+                skip_datasets=list({*self.skip_datasets, *paper_default.skip_datasets}),
                 seeds=self.seeds or paper_default.seeds,
                 eval_slice=self.eval_slice or paper_default.eval_slice,
                 budget_per_model=(
@@ -958,10 +970,55 @@ class ScopeSpec(BaseModel):
                 ),
             )
 
+        # Models (2026-06-01): an operator-narrowed ``models`` list implicitly
+        # de-scopes the paper-default models it dropped. Fold those into
+        # ``skip_models`` (symmetry with the datasets/skip_datasets rule below) so
+        # the rubric excludes their leaves instead of scoring them 0. Only triggers
+        # when the operator actually set ``models`` (a deliberate narrowing), never
+        # on a pure paper-default run.
+        if paper_default is not None and self.models:
+            _active_m = set(base.models)
+            _dropped_m = [m for m in paper_default.models if m not in _active_m]
+            if _dropped_m:
+                base = base.model_copy(
+                    update={"skip_models": list({*base.skip_models, *_dropped_m})}
+                )
         if base.skip_models and base.models:
             skipped = set(base.skip_models)
             base = base.model_copy(
                 update={"models": [m for m in base.models if m not in skipped]}
+            )
+
+        # Datasets/environments (2026-06-01): an operator-narrowed ``datasets``
+        # list implicitly de-scopes the paper-default datasets it dropped. Fold
+        # those into ``skip_datasets`` — the verified operator-scope source for
+        # the environment axis (mirrors ``skip_models``) — so the rubric excludes
+        # their leaves instead of scoring them 0. Explicit ``skip_datasets``
+        # entries union in. Only triggers when the operator actually set
+        # ``datasets`` (a deliberate narrowing), never on a pure paper-default run.
+        if paper_default is not None and self.datasets:
+            _active_ds = {d.normalized_id() for d in base.datasets}
+            _dropped = [
+                d.normalized_id()
+                for d in paper_default.datasets
+                if d.normalized_id() not in _active_ds
+            ]
+            if _dropped:
+                base = base.model_copy(
+                    update={"skip_datasets": list({*base.skip_datasets, *_dropped})}
+                )
+        # Reconcile: a ``skip_datasets`` entry must not also remain in the
+        # effective ``datasets`` the agent is told to run (case-insensitive id).
+        if base.skip_datasets and base.datasets:
+            _skip_ds = {s.strip().lower() for s in base.skip_datasets if s}
+            base = base.model_copy(
+                update={
+                    "datasets": [
+                        d
+                        for d in base.datasets
+                        if d.normalized_id().strip().lower() not in _skip_ds
+                    ]
+                }
             )
         return base
 

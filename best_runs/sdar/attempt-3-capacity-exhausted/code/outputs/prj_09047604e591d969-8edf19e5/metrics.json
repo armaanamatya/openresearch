@@ -1,0 +1,39 @@
+{
+  "status": "failed",
+  "per_model": {
+    "qwen3_1_7b": {
+      "search_qa": {
+        "sdar": {
+          "status": "failed",
+          "metric": null,
+          "error": "[gpu_cell_runner] failed to launch subprocess: [Errno 2] No such file or directory: 'python'\n"
+        },
+        "grpo": {
+          "status": "failed",
+          "metric": null,
+          "error": "[gpu_cell_runner] failed to launch subprocess: [Errno 2] No such file or directory: 'python'\n"
+        }
+      }
+    },
+    "qwen2_5_3b": {
+      "search_qa": {
+        "sdar": {
+          "status": "failed",
+          "metric": null,
+          "error": "[gpu_cell_runner] failed to launch subprocess: [Errno 2] No such file or directory: 'python'\n"
+        },
+        "grpo": {
+          "status": "failed",
+          "metric": null,
+          "error": "[gpu_cell_runner] failed to launch subprocess: [Errno 2] No such file or directory: 'python'\n"
+        }
+      }
+    }
+  },
+  "scope": {
+    "models_run": [],
+    "models_skipped": [],
+    "environments_skipped": [],
+    "gaps": []
+  }
+}

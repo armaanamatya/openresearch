@@ -660,15 +660,38 @@ def _emit_supplemental(
                 # Malformed score — leave policy state untouched; the
                 # interceptor treats None-score as "no rubric, accept".
                 pass
+            # Pass through the per-area `leaves` detail (id/label/score/status/why)
+            # that `_rubric_areas` attached, plus the cross-area weak_leaves and
+            # the last few failed-experiment rows, so the lab UI can show
+            # leaf-level "which criteria fail + why" without a second fetch.
+            # build_rubric_score_event re-derives every status and bounds sizes.
+            _weak_leaves = [
+                {
+                    "id": w.get("id", ""),
+                    "score": w.get("score"),
+                    "why": w.get("justification") or w.get("why") or "",
+                    "area": w.get("area", ""),
+                }
+                for w in (result.get("weak_leaves") or [])
+                if isinstance(w, dict)
+            ]
+            try:
+                from backend.agents.rlm.primitives import _recent_experiment_errors
+                _recent_errors = _recent_experiment_errors(ctx.project_dir)
+            except Exception:  # noqa: BLE001 — observability must never block emit
+                _recent_errors = []
             emit_extra(build_rubric_score_event(
                 iteration=ctx.current_iteration,
                 score=float(score),
                 target=float(target) if target is not None else 0.0,
                 areas=[
                     {"area": a.get("area") or a.get("name") or "", "score": a.get("score", 0.0),
-                     "weight": a.get("weight", 0.0)}
+                     "weight": a.get("weight", 0.0),
+                     "leaves": a.get("leaves") if isinstance(a.get("leaves"), list) else []}
                     for a in areas if isinstance(a, dict)
                 ],
+                weak_leaves=_weak_leaves,
+                recent_errors=_recent_errors,
             ))
 
             # 2026-05-26: persist the full verify_against_rubric payload so

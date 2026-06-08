@@ -1,0 +1,37 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct'], datasets=['Search-QA'], seeds=[42, 43, 44].
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'ALFWorld is evaluated by success rate (%) over the six task categories, Search-QA by accuracy (%) over the in-domain (NQ'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2768867 is closed
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2785090 is closed
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2805564 is closed
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2822416 is closed
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2833604 is closed
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2847320 is closed
+{
+  "project_id": "prj_09047604e591d969",
+  "status": "partial",
+  "output_dir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "iterations": 10,
+  "rubric_score": 0.3633423076923077,
+  "cost_usd": 3.5540475,
+  "final_report_path": "/home/sww35/openresearch/runs/prj_09047604e591d969/final_report.json",
+  "execution_mode": "max",
+  "sandbox": "local"
+}

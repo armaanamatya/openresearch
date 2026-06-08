@@ -42,14 +42,35 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
     target_pdf.write_bytes(source_pdf.read_bytes())
 
 
-# Harness-owned, zero-non-stdlib-dep helper modules the agent's generated code
-# imports by name. Copied verbatim into code/ (2026-05-31 OOM/GPU remediation,
-# comp 2b) so the copy-and-paste import route always resolves inside any sandbox
-# — mirror of the rubric_guard.py "emit alongside train.py" pattern, but a real
-# file copy rather than a prompt instruction:
+# Harness-owned helper modules the agent's generated code imports by name. Copied
+# verbatim into code/ (2026-05-31 OOM/GPU remediation, comp 2b; extended 2026-06-01
+# for the agentic full-scope envs) so the copy-and-paste import route always
+# resolves inside any sandbox — mirror of the rubric_guard.py "emit alongside
+# train.py" pattern, but a real file copy rather than a prompt instruction:
+#   * cell_scheduler.py  — pure-stdlib resume/placement helpers; gpu_cell_runner imports
+#                          it BARE, so it must be copied alongside (else the flat-sandbox
+#                          `from cell_scheduler import …` falls back to an in-repo
+#                          `backend.*` import that doesn't resolve — the bug that zeroed
+#                          an SDAR matrix at import on 2026-06-07).
 #   * gpu_cell_runner.py — single-cell trainer references its env-var contract.
-#   * sdar_env_base.py   — every teacher/student *Env subclasses BaseEnv.
-_HARNESS_CODE_HELPERS: tuple[str, ...] = ("gpu_cell_runner.py", "sdar_env_base.py")
+#   * sdar_env_base.py   — BaseEnv (single-turn) + AgenticEnv (multi-turn) bases.
+#   * agentic_rollout.py — multi-turn episode → (sequence_ids, response_mask, reward).
+#   * search_qa_env.py   — real retrieval QA env (dense E5 / BM25 / overlap).
+#   * alfworld_env.py    — real ALFWorld TextWorld agentic env.
+#   * webshop_env.py     — real WebShop agentic env.
+# The first three are zero-non-stdlib-dep; the three agentic envs lazy-import their
+# heavy deps (rank_bm25 / sentence-transformers / faiss / alfworld), so the COPY +
+# bare ``import`` always work and the deps load only when an env is actually used.
+_HARNESS_CODE_HELPERS: tuple[str, ...] = (
+    "cell_scheduler.py",
+    "gpu_cell_runner.py",
+    "sdar_env_base.py",
+    "agentic_rollout.py",
+    "search_qa_env.py",
+    "alfworld_env.py",
+    "webshop_env.py",
+    "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
+)
 
 
 def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
@@ -68,12 +89,38 @@ def _copy_harness_helpers_to_code_root(code_dir: Path) -> None:
             logger.warning("could not copy harness helper %s into code/: %s", helper, exc)
 
 
+def refresh_harness_helpers(code_dir: str | Path) -> Path:
+    """Refresh the vendored stdlib-only harness helpers in ``code_dir`` for $0.
+
+    Public re-copy entry point for the cell-level resume path (Track B): a warm
+    retry that skips codegen leaves STALE helper copies in ``code/`` (the agent's
+    ``run_with_sdk`` only re-copies them as a side effect of a full codegen pass).
+    Resume needs the *current* helper bytes — both so a bug-fix to e.g.
+    ``alfworld_env.py`` actually re-runs the affected cells and so the
+    fingerprint reflects what is on disk — without paying for a regeneration.
+
+    This is a thin wrapper over :func:`_copy_harness_helpers_to_code_root`: same
+    file list, same idempotent + fail-soft semantics, no SDK / LLM call.  The
+    directory is created if absent.
+
+    Args:
+        code_dir: The run's ``code/`` directory to refresh.
+
+    Returns:
+        The resolved ``code_dir`` as a :class:`~pathlib.Path`.
+    """
+    code = Path(code_dir)
+    code.mkdir(parents=True, exist_ok=True)
+    _copy_harness_helpers_to_code_root(code)
+    return code
+
+
 # ---------------------------------------------------------------------------
 # PPO CartPole-v1 implementation template
 # ---------------------------------------------------------------------------
 
 PPO_TRAIN_PY = '''\
-"""PPO CartPole-v1 Baseline — OpenResearch generated implementation.
+"""PPO CartPole-v1 Baseline — ReproLab generated implementation.
 
 This implements Proximal Policy Optimization (Schulman et al., 2017) on
 CartPole-v1 with all assumption decisions applied from the assumption ledger.
@@ -1029,6 +1076,53 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
 )
 
 
+_PROVENANCE_BLOCK = (
+    "\n\nPROVENANCE MANIFEST (makes your run legible to the TEXT-ONLY grader):\n"
+    "The rubric grader cannot SEE your figures and reads only a bounded slice of code, so a\n"
+    "faithful run gets docked for details it actually has ('45-epoch not confirmed', 'batch\n"
+    "size only an assumption', 'log-axis not verifiable'). Fix this by emitting a machine-\n"
+    "readable manifest. The helper `provenance.py` is ALREADY in your code dir:\n"
+    "  from provenance import emit_provenance, emit_figure_sidecar\n"
+    "  emit_provenance(OUTPUT_DIR, experiments={\n"
+    "    '<exp_id>': {'model_key':..., 'baseline':..., 'seed':..., 'epochs':..., 'steps':...,\n"
+    "      'batch_size':..., 'per_optimizer': {'adam': {'lr':..., 'betas':...}, ...},\n"
+    "      'hardware':..., 'framework_versions': {'torch': torch.__version__},\n"
+    "      'convergence': {'iteration':[...], '<metric>':[...]}}})\n"
+    "  # for EACH fig_*.png you save, also emit its sidecar so the grader knows the axes:\n"
+    "  emit_figure_sidecar(png_path, shows='val accuracy vs epoch (log-x)',\n"
+    "    axis={'x': {'label':'epoch','scale':'log'}, 'y': {'label':'accuracy','scale':'linear'}},\n"
+    "    series={'adam': {'x':[...], 'y':[...]}})\n"
+    "emit_provenance auto-summarizes long convergence arrays (no byte-budget risk). Wrap both\n"
+    "calls in try/except (FAIL-SOFT, exactly like the figures). This is the single biggest\n"
+    "lever on the 'Artifact completeness', 'Evaluation protocol', and 'Experiment execution'\n"
+    "rubric areas.\n"
+)
+
+
+_SMOKE_BLOCK = (
+    "\n\nEXECUTION SMOKE — honor OPENRESEARCH_SMOKE_STEPS (a FREE pre-run crash check):\n"
+    "Before the full run the harness may launch your entry script with OPENRESEARCH_SMOKE_STEPS\n"
+    "set (e.g. =1) and CUDA_LAUNCH_BLOCKING=1. When it is set, run a MINIMAL dry-run:\n"
+    "construct EVERY model/experiment you would run for real (especially the riskiest — a\n"
+    "VAE, a custom loss) and take that many optimizer steps on a TINY data slice (≈2\n"
+    "batches), then sys.exit(0). Skip full epochs, heavy downloads, and figure/metrics\n"
+    "writing. Pattern:\n"
+    "  import os, sys\n"
+    "  SMOKE = int(os.environ.get('OPENRESEARCH_SMOKE_STEPS', '0') or 0)\n"
+    "  ...\n"
+    "  for step, batch in enumerate(loader):\n"
+    "      train_step(batch)\n"
+    "      if SMOKE and step + 1 >= SMOKE: break\n"
+    "  ...\n"
+    "  if SMOKE: sys.exit(0)   # every experiment constructed + stepped without crashing\n"
+    "This runs in SECONDS and catches runtime crashes — e.g. a VAE `CUDA error: device-side\n"
+    "assert` from feeding non-[0,1] data to a Bernoulli/BCE loss (binarize or [0,1]-scale\n"
+    "the VAE's input; do NOT reuse the classifier's mean/std Normalize) — at the REAL line\n"
+    "BEFORE the expensive run, so the traceback becomes your repair_context. Ignoring the\n"
+    "env var just times the smoke out and skips it, but you LOSE the free crash check.\n"
+)
+
+
 _RUBRIC_GUARD_BLOCK = (
     "\n\nSELF-VALIDATING RUBRIC GUARD — always-on:\n"
     "At the END of train.py (after writing metrics.json) call:\n"
@@ -1231,6 +1325,90 @@ _RL_SCAFFOLD_BLOCK = (
     "  webshop_score_per_model, per_model, baselines_vs_sdar, omitted.\n"
     "  Smallest-two scope: Qwen3-1.7B + Qwen2.5-3B, Search-QA only.\n"
     "  Declare ALFWorld / WebShop / 7B in omitted[].\n"
+)
+
+
+# ---------------------------------------------------------------------------
+# SDAR baseline-coverage guidance block (opt-in: OPENRESEARCH_SDAR_BASELINES=1)
+# ---------------------------------------------------------------------------
+# BES Phase 1 — Coverage Completion (spec
+# docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
+# A "baseline" is purely agent-side: the generated train.py maps a baseline
+# STRING to two flags (opsd_enabled, gate_type) inside train_one_run(baseline=...),
+# so emitting more baselines is GUIDANCE, not a harness change. The SDAR paper
+# reports FIVE (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD) but a typical run emits
+# only three (GRPO, GRPO+OPSD, SDAR), leaving the heaviest Method leaf
+# under-scored. This block instructs the agent to ALSO emit the three missing
+# ones — all on the SAME Search-QA env that already runs. It deliberately does
+# NOT touch ALFWorld / WebShop: activating an env that cannot yet learn turns
+# excluded leaves into counted zeros (the sequencing trap). Search-QA only.
+_SDAR_BASELINES_BLOCK = (
+    "\n\nSDAR BASELINE COVERAGE — emit ALL FIVE paper baselines (Search-QA only):\n"
+    "The SDAR paper reports five baselines; a typical run emits only three\n"
+    "(grpo, grpo_opsd, sdar). Emit the three MISSING ones so the full set is\n"
+    "{grpo, opsd, skill_sd, grpo_opsd, rlsd} (plus your headline `sdar`). A\n"
+    "baseline is JUST A STRING your train.py maps to (opsd_enabled, gate_type)\n"
+    "inside train_one_run(baseline=...): e.g.\n"
+    "  opsd_enabled = baseline in ('sdar', 'grpo_opsd', 'opsd', 'skill_sd', 'rlsd')\n"
+    "  gate_type    = 'sigmoid' if baseline == 'sdar' else 'ones'\n"
+    "Add one cell PER missing baseline to code/cells.json carrying that exact\n"
+    "`baseline` string; aggregate_cell_metrics then nests each result at\n"
+    "per_model[model][env][baseline]. Keep EVERY new cell on the Search-QA env\n"
+    "(env='searchqa' / 'search_qa') — do NOT add ALFWorld or WebShop cells here.\n"
+    "\n"
+    "RECIPE 1 — standalone OPSD (baseline='opsd') — NEAR-FREE, do this FIRST:\n"
+    "  OPSD self-distillation loss ONLY, with NO GRPO RL term. Set the GRPO\n"
+    "  weight to zero and keep the OPSD term: opsd_enabled=True, grpo_weight=0.0\n"
+    "  (i.e. total_loss = 0 * grpo_loss + LAMBDA * opsd_loss, LAMBDA=0.1). Use\n"
+    "  the OPSD gate (gate_type='ones'), NOT the sigmoid SDAR gate. The OPSD\n"
+    "  machinery already exists — this is a flag flip. Validate the cell→leaf\n"
+    "  plumbing with this one before the two below.\n"
+    "\n"
+    "RECIPE 2 — Skill-SD (baseline='skill_sd'):\n"
+    "  Self-distillation WITH a POPULATED skill_context prompt slot. Your\n"
+    "  build_prompt(question, skill_context) already accepts skill_context but\n"
+    "  it is normally EMPTY (''). For this baseline, retrieve a few relevant\n"
+    "  skills/exemplars (reuse your Search-QA retriever — e.g. the top-k E5\n"
+    "  passages, or a small fixed skill bank) and feed them as skill_context so\n"
+    "  the prompt actually contains them. opsd_enabled=True, gate_type='ones'.\n"
+    "  The ONLY structural difference from standalone OPSD is the non-empty\n"
+    "  skill_context — make sure build_prompt receives it.\n"
+    "\n"
+    "RECIPE 3 — RLSD (baseline='rlsd') — RL + self-distillation:\n"
+    "  Combine the GRPO RL term WITH self-distillation, a distinct\n"
+    "  (opsd_enabled, gate_type, schedule) combination from `sdar`: keep the\n"
+    "  GRPO RL term ON (grpo_weight=1.0) AND opsd_enabled=True with\n"
+    "  gate_type='ones' (constant gate, NOT the sigmoid SDAR gate) — this is\n"
+    "  the 'RL + SD without the learned sigmoid gate' point in the ablation. If\n"
+    "  you schedule the OPSD term, anneal it on a fixed schedule rather than the\n"
+    "  token-level sigmoid gap gate.\n"
+    "\n"
+    "Distinctness check (the leaf scorer reads the source): the five must be\n"
+    "MECHANICALLY different, not relabelled copies —\n"
+    "  grpo       : opsd_enabled=False, gate_type='ones'\n"
+    "  opsd       : opsd_enabled=True,  gate_type='ones', grpo_weight=0.0\n"
+    "  skill_sd   : opsd_enabled=True,  gate_type='ones', skill_context POPULATED\n"
+    "  grpo_opsd  : opsd_enabled=True,  gate_type='ones', grpo_weight=1.0\n"
+    "  rlsd       : opsd_enabled=True,  gate_type='ones', grpo_weight=1.0, scheduled SD\n"
+    "  sdar       : opsd_enabled=True,  gate_type='sigmoid'  (g_t = sigmoid(BETA*delta_t))\n"
+    "\n"
+    "PROVENANCE — cite the reference implementation:\n"
+    "  Emit an explicit link to the SDAR reference repository\n"
+    "  (https://github.com/ZJU-REAL/SDAR) in your run artifacts AND in the\n"
+    "  report (e.g. a `provenance` / `reference_repo` field in metrics.json and\n"
+    "  a 'Reference implementation: ZJU-REAL/SDAR' line in README.md).\n"
+    "\n"
+    "CURVES — write per-step curves, not just terminal scalars:\n"
+    "  In addition to metrics.json, write `curves.json` in OUTPUT_DIR holding\n"
+    "  PER-STEP series so the training dynamics are inspectable. At minimum log,\n"
+    "  every step (or every few steps), the four series:\n"
+    "    gate_mean  — mean of the SDAR gate g_t over the batch's tokens\n"
+    "    gap        — mean teacher-student gap delta_t (the gate's input)\n"
+    "    opsd_loss  — the OPSD self-distillation loss term that step\n"
+    "    reward     — mean episode/sequence reward that step\n"
+    "  Shape: curves.json = {\"step\": [...], \"gate_mean\": [...], \"gap\": [...],\n"
+    "  \"opsd_loss\": [...], \"reward\": [...]} (lists aligned by index), written\n"
+    "  with the same atomic write pattern as metrics.json.\n"
 )
 
 
@@ -1569,6 +1747,19 @@ def _rubric_checklist_block(project_dir: Path) -> str:
             req = req[:247] + "..."
         lines.append(f"  [w={weight:.2f}] {req}")
 
+    # Completeness nudge (Layer 1, lite): the agent already SEES the leaves, but a
+    # prior run still skipped a complex component (SFO, a second-order optimizer) by
+    # choice and reported only training loss. A simplified-but-present implementation
+    # earns partial credit; an OMITTED component scores 0. So push best-effort coverage
+    # of EVERY leaf + the evaluation metrics the leaves ask for, not just training loss.
+    lines.append(
+        "\nCOVER EVERY LEAF: implement a best-effort version of each item above — do NOT "
+        "skip one just because it's complex (a basic correct version of a hard component, "
+        "e.g. a second-order optimizer, beats absence: partial credit vs 0). Report the "
+        "TEST/validation metrics the leaves name (accuracy, ELBO, etc.), not only training "
+        "loss. If you must reduce scope, reduce SIZE (fewer epochs/steps), never OMIT a "
+        "whole experiment or baseline a leaf asks for."
+    )
     return "\n".join(lines)
 
 
@@ -2057,6 +2248,15 @@ def _compute_constraint_guidance(
     # to nail. Asks for README, figures, config_used.json, per-step curves.
     guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
+    guidance += _PROVENANCE_BLOCK
+    # Layer 1: only ask the agent to write smoke-aware code when the execution smoke
+    # is actually enabled — keeps the prompt lean otherwise (flag default-OFF).
+    try:
+        from backend.agents.rlm import execution_smoke as _exec_smoke
+        if _exec_smoke.is_enabled():
+            guidance += _SMOKE_BLOCK
+    except Exception:  # noqa: BLE001 — guidance assembly must never fail the run
+        pass
 
     # 5.8. Self-validating rubric guard — always-on. The agent's own train.py
     # imports `rubric_guard.assert_metrics_schema` and calls it at the end of
@@ -2078,6 +2278,16 @@ def _compute_constraint_guidance(
     import os as _os_scaffold
     if _os_scaffold.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         guidance += _RL_SCAFFOLD_BLOCK
+
+    # 5.86. SDAR baseline-coverage guidance — opt-in (OPENRESEARCH_SDAR_BASELINES=1).
+    # BES Phase 1 (Coverage Completion). Tells the agent to ALSO emit the three
+    # missing SDAR baselines (standalone OPSD, Skill-SD, RLSD) so all five are
+    # present, plus provenance link + per-step curves.json. Search-QA only — it
+    # deliberately does NOT activate ALFWorld/WebShop env cells (the sequencing
+    # trap: an env that can't learn turns excluded leaves into counted zeros).
+    # DEFAULT OFF → not injected → guidance byte-identical to today.
+    if _os_scaffold.environ.get("OPENRESEARCH_SDAR_BASELINES", "").strip().lower() in ("1", "true", "yes"):
+        guidance += _SDAR_BASELINES_BLOCK
 
     # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
     # metrics_shape, bind the agent to those exact paths. Injected after the

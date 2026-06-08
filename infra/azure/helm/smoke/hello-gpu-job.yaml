@@ -1,0 +1,176 @@
+# ---------------------------------------------------------------------------
+# hello-gpu-job.yaml — Phase-1a gate: GPU pool scale 0→1→0
+#
+# PURPOSE:
+#   Prove end-to-end that:
+#     1. The GPU node pool scales from 0 → 1 (AKS cluster autoscaler).
+#     2. The NVIDIA device plugin surfaces the GPU as nvidia.com/gpu: 1.
+#     3. `nvidia-smi` runs successfully inside the Job pod.
+#     4. The Workload Identity token is injected (azure.workload.identity/use).
+#     5. The Job can write a marker blob to Azure Blob Storage using
+#        DefaultAzureCredential (federated token, NO static secrets).
+#     6. After TTL, the pool autoscales back to 0.
+#
+# USAGE:
+#   # Apply (note: not managed by Helm install — this is a one-shot gate smoke):
+#   kubectl apply -f smoke/hello-gpu-job.yaml -n <namespace>
+#   kubectl get jobs -n <namespace> -w
+#   kubectl logs -n <namespace> job/hello-gpu-smoke -f
+#
+# PREREQUISITES:
+#   - `helm install` has been run (namespace, SA, storageclass, pvc, rbac exist).
+#   - `STORAGE_ACCOUNT`, `BLOB_CONTAINER`, and `MI_CLIENT_ID` are filled in below
+#     (or pass via `kubectl create job --from=...` + `--env`).
+#   - The user-assigned MI holds `Storage Blob Data Contributor` on the container.
+#
+# SUCCESS CRITERIA:
+#   Job status = Completed; logs contain "nvidia-smi OK" and "blob write OK".
+#   Pool node count goes 0 → 1 → (after ttl) → 0.
+#
+# FILL BEFORE RUNNING — substitute from `terraform output`:
+#   STORAGE_ACCOUNT  = terraform output -raw storage_account_name
+#   BLOB_CONTAINER   = terraform output -raw blob_container_name
+#   MI_CLIENT_ID     = terraform output -raw workload_identity_client_id
+#   IMAGE            = terraform output -raw acr_login_server  (+ :0.1.0 tag)
+#   NAMESPACE        = the value of .Values.namespace
+#   SERVICE_ACCOUNT  = the value of .Values.serviceAccountName
+#   GPU_SKU          = .Values.gpu.defaultSku  (e.g. "azure_a100_80")
+#   GPU_TAINT_KEY    = .Values.gpu.taintKey
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hello-gpu-smoke
+  # Replace with your namespace (.Values.namespace)
+  namespace: reprolab
+  labels:
+    app.kubernetes.io/name: reprolab-aks-smoke
+    app.kubernetes.io/component: hello-gpu
+spec:
+  # Retry at most once for infra failures (e.g. image pull on a cold node).
+  backoffLimit: 1
+  # Automatically delete 1 hour after completion (success or failure).
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: hello-gpu-smoke
+        # MANDATORY workload identity label — the webhook injects the projected
+        # service-account token volume only when this label is present.
+        azure.workload.identity/use: "true"
+    spec:
+      # Use the Workload-Identity-annotated SA.
+      # Value MUST match .Values.serviceAccountName (default: reprolab-sa).
+      # Terraform federated-credential subject: system:serviceaccount:<ns>:reprolab-sa
+      serviceAccountName: reprolab-sa
+      restartPolicy: Never
+
+      # Schedule on the specific GPU SKU pool.
+      # reprolab/sku targets exactly one pool (one VM size).
+      # Replace <GPU_SKU> with .Values.gpu.defaultSku (e.g. "azure_a100_80").
+      # [TF: gpu_pools — use gpu_pools[<sku>].sku_label]
+      nodeSelector:
+        reprolab/sku: azure_a100_80   # replace with .Values.gpu.defaultSku
+
+      tolerations:
+        # Tolerate the shared GPU NoSchedule taint (nvidia.com/gpu=present:NoSchedule).
+        # operator: Exists matches any taint value — no per-pool taint enumeration needed.
+        # Replace taintKey with .Values.gpu.taintKey
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: hello-gpu
+          # Replace with the ACR image produced by docker/aks-cell-base build.
+          # [TF: acr_login_server]  e.g. myacr.azurecr.io/aks-cell-base:0.1.0
+          image: "REPLACE_WITH_ACR_IMAGE"
+          imagePullPolicy: Always
+
+          # GPU resource request AND limit — required for the device plugin to
+          # inject CUDA_VISIBLE_DEVICES and schedule on a GPU node.
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "2"
+              memory: "8Gi"
+
+          env:
+            # Workload identity supplies the AZURE_CLIENT_ID env var automatically
+            # when the pod label is set, but we also set it explicitly for clarity.
+            - name: AZURE_CLIENT_ID
+              # [TF: workload_identity_client_id]
+              value: "REPLACE_WITH_MI_CLIENT_ID"
+            - name: OPENRESEARCH_STORAGE_ACCOUNT
+              # [TF: storage_account_name]
+              value: "REPLACE_WITH_STORAGE_ACCOUNT"
+            - name: OPENRESEARCH_BLOB_CONTAINER
+              # [TF: blob_container_name]
+              value: "REPLACE_WITH_BLOB_CONTAINER"
+            # Marker blob path written to prove Blob auth works.
+            - name: SMOKE_BLOB_NAME
+              value: "smoke/hello-gpu-smoke-marker.txt"
+
+          # Mount the shared Azure Files PVC to prove the RWX cache mount works.
+          volumeMounts:
+            - name: reprolab-cache
+              mountPath: /mnt/reprolab-cache
+
+          command:
+            - /bin/bash
+            - -euo
+            - pipefail
+            - -c
+            - |
+              echo "=== hello-gpu-smoke starting ==="
+
+              # 1. Verify the GPU is accessible.
+              echo "--- nvidia-smi ---"
+              nvidia-smi
+              echo "nvidia-smi OK"
+
+              # 2. Write a test file to the shared Files cache mount.
+              echo "--- Files PVC write ---"
+              TMPFILE="/mnt/reprolab-cache/smoke-test-$(date +%s).txt"
+              echo "hello from hello-gpu-smoke at $(date)" > "${TMPFILE}"
+              cat "${TMPFILE}"
+              rm "${TMPFILE}"
+              echo "Files PVC write OK"
+
+              # 3. Write a marker blob to Azure Blob Storage using
+              #    DefaultAzureCredential (Workload Identity federated token).
+              echo "--- Blob write via Workload Identity ---"
+              python3 - <<'PYEOF'
+              import os, sys
+              account = os.environ["OPENRESEARCH_STORAGE_ACCOUNT"]
+              container = os.environ["OPENRESEARCH_BLOB_CONTAINER"]
+              blob_name = os.environ["SMOKE_BLOB_NAME"]
+
+              try:
+                  from azure.identity import DefaultAzureCredential
+                  from azure.storage.blob import BlobServiceClient
+              except ImportError as e:
+                  print(f"Azure SDK not available: {e}", file=sys.stderr)
+                  sys.exit(1)
+
+              cred = DefaultAzureCredential()
+              url = f"https://{account}.blob.core.windows.net"
+              client = BlobServiceClient(account_url=url, credential=cred)
+              container_client = client.get_container_client(container)
+              import datetime
+              marker = f"hello-gpu-smoke OK at {datetime.datetime.utcnow().isoformat()}"
+              container_client.upload_blob(blob_name, marker.encode(), overwrite=True)
+              print(f"Uploaded marker to blob://{container}/{blob_name}")
+              print("blob write OK")
+              PYEOF
+
+              echo "=== hello-gpu-smoke PASSED ==="
+
+      volumes:
+        - name: reprolab-cache
+          persistentVolumeClaim:
+            claimName: reprolab-cache
