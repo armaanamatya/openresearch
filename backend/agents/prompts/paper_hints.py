@@ -140,6 +140,35 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "https://github.com/BartekCupial/finetuning-RL-as-CL",
         ],
     ),
+    # Adam (Kingma & Ba, 2014) — five experiment families. Four are cheap
+    # (MNIST-MLP, MNIST logistic regression, IMDB BoW logistic, CIFAR-10 CNN);
+    # the long pole is the VAE bias-correction sweep (~21 configs = beta2 x lr x
+    # optimizer, each x 20 epochs). The 2026-06-08 run packed all five into one
+    # monolithic train.py with the sweep last and wrote metrics.json only at the
+    # end — a wall-clock timeout fired mid-sweep and zeroed the four finished
+    # families. This hint caps + cell-structures the sweep so each config is
+    # independently bounded and partial results survive a timeout.
+    "1412.6980": PaperHint(
+        guidance=(
+            "Adam (1412.6980) timeout-survival structure: the VAE bias-correction "
+            "sweep is the long pole (~21 configs = beta2 x lr x optimizer, each x 20 "
+            "epochs). CAP it to a smallest-config-first subset (NOT the full grid) and "
+            "structure it as `cells.json` cells (one cell per config in train_cell.py), "
+            "never a monolithic in-process loop, so the harness bounds each config and "
+            "its metrics land incrementally. The four quick families (MNIST-MLP, MNIST "
+            "logistic-regression, IMDB, CIFAR10) are cheap: write metrics.json "
+            "ATOMICALLY as each completes (never only at the end) so a timeout truncates "
+            "the tail, not finished work."
+        ),
+        default_scope=ScopeSpec(
+            datasets=[
+                DatasetSlice(name="MNIST"),
+                DatasetSlice(name="IMDB"),
+                DatasetSlice(name="CIFAR-10"),
+            ],
+            seeds=[1],
+        ),
+    ),
 }
 
 

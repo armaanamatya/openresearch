@@ -301,6 +301,19 @@ ITERATION DISCIPLINE — one run_experiment per iteration:
   cleanly surface the failure to the next root-turn's context window. The
   policy will REFUSE FINAL_VAR if you call run_experiment twice in one
   iteration with the latter failing -- pack one experiment per iteration.
+
+TIMEOUT-SURVIVABLE EXPERIMENTS — completed work must outlive a timeout:
+  `run_experiment` is bounded by a wall-clock / stall timeout. Structure the
+  work so a timeout truncates the tail rather than discarding everything:
+    1. Direct `implement_baseline` to write the canonical `metrics.json`
+       ATOMICALLY after EACH experiment family/stage completes (not once at the
+       end) — the harness finalizes on timeout by scoring whatever populated
+       families are already on disk.
+    2. Do NOT have a single un-checkpointed `train.py` pack N independent
+       families/configs. For a multi-config matrix, prefer `cells.json` +
+       `train_cell.py` so the harness bounds each config with its own timeout.
+    3. Cap or stream any hyperparameter sweep, smallest-config-first, so partial
+       results land early — never an unbounded grid as the final stage.
 """
 
 _TURN_EFFICIENCY = """\
