@@ -167,6 +167,22 @@ class FakeBlobClient:
         return m
 
 
+def _make_fake_settings(**overrides: Any) -> MagicMock:
+    """Return a minimal settings stub with all AKS fields populated."""
+    s = MagicMock()
+    s.azure_namespace = "reprolab"
+    s.azure_base_image = "myacr.azurecr.io/reprolab/aks-cell-base:20260603"
+    s.azure_storage_account = "myaccount"
+    s.azure_blob_container = "reprolab-artifacts"
+    s.azure_service_account = "reprolab-sa"
+    s.azure_pending_timeout_seconds = 900
+    s.azure_ttl_seconds_after_finished = 3600
+    s.azure_job_backoff_limit = 0
+    for k, v in overrides.items():
+        setattr(s, k, v)
+    return s
+
+
 def _make_backend(
     *,
     batch_api: Any = None,
@@ -178,6 +194,8 @@ def _make_backend(
         batch_api = FakeBatchApi()
     if core_api is None:
         core_api = FakeCoreApi()
+    if settings is None:
+        settings = _make_fake_settings()
     return AksJobBackend(
         batch_api=batch_api,
         core_api=core_api,
@@ -833,6 +851,7 @@ async def test_exec_with_gpu_plan_sets_node_selector_in_submitted_job(tmp_path: 
         gpu_plan=plan,
         batch_api=batch_api,
         core_api=FakeCoreApi(),
+        settings=_make_fake_settings(),
     )
     sandbox = _make_sandbox(tmp_path)
     backend._active_jobs[sandbox.sandbox_id] = []
@@ -851,7 +870,7 @@ async def test_exec_with_gpu_plan_sets_node_selector_in_submitted_job(tmp_path: 
 async def test_exec_without_gpu_plan_no_node_selector_in_submitted_job(tmp_path: Path):
     """When AksJobBackend has no gpu_plan, the submitted Job has no nodeSelector."""
     batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
-    backend = AksJobBackend(batch_api=batch_api, core_api=FakeCoreApi())
+    backend = AksJobBackend(batch_api=batch_api, core_api=FakeCoreApi(), settings=_make_fake_settings())
     sandbox = _make_sandbox(tmp_path)
     backend._active_jobs[sandbox.sandbox_id] = []
 
@@ -861,3 +880,165 @@ async def test_exec_without_gpu_plan_no_node_selector_in_submitted_job(tmp_path:
     body = batch_api.created_jobs[0]["body"]
     pod_spec = body["spec"]["template"]["spec"]
     assert "nodeSelector" not in pod_spec
+
+
+# ---------------------------------------------------------------------------
+# P0: REPROLAB_EXEC_COMMAND injected exactly once
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_command_env_var_appears_exactly_once(tmp_path: Path):
+    """REPROLAB_EXEC_COMMAND must appear exactly once in the submitted Job manifest.
+
+    Regression guard for the double-injection bug: exec() injected it via
+    env_vars AND _build_exec_job_manifest appended it again → duplicate env var.
+    """
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = _make_backend(batch_api=batch_api)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "python train.py", timeout=10)
+
+    assert len(batch_api.created_jobs) == 1
+    env_list = batch_api.created_jobs[0]["body"]["spec"]["template"]["spec"]["containers"][0]["env"]
+    exec_cmd_entries = [e for e in env_list if e["name"] == "REPROLAB_EXEC_COMMAND"]
+    assert len(exec_cmd_entries) == 1, (
+        f"REPROLAB_EXEC_COMMAND appeared {len(exec_cmd_entries)} time(s) in the env list; "
+        "expected exactly 1."
+    )
+    assert exec_cmd_entries[0]["value"] == "python train.py"
+
+
+# ---------------------------------------------------------------------------
+# P1: GPU taint toleration present on exec manifest
+# ---------------------------------------------------------------------------
+
+
+def test_build_exec_job_manifest_has_gpu_toleration():
+    """_build_exec_job_manifest always includes the nvidia.com/gpu:NoSchedule toleration."""
+    manifest = _build_exec_job_manifest(
+        job_name="reprolab-exec-test-tol",
+        namespace="reprolab",
+        image="reprolab/base:test",
+        service_account="reprolab-sa",
+        command="echo hi",
+        environment={},
+        active_deadline_seconds=60,
+        ttl_seconds=3600,
+        backoff_limit=0,
+    )
+    pod_spec = manifest["spec"]["template"]["spec"]
+    tolerations = pod_spec.get("tolerations", [])
+    gpu_toleration = {
+        "key": "nvidia.com/gpu",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    }
+    assert gpu_toleration in tolerations, (
+        f"Expected GPU taint toleration {gpu_toleration!r} in tolerations, got: {tolerations}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exec_submitted_job_has_gpu_toleration(tmp_path: Path):
+    """The Job manifest submitted by exec() carries the nvidia.com/gpu toleration."""
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = _make_backend(batch_api=batch_api)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "python train.py", timeout=10)
+
+    body = batch_api.created_jobs[0]["body"]
+    tolerations = body["spec"]["template"]["spec"].get("tolerations", [])
+    keys = [t.get("key") for t in tolerations]
+    assert "nvidia.com/gpu" in keys, f"nvidia.com/gpu toleration missing; got: {tolerations}"
+
+
+# ---------------------------------------------------------------------------
+# P1: Empty base-image raises a clear SandboxRuntimeError
+# ---------------------------------------------------------------------------
+
+
+def test_base_image_empty_raises_clear_error():
+    """When azure_base_image is empty/unset, _base_image() raises backend_unavailable
+    with a message pointing to REPROLAB_AZURE_BASE_IMAGE."""
+    fake_settings = _make_fake_settings(azure_base_image="")
+    backend = AksJobBackend(settings=fake_settings)
+
+    with pytest.raises(SandboxRuntimeError) as exc_info:
+        backend._base_image()
+
+    assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
+    msg = str(exc_info.value)
+    assert "REPROLAB_AZURE_BASE_IMAGE" in msg or "azure_base_image" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_raises_when_base_image_unset(tmp_path: Path):
+    """create_sandbox propagates the base-image error before any Blob upload."""
+    fake_settings = _make_fake_settings(azure_base_image="")
+    backend = _make_backend(settings=fake_settings)
+
+    with pytest.raises(SandboxRuntimeError) as exc_info:
+        await backend.create_sandbox(_make_config(tmp_path))
+
+    assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
+
+
+# ---------------------------------------------------------------------------
+# P1: TTL and backoff read from settings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_uses_ttl_from_settings(tmp_path: Path):
+    """exec() passes the ttlSecondsAfterFinished value from settings to the manifest."""
+    fake_settings = _make_fake_settings(azure_ttl_seconds_after_finished=7200)
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = _make_backend(batch_api=batch_api, settings=fake_settings)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "echo ttl", timeout=10)
+
+    body = batch_api.created_jobs[0]["body"]
+    assert body["spec"]["ttlSecondsAfterFinished"] == 7200
+
+
+@pytest.mark.asyncio
+async def test_exec_uses_backoff_limit_from_settings(tmp_path: Path):
+    """exec() passes the backoffLimit value from settings to the manifest."""
+    fake_settings = _make_fake_settings(azure_job_backoff_limit=3)
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = _make_backend(batch_api=batch_api, settings=fake_settings)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "echo backoff", timeout=10)
+
+    body = batch_api.created_jobs[0]["body"]
+    assert body["spec"]["backoffLimit"] == 3
+
+
+@pytest.mark.asyncio
+async def test_exec_uses_default_ttl_when_setting_absent(tmp_path: Path):
+    """exec() falls back to _DEFAULT_TTL_AFTER_FINISHED_S when the setting is missing."""
+    from backend.services.runtime.aks_job_backend import _DEFAULT_TTL_AFTER_FINISHED_S
+
+    # Setting not present → getattr returns None → uses default.
+    fake_settings = _make_fake_settings()
+    del fake_settings.azure_ttl_seconds_after_finished  # remove so getattr returns None via MagicMock
+    # Since MagicMock auto-creates missing attrs, set it explicitly to a sentinel.
+    fake_settings.azure_ttl_seconds_after_finished = None
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    backend = _make_backend(batch_api=batch_api, settings=fake_settings)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "echo default-ttl", timeout=10)
+
+    body = batch_api.created_jobs[0]["body"]
+    assert body["spec"]["ttlSecondsAfterFinished"] == _DEFAULT_TTL_AFTER_FINISHED_S

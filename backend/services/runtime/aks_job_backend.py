@@ -50,10 +50,10 @@ _JOB_PREFIX = "reprolab-exec"
 # Default values used when settings are absent (defensive: W2 adds the block later).
 _DEFAULT_NAMESPACE = "reprolab"
 _DEFAULT_PENDING_TIMEOUT_S = 900
-_DEFAULT_BOOT_TIMEOUT_S = 900
 _DEFAULT_TTL_AFTER_FINISHED_S = 3600
-_DEFAULT_BACKOFF_LIMIT = 2
-_DEFAULT_BASE_IMAGE = "reprolab/aks-cell-base:latest"
+_DEFAULT_BACKOFF_LIMIT = 0
+# No floating :latest default — callers must supply REPROLAB_AZURE_BASE_IMAGE.
+_DEFAULT_BASE_IMAGE = ""
 
 
 # ---------------------------------------------------------------------------
@@ -61,16 +61,18 @@ _DEFAULT_BASE_IMAGE = "reprolab/aks-cell-base:latest"
 # ---------------------------------------------------------------------------
 
 
-def _load_kubernetes_batch_api(kubeconfig: str | None = None) -> Any:
-    """Lazily load and return a kubernetes BatchV1Api instance."""
-    try:
-        from kubernetes import client as k8s_client, config as k8s_config  # type: ignore[import]
-    except ImportError as exc:
-        raise SandboxRuntimeError(
-            RuntimeCauseKind.backend_unavailable,
-            "The 'kubernetes' Python package is not installed. "
-            "Install it with: pip install kubernetes",
-        ) from exc
+def _load_kubeconfig(kubeconfig: str | None = None) -> None:
+    """Load kubeconfig once: in-cluster first, kubeconfig file fallback.
+
+    Extracted to avoid repeating the same incluster-first logic in every API
+    factory.  Callers must have already imported ``kubernetes.config`` and
+    pass it as an argument to avoid re-importing.
+
+    Raises ``SandboxRuntimeError(backend_unavailable, ...)`` if the
+    ``kubernetes`` package is not installed (propagated from callers).
+    """
+    from kubernetes import config as k8s_config  # type: ignore[import]
+
     if kubeconfig:
         k8s_config.load_kube_config(config_file=kubeconfig)
     else:
@@ -78,26 +80,33 @@ def _load_kubernetes_batch_api(kubeconfig: str | None = None) -> Any:
             k8s_config.load_incluster_config()
         except Exception:
             k8s_config.load_kube_config()
+
+
+def _load_kubernetes_batch_api(kubeconfig: str | None = None) -> Any:
+    """Lazily load and return a kubernetes BatchV1Api instance."""
+    try:
+        from kubernetes import client as k8s_client  # type: ignore[import]
+    except ImportError as exc:
+        raise SandboxRuntimeError(
+            RuntimeCauseKind.backend_unavailable,
+            "The 'kubernetes' Python package is not installed. "
+            "Install it with: pip install kubernetes",
+        ) from exc
+    _load_kubeconfig(kubeconfig)
     return k8s_client.BatchV1Api()
 
 
 def _load_kubernetes_core_api(kubeconfig: str | None = None) -> Any:
     """Lazily load and return a kubernetes CoreV1Api instance."""
     try:
-        from kubernetes import client as k8s_client, config as k8s_config  # type: ignore[import]
+        from kubernetes import client as k8s_client  # type: ignore[import]
     except ImportError as exc:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
             "The 'kubernetes' Python package is not installed. "
             "Install it with: pip install kubernetes",
         ) from exc
-    if kubeconfig:
-        k8s_config.load_kube_config(config_file=kubeconfig)
-    else:
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            k8s_config.load_kube_config()
+    _load_kubeconfig(kubeconfig)
     return k8s_client.CoreV1Api()
 
 
@@ -220,7 +229,15 @@ class AksJobBackend(RuntimeBackend):
         return _settings_get(self._get_settings(), "azure_namespace", _DEFAULT_NAMESPACE) or _DEFAULT_NAMESPACE
 
     def _base_image(self) -> str:
-        return _settings_get(self._get_settings(), "azure_base_image", _DEFAULT_BASE_IMAGE) or _DEFAULT_BASE_IMAGE
+        """Return the resolved base image tag, or raise if unset (no :latest fallback)."""
+        img = _settings_get(self._get_settings(), "azure_base_image", _DEFAULT_BASE_IMAGE) or _DEFAULT_BASE_IMAGE
+        if not img.strip():
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.backend_unavailable,
+                "AKS backend: REPROLAB_AZURE_BASE_IMAGE (or azure_base_image setting) is not set. "
+                "Set it to a pinned ACR tag, e.g. myacr.azurecr.io/reprolab/aks-cell-base:20260603.",
+            )
+        return img
 
     def _storage_account(self) -> str:
         return _settings_get(self._get_settings(), "azure_storage_account", "") or ""
@@ -234,8 +251,12 @@ class AksJobBackend(RuntimeBackend):
     def _pending_timeout(self) -> int:
         return int(_settings_get(self._get_settings(), "azure_pending_timeout_seconds", _DEFAULT_PENDING_TIMEOUT_S) or _DEFAULT_PENDING_TIMEOUT_S)
 
-    def _exec_boot_timeout(self) -> int:
-        return int(_settings_get(self._get_settings(), "azure_boot_timeout_seconds", _DEFAULT_BOOT_TIMEOUT_S) or _DEFAULT_BOOT_TIMEOUT_S)
+    def _ttl_after_finished(self) -> int:
+        return int(_settings_get(self._get_settings(), "azure_ttl_seconds_after_finished", _DEFAULT_TTL_AFTER_FINISHED_S) or _DEFAULT_TTL_AFTER_FINISHED_S)
+
+    def _job_backoff_limit(self) -> int:
+        val = _settings_get(self._get_settings(), "azure_job_backoff_limit", None)
+        return int(val) if val is not None else _DEFAULT_BACKOFF_LIMIT
 
     # ------------------------------------------------------------------
     # API accessors (lazy — fall back to constructing real clients)
@@ -296,7 +317,7 @@ class AksJobBackend(RuntimeBackend):
                 f"AKS backend: project root does not exist: {project_root}",
             )
 
-        image = self._base_image() or config.image or _DEFAULT_BASE_IMAGE
+        image = self._base_image()
         blob_prefix = _blob_code_prefix(config.project_id, config.run_id)
 
         # Upload project files to Blob (run in executor — sync SDK).
@@ -340,7 +361,7 @@ class AksJobBackend(RuntimeBackend):
         """
         started_at = datetime.now(timezone.utc)
         ns = self._namespace()
-        image = self._base_image() or sandbox.image or _DEFAULT_BASE_IMAGE
+        image = self._base_image()
         job_name = _job_name(sandbox.config.run_id, suffix="exec")
 
         env_vars = dict(sandbox.config.environment)
@@ -355,8 +376,8 @@ class AksJobBackend(RuntimeBackend):
             command=command,
             environment=env_vars,
             active_deadline_seconds=timeout,
-            ttl_seconds=_DEFAULT_TTL_AFTER_FINISHED_S,
-            backoff_limit=_DEFAULT_BACKOFF_LIMIT,
+            ttl_seconds=self._ttl_after_finished(),
+            backoff_limit=self._job_backoff_limit(),
             gpu_sku=self._gpu_plan_short_name(),
             gpu_count=self._gpu_plan_gpu_count(),
         )
@@ -683,14 +704,26 @@ def _build_exec_job_manifest(
     and requests ``nvidia.com/gpu: <gpu_count>`` resources.  When *gpu_sku* is None
     the spec falls back to the cluster default (1 GPU, no explicit nodeSelector).
     """
+    # REPROLAB_EXEC_COMMAND is already injected by the caller via ``environment``;
+    # do NOT append it again here — that would produce a duplicate env var whose
+    # behaviour is unspecified by Kubernetes.
     env_list = [{"name": k, "value": str(v)} for k, v in sorted(environment.items())]
-    env_list.append({"name": "REPROLAB_EXEC_COMMAND", "value": command})
 
     gpu_count = max(1, int(gpu_count or 1))
+
+    # GPU taint toleration — required so the pod can be scheduled on AKS GPU
+    # nodes (which carry the ``nvidia.com/gpu:NoSchedule`` taint).  Mirror of
+    # k8s_job_cell_runner._build_job_manifest.
+    gpu_toleration = {
+        "key": "nvidia.com/gpu",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    }
 
     pod_spec: dict[str, Any] = {
         "serviceAccountName": service_account,
         "restartPolicy": "Never",
+        "tolerations": [gpu_toleration],
         "containers": [
             {
                 "name": "exec",
@@ -836,12 +869,9 @@ def ensure_azure_available() -> None:
 
     # 6. kubeconfig — verify that a kubeconfig can be loaded.
     try:
-        from kubernetes import config as k8s_config  # type: ignore[import]
-
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            k8s_config.load_kube_config()
+        _load_kubeconfig()
+    except SandboxRuntimeError:
+        raise
     except Exception as exc:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
