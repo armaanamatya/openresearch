@@ -62,5 +62,11 @@ resource "azurerm_kubernetes_cluster" "main" {
     azure_rbac_enabled     = true
   }
 
+  # ── Disable local accounts (CIS AKS 5.1.1) ───────────────────────────────────
+  # AAD RBAC is already enabled above; local admin accounts (clusterAdmin
+  # kubeconfig) are a standing credential bypass.  Disabling them forces all
+  # cluster access through Entra ID tokens — no permanent shared secret exists.
+  local_account_disabled = true
+
   tags = var.tags
 }

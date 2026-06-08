@@ -128,6 +128,15 @@ reprolab.db-wal
 .playwright-mcp
 .playwright-mcp/
 
+# Terraform state — MUST NOT be committed (can carry resource metadata / secrets).
+# Bootstrap state is written to infra/azure/bootstrap/terraform.tfstate after
+# `terraform apply`; both it and any root-level state must stay local or in the
+# remote backend configured via backend.hcl, never in git.
+infra/azure/bootstrap/terraform.tfstate
+*.tfstate
+*.tfstate.backup
+infra/azure/**/.terraform/
+
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval
 .deepeval/

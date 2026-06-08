@@ -19,7 +19,7 @@ namespace: reprolab
 # -- Name of the Kubernetes ServiceAccount (must match the federated-credential
 #    subject `system:serviceaccount:<namespace>:<serviceAccountName>`).
 # [tfvar: workload_identity_service_account]  (envs/deepinvent/main.tfvars)
-serviceAccountName: reprolab-orchestrator
+serviceAccountName: reprolab-sa
 
 # ---------------------------------------------------------------------------
 # Workload Identity — MANDATORY; sourced from the `identity` Terraform module.
@@ -105,16 +105,26 @@ image:
 
 # ---------------------------------------------------------------------------
 # ResourceQuota limits for the namespace.
+# Sizing rules (override in envs/<env>/helm-values.yaml as needed):
+#   maxGpu / maxGpuLimits = Σ(pool max_nodes × gpu_count) across all GPU pools.
+#     Default single A100-80 pool (max_nodes=4, gpu_count=1) → maxGpu=4.
+#     Set to 8 here to match the default gpu_skus[0].max_nodes=4 with headroom
+#     for a second pool; adjust if you reduce/increase pool max_nodes.
+#   maxJobs >= parallelism × (1 + max_escalations) per resourcequota.yaml comment.
+#     64 covers 2 concurrent 8-cell runs × 3 attempts + 1 hr TTL headroom.
 # ---------------------------------------------------------------------------
 resourceQuota:
   # Hard limit on the total number of nvidia.com/gpu REQUESTED across all pods.
-  # [tfvar: gpu_max_nodes]  — set equal to the node pool max for a 1:1 cell-per-node model.
+  # Sizing: Σ(pool max_nodes × gpu_count). Default: 8 (headroom for 2 pools).
+  # [tfvar: gpu_max_nodes]  — override per-env in envs/<env>/helm-values.yaml.
   maxGpu: 8
 
   # Hard limit on nvidia.com/gpu LIMITS (typically == maxGpu for GPU workloads).
   maxGpuLimits: 8
 
-  # Hard limit on the number of Jobs that may exist (running + pending) in the namespace.
+  # Hard limit on the number of Jobs that may exist (running + pending) in namespace.
+  # Sizing: parallelism × (1 + max_escalations) + TTL-retained finished Jobs.
+  # Override in envs/<env>/helm-values.yaml if parallelism or escalations increase.
   maxJobs: 64
 
 # ---------------------------------------------------------------------------

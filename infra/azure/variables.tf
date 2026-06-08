@@ -116,30 +116,37 @@ variable "gpu_skus" {
   description = <<-EOT
     List of GPU SKU objects — one AKS scale-to-zero node pool is created per entry.
     Fields:
-      short_name  — catalog identifier; written to the 'reprolab/sku' node label
-                    and used by Job nodeSelector.  Must be unique within the list.
-      vm_size     — Azure VM SKU for the pool nodes.
-      gpu_count   — GPUs per node; written to the 'nvidia.com/gpu' node label.
-      pool_suffix — short suffix (≤7 chars, lowercase-alnum) appended to <prefix>
-                    to form the AKS pool name (≤12 chars total).
-      max_nodes   — maximum autoscaler node count for this pool. min is always 0.
+      short_name    — catalog identifier; written to the 'reprolab/sku' node label
+                      and used by Job nodeSelector.  Must be unique within the list.
+      vm_size       — Azure VM SKU for the pool nodes.
+      gpu_count     — GPUs per node; written to the 'nvidia.com/gpu' node label.
+      pool_suffix   — short suffix (≤7 chars, lowercase-alnum) appended to <prefix>
+                      to form the AKS pool name (≤12 chars total).
+      max_nodes     — maximum autoscaler node count for this pool. min is always 0.
+      os_disk_size_gb — OS disk size in GiB for nodes in this pool. Default 256 GiB
+                        is sufficient for the aks-cell-base image + working dir;
+                        raise to 512 for SKUs that pull very large Docker images
+                        (e.g. the devel CUDA image) or have large pip/HF caches
+                        that overflow the Azure Files PVC onto local disk.
     Default: a single A100-80 pool — ONE quota ask.  Add NC48/NC96/A10 entries
     (each needing separate quota) to enable the escalation ladder.
   EOT
   type = list(object({
-    short_name  = string
-    vm_size     = string
-    gpu_count   = number
-    pool_suffix = string
-    max_nodes   = number
+    short_name      = string
+    vm_size         = string
+    gpu_count       = number
+    pool_suffix     = string
+    max_nodes       = number
+    os_disk_size_gb = optional(number, 256)
   }))
   default = [
     {
-      short_name  = "azure_a100_80"
-      vm_size     = "Standard_NC24ads_A100_v4"
-      gpu_count   = 1
-      pool_suffix = "a10080"
-      max_nodes   = 4
+      short_name      = "azure_a100_80"
+      vm_size         = "Standard_NC24ads_A100_v4"
+      gpu_count       = 1
+      pool_suffix     = "a10080"
+      max_nodes       = 4
+      os_disk_size_gb = 256
     }
   ]
 }

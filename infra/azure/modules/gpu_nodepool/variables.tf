@@ -48,6 +48,12 @@ variable "gpu_max_nodes" {
   default     = 4
 }
 
+variable "os_disk_size_gb" {
+  description = "OS disk size in GiB for nodes in this GPU pool. Default 256 GiB is sufficient for the aks-cell-base image + working dir; raise to 512 for SKUs that pull large Docker images or have large local pip/HF cache overflow. Sourced from gpu_skus[].os_disk_size_gb."
+  type        = number
+  default     = 256
+}
+
 variable "tags" {
   description = "Map of tags applied to the node pool."
   type        = map(string)

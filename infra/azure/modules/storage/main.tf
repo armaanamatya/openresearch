@@ -10,6 +10,24 @@ resource "azurerm_storage_account" "main" {
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
 
+  # P1 security: disable shared key auth — force token-only (workload identity /
+  # DefaultAzureCredential).  No code path uses a storage account key; this
+  # closes the SAS-token lateral-movement vector entirely.
+  shared_access_key_enabled = false
+
+  # P1 security: lock the storage account to the AKS subnet (via service
+  # endpoint) plus any operator IPs listed in var.authorized_ip_ranges.
+  # All other traffic (including public internet) is denied at the Azure
+  # Storage firewall layer — defence-in-depth on top of no-shared-key.
+  public_network_access_enabled = false
+
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [var.aks_subnet_id]
+    ip_rules                   = var.authorized_ip_ranges
+    bypass                     = ["AzureServices"]
+  }
+
   # IMPORTANT — zero static secrets policy:
   # No storage account key is exported in outputs or used by the orchestrator.
   # - Orchestrator-to-Blob auth: DefaultAzureCredential (az login) → user token,
@@ -56,9 +74,15 @@ resource "azurerm_storage_share" "cache" {
 # Allows the Azure Files CSI driver (running as kubelet) to manage the share
 # without storing a storage account key in a Kubernetes Secret.
 # The Helm L2 StorageClass sets storeAccountKey: "false" to rely on this role.
+#
+# P1 security (least-privilege): scope is narrowed to the specific Files SHARE
+# resource ID instead of the whole storage account. This prevents the kubelet
+# identity from accessing any other share or Blob container in the account.
+# The Blob Data Contributor assignment (identity module) is already
+# container-scoped — no change needed there.
 
 resource "azurerm_role_assignment" "files_smb_kubelet" {
-  scope                = azurerm_storage_account.main.id
+  scope                = azurerm_storage_share.cache.id
   role_definition_name = "Storage File Data SMB Share Contributor"
   principal_id         = var.kubelet_object_id
 }

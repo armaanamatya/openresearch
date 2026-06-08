@@ -63,8 +63,9 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       # Use the Workload-Identity-annotated SA.
-      # Replace with .Values.serviceAccountName
-      serviceAccountName: reprolab-orchestrator
+      # Value MUST match .Values.serviceAccountName (default: reprolab-sa).
+      # Terraform federated-credential subject: system:serviceaccount:<ns>:reprolab-sa
+      serviceAccountName: reprolab-sa
       restartPolicy: Never
 
       # NO nodeSelector — runs on the system (CPU) node pool.

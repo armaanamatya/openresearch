@@ -36,6 +36,17 @@ variable "kubelet_object_id" {
   type        = string
 }
 
+variable "aks_subnet_id" {
+  description = "Resource ID of the AKS subnet. Added to the storage account network_rules allowlist so AKS Job pods and the CSI driver can reach the storage account via service endpoint. Required — locks the storage account to the AKS subnet."
+  type        = string
+}
+
+variable "authorized_ip_ranges" {
+  description = "List of operator CIDR(s) or single IPv4 addresses allowed to reach the storage account from outside the VNet (e.g. local dev machine, CI runner). Passed directly to azurerm_storage_account network_rules ip_rules. Use [] to allow only the AKS subnet."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Map of tags applied to storage resources."
   type        = map(string)

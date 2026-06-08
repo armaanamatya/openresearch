@@ -39,6 +39,25 @@ resource "azurerm_storage_account" "tfstate" {
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
 
+  # P1 security: disable shared key auth — Terraform backend authenticates via
+  # service principal / az login (DefaultAzureCredential / OIDC), not account keys.
+  # This prevents SAS-token generation against the tfstate bucket.
+  shared_access_key_enabled = false
+
+  # NOTE on network_rules: the bootstrap root runs BEFORE the AKS VNet and subnet
+  # exist (those are created by the main root).  We cannot reference the AKS subnet
+  # here without a circular dependency.  Network restriction of the tfstate bucket
+  # must be applied as a post-bootstrap step:
+  #   az storage account update \
+  #     --name <state_storage_account_name> \
+  #     --resource-group <state_resource_group_name> \
+  #     --default-action Deny \
+  #     --public-network-access Disabled \
+  #     --add networkRuleSet.ipRules action=Allow ipAddressOrRange=<operator_ip>
+  # Track this as a post-apply runbook step in docs/runbooks/running-the-project.md.
+  # The main storage account (modules/storage/main.tf) applies network_rules inline
+  # because the AKS subnet ID is available at plan time.
+
   blob_properties {
     versioning_enabled = true
   }

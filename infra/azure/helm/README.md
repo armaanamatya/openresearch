@@ -61,7 +61,7 @@ helm install reprolab-aks ./infra/azure/helm \
 
 # 3. Verify
 kubectl get namespace reprolab
-kubectl get serviceaccount reprolab-orchestrator -n reprolab -o yaml | grep "workload.identity"
+kubectl get serviceaccount reprolab-sa -n reprolab -o yaml | grep "workload.identity"
 kubectl get storageclass reprolab-azurefiles-wi
 kubectl get pvc reprolab-cache -n reprolab
 kubectl get role reprolab-orchestrator -n reprolab
@@ -119,7 +119,7 @@ After `helm install`, verify the identity chain end-to-end:
 
 ```bash
 # 1. Confirm SA annotation
-kubectl get sa reprolab-orchestrator -n reprolab \
+kubectl get sa reprolab-sa -n reprolab \
   -o jsonpath='{.metadata.annotations.azure\.workload\.identity/client-id}'
 # Expected: <workload_identity_client_id value>
 

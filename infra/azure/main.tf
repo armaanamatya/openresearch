@@ -61,15 +61,16 @@ module "gpu_nodepool" {
   source   = "./modules/gpu_nodepool"
   for_each = local.gpu_skus_map
 
-  cluster_id    = module.aks.cluster_id
-  subnet_id     = module.network.aks_subnet_id
-  prefix        = var.prefix
-  pool_suffix   = each.value.pool_suffix
-  vm_size       = each.value.vm_size
-  gpu_count     = each.value.gpu_count
-  sku_label     = each.key
-  gpu_max_nodes = each.value.max_nodes
-  tags          = var.tags
+  cluster_id      = module.aks.cluster_id
+  subnet_id       = module.network.aks_subnet_id
+  prefix          = var.prefix
+  pool_suffix     = each.value.pool_suffix
+  vm_size         = each.value.vm_size
+  gpu_count       = each.value.gpu_count
+  sku_label       = each.key
+  gpu_max_nodes   = each.value.max_nodes
+  os_disk_size_gb = each.value.os_disk_size_gb
+  tags            = var.tags
 }
 
 # ─── Container registry ──────────────────────────────────────────────────────
@@ -97,6 +98,9 @@ module "storage" {
   files_share_name       = var.files_share_name
   files_share_quota_gb   = var.files_share_quota_gb
   kubelet_object_id      = module.aks.kubelet_identity_object_id
+  # P1: restrict storage account network access to AKS subnet + operator IPs.
+  aks_subnet_id          = module.network.aks_subnet_id
+  authorized_ip_ranges   = var.authorized_ip_ranges
   tags                   = var.tags
 }
 

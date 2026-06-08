@@ -41,7 +41,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "gpu" {
   priority        = "Regular"
   eviction_policy = null
 
-  os_disk_size_gb = 256
+  os_disk_size_gb = var.os_disk_size_gb
 
   # ── GPU taint ─────────────────────────────────────────────────────────────
   # Shared taint key across ALL GPU pools — the device-plugin DaemonSet
