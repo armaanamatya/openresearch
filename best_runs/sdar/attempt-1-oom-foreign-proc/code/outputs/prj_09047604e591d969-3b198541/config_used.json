@@ -1,0 +1,44 @@
+{
+  "BETA": 10.0,
+  "LAMBDA": 0.1,
+  "steps": 150,
+  "batch_size": {
+    "search_qa": 4,
+    "alfworld": 2,
+    "webshop": 4
+  },
+  "max_new_tokens": {
+    "search_qa": 512,
+    "alfworld": 64,
+    "webshop": 64
+  },
+  "models": [
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen2.5-3B-Instruct",
+    "Qwen/Qwen2.5-7B-Instruct"
+  ],
+  "environments": [
+    "search_qa",
+    "alfworld",
+    "webshop"
+  ],
+  "algorithms": [
+    "sdar",
+    "grpo",
+    "opsd",
+    "skill_sd",
+    "grpo_opsd",
+    "rlsd"
+  ],
+  "optimizer": "Adafactor",
+  "lr": 1e-05,
+  "eps": 0.2,
+  "group_size": 8,
+  "gate_strategy": "gap",
+  "retrieval_default": "km",
+  "device": "cuda:0",
+  "torch_version": "2.5.1+cu121",
+  "framework": "pytorch",
+  "smoke_mode": false,
+  "scale_note": "Paper: 8\u00d7H800 GPUs, batch_size=128 (Search-QA). This run: 1\u00d7A5000, batch_size=16."
+}

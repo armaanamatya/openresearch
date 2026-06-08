@@ -459,8 +459,10 @@ async def _reproduce_inner(
     """Inner (non-fail-soft) implementation; callers must wrap in try/except."""
     cluster_id = agent_context.cluster.id
 
-    # 1. Ensure the shared code directory exists.
-    code_dir: Path = ctx.project_dir / "code"
+    # 1. Ensure the code directory exists. BES competing-candidates pass a
+    #    per-candidate scratch dir via AgentContext.candidate_code_dir so N
+    #    candidates build in isolation; None => the shared project_dir/code (today).
+    code_dir: Path = getattr(agent_context, "candidate_code_dir", None) or (ctx.project_dir / "code")
     code_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Render the agent prompt.

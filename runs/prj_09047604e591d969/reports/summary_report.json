@@ -1,9 +1,8 @@
 {
-  "total_workers": 58,
+  "total_workers": 17,
   "by_status": {
-    "completed": 47,
-    "running": 3,
-    "failed": 8
+    "failed": 7,
+    "completed": 10
   },
   "critical_blockers": [],
   "files_changed": [],
@@ -15,5 +14,5 @@
   },
   "final_run_status": "running",
   "top_next_actions": [],
-  "generated_at": "2026-05-31T16:39:49.274288+00:00"
+  "generated_at": "2026-06-01T19:05:53.773049+00:00"
 }

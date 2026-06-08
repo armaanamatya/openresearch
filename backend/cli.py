@@ -1,4 +1,4 @@
-"""OpenResearch CLI — drives ingestion, inspection, and reproduction.
+"""ReproLab CLI — drives ingestion, inspection, and reproduction.
 
   $ python -m backend.cli ingest <pdf-path>
       project_id=prj_..., parsed=N sections, sources=N, chunks=N,
@@ -394,6 +394,31 @@ def _mark_demo_status_failed(
             "error": reason,
         }
         _atomic_write_json(path, merged)
+        # Also leave a terminal final_report.json so the leaderboard/aggregator
+        # can represent this crashed run. A crash before the run's try/finally
+        # reached `_finalize` (e.g. an early setup exception) flips demo_status
+        # to failed above but writes no report — leaving the run report-less.
+        # Best-effort + nested try: this must never raise (mirrors the outer
+        # contract) and must NEVER overwrite an existing report (a real
+        # _finalize / scorer write always wins).
+        try:
+            fr = runs_root / project_id / "final_report.json"
+            if not fr.exists():
+                from backend.agents.rlm.report import (
+                    RLMFinalReport,
+                    write_final_report_rlm,
+                )
+
+                write_final_report_rlm(
+                    RLMFinalReport(
+                        verdict="failed",
+                        reproduction_summary=reason,
+                        iterations=0,
+                    ),
+                    runs_root / project_id,
+                )
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -763,7 +788,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
-            "\n[openresearch] RDR pipeline interrupted (Ctrl-C). Exiting.",
+            "\n[reprolab] RDR pipeline interrupted (Ctrl-C). Exiting.",
             file=sys.stderr,
             flush=True,
         )
@@ -937,7 +962,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
             ))
     except (KeyboardInterrupt, asyncio.CancelledError):
         print(
-            f"\n[openresearch] {_runner_label} pipeline interrupted (Ctrl-C). Exiting.",
+            f"\n[reprolab] {_runner_label} pipeline interrupted (Ctrl-C). Exiting.",
             file=sys.stderr,
             flush=True,
         )
@@ -1009,7 +1034,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         "os.makedirs(out, exist_ok=True)\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
         "    json.dump({'sanity_ok': 1.0}, fh)\n"
-        "print('openresearch sanity ok')\n",
+        "print('reprolab sanity ok')\n",
         encoding="utf-8",
     )
     (code_dir / "commands.json").write_text(json.dumps(["python sanity.py"]), encoding="utf-8")
@@ -1080,6 +1105,238 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     ctx.cost_ledger.flush()
     print(f"[sanity] project_id: {project_id}", file=sys.stderr)
     print(f"[sanity] result    : {'ok' if success else 'failed'}", file=sys.stderr)
+    return 0 if success else 2
+
+
+def _build_resume_force_cells(
+    all_cells: list[dict],
+    rerun_envs: list[str] | None,
+    rerun_cell_ids: list[str] | None,
+) -> set[str]:
+    """Build the forced-rerun cell-id set from --rerun-env + --rerun-cell.
+
+    ``--rerun-env`` expands to EVERY cell id whose ``env`` matches; ``--rerun-cell``
+    adds explicit ids verbatim (kept even if not present in ``all_cells`` so a typo
+    is a harmless no-op rather than a silent drop).  Pure — unit-tested in
+    isolation so the selection logic is verifiable without a live run.
+    """
+    envs = {e.strip().lower() for e in (rerun_envs or []) if e and e.strip()}
+    forced: set[str] = set()
+    if envs:
+        for cell in all_cells:
+            if not isinstance(cell, dict):
+                continue
+            cid = cell.get("id")
+            cenv = str(cell.get("env", "") or "").strip().lower()
+            if isinstance(cid, str) and cenv in envs:
+                forced.add(cid)
+    for cid in (rerun_cell_ids or []):
+        if cid and cid.strip():
+            forced.add(cid.strip())
+    return forced
+
+
+def _select_cells_needing_rerun(
+    all_cells: list[dict],
+    code_dir: "Path",
+    force_cells: set[str],
+) -> dict[str, str]:
+    """Return ``{cell_id: reason}`` for every cell the resume would re-run.
+
+    A diagnostic preview of the re-run predicate (it does NOT execute anything):
+    a cell re-runs iff forced, OR it has no prior ok ``cell_manifest.json``, OR
+    its current fingerprint differs from the manifest's stored one.  Unchanged ok
+    cells are omitted (they will be skipped).  Pure + unit-tested in isolation.
+    """
+    from backend.agents.rlm import cell_fingerprint
+
+    selected: dict[str, str] = {}
+    for cell in all_cells:
+        if not isinstance(cell, dict):
+            continue
+        cid = cell.get("id")
+        if not isinstance(cid, str):
+            continue
+        if cid in force_cells:
+            selected[cid] = "forced"
+            continue
+        fp = cell_fingerprint.compute_fingerprint(cell, str(code_dir))
+        # The authoritative manifest lives in the cell's output_dir, namespaced by
+        # run id (outputs/<run_id>/<cell_id>/); a resume may use a fresh run id, so
+        # we scan all prior outputs/* and take the newest matching manifest.
+        prior = _load_any_cell_manifest(Path(code_dir), cid)
+        if not prior or prior.get("status") != "ok":
+            selected[cid] = "no_prior_ok"
+        elif prior.get("fingerprint") != fp:
+            selected[cid] = "fingerprint_changed"
+        # else: unchanged ok → skipped (omitted from selection)
+    return selected
+
+
+def _load_any_cell_manifest(code_dir: "Path", cell_id: str) -> dict | None:
+    """Find a cell's most-recent cell_manifest.json under code/outputs/*/<cell_id>/.
+
+    Cell outputs are namespaced by run id (``outputs/<run_id>/<cell_id>/``), and a
+    resume may target a fresh run id, so we scan all prior ``outputs/*`` dirs and
+    return the newest matching manifest.  Returns None when none exists.
+    """
+    import json as _json
+
+    from backend.agents.rlm.gpu_cell_runner import CELL_MANIFEST_NAME
+
+    outputs = Path(code_dir) / "outputs"
+    if not outputs.is_dir():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    for run_dir in outputs.iterdir():
+        mf = run_dir / cell_id / CELL_MANIFEST_NAME
+        if mf.is_file():
+            try:
+                candidates.append((mf.stat().st_mtime, mf))
+            except OSError:
+                continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    try:
+        data = _json.loads(candidates[0][1].read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _cmd_reproduce_resume_cells(args: argparse.Namespace, runs_root: Path) -> int:
+    """Cell-level resume short-circuit (Track B): re-run only changed/failed cells.
+
+    Skips ingest / understand / plan / implement entirely.  Refreshes the vendored
+    helpers in the prior ``code/`` (unless --force-regen, which is handled by the
+    caller falling through to the normal pipeline), computes each cell's
+    fingerprint, builds the forced-rerun set from --rerun-env / --rerun-cell,
+    arms ``OPENRESEARCH_RESUME_CELLS``, and invokes ``run_experiment`` directly on the
+    existing ``code_dir`` — the SAME public entry the root loop uses, whose
+    cell-route gate (cells.json + train_cell.py + GPU backend) computes per-cell
+    fingerprints and skips unchanged ok cells inside ``_execute_cell_matrix``.
+
+    Returns 0 when at least one cell produced metrics (success/partial), else 2.
+    """
+    import os as _os
+
+    from backend.agents.baseline_implementation import refresh_harness_helpers
+    from backend.agents.dashboard_emitter import DashboardEmitter
+    from backend.agents.execution import ensure_sandbox_mode_available, resolve_sandbox_mode
+    from backend.agents.resilience import RunBudget
+    from backend.agents.resilience.cost import RunCostLedger
+    from backend.agents.rlm.context import RunContext
+    from backend.agents.rlm.primitives import run_experiment
+    from backend.agents.rlm.run import _parse_gpu_device_ids, _write_demo_status
+    from backend.agents.rlm.sse_bridge import make_emit
+    from backend.services.runtime import SandboxRuntimeError
+
+    source = str(getattr(args, "source", ""))
+    project_id = getattr(args, "project_id", None) or project_id_for(
+        _source_from_cli(source, getattr(args, "source_kind", None))
+    )
+    project_dir = runs_root / project_id
+    code_dir = project_dir / "code"
+    cells_path = code_dir / "cells.json"
+    train_cell_path = code_dir / "train_cell.py"
+
+    if not (cells_path.is_file() and train_cell_path.is_file()):
+        print(
+            f"[resume-cells] no prior cell matrix at {code_dir} "
+            f"(need cells.json + train_cell.py) — cannot resume; "
+            f"re-run without --resume-cells to start fresh.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        manifest = json.loads(cells_path.read_text(encoding="utf-8"))
+        all_cells = [c for c in (manifest.get("cells") or []) if isinstance(c, dict) and c.get("id")]
+    except Exception as exc:
+        print(f"[resume-cells] cells.json unreadable: {exc}", file=sys.stderr)
+        return 2
+    if not all_cells:
+        print("[resume-cells] cells.json present but enumerated no cells.", file=sys.stderr)
+        return 2
+
+    # Refresh vendored helpers for $0 (a warm retry leaves stale copies; resume
+    # needs current bytes so a fixed env helper actually re-runs its cells).
+    refresh_harness_helpers(code_dir)
+
+    # Build forced-rerun set + arm resume via env vars the cell route consumes.
+    force_cells = _build_resume_force_cells(
+        all_cells, getattr(args, "rerun_env", None), getattr(args, "rerun_cell", None)
+    )
+    _os.environ["OPENRESEARCH_RESUME_CELLS"] = "1"
+    if force_cells:
+        _os.environ["OPENRESEARCH_RESUME_FORCE_CELLS"] = ",".join(sorted(force_cells))
+    else:
+        _os.environ.pop("OPENRESEARCH_RESUME_FORCE_CELLS", None)
+
+    # Diagnostic preview of what will re-run vs skip (does not execute anything).
+    to_rerun = _select_cells_needing_rerun(all_cells, code_dir, force_cells)
+    n_skip = len(all_cells) - len(to_rerun)
+    print(
+        f"[resume-cells] {len(all_cells)} cell(s): re-run {len(to_rerun)} "
+        f"(forced={len(force_cells)}), skip {n_skip} unchanged-ok.",
+        file=sys.stderr,
+    )
+
+    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
+    try:
+        ensure_sandbox_mode_available(sandbox_mode)
+    except SandboxRuntimeError as exc:
+        print(f"[resume-cells] sandbox preflight failed: {exc}", file=sys.stderr)
+        return 2
+
+    run_budget = RunBudget(
+        max_usd=getattr(args, "max_usd", None),
+        max_wall_clock_seconds=getattr(args, "max_wall_clock", None),
+        max_pod_seconds=_resolve_max_pod_seconds(getattr(args, "max_pod_seconds", None)),
+        max_run_gpu_usd=getattr(args, "max_run_gpu_usd", None),
+    )
+    dashboard = DashboardEmitter(project_id, runs_root)
+    ctx = RunContext(
+        project_id=project_id,
+        project_dir=project_dir,
+        runs_root=runs_root,
+        dashboard=dashboard,
+        emit=make_emit(dashboard),
+        cost_ledger=RunCostLedger.load_jsonl(
+            project_dir / "cost_ledger.jsonl",
+            project_id=project_id,
+            attach_path=True,
+        ),
+        llm_client=None,
+        provider="none",
+        model="resume-cells",
+        sandbox_mode=sandbox_mode,
+        run_budget=run_budget,
+        arxiv_id=source,
+        gpu_device_ids=_parse_gpu_device_ids(),
+    )
+    _write_demo_status(
+        project_dir, "running", primitive_provider="resume-cells",
+        process_status="running", verdict="unknown",
+    )
+
+    # run_experiment's cell-route gate fires on (local|docker GPU backend +
+    # cells.json + train_cell.py); _execute_cell_matrix computes per-cell
+    # fingerprints and honours OPENRESEARCH_RESUME_CELLS / OPENRESEARCH_RESUME_FORCE_CELLS.
+    result = run_experiment(
+        str(code_dir), "", model_id="resume", eval_env="resume", ctx=ctx,
+    )
+    success = bool(result.get("success")) and bool(result.get("metrics"))
+    _write_demo_status(
+        project_dir, "completed" if success else "failed",
+        error=None if success else result.get("error", "resume-cells: no cell produced metrics"),
+        primitive_provider="resume-cells", process_status="completed",
+        verdict="reproduced" if success else "failed",
+    )
+    ctx.cost_ledger.flush()
+    print(f"[resume-cells] project_id: {project_id}", file=sys.stderr)
+    print(f"[resume-cells] result    : {'ok' if success else 'failed'}", file=sys.stderr)
     return 0 if success else 2
 
 
@@ -1160,6 +1417,29 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    # Full-scope env guidance (2026-06-01): when the EFFECTIVE scope keeps any of the
+    # SDAR paper environments active, tell the agent to use the shipped AGENTIC env
+    # modules (real ALFWorld / WebShop / dense-retrieval Search-QA) and train at paper
+    # depth — never fake them. Search-QA is included so even a Search-QA-only run gets
+    # the real-retrieval guidance (the 2026-05-31 closed-book surrogate floored it);
+    # an env the operator de-scopes drops out of _active_envs and is simply not named.
+    _active_envs = {d.normalized_id().strip().lower() for d in _effective_scope.datasets}
+    _full_scope_envs = [
+        e for e in ("ALFWorld", "WebShop", "Search-QA") if e.lower() in _active_envs
+    ]
+    if _full_scope_envs:
+        from backend.services.runtime.env_cache import FULL_SCOPE_ENV_GUIDANCE
+        _fs_text = FULL_SCOPE_ENV_GUIDANCE.format(envs=" + ".join(_full_scope_envs))
+        _existing_fs = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
+        _os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_existing_fs}\n\n{_fs_text}" if _existing_fs else _fs_text
+        )
+        print(
+            f"[full-scope] {' + '.join(_full_scope_envs)} active in scope — appended "
+            f"agentic-env (AgenticEnv + shipped modules) guidance for the agent.",
+            file=sys.stderr,
+        )
+
     # Paper-hint invariants → env var so the spawned subprocess's RunContext
     # picks them up via __post_init__ without requiring run.py changes.
     # Serialise as a JSON array of InvariantSpec dicts.  Empty/unset when the
@@ -1209,6 +1489,13 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
     if getattr(args, "sanity", False):
         return _cmd_reproduce_sanity(args, runs_root)
+
+    # Cell-level resume short-circuit (Track B): re-run only changed/failed cells
+    # of a prior matrix, skipping ingest/understand/plan/implement entirely.
+    # --force-regen opts OUT (falls through to a full codegen pass so cells.json /
+    # train_cell.py themselves are regenerated, not just the env helpers).
+    if getattr(args, "resume_cells", False) and not getattr(args, "force_regen", False):
+        return _cmd_reproduce_resume_cells(args, runs_root)
 
     # rdr mode: rubric-driven harness on a vendored PaperBench bundle.
     # Bypasses the ingest pipeline entirely — the positional `source` arg is
@@ -1484,7 +1771,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         # to mark the run "failed" via _pid_exists. Conventional SIGINT
         # exit code is 130.
         print(
-            "\n[openresearch] Pipeline interrupted (Ctrl-C). "
+            "\n[reprolab] Pipeline interrupted (Ctrl-C). "
             "Marking run as stopped and exiting.",
             file=sys.stderr,
             flush=True,
@@ -1547,8 +1834,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build and return the openresearch argument parser (testable without calling main)."""
-    parser = argparse.ArgumentParser(prog="openresearch")
+    """Build and return the reprolab argument parser (testable without calling main)."""
+    parser = argparse.ArgumentParser(prog="reprolab")
     parser.add_argument(
         "--database-url",
         default=get_settings().database_url,
@@ -1631,10 +1918,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod"),
+        choices=("auto", "local", "docker", "runpod", "azure"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
+            "azure dispatches training cells as AKS Jobs on Azure GPU nodes; "
             "runpod uses a remote GPU Pod; docker is isolated local Docker; "
             "local runs commands on the host; auto resolves to the configured default."
         ),
@@ -1930,6 +2218,52 @@ def _build_parser() -> argparse.ArgumentParser:
             "Merges under any --paper-hint default_scope via "
             "ScopeSpec.merge_with_paper_default — operator fields win, absences "
             "fall back to paper defaults."
+        ),
+    )
+    reproduce.add_argument(
+        "--resume-cells",
+        dest="resume_cells",
+        action="store_true",
+        default=False,
+        help=(
+            "(rlm mode) cell-level resume: when a prior runs/<id>/code/ with "
+            "cells.json + train_cell.py exists, SKIP ingest/understand/plan/implement "
+            "and re-run ONLY the training cells whose status != ok or whose "
+            "fingerprint changed (env-helper bytes / cell params / behaviour flags). "
+            "Unchanged ok cells are reused for $0. Refreshes vendored helpers first."
+        ),
+    )
+    reproduce.add_argument(
+        "--rerun-env",
+        dest="rerun_env",
+        action="append",
+        choices=["alfworld", "search_qa", "webshop"],
+        default=None,
+        help=(
+            "(with --resume-cells) force re-run of every cell of this env even if "
+            "unchanged. Repeatable (e.g. --rerun-env alfworld --rerun-env webshop)."
+        ),
+    )
+    reproduce.add_argument(
+        "--rerun-cell",
+        dest="rerun_cell",
+        action="append",
+        default=None,
+        metavar="CELL_ID",
+        help=(
+            "(with --resume-cells) force re-run of a specific cell id "
+            "(e.g. qwen2_5_7b__sdar__alfworld__s42) even if unchanged. Repeatable."
+        ),
+    )
+    reproduce.add_argument(
+        "--force-regen",
+        dest="force_regen",
+        action="store_true",
+        default=False,
+        help=(
+            "(with --resume-cells) fall through to a full codegen pass instead of "
+            "only refreshing vendored helpers — use when train_cell.py / cells.json "
+            "themselves must be regenerated, not just the env helpers."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)

@@ -1,0 +1,108 @@
+{
+  "status": "complete",
+  "per_model": {
+    "qwen3_1_7b": {
+      "search_qa": {
+        "sdar": {
+          "status": "ok",
+          "metric": 0.08592456921283025,
+          "reward_mean": 0.08592456921283025,
+          "gate_mean": 0.38871839419007304,
+          "gate_active": 0.2364564911928028,
+          "delta_t_mean": -0.2911485564346288,
+          "opsd_loss_mean": 0.08337515799503308,
+          "zero_shot_f1": 0.04687499999999999,
+          "steps_run": 150,
+          "wall_time_s": 906.1823465824127,
+          "cell_id": "qwen3_1_7b__sdar__search_qa__s42"
+        },
+        "grpo": {
+          "status": "ok",
+          "metric": 0.05080504068799994,
+          "reward_mean": 0.05080504068799994,
+          "gate_mean": 0.0,
+          "gate_active": 0.0,
+          "delta_t_mean": 0.0,
+          "opsd_loss_mean": 0.0,
+          "zero_shot_f1": 0.02760092232538469,
+          "steps_run": 150,
+          "wall_time_s": 825.9910471439362,
+          "cell_id": "qwen3_1_7b__grpo__search_qa__s42"
+        },
+        "grpo_opsd": {
+          "status": "ok",
+          "metric": 0.022812918005748993,
+          "reward_mean": 0.022812918005748993,
+          "gate_mean": 0.9999999962747097,
+          "gate_active": 0.9999999962747097,
+          "delta_t_mean": -1.771949524125769,
+          "opsd_loss_mean": 0.08638746371725574,
+          "zero_shot_f1": 0.05524325949641038,
+          "steps_run": 150,
+          "wall_time_s": 796.7015299797058,
+          "cell_id": "qwen3_1_7b__grpo_opsd__search_qa__s42"
+        }
+      }
+    },
+    "qwen2_5_3b": {
+      "search_qa": {
+        "sdar": {
+          "status": "ok",
+          "metric": 0.375724796037296,
+          "reward_mean": 0.375724796037296,
+          "gate_mean": 0.3614344036206603,
+          "gate_active": 0.15581678261514753,
+          "delta_t_mean": -0.34745547848558705,
+          "opsd_loss_mean": 0.1697229199577123,
+          "zero_shot_f1": 0.0332687186716792,
+          "steps_run": 150,
+          "wall_time_s": 908.493246793747,
+          "cell_id": "qwen2_5_3b__sdar__search_qa__s42"
+        },
+        "grpo": {
+          "status": "ok",
+          "metric": 0.17702039808018072,
+          "reward_mean": 0.17702039808018072,
+          "gate_mean": 0.0,
+          "gate_active": 0.0,
+          "delta_t_mean": 0.0,
+          "opsd_loss_mean": 0.0,
+          "zero_shot_f1": 0.026555242786769878,
+          "steps_run": 150,
+          "wall_time_s": 883.6382791996002,
+          "cell_id": "qwen2_5_3b__grpo__search_qa__s42"
+        },
+        "grpo_opsd": {
+          "status": "ok",
+          "metric": 0.0,
+          "reward_mean": 0.0,
+          "gate_mean": 1.0,
+          "gate_active": 1.0,
+          "delta_t_mean": -11.078982216971259,
+          "opsd_loss_mean": 0.0004276556246622931,
+          "zero_shot_f1": 0.09772093522093522,
+          "steps_run": 150,
+          "wall_time_s": 712.1988041400909,
+          "cell_id": "qwen2_5_3b__grpo_opsd__search_qa__s42"
+        }
+      }
+    }
+  },
+  "scope": {
+    "models_run": [
+      "qwen2_5_3b",
+      "qwen3_1_7b"
+    ],
+    "models_skipped": [
+      "qwen2_5_7b"
+    ],
+    "environments_skipped": [],
+    "gaps": [
+      {
+        "item": "qwen2_5_7b",
+        "reason": "needs ~50GB > per-GPU budget 24GB (headroom 1.25)",
+        "kind": "capacity"
+      }
+    ]
+  }
+}

@@ -1,0 +1,433 @@
+{
+  "paper": {
+    "id": "2605.15155",
+    "title": "SDAR: Self-Distilled Agentic Reinforcement Learning"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "Partial reproduction of SDAR (arXiv 2605.15155). Algorithm: L_total=L_GRPO+0.1*L_OPSD, g_t=sigmoid(10*Delta_t), Delta_t=log pi_teacher - log pi_student (stop-gradient on teacher+gate). Qwen3-1.7B/Search-QA: SDAR=0.0543, GRPO=0.0567, GRPO+OPSD=0.0521. Qwen2.5-3B/Search-QA: SDAR=N/A, GRPO=0.1450. Rubric: 0.363/0.600. Scope limited to Search-QA on 1.7B/3B models. ALFWorld/WebShop unavailable (simulator/server required). 7B models capacity-skipped (>24GB). Skill-SD/RLSD/OPSD baselines not implemented.",
+  "baseline_metrics": {
+    "status": "complete",
+    "per_model": {
+      "qwen3_1_7b": {
+        "search_qa": {
+          "sdar": {
+            "status": "ok",
+            "metric": 0.054303844589571715,
+            "reward_mean": 0.054303844589571715,
+            "gate_mean": 0.4175413267686963,
+            "gate_active": 0.3173767340835184,
+            "zero_shot_f1": 0.06956104579015578,
+            "steps_run": 150,
+            "wall_time_s": 878.1680161952972,
+            "cell_id": "qwen3_1_7b__sdar__search_qa__s42"
+          },
+          "grpo": {
+            "status": "ok",
+            "metric": 0.05668243855822004,
+            "reward_mean": 0.05668243855822004,
+            "gate_mean": 0.0,
+            "gate_active": 0.0,
+            "zero_shot_f1": 0.04914822620302072,
+            "steps_run": 150,
+            "wall_time_s": 824.5147993564606,
+            "cell_id": "qwen3_1_7b__grpo__search_qa__s42"
+          },
+          "grpo_opsd": {
+            "status": "ok",
+            "metric": 0.05211247086247086,
+            "reward_mean": 0.05211247086247086,
+            "gate_mean": 0.9999999988824129,
+            "gate_active": 0.9999999988824129,
+            "zero_shot_f1": 0.06921722950684481,
+            "steps_run": 150,
+            "wall_time_s": 539.2502822875977,
+            "cell_id": "qwen3_1_7b__grpo_opsd__search_qa__s42"
+          }
+        }
+      },
+      "qwen2_5_3b": {
+        "search_qa": {
+          "grpo": {
+            "status": "ok",
+            "metric": 0.14498335431348147,
+            "reward_mean": 0.14498335431348147,
+            "gate_mean": 0.0,
+            "gate_active": 0.0,
+            "zero_shot_f1": 0.05529471222451245,
+            "steps_run": 150,
+            "wall_time_s": 835.9527711868286,
+            "cell_id": "qwen2_5_3b__grpo__search_qa__s42"
+          }
+        }
+      }
+    },
+    "scope": {
+      "models_run": [
+        "qwen2_5_3b",
+        "qwen3_1_7b"
+      ],
+      "models_skipped": [],
+      "environments_skipped": [],
+      "gaps": []
+    }
+  },
+  "paper_claims": {
+    "core_contribution": "SDAR (Self-Distilled Agentic Reinforcement Learning) treats On-Policy Self-Distillation (OPSD) as a gated auxiliary objective with RL (GRPO) as the primary optimization backbone. It maps detached token-level signals into a sigmoid gate g_t = sigma(beta * Delta_t), strengthening distillation on teacher-endorsed positive-gap tokens and softly attenuating negative teacher rejections. lambda=0.1, beta=10.",
+    "claims": [
+      {
+        "method": "SDAR",
+        "dataset": "ALFWorld",
+        "metric": "task_success_rate",
+        "expected_result": "+9.4% over GRPO"
+      },
+      {
+        "method": "SDAR",
+        "dataset": "WebShop",
+        "metric": "accuracy",
+        "expected_result": "+10.2% over GRPO"
+      },
+      {
+        "method": "SDAR",
+        "dataset": "Search-QA",
+        "metric": "F1_or_accuracy",
+        "expected_result": "+7.0% over GRPO"
+      },
+      {
+        "method": "GRPO",
+        "dataset": "ALFWorld",
+        "metric": "task_success_rate",
+        "expected_result": "baseline"
+      },
+      {
+        "method": "GRPO+OPSD",
+        "dataset": "ALFWorld",
+        "metric": "task_success_rate",
+        "expected_result": "unstable"
+      }
+    ],
+    "datasets": [
+      "ALFWorld",
+      "WebShop",
+      "Search-QA"
+    ],
+    "key_params": {
+      "lambda": 0.1,
+      "beta": 10,
+      "gate": "g_t=sigmoid(10*Delta_t)",
+      "stop_gradient": true
+    }
+  },
+  "rubric": {
+    "overall_score": 0.3633423076923077,
+    "meets_target": false,
+    "areas": [
+      {
+        "area": "Method and code fidelity to the paper",
+        "score": 0.6275,
+        "weight": 0.38,
+        "compute_adjusted_score": 0.6275
+      },
+      {
+        "area": "Data and preprocessing fidelity",
+        "score": 0.09,
+        "weight": 0.14,
+        "compute_adjusted_score": 0.09
+      },
+      {
+        "area": "Experiment execution and reproducibility",
+        "score": 0.37,
+        "weight": 0.18,
+        "compute_adjusted_score": 0.37
+      },
+      {
+        "area": "Evaluation protocol and metric correctness",
+        "score": 0.18461538461538463,
+        "weight": 0.15,
+        "compute_adjusted_score": 0.18461538461538463
+      },
+      {
+        "area": "Result match versus the paper's reported targets",
+        "score": 0.015,
+        "weight": 0.1,
+        "compute_adjusted_score": 0.015
+      },
+      {
+        "area": "Artifact completeness and provenance",
+        "score": 0.32999999999999996,
+        "weight": 0.05,
+        "compute_adjusted_score": 0.32999999999999996
+      }
+    ],
+    "leaf_scores": [
+      {
+        "id": "5b717e4f904447dbb9af022cb357f113",
+        "score": 0.1,
+        "justification": "No evidence of ALFWorld/WebShop prompt templates; only Search-QA closed-book prompts implemented, with no explicit reference to Figures 15-17 or skill_context handling."
+      },
+      {
+        "id": "ddd545002e2b4beda5352fec185553ee",
+        "score": 0.7,
+        "justification": "Metrics.json logs gate_mean, gate_active, delta_t_mean, opsd_loss_mean, and reward_mean per cell, matching the five diagnostics, though only as scalars rather than full curves (curves.json mentioned but not shown)."
+      },
+      {
+        "id": "b78dce6eab014b7b8f526096388f37f7",
+        "score": 0.0,
+        "justification": "ALFWorld is explicitly out of scope and no ALFWorld results are produced."
+      },
+      {
+        "id": "9ce7abf4b7ac469bbdf6dadbe856b87b",
+        "score": 0.4,
+        "justification": "Qwen2.5-3B Search-QA SDAR (0.376) exceeds GRPO (0.177) by ~+20%, showing directional improvement but not matching the specific +7.0% claim from Table 1."
+      },
+      {
+        "id": "9bf5f1fa91194142bd1db6148e4b7e1a",
+        "score": 0.0,
+        "justification": "WebShop is not implemented or evaluated in this reproduction."
+      },
+      {
+        "id": "272c4c09a02842ffbfc7513e76634149",
+        "score": 0.0,
+        "justification": "ALFWorld is out of scope; no Qwen3-1.7B ALFWorld results are produced."
+      },
+      {
+        "id": "918a757c793746b1b2e1af56a33346aa",
+        "score": 0.4,
+        "justification": "On Search-QA, SDAR (0.086) outperforms GRPO+OPSD (0.023) on Qwen3-1.7B and OPSD-variant collapses near zero on Qwen2.5-3B (0.0), partially confirming qualitative claims, but ALFWorld GRPO+OPSD collapse is not demonstrated."
+      },
+      {
+        "id": "c9239cbabf6e46c3af4a5c27f79652b4",
+        "score": 0.3,
+        "justification": "train.py and train_cell.py exist with cells_manifest.json and commands.log, but only Search-QA is configured; ALFWorld and WebShop configs are absent."
+      },
+      {
+        "id": "41f414bf75e44f308e4e7145ccb90c89",
+        "score": 0.6,
+        "justification": "train.py records BETA=10.0, LAMBDA=0.1, CLIP_EPS=0.2, ALPHA_KL=0.01, GROUP_SIZE=8, LR=1e-5 as module constants, but no explicit skill retrieval strategy = KM is documented."
+      },
+      {
+        "id": "08e3c5c52ca946b793d601ace9723932",
+        "score": 0.4,
+        "justification": "Per-cell metrics.json captures the five diagnostic scalars and curves.json is written, but no clear provenance link to the ZJU-REAL/SDAR repo and only Search-QA cells of Table 1 are populated."
+      },
+      {
+        "id": "802a99b42010418496e41eef5e85f7b4",
+        "score": 0.9,
+        "justification": "train.py explicitly defines BETA=10.0 and implements gate = torch.sigmoid(beta * delta_t).detach() with delta_t = teacher_logps.detach() - student_logps as documented in the module docstring."
+      },
+      {
+        "id": "400c911490f341c292cbaaea7c6a75e0",
+        "score": 0.9,
+        "justification": "The code applies .detach() to teacher_logps and to the gate (gate = torch.sigmoid(beta * delta_t).detach()), so gradients flow only through student_logps as required by Proposition 1."
+      },
+      {
+        "id": "09cfd06bfb58462fb18e7e492cd0d186",
+        "score": 0.85,
+        "justification": "LAMBDA=0.1 is defined and loss = grpo_loss + (LAMBDA * opsd_loss if opsd_enabled else 0.0) is implemented; OPSD is a gated token-level surrogate as described, though full GRPO clipped objective details aren't fully visible."
+      },
+      {
+        "id": "5e6cb59b724e4bba9254cc05c219c64e",
+        "score": 0.5,
+        "justification": "CLIP_EPS=0.2 and ALPHA_KL=0.01 are declared as invariants matching Table 3, but the actual GRPO clipped surrogate implementation and KL penalty application aren't shown in the visible code excerpts."
+      },
+      {
+        "id": "4dde5e2c46cd4e96b2bae4ef1f6bba3b",
+        "score": 0.1,
+        "justification": "Only gap gating (sigmoid of beta*delta_t) is shown; no evidence of entropy gating or soft-OR gating implementations being selectable in the code."
+      },
+      {
+        "id": "39e798b732994fae828695d0f3417d4a",
+        "score": 0.15,
+        "justification": "Only GRPO, GRPO+OPSD, and SDAR baselines are run in metrics.json; Skill-SD, RLSD, and standalone OPSD baselines are absent from the experiment."
+      },
+      {
+        "id": "e1acc62ec3d34fdc830a27c4a5510e22",
+        "score": 0.0,
+        "justification": "ALFWorld is explicitly declared out of scope ('ALFWorld, WebShop... declared as scope gaps'); no evidence of GiGPO training data or the six task categories."
+      },
+      {
+        "id": "9b6f6fef791f418ab62306f57817a6ed",
+        "score": 0.3,
+        "justification": "Search-QA is included with load_qa_data, but no evidence of E5 retriever, OOD evaluation on TriviaQA/PopQA/2Wiki/MuSiQue/Bamboogle, or full Search-R1 setup; appears to use closed-book prompts."
+      },
+      {
+        "id": "e0515c40ace1416e8b2f1fe4a76a38f7",
+        "score": 0.0,
+        "justification": "WebShop is explicitly declared out of scope; no training or validation task configuration is shown."
+      },
+      {
+        "id": "d2c1a0a8f8ac4fe2995b9299be50ebff",
+        "score": 0.0,
+        "justification": "No evidence of SkillBank from SkillRL or any of the four retrieval strategies (UCB, KM, Full, Random) being implemented."
+      },
+      {
+        "id": "1b7c8f27ca1a46c2badb8de819a95645",
+        "score": 0.0,
+        "justification": "ALFWorld is out of scope and no ALFWorld-specific batch configuration is implemented."
+      },
+      {
+        "id": "6521a0eb79c141cfbb79bffbf4e15c3d",
+        "score": 0.5,
+        "justification": "MAX_PROMPT_LEN=4096 matches the paper's Search-QA prompt length, but GROUP_SIZE=8 and no explicit batch_size=128 is shown; documented as 'closed-book prompts are short'."
+      },
+      {
+        "id": "ba5901d62d254e78a95319b4cc883b2f",
+        "score": 0.0,
+        "justification": "WebShop is explicitly out of scope; no WebShop training configuration exists."
+      },
+      {
+        "id": "da13a7df394f4889b682128d0e894127",
+        "score": 0.3,
+        "justification": "Multi-GPU per-cell scheduling is implemented via gpu_cell_runner.py with documented 24GB-per-GPU budget; the run completes training-to-evaluation but uses smaller GPUs (qwen2.5-7b skipped due to capacity), not 8 H800s."
+      },
+      {
+        "id": "bed9749b57d74a24931e089f1549b175",
+        "score": 0.1,
+        "justification": "No evidence of skill_context prompt slot or Skill-GRPO* baselines with/without skill context distinction; skills are not implemented at all in the reproduction."
+      },
+      {
+        "id": "6d1b8d3b2d524771a579ae7419d67e23",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "b78dce6eab014b7b8f526096388f37f7",
+        "score": 0.0,
+        "justification": "ALFWorld is explicitly out of scope and no ALFWorld results are produced."
+      },
+      {
+        "id": "9bf5f1fa91194142bd1db6148e4b7e1a",
+        "score": 0.0,
+        "justification": "WebShop is not implemented or evaluated in this reproduction."
+      },
+      {
+        "id": "272c4c09a02842ffbfc7513e76634149",
+        "score": 0.0,
+        "justification": "ALFWorld is out of scope; no Qwen3-1.7B ALFWorld results are produced."
+      },
+      {
+        "id": "e1acc62ec3d34fdc830a27c4a5510e22",
+        "score": 0.0,
+        "justification": "ALFWorld is explicitly declared out of scope ('ALFWorld, WebShop... declared as scope gaps'); no evidence of GiGPO training data or the six task categories."
+      },
+      {
+        "id": "e0515c40ace1416e8b2f1fe4a76a38f7",
+        "score": 0.0,
+        "justification": "WebShop is explicitly declared out of scope; no training or validation task configuration is shown."
+      },
+      {
+        "id": "d2c1a0a8f8ac4fe2995b9299be50ebff",
+        "score": 0.0,
+        "justification": "No evidence of SkillBank from SkillRL or any of the four retrieval strategies (UCB, KM, Full, Random) being implemented."
+      },
+      {
+        "id": "1b7c8f27ca1a46c2badb8de819a95645",
+        "score": 0.0,
+        "justification": "ALFWorld is out of scope and no ALFWorld-specific batch configuration is implemented."
+      },
+      {
+        "id": "ba5901d62d254e78a95319b4cc883b2f",
+        "score": 0.0,
+        "justification": "WebShop is explicitly out of scope; no WebShop training configuration exists."
+      }
+    ],
+    "leaf_count": 26,
+    "graded": 25,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.35557802197802196
+  },
+  "improvements": [
+    {
+      "title": "Fix Gate Formula & Lambda Naming",
+      "outcome": "promoted",
+      "delta": 0.146
+    },
+    {
+      "title": "Fix Sigmoid Gate Regex + Qwen Loading",
+      "outcome": "failed",
+      "delta": -0.323
+    },
+    {
+      "title": "Add Qwen2.5-3B cells",
+      "outcome": "promoted",
+      "delta": 0.04
+    },
+    {
+      "title": "Complete Qwen2.5-3B Matrix",
+      "outcome": "promoted",
+      "delta": 0.04
+    },
+    {
+      "title": "Add Skill-SD/RLSD baselines",
+      "outcome": "failed",
+      "delta": -0.008
+    },
+    {
+      "title": "Fix scope/data fidelity",
+      "outcome": "failed",
+      "delta": 0.0
+    },
+    {
+      "title": "Add SDAR Run on Qwen2.5-3B Search-QA",
+      "outcome": "promoted",
+      "delta": 0.0
+    }
+  ],
+  "primitive_trace": {
+    "calls": 76,
+    "by_primitive": {
+      "check_user_messages": 9,
+      "understand_section": 4,
+      "extract_hyperparameters": 1,
+      "resolve_gpu_requirements": 1,
+      "heartbeat": 20,
+      "detect_environment": 1,
+      "build_environment": 1,
+      "plan_reproduction": 1,
+      "implement_baseline": 8,
+      "run_experiment": 8,
+      "verify_against_rubric": 6,
+      "propose_improvements": 7,
+      "record_candidate_outcome": 7,
+      "rlm_root": 2
+    }
+  },
+  "cost": {
+    "llm_usd": 3.5540475,
+    "primitives": 3.5540475
+  },
+  "iterations": 10,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": "claude-oauth",
+    "grader": "claude-oauth"
+  },
+  "started_at": "2026-05-31T23:58:00.280890+00:00",
+  "completed_at": "2026-06-01T03:15:08.201418+00:00",
+  "title": "SDAR cell-runner uncapped (py+hf fix) 23:56",
+  "scope": {
+    "requested": "SDAR on Qwen2.5/Qwen3 across ALFWorld, WebShop, Search-QA",
+    "ran": [
+      "qwen3_1_7b/search_qa/sdar",
+      "qwen3_1_7b/search_qa/grpo",
+      "qwen3_1_7b/search_qa/grpo_opsd",
+      "qwen2_5_3b/search_qa/grpo"
+    ],
+    "gaps": [
+      "ALFWorld: data_unavailable — alfworld simulator not installed",
+      "WebShop: data_unavailable — WebShop server not available",
+      "qwen2_5_7b: capacity_skipped — exceeds 24GB GPU VRAM",
+      "Skill-SD baseline: not implemented",
+      "RLSD baseline: not implemented",
+      "OPSD standalone baseline: not implemented"
+    ]
+  },
+  "stop_reason": null
+}

@@ -1,0 +1,25 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct'], datasets=['Search-QA'], seeds=[42, 43, 44].
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'The gate is applied with a stop-gradient operator (gate.detach()) on g_t so that gradients flow exclusively through the '
+generate_rubric_tree: dropped placeholder leaf: 'GRPO baseline is implemented per Equation 2 with the clipped importance-sampling ratio r_t(θ) = π_θ(y_t)/π_θ_old(y_t), g'
+generate_rubric_tree: dropped placeholder leaf: 'ALFWorld evaluation reports success rate (%) on the six task categories as in Section 3 and Table 1.'
+generate_rubric_tree: dropped placeholder leaf: 'Search-QA evaluation reports accuracy (%) on NQ, TriviaQA, PopQA, HotpotQA, 2Wiki, MuSiQue, Bamboogle, distinguishing in'
+generate_rubric_tree: dropped placeholder leaf: 'WebShop evaluation reports both Score and Acc (%) on the 128-task fixed validation set per Section 3 and Table 1.'
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2732765 is closed

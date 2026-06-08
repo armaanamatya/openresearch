@@ -216,16 +216,27 @@ function statusGlyph(status: "pass" | "partial" | "fail"): string {
  * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.1, §4.3.
  */
 export function RubricStrip({ rubric, computeAdjustedScore, computeScopeIsClipped }: RubricStripProps) {
-  const { current, baseline, target, series, areas, previousAreas, attributableCandidate } = rubric;
+  const { current, baseline, best, target, series, areas, previousAreas, attributableCandidate } = rubric;
 
   const isScored = current !== null;
-  // β3: when compute is clipped and we have an adjusted score, headline uses
-  // the adjusted number; raw moves to a small footnote.
+  // The HONEST headline is the BEST score the run achieved (max over the
+  // trajectory), not the latest attempt — a failed final iteration must not
+  // erase a higher earlier result. `best` is derived in the reducer; fall back
+  // to `current` for older states that predate the field.
+  const bestScore = best ?? current;
+  // A failed/lower latest attempt: show it as a muted secondary line so it
+  // reads as a transient dip rather than a regression of the headline.
+  const latestBelowBest =
+    isScored && bestScore !== null && current !== null && current < bestScore - 1e-9;
+  // β3: when compute is clipped and we have an adjusted score, that explicit
+  // signal STILL takes precedence and becomes the headline (raw → footnote).
   const isClipped = computeScopeIsClipped === true && computeAdjustedScore != null;
-  const headlineScore = isClipped ? computeAdjustedScore! : (current ?? 0);
+  const headlineScore = isClipped ? computeAdjustedScore! : (bestScore ?? 0);
   const tweenedCurrent = useCountUp(isScored ? headlineScore : 0, 400);
 
   const fmtScore = (n: number) => n.toFixed(2);
+  // Progress fill tracks the headline (best-of-run) so the bar matches the
+  // big number rather than dropping on a failed attempt.
   const fillPct = isScored ? `${Math.min(1, Math.max(0, tweenedCurrent)) * 100}%` : "0%";
 
   const hasClimb = isScored && baseline !== null;
@@ -249,7 +260,9 @@ export function RubricStrip({ rubric, computeAdjustedScore, computeScopeIsClippe
       aria-label="Rubric score"
       title="Rubric score updates when verify_against_rubric or report generation emits scored areas."
     >
-      {/* Current score — large prominent number, count-up animated. */}
+      {/* Headline score — BEST-of-run, large prominent number, count-up animated.
+          Labeled "best" so a failed latest attempt does not read as the run's
+          standing. The latest score (when lower) appears as a muted dip line. */}
       <div className={styles.scoreBlock}>
         <span className={isScored ? styles.scoreValue : styles.scorePlaceholder}>
           {isScored ? fmtScore(tweenedCurrent) : "—"}
@@ -262,7 +275,19 @@ export function RubricStrip({ rubric, computeAdjustedScore, computeScopeIsClippe
             compute-adjusted
           </span>
         )}
-        <span className={styles.scoreLabel}>rubric score</span>
+        <span className={styles.scoreLabel}>
+          {isClipped ? "rubric score" : isScored ? "best rubric score" : "rubric score"}
+        </span>
+        {/* Secondary muted line: the LATEST attempt when it dipped below best.
+            Frames a failed iteration as a transient dip, not a regression. */}
+        {!isClipped && latestBelowBest && current !== null && (
+          <span
+            className={styles.latestScore}
+            title="The most recent attempt scored below the run's best — a transient dip, not a regression."
+          >
+            {`latest: ${fmtScore(current)}`}
+          </span>
+        )}
         {isClipped && current !== null && (
           <span className={styles.rawScoreFootnote}>
             {`vs paper headline: ${fmtScore(current)}`}

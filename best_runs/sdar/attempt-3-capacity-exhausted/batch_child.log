@@ -1,0 +1,1348 @@
+[paper-hint] Applied 2605.15155 (469 chars guidance, 6 invariants, scope).
+[scope] Effective scope: models=['Qwen3-1.7B', 'Qwen2.5-3B-Instruct'], datasets=['Search-QA'], seeds=[42, 43, 44].
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+parsed_full_text.txt missing — parser likely failed; falling back to workspace variable (lossy)
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+paper text degraded — proceeding with lossy workspace fallback (parsed_full_text.txt missing or <1KB at /home/sww35/openresearch/runs/prj_09047604e591d969/parsed_full_text.txt)
+run_pipeline_rlm: root model 'claude-oauth' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+generate_rubric_tree: dropped placeholder leaf: 'ALFWorld is evaluated using success rate (%) across the 6 task categories, Search-QA uses accuracy (%) on the in-domain '
+Loop <_UnixSelectorEventLoop running=False closed=True debug=False> that handles pid 2738743 is closed
+{
+  "project_id": "prj_09047604e591d969",
+  "status": "failed",
+  "output_dir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "iterations": 1,
+  "rubric_score": 0.08915254237288137,
+  "cost_usd": 0.14908785,
+  "final_report_path": "/home/sww35/openresearch/runs/prj_09047604e591d969/final_report.json",
+  "execution_mode": "max",
+  "sandbox": "local"
+}
+Task was destroyed but it is pending!
+task: <Task pending name='Task-6' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c2b1440>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-15' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-24' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c2b3880>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed5300>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-33' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-42' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-51' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed5940>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed5f80>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed65c0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-60' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-69' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-78' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed6c00>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed7240>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed7880>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-87' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-96' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-105' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd55ed7ec0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bc540>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bcb80>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-114' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-123' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-132' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bd1c0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bd800>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bde40>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-141' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-150' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-159' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1be480>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1beac0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bf100>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-168' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-177' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-186' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bf740>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c1bfd80>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c248400>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-195' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-204' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c248a40>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c249080>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-222' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-231' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c249d00>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c24a340>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-240' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-249' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-258' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c24a980>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c24afc0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c24b600>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-267' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-276' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-285' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c24bc40>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dc2c0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dc900>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-294' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-303' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-312' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dcf40>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dd580>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560ddbc0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-321' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-330' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-339' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560de200>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560de840>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dee80>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-348' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-357' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-366' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560df600>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd560dfb00>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd56174180>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-375' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-384' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd561747c0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd56174e00>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Task was destroyed but it is pending!
+task: <Task pending name='Task-393' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd56175800>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-213' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5c2496c0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-411' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-413' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Task was destroyed but it is pending!
+task: <Task pending name='Task-426' coro=<Query._read_messages() running at /home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py:250> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd56177ec0>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5641c040>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <coroutine object Query._read_messages at 0x7fcd5641cb80>
+Traceback (most recent call last):
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/claude_agent_sdk/_internal/query.py", line 324, in _read_messages
+    except anyio.get_cancelled_exc_class():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 164, in get_cancelled_exc_class
+    return get_async_backend().cancelled_exception_class()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/sww35/openresearch/.venv/lib/python3.12/site-packages/anyio/_core/_eventloop.py", line 189, in get_async_backend
+    raise NoEventLoopError(
+anyio.NoEventLoopError: Not currently running on any asynchronous event loop. Available async backends: asyncio, trio
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7fcd60782520>
+Traceback (most recent call last):
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+    self.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+    proto.pipe.close()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 568, in close
+    self._close(None)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+    self._loop.call_soon(self._call_connection_lost, exc)
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 799, in call_soon
+    self._check_closed()
+  File "/home/sww35/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 545, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed

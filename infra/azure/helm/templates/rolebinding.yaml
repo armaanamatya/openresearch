@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reprolab-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+subjects:
+  # ---------------------------------------------------------------------------
+  # Bind to the operator Entra group (Azure AD object ID).  Every member of this
+  # group can create/watch/delete Jobs in the namespace after authenticating
+  # with `az login` + `az aks get-credentials`.
+  # [tfvar: operator_entra_group_object_id]  (envs/deepinvent/main.tfvars — not a TF output)
+  # ---------------------------------------------------------------------------
+  - kind: Group
+    name: {{ .Values.rbac.operatorGroupObjectId | quote }}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: reprolab-orchestrator
+  apiGroup: rbac.authorization.k8s.io

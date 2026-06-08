@@ -1,0 +1,40 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reprolab-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+rules:
+  # ---------------------------------------------------------------------------
+  # Jobs — the orchestrator (k8s_job_cell_runner) needs full lifecycle control:
+  #   create   — submit a new training cell Job
+  #   get      — read a specific Job's status
+  #   list     — enumerate Jobs (e.g. on reconnect / resume)
+  #   watch    — stream Job status changes to drive the poll loop
+  #   delete   — clean up completed/failed Jobs or cancel on budget exceeded
+  # patch/update are deliberately OMITTED (least privilege — the orchestrator
+  # never mutates an in-flight Job spec).
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+
+  # Pods — read-only access so the orchestrator can inspect pod phase (e.g.
+  # Pending→Running transition for the stuck-pending quota timeout path).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+  # Pod logs — stream cell training output back to the local orchestrator so it
+  # can emit existing SSE events (primitive_call / run_warning) without storing
+  # logs centrally.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Events — read cluster events for richer error messages (OOM killer, image
+  # pull failures, scheduling failures) surfaced as run_warning SSE events.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]

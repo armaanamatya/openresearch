@@ -54,7 +54,9 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
+    "cell_execution_error",      # Phase 0C: all run cells errored (non-OOM); zero ok cells
     "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
+    "cuda_shlib_load",           # a CUDA runtime lib (libcupti/libcudart/…) couldn't dlopen
     "unknown",                   # falls-through
 )
 
@@ -150,12 +152,25 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "minutes). A smoke must never be the scored reproduction. Run the FULL training "
             "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
             "completion and record the measured eval metric for every model before finalizing",
+        "cell_execution_error":
+            "every training cell failed with a non-OOM error (a code bug in the per-cell "
+            "trainer — TypeError / AttributeError / bad arg / import error) and ZERO cells "
+            "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
+            "it names, and re-run the matrix. This is NOT a scope reduction and NOT an OOM "
+            "— do not shrink the grid or de-scope a model/env; fix the code",
         "nccl_timeout":
             "a distributed collective (NCCL) timed out — one rank hung or died while the "
             "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "
             "SAME number of forward/backward steps (no per-rank early-exit or uneven batch "
             "counts), set NCCL_P2P_DISABLE=1 on kernels that hang multi-GPU P2P, and check "
             "whether an earlier rank crashed first (its trace is the real cause)",
+        "cuda_shlib_load":
+            "a CUDA runtime library (libcupti.so, libcudart.so, libnvrtc.so, …) couldn't "
+            "be loaded — almost always because requirements.txt re-pinned torch / "
+            "torchvision to a build that fights the harness's driver-compatible cu121 "
+            "install, leaving an incoherent CUDA stack. Remove the torch / torchvision / "
+            "torchaudio pins from requirements.txt (let the harness own them) and do NOT "
+            "set an exotic CUDA index — the harness installs a matching, loadable stack",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -304,6 +319,21 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # NCCL collective hang — the FSDP rank-0 ~600s watchdog timeout (F-08)
         if "nccl" in haystack and ("timeout" in haystack or "timed out" in haystack):
             return ("nccl_timeout", _suggest("nccl_timeout"))
+
+        # CUDA shared-object load failure — a torch/CUDA runtime lib (libcupti, libcudart,
+        # libnvrtc, …) can't be dlopen'd. The 2026-06-07 All-Conv-Net run hit
+        # "libcupti.so.12: cannot open shared object file" because requirements.txt re-pinned
+        # torch==2.2.0 over the harness's cu121 build, leaving an incoherent CUDA stack. This
+        # is an ENV/dependency failure (not code/data); the fix is to stop re-pinning torch
+        # (env_pin strips it). Checked AFTER nccl_timeout so a real NCCL hang keeps its class.
+        if "cannot open shared object file" in haystack and any(
+            _lib in haystack
+            for _lib in (
+                "libcupti", "libcudart", "libnvrtc", "libcublas",
+                "libcudnn", "libcusolver", "libcusparse", "libcurand", "libnccl",
+            )
+        ):
+            return ("cuda_shlib_load", _suggest("cuda_shlib_load"))
 
         # Disk exhaustion — a mid-run pip/HF download that fills the disk crashes
         # with a raw ENOSPC trace (no postflight preset). The class + fix already

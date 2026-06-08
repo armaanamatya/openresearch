@@ -45,6 +45,7 @@ class PrimitiveOutcome(str, Enum):
 
 _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
+    "cell_execution_error",   # Phase 0C: all run cells errored (non-OOM) → repair
     "degenerate_training",
     "disk_exhausted",
     "incomplete_metrics",
@@ -53,6 +54,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "missing_module",
     "torch_redundancy",
     "cuda_oom",
+    "cuda_shlib_load",        # incoherent CUDA stack (libcupti/… won't load) → strip torch re-pin
     "oom_killed",
     "requirements_not_found",
     "missing_dataset",
@@ -81,6 +83,76 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
     "quota_exceeded",
     # Existing classifier label for the same fatal funding state.
     "runpod_balance_too_low",
+}
+
+
+def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) -> list[str]:
+    """pip-install commands for the local-sandbox bootstrap, hardened by env_pin.
+
+    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST, then the
+    agent's requirements with any conflicting core re-pin stripped (writing
+    ``requirements.hardened.txt`` next to ``requirements.txt``). This is the fix for the
+    2026-06-07 All-Conv-Net collapse, where the agent's ``torch==2.2.0`` re-pin
+    DOWNGRADED the cu121 build and left an incoherent CUDA stack (``libcupti.so.12``
+    failed to dlopen → every experiment died at import).
+
+    Fail-soft: env_pin off (``OPENRESEARCH_DISABLE_ENV_PIN``) / no torch index / unknown tag
+    / any error → legacy bare-``torch`` install + raw ``requirements.txt``. Returns the
+    ordered command list (the caller appends ``accelerate`` afterwards).
+    """
+    core_install_cmd: str | None = None
+    requirements_target = "requirements.txt"
+    env_pin_on = bool(torch_index) and os.environ.get(
+        "OPENRESEARCH_DISABLE_ENV_PIN", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+    if env_pin_on:
+        try:
+            from backend.agents.rlm import env_pin
+
+            tag = env_pin.base_tag_for("local", None)  # → "cu121"
+            specs = env_pin.pin_install_specs(tag)
+            kept, dropped = env_pin.harden_requirements(
+                requirements_path.read_text(encoding="utf-8").splitlines(),
+                base_tag=tag,
+            )
+            if specs:
+                core_install_cmd = (
+                    f"python -m pip install {' '.join(specs)} "
+                    f"--index-url {torch_index} || true"
+                )
+            if dropped:
+                hardened = requirements_path.with_name("requirements.hardened.txt")
+                hardened.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                requirements_target = hardened.name
+                logger.info(
+                    "_local_core_bootstrap_commands: env_pin stripped %d core re-pin(s) "
+                    "%s; harness installs the pinned cu121 stack", len(dropped), dropped,
+                )
+        except Exception:  # noqa: BLE001 — env_pin must never block the run
+            logger.exception(
+                "_local_core_bootstrap_commands: env_pin hardening failed; raw requirements.txt"
+            )
+            core_install_cmd, requirements_target = None, "requirements.txt"
+
+    cmds: list[str] = []
+    if core_install_cmd is not None:
+        cmds.append(core_install_cmd)
+    elif torch_index:
+        cmds.append(f"python -m pip install torch --index-url {torch_index} || true")
+    cmds.append(f"python -m pip install -r {requirements_target} || true")
+    return cmds
+
+
+# Phase 0C: failure classes whose run_experiment result carries a POPULATED
+# metrics dict (aggregate_cell_metrics always returns non-empty) yet represents an
+# all-cells-failed, fully-repairable code bug. These must engage the repair floor,
+# NOT be typed partial_evidence by the metrics-first short-circuit in
+# _classify_run_experiment_outcome. Keep this NARROW: only classes that are set
+# exclusively when ZERO cells succeeded, so a genuine some-ok/some-bug partial is
+# never reclassified as fully repairable. ``cell_execution_error`` is set only in
+# the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
+_METRICS_BEARING_REPAIRABLE_FAILURES = {
+    "cell_execution_error",
 }
 
 _CODEX_HARD_ALLOWED_TASKS = {
@@ -292,7 +364,7 @@ def _build_codex_prompt(
 ) -> str:
     allowed = "\n".join(f"- {p}" for p in allowed_paths) if allowed_paths else "- Entire workspace"
     return (
-        "You are a specialized OpenResearch repo-editing repair subagent.\n"
+        "You are a specialized ReproLab repo-editing repair subagent.\n"
         "Do not perform paper navigation, paper summarization, rubric judgment, "
         "final report writing, broad research, credential inspection, or secret search.\n\n"
         f"Task type: {task_type}\n"
@@ -317,11 +389,21 @@ def _classify_run_experiment_outcome(result: dict) -> PrimitiveOutcome:
     if result.get("success") is True:
         return PrimitiveOutcome.ok
 
+    failure_class = _failure_class_key(result.get("failure_class"))
+
+    # Phase 0C: a few failure classes carry a populated metrics dict even though
+    # every run cell failed (aggregate_cell_metrics always returns non-empty, so
+    # the all-cells-errored ``cell_execution_error`` branch ships metrics). The
+    # metrics-first short-circuit below would mis-type those as partial_evidence
+    # and skip the repair-iteration floor (which fires only on ``repairable``).
+    # Consult the failure_class FIRST for these so a code-bug cell engages repair.
+    if failure_class in _METRICS_BEARING_REPAIRABLE_FAILURES:
+        return PrimitiveOutcome.repairable
+
     metrics = result.get("metrics")
     if isinstance(metrics, dict) and bool(metrics):
         return PrimitiveOutcome.partial_evidence
 
-    failure_class = _failure_class_key(result.get("failure_class"))
     if not failure_class:
         return PrimitiveOutcome.repairable
     if failure_class in _RUN_EXPERIMENT_REPAIRABLE_FAILURES:
@@ -573,7 +655,7 @@ def _cap_logs(text: str) -> str:
 
 
 _PLAN_REPRODUCTION_SYSTEM = (
-    "You are the Reproduction Planner for OpenResearch. Given a paper's method "
+    "You are the Reproduction Planner for ReproLab. Given a paper's method "
     "spec and a target environment spec, produce a ReproductionContract: what "
     "counts as a faithful reproduction, a smoke-test plan, a full-run plan, "
     "the expected output artifacts, a dataset plan, an evaluation plan, and a "
@@ -933,11 +1015,38 @@ def resolve_gpu_requirements(
         req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
 
     settings = get_settings()
-    cloud_types: tuple[str, ...] = (
-        ("COMMUNITY", "SECURE")
-        if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-        else ("COMMUNITY",)
-    )
+
+    # Select the cloud provider from the run's sandbox_mode: azure → azure SKUs
+    # (ONDEMAND tier, multi-GPU VM-size aware); everything else → runpod (default,
+    # byte-for-byte identical to the pre-azure behaviour).
+    from backend.agents.execution import SandboxMode as _SandboxMode
+    _sb_mode = getattr(ctx, "sandbox_mode", None)
+    try:
+        _sb_enum = _SandboxMode(_sb_mode) if _sb_mode is not None else None
+    except (ValueError, TypeError):
+        _sb_enum = None
+    _is_azure = _sb_enum is _SandboxMode.azure
+
+    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
+    # so the primary pick + OOM escalation ladder can never name a pool that does
+    # not exist (which would otherwise hang the cell Pending until the
+    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # byte-for-byte unchanged.
+    if _is_azure:
+        _provider = "azure"
+        cloud_types: tuple[str, ...] = ("ONDEMAND",)
+        _provisioned_skus: tuple[str, ...] | None = tuple(
+            getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
+    else:
+        _provider = "runpod"
+        cloud_types = (
+            ("COMMUNITY", "SECURE")
+            if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
+            else ("COMMUNITY",)
+        )
+        _provisioned_skus = None
 
     from backend.agents.schemas import GpuPlan as _GpuPlan
     plan: "_GpuPlan" = gpu_resolver.resolve(
@@ -948,6 +1057,8 @@ def resolve_gpu_requirements(
         headroom_multiplier=settings.dynamic_gpu_headroom,
         fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
         cloud_types=cloud_types,
+        provider=_provider,
+        provisioned_skus=_provisioned_skus,
     )
 
     # ---- Persist atomically.
@@ -1034,6 +1145,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
             "skipped": True,
             "note": "local sandbox: dependencies resolved on host venv; no image built",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "azure":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
 
     import asyncio
@@ -2230,12 +2349,19 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_runpod_available()
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.azure:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.aks_job_backend import AksJobBackend
+
+        _runtime.ensure_azure_available()
+        return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker or --sandbox runpod for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -2642,7 +2768,7 @@ def _write_fsdp_accelerate_config(code_dir: "Path", nproc: int) -> "Path":
             "  fsdp_sharding_strategy: FULL_SHARD\n"
             "  fsdp_use_orig_params: true\n"
         )
-    path = code_dir / "_openresearch_fsdp.yaml"
+    path = code_dir / "_reprolab_fsdp.yaml"
     try:
         path.write_text(cfg, encoding="utf-8")
     except Exception:  # noqa: BLE001 — best-effort; caller still launches distributed
@@ -2955,7 +3081,7 @@ async def _execute_in_sandbox(
         # create those dirs FIRST so pip and HuggingFace can write to them.
         # Pre-pip step — must run before any other bootstrap.
         bootstrap_commands.append(
-            'mkdir -p ${OPENRESEARCH_BOOTSTRAP_MKDIRS:-/tmp/.openresearch_noop}'
+            'mkdir -p ${OPENRESEARCH_BOOTSTRAP_MKDIRS:-/tmp/.reprolab_noop}'
         )
         # Lane 1: auto-derive requirements.txt from the Dockerfile when the
         # agent forgot to write one. The local-docker sandbox path builds an
@@ -3014,6 +3140,29 @@ async def _execute_in_sandbox(
     # `|| true` to prevent non-zero exit codes from causing `success=False`
     # in the all(r.succeeded) check. The commands.json entry handles the
     # actual package install via an explicit PATH-export bash -c command.
+    # Phase 2A (2026-06-07): synthesize requirements.txt on the LOCAL sandbox too.
+    # Previously ONLY the runpod block above called ensure_requirements_txt, while the
+    # local path gated on the file already existing — so a local run whose agent forgot
+    # requirements.txt installed nothing and died at the first third-party import (the
+    # matplotlib ModuleNotFoundError class). Mirror the runpod synthesis so the local
+    # install block + the commands.json install have a file to install.
+    if "local" in _mode_str and not requirements_path.exists():
+        try:
+            from backend.agents.rlm.requirements_derive import ensure_requirements_txt
+            _project_dir_local = code_dir.parent if code_dir.name == "code" else code_dir
+            ensure_requirements_txt(
+                code_dir,
+                dockerfile_path=_project_dir_local / "Dockerfile",
+                base_image=env_id,
+            )
+            if requirements_path.exists():
+                logger.info(
+                    "_execute_in_sandbox: synthesized requirements.txt for local sandbox "
+                    "(%d bytes)", requirements_path.stat().st_size,
+                )
+        except Exception:  # noqa: BLE001 — synthesis must never block the run
+            logger.exception("_execute_in_sandbox: local requirements.txt auto-derive failed")
+
     if "local" in _mode_str and requirements_path.exists():
         bootstrap_commands.append(
             "python -m pip install --upgrade pip wheel setuptools || true"
@@ -3030,18 +3179,59 @@ async def _execute_in_sandbox(
             "OPENRESEARCH_LOCAL_TORCH_INDEX_URL",
             "https://download.pytorch.org/whl/cu121",
         ).strip()
-        if _torch_index:
-            bootstrap_commands.append(
-                f"python -m pip install torch --index-url {_torch_index} || true"
-            )
-        bootstrap_commands.append(
-            "python -m pip install -r requirements.txt || true"
+        # env_pin (D6a) — the harness OWNS the cu121 core (torch/vision/audio); the
+        # agent's conflicting re-pin is stripped before install. This is the fix for the
+        # 2026-06-07 All-Conv-Net collapse, where `torch==2.2.0` DOWNGRADED the cu121
+        # build and left an incoherent CUDA stack (libcupti.so.12 failed to dlopen →
+        # every experiment died at import). See _local_core_bootstrap_commands. Fail-soft;
+        # opt out with OPENRESEARCH_DISABLE_ENV_PIN=1 (or OPENRESEARCH_LOCAL_TORCH_INDEX_URL="").
+        bootstrap_commands.extend(
+            _local_core_bootstrap_commands(requirements_path, _torch_index)
         )
         # Harness owns the multi-GPU launcher (`accelerate launch` + FSDP2) —
         # ensure Accelerate is in the per-run venv regardless of requirements.txt.
         bootstrap_commands.append(
             "python -m pip install -U accelerate || true"
         )
+
+    # Phase 2B — preflight IMPORT smoke (the executing half of preflight "TDD").
+    # When OPENRESEARCH_PREFLIGHT_SMOKE is on, emit a stdlib-only probe into code/ and run
+    # it as the LAST bootstrap step (after deps install, before the training commands).
+    # It imports every third-party dependency on CPU (GPU hidden) — NOT the agent's own
+    # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
+    # seconds; the command loop then short-circuits the GPU training and the import
+    # error becomes the next iteration's repair_context.
+    try:
+        from backend.agents.rlm import preflight_smoke as _preflight_smoke
+        if _preflight_smoke.is_enabled():
+            _preflight_smoke.emit(code_dir)
+            bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+    except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
+
+    # Layer 1 execution smoke: when OPENRESEARCH_EXECUTION_SMOKE is on, run the agent's
+    # entry script for 1 step per experiment on tiny data (OPENRESEARCH_SMOKE_STEPS=1) with
+    # CUDA_LAUNCH_BLOCKING=1 — AFTER the import smoke, BEFORE the full training. A runtime
+    # crash (e.g. a VAE device-side assert from a data/shape bug) surfaces at the real
+    # line in seconds, short-circuits the GPU training, and becomes repair_context — the
+    # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
+    # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
+    try:
+        from backend.agents.rlm import execution_smoke as _execution_smoke
+        if _execution_smoke.is_enabled():
+            _entry = next(
+                (e for e in ("train.py", "train_cell.py", "main.py", "run.py")
+                 if (code_dir / e).exists()),
+                None,
+            )
+            if _entry is not None:
+                bootstrap_commands.append(
+                    _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                )
+            else:
+                logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
+    except Exception:  # noqa: BLE001 — execution smoke wiring must never block the run
+        logger.exception("_execute_in_sandbox: execution smoke wiring failed")
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -3228,10 +3418,37 @@ async def _execute_in_sandbox(
                     list(commands), code_dir, len(gpu_device_ids), run_id
                 )
 
+            from backend.agents.rlm.preflight_smoke import MARKER as _SMOKE_MARKER
+            from backend.agents.rlm import execution_smoke as _exec_smoke
             for command in (*bootstrap_commands, *commands):
-                results.append(await service.execute(
+                _cmd_res = await service.execute(
                     ExecuteCommand(sandbox=sandbox, command=command,
-                                   timeout=_EXEC_TIMEOUT_SECONDS)))
+                                   timeout=_EXEC_TIMEOUT_SECONDS))
+                results.append(_cmd_res)
+                # Phase 2B: a failed preflight IMPORT smoke means the training command
+                # would crash on the same missing dep — skip it (and the rest) so the bug
+                # surfaces in CPU-seconds, not after the GPU spins up. Only the marked
+                # smoke command triggers this; every other command runs exactly as before.
+                if _SMOKE_MARKER in command and not _cmd_res.succeeded:
+                    logger.warning(
+                        "_execute_in_sandbox: preflight import smoke FAILED — skipping "
+                        "remaining commands (no GPU training); see preflight_smoke_result.json")
+                    break
+                # Layer 1: the EXECUTION smoke (1-step dry-run) blocks ONLY on a REAL
+                # crash, NOT on a timeout-kill (exit 124 = the script ignored the step
+                # cap → not necessarily broken → soft pass). Use the exit code to make
+                # that distinction; if it's unavailable, fail-soft (do NOT block — a
+                # false block costs more than a missed catch).
+                if _exec_smoke.MARKER in command:
+                    _code = getattr(_cmd_res, "exit_code", None)
+                    if _code is not None:
+                        _status, _blocking = _exec_smoke.interpret_exit(int(_code))
+                        if _blocking:
+                            logger.warning(
+                                "_execute_in_sandbox: execution smoke CRASH (%s) — skipping "
+                                "remaining commands (no GPU training). The real traceback is "
+                                "in the smoke output (CUDA_LAUNCH_BLOCKING=1).", _status)
+                            break
         except _WatchdogKilled as exc:
             # Surface as a fail-soft error dict so the caller's outer escalation
             # loop treats it like an OOM (advance ladder / repair_context).
@@ -3822,7 +4039,16 @@ def _validate_scope_metrics(
                 f"'qwen2.5-3b': {{...}}}}}}."
             )
         present_keys = {_ck(k) for k in per_model}
-        missing = [m for m in models if _ck(m) not in present_keys]
+        # Models in scope.models_skipped are explicitly excluded (e.g. capacity-gated
+        # due to VRAM budget) — treat them as accounted for, not missing.
+        skipped_canonical = {
+            _ck(k)
+            for k in ((metrics.get("scope") or {}).get("models_skipped") or [])
+        }
+        missing = [
+            m for m in models
+            if _ck(m) not in present_keys and _ck(m) not in skipped_canonical
+        ]
         if missing:
             return (
                 f"per_model_incomplete: scope requires entries for {models}; "
@@ -3933,6 +4159,83 @@ def _summarize_cell_logs(cells: list, matrix_result: dict, gpus: list) -> str:
     return "\n".join(lines)
 
 
+def _operator_scope_exclusions(ctx: "RunContext") -> list:
+    """Verified ``operator_scope`` Exclusions from the run's ScopeSpec.
+
+    ``skip_models`` → model-axis exclusions; ``skip_datasets`` → environment-axis
+    exclusions. Both are ``verified=True``: the operator's ``--scope-spec`` is the
+    evidence that the de-scope was a deliberate human decision (not an agent
+    laundering a failure into a free scope reduction), so the rubric EXCLUDES
+    their leaves rather than scoring them 0. Empty list when there is no
+    scope_spec. Never raises.
+    """
+    from backend.agents.rlm import exclusion as _excl
+
+    spec = getattr(ctx, "scope_spec", None)
+    if spec is None:
+        return []
+    evidence = "operator ScopeSpec (--scope-spec)"
+    out: list = []
+    pairs = (
+        (getattr(spec, "skip_models", None) or [], _excl.AXIS_MODEL, "skip_models"),
+        (getattr(spec, "skip_datasets", None) or [], _excl.AXIS_ENVIRONMENT, "skip_datasets"),
+    )
+    for items, axis, field in pairs:
+        for it in items:
+            name = str(it).strip()
+            if not name:
+                continue
+            try:
+                out.append(_excl.Exclusion(
+                    item=name, axis=axis, kind=_excl.KIND_OPERATOR_SCOPE,
+                    reason=f"{name} de-scoped by operator ({field})",
+                    verified=True, evidence=evidence,
+                ))
+            except ValueError:
+                logger.debug("operator-scope: skipped malformed exclusion %r", name)
+    return out
+
+
+def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
+    """Fold verified operator_scope + recovered gate exclusions into metrics.scope.
+
+    Rewrites ``metrics['scope']`` so it carries (a) a structured ``exclusions``
+    list spanning the capacity/dataset gate gaps AND the operator's
+    ``skip_models`` / ``skip_datasets``, and (b) legacy ``environments_skipped`` /
+    ``models_skipped`` / ``gaps`` derived from the VERIFIED subset only
+    (anti-gaming). Idempotent and fail-soft — any error leaves the original
+    metrics untouched so scope enrichment can never break the run.
+    """
+    if not isinstance(metrics, dict):
+        return metrics
+    op_excls = _operator_scope_exclusions(ctx)
+    # Verified env-setup failures from run-start provisioning (an ALFWorld/WebShop
+    # the host could not stand up) are excluded on the SAME fairness footing as an
+    # operator de-scope — both are outside the agent's control, both verified.
+    env_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+    all_excls = op_excls + env_excls
+    if not all_excls:
+        return metrics
+    try:
+        from backend.agents.rlm import exclusion as _excl
+
+        scope = metrics.get("scope") if isinstance(metrics, dict) else None
+        existing = dict(scope) if isinstance(scope, dict) else {}
+        # Recover the capacity/dataset gate gaps as structured exclusions so the
+        # final ``exclusions`` list is complete; clear ``gaps`` so
+        # build_scope_block regenerates ONE deduped list from the structured set.
+        recovered = _excl.exclusions_from_gaps(existing.get("gaps") or [])
+        existing["gaps"] = []
+        metrics["scope"] = _excl.build_scope_block(
+            recovered + all_excls,
+            models_run=existing.get("models_run"),
+            existing=existing,
+        )
+    except Exception:  # noqa: BLE001 — scope enrichment must never break the run
+        logger.warning("cell-matrix: operator-scope exclusion merge failed", exc_info=True)
+    return metrics
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -3947,9 +4250,10 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     """
     import json
     import time as _time
+    from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_matrix, gpu_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner, k8s_job_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -3978,10 +4282,13 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
 
-    # PREVENT — clamp to one-card budget, drop confirmed-dead datasets (fail-soft).
+    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
+    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    _gpus_per_cell = max(1, int(os.environ.get("OPENRESEARCH_GPUS_PER_CELL", "1") or "1"))
+    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
     headroom = _dynamic_gpu_headroom()
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
-        all_cells, caps.per_gpu_vram_gb, headroom=headroom)
+        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
 
     gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
@@ -4007,6 +4314,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         metrics = cell_matrix.aggregate_cell_metrics(
             {}, [], capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
             models_skipped=models_skipped, environments_skipped=envs_skipped)
+        metrics = _apply_operator_scope(metrics, ctx)
         return _terminal(
             "capacity_exhausted",
             f"every cell exceeds the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB "
@@ -4014,17 +4322,80 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             metrics, "cell-matrix: all cells dropped by capacity/dataset gates")
 
     _t0 = _time.monotonic()
-    matrix_result = gpu_cell_runner.run_matrix(
-        kept, str(code / "train_cell.py"),
-        output_root=str(artifact_root),
-        gpus=gpus or None,
-        per_cell_timeout_s=timeout_s,
-    )
+    # Bound the WHOLE matrix as a backstop, but GENEROUSLY: cells run in waves of
+    # min(free_gpus, cells), so each sequential wave must get a full per-cell budget
+    # — capping the whole matrix at ONE cell's budget would silently drop every cell
+    # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
+    # run-level watchdog is the ultimate hang guard; this just lets the root score a
+    # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
+    _n_slots = max(1, len(gpus) // _gpus_per_cell)
+    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Cell-level resume (Track B): compute each kept cell's content fingerprint so
+    # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
+    # OPENRESEARCH_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
+    # OPENRESEARCH_RESUME_FORCE_CELLS (CSV of cell ids the CLI builds from --rerun-env /
+    # --rerun-cell). All no-ops when resume is unset; fingerprints are always recorded.
+    _fingerprints = {
+        c["id"]: cell_fingerprint.compute_fingerprint(c, str(code))
+        for c in kept if isinstance(c, dict) and c.get("id")
+    }
+    _force_cells = {
+        cid.strip()
+        for cid in (os.environ.get("OPENRESEARCH_RESUME_FORCE_CELLS", "") or "").split(",")
+        if cid.strip()
+    }
+    _sb_key_ecm = getattr(
+        getattr(ctx, "sandbox_mode", None), "value",
+        str(getattr(ctx, "sandbox_mode", None) or ""),
+    ).lower()
+    _run_budget_ecm = getattr(ctx, "run_budget", None)
+    _event_sink_ecm = getattr(ctx, "_event_sink", None)
+
+    # Load the cached gpu_plan (written by resolve_gpu_requirements) so the K8s
+    # runner can target the resolved SKU/node-pool.  Mirror run_experiment's load;
+    # fail-soft to None so a missing plan never blocks the cell-matrix route.
+    _ecm_gpu_plan = None
+    try:
+        _ecm_plan_path = Path(ctx.project_dir) / "rlm_state" / "gpu_plan.json"
+        if _ecm_plan_path.exists():
+            from backend.agents.schemas import GpuPlan as _ECMGpuPlan
+            _ecm_gpu_plan = _ECMGpuPlan(**json.loads(_ecm_plan_path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
+        logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
+
+    if _sb_key_ecm == "azure":
+        with k8s_job_cell_runner.bind_run_context(
+            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
+        ):
+            matrix_result = k8s_job_cell_runner.run_matrix(
+                kept, str(code / "train_cell.py"),
+                output_root=str(artifact_root),
+                gpus=gpus or None,
+                per_cell_timeout_s=timeout_s,
+                overall_timeout_s=timeout_s * max(1, _waves),
+                gpus_per_cell=_gpus_per_cell,
+                fingerprints=_fingerprints,
+                force_cells=_force_cells or None,
+                now_iso=datetime.now(timezone.utc).isoformat(),
+            )
+    else:
+        matrix_result = gpu_cell_runner.run_matrix(
+            kept, str(code / "train_cell.py"),
+            output_root=str(artifact_root),
+            gpus=gpus or None,
+            per_cell_timeout_s=timeout_s,
+            overall_timeout_s=timeout_s * max(1, _waves),
+            gpus_per_cell=_gpus_per_cell,
+            fingerprints=_fingerprints,
+            force_cells=_force_cells or None,
+            now_iso=datetime.now(timezone.utc).isoformat(),
+        )
     wall = _time.monotonic() - _t0
 
     metrics = cell_matrix.aggregate_cell_metrics(
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
         models_skipped=models_skipped, environments_skipped=envs_skipped)
+    metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 
     statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
@@ -4048,6 +4419,27 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             f"retries on the per-GPU budget {caps.per_gpu_vram_gb:.0f} GB; the matrix "
             f"cannot fit one card — reduce model size/scope or use a larger GPU",
             metrics, logs)
+
+    # capacity_exhausted promotion: the K8s runner emits "capacity_exhausted:"-prefixed
+    # error strings for stuck-Pending cells (pool quota/stock exhausted). When EVERY
+    # errored cell carries that prefix (and no OOM, no ok), promote to terminal rather
+    # than allowing a pointless repair loop — the cluster, not the code, is the bottleneck.
+    # This branch is only reachable for azure runs (non-azure error strings never carry
+    # the prefix), so it leaves local/runpod/docker behavior byte-for-byte unchanged.
+    if n_ok == 0 and n_oom == 0 and n_err > 0:
+        _err_cells = [
+            (matrix_result.get(c["id"]) or {}) for c in kept
+            if (matrix_result.get(c["id"]) or {}).get("status") not in ("ok", "oom_failed")
+        ]
+        _all_cap_exhausted = all(
+            str((r.get("error") or "")).startswith("capacity_exhausted:")
+            for r in _err_cells
+        )
+        if _all_cap_exhausted:
+            _cap_msg = (f"all {n_err} run cell(s) failed: AKS node pool capacity exhausted "
+                        f"(stuck-Pending past timeout) — quota or stock unavailable; "
+                        f"try reducing azure_max_nodes or requesting a quota increase")
+            return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
     _persist_metrics(metrics)
@@ -4674,12 +5066,89 @@ def run_experiment(
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
 
+def _leaf_status(score: object, state: object) -> str:
+    """Map a leaf (score, state) pair to a UI status string.
+
+    ``"unavailable"`` when the leaf was skipped (state contains ``skipped``) or
+    its score is ``None`` (PR-κ data-unavailable). Otherwise threshold the score:
+    ``pass`` (>=0.75) / ``partial`` (>=0.4) / ``fail``. Fail-soft: a malformed
+    score coerces to 0.0 → ``fail``.
+    """
+    if score is None or (isinstance(state, str) and "skipped" in state):
+        return "unavailable"
+    try:
+        s = float(score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "fail"
+    if s >= 0.75:
+        return "pass"
+    if s >= 0.4:
+        return "partial"
+    return "fail"
+
+
+def _enrich_area_leaves(area_node: dict, leaf_detail: dict[str, dict]) -> list[dict]:
+    """Build the per-area ``leaves`` list for one top-level rubric sub_task.
+
+    Walks the area's sub-tree via ``flatten_leaves`` to get the leaf nodes (which
+    carry the human-readable ``requirements`` label + ``id``), then joins each to
+    its scored record in ``leaf_detail`` (id -> {score, justification, state}).
+
+    Each emitted leaf: ``{id, label, score, status, why}`` where ``label`` is the
+    requirements text (≤140 chars), ``score`` is the leaf score (``None`` when
+    unavailable), ``status`` from :func:`_leaf_status`, and ``why`` the leaf
+    justification (≤280 chars, single line). Fail-soft per leaf: a malformed leaf
+    node is skipped rather than crashing the whole area.
+    """
+    from backend.evals.paperbench.leaf_scorer import flatten_leaves
+
+    out: list[dict] = []
+    try:
+        leaf_nodes = flatten_leaves(area_node)
+    except Exception:  # noqa: BLE001 — a malformed tree must not crash the area
+        return out
+    for node in leaf_nodes:
+        try:
+            if not isinstance(node, dict):
+                continue
+            lid = str(node.get("id", "") or "")
+            if not lid:
+                continue
+            label = " ".join(str(node.get("requirements") or "").split())[:140]
+            detail = leaf_detail.get(lid) or {}
+            raw_score = detail.get("score") if "score" in detail else None
+            state = detail.get("state")
+            status = _leaf_status(raw_score, state)
+            score_out: float | None = None
+            if status != "unavailable":
+                try:
+                    score_out = max(0.0, min(1.0, float(raw_score)))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    score_out = None
+            why = " ".join(str(detail.get("justification") or "").split())[:280]
+            out.append({
+                "id": lid,
+                "label": label,
+                "score": score_out,
+                "status": status,
+                "why": why,
+            })
+        except Exception:  # noqa: BLE001 — skip the one bad leaf, keep the rest
+            continue
+    return out
+
+
 def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
     """Derive a flat ``areas`` list from the top-level rubric sub_tasks.
 
     Each top-level sub_task becomes one area entry:
-      {"name": <requirements text, truncated>, "score": <rolled-up float>,
-       "weight": <raw weight int/float>}
+      {"area": <requirements text, truncated>, "score": <rolled-up float>,
+       "weight": <raw weight int/float>,
+       "leaves": [{id, label, score, status, why}, ...]}
+
+    The ``leaves`` list carries leaf-level detail (which criteria fail + why),
+    mapped to the area via the same rubric-tree structure that produces the
+    rollup (``flatten_leaves`` over the area sub-tree).
 
     This gives the root model named, scored areas it can include verbatim in
     the final report instead of fabricating blank placeholders.  Fail-soft:
@@ -4701,6 +5170,14 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         if isinstance(e, dict) and e.get("id") and e.get("score") is not None
     }
 
+    # Build a {leaf_id: full-record} map so per-area leaves can attach
+    # score + justification + state (the label/requirements come from the tree).
+    leaf_detail: dict[str, dict] = {
+        str(e["id"]): e
+        for e in leaf_scores_list
+        if isinstance(e, dict) and e.get("id")
+    }
+
     areas: list[dict] = []
     for i, task in enumerate(sub_tasks):
         name = str(task.get("requirements") or "")[:120]
@@ -4708,8 +5185,72 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
             name = f"Area {i + 1}"
         score = _clamp01(roll_up(task, leaf_score_map))
         weight = task.get("weight")
-        areas.append({"area": name, "score": score, "weight": weight})
+        areas.append({
+            "area": name,
+            "score": score,
+            "weight": weight,
+            "leaves": _enrich_area_leaves(task, leaf_detail),
+        })
     return areas
+
+
+def _recent_experiment_errors(project_dir: "Path", limit: int = 3) -> list[dict]:
+    """Return the last ``limit`` failed ``run_experiment`` entries as UI rows.
+
+    Reads ``experiment_runs.jsonl`` in ``project_dir`` and selects the most
+    recent lines with ``success=False``. Each row: ``{kind, message, iteration}``
+    where ``kind`` is the classified ``failure_class`` (fallback ``cause_kind`` /
+    ``"unknown"``), ``message`` is the error string truncated to 200 chars
+    (falling back to a logs tail when ``error`` is absent — the real-world common
+    case), and ``iteration`` is the entry's iteration if recorded else ``None``.
+
+    Fail-soft: a missing/unreadable file or any malformed line yields ``[]`` (or
+    the rows parsed so far) — observability must never break the run.
+    """
+    import json as _json_re
+
+    path = project_dir / "experiment_runs.jsonl"
+    try:
+        if not path.exists():
+            return []
+        # Read the tail only — the file can grow large over a long run.
+        with path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+
+    out: list[dict] = []
+    # Walk newest-first so we collect the most recent failures.
+    for raw in reversed(lines):
+        if len(out) >= max(0, int(limit)):
+            break
+        raw = raw.strip()
+        if not raw or '"success"' not in raw:
+            continue
+        try:
+            entry = _json_re.loads(raw)
+        except Exception:  # noqa: BLE001 — skip a corrupt line
+            continue
+        if not isinstance(entry, dict) or entry.get("success") is not False:
+            continue
+        kind = str(
+            entry.get("failure_class")
+            or entry.get("cause_kind")
+            or "unknown"
+        )
+        # `error` is frequently None on real failures — the diagnostic lives in
+        # the logs tail (e.g. a ModuleNotFoundError traceback). Fall back so the
+        # UI row is actually informative.
+        message = entry.get("error")
+        if not message:
+            logs = str(entry.get("logs") or "")
+            message = logs[-200:] if logs else (entry.get("suggested_fix") or "")
+        message = " ".join(str(message).split())[:200]
+        iteration = entry.get("iteration")
+        if not isinstance(iteration, int):
+            iteration = None
+        out.append({"kind": kind, "message": message, "iteration": iteration})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -4962,7 +5503,24 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             operator_skip_models=list(
                 getattr(getattr(ctx, "scope_spec", None), "skip_models", None) or []
             ),
+            # 2026-06-01: the operator's de-scoped environments (skip_datasets,
+            # e.g. ALFWorld/WebShop on a Search-QA-only run) gate the environment
+            # axis the same way skip_models gates the model axis — verified
+            # operator scope is excluded; an agent-laundered env skip stays scored.
+            operator_skip_environments=list(
+                getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
+            ),
         )
+        # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
+        # (report → leaf_scorer.finalize_rescore) can recompute the score under a
+        # late-declared scope WITHOUT re-grading. Best-effort — finalize falls back
+        # to today's recorded score if this file is absent.
+        try:
+            (ctx.project_dir / "rubric_tree.json").write_text(
+                __import__("json").dumps(rubric, default=str), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 — persistence is best-effort, never fatal
+            pass
         # Honesty guard: if score_reproduction handed back zero successfully-graded
         # leaves for a non-degraded run, the LLM grader's output was unparseable
         # on every batch. That is a real verification failure — never a "scored
@@ -4990,6 +5548,21 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             [e for e in leaf_scores if isinstance(e, dict) and e.get("score") is not None],
             key=lambda e: float(e.get("score", 0.0)),
         )[:8]
+        # leaf_id -> top-level area name, so the UI can group each weak leaf under
+        # its area. Built from the SAME top-level sub_task structure as the area
+        # rollup. Fail-soft: a malformed tree yields an empty map (area="").
+        _leaf_area: dict[str, str] = {}
+        try:
+            from backend.evals.paperbench.leaf_scorer import flatten_leaves as _flat
+            for _i, _task in enumerate(
+                c for c in (rubric.get("sub_tasks") or []) if isinstance(c, dict)
+            ):
+                _aname = str(_task.get("requirements") or "")[:120] or f"Area {_i + 1}"
+                for _ln in _flat(_task):
+                    if isinstance(_ln, dict) and _ln.get("id"):
+                        _leaf_area[str(_ln["id"])] = _aname
+        except Exception:  # noqa: BLE001 — area attribution is best-effort
+            _leaf_area = {}
 
         result = {
             "overall_score": overall_score,
@@ -5005,7 +5578,8 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "areas": _rubric_areas(rubric, leaf_scores),
             "weak_leaves": [
                 {"id": e.get("id", ""), "score": e.get("score", 0.0),
-                 "justification": e.get("justification", "")}
+                 "justification": e.get("justification", ""),
+                 "area": _leaf_area.get(str(e.get("id", "")), "")}
                 for e in weak_leaves
             ],
             "leaf_scores": leaf_scores,
