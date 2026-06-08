@@ -101,7 +101,11 @@ module "storage" {
   # P1: restrict storage account network access to AKS subnet + operator IPs.
   aks_subnet_id          = module.network.aks_subnet_id
   authorized_ip_ranges   = var.authorized_ip_ranges
-  tags                   = var.tags
+  # Files tier selection.  Default false = Standard (existing behaviour, no change).
+  # Set true for high-parallelism deployments (≥8 concurrent cells).
+  files_premium                      = var.files_premium
+  files_premium_storage_account_name = var.files_premium_storage_account_name
+  tags                               = var.tags
 }
 
 # ─── Workload identity (user-assigned MI + federated credential) ──────────────

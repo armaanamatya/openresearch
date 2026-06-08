@@ -119,10 +119,14 @@ terraform output -json > /tmp/tf-outputs.json
 
 cp envs/deepinvent/helm-values.yaml.example envs/deepinvent/helm-values.yaml
 # Manually copy terraform output values into helm-values.yaml:
-#   workload_identity_client_id  → serviceAccount.workloadIdentityClientId
+#   workload_identity_client_id  → workloadIdentity.clientId
 #   storage_account_name         → storage.accountName
-#   gpu_max_nodes (from tfvars)  → resourceQuota.maxGpuRequests / maxJobs
-#   operator_entra_group_object_id (from tfvars) → operatorGroupObjectId
+#   files_storage_account_name   → storage.filesAccountName
+#                                   (same as storage_account_name when files_premium=false;
+#                                    dedicated Premium account when files_premium=true)
+#   files_share_name             → storage.fileShareName
+#   gpu_max_nodes (from tfvars)  → resourceQuota.maxGpu / maxGpuLimits / maxJobs
+#   operator_entra_group_object_id (from tfvars) → rbac.operatorGroupObjectId
 ```
 
 ### 7. Apply Helm L2
@@ -212,7 +216,8 @@ Report any validation errors back to the engineering team before proceeding to a
 | `kubelet_identity_client_id` | AcrPull + Files role confirmation |
 | `workload_identity_client_id` | Helm SA annotation (critical) |
 | `acr_login_server` | `REPROLAB_AZURE_ACR_LOGIN_SERVER` |
-| `storage_account_name` | `REPROLAB_AZURE_STORAGE_ACCOUNT` |
+| `storage_account_name` | `REPROLAB_AZURE_STORAGE_ACCOUNT` (Blob artifact bus account) |
 | `blob_container_name` | `REPROLAB_AZURE_BLOB_CONTAINER` |
 | `files_share_name` | `REPROLAB_AZURE_FILES_SHARE` |
+| `files_storage_account_name` | Helm `storage.filesAccountName` — the account hosting the active Files share. Same as `storage_account_name` when `files_premium=false`; the dedicated Premium FileStorage account when `files_premium=true`. Always pass this (not `storage_account_name`) to the StorageClass. |
 | `gpu_nodepool_name` | `REPROLAB_AZURE_NODE_POOL_NAME` |

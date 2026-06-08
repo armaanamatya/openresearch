@@ -15,8 +15,15 @@ provisioner: file.csi.azure.com
 parameters:
   # Reference the EXISTING storage account and share provisioned by Terraform.
   # These values are NOT created by this StorageClass; they are pre-existing.
-  # storageAccount: [TF: storage_account_name]
-  storageAccount: {{ .Values.storage.accountName | quote }}
+  #
+  # storageAccount must point to whichever account hosts the active Files share:
+  #   files_premium=false (default): same as the Blob account (storage_account_name)
+  #   files_premium=true:            the dedicated Premium account (files_storage_account_name)
+  #
+  # Use storage.filesAccountName when set (non-empty); fall back to storage.accountName
+  # for the Standard-tier default where both Blob and Files share one account.
+  # [TF: files_storage_account_name]
+  storageAccount: {{ ((.Values.storage.filesAccountName | default "") | empty | ternary .Values.storage.accountName .Values.storage.filesAccountName) | quote }}
   # shareName: [TF: files_share_name]
   shareName: {{ .Values.storage.fileShareName | quote }}
   # Keyless auth — the CSI driver uses the kubelet identity, not a key.

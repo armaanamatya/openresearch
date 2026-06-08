@@ -146,7 +146,8 @@ acr_sku = "Standard"
 # ─── Storage ─────────────────────────────────────────────────────────────────
 
 # Globally unique storage account name (3-24 lowercase alphanum, no hyphens).
-# This account hosts BOTH the artifact Blob container and the Files share.
+# This account hosts the artifact Blob container AND the Files share when
+# files_premium = false (the default).
 storage_account_name = "<GLOBALLY_UNIQUE_STORAGE_ACCOUNT_NAME>"
 
 blob_container_name  = "reprolab-artifacts"
@@ -156,6 +157,29 @@ files_share_name     = "reprolab-cache"
 # 512 GiB covers Qwen3-1.7B + Qwen2.5-3B + 7B weights plus pip caches.
 # Increase to 1024+ for larger model portfolios.
 files_share_quota_gb = 512
+
+# ── Azure Files tier selection ────────────────────────────────────────────────
+#
+# files_premium = false  (DEFAULT — Standard Files on the existing account)
+#   IOPS: ~1 000 IOPS shared across all concurrent mounts.
+#   Cost: consumption-based (~$0.02/GiB/month in eastus).
+#   Best for: ≤8 concurrent cells, sequential or low-parallelism workloads.
+#
+# files_premium = true   (Premium Files — dedicated FileStorage account)
+#   IOPS: ~100 000 IOPS provisioned, eliminating pip-install bootstrap contention
+#         when many cells start concurrently on fresh AKS nodes.
+#   Cost: provisioned/GiB (~$0.10/GiB/month in eastus) — e.g. $51/month for
+#         512 GiB, regardless of how much data is stored.
+#   Best for: ≥8–16 concurrent cells or tightly-packed multi-run sprints.
+#
+# Leave both lines commented out to keep the Standard default.
+
+# files_premium = false
+
+# Required only when files_premium = true: a globally unique name for the
+# dedicated Premium FileStorage account (3-24 lowercase alphanum, no hyphens).
+# Convention: append "prem" to your base name.
+# files_premium_storage_account_name = "<GLOBALLY_UNIQUE_STORAGE_ACCOUNT_NAME>prem"
 
 # ─── Workload identity ────────────────────────────────────────────────────────
 # These MUST match the Helm L2 values in envs/deepinvent/helm-values.yaml.

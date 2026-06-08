@@ -47,6 +47,42 @@ variable "authorized_ip_ranges" {
   default     = []
 }
 
+variable "files_premium" {
+  description = <<-EOT
+    When false (default): the Azure Files cache share is created on the existing
+    Standard StorageV2 account — identical to the pre-flag behaviour, no extra
+    resources are provisioned.
+
+    When true: a dedicated FileStorage (Premium) storage account is provisioned
+    alongside the Standard account and the cache share is created there instead.
+    Premium Files delivers ~100 000 IOPS vs ~1 000 IOPS on Standard, eliminating
+    the pip-install bootstrap bottleneck when many cells start concurrently.
+
+    Azure constraint: Premium Files requires account_kind="FileStorage" +
+    account_tier="Premium", which cannot coexist with the Blob service on the
+    same general-purpose-v2 account — hence the dedicated account.
+
+    Cost note: Premium Files is provisioned/GiB (charged for reserved capacity
+    regardless of usage), not consumption-based.  A 512 GiB share in eastus is
+    roughly $52/month vs $10/month for Standard.  Enable only when cell
+    parallelism (≥8 concurrent cells) justifies the cost.
+  EOT
+  type    = bool
+  default = false
+}
+
+variable "files_premium_storage_account_name" {
+  description = <<-EOT
+    Globally unique name for the dedicated Premium FileStorage account created
+    when files_premium = true (3-24 lowercase alphanum, no hyphens).
+    Ignored when files_premium = false.
+    Must differ from storage_account_name (the Standard account).
+    Convention: append "prem" to the base name, e.g. "reprolabsaprem".
+  EOT
+  type    = string
+  default = ""
+}
+
 variable "tags" {
   description = "Map of tags applied to storage resources."
   type        = map(string)

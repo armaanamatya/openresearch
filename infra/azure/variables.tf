@@ -195,6 +195,36 @@ variable "files_share_quota_gb" {
   default     = 512
 }
 
+variable "files_premium" {
+  description = <<-EOT
+    false (default): Azure Files cache share lives on the existing Standard
+    StorageV2 account — identical to pre-flag behaviour, zero extra resources.
+
+    true: provision a dedicated FileStorage (Premium) account and create the
+    cache share there.  Premium Files delivers ~100 000 IOPS vs ~1 000 IOPS
+    on Standard, eliminating the pip-install bootstrap contention bottleneck
+    when many cells start concurrently on fresh AKS nodes.
+
+    Cost: Premium Files is provisioned/GiB (~$52/month for 512 GiB in eastus)
+    vs consumption-based Standard (~$10/month).  Enable for high-parallelism
+    runs (≥8 concurrent cells per cluster), leave off otherwise.
+  EOT
+  type    = bool
+  default = false
+}
+
+variable "files_premium_storage_account_name" {
+  description = <<-EOT
+    Globally unique name for the dedicated Premium FileStorage storage account
+    created when files_premium = true (3-24 lowercase alphanum, no hyphens).
+    Ignored when files_premium = false.
+    Must differ from storage_account_name.
+    Convention: append "prem" to the base name, e.g. "reprolabsaprem".
+  EOT
+  type    = string
+  default = ""
+}
+
 # ─── Workload identity ───────────────────────────────────────────────────────
 
 variable "workload_identity_namespace" {

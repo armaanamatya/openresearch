@@ -78,6 +78,18 @@ output "files_share_name" {
   value       = module.storage.files_share_name
 }
 
+output "files_storage_account_name" {
+  description = <<-EOT
+    Name of the storage account hosting the active Azure Files share.
+    When files_premium = false (default): same as storage_account_name.
+    When files_premium = true:            the dedicated Premium FileStorage account.
+    Pass as storage.accountName to Helm L2 so the StorageClass points at the
+    correct account in both modes.  Replaces the previous hard-coded assumption
+    that Blob and Files always share one account.
+  EOT
+  value = module.storage.files_storage_account_name
+}
+
 # ─── Network ─────────────────────────────────────────────────────────────────
 
 output "vnet_id" {

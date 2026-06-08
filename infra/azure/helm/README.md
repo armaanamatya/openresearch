@@ -44,14 +44,19 @@ Azure AKS GPU execution backend.  It is Layer 2 in the three-layer split
 cd infra/azure
 MI_CLIENT_ID=$(terraform output -raw workload_identity_client_id)
 STORAGE_ACCOUNT=$(terraform output -raw storage_account_name)
+FILES_STORAGE_ACCOUNT=$(terraform output -raw files_storage_account_name)
 FILES_SHARE=$(terraform output -raw files_share_name)
 ACR_IMAGE=$(terraform output -raw acr_login_server)/aks-cell-base:0.1.0
 OPERATOR_GROUP_OID=<your-entra-operator-group-object-id>   # from main.tfvars, not a TF output
 
 # 2. Install the chart
+#    storage.filesAccountName routes the Files CSI StorageClass to the correct account:
+#      files_premium=false (default): FILES_STORAGE_ACCOUNT == STORAGE_ACCOUNT — harmless duplicate.
+#      files_premium=true:            FILES_STORAGE_ACCOUNT is the dedicated Premium account.
 helm install reprolab-aks ./infra/azure/helm \
   --set workloadIdentity.clientId="${MI_CLIENT_ID}" \
   --set storage.accountName="${STORAGE_ACCOUNT}" \
+  --set storage.filesAccountName="${FILES_STORAGE_ACCOUNT}" \
   --set storage.fileShareName="${FILES_SHARE}" \
   --set image.aksCellBase="${ACR_IMAGE}" \
   --set rbac.operatorGroupObjectId="${OPERATOR_GROUP_OID}" \
@@ -93,7 +98,8 @@ kubectl delete pvc reprolab-cache -n reprolab
 | values.yaml key | Source | Description |
 |---|---|---|
 | `workloadIdentity.clientId` | TF output `workload_identity_client_id` | User-assigned MI client ID for Workload Identity |
-| `storage.accountName` | TF output `storage_account_name` | Storage account hosting Blob container + Files share |
+| `storage.accountName` | TF output `storage_account_name` | Storage account hosting the artifact Blob container |
+| `storage.filesAccountName` | TF output `files_storage_account_name` | Storage account hosting the active Files share (equals `accountName` when `files_premium=false`; dedicated Premium account when `files_premium=true`). Set this to correctly route the CSI StorageClass in both modes |
 | `storage.fileShareName` | TF output `files_share_name` | Azure Files share name for the RWX cache PVC |
 | `image.aksCellBase` | TF output `acr_login_server` + image tag | Full ACR image ref for Job pods |
 | `rbac.operatorGroupObjectId` | tfvar `operator_entra_group_object_id` (not a TF output) | Entra group OID bound to the orchestrator Role |

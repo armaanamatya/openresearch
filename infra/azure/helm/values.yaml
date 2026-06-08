@@ -34,9 +34,17 @@ workloadIdentity:
 # ---------------------------------------------------------------------------
 storage:
   # Name of the Azure Storage account that holds the Blob artifact container
-  # AND the Azure Files share used for the RWX HF_HOME/pip-cache PVC.
+  # (runs/<id>/code/**, runs/<id>/cells/**).
   # [TF: storage_account_name]
   accountName: ""   # REQUIRED — fill from `terraform output -raw storage_account_name`
+
+  # Name of the storage account that hosts the Azure Files cache share.
+  # When files_premium = false (default): identical to accountName above.
+  # When files_premium = true: a dedicated Premium FileStorage account.
+  # [TF: files_storage_account_name]
+  # Set with: --set storage.filesAccountName=$(terraform output -raw files_storage_account_name)
+  # Omit (leave "") to fall back to storage.accountName for the Standard-tier default.
+  filesAccountName: ""
 
   # Name of the Azure Files share to mount as the shared cache PVC.
   # [TF: files_share_name]
