@@ -1,5 +1,15 @@
 # `bes` branch — doc-alignment audit (2026-06-07)
 
+> **STATUS: REMEDIATED 2026-06-07** on branch `integrate/main-into-bes` (see
+> `docs/superpowers/specs/2026-06-07-bes-remediation-plan.md`). `main` was merged
+> into `bes` (it is a verified superset: rename, SDK isolation, docs-freshness,
+> GPU/replay/scoring features all arrived), then the genuinely-remaining items
+> were fixed/built: SDK-isolation at the 2 missing sites, Dockerfile shape guard,
+> SIGTERM/RunStatus, ACC-1/ACC-2, PEEK-lite context map, MUSE-lite negative
+> lessons, the Bucket A/B/C2 doc reconciliations, and the D2/D3 hygiene cleanup.
+> Verification: no test regressions beyond the pre-existing environmental
+> (`disk_exhausted`) floor; docs-freshness green; all doc citations resolve.
+
 **Scope:** all changes the `bes` branch added vs `main` — `git diff main...bes` (merge-base `1522579` → `bes`): **140 files, +16,640 / −246**.
 **Method:** 10-dimension multi-agent audit (forward: doc→code; reverse: new code→docs), every medium/high finding adversarially re-verified against the on-disk files. 39 agents. No finding was refuted; several HIGHs were down-graded HIGH→MEDIUM on verification.
 **Doc baseline:** the on-disk `bes` `CLAUDE.md` (uses the `REPROLAB_` prefix; title reads "OpenResearch / ReproLab").
