@@ -34,6 +34,13 @@ from backend.services.runtime.local_docker import _gpu_device_request
 from backend.services.runtime.local_process import LocalProcessBackend
 
 
+class _FakeStream:
+    """A pipe that is at EOF immediately (the streaming drain loop reads b'')."""
+
+    async def read(self, n: int = -1) -> bytes:
+        return b""
+
+
 # ---------------------------------------------------------------------------
 # 1. SandboxConfig.gpu_device_ids round-trip
 # ---------------------------------------------------------------------------
@@ -143,9 +150,17 @@ def test_exec_sets_cuda_visible_devices(
 
     class _FakeProcess:
         returncode = 0
+        pid = 4000000  # nonexistent pid; liveness polls (cpu/gpu) fail-soft
 
-        async def communicate(self):
-            return b"", b""
+        def __init__(self):
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
 
     async def _fake_create_subprocess_shell(cmd, **kwargs):  # type: ignore[override]
         captured_env.update(kwargs.get("env") or {})
@@ -181,9 +196,17 @@ def test_exec_no_cuda_visible_when_no_device_ids(
 
     class _FakeProcess:
         returncode = 0
+        pid = 4000000  # nonexistent pid; liveness polls (cpu/gpu) fail-soft
 
-        async def communicate(self):
-            return b"", b""
+        def __init__(self):
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
 
     async def _fake_create_subprocess_shell(cmd, **kwargs):
         captured_env.update(kwargs.get("env") or {})
@@ -216,9 +239,17 @@ def test_exec_sets_cuda_device_order(
 
     class _FakeProcess:
         returncode = 0
+        pid = 4000000  # nonexistent pid; liveness polls (cpu/gpu) fail-soft
 
-        async def communicate(self):
-            return b"", b""
+        def __init__(self):
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            pass
 
     async def _fake_create_subprocess_shell(cmd, **kwargs):
         captured_env.update(kwargs.get("env") or {})
