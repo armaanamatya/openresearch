@@ -968,9 +968,18 @@ def resolve_gpu_requirements(
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
 
+    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
+    # so the primary pick + OOM escalation ladder can never name a pool that does
+    # not exist (which would otherwise hang the cell Pending until the
+    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # byte-for-byte unchanged.
     if _is_azure:
         _provider = "azure"
         cloud_types: tuple[str, ...] = ("ONDEMAND",)
+        _provisioned_skus: tuple[str, ...] | None = tuple(
+            getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
     else:
         _provider = "runpod"
         cloud_types = (
@@ -978,6 +987,7 @@ def resolve_gpu_requirements(
             if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
             else ("COMMUNITY",)
         )
+        _provisioned_skus = None
 
     from backend.agents.schemas import GpuPlan as _GpuPlan
     plan: "_GpuPlan" = gpu_resolver.resolve(
@@ -989,6 +999,7 @@ def resolve_gpu_requirements(
         fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
         cloud_types=cloud_types,
         provider=_provider,
+        provisioned_skus=_provisioned_skus,
     )
 
     # ---- Persist atomically.

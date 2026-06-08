@@ -357,8 +357,8 @@ def test_resolve_gpu_requirements_azure_mode_calls_resolve_with_azure_provider(t
         model_dump=lambda mode=None: _make_valid_gpu_plan_dict(),
     )
 
-    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
-        captured.append({"provider": provider, "cloud_types": cloud_types})
+    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), provisioned_skus=None, **kw):
+        captured.append({"provider": provider, "cloud_types": cloud_types, "provisioned_skus": provisioned_skus})
         return fake_plan
 
     monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
@@ -370,6 +370,7 @@ def test_resolve_gpu_requirements_azure_mode_calls_resolve_with_azure_provider(t
     fake_settings.dynamic_gpu_headroom = 1.25
     fake_settings.dynamic_gpu_fallback_vram_gb = 16
     fake_settings.runpod_cloud_type = "COMMUNITY"
+    fake_settings.azure_gpu_skus = ["azure_a100_80", "azure_a100_80x2"]
     monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
 
     from backend.agents.rlm.primitives import resolve_gpu_requirements
@@ -382,6 +383,11 @@ def test_resolve_gpu_requirements_azure_mode_calls_resolve_with_azure_provider(t
     assert captured[0]["provider"] == "azure", f"Expected provider='azure', got {captured[0]['provider']!r}"
     assert captured[0]["cloud_types"] == ("ONDEMAND",), (
         f"Expected cloud_types=('ONDEMAND',), got {captured[0]['cloud_types']!r}"
+    )
+    # Follow-up wiring: the azure path must restrict the resolver to the
+    # provisioned pools (settings.azure_gpu_skus) so it can't name a non-existent pool.
+    assert captured[0]["provisioned_skus"] == ("azure_a100_80", "azure_a100_80x2"), (
+        f"Expected provisioned_skus from azure_gpu_skus, got {captured[0]['provisioned_skus']!r}"
     )
 
 
@@ -407,8 +413,8 @@ def test_resolve_gpu_requirements_runpod_mode_uses_runpod_provider(tmp_path, mon
         ),
     )
 
-    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
-        captured.append({"provider": provider, "cloud_types": cloud_types})
+    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), provisioned_skus=None, **kw):
+        captured.append({"provider": provider, "cloud_types": cloud_types, "provisioned_skus": provisioned_skus})
         return fake_plan
 
     monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
@@ -430,6 +436,9 @@ def test_resolve_gpu_requirements_runpod_mode_uses_runpod_provider(tmp_path, mon
     assert len(captured) == 1
     assert captured[0]["provider"] == "runpod", (
         f"Regression: expected provider='runpod' for runpod mode, got {captured[0]['provider']!r}"
+    )
+    assert captured[0]["provisioned_skus"] is None, (
+        f"Regression: runpod path must pass provisioned_skus=None, got {captured[0]['provisioned_skus']!r}"
     )
     assert "azure" not in str(captured[0]["cloud_types"]).lower(), (
         f"Regression: runpod path must not use ONDEMAND cloud_types, got {captured[0]['cloud_types']!r}"
