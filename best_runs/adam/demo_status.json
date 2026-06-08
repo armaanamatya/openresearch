@@ -1,23 +1,25 @@
 {
   "paperId": "1412.6980",
-  "paperTitle": "paper_text",
+  "paperTitle": "arXiv:1412.6980",
   "paper": {
     "id": "1412.6980",
-    "title": "paper_text"
+    "title": "arXiv:1412.6980"
   },
   "projectId": "prj_6d41d2f09c026403",
-  "outputDir": "/home/abheekp/openresearch/runs/prj_6d41d2f09c026403",
+  "outputDir": "/home/sww35/openresearch/runs/prj_6d41d2f09c026403",
   "runMode": "rlm",
   "status": "completed",
-  "updatedAt": "2026-05-26T15:43:24.687507+00:00",
-  "startedAt": "2026-05-26T15:27:06.640760+00:00",
+  "updatedAt": "2026-06-07T20:44:10.732829+00:00",
+  "startedAt": "2026-06-07T18:08:20.256357+00:00",
   "primitiveProvider": "real",
+  "process_status": "completed",
+  "verdict": "unknown",
   "cost_summary": {
-    "usd_total": 0.0,
-    "usd_this_iter": 0.0,
-    "iter_count": 18,
+    "usd_total": 4.269804,
+    "usd_this_iter": 4.269804,
+    "iter_count": 0,
     "usd_per_iter_p50": 0.0,
-    "updated_at": "2026-05-26T15:42:56.459577+00:00"
+    "updated_at": "2026-06-07T20:43:59.066856+00:00"
   },
-  "completedAt": "2026-05-26T15:43:24.687507+00:00"
+  "completedAt": "2026-06-07T20:44:10.732829+00:00"
 }

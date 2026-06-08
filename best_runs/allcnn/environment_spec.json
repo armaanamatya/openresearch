@@ -1,5 +1,5 @@
 {
-  "dockerfile": "FROM python:3.11-slim\n\n# System packages\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git \\\n    && rm -rf /var/lib/apt/lists/*\n\n# Python packages\nRUN pip install --no-cache-dir torch==2.2.0 torchvision==0.17.0\nRUN pip install --no-cache-dir matplotlib==3.8.0 numpy==1.26.4 tqdm==4.66.0\n\nWORKDIR /workspace\nCOPY . /workspace/\n\nCMD [\"python\", \"train.py\"]\n",
+  "dockerfile": "FROM python:3.11-slim\n\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git \\\n    && rm -rf /var/lib/apt/lists/*\n\nRUN pip install --no-cache-dir torch==2.2.0 torchvision==0.17.0\nRUN pip install --no-cache-dir matplotlib==3.8.0 numpy==1.26.4 tqdm==4.66.0\n\nWORKDIR /workspace\nCOPY . /workspace/\n\nCMD [\"python\", \"train.py\"]\n",
   "python_version": "3.11",
   "framework": "pytorch",
   "framework_version": "2.2.0",
@@ -35,9 +35,9 @@
     {
       "assumption_id": "ENV003",
       "detail": "GPU requirement",
-      "chosen_value": "GPU",
+      "chosen_value": "CPU only (no GPU required)",
       "evidence": [
-        "GPU"
+        "No GPU mentioned in paper"
       ],
       "risk": "low",
       "verified_by": null

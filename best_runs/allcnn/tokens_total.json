@@ -1,11 +1,20 @@
 {
   "by_model": {
     "claude-oauth": {
-      "input_tokens": 12,
-      "output_tokens": 2075
+      "input_tokens": 5,
+      "output_tokens": 23709
+    },
+    "claude-sonnet-4-6": {
+      "input_tokens": 79,
+      "output_tokens": 106731
     }
   },
   "by_primitive": {
+    "baseline-implementation": {
+      "calls": 2,
+      "input_tokens": 73,
+      "output_tokens": 100937
+    },
     "build_environment": {
       "calls": 1,
       "input_tokens": 0,
@@ -32,48 +41,53 @@
       "output_tokens": 0
     },
     "implement_baseline": {
-      "calls": 1,
+      "calls": 2,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "plan_reproduction": {
       "calls": 1,
-      "input_tokens": 6,
-      "output_tokens": 1104
+      "input_tokens": 2,
+      "output_tokens": 4935
     },
     "propose_improvements": {
       "calls": 1,
-      "input_tokens": 6,
-      "output_tokens": 971
+      "input_tokens": 2,
+      "output_tokens": 4270
     },
     "resolve_gpu_requirements": {
       "calls": 1,
       "input_tokens": 0,
       "output_tokens": 0
     },
-    "run_experiment": {
+    "rlm_root": {
       "calls": 1,
+      "input_tokens": 6,
+      "output_tokens": 5794
+    },
+    "run_experiment": {
+      "calls": 2,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "understand_section": {
-      "calls": 4,
+      "calls": 3,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "verify_against_rubric": {
       "calls": 1,
-      "input_tokens": 0,
-      "output_tokens": 0
+      "input_tokens": 1,
+      "output_tokens": 14504
     }
   },
-  "computed_at_utc": "2026-05-26T15:43:24.647088+00:00",
+  "computed_at_utc": "2026-06-08T09:37:11.860157+00:00",
   "grand_total": {
-    "cache_creation_input_tokens": 13629,
-    "cache_read_input_tokens": 72978,
-    "calls": 20,
-    "input_tokens": 12,
-    "output_tokens": 2075
+    "cache_creation_input_tokens": 547761,
+    "cache_read_input_tokens": 6093084,
+    "calls": 24,
+    "input_tokens": 84,
+    "output_tokens": 130440
   },
   "schema_version": 1
 }
