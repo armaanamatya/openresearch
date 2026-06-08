@@ -79,6 +79,11 @@ runs/_archive/
 /logs/
 /logs
 
+# Large binary archives never belong in git history (D2: a 6 MB bundle was
+# committed by accident). Ship docs as markdown or release assets, not zips.
+*.zip
+/paper-repro-bes-docs/
+
 # Windows artifacts
 %APPDATA%/
 *:Zone.Identifier
