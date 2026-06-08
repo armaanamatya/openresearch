@@ -1077,25 +1077,49 @@ class TestGpuPlanManifest:
         ]
         assert nvidia_tols, f"no nvidia.com/gpu taint toleration found in {tolerations!r}"
 
-    def test_no_gpu_plan_uses_default_agentpool_selector(
+    def test_no_gpu_plan_uses_reprolab_sku_default_selector(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Without a gpu_plan the manifest must use the legacy agentpool nodeSelector."""
+        """Without a gpu_plan the manifest must fall back to reprolab/sku=<default_sku>
+        (P0-fix-3: ``agentpool`` label does NOT match the infra pool label contract;
+        ``reprolab/sku`` ensures the Pod lands on a real GPU node even without a plan).
+        """
         cells = [{"id": "gpm3"}]
         k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.1})
 
+        # Provide a settings override so we get a predictable default_sku.
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            # One provisioned SKU — this becomes the default.
+            "azure_gpu_skus": ["azure_a100_80"],
+            "dynamic_gpu_max_escalations": 2,
+            "azure_ttl_seconds_after_finished": 3600,
+            "azure_job_backoff_limit": 0,
+            "azure_cache_mount_path": "/mnt/reprolab-cache",
+            "azure_watch_poll_interval_s": 5.0,
+        }.get(name, default))
+
         # No bind_run_context at all → gpu_plan is None.
         run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
 
         node_selector = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["nodeSelector"]
-        # Must use "agentpool" key, NOT "reprolab/sku".
-        assert "agentpool" in node_selector, (
-            f"expected agentpool nodeSelector without gpu_plan, got {node_selector!r}"
+        # P0-fix-3: must use reprolab/sku, NOT agentpool.
+        assert "reprolab/sku" in node_selector, (
+            f"expected reprolab/sku nodeSelector without gpu_plan, got {node_selector!r}"
         )
-        assert "reprolab/sku" not in node_selector, (
-            f"reprolab/sku must not be present without gpu_plan, got {node_selector!r}"
+        assert "agentpool" not in node_selector, (
+            f"agentpool must not be present; reprolab/sku is the infra label, got {node_selector!r}"
         )
 
     def test_no_gpu_plan_uses_single_gpu(
@@ -1670,3 +1694,369 @@ class TestResolveEscalationSku:
         ladder = ("azure_a100_80x2",)
         provisioned = ["azure_a10_24"]
         assert kjcr._resolve_escalation_sku(ladder, provisioned) is None
+
+
+# ---------------------------------------------------------------------------
+# 22. P0-fix-2 — escalation Job-name uniqueness
+# ---------------------------------------------------------------------------
+
+class TestEscalationJobNameUniqueness:
+    """P0-fix-2: escalated Jobs must have a different K8s name to avoid 409."""
+
+    def test_escalated_job_has_unique_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The original and escalated Jobs must have distinct names."""
+        cells = [{"id": "uniq0"}]
+        batch = _OomThenSucceedBatch()
+        core = _StatefulCore()
+        core._batch_ref = batch
+        k8s = _K8sClients(batch=batch, core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],
+            "dynamic_gpu_max_escalations": 2,
+            "azure_ttl_seconds_after_finished": 3600,
+            "azure_job_backoff_limit": 0,
+            "azure_cache_mount_path": "/mnt/reprolab-cache",
+            "azure_watch_poll_interval_s": 0.001,
+        }.get(name, default))
+
+        with bind_run_context(gpu_plan=plan):
+            run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=1,
+            )
+
+        assert len(batch.created_jobs) == 2, "expected original + 1 escalated Job"
+        name0 = batch.created_jobs[0]["metadata"]["name"]
+        name1 = batch.created_jobs[1]["metadata"]["name"]
+        assert name0 != name1, (
+            f"P0-fix-2: escalated Job must have a different name; got both={name0!r}"
+        )
+        # Escalated name must carry the '-e1' suffix to identify it.
+        assert "e1" in name1, (
+            f"P0-fix-2: escalated name should contain suffix 'e1', got {name1!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 23. P0-fix-3 — no-gpu_plan nodeSelector fallback uses reprolab/sku
+# ---------------------------------------------------------------------------
+
+class TestNodeSelectorFallback:
+    """P0-fix-3: without gpu_plan the nodeSelector must be reprolab/sku=<default_sku>."""
+
+    def test_fallback_uses_reprolab_sku_not_agentpool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        cells = [{"id": "ns_fallback0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.3})
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.5,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80"],
+            "dynamic_gpu_max_escalations": 2,
+            "azure_ttl_seconds_after_finished": 3600,
+            "azure_job_backoff_limit": 0,
+            "azure_cache_mount_path": "/mnt/reprolab-cache",
+            "azure_watch_poll_interval_s": 0.001,
+        }.get(name, default))
+
+        # No gpu_plan bound.
+        results = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert len(k8s.batch.created_jobs) == 1
+        node_selector = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["nodeSelector"]
+        assert "reprolab/sku" in node_selector, (
+            f"P0-fix-3: fallback must use reprolab/sku, got {node_selector!r}"
+        )
+        assert node_selector["reprolab/sku"] == "azure_a100_80", (
+            f"P0-fix-3: fallback sku must be first in azure_gpu_skus, "
+            f"got {node_selector['reprolab/sku']!r}"
+        )
+        assert "agentpool" not in node_selector, (
+            f"P0-fix-3: agentpool must not appear, got {node_selector!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 24. P0-fix-4 — escalated SKU billed at correct rate + budget recheck
+# ---------------------------------------------------------------------------
+
+class TestEscalationBudgetRecheck:
+    """P0-fix-4: escalated rate is read from catalog; budget rechecked before resubmit."""
+
+    def test_escalation_blocked_when_escalated_rate_exceeds_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """If the escalated SKU's rate would push over budget, no second Job is submitted."""
+        from backend.agents.resilience.budget import RunBudget
+
+        cells = [{"id": "budget_esc0"}]
+        # Always OOM.
+        k8s = _make_k8s(
+            job_sequence=[_FakeJob(_FakeJobStatus(
+                conditions=[_FakeJobCondition("Failed")]
+            ))] * 10,
+            pods=[_FakePod(exit_code=42)],
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "gpunodes",
+            "azure_base_image": "img:latest",
+            "azure_storage_account": "acct",
+            "azure_blob_container": "ctr",
+            "azure_files_share": "share",
+            "azure_max_nodes": 4,
+            # Budget: tiny — base rate ok at small timeout, escalated rate over.
+            "azure_gpu_usd_per_hour": 0.001,
+            "azure_pending_timeout_seconds": 900,
+            "azure_gpu_skus": ["azure_a100_80x2"],
+            "dynamic_gpu_max_escalations": 2,
+            "azure_ttl_seconds_after_finished": 3600,
+            "azure_job_backoff_limit": 0,
+            "azure_cache_mount_path": "/mnt/reprolab-cache",
+            "azure_watch_poll_interval_s": 0.001,
+        }.get(name, default))
+
+        # Patch catalog lookup so the escalated SKU returns a very high rate.
+        def _fake_lookup(short_name: str) -> Any:
+            class _FakeSku:
+                approx_usd_per_hr = 1000.0
+                gpu_count = 2
+            return _FakeSku() if short_name == "azure_a100_80x2" else None
+
+        monkeypatch.setattr(kjcr, "_lookup_sku_by_short_name", _fake_lookup)
+
+        plan = _FakeGpuPlan(
+            short_name="azure_a100_80",
+            gpu_count=1,
+            ladder_remaining=("azure_a100_80x2",),
+        )
+        # Budget that is already nearly consumed.
+        budget = RunBudget(max_run_gpu_usd=0.0001)
+
+        events: list[tuple[str, dict]] = []
+
+        with bind_run_context(
+            gpu_plan=plan,
+            run_budget=budget,
+            event_sink=lambda t, p: events.append((t, p)),
+        ):
+            results = run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                per_cell_timeout_s=1.0,
+                max_parallel=1,
+            )
+
+        # Either budget stopped the cell from being submitted at all (budget_exceeded),
+        # or the escalation was blocked (oom_failed with only 1 Job).
+        # Either way, at most 1 Job was submitted (no escalation over budget).
+        assert len(k8s.batch.created_jobs) <= 1, (
+            f"P0-fix-4: escalation over budget must not submit a second Job; "
+            f"got {len(k8s.batch.created_jobs)} Jobs"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 25. P1-fix-7 — job.status None guard
+# ---------------------------------------------------------------------------
+
+class TestJobStatusNoneGuard:
+    """P1-fix-7: job.status=None in transitional states must keep polling, not crash."""
+
+    def test_status_none_then_succeeded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Polling should continue past a None-status response and eventually succeed."""
+        cells = [{"id": "null_status0"}]
+
+        # First read returns a job with status=None; second read returns Complete.
+        null_job = _FakeJob(None)  # type: ignore[arg-type]
+        succeed_job = _FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Complete")]))
+        k8s = _make_k8s(
+            job_sequence=[null_job, succeed_job],
+            pods=[_FakePod(exit_code=0)],
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        results = run_matrix(
+            cells,
+            tmp_path / "train_cell.py",
+            output_root=tmp_path / "out",
+        )
+        # Must not crash; must eventually resolve.
+        assert "null_status0" in results
+        assert results["null_status0"]["status"] == "ok"
+
+    def test_status_none_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """job.status=None must not raise AttributeError."""
+        cells = [{"id": "null_status1"}]
+        null_job = _FakeJob(None)  # type: ignore[arg-type]
+        # Always None then finally succeed.
+        succeed = _FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Complete")]))
+        k8s = _make_k8s(
+            job_sequence=[null_job, null_job, succeed],
+            pods=[_FakePod(exit_code=0)],
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        # Should complete without AttributeError.
+        results = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+        assert "null_status1" in results
+
+
+# ---------------------------------------------------------------------------
+# 26. P0-fix-1 — env-var names in Job manifest (runner injects REPROLAB_AZURE_*)
+# ---------------------------------------------------------------------------
+
+class TestEnvVarNamesInManifest:
+    """P0-fix-1: verify the canonical env-var names appear in the Job manifest."""
+
+    # Canonical contract: runner injects these names; entrypoint reads the same names.
+    _REQUIRED_ENV_NAMES = {
+        "REPROLAB_CELL_ID",
+        "REPROLAB_CELL_PARAMS",
+        "REPROLAB_CELL_OUTPUT_DIR",
+        "REPROLAB_CELL_MAX_OOM_RETRIES",
+        "REPROLAB_AZURE_STORAGE_ACCOUNT",   # P0-fix-1: was REPROLAB_BLOB_ACCOUNT
+        "REPROLAB_AZURE_BLOB_CONTAINER",     # P0-fix-1: was REPROLAB_BLOB_CONTAINER
+        "REPROLAB_BLOB_CODE_PREFIX",
+        "REPROLAB_BLOB_OUTPUT_PREFIX",
+        "REPROLAB_CACHE_MOUNT",
+    }
+
+    def test_manifest_contains_all_required_env_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        cells = [{"id": "env0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert len(k8s.batch.created_jobs) == 1
+        env_list: list[dict] = (
+            k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+        )
+        env_names = {e["name"] for e in env_list}
+
+        missing = self._REQUIRED_ENV_NAMES - env_names
+        assert not missing, (
+            f"P0-fix-1: manifest is missing these required env var names: {missing!r}\n"
+            f"All injected names: {sorted(env_names)}"
+        )
+
+    def test_old_blob_account_name_not_injected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The old REPROLAB_BLOB_ACCOUNT name (pre-fix) must NOT appear."""
+        cells = [{"id": "env1"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        env_list: list[dict] = (
+            k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+        )
+        env_names = {e["name"] for e in env_list}
+        assert "REPROLAB_BLOB_ACCOUNT" not in env_names, (
+            "REPROLAB_BLOB_ACCOUNT is the old name (pre-fix); entrypoint reads "
+            "REPROLAB_AZURE_STORAGE_ACCOUNT.  Remove the old name."
+        )
+        assert "REPROLAB_BLOB_CONTAINER" not in env_names, (
+            "REPROLAB_BLOB_CONTAINER is the old name (pre-fix); entrypoint reads "
+            "REPROLAB_AZURE_BLOB_CONTAINER.  Remove the old name."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 27. P1-fix-5 — empty base_image raises at submit, not silently uses :latest
+# ---------------------------------------------------------------------------
+
+class TestEmptyBaseImageError:
+    def test_empty_base_image_raises_value_error(self):
+        """_build_job_manifest must raise ValueError when base_image is empty."""
+        with pytest.raises(ValueError, match="azure_base_image is empty"):
+            kjcr._build_job_manifest(
+                job_name="test-job",
+                namespace="reprolab",
+                service_account="reprolab-sa",
+                node_pool_name="gpunodes",
+                base_image="",  # empty → should raise
+                storage_account="myacct",
+                blob_container="myctr",
+                files_share="share",
+                cell_id="c0",
+                cell_params_json="{}",
+                output_blob_prefix="runs/r1/cells",
+                code_blob_prefix="runs/r1/code",
+                active_deadline_seconds=3600,
+                max_oom_retries=2,
+                fingerprint=None,
+                now_iso=None,
+            )
+
+    def test_non_empty_base_image_does_not_raise(self):
+        """_build_job_manifest must succeed when base_image is non-empty."""
+        manifest = kjcr._build_job_manifest(
+            job_name="test-job",
+            namespace="reprolab",
+            service_account="reprolab-sa",
+            node_pool_name="gpunodes",
+            base_image="myregistry.io/image:v1",
+            storage_account="myacct",
+            blob_container="myctr",
+            files_share="share",
+            cell_id="c0",
+            cell_params_json="{}",
+            output_blob_prefix="runs/r1/cells",
+            code_blob_prefix="runs/r1/code",
+            active_deadline_seconds=3600,
+            max_oom_retries=2,
+            fingerprint=None,
+            now_iso=None,
+        )
+        assert manifest["spec"]["template"]["spec"]["containers"][0]["image"] == \
+            "myregistry.io/image:v1"

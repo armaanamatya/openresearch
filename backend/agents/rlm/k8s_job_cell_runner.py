@@ -110,17 +110,25 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
     "azure_node_pool_name": "gpunodes",
-    "azure_base_image": "reprolab.azurecr.io/reprolab-aks-cell:latest",
+    # P1-fix-5: empty string fallback — ERROR clearly at submit if blank rather
+    # than silently using a floating :latest tag.
+    "azure_base_image": "",
     "azure_storage_account": "",
     "azure_blob_container": "reprolab-artifacts",
     "azure_files_share": "reprolab-cache",
-    "azure_max_nodes": 8,
+    # P1-fix-5: aligns with config.py default of 4.
+    "azure_max_nodes": 4,
     "azure_per_gpu_vram_gb": 80.0,
     "azure_gpu_usd_per_hour": 3.67,
     "azure_pending_timeout_seconds": 900,
     "azure_boot_timeout_seconds": 900,
     "azure_gpu_skus": [],        # provisioned SKU short_names (list[str])
     "dynamic_gpu_max_escalations": 2,
+    # P1-fix-8: configurable knobs (config.py additions by another agent).
+    "azure_ttl_seconds_after_finished": 3600,
+    "azure_job_backoff_limit": 0,
+    "azure_cache_mount_path": "/mnt/reprolab-cache",
+    "azure_watch_poll_interval_s": 5.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -216,11 +224,14 @@ def _k8s_factory() -> _K8sClients:
     from kubernetes import config as k8s_config  # type: ignore[import]
     from kubernetes.watch import Watch as K8sWatch  # type: ignore[import]
 
+    # P1-fix-6: try incluster first (inside a pod), fall back to kubeconfig for
+    # local/dev use.  This mirrors aks_job_backend and avoids spurious file-not-
+    # found errors when running inside a cluster pod.
     try:
-        k8s_config.load_kube_config()
+        k8s_config.load_incluster_config()
     except Exception:
         try:
-            k8s_config.load_incluster_config()
+            k8s_config.load_kube_config()
         except Exception as exc:
             raise RuntimeError(f"k8s_job_cell_runner: cannot load kubeconfig: {exc}") from exc
 
@@ -387,6 +398,16 @@ def _build_job_manifest(
     fingerprint: str | None,
     now_iso: str | None,
     gpu_plan: Any | None = None,
+    # P1-fix-8: configurable knobs injected by the caller from settings.
+    ttl_seconds_after_finished: int = 3600,
+    backoff_limit: int = 0,
+    cache_mount_path: str = "/mnt/reprolab-cache",
+    # P1-fix-9: OOM shrink ratios forwarded to the in-Job wrapper.
+    oom_batch_scale_step1: float = 0.5,
+    oom_batch_scale_floor: float = 0.25,
+    # pip bootstrap timeout
+    bootstrap_pip_timeout_s: int = 600,
+    default_sku: str = "azure_a100_80",
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -395,20 +416,51 @@ def _build_job_manifest(
     - GPU resource request/limit ``nvidia.com/gpu = plan.gpu_count``
     - taint toleration for ``nvidia.com/gpu`` (operator Exists)
 
-    Without ``gpu_plan`` the manifest uses the default ``agentpool`` node selector
-    and a single GPU, preserving full back-compat for unplanned runs.
+    Without ``gpu_plan`` the manifest falls back to ``{"reprolab/sku": default_sku}``
+    (P0-fix-3) so the pod is always placed on a GPU node in the correct pool.
     """
+    # P1-fix-5: refuse to submit with an empty image tag rather than silently
+    # using whatever :latest resolves to at runtime.
+    if not base_image:
+        raise ValueError(
+            "k8s_job_cell_runner: azure_base_image is empty — set REPROLAB_AZURE_BASE_IMAGE "
+            "or the azure_base_image config field before submitting AKS Jobs."
+        )
+
     pvc_name = f"{namespace}-files-pvc"
 
+    # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
+    # Canonical contract (runner injects → entrypoint reads):
+    #   REPROLAB_CELL_ID               → os.environ.get("REPROLAB_CELL_ID")
+    #   REPROLAB_CELL_PARAMS           → os.environ.get("REPROLAB_CELL_PARAMS")
+    #   REPROLAB_CELL_OUTPUT_DIR       → env["REPROLAB_CELL_OUTPUT_DIR"] in subprocess
+    #   REPROLAB_CELL_MAX_OOM_RETRIES  → os.environ.get("REPROLAB_CELL_MAX_OOM_RETRIES")
+    #   REPROLAB_AZURE_STORAGE_ACCOUNT → os.environ.get("REPROLAB_AZURE_STORAGE_ACCOUNT")
+    #   REPROLAB_AZURE_BLOB_CONTAINER  → os.environ.get("REPROLAB_AZURE_BLOB_CONTAINER")
+    #   REPROLAB_BLOB_CODE_PREFIX      → os.environ.get("REPROLAB_BLOB_CODE_PREFIX")
+    #   REPROLAB_BLOB_OUTPUT_PREFIX    → os.environ.get("REPROLAB_BLOB_OUTPUT_PREFIX")
+    #   REPROLAB_CACHE_MOUNT           → os.environ.get("REPROLAB_CACHE_MOUNT")
+    #   REPROLAB_CELL_OOM_BATCH_SCALE_STEP1  → (entrypoint plan_attempts)
+    #   REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR  → (entrypoint plan_attempts)
+    #   REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S     → (entrypoint _bootstrap pip install)
     env_vars = [
-        {"name": "REPROLAB_CELL_ID", "value": cell_id},
-        {"name": "REPROLAB_CELL_PARAMS", "value": cell_params_json},
-        {"name": "REPROLAB_CELL_OUTPUT_DIR", "value": f"/mnt/outputs/{cell_id}"},
-        {"name": "REPROLAB_CELL_MAX_OOM_RETRIES", "value": str(max_oom_retries)},
-        {"name": "REPROLAB_BLOB_ACCOUNT", "value": storage_account},
-        {"name": "REPROLAB_BLOB_CONTAINER", "value": blob_container},
-        {"name": "REPROLAB_BLOB_CODE_PREFIX", "value": code_blob_prefix},
-        {"name": "REPROLAB_BLOB_OUTPUT_PREFIX", "value": output_blob_prefix},
+        {"name": "REPROLAB_CELL_ID",               "value": cell_id},
+        {"name": "REPROLAB_CELL_PARAMS",            "value": cell_params_json},
+        {"name": "REPROLAB_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
+        {"name": "REPROLAB_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
+        # P0-fix-1: standardised on REPROLAB_AZURE_* names the entrypoint reads.
+        {"name": "REPROLAB_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
+        {"name": "REPROLAB_AZURE_BLOB_CONTAINER",   "value": blob_container},
+        {"name": "REPROLAB_BLOB_CODE_PREFIX",       "value": code_blob_prefix},
+        {"name": "REPROLAB_BLOB_OUTPUT_PREFIX",     "value": output_blob_prefix},
+        {"name": "REPROLAB_CACHE_MOUNT",            "value": cache_mount_path},
+        # P1-fix-9: OOM shrink ratios + pip timeout forwarded from settings.
+        {"name": "REPROLAB_CELL_OOM_BATCH_SCALE_STEP1",
+         "value": str(oom_batch_scale_step1)},
+        {"name": "REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR",
+         "value": str(oom_batch_scale_floor)},
+        {"name": "REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S",
+         "value": str(bootstrap_pip_timeout_s)},
     ]
     if fingerprint:
         env_vars.append({"name": "REPROLAB_CELL_FINGERPRINT", "value": fingerprint})
@@ -422,13 +474,14 @@ def _build_job_manifest(
     else:
         gpu_count_str = "1"
 
-    # Node selector: plan SKU label contract OR legacy agentpool label.
+    # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
+    # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
     if gpu_plan is not None:
         node_selector: dict[str, str] = {
-            "reprolab/sku": str(getattr(gpu_plan, "short_name", node_pool_name))
+            "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
         }
     else:
-        node_selector = {"agentpool": node_pool_name}
+        node_selector = {"reprolab/sku": default_sku}
 
     # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
     gpu_toleration = {
@@ -468,7 +521,7 @@ def _build_job_manifest(
                     "volumeMounts": [
                         {
                             "name": "reprolab-cache",
-                            "mountPath": "/mnt/reprolab-cache",
+                            "mountPath": cache_mount_path,
                         }
                     ],
                 }
@@ -498,9 +551,10 @@ def _build_job_manifest(
             "labels": {"app": "reprolab-cell"},
         },
         "spec": {
-            "backoffLimit": 2,
+            # P1-fix-8: configurable knobs from settings.
+            "backoffLimit": backoff_limit,
             "activeDeadlineSeconds": active_deadline_seconds,
-            "ttlSecondsAfterFinished": 3600,
+            "ttlSecondsAfterFinished": ttl_seconds_after_finished,
             "podFailurePolicy": {"rules": pod_failure_rules},
             "template": pod_template,
         },
@@ -548,14 +602,19 @@ def _watch_job(
             return _watch_result("deadline")
 
         # Poll Job status.
+        _poll_interval: float = _setting("azure_watch_poll_interval_s", 5.0)
         try:
             job = k8s.batch.read_namespaced_job_status(job_name, namespace)
         except Exception as exc:
             logger.warning("k8s_job_cell_runner: read_namespaced_job_status failed: %s", exc)
-            time.sleep(5)
+            time.sleep(_poll_interval)
             continue
 
         status = getattr(job, "status", None)
+        # P1-fix-7: guard against status being None in transitional states.
+        if status is None:
+            time.sleep(_setting("azure_watch_poll_interval_s", 5.0))
+            continue
         conditions = getattr(status, "conditions", None) or []
         succeeded = getattr(status, "succeeded", 0) or 0
         failed = getattr(status, "failed", 0) or 0
@@ -599,7 +658,8 @@ def _watch_job(
             pending_since = None  # reset once past Pending
             last_phase = phase or last_phase
 
-        time.sleep(5)
+        # P1-fix-8: poll interval from settings.
+        time.sleep(_poll_interval)
 
 
 def _watch_result(
@@ -850,25 +910,58 @@ def _run_cell_job(
 
     cell_params_json = json.dumps(cell)
 
-    manifest = _build_job_manifest(
-        job_name=job_name,
-        namespace=namespace,
-        service_account=service_account,
-        node_pool_name=node_pool_name,
-        base_image=base_image,
-        storage_account=storage_account,
-        blob_container=blob_container,
-        files_share=_setting("azure_files_share", "reprolab-cache"),
-        cell_id=cell_id,
-        cell_params_json=cell_params_json,
-        output_blob_prefix=output_blob_prefix,
-        code_blob_prefix=code_blob_prefix,
-        active_deadline_seconds=active_deadline_seconds,
-        max_oom_retries=max_oom_retries,
-        fingerprint=fingerprint,
-        now_iso=now_iso,
-        gpu_plan=gpu_plan,
-    )
+    try:
+        manifest = _build_job_manifest(
+            job_name=job_name,
+            namespace=namespace,
+            service_account=service_account,
+            node_pool_name=node_pool_name,
+            base_image=base_image,
+            storage_account=storage_account,
+            blob_container=blob_container,
+            files_share=_setting("azure_files_share", "reprolab-cache"),
+            cell_id=cell_id,
+            cell_params_json=cell_params_json,
+            output_blob_prefix=output_blob_prefix,
+            code_blob_prefix=code_blob_prefix,
+            active_deadline_seconds=active_deadline_seconds,
+            max_oom_retries=max_oom_retries,
+            fingerprint=fingerprint,
+            now_iso=now_iso,
+            gpu_plan=gpu_plan,
+            # P1-fix-8: configurable knobs from settings.
+            ttl_seconds_after_finished=int(_setting("azure_ttl_seconds_after_finished", 3600)),
+            backoff_limit=int(_setting("azure_job_backoff_limit", 0)),
+            cache_mount_path=str(_setting("azure_cache_mount_path", "/mnt/reprolab-cache")),
+            # P1-fix-9: OOM shrink ratios forwarded from settings.
+            oom_batch_scale_step1=float(
+                _setting("azure_cell_oom_batch_scale_step1", 0.5)
+            ),
+            oom_batch_scale_floor=float(
+                _setting("azure_cell_oom_batch_scale_floor", 0.25)
+            ),
+            bootstrap_pip_timeout_s=int(
+                _setting("azure_bootstrap_pip_timeout_s", 600)
+            ),
+            # P0-fix-3: default SKU for no-plan fallback.
+            default_sku=str(
+                (_setting("azure_gpu_skus", []) or ["azure_a100_80"])[0]
+            ),
+        )
+    except ValueError as exc:
+        # P1-fix-5: manifest builder raises ValueError on empty base_image.
+        # Treat as a job submission failure — cell becomes "error" with a clear message.
+        logger.error(
+            "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, exc
+        )
+        return CellResult(
+            cell_id=cell_id,
+            status=STATUS_ERROR,
+            metrics=None,
+            gpu="aks:unassigned",
+            retries=0,
+            error=f"manifest build failed: {exc}",
+        )
 
     # Submit the Job.
     try:
@@ -1057,10 +1150,12 @@ def run_matrix(
     namespace: str = _setting("azure_namespace", "reprolab")
     service_account: str = _setting("azure_service_account", "reprolab-sa")
     node_pool_name: str = _setting("azure_node_pool_name", "gpunodes")
-    base_image: str = _setting("azure_base_image", "reprolab.azurecr.io/reprolab-aks-cell:latest")
+    # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
+    base_image: str = _setting("azure_base_image", "")
     storage_account: str = _setting("azure_storage_account", "")
     blob_container: str = _setting("azure_blob_container", "reprolab-artifacts")
-    azure_max_nodes: int = int(_setting("azure_max_nodes", 8))
+    # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
+    azure_max_nodes: int = int(_setting("azure_max_nodes", 4))
     gpu_usd_per_hour: float = float(_setting("azure_gpu_usd_per_hour", 3.67))
     pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 900))
     provisioned_skus: list[str] = list(_setting("azure_gpu_skus", []) or [])
@@ -1166,6 +1261,12 @@ def run_matrix(
     def _process_cell(cell: dict[str, Any]) -> None:
         nonlocal reserved_gpu_seconds
 
+        # P0-fix-4: per-cell copy so escalation can update the rate for THIS cell
+        # without affecting other concurrent cells (shared outer var would be a race
+        # AND would cause UnboundLocalError since Python sees the assignment below
+        # as making the name local throughout the whole function body).
+        cell_gpu_usd_per_hour: float = gpu_usd_per_hour
+
         cell_id: str = cell.get("id", f"cell_{id(cell)}")
         output_dir = output_root / cell_id
 
@@ -1229,7 +1330,7 @@ def run_matrix(
             budget_err = _check_budget(
                 run_budget=run_budget,
                 reserved_gpu_seconds=new_reserved,
-                gpu_usd_per_hour=gpu_usd_per_hour,
+                gpu_usd_per_hour=cell_gpu_usd_per_hour,
                 cell_id=cell_id,
             )
             if budget_err:
@@ -1250,6 +1351,9 @@ def run_matrix(
         # --- Submit and watch (with optional SKU escalation on oom_failed) ---
         current_plan = gpu_plan  # may become a lighter stub on escalation
         escalation_count = 0
+        # P0-fix-2: track the effective run_id per attempt so each escalated Job
+        # gets a unique name (avoids 409 AlreadyExists on resubmit).
+        current_run_id = run_id
 
         while True:
             result = _run_cell_job(
@@ -1270,7 +1374,8 @@ def run_matrix(
                 max_oom_retries=max_oom_retries,
                 fingerprint=_fingerprints.get(cell_id),
                 now_iso=now_iso,
-                run_id=run_id,
+                # P0-fix-2: use the (possibly suffixed) run_id for Job naming.
+                run_id=current_run_id,
                 gpu_plan=current_plan,
             )
 
@@ -1303,6 +1408,35 @@ def run_matrix(
                 getattr(current_plan, "short_name", "unknown") if current_plan else "default"
             )
 
+            # P0-fix-4: update the GPU rate to the escalated SKU's catalog price
+            # BEFORE the budget re-check, so the guard uses the correct (higher) rate.
+            escalated_usd_per_hour: float = cell_gpu_usd_per_hour
+            if next_sku is not None:
+                escalated_usd_per_hour = float(
+                    getattr(next_sku, "approx_usd_per_hr", cell_gpu_usd_per_hour)
+                )
+
+            # P0-fix-4 (cont.): re-check budget with escalated rate + already-
+            # reserved seconds before committing to the resubmit.
+            with budget_lock:
+                escalated_budget_err = _check_budget(
+                    run_budget=run_budget,
+                    reserved_gpu_seconds=reserved_gpu_seconds,
+                    gpu_usd_per_hour=escalated_usd_per_hour,
+                    cell_id=cell_id,
+                )
+            if escalated_budget_err:
+                logger.warning(
+                    "k8s_job_cell_runner: escalation budget exceeded, stopping: %s",
+                    escalated_budget_err,
+                )
+                event_sink("run_warning", {
+                    "code": "k8s_escalation_budget_exceeded",
+                    "message": escalated_budget_err,
+                })
+                # Return oom_failed cleanly rather than resubmitting over budget.
+                break
+
             logger.info(
                 "k8s_job_cell_runner: cell=%s oom_failed → escalate %s→%s (escalation %d/%d)",
                 cell_id, from_sku, next_sku_name, escalation_count + 1, max_escalations,
@@ -1323,8 +1457,11 @@ def run_matrix(
                 # Trim the ladder: drop everything up to and including next_sku_name.
                 ladder_remaining=_trim_ladder(ladder, next_sku_name),
             )
-            # Update job_name suffix to avoid K8s name collision with the prior attempt.
-            run_id_suffix = f"{run_id}-e{escalation_count}"
+            # P0-fix-2: suffix the run_id so the escalated Job gets a unique name.
+            current_run_id = f"{run_id}-e{escalation_count}"
+            # P0-fix-4: carry the escalated rate forward for any further budget checks
+            # in this cell's loop.  cell_gpu_usd_per_hour is cell-local (not shared).
+            cell_gpu_usd_per_hour = escalated_usd_per_hour
             active_deadline_seconds = max(
                 1,
                 math.ceil(

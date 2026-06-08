@@ -95,20 +95,33 @@ _OOM_KILL_SIGNALS: frozenset[int] = frozenset({9, signal.SIGKILL})
 # Pure functions (no azure import, no subprocess — fully unit-testable)
 # ---------------------------------------------------------------------------
 
-def plan_attempts(max_oom_retries: int) -> list[dict[str, Any]]:
+def plan_attempts(
+    max_oom_retries: int,
+    *,
+    # P1-fix-9: configurable OOM batch-shrink ratios read from env (runner injects these).
+    batch_scale_step1: float | None = None,
+    batch_scale_floor: float | None = None,
+) -> list[dict[str, Any]]:
     """Return the ordered list of attempt configs for the shrink ladder.
 
     Attempt 0 is always the original (no overrides).
-    Attempt 1: BATCH_SCALE=0.5, GRAD_CHECKPOINT=1.
-    Attempt 2: BATCH_SCALE=0.25, GRAD_CHECKPOINT=1.
-    Attempts 3+: repeat the 0.25 floor only when max_oom_retries > 2.
+    Attempt 1: BATCH_SCALE=<step1> (default 0.5), GRAD_CHECKPOINT=1.
+    Attempt 2: BATCH_SCALE=<floor> (default 0.25), GRAD_CHECKPOINT=1.
+    Attempts 3+: repeat the floor only when max_oom_retries > 2.
 
     The caller passes the *number of OOM retries allowed after the original*
     (i.e. the value of REPROLAB_CELL_MAX_OOM_RETRIES, default 2).  Total
     attempts = max_oom_retries + 1.
 
+    ``batch_scale_step1`` and ``batch_scale_floor`` override the defaults when
+    provided; when None they are read from
+    ``REPROLAB_CELL_OOM_BATCH_SCALE_STEP1`` / ``REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR``
+    (defaults 0.5 / 0.25) so the orchestrator can tune them per-run.
+
     Args:
-        max_oom_retries: Non-negative integer (0 means no retry after OOM).
+        max_oom_retries:  Non-negative integer (0 means no retry after OOM).
+        batch_scale_step1: Override for attempt-1 scale (or None → read env).
+        batch_scale_floor: Override for attempt-2+ scale (or None → read env).
 
     Returns:
         List of dicts, each with keys:
@@ -116,15 +129,31 @@ def plan_attempts(max_oom_retries: int) -> list[dict[str, Any]]:
           - ``batch_scale``:    float override for REPROLAB_CELL_BATCH_SCALE.
           - ``grad_checkpoint``:str "0" or "1" for REPROLAB_CELL_GRAD_CHECKPOINT.
     """
+    # P1-fix-9: read from env when not supplied by caller.
+    if batch_scale_step1 is None:
+        try:
+            batch_scale_step1 = float(
+                os.environ.get("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.5")
+            )
+        except (ValueError, TypeError):
+            batch_scale_step1 = 0.5
+    if batch_scale_floor is None:
+        try:
+            batch_scale_floor = float(
+                os.environ.get("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", "0.25")
+            )
+        except (ValueError, TypeError):
+            batch_scale_floor = 0.25
+
     attempts: list[dict[str, Any]] = []
     for i in range(max_oom_retries + 1):
         if i == 0:
             cfg = {"attempt": 0, "batch_scale": 1.0, "grad_checkpoint": "0"}
         elif i == 1:
-            cfg = {"attempt": 1, "batch_scale": 0.5, "grad_checkpoint": "1"}
+            cfg = {"attempt": 1, "batch_scale": batch_scale_step1, "grad_checkpoint": "1"}
         else:
-            # i >= 2: floor at 0.25
-            cfg = {"attempt": i, "batch_scale": 0.25, "grad_checkpoint": "1"}
+            # i >= 2: floor at batch_scale_floor
+            cfg = {"attempt": i, "batch_scale": batch_scale_floor, "grad_checkpoint": "1"}
         attempts.append(cfg)
     return attempts
 
@@ -743,7 +772,12 @@ def _bootstrap(
     # pip install requirements if a requirements file is present
     req_path = local_code_dir / "requirements.txt"
     if req_path.is_file():
-        logger.info("pip installing requirements from %s", req_path)
+        # P1-fix-9: read pip timeout from env (runner injects REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S).
+        try:
+            _pip_timeout = int(os.environ.get("REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S", "600"))
+        except (ValueError, TypeError):
+            _pip_timeout = 600
+        logger.info("pip installing requirements from %s (timeout=%ds)", req_path, _pip_timeout)
         try:
             result = subprocess.run(
                 [
@@ -754,7 +788,7 @@ def _bootstrap(
                 ],
                 capture_output=True,
                 text=True,
-                timeout=600,
+                timeout=_pip_timeout,
             )
             if result.returncode != 0:
                 return False, f"pip install failed (rc={result.returncode}): {result.stderr[:500]}"
@@ -930,10 +964,19 @@ def main(
         client=blob_client,
     )
 
-    if final_exit_code == EXIT_OK and not uploaded_sentinel:
-        # Metrics were ok but we couldn't durably persist the sentinel —
-        # the orchestrator cannot confirm success; escalate to upload error.
-        logger.error("sentinel upload failed after successful training")
+    if not uploaded_sentinel:
+        # P1-fix-10: regardless of outcome — if the sentinel/status.json upload
+        # fails the orchestrator cannot reliably score this cell.  On success path
+        # this prevents a false-negative; on failure path it prevents the runner
+        # from mis-scoring an oom_failed cell as ok because it sees "no status.json
+        # → assume still running" and keeps polling.  Log ERROR so it is visible
+        # in pod logs / K8s events.
+        logger.error(
+            "Cell %s: sentinel upload failed (outcome=%s, exit=%d) — "
+            "returning EXIT_ARTIFACT_UPLOAD_ERROR so the orchestrator can "
+            "detect the upload failure rather than silently mis-scoring.",
+            cell_id, final_outcome, final_exit_code,
+        )
         return EXIT_ARTIFACT_UPLOAD_ERROR
 
     logger.info(

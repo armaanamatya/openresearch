@@ -756,3 +756,61 @@ class TestMainIntegration:
 
         code = ep.main(blob_client=blob, subprocess_runner=runner)
         assert code == ep.EXIT_ARTIFACT_UPLOAD_ERROR
+
+    def test_artifact_upload_error_when_sentinel_fails_on_failure_path(self, ep, tmp_path):
+        """P1-fix-10: sentinel upload failure on non-OK path also returns EXIT_ARTIFACT_UPLOAD_ERROR.
+
+        Previously only the success path escalated; now ALL sentinel upload failures escalate so
+        the orchestrator is never mis-scoring a failed/oom cell as ok.
+        """
+
+        class FailSentinelBlob(FakeBlobClient):
+            def upload_blob(self, name: str, data: bytes, *, overwrite: bool = True) -> None:
+                if "status.json" in name:
+                    raise RuntimeError("Simulated upload failure on failure path")
+                super().upload_blob(name, data, overwrite=overwrite)
+
+        blob = FailSentinelBlob()
+        blob.seed_blob("runs/run1/code/train_cell.py", b"# fake train_cell.py")
+        # Trainer exits with non-zero (OOM path)
+        runner = _make_fake_runner(returncode=1, output="CUDA out of memory")
+
+        code = ep.main(blob_client=blob, subprocess_runner=runner)
+        assert code == ep.EXIT_ARTIFACT_UPLOAD_ERROR, (
+            "P1-fix-10: sentinel upload failure on OOM path must return "
+            "EXIT_ARTIFACT_UPLOAD_ERROR, not silently use the original exit code"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-fix-9: plan_attempts reads batch-scale ratios from env
+# ---------------------------------------------------------------------------
+
+class TestPlanAttemptsEnvOverride:
+    """P1-fix-9: plan_attempts must read batch-scale ratios from env vars."""
+
+    def test_custom_step1_from_env(self, ep, monkeypatch):
+        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.3")
+        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", "0.1")
+        attempts = ep.plan_attempts(2)
+        assert attempts[1]["batch_scale"] == 0.3, (
+            "P1-fix-9: REPROLAB_CELL_OOM_BATCH_SCALE_STEP1 must override step-1 scale"
+        )
+        assert attempts[2]["batch_scale"] == 0.1, (
+            "P1-fix-9: REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR must override floor scale"
+        )
+
+    def test_defaults_when_env_absent(self, ep, monkeypatch):
+        monkeypatch.delenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", raising=False)
+        monkeypatch.delenv("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", raising=False)
+        attempts = ep.plan_attempts(2)
+        assert attempts[1]["batch_scale"] == 0.5
+        assert attempts[2]["batch_scale"] == 0.25
+
+    def test_kwarg_overrides_env(self, ep, monkeypatch):
+        """Explicit kwargs take priority over env vars."""
+        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.9")
+        attempts = ep.plan_attempts(2, batch_scale_step1=0.4)
+        assert attempts[1]["batch_scale"] == 0.4, (
+            "explicit batch_scale_step1 kwarg must override env var"
+        )
