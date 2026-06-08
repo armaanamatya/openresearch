@@ -210,14 +210,17 @@ class Settings(BaseSettings):
     azure_acr_login_server: str = Field(default="", description="ACR login server (e.g. myregistry.azurecr.io)")
     azure_aks_cluster: str = Field(default="", description="AKS cluster name")
     azure_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
-    azure_service_account: str = Field(default="reprolab-runner", description="K8s ServiceAccount annotated for workload identity")
+    azure_service_account: str = Field(default="reprolab-sa", description="K8s ServiceAccount annotated for workload identity (must match the federated-credential subject: system:serviceaccount:<ns>:reprolab-sa)")
     azure_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     azure_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     azure_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
-    azure_base_image: str = Field(default="", description="Pre-baked ACR base image (build_environment no-op)")
+    # Empty means the operator MUST set REPROLAB_AZURE_BASE_IMAGE to a PINNED
+    # ACR tag (e.g. myregistry.azurecr.io/reprolab:20260603-abc1234). The runner
+    # errors clearly on empty rather than defaulting to a floating :latest tag.
+    azure_base_image: str = Field(default="", description="Pre-baked ACR base image (build_environment no-op); operator must set to a PINNED ACR tag — never :latest")
     azure_gpu_usd_per_hour: float = Field(default=3.67, ge=0.0, description="Per-GPU $/hr for budget tracking (default = Standard_NC24ads_A100_v4 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
     azure_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
-    azure_pending_timeout_seconds: int = Field(default=900, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted")
+    azure_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted (AKS GPU cold-start from zero can take 10-12 min; 900s killed legitimate scale-up)")
     # Catalog short_names of the Azure GPU SKUs that are actually provisioned
     # as AKS node pools (mirrors Terraform var.gpu_skus). The SKU resolver
     # only selects from this list; the OOM escalation ladder (reused from
@@ -235,6 +238,62 @@ class Settings(BaseSettings):
             "these; the OOM ladder only escalates within these. "
             "Default = single A100-80 pool = one quota ask."
         ),
+    )
+    # TTL added to the Job spec's ttlSecondsAfterFinished; Kubernetes deletes
+    # the Job + Pod objects this many seconds after they reach a terminal state
+    # (Succeeded or Failed). Keeps the namespace tidy without operator cron jobs.
+    azure_ttl_seconds_after_finished: int = Field(
+        default=3600,
+        ge=1,
+        description="Job.spec.ttlSecondsAfterFinished — Kubernetes auto-deletes finished Jobs after this many seconds",
+    )
+    # Number of times Kubernetes will restart the Job's Pod on failure.
+    # Set to 0 because OOM retry + podFailurePolicy is handled in-process
+    # by the OOM wrapper; letting Kubernetes restart the Pod would bypass
+    # that logic and double-count failures.
+    azure_job_backoff_limit: int = Field(
+        default=0,
+        ge=0,
+        description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper + podFailurePolicy",
+    )
+    # Path inside the Job Pod where the Azure Files share (HF_HOME + pip cache)
+    # is mounted. Must match the volume mount in the Job template and the
+    # HF_HOME / pip cache env vars injected by the runner.
+    azure_cache_mount_path: str = Field(
+        default="/mnt/reprolab-cache",
+        description="Mount path for the Azure Files share (HF_HOME + pip cache) inside Job Pods",
+    )
+    # How often the Job watcher polls the Kubernetes API for Pod phase changes.
+    # Lower values reduce latency between Job completion and result ingestion;
+    # higher values reduce API server load on large clusters.
+    azure_watch_poll_interval_s: float = Field(
+        default=5.0,
+        gt=0,
+        description="Polling interval (seconds) for the Job/Pod phase watcher",
+    )
+    # Batch-size scale factors for the two-step OOM shrink retry.
+    # Step 1: multiply the cell's batch size by this factor before the first
+    # OOM retry. Step 2 (floor): never go below this factor regardless of
+    # further OOMs. Must satisfy 0 < floor <= step1 <= 1.
+    azure_oom_batch_scale_step1: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Batch-size scale factor applied on the first OOM retry (step 1 of 2)",
+    )
+    azure_oom_batch_scale_floor: float = Field(
+        default=0.25,
+        gt=0,
+        le=1,
+        description="Minimum batch-size scale factor for OOM shrink retries (floor; never go below this)",
+    )
+    # Timeout (seconds) for `pip install -r requirements.txt` inside the Job
+    # bootstrap script. Some SDAR dependency trees are large; 600s avoids
+    # spurious bootstrap timeouts on slow ACR pulls or large sdists.
+    azure_bootstrap_pip_timeout_s: int = Field(
+        default=600,
+        ge=1,
+        description="Timeout (seconds) for pip install in the Job bootstrap script",
     )
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---

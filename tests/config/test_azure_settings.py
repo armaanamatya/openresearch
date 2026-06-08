@@ -46,6 +46,13 @@ _AZURE_ENVVARS = [
     "REPROLAB_AZURE_BOOT_TIMEOUT_SECONDS",
     "REPROLAB_AZURE_PENDING_TIMEOUT_SECONDS",
     "REPROLAB_AZURE_GPU_SKUS",
+    "REPROLAB_AZURE_TTL_SECONDS_AFTER_FINISHED",
+    "REPROLAB_AZURE_JOB_BACKOFF_LIMIT",
+    "REPROLAB_AZURE_CACHE_MOUNT_PATH",
+    "REPROLAB_AZURE_WATCH_POLL_INTERVAL_S",
+    "REPROLAB_AZURE_OOM_BATCH_SCALE_STEP1",
+    "REPROLAB_AZURE_OOM_BATCH_SCALE_FLOOR",
+    "REPROLAB_AZURE_BOOTSTRAP_PIP_TIMEOUT_S",
 ]
 
 
@@ -68,15 +75,26 @@ def test_azure_fields_exist_with_defaults(clean_azure_env):
     assert s.azure_acr_login_server == ""
     assert s.azure_aks_cluster == ""
     assert s.azure_namespace == "reprolab"
-    assert s.azure_service_account == "reprolab-runner"
+    # Canonical SA name — matches Terraform/tfvars/Helm federated-credential subject
+    assert s.azure_service_account == "reprolab-sa"
     assert s.azure_node_pool_name == "gpua100"
     assert s.azure_per_gpu_vram_gb == pytest.approx(80.0)
+    # Canonical concurrency cap — the runner's _SETTINGS_DEFAULTS must match this
     assert s.azure_max_nodes == 4
     assert s.azure_base_image == ""
     assert s.azure_gpu_usd_per_hour == pytest.approx(3.67)
     assert s.azure_boot_timeout_seconds == 900
-    assert s.azure_pending_timeout_seconds == 900
+    # Cold-start from zero can take 10-12 min; 900s killed legitimate scale-up
+    assert s.azure_pending_timeout_seconds == 1500
     assert s.azure_gpu_skus == ["azure_a100_80"]
+    # New operational knob defaults
+    assert s.azure_ttl_seconds_after_finished == 3600
+    assert s.azure_job_backoff_limit == 0
+    assert s.azure_cache_mount_path == "/mnt/reprolab-cache"
+    assert s.azure_watch_poll_interval_s == pytest.approx(5.0)
+    assert s.azure_oom_batch_scale_step1 == pytest.approx(0.5)
+    assert s.azure_oom_batch_scale_floor == pytest.approx(0.25)
+    assert s.azure_bootstrap_pip_timeout_s == 600
 
 
 def test_default_sandbox_literal_accepts_azure(clean_azure_env):
@@ -158,3 +176,70 @@ def test_azure_gpu_skus_single_element_override(monkeypatch):
     monkeypatch.setenv("REPROLAB_AZURE_GPU_SKUS", '["v100_32"]')
     s = Settings(_env_file=None)
     assert s.azure_gpu_skus == ["v100_32"]
+
+
+def test_azure_max_nodes_canonical_cap(clean_azure_env):
+    """azure_max_nodes default == 4, the canonical concurrency cap.
+
+    The runner's _SETTINGS_DEFAULTS must match this value.  If this test
+    fails, a drift fix agent updated the runner without updating config.py
+    (or vice-versa).
+    """
+    s = Settings(_env_file=None)
+    assert s.azure_max_nodes == 4
+
+
+def test_azure_new_fields_env_overrides(monkeypatch):
+    """Env-var overrides for the 7 new operational knob fields."""
+    monkeypatch.setenv("REPROLAB_AZURE_TTL_SECONDS_AFTER_FINISHED", "7200")
+    monkeypatch.setenv("REPROLAB_AZURE_JOB_BACKOFF_LIMIT", "2")
+    monkeypatch.setenv("REPROLAB_AZURE_CACHE_MOUNT_PATH", "/mnt/custom-cache")
+    monkeypatch.setenv("REPROLAB_AZURE_WATCH_POLL_INTERVAL_S", "10.0")
+    monkeypatch.setenv("REPROLAB_AZURE_OOM_BATCH_SCALE_STEP1", "0.75")
+    monkeypatch.setenv("REPROLAB_AZURE_OOM_BATCH_SCALE_FLOOR", "0.5")
+    monkeypatch.setenv("REPROLAB_AZURE_BOOTSTRAP_PIP_TIMEOUT_S", "300")
+
+    s = Settings(_env_file=None)
+    assert s.azure_ttl_seconds_after_finished == 7200
+    assert s.azure_job_backoff_limit == 2
+    assert s.azure_cache_mount_path == "/mnt/custom-cache"
+    assert s.azure_watch_poll_interval_s == pytest.approx(10.0)
+    assert s.azure_oom_batch_scale_step1 == pytest.approx(0.75)
+    assert s.azure_oom_batch_scale_floor == pytest.approx(0.5)
+    assert s.azure_bootstrap_pip_timeout_s == 300
+
+
+def test_azure_service_account_drift_fix(clean_azure_env):
+    """azure_service_account must be 'reprolab-sa', not 'reprolab-runner'.
+
+    The federated-credential subject in Terraform/tfvars/Helm is:
+      system:serviceaccount:<ns>:reprolab-sa
+    Using 'reprolab-runner' would cause every workload-identity token request
+    to fail with a 401.
+    """
+    s = Settings(_env_file=None)
+    assert s.azure_service_account == "reprolab-sa"
+    assert s.azure_service_account != "reprolab-runner"
+
+
+def test_azure_pending_timeout_cold_start(clean_azure_env):
+    """azure_pending_timeout_seconds must be >= 1500.
+
+    AKS GPU cold-start from zero can take 10-12 minutes (node provisioning +
+    image pull + driver init).  900s killed legitimate scale-up as
+    capacity_exhausted.  The canonical floor is 1500s.
+    """
+    s = Settings(_env_file=None)
+    assert s.azure_pending_timeout_seconds >= 1500
+
+
+def test_azure_oom_batch_scale_invariant(clean_azure_env):
+    """OOM batch scale floor must be <= step1 (both in (0, 1])."""
+    s = Settings(_env_file=None)
+    assert 0 < s.azure_oom_batch_scale_floor <= s.azure_oom_batch_scale_step1 <= 1.0
+
+
+def test_azure_base_image_default_empty(clean_azure_env):
+    """azure_base_image defaults to empty — operator must supply a pinned tag."""
+    s = Settings(_env_file=None)
+    assert s.azure_base_image == ""
