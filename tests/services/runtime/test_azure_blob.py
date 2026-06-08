@@ -253,6 +253,50 @@ class TestUploadPrefix:
         )
         assert result == []
 
+    # -----------------------------------------------------------------------
+    # Parallel upload — correctness and error propagation
+    # -----------------------------------------------------------------------
+
+    def test_parallel_upload_all_files_sorted(self, tmp_path: Path) -> None:
+        """20 files all uploaded and return value is sorted regardless of thread order."""
+        n = 20
+        for i in range(n):
+            (tmp_path / f"file_{i:02d}.txt").write_text(f"content {i}")
+
+        client = _fake()
+        result = ab.upload_prefix(
+            tmp_path, blob_prefix="bulk",
+            account_name=ACCT, container_name=CONT, client=client,
+        )
+
+        # All 20 files must appear.
+        assert len(result) == n
+        expected_names = sorted(f"bulk/file_{i:02d}.txt" for i in range(n))
+        assert result == expected_names
+        # Blobs dict must also contain all uploads.
+        for name in expected_names:
+            assert name in client.blobs
+
+    def test_upload_error_propagates(self, tmp_path: Path) -> None:
+        """If any single upload raises, upload_prefix must propagate the exception."""
+        import threading
+
+        (tmp_path / "good.txt").write_text("ok")
+        (tmp_path / "bad.txt").write_text("will fail")
+
+        class ErrorOnBadClient(FakeContainerClient):
+            def upload_blob(self, name: str, data: bytes, *, overwrite: bool = True) -> None:
+                if "bad" in name:
+                    raise RuntimeError("simulated upload failure")
+                super().upload_blob(name, data, overwrite=overwrite)
+
+        client = ErrorOnBadClient()
+        with pytest.raises(RuntimeError, match="simulated upload failure"):
+            ab.upload_prefix(
+                tmp_path, blob_prefix="p",
+                account_name=ACCT, container_name=CONT, client=client,
+            )
+
 
 # ---------------------------------------------------------------------------
 # upload_bytes + download_bytes — round-trip

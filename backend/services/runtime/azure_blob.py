@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -193,8 +194,10 @@ def upload_prefix(
         raise ValueError(f"local_root is not a directory: {local_root}")
 
     container = _client_or_new(client, account_name, container_name)
-    uploaded: list[str] = []
 
+    # Collect eligible (abs_path, blob_name) pairs up-front before spawning
+    # threads, so filtering logic stays serial and deterministic.
+    eligible: list[tuple[Path, str]] = []
     for abs_path in sorted(local_root.rglob("*")):
         if not abs_path.is_file() and not abs_path.is_symlink():
             continue  # skip directories themselves
@@ -220,13 +223,26 @@ def upload_prefix(
             continue
 
         # Build a forward-slash blob name.
-        rel_posix = rel.as_posix()
-        blob_name = f"{blob_prefix}/{rel_posix}"
+        blob_name = f"{blob_prefix}/{rel.as_posix()}"
+        eligible.append((abs_path, blob_name))
 
+    if not eligible:
+        return []
+
+    def _upload_one(args: tuple[Path, str]) -> str:
+        abs_path, blob_name = args
         logger.debug("Uploading %s -> %s", abs_path, blob_name)
         data = abs_path.read_bytes()
         container.upload_blob(blob_name, data, overwrite=True)
-        uploaded.append(blob_name)
+        return blob_name
+
+    # Fan out uploads with a bounded thread pool.  azure ContainerClient is
+    # thread-safe for independent blob uploads; FakeContainerClient dict writes
+    # are GIL-protected and keyed independently.
+    # executor.map preserves submission order and re-raises the first exception.
+    max_workers = min(16, len(eligible))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        uploaded = list(executor.map(_upload_one, eligible))
 
     uploaded.sort()
     return uploaded
