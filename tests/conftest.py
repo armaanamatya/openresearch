@@ -108,3 +108,18 @@ def _isolate_event_registry():
     from backend.messaging.event import _restore_registry_for_tests
 
     _restore_registry_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _disable_disk_floor_preflight(monkeypatch):
+    """Keep the suite hermetic to host free-disk.
+
+    ``run_experiment``'s disk-floor preflight (primitives.py, default
+    ``OPENRESEARCH_DISK_FLOOR_GB=15``) probes the REAL host filesystem even
+    when the sandbox backend is fully mocked — on any machine with <15 GB
+    free, 31 otherwise-green tests fail with ``disk_exhausted``. Disable it
+    by default; the floor behaviour itself is covered by
+    tests/agents/rlm/test_harness_enforcement.py, which sets the variable
+    explicitly (its in-test monkeypatch.setenv overrides this fixture).
+    """
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "0")

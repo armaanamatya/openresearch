@@ -624,6 +624,13 @@ def _write_demo_status(
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
+    # Liveness prereq: run_liveness.sweep_orphaned_runs deliberately skips
+    # runs without a pid ("absent-pid means unknown, not dead"), so a
+    # SIGKILLed CLI/batch run used to show status=running forever — only the
+    # API spawn path stamped one (live_runs.py). For CLI runs this process IS
+    # the run; for API runs the parent already wrote the same subprocess pid
+    # and **existing keeps it.
+    payload.setdefault("pid", os.getpid())
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1395,7 +1402,14 @@ async def run_pipeline_rlm(
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
-    if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+    # Stub-primitive runs skip this: rubric generation is a REAL paid LLM call
+    # (the one non-stubbed network path), and under pytest it turned the
+    # leaked .env OPENAI_API_KEY into minutes of 429-retry sleep per run —
+    # the suite's 862s-test stall (audit 2026-06-09).
+    _stub_mode = os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1"
+    if _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+        logger.info("run_pipeline_rlm: stub mode — skipping LLM rubric generation (run proceeds rubric-less)")
+    if not _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         from backend.agents.rlm.rubric_gen import generate_rubric_tree
 
         generated = generate_rubric_tree(

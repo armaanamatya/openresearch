@@ -7,6 +7,8 @@ The full `run_pipeline_rlm` end-to-end path (a real `rlm.RLM` + stub primitives
 
 from __future__ import annotations
 
+import pytest
+
 from backend.agents.rlm.run import (
     RLMRunResult,
     _build_context,
@@ -16,6 +18,18 @@ from backend.agents.rlm.run import (
     _verdict_to_status,
     _write_demo_status,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_keys(monkeypatch):
+    """Nothing in this module may reach a real LLM API.
+
+    `.env` credentials leak into os.environ via load_dotenv() at import time,
+    so even an `env -u OPENAI_API_KEY` shell doesn't protect these tests; a
+    quota-dead key once turned run_pipeline_rlm's rubric-generation call into
+    an 862-second 429-retry stall inside the suite (audit 2026-06-09)."""
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "FEATHERLESS_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +385,26 @@ class TestWriteDemoStatus:
         assert status["process_status"] == "completed"
         assert status["verdict"] == "failed"
         assert status["error"] == "watchdog timeout"
+
+    def test_stamps_own_pid_for_orphan_sweep(self, tmp_path):
+        """sweep_orphaned_runs skips runs without a pid, so every writer of
+        status=running must stamp one — CLI runs had none and a SIGKILLed CLI
+        run showed status=running forever (audit 2026-06-09)."""
+        import os
+
+        _write_demo_status(tmp_path, "running")
+        assert self._load(tmp_path)["pid"] == os.getpid()
+
+    def test_does_not_clobber_existing_pid(self, tmp_path):
+        """API-spawned runs get their subprocess pid stamped by the parent
+        (live_runs.py); the run's own writes must keep it."""
+        import json
+
+        (tmp_path / "demo_status.json").write_text(
+            json.dumps({"pid": 424242}), encoding="utf-8"
+        )
+        _write_demo_status(tmp_path, "running")
+        assert self._load(tmp_path)["pid"] == 424242
 
 
 # ---------------------------------------------------------------------------
