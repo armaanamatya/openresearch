@@ -262,10 +262,17 @@ All items deferred in §6 (except branch GC and GEPA, see below) were executed:
    previously-skipped ingestion tests now run; the week-old :8000 dev server
    restarted onto it.
 
-**Final state:** full suite **4,470 passed / 9 skipped / 1 xfailed / 0
+**Final state:** full suite **4,471 passed / 9 skipped / 1 xfailed / 0
 failed (~33 s)** on the merged trunk; frontend lint/types/vitest/build green;
 `docker build` + `docker compose up` healthy (builder-stage node v20.20.2
-serving); docs-check OK; PR #101 open against main.
+serving); docs-check OK; PR #101 open against main (docs-check green on it).
+**CI exercised in anger:** the first `ci.yml` run on a truly keyless
+ubuntu runner caught 5 more tests that passed locally only because `.env`
+leaks credentials at import (host-dependent root-model resolution via the
+macOS Keychain; presence-checking SDK constructors) — fixed with planted
+fake keys and verified with `.env` physically removed. Second run:
+**backend ✓ frontend ✓ compose-validate ✓** (run 27233993367, ~76 s test
+step). Pushed: `origin/bes` @ `2302ddb`.
 
 **Still open after round 2:** remote-branch GC (deleting others' branches
 needs owner sign-off — list in `docs/audit-initial.md` §2); GEPA subsystem
