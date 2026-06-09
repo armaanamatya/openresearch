@@ -104,6 +104,11 @@ flowchart TD
 - Python >= 3.11
 - Node.js >= 20.19 (< 21) or >= 22.12
 - At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
+- A Docker daemon (Docker Desktop / OrbStack) — required for every sandbox
+  except `local`, *including* the default `runpod` (its `build_environment`
+  step runs a local `docker build`). No Docker yet? Set
+  `OPENRESEARCH_DEFAULT_SANDBOX=local` in `.env` (what `.env.example` ships)
+  or pass `--sandbox local` for your first run.
 
 ### Setup
 
@@ -118,7 +123,9 @@ cd frontend && npm ci && cd ..
 
 # Environment
 cp .env.example .env
-# Edit .env: set at least one API key
+# Edit .env: set at least one API key. The example pins
+# OPENRESEARCH_DEFAULT_SANDBOX=local (no Docker/RunPod needed);
+# switch to runpod/docker once credentials + a daemon are in place.
 ```
 
 ### Run
@@ -134,10 +141,12 @@ npm run dev
 # Open http://localhost:3000
 ```
 
-Or use the launcher with RunPod preflight checks:
+Or start the **backend only** via the preflight-aware launcher (Terminal 2 is
+still needed for the UI):
 
 ```bash
-./start.sh  # defaults sandbox to runpod; runs preflight checks
+./start.sh  # sandbox default: shell env > .env > runpod; checks RunPod creds
+            # (runpod) + the Docker daemon (any non-local sandbox) up front
 ```
 
 ### CLI
@@ -195,18 +204,19 @@ See `.env.example` for the full list.
 
 ```bash
 # Backend tests
-.venv/bin/python -m pytest tests/               # all (180+ test files)
+.venv/bin/python -m pytest tests/ -n auto       # all (~340 files / ~3,600 tests, <1 min parallel)
 .venv/bin/python -m pytest tests/ -n auto        # parallel
 .venv/bin/python -m pytest tests/rlm/            # RLM tests only
 
 # Frontend
 cd frontend
 npx tsc --noEmit      # type check
-npm test              # vitest (requires Node >= 22.12)
+npm test              # vitest run (non-watch)
 npm run lint          # eslint
 
 # E2E
-cd frontend && npx playwright test
+cd frontend && npx playwright install chromium   # one-time browser download
+cd frontend && npx playwright test               # needs the backend on :8000
 ```
 
 ## Project Structure
@@ -238,7 +248,7 @@ frontend/
     hooks/            # React hooks: useRlmRun, useSteeringChat, useRdrArtifacts
     lib/              # Shared utilities, event types, auth
 
-tests/                # ~220 backend tests (pytest)
+tests/                # ~3,600 backend tests (pytest)
 scripts/              # Dev tools: RunPod preflight, PaperBench runners, monitoring
 third_party/          # Vendored PaperBench bundles (rubrics + paper markdown)
 docs/                 # Design docs, runbooks, setup guides
@@ -270,7 +280,7 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 - Single-user local deployment. No multi-tenant auth or distributed state.
 - Cost ledger reports $0 for OAuth runs (SDK doesn't surface token counts).
 - No GPU sandbox without RunPod account and API key.
-- Frontend vitest requires Node >= 22.12.
+- Frontend engines: Node >=20.19 <21 or >=22.12 (enforced via package.json `engines`).
 
 ## Documentation
 

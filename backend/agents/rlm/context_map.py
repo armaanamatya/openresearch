@@ -6,8 +6,10 @@ orientation primitives — ``understand_section``, ``extract_hyperparameters``,
 ``runs/<id>/rlm_state/context_map.json`` so the root can consult already-known
 facts before re-deriving them.
 
-Navigation aid ONLY — never a report source (the evidence gate
-``OPENRESEARCH_EVIDENCE_GATE`` remains the backstop).
+Navigation aid ONLY — never a report source (the evidence-gate machinery —
+``OPENRESEARCH_METRIC_PROVENANCE``, default on, plus
+``OPENRESEARCH_METRICS_COMPLETENESS_CHECK`` — remains the backstop; there is
+no ``OPENRESEARCH_EVIDENCE_GATE`` variable).
 
 Off-state contract: when ``OPENRESEARCH_CONTEXT_MAP`` is not enabled,
 :func:`update_context_map` is a no-op and :func:`read_context_map` returns ``{}``.

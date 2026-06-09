@@ -17,3 +17,4 @@ docs/design/project-rebuild-spec.md
 docs/guides/setup-guide.md
 docs/guides/deployment.md
 docs/runbooks/e2e-testing.md
+docs/runbooks/running-the-project.md

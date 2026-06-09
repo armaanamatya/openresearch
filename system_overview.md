@@ -1,4 +1,4 @@
-# System Overview — OpenResearch / OpenResearch
+# System Overview — OpenResearch
 
 <!-- doc-meta: status=current; last-verified=2026-06-03 -->
 > **Doc status:** Current · source-of-truth tier 1 (the "why") · last verified

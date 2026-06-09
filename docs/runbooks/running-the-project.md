@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-06-07 -->
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
 # Running the project — workflow + sandbox×prerequisite matrix
 
 > **Status:** Current. Day-to-day commands live in `CLAUDE.md`; this runbook is
@@ -7,9 +7,10 @@
 ## Quickstart
 
 ```bash
-pip install -r backend/requirements.txt            # rlms pulls a working pytest 9
+python3 -m venv .venv                              # fresh clones ship no venv
+.venv/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000   # API
-python -m backend.cli reproduce 2605.15155 --provider anthropic --sandbox local   # CLI
+.venv/bin/python -m backend.cli reproduce 2605.15155 --provider anthropic --sandbox local   # CLI
 ```
 
 Cheapest local-dev cost model: OpenAI root (`--model gpt-5`, ~$1/run) + OAuth

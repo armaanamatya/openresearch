@@ -1,6 +1,10 @@
-# Harness Breakdown & Recent Changelog
+# Harness Breakdown & Recent Changelog (snapshot: 2026-06-01)
 
-A working map of the OpenResearch / OpenResearch reproduction **harness** — the layers
+> Dated-historical snapshot (moved from `docs/harness-breakdown.md`,
+> audit 2026-06-09): it maps the harness as of the 2026-05-31 → 2026-06-01
+> work and is not held to freshness. Current-state maps: `system_overview.md`.
+
+A working map of the OpenResearch reproduction **harness** — the layers
 that take a paper to a scored reproduction — and a changelog of what was
 added/changed in the 2026-05-31 → 2026-06-01 work (the OOM/GPU cell-runner
 remediation, env robustness, the lab-UI clarity fixes, and the fidelity-scoring
