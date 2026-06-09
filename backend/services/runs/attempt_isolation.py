@@ -59,6 +59,14 @@ except ImportError:  # pragma: no cover — Windows
 # ---------------------------------------------------------------------------
 
 # Top-level files moved if present.
+# 2026-06-09: rubric_evaluation.json / rubric_tree.json were missing from this
+# list — a fresh attempt inherited the PREVIOUS attempt's graded leaves (every
+# 0-iteration attempt in the 06-08/06-09 cluster reported weak_leaves it never
+# produced, and write_final_report_rlm's merge + leaf_scorer.finalize_rescore
+# both read these files assuming they belong to the current attempt). The
+# telemetry sidecars (timing/tokens/worker_reports) leak the same way into the
+# next attempt's report rendering and fidelity evidence. All are per-attempt
+# run products; their absence at fresh-attempt start is handled everywhere.
 _ARCHIVE_FILES: tuple[str, ...] = (
     "final_report.json",
     "final_report.md",
@@ -67,6 +75,12 @@ _ARCHIVE_FILES: tuple[str, ...] = (
     "dashboard_events.jsonl",
     "user_messages.jsonl",
     "_user_message_cursor.json",
+    "rubric_evaluation.json",
+    "rubric_tree.json",
+    "timing.json",
+    "tokens_total.json",
+    "worker_reports.jsonl",
+    "environment_spec.json",
 )
 
 # Sub-paths inside rlm_state/ that are moved per-attempt.

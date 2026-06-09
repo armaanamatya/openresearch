@@ -150,15 +150,36 @@ PAPER_HINTS: dict[str, PaperHint] = {
     # independently bounded and partial results survive a timeout.
     "1412.6980": PaperHint(
         guidance=(
-            "Adam (1412.6980) timeout-survival structure: the VAE bias-correction "
-            "sweep is the long pole (~21 configs = beta2 x lr x optimizer, each x 20 "
-            "epochs). CAP it to a smallest-config-first subset (NOT the full grid) and "
-            "structure it as `cells.json` cells (one cell per config in train_cell.py), "
-            "never a monolithic in-process loop, so the harness bounds each config and "
-            "its metrics land incrementally. The four quick families (MNIST-MLP, MNIST "
-            "logistic-regression, IMDB, CIFAR10) are cheap: write metrics.json "
-            "ATOMICALLY as each completes (never only at the end) so a timeout truncates "
-            "the tail, not finished work."
+            "Adam (1412.6980) — PRIORITY #1: reproduce ALL SIX experiment families and "
+            "aggregate EACH into metrics.json `per_model[<experiment>]` with MEASURED SCALAR "
+            "values. A metrics.json that contains only one experiment scores ~0 on BOTH "
+            "Result-match and Eval-protocol — breadth across experiments is the dominant "
+            "lever. The six families: (1) MNIST logistic-regression, (2) IMDB BoW, (3) MNIST "
+            "MLP, (4) CIFAR-10 CNN, (5) VAE bias-correction, (6) VAE LR sweep (Fig 4). Do the "
+            "FOUR CHEAP families (1-4) FIRST and write their per_model[...] entries (with real "
+            "accuracy/NLL scalars) BEFORE touching any VAE work; write metrics.json ATOMICALLY "
+            "as each family completes so a timeout truncates the tail, not finished work.\n"
+            "The VAE LR sweep (6) is the LONG POLE — do it LAST and CAP it to a "
+            "smallest-config-first subset (NOT the full ~21-config grid); structure the VAE "
+            "sweep as `cells.json` cells (one per config), never a monolithic loop. The "
+            "bias-corrected VAE config can DIVERGE at high LR (NaN reconstruction -> CUDA "
+            "`input_val >= 0 && <= 1` assert) — clamp/sigmoid the decoder output to [0,1] (or "
+            "use BCE-with-logits) and guard NaN so a diverging config records a (bad) ELBO "
+            "scalar instead of CRASHING the cell.\n"
+            "ADDITIVE convergence evidence — ONLY after the per_model scalars for all six "
+            "families are in (never instead of them): the paper's headline claims are about "
+            "CONVERGENCE SPEED, so also emit a per-epoch `history` block "
+            "(history.<experiment>.<optimizer> = {epoch:[...], <metric>:[...]}) on a COMMON "
+            "x-axis with identical init across optimizers (fair_comparison.snapshot_init_state "
+            "once -> restore_init_state before each optimizer -> record init_fingerprint per "
+            "optimizer in provenance.json); write the VAE sweep results under metrics.json "
+            "`vae_lr_sweep`; emit cumulative `regret` as a time-series ARRAY (not a scalar); "
+            "render fig_4 as loss-vs-log10(alpha) with a LOG x-axis (axis sidecar JSON). "
+            "CIFAR-10 uses global-contrast-normalization + ZCA whitening; the MLP/MNIST panel "
+            "includes AdaDelta + SFO baselines. Call "
+            "rubric_guard.assert_metrics_schema(structured_evidence=...) at the end of "
+            "train.py so a missing curve/sweep/series is repaired — but get the six per_model "
+            "scalars landing FIRST."
         ),
         default_scope=ScopeSpec(
             datasets=[
@@ -168,6 +189,13 @@ PAPER_HINTS: dict[str, PaperHint] = {
             ],
             seeds=[1],
         ),
+        structured_evidence={
+            "history_methods": [
+                "adam", "sgd_nesterov", "adagrad", "adamax", "rmsprop", "adadelta",
+            ],
+            "sweeps": ["vae_lr_sweep"],
+            "series": ["regret"],
+        },
     ),
 }
 

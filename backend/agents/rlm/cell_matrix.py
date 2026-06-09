@@ -64,6 +64,7 @@ __all__ = [
     "dataset_url_preflight",
     "aggregate_cell_metrics",
     "default_dataset_probe",
+    "normalize_cell_axes",
 ]
 
 # Default VRAM headroom multiplier — must match the dynamic-GPU resolver
@@ -124,6 +125,126 @@ def _coerce_metric(value: Any) -> float | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Stage 0 — axis normalization
+# ---------------------------------------------------------------------------
+
+# Synonym fallbacks for the three per_model tree axes.  The cells.json contract
+# asks for explicit ``model_key`` / ``env`` / ``baseline`` per cell, but agents
+# reproducing non-SDAR papers routinely emit their own axis vocabulary
+# (``variant`` / ``dataset`` / ``optimizer`` ...).  2026-06-09: an All-CNN run
+# trained 14 cells to paper-grade accuracy and ``aggregate_cell_metrics``
+# silently dropped every one (``per_model={}``) because the manifest carried no
+# SDAR-shaped axes — the scorer saw "no measured metrics" and the run burned
+# its remaining budget re-running work it had already done.  A derived,
+# coarse-but-present leaf is strictly better than a discarded measured result.
+_AXIS_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "model_key": ("model_key", "model", "model_id", "model_name", "arch", "architecture"),
+    "env": ("env", "environment", "dataset", "dataset_id", "task", "benchmark"),
+    "baseline": ("baseline", "method", "variant", "optimizer", "algorithm"),
+}
+
+
+def _cell_axes(cell: dict[str, Any], index: int) -> tuple[str, str, str, bool]:
+    """Resolve ``(model_key, env, baseline, was_derived)`` for one cell.
+
+    Explicit axis keys win.  A missing axis falls back through
+    ``_AXIS_SYNONYMS`` (each source key feeds at most ONE axis, so ``variant``
+    can't become both the model and the baseline), then to the cell ``id`` for
+    ``model_key`` (token-rich and unique — exactly what the scorer's token
+    matching wants) and the literal ``"default"`` for ``env``/``baseline``.
+    Deterministic and pure; never raises.
+    """
+    used: set[str] = set()
+    resolved: dict[str, str] = {}
+    derived = False
+    for axis, synonyms in _AXIS_SYNONYMS.items():
+        value = ""
+        for key in synonyms:
+            if key in used:
+                continue
+            raw = cell.get(key)
+            if isinstance(raw, (str, int, float)) and not isinstance(raw, bool) and str(raw).strip():
+                value = str(raw).strip()
+                used.add(key)
+                if key != axis:
+                    derived = True
+                break
+        resolved[axis] = value
+    if not resolved["model_key"]:
+        cid = cell.get("id")
+        resolved["model_key"] = (
+            cid.strip() if isinstance(cid, str) and cid.strip() else f"cell_{index}"
+        )
+        derived = True
+    if not resolved["env"]:
+        resolved["env"] = "default"
+        derived = True
+    if not resolved["baseline"]:
+        resolved["baseline"] = "default"
+        derived = True
+    return resolved["model_key"], resolved["env"], resolved["baseline"], derived
+
+
+def normalize_cell_axes(
+    cells: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Ensure every cell carries non-empty ``model_key``/``env``/``baseline``.
+
+    Returns ``(normalized_cells, notes)``.  ``notes`` is empty when every cell
+    already had explicit axes (the common SDAR path — byte-for-byte unchanged);
+    otherwise it holds one human/agent-readable sentence describing the
+    derivation so the warning can ride the result back to the agent.
+
+    Guarantees:
+
+    * **Never drops a cell** (non-dict entries excepted — they can't run).
+    * Input is not mutated; patched cells are shallow copies.
+    * When two cells DERIVE to the same ``(model_key, env, baseline)`` triple,
+      the later one's ``baseline`` is suffixed with its cell id so no leaf can
+      silently overwrite another.  Explicit duplicate triples are preserved
+      verbatim (existing behavior for agent-authored manifests).
+    """
+    if not isinstance(cells, list):
+        return [], []
+    out: list[dict[str, Any]] = []
+    seen_triples: set[tuple[str, str, str]] = set()
+    n_derived = 0
+    for i, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            continue
+        model_key, env, baseline, derived = _cell_axes(cell, i)
+        if derived:
+            triple = (model_key, env, baseline)
+            if triple in seen_triples:
+                cid = str(cell.get("id") or f"cell_{i}")
+                baseline = f"{baseline}__{cid}"
+            n_derived += 1
+        seen_triples.add((model_key, env, baseline))
+        if (
+            cell.get("model_key") == model_key
+            and cell.get("env") == env
+            and cell.get("baseline") == baseline
+        ):
+            out.append(cell)
+        else:
+            patched = dict(cell)
+            patched["model_key"] = model_key
+            patched["env"] = env
+            patched["baseline"] = baseline
+            out.append(patched)
+    notes: list[str] = []
+    if n_derived:
+        notes.append(
+            f"cells.json contract: {n_derived}/{len(out)} cell(s) were missing explicit "
+            "model_key/env/baseline axes; the harness derived them from "
+            "model/dataset/variant-style fields (falling back to the cell id). "
+            "Metrics are keyed under the derived axes. For precise rubric matching, "
+            "emit explicit model_key, env, and baseline for every cell in cells.json."
+        )
+    return out, notes
 
 
 # ---------------------------------------------------------------------------
@@ -511,18 +632,21 @@ def aggregate_cell_metrics(
     any_ok = False
     any_failed = False
 
-    for cell in cells if isinstance(cells, list) else []:
+    for idx, cell in enumerate(cells if isinstance(cells, list) else []):
         if not isinstance(cell, dict):
             continue
         cell_id = cell.get("id")
         model_key = str(cell.get("model_key", "") or "")
         env = str(cell.get("env", "") or "")
         baseline = str(cell.get("baseline", "") or "")
-        # A cell that cannot be placed in the tree is unusable — skip it rather
-        # than nest under empty-string axes (which would corrupt the scorer's
-        # token matching).
+        # A ran cell must NEVER vanish from the aggregate (2026-06-09 All-CNN:
+        # 14 paper-grade cells aggregated to per_model={} because the agent's
+        # manifest used its own axis names, and this loop silently skipped all
+        # of them).  Callers normally pre-normalize via normalize_cell_axes();
+        # this is the belt-and-braces layer for direct callers — derive the
+        # missing axes instead of dropping measured results.
         if not model_key or not env or not baseline:
-            continue
+            model_key, env, baseline, _ = _cell_axes(cell, idx)
 
         record = matrix_result.get(cell_id) if isinstance(cell_id, str) else None
         if not isinstance(record, dict):

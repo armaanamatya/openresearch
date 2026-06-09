@@ -64,12 +64,15 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
 _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "cell_scheduler.py",
     "gpu_cell_runner.py",
+    "dead_training_guard.py",  # zero-dep dead-training early-stop detector (imported by gpu_cell_runner)
     "sdar_env_base.py",
     "agentic_rollout.py",
     "search_qa_env.py",
     "alfworld_env.py",
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
+    "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
+    "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
 )
 
 
@@ -574,6 +577,31 @@ _PER_MODEL_METRICS_BLOCK_BASE = (
     "If only one model variant is evaluated, omit `per_model` entirely; the flat\n"
     "format is sufficient. Never fabricate `per_model` entries for variants you\n"
     "did not actually run — use `scope.models_skipped` instead.\n"
+    "\n\nCONVERGENCE / TRAINING-COST CLAIMS — record the TRAJECTORY, not only finals:\n"
+    "Many papers' HEADLINE claim is about HOW a method reaches its result — faster\n"
+    "convergence, lower training cost, better sample efficiency, fewer iterations to a\n"
+    "target — NOT the final scalar (which frequently ties across methods once every\n"
+    "method has converged). A `metrics.json` carrying only FINAL accuracy/loss\n"
+    "STRUCTURALLY cannot evidence such a claim, and the grader will (correctly) be\n"
+    "unable to confirm it — `final_acc(adam) ≈ final_acc(sgd)` looks like a NON-result\n"
+    "even when the paper's real claim (`adam converges faster`) is fully reproduced.\n"
+    "  - If the paper compares optimizers/methods/configs on convergence speed,\n"
+    "    training cost, sample efficiency, or ANY per-epoch / per-step behavior, your\n"
+    "    `metrics.json` MUST include the per-epoch (or per-step) TRAJECTORY for each\n"
+    "    method alongside the finals, e.g.:\n"
+    "      \"history\": {\n"
+    "        \"<method>\": {\"epoch\": [0,1,2,...],\n"
+    "                       \"train_loss\": [...], \"train_cost\": [...],\n"
+    "                       \"val_metric\": [...]},\n"
+    "        ...one entry per method compared, on a COMMON x-axis...\n"
+    "      }\n"
+    "  - Use IDENTICAL initialization (same seed/weights) and a COMMON x-axis (same\n"
+    "    epochs/steps) across every method compared — that direct comparability IS the\n"
+    "    claim; without it the curves cannot be read against each other.\n"
+    "  - Train LONG ENOUGH for the claimed effect to appear: an advantage the paper\n"
+    "    shows over the first K epochs must be run for at least K epochs, or the\n"
+    "    ordering it demonstrates simply will not be present in your data.\n"
+    "  - Keep the final scalars too — the trajectory is ADDITIVE, never a replacement.\n"
 )
 
 
@@ -1156,6 +1184,27 @@ _RUBRIC_GUARD_BLOCK = (
     "The guard is unconditional — even when the run is a smoke-test, schema\n"
     "completeness must hold; a smoke-test that writes 1 sample is fine, a\n"
     "smoke-test that writes 0 keys is not.\n"
+    "\n"
+    "STRUCTURED EVIDENCE (convergence / sweep / time-series claims): when the\n"
+    "paper's HEADLINE claim is about convergence SPEED, a parameter sweep, or a\n"
+    "time-series (your extra guidance will say so and name the exact families),\n"
+    "final scalars alone score ~0 on the evaluation-protocol leaves. In that case:\n"
+    "  - ALSO emit `convergence_evidence.py` as a top-level file under code/\n"
+    "    (paste its source verbatim from\n"
+    "    `backend/agents/rlm/convergence_evidence.py` — zero non-stdlib deps), and\n"
+    "  - pass `structured_evidence={...}` to `assert_metrics_schema`, matching the\n"
+    "    families your guidance names, e.g.\n"
+    "      assert_metrics_schema(metrics, required_keys=[...],\n"
+    "          structured_evidence={'history_methods': ['adam','sgd_nesterov', ...],\n"
+    "                               'sweeps': ['<sweep_name>'],\n"
+    "                               'series': ['regret']})\n"
+    "    where `history.<exp>.<method>` carries per-epoch curves on a COMMON x-axis\n"
+    "    with IDENTICAL initialization across methods, every named sweep's results\n"
+    "    live in metrics.json (not only logs), and every named series is an ARRAY\n"
+    "    over t (never a lone scalar). A missing curve / sweep / series then raises\n"
+    "    RubricGuardFailure with the exact gap so you repair it BEFORE finalizing.\n"
+    "    (This enforcement is active only when REPROLAB_FIDELITY_EVIDENCE is set; the\n"
+    "    call is harmless otherwise.)\n"
 )
 
 

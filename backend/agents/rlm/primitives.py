@@ -115,19 +115,35 @@ def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) 
                 requirements_path.read_text(encoding="utf-8").splitlines(),
                 base_tag=tag,
             )
+            # Garbage-line guard (2026-06-09): one un-parseable line (agent prose
+            # like "(Section 5.2)") aborts the ENTIRE `pip install -r`, silently
+            # losing every valid dependency — the failure then surfaces minutes
+            # later as missing_module. Strip such lines and keep the rest.
+            kept, invalid = env_pin.sanitize_requirements(kept)
             if specs:
                 core_install_cmd = (
                     f"python -m pip install {' '.join(specs)} "
                     f"--index-url {torch_index} || true"
                 )
-            if dropped:
+            if dropped or invalid:
                 hardened = requirements_path.with_name("requirements.hardened.txt")
-                hardened.write_text("\n".join(kept) + "\n", encoding="utf-8")
-                requirements_target = hardened.name
-                logger.info(
-                    "_local_core_bootstrap_commands: env_pin stripped %d core re-pin(s) "
-                    "%s; harness installs the pinned cu121 stack", len(dropped), dropped,
+                header = [
+                    f"# pip-invalid line removed by harness: {s}" for s in invalid
+                ]
+                hardened.write_text(
+                    "\n".join(header + kept) + "\n", encoding="utf-8"
                 )
+                requirements_target = hardened.name
+                if dropped:
+                    logger.info(
+                        "_local_core_bootstrap_commands: env_pin stripped %d core re-pin(s) "
+                        "%s; harness installs the pinned cu121 stack", len(dropped), dropped,
+                    )
+                if invalid:
+                    logger.warning(
+                        "_local_core_bootstrap_commands: removed %d pip-invalid "
+                        "requirements line(s): %s", len(invalid), invalid,
+                    )
         except Exception:  # noqa: BLE001 — env_pin must never block the run
             logger.exception(
                 "_local_core_bootstrap_commands: env_pin hardening failed; raw requirements.txt"
@@ -899,7 +915,49 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         gpu_mode=getattr(ctx, "gpu_mode", None),
         sandbox_mode=_sandbox_key,
     )
-    result = _with_outcome(spec.model_dump(), PrimitiveOutcome.ok)
+    spec_dict = spec.model_dump()
+    # Runtime-hardware truth (2026-06-09): papers older than the GPU era never
+    # *mention* GPUs, so the paper-derived assumption reads "CPU only (no GPU
+    # required)" — and the agent then plans timid CPU-scale experiments on a
+    # multi-GPU box (every Adam/All-CNN attempt planned "CPU-only per ENV003"
+    # while training actually ran on an RTX A5000). Append a harness-measured
+    # assumption naming the real capacity so the agent scales its plan to the
+    # hardware it actually has. Fail-soft: any probe error skips the annotation.
+    try:
+        from backend.services.runtime.gpu_capacity import describe_capacity
+        caps = describe_capacity(ctx)
+        n_gpus = len(caps.free_gpu_ids or ())
+        if n_gpus > 0:
+            vram = float(caps.per_gpu_vram_gb or 0.0)
+            vram_txt = f"{vram:.0f} GB VRAM each" if vram > 0 else "VRAM unknown"
+            assumptions = list(spec_dict.get("assumptions") or [])
+            assumptions.append({
+                "assumption_id": "ENV-RT1",
+                "detail": "Runtime hardware (harness-measured)",
+                "chosen_value": (
+                    f"{n_gpus}× CUDA GPU available to this run ({vram_txt}). "
+                    "Regardless of what the paper mentions, prefer CUDA and "
+                    "scale experiments (epochs, model sizes, grids) to this "
+                    "hardware rather than planning CPU-only smoke runs."
+                ),
+                "evidence": [
+                    f"harness describe_capacity probe: {n_gpus} free GPU(s), "
+                    f"per-GPU budget {vram:.1f} GB"
+                ],
+                "risk": "low",
+                "verified_by": "harness",
+            })
+            spec_dict["assumptions"] = assumptions
+            try:  # keep the on-disk spec consistent with the returned dict
+                import json as _json
+                (ctx.project_dir / "environment_spec.json").write_text(
+                    _json.dumps(spec_dict, indent=2, default=str), encoding="utf-8"
+                )
+            except OSError:
+                logger.debug("detect_environment: environment_spec.json rewrite failed")
+    except Exception:  # noqa: BLE001 — capacity annotation must never block detection
+        logger.debug("detect_environment: runtime-capacity annotation skipped", exc_info=True)
+    result = _with_outcome(spec_dict, PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)
     return result
 
@@ -1408,6 +1466,18 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
                             f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
                         ),
                     })
+                    # Agent-visible feedback (2026-06-09): this fired on 15/15
+                    # Adam+All-CNN attempts because the dashboard warning never
+                    # reaches the root. Put the exact expected shape ON the
+                    # returned plan so the agent can self-correct, and the
+                    # compute-adjusted grading path stops being silently lost.
+                    data.setdefault("warnings", []).append(
+                        "compute_scope was a string and was DROPPED. If you "
+                        "reduced compute vs the paper, resend it as a JSON "
+                        "object: {\"is_clipped\": true, \"paper_epochs\": N, "
+                        "\"actual_epochs\": M, \"rationale\": \"...\", "
+                        "\"metric_floors\": [{...}]} — otherwise omit it."
+                    )
                 data["compute_scope"] = None
         else:
             # Not in the response (max mode or no instruction sent) — leave as None.
@@ -1467,7 +1537,14 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             logger.warning("plan_reproduction: data_recipes scan failed (%s) — empty list", _dr_exc)
             data["data_recipes"] = []
 
-        result = _with_outcome(ReproductionContract(**data).model_dump(), PrimitiveOutcome.ok)
+        contract_out = ReproductionContract(**data).model_dump()
+        # ReproductionContract is extra="ignore" — re-attach harness feedback
+        # (e.g. the compute_scope shape correction) AFTER the dump so the agent
+        # actually sees it on the returned plan instead of it being silently
+        # stripped with the other unknown keys.
+        if data.get("warnings"):
+            contract_out["warnings"] = list(data["warnings"])
+        result = _with_outcome(contract_out, PrimitiveOutcome.ok)
         _cache.put(ctx.project_dir, "plan_reproduction", payload=_payload, result=result)
         return result
     except Exception as exc:  # noqa: BLE001 — fail-soft (A2-H3 / D3 pattern)
@@ -4230,6 +4307,29 @@ def _validate_scope_metrics(
     def _ck(name: object) -> str:
         return canonical_model_key(str(name)).replace("_", "")
 
+    def _ds_covered(dataset: object, present_keys: set[str]) -> bool:
+        """True when ``dataset`` is covered by one of the metrics keys.
+
+        Agents key envs as e.g. ``cifar10_noaug`` / ``mnist_mlp`` — a plain
+        equality check against the scope dataset (``CIFAR-10``) falsely flags a
+        correctly-run dataset as missing (2026-06-09 All-CNN/Adam). Containment
+        is digit-aware so ``cifar100`` can never satisfy ``cifar10``: the
+        residual character right after the match must not be a digit.
+        """
+        cd = _ck(dataset)
+        if not cd:
+            return False
+        for pk in present_keys:
+            if not pk:
+                continue
+            if cd == pk:
+                return True
+            if pk.startswith(cd) and not pk[len(cd)].isdigit():
+                return True
+            if cd.startswith(pk) and not cd[len(pk)].isdigit():
+                return True
+        return False
+
     if is_multi_model:
         per_model = metrics.get("per_model")
         if not isinstance(per_model, dict) or not per_model:
@@ -4271,7 +4371,7 @@ def _validate_scope_metrics(
                         f"model {model_id!r} has none."
                     )
                 present_ds = {_ck(x) for x in pd}
-                missing_ds = [d for d in datasets if _ck(d) not in present_ds]
+                missing_ds = [d for d in datasets if not _ds_covered(d, present_ds)]
                 if missing_ds:
                     return (
                         f"per_dataset_incomplete: model {model_id!r} missing "
@@ -4286,7 +4386,8 @@ def _validate_scope_metrics(
                 f"Write metrics.json with a top-level per_dataset dict keyed by "
                 f"dataset id."
             )
-        missing_ds = [d for d in datasets if d not in pd]
+        present_ds = {_ck(x) for x in pd}
+        missing_ds = [d for d in datasets if not _ds_covered(d, present_ds)]
         if missing_ds:
             return (
                 f"per_dataset_incomplete: missing datasets {missing_ds} in "
@@ -4437,6 +4538,116 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
     return metrics
 
 
+def _smoke_metrics_violation(smoke_out: Path, cell_id: str) -> str | None:
+    """U3 — flag a cell that ran but produced no / NaN metrics (the
+    ``degraded_no_metrics`` root cause).  Returns a reason string, or None when fine.
+
+    Conservative to avoid false positives: an empty ``{}`` is NOT flagged (a 1-step
+    smoke may legitimately write partial metrics); only a MISSING / unparseable /
+    NaN-or-inf metrics file blocks.
+    """
+    import json
+    import math as _math
+    from pathlib import Path
+    cands = list(Path(smoke_out).rglob("metrics.json"))
+    if not cands:
+        return "ran without writing any metrics.json — the full grid would yield no measurable metrics"
+    try:
+        data = json.loads(cands[0].read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return "wrote an unparseable metrics.json"
+
+    def _bad(v) -> bool:
+        if isinstance(v, dict):
+            return any(_bad(x) for x in v.values())
+        if isinstance(v, (list, tuple)):
+            return any(_bad(x) for x in v)
+        if isinstance(v, float):
+            return _math.isnan(v) or _math.isinf(v)
+        return False
+
+    return "metrics.json contains NaN/inf values" if _bad(data) else None
+
+
+def _cell_smoke_repair(failure_class: str, cell_id: str, detail: str, log_tail: str) -> dict:
+    """Build a REPAIRABLE ``run_experiment`` failure from the pre-grid cell smoke.
+
+    No ``stop_reason`` → the next iteration repairs train_cell.py and retries
+    (distinct from the terminal capacity/oom stops, which end the run).
+    """
+    return {
+        "success": False,
+        "metrics": {},
+        "logs": f"pre-grid cell smoke [{cell_id}]: {detail}\n{log_tail}",
+        "error": f"pre-grid cell smoke ({cell_id}) failed: {detail}",
+        "failure_class": failure_class,
+        "repair_context": {
+            "failure_class": failure_class,
+            "detail": (
+                f"The cell-aware execution smoke ran the SMALLEST cell '{cell_id}' for a brief "
+                f"dry-run BEFORE the full grid and it failed ({detail}). This is a bug in "
+                f"train_cell.py that would affect every cell — fix it and re-emit. Log tail:\n{log_tail}"
+            ),
+        },
+    }
+
+
+def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_s, ctx) -> dict | None:
+    """U2/U3 — run the SMALLEST cell for a brief smoke BEFORE the full grid.
+
+    Catches a non-OOM ``train_cell.py`` code bug (the All-CNN ``cell_execution_error``
+    that zeroed 17 cells) on cell 1 in seconds and routes it to repair, instead of
+    burning the whole matrix.  Returns a repairable failure dict to block, or None to
+    proceed (ok / oom / timeout / soft pass).  Fully fail-soft: any infra error → None
+    (a smoke flake must never block a legitimate run).
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from backend.agents.rlm import gpu_cell_runner
+    try:
+        smoke_cell = min(kept, key=lambda c: float((c or {}).get("est_vram_gb") or 0.0))
+        cid = str(smoke_cell.get("id") or "cell0")
+        smoke_out = Path(artifact_root) / "_cell_smoke"
+        smoke_timeout = int(os.environ.get("REPROLAB_CELL_SMOKE_TIMEOUT_S", "180") or "180")
+        if timeout_s:
+            smoke_timeout = max(30, min(smoke_timeout, int(timeout_s)))
+        # Encourage a cooperating train_cell.py to self-cap to 1 step (run_matrix's
+        # child inherits os.environ; this call is sequential so a temporary set is
+        # safe).  The short timeout catches a non-honoring-but-working cell as a soft pass.
+        _prev = os.environ.get("REPROLAB_SMOKE_STEPS")
+        os.environ["REPROLAB_SMOKE_STEPS"] = "1"
+        try:
+            res = gpu_cell_runner.run_matrix(
+                [smoke_cell], str(Path(code) / "train_cell.py"),
+                output_root=str(smoke_out),
+                gpus=(list(gpus)[:gpus_per_cell] or None),
+                per_cell_timeout_s=smoke_timeout,
+                overall_timeout_s=smoke_timeout,
+                gpus_per_cell=gpus_per_cell,
+                now_iso=datetime.now(timezone.utc).isoformat(),
+            )
+        finally:
+            if _prev is None:
+                os.environ.pop("REPROLAB_SMOKE_STEPS", None)
+            else:
+                os.environ["REPROLAB_SMOKE_STEPS"] = _prev
+        cell_res = res.get(cid) or {}
+        status = cell_res.get("status")
+        log_tail = str(cell_res.get("log") or cell_res.get("logs") or "")[-1500:]
+        # OOM has its own shrink-retry ladder; a timeout means the cell ran but did not
+        # honor the 1-step cap (soft pass).  Only a genuine crash blocks + repairs.
+        if status not in ("ok", "oom_failed", "timeout", None):
+            return _cell_smoke_repair("cell_smoke_failed", cid, f"status={status}", log_tail)
+        if status == "ok":
+            bad = _smoke_metrics_violation(smoke_out, cid)
+            if bad is not None:
+                return _cell_smoke_repair("incomplete_metrics", cid, bad, log_tail)
+        return None
+    except Exception:  # noqa: BLE001 — smoke infra must never block a legit run
+        logger.warning("run_experiment: pre-grid cell smoke raised (non-blocking)", exc_info=True)
+        return None
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -4482,6 +4693,23 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         return {"success": False, "metrics": {}, "logs": "",
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
+
+    # Contract normalization (2026-06-09): every cell must carry the three
+    # per_model tree axes (model_key/env/baseline) or the aggregate loses it —
+    # the All-CNN run trained 14 cells to paper-grade accuracy and scored as
+    # "no measured metrics" because its manifest used its own axis vocabulary.
+    # Derive missing axes BEFORE any GPU is spent and tell both the operator
+    # (run_warning event) and the agent (logs + contract_warnings on the
+    # result) so the next iteration emits explicit axes.
+    all_cells, _axis_notes = cell_matrix.normalize_cell_axes(all_cells)
+    if _axis_notes:
+        try:
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "cell_axes_derived",
+                "message": " ".join(_axis_notes)[:500],
+            })
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            logger.debug("run_experiment: cell_axes_derived warning emit failed")
 
     # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
     # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
@@ -4564,6 +4792,27 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
         logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
 
+    # U2/U3 — cell-aware pre-grid execution smoke (REPROLAB_EXECUTION_SMOKE, local/docker
+    # only; azure uses the K8s runner).  Run the smallest cell briefly BEFORE the grid so a
+    # non-OOM train_cell.py bug (the All-CNN cell_execution_error) is caught on cell 1 and
+    # routed to repair.  Skipped for a 1-cell grid (redundant); fully fail-soft.
+    try:
+        from backend.agents.rlm import execution_smoke as _execution_smoke_cm
+        if (
+            _execution_smoke_cm.is_enabled()
+            and _sb_key_ecm != "azure"
+            and gpus
+            and len(kept) > 1
+        ):
+            _smoke_block = _cell_pregrid_smoke(
+                kept, code, artifact_root, gpus, _gpus_per_cell, timeout_s, ctx,
+            )
+            if _smoke_block is not None:
+                _persist_metrics(_smoke_block.get("metrics") or {})
+                return _smoke_block
+    except Exception:  # noqa: BLE001 — the smoke gate must never block a legit run
+        logger.debug("run_experiment: cell pre-grid smoke gate raised (non-blocking)", exc_info=True)
+
     if _sb_key_ecm == "azure":
         with k8s_job_cell_runner.bind_run_context(
             run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
@@ -4598,18 +4847,57 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         models_skipped=models_skipped, environments_skipped=envs_skipped)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
+    if _axis_notes:
+        logs = logs + "\n" + "\n".join(_axis_notes)
 
     statuses = [(matrix_result.get(c["id"]) or {}).get("status") for c in kept]
     n_ok = sum(s == "ok" for s in statuses)
     n_oom = sum(s == "oom_failed" for s in statuses)
     n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+    # Dead-training early-stop (2026-06-09): cells the guard killed because their loss
+    # was pinned (network never learned). These are deterministic architecture/init bugs
+    # — NOT transient — so they drive a targeted, repairable ``degenerate_training``
+    # signal rather than being silently scored low as fake-``ok`` runs-to-completion.
+    n_diverged = sum(s == "training_diverged" for s in statuses)
+    _diverged_cells = [
+        c["id"] for c, s in zip(kept, statuses) if s == "training_diverged"
+    ]
 
     if n_ok > 0:
         # At least one cell produced real metrics — partial or full success. Honest
-        # gaps (dropped/oom/err cells) are already in metrics.scope; flows to the
-        # SAME postflight guards + verify_against_rubric.
+        # gaps (dropped/oom/err/diverged cells) are already in metrics.scope; flows to
+        # the SAME postflight guards + verify_against_rubric.
         _persist_metrics(metrics)
-        return {"success": True, "metrics": metrics, "logs": logs, "wall_time_s": wall}
+        result = {"success": True, "metrics": metrics, "logs": logs, "wall_time_s": wall}
+        if _axis_notes:
+            # Agent-visible: the root sees this on the returned dict and can emit
+            # explicit axes in the next cells.json instead of repeating the gap.
+            result["contract_warnings"] = list(_axis_notes)
+        if n_diverged:
+            # Surface the divergence prominently so the root model re-implements the
+            # broken architectures on a later iteration (raising the score), instead of
+            # the gaps being buried in scope. Advisory — the partial result still ships.
+            result["divergence_warning"] = (
+                f"{n_diverged} cell(s) early-stopped as dead-training (loss pinned, no "
+                f"learning): {', '.join(_diverged_cells)}. These are gaps in the result "
+                f"— fix the trainer for these architectures (weight init, normalization, "
+                f"or pooling/shape wiring) to recover their contribution to the score."
+            )
+        return result
+
+    if n_ok == 0 and n_oom == 0 and n_diverged > 0 and n_diverged == n_err:
+        # Every run cell early-stopped as dead-training — repairable by fixing the
+        # trainer, NOT terminal. Reuse the existing ``degenerate_training`` repairable
+        # class (its classifier guidance + repair loop already exist); the error names
+        # the exact cells + the concrete fix surface so the agent repairs the right bug.
+        _persist_metrics(metrics)
+        return {"success": False, "metrics": metrics, "logs": logs,
+                "failure_class": "degenerate_training",
+                "error": (f"all {n_diverged} run cell(s) early-stopped as dead-training "
+                          f"(loss pinned, network not learning): "
+                          f"{', '.join(_diverged_cells)} — fix weight init, add a missing "
+                          f"normalization layer, or correct the pooling/shape wiring in "
+                          f"these architectures, then re-run")}
 
     if n_err == 0:
         # Every run cell OOM-failed after the shrink ladder — un-repairable by
@@ -4644,10 +4932,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
 
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
     _persist_metrics(metrics)
+    _div_note = (
+        f" (of which {n_diverged} early-stopped as dead-training: "
+        f"{', '.join(_diverged_cells)})" if n_diverged else ""
+    )
     return {"success": False, "metrics": metrics, "logs": logs,
             "failure_class": "cell_execution_error",
-            "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs), "
-                      f"{n_oom} OOM-failed, 0 succeeded — fix the cell trainer and re-run")}
+            "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs)"
+                      f"{_div_note}, {n_oom} OOM-failed, 0 succeeded — fix the cell "
+                      f"trainer and re-run")}
 
 
 def run_experiment(

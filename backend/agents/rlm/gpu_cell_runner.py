@@ -69,6 +69,11 @@ except ImportError:  # in-repo import path (running inside the harness package).
         write_cell_manifest,
     )
 
+try:  # sandbox-flat: dead_training_guard.py is copied next to this file.
+    import dead_training_guard
+except ImportError:  # in-repo import path.
+    from backend.agents.rlm import dead_training_guard
+
 logger = logging.getLogger(__name__)
 
 # Signatures that indicate a CUDA out-of-memory event in subprocess output.
@@ -257,12 +262,38 @@ def _run_cell_subprocess(
                 start_new_session=True,
             )
 
+            # Dead-training early-stop (2026-06-09, flag-gated default OFF): watch the
+            # streamed loss for the provably-stuck signature and kill the cell early as
+            # a ``training_diverged`` signal rather than burning the full epoch budget on
+            # a network that never learns. When disabled the detector is never built and
+            # the reader is byte-for-byte the original.
+            _detector = (
+                dead_training_guard.DeadTrainingDetector()
+                if dead_training_guard.is_enabled()
+                else None
+            )
+
             def _reader() -> None:
                 assert proc.stdout is not None
                 for line in proc.stdout:
                     captured_chunks.append(line)
                     log_fh.write(line)
                     log_fh.flush()
+                    if _detector is not None:
+                        diag = _detector.observe(line)
+                        if diag:
+                            marker = (
+                                f"\n{dead_training_guard.MARKER} "
+                                f"cell={cell.get('id', '')}: {diag}\n"
+                            )
+                            captured_chunks.append(marker)
+                            log_fh.write(marker)
+                            log_fh.flush()
+                            try:
+                                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                            except (ProcessLookupError, OSError):
+                                pass
+                            return  # stop reading; proc.wait() in the parent returns
 
             reader_thread = threading.Thread(target=_reader, daemon=True)
             reader_thread.start()
@@ -574,6 +605,31 @@ def run_matrix(
                 # worker exits; the retry will be picked up by the next idle
                 # worker or a freshly spawned one).
                 _spawn_worker()
+            elif dead_training_guard.is_dead_training(output):
+                # Early-stopped as provably-stuck training. Deterministic (an
+                # architecture/init bug, not a transient OOM) → do NOT retry; mark
+                # ``training_diverged`` so the matrix surfaces a targeted, repairable
+                # signal that drives the agent to fix its own trainer.
+                _div_metrics = _load_metrics(output_dir)
+                with results_lock:
+                    results[cell_id] = CellResult(
+                        cell_id=cell_id,
+                        status="training_diverged",
+                        metrics=_div_metrics,
+                        gpu=gpu_id,
+                        retries=retry_idx,
+                        error=(output[-2000:] if output else "training diverged"),
+                    )
+                write_cell_manifest(
+                    output_dir, caller="gpu_cell_runner", cell_id=cell_id,
+                    status="training_diverged",
+                    fingerprint=_fingerprints.get(cell_id), metrics=_div_metrics,
+                    retries=retry_idx, now_iso=now_iso,
+                )
+                logger.warning(
+                    "gpu_cell_runner: cell=%s TRAINING_DIVERGED (early-stop) gpu=%s",
+                    cell_id, gpu_id,
+                )
             else:
                 if deadline_hit:
                     status = "timeout"

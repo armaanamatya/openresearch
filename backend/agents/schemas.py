@@ -1116,6 +1116,15 @@ class PaperHint(BaseModel):
     # deps (trl, etc.) the reproduction legitimately needs.
     blocked_resources: list[str] = Field(default_factory=list)
     primitive_share: dict[str, float] | None = None
+    # Module A (fidelity evidence): when the paper's HEADLINE claims are about
+    # convergence speed / sweeps / time-series, declare the structured evidence the
+    # eval-protocol rubric leaves require, e.g.
+    #   {"history_methods": ["adam", "sgd_nesterov"], "sweeps": ["vae_lr_sweep"],
+    #    "series": ["regret"]}
+    # Surfaced into the implementer prompt AND passed to
+    # ``rubric_guard.assert_metrics_schema(structured_evidence=...)``; ENFORCED only when
+    # ``REPROLAB_FIDELITY_EVIDENCE`` is set, so None / unset flag is a no-op.
+    structured_evidence: dict | None = None
 
 
 # ---------------------------------------------------------------------------

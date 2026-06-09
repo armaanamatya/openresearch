@@ -893,6 +893,46 @@ def _finalize_fatal_primitive_abort(
     )
 
 
+def _salvage_partial_report(
+    report: "RLMFinalReport", project_dir: Path, *, stop_kind: str, stop_detail: str,
+) -> "float | None":
+    """Fold the run's already-earned evidence into a hard-stop report (in place).
+
+    2026-06-09 All-CNN: the watchdog shipped ``rubric.overall_score=None`` +
+    ``verdict="failed"`` while the run had recorded a real 0.49 rubric score —
+    the hard-stop path bypassed ``build_final_report`` and with it the
+    best-of-run floor. This helper applies the floor from dashboard events,
+    reconciles the verdict against the salvaged score (downgrade-only ceiling,
+    starting from the honest "partial" claim), and attaches a structured
+    ``stop_reason``. Fail-soft: any error leaves the bare report intact.
+    Returns the salvaged overall score (or None).
+    """
+    score: float | None = None
+    try:
+        from backend.agents.rlm.report import (
+            _apply_best_of_run_floor,
+            reconcile_verdict_with_score,
+        )
+        rubric = _apply_best_of_run_floor(dict(report.rubric or {}), project_dir)
+        raw = rubric.get("overall_score")
+        score = float(raw) if raw is not None else None
+        if score is not None:
+            report.rubric = rubric
+            report.verdict = reconcile_verdict_with_score("partial", score)
+            report.reproduction_summary = (
+                (report.reproduction_summary or "")
+                + f"\n\n[salvage] Best rubric score recorded before the stop: "
+                f"{score:.3f} (best_of_run) — preserved in this report."
+            ).strip()
+    except Exception:  # noqa: BLE001 — salvage must never block the report write
+        logger.exception("run_pipeline_rlm: hard-stop salvage failed (shipping bare report)")
+    try:
+        report.stop_reason = {"kind": stop_kind, "detail": stop_detail}
+    except Exception:  # noqa: BLE001 — schema drift must not block the write
+        logger.debug("run_pipeline_rlm: could not attach stop_reason", exc_info=True)
+    return score
+
+
 def _hard_stop_with_report(
     *,
     project_dir: Path,
@@ -901,13 +941,19 @@ def _hard_stop_with_report(
     summary: str,
     status_error: str,
     exit_code: int,
+    stop_kind: str = "hard_stop",
 ) -> None:
-    """Ship a partial ``failed`` report, emit ``run_complete``, flip demo_status, and
+    """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
     watchdog and the SIGTERM finalizer (2026-06-01). Every step is best-effort so a
-    failure writing one artifact never blocks the others or the exit.
+    failure writing one artifact never blocks the others or the exit. The report
+    carries the run's best recorded rubric score + a reconciled verdict (salvage,
+    2026-06-09) instead of an unconditional scoreless ``failed``.
     """
     report = RLMFinalReport(verdict="failed", reproduction_summary=summary, iterations=done)
+    salvaged_score = _salvage_partial_report(
+        report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
+    )
     try:
         write_final_report_rlm(report, project_dir)
     except Exception:  # noqa: BLE001
@@ -917,7 +963,7 @@ def _hard_stop_with_report(
             build_run_complete_event(
                 status="failed",
                 iterations=done,
-                rubric_score=None,
+                rubric_score=salvaged_score,
                 cost_usd=None,
                 final_report_path=str(project_dir / "final_report.json"),
             )
@@ -985,6 +1031,7 @@ def _arm_watchdog(
                 f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
+            stop_kind="wall_clock_watchdog",
         )
 
     timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
@@ -1031,6 +1078,7 @@ def _install_sigterm_finalizer(
             ),
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
+            stop_kind="sigterm",
         )
 
     try:
@@ -2015,6 +2063,27 @@ def _finalize(
                     ))
         except Exception:  # noqa: BLE001 — diagnostic only; never block report write
             logger.debug("_finalize: suspicious_partial check raised", exc_info=True)
+
+    # Two-axis reproducibility verdict producers (U14/U16, flag-gated + fail-soft):
+    # write repro_spec.json (claims) + fidelity_certificate.json so write_final_report_rlm
+    # can attach the verdict.  No-ops entirely unless REPROLAB_TWO_AXIS_VERDICT is set.
+    try:
+        from backend.agents.rlm import repro_spec_extractor, fidelity_certificate_builder
+        if repro_spec_extractor.is_enabled():
+            _paper_txt = ""
+            _ptxt = project_dir / "parsed_full_text.txt"
+            if _ptxt.exists():
+                _paper_txt = _ptxt.read_text(encoding="utf-8", errors="replace")
+            repro_spec_extractor.extract_and_write(
+                None, project_dir,
+                llm_client=getattr(ctx, "llm_client", None),
+                paper_text=_paper_txt,
+            )
+            fidelity_certificate_builder.build_certificate(
+                project_dir, arxiv_id=getattr(ctx, "arxiv_id", None),
+            )
+    except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
+        logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
