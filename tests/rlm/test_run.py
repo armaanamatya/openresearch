@@ -509,3 +509,49 @@ def test_stub_run_is_honestly_observable_in_artifacts(monkeypatch, tmp_path):
     assert status["primitiveProvider"] == "stub", (
         f"expected primitiveProvider='stub' in demo_status.json, got {status.get('primitiveProvider')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# run_config.json — relaunchable launch-parameter snapshot (audit 2026-06-09)
+# ---------------------------------------------------------------------------
+
+def test_run_writes_secret_free_config_snapshot(monkeypatch, tmp_path):
+    """Every run persists runs/<id>/run_config.json with the resolved launch
+    parameters (model/provider/sandbox/seed/budgets + OPENRESEARCH_* flags)
+    and NEVER any credential-looking variable."""
+    import asyncio
+    import json
+    import backend.agents.rlm.run as run_mod
+
+    monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
+    monkeypatch.setenv("OPENRESEARCH_CONTEXT_MAP", "on")  # a flag that should appear
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "rpa_fake")  # must be excluded
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "shh")  # must be excluded
+
+    class _FakeRLM:
+        def __init__(self, **kwargs): ...
+        def completion(self, *args, **kwargs):
+            raw = json.dumps({"verdict": "failed", "baseline_metrics": {}, "rubric": {}})
+            return type("R", (), {"response": raw, "usage_summary": None, "metadata": {}})()
+
+    monkeypatch.setattr(run_mod, "RLM", _FakeRLM)
+
+    asyncio.run(run_mod.run_pipeline_rlm(
+        project_id="cfg_snap",
+        runs_root=tmp_path,
+        workspace_claim_map={"entries": [{"title": "T", "excerpt": "x" * 600}]},
+        model="gpt-5",
+        provider="openai",
+        seed=42,
+    ))
+
+    cfg = json.loads((tmp_path / "cfg_snap" / "run_config.json").read_text(encoding="utf-8"))
+    assert cfg["model"] == "gpt-5"
+    assert cfg["provider"] == "openai"
+    assert cfg["seed"] == 42
+    assert cfg["mode"] == "rlm"
+    assert cfg["env_flags"].get("OPENRESEARCH_CONTEXT_MAP") == "on"
+    flat = json.dumps(cfg)
+    assert "rpa_fake" not in flat and "shh" not in flat, "secrets leaked into run_config.json"
+    assert "OPENRESEARCH_RUNPOD_API_KEY" not in cfg["env_flags"]
+    assert "OPENRESEARCH_DEMO_SECRET" not in cfg["env_flags"]

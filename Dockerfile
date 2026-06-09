@@ -87,14 +87,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         ca-certificates \
         curl \
-        gnupg \
         openssh-client \
         docker.io \
         tesseract-ocr \
         tesseract-ocr-eng \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Node comes from the frontend builder stage (same Debian bookworm base), so
+# the runtime serves with EXACTLY the Node that built the app. This replaces
+# the old `curl -fsSL https://deb.nodesource.com/setup_20.x | bash -` — an
+# unpinned remote script piped to root at build time, which could also drift
+# the serving Node away from the build Node (audit 2026-06-09). gnupg was
+# only needed for that nodesource flow and is gone with it.
+COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npx --version
 
 # Bring the pre-built Python venv from stage 1.
 COPY --from=python-deps /opt/venv /opt/venv
