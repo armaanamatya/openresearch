@@ -148,6 +148,42 @@ PAPER_HINTS: dict[str, PaperHint] = {
     # end — a wall-clock timeout fired mid-sweep and zeroed the four finished
     # families. This hint caps + cell-structures the sweep so each config is
     # independently bounded and partial results survive a timeout.
+    "1412.6806": PaperHint(
+        guidance=(
+            "All-CNN (1412.6806) — the rubric's dominant lever is the CIFAR-10 "
+            "model-comparison table: models A/B/C, each as base / strided-CNN / "
+            "ConvPool-CNN / All-CNN variants (12 combos; headline: All-CNN-C "
+            "~9.1% test error without augmentation, and the strided/all-conv "
+            "variants matching or beating their pooling counterparts).\n"
+            "LEARNING-RATE PROTOCOL (the #1 prior-run killer — single global "
+            "lr=0.05 dead-trained ConvPool/base variants on three attempts): "
+            "the paper selects gamma PER MODEL from {0.25, 0.1, 0.05, 0.01}. "
+            "Run a SHORT lr probe per (model, variant) — a few epochs, pick "
+            "the best by val accuracy — THEN launch the full 350-epoch run at "
+            "each model's own lr. Never share one lr across architectures. "
+            "Recipe: SGD momentum 0.9, weight decay 0.001, lr x0.1 at epochs "
+            "[200, 250, 300], 350 epochs total, dropout 20% on input + 50% "
+            "after pooling (or its replacement), global-contrast-normalization "
+            "+ ZCA whitening.\n"
+            "STRUCTURE: emit cells.json with ONE cell per (model, variant, "
+            "dataset) and EXPLICIT model_key/env/baseline axes per cell (e.g. "
+            "model_key='c_allcnn', env='cifar10_noaug', baseline='allcnn') "
+            "plus that cell's chosen lr; train_cell.py writes a FLAT per-cell "
+            "metrics.json with test_error_pct. Aggregate per_model entries "
+            "ATOMICALLY as cells finish so a timeout truncates the tail, not "
+            "finished work. CIFAR-100 (All-CNN, with aug) comes only AFTER all "
+            "CIFAR-10 cells land. The ImageNet experiment is OUT OF SCOPE on "
+            "this budget: declare it in scope.gaps explicitly — never fake or "
+            "silently omit it."
+        ),
+        default_scope=ScopeSpec(
+            datasets=[
+                DatasetSlice(name="CIFAR-10"),
+                DatasetSlice(name="CIFAR-100"),
+            ],
+            seeds=[1],
+        ),
+    ),
     "1412.6980": PaperHint(
         guidance=(
             "Adam (1412.6980) — PRIORITY #1: reproduce ALL SIX experiment families and "
