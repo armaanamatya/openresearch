@@ -79,7 +79,7 @@ flowchart TD
 | RLM Engine | [`rlms`](https://pypi.org/project/rlms/) library (Algorithm 1 reference implementation) |
 | Sub-agents | Claude Agent SDK (Sonnet) |
 | Root models | GPT-5, Claude (API or OAuth), Qwen3-Coder, Azure OpenAI |
-| Sandbox | Docker (CPU), RunPod (GPU), local process |
+| Sandbox | Docker (CPU), RunPod (GPU), Azure AKS (GPU), local process |
 | PDF Parsing | PyMuPDF, BeautifulSoup (arXiv HTML), Tesseract OCR |
 | Evaluation | PaperBench rubric framework |
 
@@ -134,7 +134,7 @@ python -m backend.cli reproduce 2605.15155 --sandbox runpod
 python -m backend.cli ingest 2512.24601  # ingest only
 ```
 
-**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,runpod}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
+**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,runpod,azure}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
 
 ### Docker
 
@@ -143,15 +143,35 @@ cp .env.example .env  # set API keys
 docker compose up --build
 ```
 
+### Cloud GPU on Azure (Kubernetes)
+
+The `--sandbox azure` backend dispatches each training cell as a **Kubernetes Job**
+on an AKS cluster with a **scale-to-zero** A100 pool (≈ $0 idle). The orchestrator
+runs on your machine; the GPUs live only in Azure.
+
+- **Startup** (once per cluster) — provision infra with Terraform (`infra/azure/`),
+  then the in-cluster scaffold with Helm (`infra/azure/helm/`).
+- **Integration** — drop-in: the same run routes `run_matrix` through
+  `k8s_job_cell_runner`; the `local` / `runpod` paths are untouched.
+- **Sync** — each run submits Jobs, polls their status, and pulls every
+  `metrics.json` back from Blob; the GPU pool scales `0 → N → 0` around the run.
+
+```bash
+python -m backend.cli reproduce 2605.15155 --sandbox azure --model claude-oauth
+```
+
+Full provisioning + run steps: **[docs/guides/azure-kubernetes-gpu-setup.md](docs/guides/azure-kubernetes-gpu-setup.md)**.
+
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | One of these | Root model (GPT-5) |
 | `ANTHROPIC_API_KEY` | required | Sub-agents (Sonnet). Leave empty to use Claude OAuth. |
-| `REPROLAB_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` |
+| `REPROLAB_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
 | `REPROLAB_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
 | `REPROLAB_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
+| `REPROLAB_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image). See the [Azure guide](docs/guides/azure-kubernetes-gpu-setup.md). |
 | `REPROLAB_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
 | `REPROLAB_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
 | `REPROLAB_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
@@ -258,4 +278,5 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 | [rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM architecture reference |
 | [setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions |
 | [deployment.md](docs/guides/deployment.md) | Deployment guide |
+| [azure-kubernetes-gpu-setup.md](docs/guides/azure-kubernetes-gpu-setup.md) | Azure AKS GPU sandbox — provisioning + run steps |
 | [e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook |
