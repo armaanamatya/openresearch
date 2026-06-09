@@ -8,12 +8,19 @@ cd /app
 
 # Compose mounts .env read-only for local development. Source it here rather
 # than using docker-compose env_file so `docker compose config` does not print
-# secret values.
+# secret values. Vars already set in the container environment (compose
+# `environment:` entries, `docker run -e`) must KEEP winning over .env — the
+# normal compose precedence — so snapshot them first and re-apply after
+# sourcing. Without this, a copied .env.example silently overrode e.g. the
+# compose-set OPENRESEARCH_DATABASE_URL and broke event-store persistence.
 if [[ -f /app/.env ]]; then
+    _pre_env="$(export -p)"
     set -a
     # shellcheck disable=SC1091
     source /app/.env
     set +a
+    eval "$_pre_env"
+    unset _pre_env
 fi
 
 # --- SSH key injection (Railway / env-only deployments) ---------------------
@@ -55,8 +62,11 @@ trap 'echo "[entrypoint] forwarding shutdown" >&2; \
 # wait -n returns when ANY background job exits. We then propagate that exit
 # code so docker compose treats the container as failed (lets restart policy
 # handle it instead of hanging with one healthy and one dead service).
-wait -n "$BACKEND_PID" "$FRONTEND_PID"
-EXIT_CODE=$?
+# The `|| EXIT_CODE=$?` is load-bearing: under `set -e` a bare `wait -n` that
+# returns nonzero would kill this script instantly, skipping the SIGTERM
+# teardown below (the surviving child then gets namespace-SIGKILLed — which
+# has corrupted the SQLite event store before).
+wait -n "$BACKEND_PID" "$FRONTEND_PID" && EXIT_CODE=0 || EXIT_CODE=$?
 echo "[entrypoint] one of (backend=$BACKEND_PID, frontend=$FRONTEND_PID) exited with $EXIT_CODE; tearing down" >&2
 kill -TERM "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
 wait "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true

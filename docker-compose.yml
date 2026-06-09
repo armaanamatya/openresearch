@@ -12,7 +12,7 @@
 # This compose mounts the host docker socket so the inner agent pipeline's
 # LocalDockerBackend can spawn sandbox containers against the host daemon
 # (no nested DinD). For prod, use the RunPodBackend instead — see
-# docs/setup-guide.md §"Remote GPU support with Runpod".
+# docs/guides/setup-guide.md §"Remote GPU support with Runpod".
 
 services:
   app:
@@ -22,8 +22,12 @@ services:
     image: openresearch/app:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"   # Next.js
-      - "8000:8000"   # FastAPI
+      - "3000:3000"             # Next.js (the gated UI surface)
+      # Loopback-only: the frontend reaches the backend server-side over the
+      # compose network; publishing :8000 beyond localhost would bypass the
+      # frontend unlock gate (read + run-start endpoints are ungated when
+      # OPENRESEARCH_DEMO_SECRET is empty).
+      - "127.0.0.1:8000:8000"   # FastAPI (debugging/curl from the host only)
     volumes:
       # Host docker socket → inner LocalDockerBackend works against host daemon.
       # This grants the container effective root on host Docker. Local-dev only.
@@ -40,7 +44,10 @@ services:
       # Tell anything that wants the venv interpreter where it lives.
       - OPENRESEARCH_PYTHON_BIN=/opt/venv/bin/python
       # Persisted SQLite event store (volume above keeps it between restarts).
-      - OPENRESEARCH_DATABASE_URL=sqlite:///app/runs/openresearch.db
+      # Four slashes = absolute /app/runs/... — three slashes is a CWD-relative
+      # path that would resolve to the never-created /app/app/runs/ and crash.
+      # The entrypoint guarantees compose `environment:` wins over .env values.
+      - OPENRESEARCH_DATABASE_URL=sqlite:////app/runs/openresearch.db
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 15s
