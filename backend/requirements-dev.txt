@@ -5,7 +5,9 @@
 -r requirements.txt
 
 # --- Test runner ------------------------------------------------------------
-pytest>=8,<9
+# Floor 9.0.2: rlms==0.1.1 (requirements.txt) declares pytest>=9.0.2; a <9 pin
+# here makes the combined install unsolvable on a clean machine.
+pytest>=9.0.2,<10
 pytest-asyncio>=0.23
 pytest-xdist>=3.5            # parallel test execution
 pytest-rerunfailures>=14     # rerun flaky network tests

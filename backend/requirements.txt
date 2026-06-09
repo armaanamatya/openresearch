@@ -1,5 +1,6 @@
-# OpenResearch backend — pinned runtime dependencies.
-# Source of truth: ../pyproject.toml. Keep in sync.
+# OpenResearch backend — pinned runtime dependencies. THIS file is the source
+# of truth (README, CLAUDE.md and the Dockerfile all install from it);
+# ../pyproject.toml [project].dependencies mirrors it for `pip install .`.
 # Install with: pip install -r backend/requirements.txt
 # (For development tooling, also install backend/requirements-dev.txt.)
 
