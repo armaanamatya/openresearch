@@ -1,0 +1,13 @@
+{
+  "status": "ok",
+  "metric": 0.19895833333333332,
+  "reward_mean": 0.19895833333333332,
+  "gate_mean": 0.9999999936670065,
+  "gate_active": 0.9999999936670065,
+  "delta_t_mean": -0.5076160169007384,
+  "opsd_loss_mean": 0.06964731276966632,
+  "zero_shot_f1": 0.0869786866359447,
+  "steps_run": 150,
+  "wall_time_s": 866.3973579406738,
+  "cell_id": "qwen3_1_7b__grpo_opsd__search_qa__s42"
+}

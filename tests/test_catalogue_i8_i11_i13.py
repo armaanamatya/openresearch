@@ -277,6 +277,14 @@ def test_i11_claude_binary_alone_is_not_credentials(monkeypatch, tmp_path) -> No
     monkeypatch.setattr("os.path.expanduser", lambda p: nonexistent if ".credentials.json" in p else p)
     # os.path.isfile must return False for that path (it doesn't exist in tmp_path)
     assert not (tmp_path / "no_such_credentials.json").exists()
+    # … and the macOS Keychain probe must not see the HOST's real `claude
+    # login` session (subprocess.run(["security", …]) — returncode 0 means a
+    # keychain credential exists, which is true on any logged-in dev Mac and
+    # made this test environment-dependent; audit 2026-06-09).
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.subprocess.run",
+        lambda *_a, **_k: SimpleNamespace(returncode=44),
+    )
 
     result = has_provider_credentials("anthropic")
     assert result is False, (

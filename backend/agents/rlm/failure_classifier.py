@@ -41,6 +41,8 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "requirements_not_found",    # pip CWD vs requirements.txt path mismatch
     "missing_dataset",           # HuggingFace datasets URI failure / dataset 404
     "exec_timeout",              # Per-command 4h cap hit
+    "exec_stalled",              # killed for no liveness (no output/ckpt/GPU/CPU) — a hang
+    "partial_timeout",           # timed-out/stalled but completed families recovered + scored
     "watchdog_killed",           # Lane E watchdog tripped
     "preflight_blocked",         # Lane F+I caught a scope / surrogate violation
     "permission_denied",         # File ownership / FS perm
@@ -54,7 +56,9 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "disk_exhausted",            # free disk fell below floor / HF cache ballooned mid-run
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
+    "cell_execution_error",      # Phase 0C: all run cells errored (non-OOM); zero ok cells
     "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
+    "cuda_shlib_load",           # a CUDA runtime lib (libcupti/libcudart/…) couldn't dlopen
     "unknown",                   # falls-through
 )
 
@@ -98,6 +102,19 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "exec_timeout":
             "the per-command 4h cap fired; reduce train.py epochs OR set "
             "OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S higher",
+        "exec_stalled":
+            "the run was killed because it produced NO output, no checkpoint write, and no "
+            "GPU/CPU activity for the stall window (OPENRESEARCH_EXPERIMENT_STALL_S) — a genuine "
+            "hang, likely a deadlocked dataloader / distributed collective or a frozen "
+            "download. Make the step emit periodic progress (a print or a checkpoint write), "
+            "avoid an un-timed blocking call (add a timeout to downloads / collectives), and "
+            "if it is a real long-but-quiet phase raise OPENRESEARCH_EXPERIMENT_STALL_S",
+        "partial_timeout":
+            "the experiment timed out but the families that completed were preserved and "
+            "scored (not zeroed) — finish the rest by bounding the long pole: emit cells.json "
+            "+ train_cell.py (one cell per config, each independently timed) OR cap/stream the "
+            "sweep smallest-config-first, writing metrics.json atomically after each family, "
+            "then re-run so the remaining families complete",
         "watchdog_killed":
             "no exec.log / heartbeat / SSE-event activity for 10 min — agent or pod was "
             "wedged; next iteration starts fresh against the persistent pod",
@@ -150,12 +167,25 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "minutes). A smoke must never be the scored reproduction. Run the FULL training "
             "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
             "completion and record the measured eval metric for every model before finalizing",
+        "cell_execution_error":
+            "every training cell failed with a non-OOM error (a code bug in the per-cell "
+            "trainer — TypeError / AttributeError / bad arg / import error) and ZERO cells "
+            "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
+            "it names, and re-run the matrix. This is NOT a scope reduction and NOT an OOM "
+            "— do not shrink the grid or de-scope a model/env; fix the code",
         "nccl_timeout":
             "a distributed collective (NCCL) timed out — one rank hung or died while the "
             "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "
             "SAME number of forward/backward steps (no per-rank early-exit or uneven batch "
             "counts), set NCCL_P2P_DISABLE=1 on kernels that hang multi-GPU P2P, and check "
             "whether an earlier rank crashed first (its trace is the real cause)",
+        "cuda_shlib_load":
+            "a CUDA runtime library (libcupti.so, libcudart.so, libnvrtc.so, …) couldn't "
+            "be loaded — almost always because requirements.txt re-pinned torch / "
+            "torchvision to a build that fights the harness's driver-compatible cu121 "
+            "install, leaving an incoherent CUDA stack. Remove the torch / torchvision / "
+            "torchaudio pins from requirements.txt (let the harness own them) and do NOT "
+            "set an exotic CUDA index — the harness installs a matching, loadable stack",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -224,6 +254,13 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # Timeout sentinels
         if "timed out after" in haystack and "run_experiment" in haystack:
             return ("exec_timeout", _suggest("exec_timeout"))
+
+        # Stall sentinel — killed for zero liveness (no stdout/stderr, no checkpoint mtime
+        # bump, no GPU-util, no CPU-util) over the stall window: a genuine hang (deadlocked
+        # dataloader / NCCL desync / frozen download), distinct from exec_timeout which hit
+        # the hard wall-clock while actively computing.
+        if cause_kind.endswith("exec_stalled") or "stalled: no output" in haystack:
+            return ("exec_stalled", _suggest("exec_stalled"))
 
         # CUDA OOM
         if (
@@ -304,6 +341,21 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # NCCL collective hang — the FSDP rank-0 ~600s watchdog timeout (F-08)
         if "nccl" in haystack and ("timeout" in haystack or "timed out" in haystack):
             return ("nccl_timeout", _suggest("nccl_timeout"))
+
+        # CUDA shared-object load failure — a torch/CUDA runtime lib (libcupti, libcudart,
+        # libnvrtc, …) can't be dlopen'd. The 2026-06-07 All-Conv-Net run hit
+        # "libcupti.so.12: cannot open shared object file" because requirements.txt re-pinned
+        # torch==2.2.0 over the harness's cu121 build, leaving an incoherent CUDA stack. This
+        # is an ENV/dependency failure (not code/data); the fix is to stop re-pinning torch
+        # (env_pin strips it). Checked AFTER nccl_timeout so a real NCCL hang keeps its class.
+        if "cannot open shared object file" in haystack and any(
+            _lib in haystack
+            for _lib in (
+                "libcupti", "libcudart", "libnvrtc", "libcublas",
+                "libcudnn", "libcusolver", "libcusparse", "libcurand", "libnccl",
+            )
+        ):
+            return ("cuda_shlib_load", _suggest("cuda_shlib_load"))
 
         # Disk exhaustion — a mid-run pip/HF download that fills the disk crashes
         # with a raw ENOSPC trace (no postflight preset). The class + fix already

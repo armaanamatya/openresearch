@@ -12,7 +12,7 @@ Automated research paper reproduction. Given a paper (arXiv link or PDF), OpenRe
 
 > **Status (2026-06-03):** Single-user, locally-run research tool — not a hosted
 > product. End-to-end reproduction works on arXiv IDs and PDFs (see
-> [`best_runs/`](best_runs/README.md) for two scored reproductions). Multi-tenant
+> [`best_runs/`](best_runs/README.md) for scored reproductions). Multi-tenant
 > auth, hosted deployment, and a stable public API are **not** built. See
 > [Current Limitations](#current-limitations).
 
@@ -316,13 +316,12 @@ re-running an expensive reproduction):
 
 | Artifact | What it is |
 |---|---|
-| [`best_runs/`](best_runs/README.md) | Two point-in-time scored reproductions (Adam, VAE) + their full sidecars |
+| [`best_runs/`](best_runs/README.md) | Point-in-time scored reproductions (Adam, All-CNN, VAE + the SDAR campaign) with full sidecars |
 | `runs/<project_id>/` | Live per-run state: `final_report.{json,md}`, event log, cost ledger, reproduced `code/` (gitignored) |
 | `docs/runbooks/artifacts/<id>/` | A committed reference run captured for a runbook |
 
-Tracked PDFs (`paperbench1.pdf`, `demo_paper.pdf`, `best_runs/adam/code/paper.pdf`)
-are **input fixtures** — the papers being reproduced. Papers don't go stale; they
-are not generated output.
+Tracked PDFs (`paperbench1.pdf`, `demo_paper.pdf`) are **input fixtures** — the
+papers being reproduced. Papers don't go stale; they are not generated output.
 
 ### Documentation freshness
 

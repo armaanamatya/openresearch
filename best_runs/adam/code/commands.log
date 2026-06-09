@@ -1,30 +1,33 @@
-# Command log — Adam paper reproduction
-# Project: prj_6d41d2f09c026403
-# Implemented by: Baseline Implementation Agent (v2 — architecture fixes)
-# Date: 2026-05-26
+# Command history for Adam paper reproduction (arXiv:1412.6980)
+# Baseline Implementation Agent — Mode 2 (Implement From Paper)
+# Generated: 2026-06-07
 
-# Paper: "Adam: A Method for Stochastic Optimization" — Kingma & Ba, ICLR 2015
-# arXiv: 1412.6980
+# Files written to code/
+# - config.json          : hyperparameters (Adam defaults, all experiments)
+# - optimizers.py        : AdamOptimizer, AdaMaxOptimizer, SGDNesterov, AdaGrad, RMSProp, AdaDelta
+# - models.py            : LogisticRegression, BOWLogisticRegression, MLP1000, CIFAR10CNN, VAE
+# - train.py             : 5 experiments orchestrator
+# - rubric_guard.py      : verbatim copy from backend/agents/rlm/rubric_guard.py
+# - commands.json        : harness entry point
+# - commands.log         : this file
 
-# Files written:
-#   train.py         — main experiment script (5 experiments, all 4 figures)
-#   config.json      — all hyperparameters
-#   requirements.txt — pip dependencies (torch/torchvision pre-installed on RunPod)
-#   commands.json    — ["python train.py"]
-#   rubric_guard.py  — self-validating schema checker (copied from backend)
-#   commands.log     — this file
-
-# Architecture fixes applied in v2:
-#   - MLP: 800 hidden → 1000 units per layer (paper Section 6.2: "1000 hidden units")
-#   - CIFAR CNN: rewritten as c64-c64-c128-1000 (5x5 conv, 3x3 maxpool stride 2)
-#   - VAE: 200/20 → 500 softplus / 50-dim latent (paper Section 6.4)
-#   - IMDB: added RMSProp optimizer (paper Figure 1 right)
-#   - Logistic regression: added alpha_t = alpha/sqrt(t) stepsize decay (Section 6.1)
+# Run command (inside container):
+python /code/train.py --output-dir $OUTPUT_DIR
 
 # Assumptions applied:
-#   ENV001 — PyTorch 2.2.0 (pre-installed on RunPod; paper date inference)
-#   ENV002 — Python 3.11 (compatible with torch 2.2.0)
-#   ENV003 — CPU/GPU auto-detect at runtime via torch.cuda.is_available()
+# ENV001 — pytorch==2.2.0 (inferred from paper date)
+# ENV002 — python==3.11 (compatible with pytorch 2.2.0)
+# ENV003 — GPU preferred; code adaptive (HAS_GPU detection at runtime)
 
-# Command to run:
-python train.py
+# Expected outputs in $OUTPUT_DIR/:
+# - metrics.json          (contract paths: per_dataset.{mnist,cifar10}.{final_accuracy,final_nll})
+# - training_curves.json  (per-step/epoch loss arrays for all 5 experiments)
+# - config_used.json      (all hyperparameters actually used)
+# - README.md
+# - fig_mnist_lr.png      (Figure 1 equivalent)
+# - fig_imdb_lr.png       (Figure 1 IMDB equivalent)
+# - fig_mlp_mnist.png     (Figure 2 equivalent — log scale)
+# - fig_cifar10_acc.png   (Figure 3 equivalent — accuracy)
+# - fig_cifar10_loss.png  (Figure 3 equivalent — loss)
+# - fig_vae.png           (Figure 4 equivalent — VAE ELBO)
+Sun 07 Jun 2026 07:46:02 PM UTC DIAGNOSIS: metrics.json missing from code root — train.py only wrote to $OUTPUT_DIR subdir, not to __file__ dir. FIX: added CODE_ROOT var + write_code_root_metrics() + flat extraction at end of main(); also materially wrote flat metrics.json from existing run data.

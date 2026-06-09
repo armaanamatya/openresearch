@@ -1,0 +1,18 @@
+{
+  "status": "failed",
+  "per_model": {},
+  "scope": {
+    "models_run": [],
+    "models_skipped": [],
+    "environments_skipped": [
+      "search_qa"
+    ],
+    "gaps": [
+      {
+        "item": "search_qa",
+        "reason": "dataset_url returned 404 (dead endpoint): https://huggingface.co/datasets/nq_open",
+        "kind": "dataset_unavailable"
+      }
+    ]
+  }
+}

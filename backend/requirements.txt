@@ -26,6 +26,15 @@ openai-agents>=0.17,<0.18
 # --- Sandbox runtime --------------------------------------------------------
 docker>=7,<8
 asyncssh>=2.14,<3
+# CPU-liveness probe for the local-sandbox stall detector
+# (local_process.py::_proc_tree_cpu_seconds): designed psutil-first with a
+# /proc fallback, so on macOS (no /proc) the signal silently vanished and
+# quiet CPU-busy jobs were stall-killed until this was declared (2026-06-09).
+psutil>=5.9,<8
+# Azure AKS GPU backend (lazy-imported; only needed when --sandbox azure)
+azure-identity>=1.16,<2
+azure-storage-blob>=12.19,<13
+kubernetes>=29,<32
 
 # --- Evaluation: reproduction + innovation scoring --------------------------
 # Required by backend/evals/* — install if you use the `eval` CLI.

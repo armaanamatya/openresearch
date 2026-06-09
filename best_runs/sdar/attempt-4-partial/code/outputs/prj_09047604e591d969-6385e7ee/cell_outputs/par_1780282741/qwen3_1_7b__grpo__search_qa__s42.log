@@ -1,0 +1,186 @@
+[train_cell] cell=qwen3_1_7b__grpo__search_qa__s42
+[train_cell] model_id=Qwen/Qwen3-1.7B  baseline=grpo  seed=42
+[train_cell] output_dir=/home/sww35/openresearch/runs/prj_09047604e591d969/code/outputs/prj_09047604e591d969-6385e7ee/cell_outputs/par_1780282741/qwen3_1_7b__grpo__search_qa__s42
+[init] device=cuda  HAS_GPU=True  STEPS=150
+[init] OUTPUT_DIR=/home/sww35/openresearch/runs/prj_09047604e591d969/code/outputs/prj_09047604e591d969-6385e7ee/cell_outputs/par_1780282741/qwen3_1_7b__grpo__search_qa__s42
+[init] BETA=10.0  LAMBDA=0.1  CLIP_EPS=0.2  ALPHA_KL=0.01
+Using the latest cached version of the dataset since nq_open couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'nq_open' at /home/sww35/openresearch/runs/.cache/hf/datasets/nq_open/nq_open/0.0.0/5dd9790a83002ad084ddeb7c420dc716852c6f28 (last modified on Fri May 29 16:34:02 2026).
+[data] NQ-Open: loaded 256 examples
+Using the latest cached version of the dataset since hotpotqa/hotpot_qa couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'distractor' at /home/sww35/openresearch/runs/.cache/hf/datasets/hotpotqa___hotpot_qa/distractor/0.0.0/1908d6afbbead072334abe2965f91bd2709910ab (last modified on Fri May 29 16:48:26 2026).
+[data] HotpotQA: loaded 256 examples
+[data] Total examples: 512
+/home/sww35/openresearch/.venv/lib/python3.12/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+
+============================================================
+[train] qwen3_1_7b | GRPO | seed=42
+  opsd_enabled=False  gate_type=ones
+  BETA=10.0  LAMBDA=0.1  CLIP_EPS=0.2  ALPHA_KL=0.01
+============================================================
+  Loading student Qwen/Qwen3-1.7B...
+`torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 58.82it/s]
+  Student loaded. params=1.72B
+  Running zero-shot sanity check...
+The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+  [sanity] zero-shot F1=0.0724 over 16 examples
+/home/sww35/openresearch/.venv/lib/python3.12/site-packages/torch/utils/checkpoint.py:87: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+  [qwen3_1_7b|grpo] step=1/150 loss=-0.0000  reward=0.1019  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=2/150 loss=-0.0000  reward=0.0109  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=3/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=4/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=5/150 loss=-0.0000  reward=0.0029  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=6/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=7/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=8/150 loss=-0.0000  reward=0.0213  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=9/150 loss=0.0000  reward=0.1009  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=10/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=11/150 loss=-0.0000  reward=0.0464  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=12/150 loss=-0.0000  reward=0.0089  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=13/150 loss=0.0000  reward=0.0265  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=14/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=15/150 loss=0.0000  reward=0.0460  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=16/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=17/150 loss=-0.0000  reward=0.0244  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=18/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=19/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=20/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=21/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=22/150 loss=0.0000  reward=0.1050  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=23/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=24/150 loss=0.0000  reward=0.0309  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=25/150 loss=-0.0000  reward=0.0238  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=26/150 loss=-0.0000  reward=0.0024  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=27/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=28/150 loss=-0.0000  reward=0.0293  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=29/150 loss=0.0000  reward=0.0362  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=30/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=31/150 loss=-0.0000  reward=0.0199  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=32/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=33/150 loss=0.0000  reward=0.0033  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=34/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=35/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=36/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=37/150 loss=0.0000  reward=0.0031  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=38/150 loss=-0.0000  reward=0.0256  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=39/150 loss=-0.0000  reward=0.0056  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=40/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=41/150 loss=0.0000  reward=0.0212  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=42/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=43/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=44/150 loss=0.0000  reward=0.0344  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=45/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=46/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=47/150 loss=0.0000  reward=0.0220  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=48/150 loss=0.0000  reward=0.1403  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=49/150 loss=0.0000  reward=0.3315  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=50/150 loss=0.0000  reward=0.0183  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=51/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=52/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=53/150 loss=0.0000  reward=0.0763  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=54/150 loss=-0.0000  reward=0.0112  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=55/150 loss=0.0000  reward=0.0577  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.1s
+  [qwen3_1_7b|grpo] step=56/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=57/150 loss=0.0000  reward=0.0385  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=58/150 loss=0.0000  reward=0.0199  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=59/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=60/150 loss=-0.0000  reward=0.0637  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=61/150 loss=-0.0000  reward=0.0652  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=62/150 loss=0.0000  reward=0.0472  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=63/150 loss=-0.0000  reward=0.0493  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=64/150 loss=0.0000  reward=0.0289  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.1s
+  [qwen3_1_7b|grpo] step=65/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=66/150 loss=0.0000  reward=0.0570  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=67/150 loss=0.0000  reward=0.2722  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=68/150 loss=0.0000  reward=0.0249  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=69/150 loss=-0.0000  reward=0.1003  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=70/150 loss=-0.0000  reward=0.0060  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=71/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=72/150 loss=-0.0000  reward=0.0452  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=73/150 loss=0.0000  reward=0.0422  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=74/150 loss=-0.0000  reward=0.0280  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=75/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=76/150 loss=-0.0000  reward=0.0317  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=77/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=78/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=79/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=80/150 loss=0.0000  reward=0.0801  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=81/150 loss=0.0000  reward=0.1515  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=82/150 loss=-0.0000  reward=0.6289  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=83/150 loss=-0.0000  reward=0.2045  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=84/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=85/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=86/150 loss=0.0000  reward=0.0122  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=87/150 loss=-0.0000  reward=0.0062  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=88/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=89/150 loss=-0.0000  reward=0.0333  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=90/150 loss=-0.0000  reward=0.0029  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=91/150 loss=0.0000  reward=0.0272  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=92/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=93/150 loss=0.0000  reward=0.3436  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=94/150 loss=0.0000  reward=0.0576  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=95/150 loss=-0.0000  reward=0.1250  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=96/150 loss=-0.0000  reward=0.0050  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=97/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=98/150 loss=-0.0000  reward=0.0820  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=99/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=100/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=101/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=102/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=103/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=104/150 loss=-0.0000  reward=0.0025  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=105/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=106/150 loss=-0.0000  reward=0.0275  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=107/150 loss=-0.0000  reward=0.0069  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=108/150 loss=0.0000  reward=0.0295  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=109/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=110/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=111/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=112/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=113/150 loss=-0.0000  reward=0.1155  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=114/150 loss=-0.0000  reward=0.0185  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=115/150 loss=-0.0000  reward=0.0592  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=116/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=117/150 loss=0.0000  reward=0.0916  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=5.0s
+  [qwen3_1_7b|grpo] step=118/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=119/150 loss=-0.0000  reward=0.0475  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=120/150 loss=-0.0000  reward=0.7957  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=121/150 loss=-0.0000  reward=0.0625  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=122/150 loss=0.0000  reward=0.1323  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=123/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=124/150 loss=0.0000  reward=0.2418  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=125/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=126/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=127/150 loss=0.0000  reward=0.0147  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=128/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=129/150 loss=-0.0000  reward=0.1904  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=130/150 loss=-0.0000  reward=0.1250  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=131/150 loss=0.0000  reward=0.0297  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=132/150 loss=0.0000  reward=0.6250  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=133/150 loss=-0.0000  reward=0.0385  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=134/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=135/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=136/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=137/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=138/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=139/150 loss=0.0000  reward=0.7500  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=140/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.9s
+  [qwen3_1_7b|grpo] step=141/150 loss=0.0000  reward=0.0068  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=142/150 loss=-0.0000  reward=0.1562  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=143/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=144/150 loss=-0.0000  reward=0.2776  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=145/150 loss=0.0000  reward=0.2594  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=146/150 loss=0.0000  reward=0.4687  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=147/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=148/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=149/150 loss=0.0000  reward=0.6667  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+  [qwen3_1_7b|grpo] step=150/150 loss=0.0000  reward=0.0000  gate_active=0.000  gate_mag=0.000  delta_t=0.000  t=4.8s
+
+  [qwen3_1_7b|grpo] DONE  final_reward=0.1639  gate_active=0.000  wall=730s
+[train_cell] curves.json written (8 keys)
+[train_cell] Done. metric=0.1639

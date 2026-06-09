@@ -6,7 +6,8 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 
-# depth-1 per-run files the whitelist intentionally tracks.
+# depth-1 per-run files the whitelist intentionally tracks. Mirror of the
+# .gitignore `!/runs/*/<name>` re-include rules — keep the two lists in sync.
 _RUNS_WHITELIST = {
     "final_report.json",
     "final_report.md",
@@ -14,6 +15,7 @@ _RUNS_WHITELIST = {
     "batch_child.log",
     "experiment_runs.jsonl",
     "cost_ledger.jsonl",
+    "tokens_total.json",
 }
 
 

@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "per_model": {},
+  "scope": {
+    "models_run": [],
+    "models_skipped": [],
+    "environments_skipped": [],
+    "gaps": []
+  }
+}

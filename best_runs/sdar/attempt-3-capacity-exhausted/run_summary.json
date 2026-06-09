@@ -1,0 +1,66 @@
+{
+  "source_run_dir": "runs/prj_09047604e591d969__20260531-235743",
+  "status": "completed",
+  "started_at": "2026-05-31T23:21:49.950157+00:00",
+  "completed_at": "2026-05-31T23:44:39.751068+00:00",
+  "verdict": "failed",
+  "iterations": 1,
+  "mode": "rlm",
+  "stop_reason": {
+    "kind": "capacity_exhausted",
+    "detail": "every cell exceeds the per-GPU budget 24 GB (headroom 1.25) or targets a dead dataset; nothing to run on this backend",
+    "per_gpu_vram_gb": 23.98828125,
+    "models_skipped": [],
+    "environments_skipped": [
+      "search_qa"
+    ],
+    "gaps": [
+      {
+        "item": "search_qa",
+        "reason": "dataset_url returned 404 (dead endpoint): https://huggingface.co/datasets/nq_open",
+        "kind": "dataset_unavailable"
+      }
+    ]
+  },
+  "rubric_overall_score": 0.08915254237288137,
+  "rubric_target_score": null,
+  "rubric_leaf_count": 27,
+  "rubric_coverage_pct": 1.0,
+  "rubric_meets_target": false,
+  "tokens": {
+    "input_total": 89,
+    "output_total": 51781,
+    "by_model": {
+      "claude-oauth": {
+        "input": 17,
+        "output": 7400
+      },
+      "claude-sonnet-4-6": {
+        "input": 72,
+        "output": 44381
+      }
+    }
+  },
+  "estimated_cost_usd": {
+    "total": 3.0031,
+    "rlm_root": 0.1491,
+    "baseline_subagents": 2.854,
+    "note": "estimated API-equivalent; run used claude-oauth subscription so actual LLM cash cost is ~$0"
+  },
+  "outcome": "failed \u2014 capacity_exhausted: Search-QA dataset (nq_open) returned 404, every cell dropped",
+  "packaged_files": [
+    "batch_child.log",
+    "cost_ledger.jsonl",
+    "dashboard_events.jsonl",
+    "demo_status.json",
+    "environment_spec.json",
+    "experiment_runs.jsonl",
+    "final_report.json",
+    "final_report.md",
+    "generated_rubric.json",
+    "rubric_evaluation.json",
+    "tokens_total.json",
+    "worker_reports.jsonl"
+  ],
+  "code_files_copied": 23
+}

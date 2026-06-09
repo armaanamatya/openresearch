@@ -31,6 +31,7 @@ _RESPONSE_MAX_CHARS: int = 4_000
 _STDOUT_PREFIX_MAX_CHARS: int = 200
 _PROMPT_PREVIEW_MAX_CHARS: int = 200
 _SENTINEL_LEN: int = 200  # chars from each corpus value used as a leak sentinel
+_PROGRESS_LINE_MAX_CHARS: int = 200  # bound the last_line/command preview on experiment_progress
 
 # Thresholds for rubric area status derivation in build_rubric_score_event.
 # score >= RUBRIC_AREA_PASS_THRESHOLD    → "pass"
@@ -627,12 +628,46 @@ def build_candidate_outcome_event(
     }
 
 
+# Bounds on the rubric_score payload so the SSE event stays small even on a
+# fine-grained rubric (SDAR has dozens of leaves). Scores + justifications +
+# error strings are egress-safe (no REPL locals / corpus), but still bounded.
+_MAX_LEAVES_PER_AREA = 12
+_MAX_WEAK_LEAVES = 8
+_MAX_RECENT_ERRORS = 3
+_LEAF_LABEL_MAX = 140
+_LEAF_WHY_MAX = 280
+_ERROR_MESSAGE_MAX = 200
+
+
+def _leaf_ui_status(score: object, state: object) -> str:
+    """UI status for one leaf: unavailable / pass / partial / fail.
+
+    ``unavailable`` when the leaf was skipped (state contains ``skipped``) or its
+    score is ``None``; otherwise thresholded by the same area cutoffs. Mirrors
+    ``primitives._leaf_status`` so a leaf and its parent area read consistently;
+    duplicated here to keep ``sse_bridge`` free of a primitives import.
+    """
+    if score is None or (isinstance(state, str) and "skipped" in state):
+        return "unavailable"
+    try:
+        s = float(score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "fail"
+    if s >= RUBRIC_AREA_PASS_THRESHOLD:
+        return "pass"
+    if s >= RUBRIC_AREA_PARTIAL_THRESHOLD:
+        return "partial"
+    return "fail"
+
+
 def build_rubric_score_event(
     *,
     iteration: int,
     score: float,
     target: float,
     areas: list[dict],
+    weak_leaves: list[dict] | None = None,
+    recent_errors: list[dict] | None = None,
 ) -> dict:
     """Build a ``rubric_score`` dashboard event.
 
@@ -646,8 +681,18 @@ def build_rubric_score_event(
         iteration:  1-based root-loop iteration index.
         score:      Overall rubric score, 0–1 (from ``RubricVerification.overall_score``).
         target:     Rubric target, 0–1 (from ``RubricVerification.target_score``).
-        areas:      List of area dicts with keys ``area``, ``score``, ``weight``;
-                    ``status`` is derived and added here.
+        areas:      List of area dicts with keys ``area``, ``score``, ``weight``,
+                    and an optional ``leaves`` list of leaf detail dicts
+                    (``{id, label, score, status, why}``); the area ``status`` is
+                    derived and added here. Leaf ``status`` is re-derived from the
+                    leaf score/state so the wire value is always self-consistent.
+        weak_leaves: Optional list of the lowest-scoring leaves across all areas,
+                    each ``{id, score, why, area}``; bounded to ``_MAX_WEAK_LEAVES``.
+        recent_errors: Optional list of recent failed-experiment rows, each
+                    ``{kind, message, iteration}``; bounded to ``_MAX_RECENT_ERRORS``.
+
+    The payload is egress-safe (scores + justifications + error strings only — no
+    REPL locals / paper corpus) and size-bounded by the module ``_MAX_*`` caps.
     """
     def _area_status(area_score: float) -> str:
         if area_score >= RUBRIC_AREA_PASS_THRESHOLD:
@@ -656,21 +701,76 @@ def build_rubric_score_event(
             return "partial"
         return "fail"
 
+    def _leaf_out(leaf: dict) -> dict:
+        lscore = leaf.get("score")
+        state = leaf.get("state")
+        status = _leaf_ui_status(lscore, state)
+        score_out: float | None = None
+        if status != "unavailable":
+            try:
+                score_out = float(lscore)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                score_out = None
+        return {
+            "id": str(leaf.get("id", "") or ""),
+            "label": " ".join(str(leaf.get("label") or "").split())[:_LEAF_LABEL_MAX],
+            "score": score_out,
+            "status": status,
+            "why": " ".join(str(leaf.get("why") or "").split())[:_LEAF_WHY_MAX],
+        }
+
+    def _area_out(a: dict) -> dict:
+        raw_leaves = a.get("leaves") if isinstance(a.get("leaves"), list) else []
+        leaves_out: list[dict] = []
+        for leaf in raw_leaves[:_MAX_LEAVES_PER_AREA]:
+            if isinstance(leaf, dict):
+                try:
+                    leaves_out.append(_leaf_out(leaf))
+                except Exception:  # noqa: BLE001 — drop a malformed leaf
+                    continue
+        return {
+            "area": a["area"],
+            "score": a["score"],
+            "weight": a["weight"],
+            "status": _area_status(a["score"]),
+            "leaves": leaves_out,
+        }
+
+    def _weak_out(e: dict) -> dict:
+        wscore = e.get("score")
+        try:
+            wscore = float(wscore) if wscore is not None else None  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            wscore = None
+        return {
+            "id": str(e.get("id", "") or ""),
+            "score": wscore,
+            "why": " ".join(str(e.get("why") or e.get("justification") or "").split())[:_LEAF_WHY_MAX],
+            "area": str(e.get("area", "") or ""),
+        }
+
+    def _error_out(e: dict) -> dict:
+        it = e.get("iteration")
+        if not isinstance(it, int):
+            it = None
+        return {
+            "kind": str(e.get("kind", "") or "unknown"),
+            "message": " ".join(str(e.get("message") or "").split())[:_ERROR_MESSAGE_MAX],
+            "iteration": it,
+        }
+
+    weak_src = [w for w in (weak_leaves or []) if isinstance(w, dict)][:_MAX_WEAK_LEAVES]
+    err_src = [e for e in (recent_errors or []) if isinstance(e, dict)][:_MAX_RECENT_ERRORS]
+
     return {
         "event": "rubric_score",
         "timestamp": _now_iso(),
         "iteration": iteration,
         "score": score,
         "target": target,
-        "areas": [
-            {
-                "area": a["area"],
-                "score": a["score"],
-                "weight": a["weight"],
-                "status": _area_status(a["score"]),
-            }
-            for a in areas
-        ],
+        "areas": [_area_out(a) for a in areas],
+        "weak_leaves": [_weak_out(w) for w in weak_src],
+        "recent_errors": [_error_out(e) for e in err_src],
     }
 
 
@@ -698,6 +798,60 @@ def build_iteration_heartbeat_event(
         "iteration": iteration,
         "counter": counter,
         "note": note,
+    }
+
+
+def build_experiment_progress_event(
+    *,
+    last_output_at: str | None,
+    last_line: str,
+    lines: int,
+    pid: int | None,
+    command: str,
+    elapsed_s: float | None,
+    sentinels: list[str] | None = None,
+) -> dict:
+    """Build an ``experiment_progress`` dashboard event.
+
+    Emitted periodically (~30 s) by ``run_experiment`` on the ``local`` sandbox
+    while a long training subprocess runs, so the UI / ``dashboard_events.jsonl``
+    show that the experiment is *ongoing* (mirrors the ``.exec_heartbeat.json``
+    sidecar that ``LocalProcessBackend`` streams to ``code/.exec_live.log``).
+
+    This is a liveness/progress event in the same family as
+    :func:`build_iteration_heartbeat_event`: it carries only PII-safe execution
+    *metadata* — never REPL locals or the paper corpus. The free-text
+    ``last_line`` (tail of the subprocess stdout/stderr) and ``command`` fields
+    are bounded to ``_PROGRESS_LINE_MAX_CHARS`` and, when *sentinels* are
+    supplied, run through :func:`redact_corpus` (M-REDACT / A1-M2) so a line that
+    happened to echo corpus content can never leak at egress.
+
+    Args:
+        last_output_at: ISO-8601 timestamp of the most recent subprocess output
+                        line, or ``None`` when nothing has been emitted yet.
+        last_line:      Tail of the most recent stdout/stderr line; bounded.
+        lines:          Cumulative count of output lines streamed so far.
+        pid:            OS process id of the running subprocess, or ``None``.
+        command:        The shell command being executed; bounded.
+        elapsed_s:      Seconds elapsed since the subprocess started, or ``None``.
+        sentinels:      Optional corpus sentinels for the M-REDACT egress pass on
+                        ``last_line``/``command``.
+    """
+    _sentinels = sentinels or []
+    last_line_out = (last_line or "")[:_PROGRESS_LINE_MAX_CHARS]
+    command_out = (command or "")[:_PROGRESS_LINE_MAX_CHARS]
+    if _sentinels:
+        last_line_out = redact_corpus(last_line_out, _sentinels)
+        command_out = redact_corpus(command_out, _sentinels)
+    return {
+        "event": "experiment_progress",
+        "timestamp": _now_iso(),
+        "last_output_at": last_output_at,
+        "last_line": last_line_out,
+        "lines": lines,
+        "pid": pid,
+        "command": command_out,
+        "elapsed_s": elapsed_s,
     }
 
 
@@ -737,6 +891,7 @@ __all__ = [
     "build_cluster_started",
     "build_candidate_outcome_event",
     "build_candidate_proposed_event",
+    "build_experiment_progress_event",
     "build_iteration_heartbeat_event",
     "build_repair_dispatched",
     "build_rubric_score_event",

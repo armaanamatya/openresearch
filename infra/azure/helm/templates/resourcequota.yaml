@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: reprolab-gpu-quota
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+spec:
+  hard:
+    # ---------------------------------------------------------------------------
+    # GPU limits — prevent runaway cost from Jobs that accidentally omit the limit
+    # or from a bug that submits far more cells than the node-pool max.
+    # Both requests AND limits are capped independently.
+    #
+    # Sizing rule: maxGpu = Σ(pool max_nodes × gpu_count) across all GPU pools.
+    # With the default single A100-80 pool (max_nodes=4, gpu_count=1): maxGpu=4.
+    # Override in envs/<env>/helm-values.yaml when multiple pools are provisioned.
+    # [tfvar: gpu_max_nodes] — set to the sum of all pool max_nodes values.
+    # ---------------------------------------------------------------------------
+    requests.nvidia.com/gpu: {{ .Values.resourceQuota.maxGpu | quote }}
+    limits.nvidia.com/gpu: {{ .Values.resourceQuota.maxGpuLimits | quote }}
+
+    # ---------------------------------------------------------------------------
+    # Job count cap — prevents a loop bug from flooding the namespace.
+    # Distinct from the GPU cap: a CPU-stub Job or a failed-retrying Job counts
+    # toward this limit but not toward the GPU limit.
+    #
+    # Sizing rule: maxJobs >= parallelism × (1 + max_escalations) + slack.
+    # With ttlSecondsAfterFinished=3600, finished Jobs occupy quota for up to
+    # 1 hour; back-to-back runs with escalation can accumulate:
+    #   parallelism=8 cells × (1 + 2 escalations) = 24 live + finished Jobs.
+    # The default of 64 provides sufficient headroom for 2 concurrent 8-cell runs
+    # each with up to 2 OOM escalations plus 1 hr of TTL-retained finished Jobs.
+    # Raise this value (override in envs/<env>/helm-values.yaml) if you increase
+    # parallelism or OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS beyond 2.
+    # ---------------------------------------------------------------------------
+    count/jobs.batch: {{ .Values.resourceQuota.maxJobs | quote }}

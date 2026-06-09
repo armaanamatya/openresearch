@@ -38,21 +38,32 @@ def _make_scanned_pdf(tmp_path: Path, text: str) -> Path:
 
     This simulates a scanned PDF: the text is rendered to a Pillow image,
     embedded as a JPEG in a new PDF via PyMuPDF. The PDF has no text layer.
+    The text is repeated across many lines in a large face: the production
+    parser rejects OCR output under its 200-char floor (_MIN_TEXT_CHARS), so
+    a single short line can never pass `parse()` even when OCR reads it
+    perfectly (which is exactly what happened on macOS — audit 2026-06-09).
     """
-    # Render text to an image.
-    img = Image.new("RGB", (800, 200), color="white")
+    try:
+        font = ImageFont.load_default(size=32)  # Pillow >= 10.1
+    except TypeError:  # older Pillow: fixed-size default bitmap font
+        font = ImageFont.load_default()
+    lines = [f"{text} line {i} of the scanned page" for i in range(1, 9)]
+    img = Image.new("RGB", (1100, 60 * len(lines) + 80), color="white")
     draw = ImageDraw.Draw(img)
-    draw.text((10, 80), text, fill="black")
+    for i, line in enumerate(lines):
+        draw.text((20, 40 + 60 * i), line, fill="black", font=font)
 
     # Convert to PNG bytes.
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     png_bytes = buf.getvalue()
 
-    # Embed in a PDF page via PyMuPDF.
+    # Embed in a PDF page via PyMuPDF (page sized to the image so OCR sees
+    # the glyphs undistorted).
+    width, height = img.size
     doc = fitz.open()
-    page = doc.new_page(width=800, height=200)
-    page.insert_image(fitz.Rect(0, 0, 800, 200), stream=png_bytes)
+    page = doc.new_page(width=width, height=height)
+    page.insert_image(fitz.Rect(0, 0, width, height), stream=png_bytes)
 
     pdf_path = tmp_path / "scanned.pdf"
     doc.save(str(pdf_path))

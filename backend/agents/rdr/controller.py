@@ -30,6 +30,7 @@ from backend.agents.rlm.primitives import (
     run_experiment,
 )
 from backend.evals.paperbench.leaf_scorer import score_reproduction
+from backend.config import get_settings
 from backend.agents.rlm.report import (
     RLMFinalReport,
     reconcile_verdict_with_score,
@@ -389,6 +390,109 @@ def _merge_cluster_files(
             )
 
 
+async def _dispatch_competing_candidates(
+    cluster: WorkCluster,
+    agctx: Any,
+    *,
+    n: int,
+    reproduce: Callable,
+    ctx: "RunContext",
+    code_dir: Path,
+    cluster_timeout_s: float,
+    bes_score_fn: Callable,
+    select_metric: str,
+    emit: Callable[[str, dict[str, Any]], None],
+) -> Artifacts:
+    """BES v1 — build N isolated candidates for one cluster; return the winner's Artifacts.
+
+    Each candidate writes into its OWN scratch dir (``candidates/<cluster.id>#i/code``)
+    via ``AgentContext.candidate_code_dir`` so they never stomp the shared ``code/``.
+    Each is scored STATICALLY by the injected ``bes_score_fn`` (the leaf scorer over the
+    scratch dir — no GPU); the best by ``select_metric`` wins and its files merge into
+    ``code/`` downstream exactly as a single attempt would. N× token cost, 1× GPU cost.
+    Fail-soft per candidate; an empty/all-failed pool returns a failed Artifacts.
+    """
+    from backend.agents.rdr.candidates import Candidate, select_best
+    import dataclasses as _dc
+    import re as _re
+    import shutil as _shutil
+
+    candidates_root = code_dir.parent / "candidates"
+    # Sanitize the cluster id used in the scratch path so a traversal-bearing id
+    # ('..', '/') can never escape candidates_root (Codex should-fix).
+    _safe_cluster = _re.sub(r"[^A-Za-z0-9_-]", "_", str(cluster.id))[:64] or "cluster"
+    pool: list[Candidate] = []
+    for i in range(n):
+        cid = f"{_safe_cluster}#{i}"
+        cand_run_dir = candidates_root / cid
+        # Clear stale state from a prior attempt/resume so the snapshot + winner-merge
+        # only ever carry THIS candidate's files (Codex should-fix).
+        if cand_run_dir.exists():
+            _shutil.rmtree(cand_run_dir, ignore_errors=True)
+        cand_code_dir = cand_run_dir / "code"
+        cand_code_dir.mkdir(parents=True, exist_ok=True)
+        # Stage paper_full.md so the agent prompt's relative ``../paper_full.md``
+        # read/grep fallback resolves from the candidate's deeper code dir too — the
+        # inline cited sections are already in the prompt, but this restores the
+        # full-paper fallback for competing candidates (Codex should-fix).
+        _paper = code_dir.parent / "paper_full.md"
+        if _paper.exists():
+            try:
+                _shutil.copy2(_paper, cand_run_dir / "paper_full.md")
+            except Exception:  # noqa: BLE001 — paper staging is best-effort
+                pass
+        cand_ctx = _dc.replace(agctx, candidate_code_dir=cand_code_dir)
+        try:
+            art_i = await asyncio.wait_for(
+                reproduce(cand_ctx, ctx=ctx),
+                timeout=cluster_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            art_i = Artifacts(
+                cluster_id=cluster.id, failed=True,
+                error=f"TimeoutError: candidate {cid} exceeded {cluster_timeout_s:.0f}s",
+            )
+        except Exception as exc:  # noqa: BLE001 — per-candidate fail-soft
+            art_i = Artifacts(
+                cluster_id=cluster.id, failed=True,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        score: float | None = None
+        failed_leaves: list[str] = []
+        if not art_i.failed:
+            try:
+                scores = await asyncio.to_thread(bes_score_fn, cand_run_dir, cluster)
+                score = _cluster_score(cluster, scores or {})
+                failed_leaves = _failed_leaves_for_cluster(cluster, scores or {}, 0.6)
+            except Exception as exc:  # noqa: BLE001 — scoring fail-soft → unscored candidate
+                logger.warning(
+                    "run_rdr[%s]: candidate %s scoring failed: %s",
+                    ctx.project_id, cid, exc,
+                )
+        pool.append(Candidate(
+            candidate_id=cid, cluster_id=cluster.id, scratch_dir=cand_run_dir,
+            artifacts=art_i, score=score, failed_leaves=failed_leaves,
+        ))
+        emit("candidate_proposed", {
+            "candidate_id": cid, "cluster_id": cluster.id,
+            "score": score, "failed": art_i.failed,
+        })
+
+    winner = select_best(pool, select_metric=select_metric)
+    if winner is None:
+        return Artifacts(cluster_id=cluster.id, failed=True, error="BES: no candidates produced")
+    emit("candidate_outcome", {
+        "candidate_id": winner.candidate_id, "cluster_id": cluster.id,
+        "outcome": "selected", "score": winner.score, "n_candidates": len(pool),
+    })
+    logger.info(
+        "run_rdr[%s]: cluster %s — BES selected %s (score=%s) from %d candidates",
+        ctx.project_id, cluster.id, winner.candidate_id, winner.score, len(pool),
+    )
+    return winner.artifacts
+
+
 async def _dispatch_one_cluster(
     cluster: WorkCluster,
     idx: int,
@@ -407,6 +511,8 @@ async def _dispatch_one_cluster(
     is_repair: bool = False,
     repair_pass: int = 0,
     prior_scores: dict[str, Any] | None = None,
+    bes_score_fn: Callable | None = None,
+    bes_settings: Any | None = None,
 ) -> None:
     """Run one cluster end-to-end. Safe to call concurrently for distinct clusters.
 
@@ -469,31 +575,49 @@ async def _dispatch_one_cluster(
         # os._exit-based _ClusterWatchdog, which would kill the entire process
         # — unsafe when multiple clusters are in flight. Each cluster gets its
         # own asyncio task; a timeout cancels only that task.
-        try:
-            art = await asyncio.wait_for(
-                reproduce(agctx, ctx=ctx),
-                timeout=cluster_timeout_s,
+        # BES competing candidates (MASTER-gated, default OFF). When bes_enabled
+        # with N>1 + an injected score_fn (and not a repair pass), build N isolated
+        # candidates, score each statically, and keep the winner's artifacts.
+        # Disabled / N==1 / no score_fn / repair => the single reproduce call in the
+        # else branch below, byte-identical to today's path.
+        _bes_n = 1
+        if bes_settings is not None and getattr(bes_settings, "bes_enabled", False):
+            _bes_n = max(1, int(getattr(bes_settings, "bes_candidates_per_cluster", 1) or 1))
+        if _bes_n > 1 and bes_score_fn is not None and not is_repair:
+            art = await _dispatch_competing_candidates(
+                cluster, agctx, n=_bes_n,
+                reproduce=reproduce, ctx=ctx, code_dir=code_dir,
+                cluster_timeout_s=cluster_timeout_s,
+                bes_score_fn=bes_score_fn,
+                select_metric=str(getattr(bes_settings, "bes_select_metric", "cluster_score")),
+                emit=emit,
             )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "run_rdr[%s]: cluster %s timed out after %.0fs — marking failed",
-                ctx.project_id, cluster.id, cluster_timeout_s,
-            )
-            art = Artifacts(
-                cluster_id=cluster.id,
-                failed=True,
-                error=f"TimeoutError: cluster exceeded {cluster_timeout_s:.0f}s",
-            )
-        except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
-            logger.warning(
-                "run_rdr[%s]: cluster %s raised %s: %s — marking failed",
-                ctx.project_id, cluster.id, type(exc).__name__, exc,
-            )
-            art = Artifacts(
-                cluster_id=cluster.id,
-                failed=True,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+        else:
+            try:
+                art = await asyncio.wait_for(
+                    reproduce(agctx, ctx=ctx),
+                    timeout=cluster_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "run_rdr[%s]: cluster %s timed out after %.0fs — marking failed",
+                    ctx.project_id, cluster.id, cluster_timeout_s,
+                )
+                art = Artifacts(
+                    cluster_id=cluster.id,
+                    failed=True,
+                    error=f"TimeoutError: cluster exceeded {cluster_timeout_s:.0f}s",
+                )
+            except Exception as exc:  # noqa: BLE001 — per-cluster fail-soft
+                logger.warning(
+                    "run_rdr[%s]: cluster %s raised %s: %s — marking failed",
+                    ctx.project_id, cluster.id, type(exc).__name__, exc,
+                )
+                art = Artifacts(
+                    cluster_id=cluster.id,
+                    failed=True,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
 
         # Publish to done before merge so any peers built right after see it.
         with done_lock:
@@ -551,6 +675,8 @@ async def _run_cluster_batch(
     is_repair: bool = False,
     repair_pass: int = 0,
     prior_scores: dict[str, Any] | None = None,
+    bes_score_fn: Callable | None = None,
+    bes_settings: Any | None = None,
 ) -> None:
     """Run a list of clusters with bounded concurrency.
 
@@ -581,6 +707,8 @@ async def _run_cluster_batch(
             is_repair=is_repair,
             repair_pass=repair_pass,
             prior_scores=prior_scores,
+            bes_score_fn=bes_score_fn,
+            bes_settings=bes_settings,
         )
         for idx, cluster in clusters_with_idx
     ]
@@ -594,6 +722,68 @@ async def _run_cluster_batch(
                 "run_rdr[%s]: _dispatch_one_cluster surfaced %s: %s",
                 ctx.project_id, type(result).__name__, result,
             )
+
+
+async def _run_rdr_preflight_gate(
+    *,
+    code_dir: Path,
+    parallel_batch: list[tuple[int, WorkCluster]],
+    reproduce: Callable,
+    ctx: "RunContext",
+    paper: str,
+    done: dict[str, Artifacts],
+    done_lock: threading.Lock,
+    file_merge_lock: threading.Lock,
+    iterations_dir: Path,
+    emit: Callable[[str, dict[str, Any]], None],
+    cluster_concurrency: int,
+    cluster_timeout_s: float,
+    max_regens: int,
+) -> None:
+    """Phase 2 mode-agnostic pre-run gate: scan ``code/`` for HARD static violations
+    BEFORE the GPU experiment; on a violation, regenerate the Code Dev clusters
+    (Codex: a violation can't be attributed to one cluster, so re-run all) up to
+    ``max_regens`` times, then proceed regardless. Fail-soft — never blocks the run,
+    never raises."""
+    try:
+        from backend.agents.rlm.preflight_ast import scan_code_dir
+    except Exception:  # noqa: BLE001 — gate import fail-soft
+        return
+    for attempt in range(max(0, int(max_regens)) + 1):
+        try:
+            violations = scan_code_dir(code_dir)
+        except Exception:  # noqa: BLE001 — scan fail-soft (never block the experiment)
+            return
+        hard = [v for v in violations if getattr(v, "severity", "soft") == "hard"]
+        if not hard:
+            return
+        emit("rdr_preflight_blocked", {
+            "attempt": attempt,
+            "hard_count": len(hard),
+            "violations": [str(getattr(v, "detail", v))[:200] for v in hard][:8],
+        })
+        if attempt >= max_regens:
+            logger.warning(
+                "run_rdr[%s]: pre-run gate found %d hard violation(s) after %d regen(s) "
+                "— proceeding to experiment (fail-soft)", ctx.project_id, len(hard), attempt,
+            )
+            return
+        logger.info(
+            "run_rdr[%s]: pre-run gate found %d hard violation(s); regenerating Code Dev "
+            "clusters (regen %d/%d)", ctx.project_id, len(hard), attempt + 1, max_regens,
+        )
+        await _run_cluster_batch(
+            parallel_batch, reproduce=reproduce, ctx=ctx, paper=paper, done=done,
+            done_lock=done_lock, file_merge_lock=file_merge_lock, code_dir=code_dir,
+            iterations_dir=iterations_dir, emit=emit, cluster_concurrency=cluster_concurrency,
+            cluster_timeout_s=cluster_timeout_s, is_repair=True, repair_pass=90 + attempt,
+        )
+        try:
+            _cmds = _dedup_commands(done)
+            (code_dir / "commands.json").write_text(
+                json.dumps(_cmds or ["python train.py"]), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — command re-assembly is best-effort
+            pass
 
 
 def _split_clusters_by_parallelism(
@@ -728,6 +918,24 @@ async def run_rdr(
     # Step 1: Decompose
     # ------------------------------------------------------------------
     rubric = bundle.rubric()
+    # BES on RDR (spec 2026-06-07): read flags once. Build the STATIC candidate
+    # score_fn only when the master gate is on AND N>1; otherwise _bes_score_fn stays
+    # None so the dispatcher takes the byte-identical legacy path. score_reproduction
+    # is the static leaf scorer (no GPU) over a candidate's scratch dir.
+    _bes_settings = get_settings()
+    _bes_score_fn: Callable | None = None
+    if _bes_settings.bes_enabled and _bes_settings.bes_candidates_per_cluster > 1:
+        def _bes_score_fn(cand_run_dir: Path, _cluster: WorkCluster, _rubric=rubric, _ctx=ctx) -> dict:
+            # degraded=False so the leaf scorer GRADES the candidate's code (Codex
+            # blocker): degraded short-circuits every leaf to 0.0 without reading the
+            # code, which ties all candidates and always picks #0. The candidate has
+            # no metrics.json yet, so this is a code-only static grade — the SELECT
+            # signal that discriminates competing candidates pre-GPU.
+            return score_reproduction(
+                _rubric, cand_run_dir, _ctx.llm_client,
+                rubric_source=str((_rubric or {}).get("source") or "paperbench_bundle"),
+                degraded=False,
+            )
     clusters: list[WorkCluster] = decompose(
         rubric, max_leaves_per_cluster=max_leaves_per_cluster
     )
@@ -819,6 +1027,8 @@ async def run_rdr(
         emit=_emit,
         cluster_concurrency=cluster_concurrency,
         cluster_timeout_s=cluster_timeout_s,
+        bes_score_fn=_bes_score_fn,
+        bes_settings=_bes_settings,
     )
 
     # Phase 1b: Code Execution + Result Analysis sequentially.
@@ -909,6 +1119,18 @@ async def run_rdr(
             ctx.project_id, type(exc).__name__, exc,
         )
     _emit("rdr_environment_completed", {"project_id": ctx.project_id, "env_id": env_id})
+
+    # Mode-agnostic RDR pre-run gate (Phase 2, default OFF). Scan the assembled
+    # code/ for HARD static violations BEFORE spending GPU on run_experiment; on a
+    # violation, regenerate the Code Dev clusters (bounded) and re-scan. Fail-soft.
+    if getattr(_bes_settings, "rdr_preflight_gate", False):
+        await _run_rdr_preflight_gate(
+            code_dir=code_dir, parallel_batch=parallel_batch, reproduce=_reproduce,
+            ctx=ctx, paper=paper, done=done, done_lock=done_lock,
+            file_merge_lock=file_merge_lock, iterations_dir=iterations_dir, emit=_emit,
+            cluster_concurrency=cluster_concurrency, cluster_timeout_s=cluster_timeout_s,
+            max_regens=int(getattr(_bes_settings, "rdr_preflight_max_regens", 1)),
+        )
 
     # ------------------------------------------------------------------
     # Step 6: Experiment (fail-soft; only if env_id available)

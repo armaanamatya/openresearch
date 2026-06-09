@@ -1,0 +1,25 @@
+{
+  "paperId": "2605.15155",
+  "paperTitle": "Self-Distilled Agentic Reinforcement Learning",
+  "paper": {
+    "id": "2605.15155",
+    "title": "Self-Distilled Agentic Reinforcement Learning"
+  },
+  "projectId": "prj_09047604e591d969",
+  "outputDir": "/home/sww35/openresearch/runs/prj_09047604e591d969",
+  "runMode": "rlm",
+  "status": "failed",
+  "updatedAt": "2026-05-31T23:10:52.761687+00:00",
+  "startedAt": "2026-05-31T23:10:52.761687+00:00",
+  "primitiveProvider": "real",
+  "process_status": "running",
+  "verdict": "unknown",
+  "cost_summary": {
+    "usd_total": 0.0,
+    "usd_this_iter": 0.0,
+    "iter_count": 0,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-05-31T23:18:36.512584+00:00"
+  },
+  "sourceLabel": "Self-Distilled Agentic Reinforcement Learning"
+}

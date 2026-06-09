@@ -1,0 +1,391 @@
+{
+  "iteration": 0,
+  "overall_score": 0.6246551724137932,
+  "target_score": 0.6,
+  "meets_target": true,
+  "leaf_count": 23,
+  "graded": 23,
+  "rubric_source": "paperbench_bundle",
+  "degraded": false,
+  "compute_adjusted_score": 0.6246551724137932,
+  "compute_scope": null,
+  "coverage_pct": 1.0,
+  "areas": [
+    {
+      "area": "Method and code fidelity to the paper",
+      "score": 1.0,
+      "weight": 0.3448275862068965,
+      "leaves": [
+        {
+          "id": "a9d889317044416e80e9ca05aed023aa",
+          "label": "The All-CNN-C model is implemented by replacing every max-pooling layer with a standard convolutional layer of stride r=2 and 3\u00d73 kernel who",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py `_cifar_stage` allcnn branch replaces pooling with `nn.Conv2d(out_c, out_c, 3, padding=1, stride=2)` (out_c==in_c), and CIFARNet ends in conv 1x1\u2192num_classes then `nn.AdaptiveAvgPool2d(1)` with cross-entropy (softmax), an all-conv net."
+        },
+        {
+          "id": "73eed8e8674c41309b93a73cc6870bf9",
+          "label": "The Strided-CNN-C variant removes each max-pooling layer and increases the stride of the immediately preceding convolution by 1 (to stride 2",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py `_cifar_stage` model C strided branch makes the second 3x3 conv `stride=2` with no new layer and no MaxPool, matching the increase-preceding-conv-stride rule."
+        },
+        {
+          "id": "65da754085ea48959579c6ab78493003",
+          "label": "The ConvPool-CNN-C control variant inserts a dense convolution with the same kernel size as the respective pooling layer immediately before ",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py `_cifar_stage` convpool branch inserts an extra `nn.Conv2d(out_c, out_c, 3, padding=1)` immediately before `nn.MaxPool2d(3, stride=2)`, same 3x3 kernel as the pool, for parameter control (comment 'ConvPool \u2248 All-CNN in parameters')."
+        },
+        {
+          "id": "709c3e6342e04dd793ec135676d84a2d",
+          "label": "Base models A, B, C are implemented per Table 1: model B is the Network-in-Network variant with one 1\u00d71 convolution after each normal convol",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py: model B adds `nn.Conv2d(out_c,out_c,1)` after each spatial conv (NiN), model C uses stacked 3x3+3x3, and stage3 terminates in `nn.Conv2d(192,num_classes,1)` then `gap=nn.AdaptiveAvgPool2d(1)`."
+        },
+        {
+          "id": "5157e7bd99c746ad82661c0aac198922",
+          "label": "Guided backpropagation is implemented so that, when propagating a signal back through a ReLU, an entry is zeroed if at least one of the top ",
+          "score": 1.0,
+          "status": "pass",
+          "why": "guided_backprop.py backward hook computes `guided_grad = grad * (grad>0).float() * act_mask` where act_mask=`(output>0).float()`, zeroing where either forward activation or incoming gradient is negative."
+        }
+      ],
+      "compute_adjusted_score": 1.0
+    },
+    {
+      "area": "Data and preprocessing fidelity",
+      "score": 0.85,
+      "weight": 0.11206896551724137,
+      "leaves": [
+        {
+          "id": "fce877af7c51490fbedd7c3f50030dbb",
+          "label": "CIFAR-10 and CIFAR-100 input images are whitened and contrast normalized following Goodfellow et al. (2013), as stated in Section 3.2.",
+          "score": 1.0,
+          "status": "pass",
+          "why": "data.py implements `global_contrast_normalize` and `ZCAWhitener` (fit on train, applied to both splits) within `prepare_cifar`, citing Goodfellow et al. 2013; cifar_shared_data holds zca_cifar10.npy / zca_cifar100.npy."
+        },
+        {
+          "id": "41145a6ba7124ff3958a7235d09bd54b",
+          "label": "The data-augmentation pipeline adds horizontally flipped copies of all images plus randomly translated versions with a maximum translation o",
+          "score": 1.0,
+          "status": "pass",
+          "why": "data.py `AugmentedTensorDataset` applies horizontal flip (flip_prob=0.5) and \u22645px translation via pad-then-crop (max_translate=5); `get_cifar_loaders_simple` mirrors with RandomCrop(32,padding=5)+RandomHorizontalFlip."
+        },
+        {
+          "id": "c12212d646444ee392bc85036f28a8cd",
+          "label": "Experiments load the three datasets named in the paper \u2014 CIFAR-10, CIFAR-100 (Krizhevsky & Hinton 2009) and the ILSVRC-2012 ImageNet subset ",
+          "score": 0.4,
+          "status": "partial",
+          "why": "data.py loads only CIFAR-10/100 (cifar_shared_data has cifar-10-batches-py and cifar-100-python) and models.py ImageNetAllCNNB docstring says ImageNet 'is NOT auto-downloadable... model is not trained in this reproduction'."
+        }
+      ],
+      "compute_adjusted_score": 0.85
+    },
+    {
+      "area": "Experiment execution and reproducibility",
+      "score": 0.42200000000000004,
+      "weight": 0.15517241379310343,
+      "leaves": [
+        {
+          "id": "20e96f0c15464722957bd4673772d640",
+          "label": "CIFAR training uses stochastic gradient descent with fixed momentum 0.9, a total of 350 epochs, learning-rate schedule S=[200,250,300] multi",
+          "score": 0.4,
+          "status": "partial",
+          "why": "Cell names confirm the \u03b3 search set {0.01,0.05,0.10,0.25} (allcnn_c lr001/lr005/lr010/lr025) matching paper {0.25,0.1,0.05,0.01}, but the optimizer/epoch/schedule code is not readable and the latest metrics.json reports status 'failed' with empty per_model."
+        },
+        {
+          "id": "54f3a6a9913449d29249782a489f213b",
+          "label": "Dropout is applied at 20% to the input image and 50% after each pooling layer (or its replacement layer), and all models use weight decay \u03bb=",
+          "score": 0.7,
+          "status": "partial",
+          "why": "models.py CIFARNet sets `drop_input=nn.Dropout2d(0.2)`, `drop1=drop2=nn.Dropout2d(0.5)` after each downsampling stage exactly per spec; weight decay is referenced only in the docstring, not confirmable in optimizer code."
+        },
+        {
+          "id": "162b4495da184d13843e0d9bc586a8dc",
+          "label": "The ImageNet All-CNN-B run uses 12 convolutional layers (conv1\u2013conv12), 450,000 iterations with batches of 64, initial learning rate \u03b3=0.01 ",
+          "score": 0.4,
+          "status": "partial",
+          "why": "models.py ImageNetAllCNNB implements 12 conv layers (conv1\u2013conv12 with strided pool replacements) but its docstring states 'the model is not trained in this reproduction (scope.gaps)'; no ImageNet cell exists in the output matrix."
+        },
+        {
+          "id": "2f2836603f4643e8b2962a00371ddc3b",
+          "label": "All experiments are run with the Caffe framework (Jia et al. 2014) as stated in Section 3.",
+          "score": 0.0,
+          "status": "fail",
+          "why": "models.py/data.py/guided_backprop.py all `import torch`/`torch.nn`; no Caffe is used anywhere in the evidence."
+        }
+      ],
+      "compute_adjusted_score": 0.42200000000000004
+    },
+    {
+      "area": "Evaluation protocol and metric correctness",
+      "score": 0.544,
+      "weight": 0.13793103448275862,
+      "leaves": [
+        {
+          "id": "ca50680dd31646dd86baea0eca72fa40",
+          "label": "CIFAR results report test classification error using only the best \u03b3 for each model from the fixed search set, as specified in Section 3.2.",
+          "score": 0.4,
+          "status": "partial",
+          "why": "The \u03b3-sweep cells exist (allcnn_c__cifar10__aug__lr001/005/010/025) but the aggregation that selects best \u03b3 and reports test error is not in readable code and metrics.json reports failed with empty per_model."
+        },
+        {
+          "id": "8bf59287d7c345c3910cf71ccdcdc9c1",
+          "label": "The pooling-necessity claim is evaluated by a parameter-matched comparison of All-CNN versus ConvPool-CNN (rather than versus the smaller ba",
+          "score": 0.7,
+          "status": "partial",
+          "why": "Both param-matched variants are in the matrix (convpool_c and allcnn_c cells) and models.py comments confirm 'ConvPool \u2248 All-CNN in parameters... the key parameter-matched comparison', but no measured comparison is available since the run failed."
+        },
+        {
+          "id": "9ccd7d67a05b42119bf1ed14345c1e5e",
+          "label": "ImageNet performance is reported as Top-1 validation error evaluated only on the center 224\u00d7224 patch, as stated in Section 3.3.",
+          "score": 0.4,
+          "status": "partial",
+          "why": "models.py ImageNetAllCNNB docstring mentions center 224\u00d7224 crop validation, but ImageNet is out of scope/untrained and no Top-1 validation error appears in any metrics.json."
+        },
+        {
+          "id": "b251d8356c4f417cadd9f445670426db",
+          "label": "The CIFAR-10 ablation evaluates the full grid of base models A/B/C crossed with their Base, Strided-CNN, All-CNN and ConvPool-CNN variants w",
+          "score": 0.7,
+          "status": "partial",
+          "why": "models.py build_cifar_model + _cifar_stage implement A/B/C \u00d7 base/strided/convpool/allcnn, and the outputs/ listing shows cells for all 12 CIFAR-10 noaug combos (base_a/b/c, strided_a/b/c, convpool_a/b/c, allcnn_a/b/c), but the authoritative metrics.json is failed/empty."
+        }
+      ],
+      "compute_adjusted_score": 0.544
+    },
+    {
+      "area": "Result match versus the paper's reported targets",
+      "score": 0.0,
+      "weight": 0.1896551724137931,
+      "leaves": [
+        {
+          "id": "18ba3bd40f5e4cb5b8d292a1ee972c8d",
+          "label": "The simplest model (base model A) reproduces approximately 12.5% test error on CIFAR-10 without augmentation, as reported in Section 3.2 and",
+          "score": 0.0,
+          "status": "fail",
+          "why": "The measured metrics.json shows status='failed', per_model={}, models_run=[], so there is no measured CIFAR-10 base-A error to compare against the 12.5% target."
+        },
+        {
+          "id": "c58efc23c6e741f2a8b2f602ca9564c5",
+          "label": "All-CNN-C matches or beats the best previously reported CIFAR-10 result both with and without data augmentation, reproducing the Table 4 com",
+          "score": 0.0,
+          "status": "fail",
+          "why": "Although allcnn_c cifar10 noaug/aug cells appear in outputs/, the authoritative metrics.json is status='failed' with empty per_model, so no measured value supports the Table-4 comparison."
+        },
+        {
+          "id": "f375b57bada74a6cae21bd736eb57f3f",
+          "label": "The qualitative ablation outcome is reproduced: Strided-CNN underperforms its base model while All-CNN performs on par with ConvPool-CNN, su",
+          "score": 0.0,
+          "status": "fail",
+          "why": "The measured metrics.json is status='failed' with per_model={}, so the qualitative ordering (Strided < base, All-CNN \u2248 ConvPool) cannot be confirmed from measured metrics."
+        },
+        {
+          "id": "0ae090f9a11c4f78ae3bb2bc8cf1d747",
+          "label": "The upscaled All-CNN-B reaches a Top-1 validation error of ~41.2% on ILSVRC-2012 (comparable to the 40.7% of Krizhevsky et al. 2012) with fe",
+          "score": 0.0,
+          "status": "fail",
+          "why": "models.py provides the ImageNetAllCNNB architecture but its docstring states ImageNet data is not auto-downloadable and the model is not trained, and metrics.json is failed/empty \u2014 no ~41.2% Top-1 result is measured."
+        },
+        {
+          "id": "33f394a41c834c3d801b00ff4b0c9a5a",
+          "label": "On CIFAR-100 the All-CNN-C performs comparably to the state of the art and is outperformed only by the much larger (~50M parameter) fraction",
+          "score": 0.0,
+          "status": "fail",
+          "why": "A cell allcnn_c__cifar100__aug__lr005 exists in outputs/, but the authoritative metrics.json is status='failed' with empty per_model, so no measured CIFAR-100 result supports the comparison."
+        }
+      ],
+      "compute_adjusted_score": 0.0
+    },
+    {
+      "area": "Artifact completeness and provenance",
+      "score": 0.7300000000000001,
+      "weight": 0.06034482758620689,
+      "leaves": [
+        {
+          "id": "81a8c16ad0d3444191fd08fd8a316905",
+          "label": "Layer-by-layer architecture specifications for the base/derived CIFAR networks (Tables 1\u20132) and the 12-layer ImageNet network (Table 6) are ",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py implements the layer-by-layer CIFAR variants via _cifar_stage + CIFARNet (stages 1-3, dropout 0.2/0.5, GAP, A=5\u00d75, B=+1\u00d71, C=stacked 3\u00d73) and the 12-conv ImageNet network ImageNetAllCNNB (conv1\u2013conv12 in block1/block2/block3/classifier), matching Tables 1-2 and Table 6."
+        },
+        {
+          "id": "e741c957cda544e197c74f9100fdc668",
+          "label": "Feature-visualization artifacts are produced with guided backpropagation for the lower (conv1\u2013conv3) and higher (conv6, conv9) ImageNet laye",
+          "score": 0.4,
+          "status": "partial",
+          "why": "guided_backprop.py implements correct guided-backprop ReLU masking and visualize_class_saliency saves fig_guided_backprop.png (present in outputs/ cell dirs), but the specific per-layer ImageNet Figures 2/3 (conv1\u2013conv3, conv6, conv9) are not reproduced and the per-layer extracto"
+        }
+      ],
+      "compute_adjusted_score": 0.7300000000000001
+    }
+  ],
+  "leaf_scores": [
+    {
+      "id": "b251d8356c4f417cadd9f445670426db",
+      "score": 0.7,
+      "justification": "models.py build_cifar_model + _cifar_stage implement A/B/C \u00d7 base/strided/convpool/allcnn, and the outputs/ listing shows cells for all 12 CIFAR-10 noaug combos (base_a/b/c, strided_a/b/c, convpool_a/b/c, allcnn_a/b/c), but the authoritative metrics.json is failed/empty."
+    },
+    {
+      "id": "18ba3bd40f5e4cb5b8d292a1ee972c8d",
+      "score": 0.0,
+      "justification": "The measured metrics.json shows status='failed', per_model={}, models_run=[], so there is no measured CIFAR-10 base-A error to compare against the 12.5% target."
+    },
+    {
+      "id": "c58efc23c6e741f2a8b2f602ca9564c5",
+      "score": 0.0,
+      "justification": "Although allcnn_c cifar10 noaug/aug cells appear in outputs/, the authoritative metrics.json is status='failed' with empty per_model, so no measured value supports the Table-4 comparison."
+    },
+    {
+      "id": "f375b57bada74a6cae21bd736eb57f3f",
+      "score": 0.0,
+      "justification": "The measured metrics.json is status='failed' with per_model={}, so the qualitative ordering (Strided < base, All-CNN \u2248 ConvPool) cannot be confirmed from measured metrics."
+    },
+    {
+      "id": "0ae090f9a11c4f78ae3bb2bc8cf1d747",
+      "score": 0.0,
+      "justification": "models.py provides the ImageNetAllCNNB architecture but its docstring states ImageNet data is not auto-downloadable and the model is not trained, and metrics.json is failed/empty \u2014 no ~41.2% Top-1 result is measured."
+    },
+    {
+      "id": "33f394a41c834c3d801b00ff4b0c9a5a",
+      "score": 0.0,
+      "justification": "A cell allcnn_c__cifar100__aug__lr005 exists in outputs/, but the authoritative metrics.json is status='failed' with empty per_model, so no measured CIFAR-100 result supports the comparison."
+    },
+    {
+      "id": "81a8c16ad0d3444191fd08fd8a316905",
+      "score": 1.0,
+      "justification": "models.py implements the layer-by-layer CIFAR variants via _cifar_stage + CIFARNet (stages 1-3, dropout 0.2/0.5, GAP, A=5\u00d75, B=+1\u00d71, C=stacked 3\u00d73) and the 12-conv ImageNet network ImageNetAllCNNB (conv1\u2013conv12 in block1/block2/block3/classifier), matching Tables 1-2 and Table 6."
+    },
+    {
+      "id": "e741c957cda544e197c74f9100fdc668",
+      "score": 0.4,
+      "justification": "guided_backprop.py implements correct guided-backprop ReLU masking and visualize_class_saliency saves fig_guided_backprop.png (present in outputs/ cell dirs), but the specific per-layer ImageNet Figures 2/3 (conv1\u2013conv3, conv6, conv9) are not reproduced and the per-layer extractor is stubbed."
+    },
+    {
+      "id": "a9d889317044416e80e9ca05aed023aa",
+      "score": 1.0,
+      "justification": "models.py `_cifar_stage` allcnn branch replaces pooling with `nn.Conv2d(out_c, out_c, 3, padding=1, stride=2)` (out_c==in_c), and CIFARNet ends in conv 1x1\u2192num_classes then `nn.AdaptiveAvgPool2d(1)` with cross-entropy (softmax), an all-conv net."
+    },
+    {
+      "id": "73eed8e8674c41309b93a73cc6870bf9",
+      "score": 1.0,
+      "justification": "models.py `_cifar_stage` model C strided branch makes the second 3x3 conv `stride=2` with no new layer and no MaxPool, matching the increase-preceding-conv-stride rule."
+    },
+    {
+      "id": "65da754085ea48959579c6ab78493003",
+      "score": 1.0,
+      "justification": "models.py `_cifar_stage` convpool branch inserts an extra `nn.Conv2d(out_c, out_c, 3, padding=1)` immediately before `nn.MaxPool2d(3, stride=2)`, same 3x3 kernel as the pool, for parameter control (comment 'ConvPool \u2248 All-CNN in parameters')."
+    },
+    {
+      "id": "709c3e6342e04dd793ec135676d84a2d",
+      "score": 1.0,
+      "justification": "models.py: model B adds `nn.Conv2d(out_c,out_c,1)` after each spatial conv (NiN), model C uses stacked 3x3+3x3, and stage3 terminates in `nn.Conv2d(192,num_classes,1)` then `gap=nn.AdaptiveAvgPool2d(1)`."
+    },
+    {
+      "id": "5157e7bd99c746ad82661c0aac198922",
+      "score": 1.0,
+      "justification": "guided_backprop.py backward hook computes `guided_grad = grad * (grad>0).float() * act_mask` where act_mask=`(output>0).float()`, zeroing where either forward activation or incoming gradient is negative."
+    },
+    {
+      "id": "fce877af7c51490fbedd7c3f50030dbb",
+      "score": 1.0,
+      "justification": "data.py implements `global_contrast_normalize` and `ZCAWhitener` (fit on train, applied to both splits) within `prepare_cifar`, citing Goodfellow et al. 2013; cifar_shared_data holds zca_cifar10.npy / zca_cifar100.npy."
+    },
+    {
+      "id": "41145a6ba7124ff3958a7235d09bd54b",
+      "score": 1.0,
+      "justification": "data.py `AugmentedTensorDataset` applies horizontal flip (flip_prob=0.5) and \u22645px translation via pad-then-crop (max_translate=5); `get_cifar_loaders_simple` mirrors with RandomCrop(32,padding=5)+RandomHorizontalFlip."
+    },
+    {
+      "id": "c12212d646444ee392bc85036f28a8cd",
+      "score": 0.4,
+      "justification": "data.py loads only CIFAR-10/100 (cifar_shared_data has cifar-10-batches-py and cifar-100-python) and models.py ImageNetAllCNNB docstring says ImageNet 'is NOT auto-downloadable... model is not trained in this reproduction'."
+    },
+    {
+      "id": "20e96f0c15464722957bd4673772d640",
+      "score": 0.4,
+      "justification": "Cell names confirm the \u03b3 search set {0.01,0.05,0.10,0.25} (allcnn_c lr001/lr005/lr010/lr025) matching paper {0.25,0.1,0.05,0.01}, but the optimizer/epoch/schedule code is not readable and the latest metrics.json reports status 'failed' with empty per_model."
+    },
+    {
+      "id": "54f3a6a9913449d29249782a489f213b",
+      "score": 0.7,
+      "justification": "models.py CIFARNet sets `drop_input=nn.Dropout2d(0.2)`, `drop1=drop2=nn.Dropout2d(0.5)` after each downsampling stage exactly per spec; weight decay is referenced only in the docstring, not confirmable in optimizer code."
+    },
+    {
+      "id": "162b4495da184d13843e0d9bc586a8dc",
+      "score": 0.4,
+      "justification": "models.py ImageNetAllCNNB implements 12 conv layers (conv1\u2013conv12 with strided pool replacements) but its docstring states 'the model is not trained in this reproduction (scope.gaps)'; no ImageNet cell exists in the output matrix."
+    },
+    {
+      "id": "2f2836603f4643e8b2962a00371ddc3b",
+      "score": 0.0,
+      "justification": "models.py/data.py/guided_backprop.py all `import torch`/`torch.nn`; no Caffe is used anywhere in the evidence."
+    },
+    {
+      "id": "ca50680dd31646dd86baea0eca72fa40",
+      "score": 0.4,
+      "justification": "The \u03b3-sweep cells exist (allcnn_c__cifar10__aug__lr001/005/010/025) but the aggregation that selects best \u03b3 and reports test error is not in readable code and metrics.json reports failed with empty per_model."
+    },
+    {
+      "id": "8bf59287d7c345c3910cf71ccdcdc9c1",
+      "score": 0.7,
+      "justification": "Both param-matched variants are in the matrix (convpool_c and allcnn_c cells) and models.py comments confirm 'ConvPool \u2248 All-CNN in parameters... the key parameter-matched comparison', but no measured comparison is available since the run failed."
+    },
+    {
+      "id": "9ccd7d67a05b42119bf1ed14345c1e5e",
+      "score": 0.4,
+      "justification": "models.py ImageNetAllCNNB docstring mentions center 224\u00d7224 crop validation, but ImageNet is out of scope/untrained and no Top-1 validation error appears in any metrics.json."
+    }
+  ],
+  "weak_leaves": [
+    {
+      "id": "18ba3bd40f5e4cb5b8d292a1ee972c8d",
+      "score": 0.0,
+      "justification": "The measured metrics.json shows status='failed', per_model={}, models_run=[], so there is no measured CIFAR-10 base-A error to compare against the 12.5% target.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "c58efc23c6e741f2a8b2f602ca9564c5",
+      "score": 0.0,
+      "justification": "Although allcnn_c cifar10 noaug/aug cells appear in outputs/, the authoritative metrics.json is status='failed' with empty per_model, so no measured value supports the Table-4 comparison.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "f375b57bada74a6cae21bd736eb57f3f",
+      "score": 0.0,
+      "justification": "The measured metrics.json is status='failed' with per_model={}, so the qualitative ordering (Strided < base, All-CNN \u2248 ConvPool) cannot be confirmed from measured metrics.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "0ae090f9a11c4f78ae3bb2bc8cf1d747",
+      "score": 0.0,
+      "justification": "models.py provides the ImageNetAllCNNB architecture but its docstring states ImageNet data is not auto-downloadable and the model is not trained, and metrics.json is failed/empty \u2014 no ~41.2% Top-1 result is measured.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "33f394a41c834c3d801b00ff4b0c9a5a",
+      "score": 0.0,
+      "justification": "A cell allcnn_c__cifar100__aug__lr005 exists in outputs/, but the authoritative metrics.json is status='failed' with empty per_model, so no measured CIFAR-100 result supports the comparison.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "2f2836603f4643e8b2962a00371ddc3b",
+      "score": 0.0,
+      "justification": "models.py/data.py/guided_backprop.py all `import torch`/`torch.nn`; no Caffe is used anywhere in the evidence.",
+      "area": "Experiment execution and reproducibility"
+    },
+    {
+      "id": "e741c957cda544e197c74f9100fdc668",
+      "score": 0.4,
+      "justification": "guided_backprop.py implements correct guided-backprop ReLU masking and visualize_class_saliency saves fig_guided_backprop.png (present in outputs/ cell dirs), but the specific per-layer ImageNet Figures 2/3 (conv1\u2013conv3, conv6, conv9) are not reproduced and the per-layer extractor is stubbed.",
+      "area": "Artifact completeness and provenance"
+    },
+    {
+      "id": "c12212d646444ee392bc85036f28a8cd",
+      "score": 0.4,
+      "justification": "data.py loads only CIFAR-10/100 (cifar_shared_data has cifar-10-batches-py and cifar-100-python) and models.py ImageNetAllCNNB docstring says ImageNet 'is NOT auto-downloadable... model is not trained in this reproduction'.",
+      "area": "Data and preprocessing fidelity"
+    }
+  ]
+}

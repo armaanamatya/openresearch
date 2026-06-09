@@ -113,6 +113,66 @@ def _extract_score(report_path: Path) -> float | None:
         return None
 
 
+def _count_experiment_runs(project_dir: Path) -> int:
+    """Best-effort iteration count from ``experiment_runs.jsonl``.
+
+    Each non-blank line in that append-only log is one ``run_experiment``
+    result the child recorded before it died, so the line count is the most
+    honest "how far did it get" signal available to an out-of-process reaper.
+    Returns 0 when the file is missing/empty/unreadable — never raises.
+    """
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError as exc:
+        logger.warning("batch_reproduce: could not read %s: %s", path, exc)
+        return 0
+
+
+def _ensure_terminal_report(runs_root: Path, project_id: str) -> None:
+    """Synthesize a minimal terminal ``final_report.json`` if the child wrote none.
+
+    A child SIGKILLed (``kill -9``, the OOM-killer, or this scheduler's own
+    SIGTERM→SIGKILL escalation) cannot run any in-process finalizer, so
+    ``runs/<project_id>/final_report.json`` may never exist. Without it the run
+    leaves NO scoreable artifact. This best-effort hook fills that gap with an
+    honest ``verdict="failed"`` report — it never fabricates metrics, and it
+    skips writing when a real report already exists. Wrapped so a failure here
+    only logs a warning and never disturbs the batch loop.
+    """
+    project_dir = runs_root / project_id
+    report_path = project_dir / "final_report.json"
+    if report_path.exists():
+        return
+    try:
+        # Local import keeps batch startup fast (mirrors the worker's pattern)
+        # and avoids importing the heavy backend stack just to print a summary.
+        from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+
+        iterations = _count_experiment_runs(project_dir)
+        report = RLMFinalReport(
+            verdict="failed",
+            reproduction_summary=(
+                "run terminated before writing a report (likely SIGKILL/OOM-kill); "
+                "synthesized by the batch scheduler"
+            ),
+            iterations=iterations,
+        )
+        write_final_report_rlm(report, project_dir)
+        logger.warning(
+            "batch_reproduce: [%s] synthesized terminal final_report.json "
+            "(verdict=failed, iterations=%d) — child exited without writing one",
+            project_id, iterations,
+        )
+    except Exception as exc:  # noqa: BLE001 — synthesis is best-effort, never crashes the batch loop
+        logger.warning(
+            "batch_reproduce: [%s] could not synthesize terminal final_report.json: %s",
+            project_id, exc,
+        )
+
+
 def _resolve_interpreter(explicit: str | None, repo_root: Path) -> str:
     """Pick the Python used to launch CLI children.
 
@@ -292,6 +352,7 @@ def _run_one(
             "batch_reproduce: [%s] timed out waiting for GPU lease after %ds" % (paper, _ACQUIRE_TIMEOUT_S)
         )
 
+    _provision = None  # opt-in EnvCacheManager provisioning (released in the finally)
     # Everything after a successful acquire is wrapped in try/finally so the
     # lease is ALWAYS released — even if venv creation, env setup, or launch
     # raises before the child process starts. reclaim_stale() only reaps DEAD
@@ -337,6 +398,32 @@ def _run_one(
         else:
             venv_ok = True
 
+        # Work around the uv "--system-site-packages inherits the EMPTY uv-cpython
+        # base" gotcha: a venv created from a uv-managed .venv does NOT actually see
+        # the .venv's packages (the flag resolves to the bare cpython install, which
+        # uv keeps empty), so the per-run venv lands empty despite the flag above.
+        # The agent then has to re-install the whole torch/torchvision/numpy stack
+        # itself — a slow ~2 GB download whose version-guessing trips the
+        # torch_redundancy guard and the preflight import smoke (2026-06-07). Drop a
+        # .pth that puts the repo .venv's proven, mutually-compatible, GPU-enabled
+        # site-packages on the per-run venv's import path — making the venv actually
+        # do what the --system-site-packages comment above always intended. The
+        # per-run venv's OWN site-packages keep precedence, so paper-specific deps
+        # install on top and shadow the base; only the base ML stack is shared.
+        if venv_ok:
+            try:
+                # IMPORTANT: do NOT .resolve() the interpreter — `.venv/bin/python` is a
+                # symlink straight to the (empty) uv cpython base, so resolving it lands
+                # on the very empty dir we are working around. The unresolved `.venv`
+                # parent is the real site-packages with the installed ML stack.
+                _base_sp = next((Path(interpreter).parent.parent / "lib").glob("python*/site-packages"), None)
+                _run_sp = next((venv_dir / "lib").glob("python*/site-packages"), None)
+                if _base_sp and _run_sp and _base_sp.resolve() != _run_sp.resolve():
+                    (_run_sp / "_reprolab_base_inherit.pth").write_text(str(_base_sp) + "\n")
+                    logger.info("batch_reproduce: [%s] seeded base-inherit .pth → %s", paper, _base_sp)
+            except Exception as exc:  # noqa: BLE001 — best-effort; the agent can still install deps
+                logger.warning("batch_reproduce: [%s] base-inherit .pth seed failed: %s", paper, exc)
+
         # --- 6e: Build child environment ---
         gpu_uuid_csv = ",".join(lease.gpu_uuids)
         shared_hf = (runs_root / ".cache" / "hf").resolve()
@@ -372,6 +459,29 @@ def _run_one(
         }
         if venv_ok:
             per_run_env["OPENRESEARCH_EXPERIMENT_VENV"] = str(venv_dir)
+
+        # Opt-in (OPENRESEARCH_PROVISION_ENVS="ALFWorld,WebShop"): stand the heavy RL
+        # environments up ONCE via the host-shared EnvCacheManager and hand their
+        # cache locations (ALFWORLD_DATA / WEBSHOP_URL) to the child. An env that
+        # cannot be provisioned on this host becomes a VERIFIED env_setup_failed
+        # Exclusion (logged) instead of failing the run — the grid runs what works
+        # and the rubric excludes (not zeroes) the rest. Dormant unless the env var
+        # is set, so the default smallest-two run is unaffected.
+        _provision_names = [
+            s.strip() for s in os.environ.get("OPENRESEARCH_PROVISION_ENVS", "").split(",") if s.strip()
+        ]
+        if _provision_names:
+            try:
+                from backend.services.runtime.env_cache import EnvCacheManager, provision_scope
+                _provision = provision_scope(_provision_names, EnvCacheManager())
+                per_run_env.update(_provision.env_vars)
+                if _provision.exclusions:
+                    logger.warning(
+                        "batch_reproduce: [%s] env provisioning produced %d verified exclusion(s): %s",
+                        paper, len(_provision.exclusions), [e.item for e in _provision.exclusions],
+                    )
+            except Exception as exc:  # noqa: BLE001 — provisioning must never crash the launch
+                logger.warning("batch_reproduce: [%s] env provisioning hook failed (continuing): %s", paper, exc)
 
         child_env = {**os.environ, **per_run_env}
 
@@ -427,6 +537,13 @@ def _run_one(
         # --- 6h: Wait for completion ---
         rc = proc.wait()
 
+        # If the child was hard-killed (SIGKILL / OOM-killer / our own
+        # SIGTERM→SIGKILL escalation) it could not run any in-process finalizer,
+        # so final_report.json may be missing. Synthesize a terminal one so a
+        # killed child still leaves a scoreable artifact. Best-effort; never
+        # overwrites a real report and never crashes the batch loop.
+        _ensure_terminal_report(runs_root, project_id)
+
         score = _extract_score(run_dir / "final_report.json")
         logger.info(
             "batch_reproduce: [%s] project_id=%s exit=%d score=%s",
@@ -444,6 +561,11 @@ def _run_one(
         # --- 6i: Always release lease + deregister (idempotent) ---
         live_procs.pop(lease_id, None)
         alloc.release(lease_id)
+        if _provision is not None:
+            try:
+                _provision.release()   # drop any WebShop lease acquired for this run
+            except Exception as exc:  # noqa: BLE001 — release must never raise
+                logger.warning("batch_reproduce: env provision release failed (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------

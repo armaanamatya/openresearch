@@ -1,0 +1,20 @@
+apiVersion: v2
+name: reprolab-aks
+description: |
+  In-cluster scaffold (L2) for the ReproLab Azure AKS GPU execution backend.
+  Installs: Namespace, Workload-Identity ServiceAccount, Azure Files StorageClass
+  (keyless), RWX PVC, orchestrator RBAC, NVIDIA device plugin DaemonSet, and
+  ResourceQuota.  Ephemeral training Jobs (L3) are NOT managed by this chart —
+  they are emitted by k8s_job_cell_runner at run time.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - reprolab
+  - azure
+  - aks
+  - gpu
+  - deepinvent
+maintainers:
+  - name: ReproLab / DeepInvent
+    email: sww35@txstate.edu
