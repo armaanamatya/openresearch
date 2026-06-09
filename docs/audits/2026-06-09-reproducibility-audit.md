@@ -207,3 +207,67 @@ make smoke / make docs-check                              → OK / OK (10 docs)
 - Compose-level resource limits and a frontend healthcheck are still absent
   (single healthcheck probes the backend only; the entrypoint watchdog now
   actually tears down, which softens this).
+
+---
+
+## Addendum — remediation round 2 (same day): trunk reunification + deferred items
+
+All items deferred in §6 (except branch GC and GEPA, see below) were executed:
+
+1. **`origin/main` merged into `bes`** (`2697ebb`) — bes is again a strict
+   superset (AKS GPU backend + Terraform/Helm, exec-reliability redesign,
+   cell-runner/env_pin line all aboard). Conflicts: CLAUDE.md (both lines'
+   sections kept) and 4 `runs/` artifacts (bes's whitelist policy won;
+   `tokens_total.json` added to the whitelist test to match main's gitignore).
+   **Main's incoming code carried four clean-machine bugs of the same class
+   this audit hunts** — all fixed on top:
+   - 6 new test files hardcoded `/home/sww35/...` as the import root
+     (collection errored everywhere but the author's box) → repo-relative.
+   - a test shelled GNU `timeout` (absent on macOS: the busy loop never ran)
+     → pure-bash `$SECONDS` spin.
+   - the CPU-liveness stall probe was psutil-first with a `/proc` fallback,
+     but **psutil was never declared** — on macOS the signal silently
+     vanished and quiet CPU-busy local jobs were stall-killed → declared.
+   - a credentials test failed on any Mac with a real `claude login`
+     (unmocked Keychain probe) → probe faked.
+   Also: OCR test fixture could never clear the parser's 200-char floor;
+   README references to main's deleted `best_runs` PDF fixed both here and
+   **on `main` via PR #101** (the sole CI gate had been red since 06-08).
+2. **Evidence-gate forge fix ported** (`59d1d36`) — the FM-004 write-time
+   gate + ledger cross-check existed on NEITHER bes nor main; the forge hole
+   recorded OPEN in project memory since 2026-05-30 is now CLOSED on the
+   trunk (`OPENRESEARCH_EVIDENCE_GATE=0` opts out; forge + replay tests in).
+   Five legacy tests shipped evidence-less success verdicts and were adapted
+   per the wedge branch's own patterns.
+3. **Wedge hardening ported** (`b92bf6f`, `05ec187`) — runpod
+   `build_environment` short-circuit (RunPod runs no longer need a local
+   Docker daemon; prerequisite docs updated everywhere), hallucinated
+   `runpod/` FROM-tag normalization, BUG-NEW-046 (FINAL_VAR refused when
+   `run_experiment` never ran), sleep-robust wall-clock watchdog (Timer's
+   monotonic clock pauses during macOS sleep) combined with main's hard
+   ceiling, FM-001 transport retry, the Qwen3-1.7B id fix (two trunk tests
+   pinned the wrong id), ISSUE-1 `--project-id` mismatch guard.
+4. **BUG-NEW-043 ported** (`31aeb3d`) — child-RLM tracebacks surfaced +
+   recursion-limit bump. (The branch's BUG-NEW-033 `rlm_query_misuse_patch`
+   was NOT ported — that module never reached the trunk; still open.)
+5. **PaperBench demo_status fix ported** (`e9c6e3f`, code only — the same
+   commit's docs purge was rejected) + launching pid stamped.
+6. **`run_config.json` launch snapshot** (`5049775`) — every run persists
+   secrets-excluded resolved launch parameters; tested incl. a
+   planted-credential leak check.
+7. **Dockerfile**: node now copied from the frontend builder stage (no more
+   `curl|bash` nodesource; serving Node == building Node; gnupg dropped).
+8. **Local venv rebuilt** on uv-managed CPython 3.12 (Homebrew 3.14's pyexpat
+   had broken pip itself); all pins satisfied, bs4/pytesseract/azure deps in,
+   previously-skipped ingestion tests now run; the week-old :8000 dev server
+   restarted onto it.
+
+**Final state:** full suite **4,470 passed / 9 skipped / 1 xfailed / 0
+failed (~33 s)** on the merged trunk; frontend lint/types/vitest/build green;
+`docker build` + `docker compose up` healthy (builder-stage node v20.20.2
+serving); docs-check OK; PR #101 open against main.
+
+**Still open after round 2:** remote-branch GC (deleting others' branches
+needs owner sign-off — list in `docs/audit-initial.md` §2); GEPA subsystem
+product decision; BUG-NEW-033 misuse patch; RLM checkpoint-resume read path;
+socket-level test-network hermeticity; non-root container user.
