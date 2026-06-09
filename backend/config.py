@@ -245,7 +245,17 @@ class Settings(BaseSettings):
     )
 
     # --- Dynamic GPU selection (spec 2026-05-23) ---
-    dynamic_gpu_enabled: bool = Field(default=True, description="Wire paper hardware clues to RunPod SKU choice")
+    # Accepts both spellings: OPENRESEARCH_DYNAMIC_GPU is what CLAUDE.md
+    # documents and what the CLI --dynamic-gpu/--no-dynamic-gpu flag writes;
+    # without the alias both were silent no-ops (only ..._ENABLED was read).
+    dynamic_gpu_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "OPENRESEARCH_DYNAMIC_GPU_ENABLED",
+            "OPENRESEARCH_DYNAMIC_GPU",
+        ),
+        description="Wire paper hardware clues to RunPod SKU choice",
+    )
     force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
     max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
     max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
