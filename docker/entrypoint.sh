@@ -6,21 +6,30 @@ set -euo pipefail
 
 cd /app
 
-# Compose mounts .env read-only for local development. Source it here rather
+# Compose mounts .env read-only for local development. Load it here rather
 # than using docker-compose env_file so `docker compose config` does not print
-# secret values. Vars already set in the container environment (compose
-# `environment:` entries, `docker run -e`) must KEEP winning over .env — the
-# normal compose precedence — so snapshot them first and re-apply after
-# sourcing. Without this, a copied .env.example silently overrode e.g. the
-# compose-set OPENRESEARCH_DATABASE_URL and broke event-store persistence.
+# secret values. Parse it as KEY=VALUE *data* instead of `source`ing it:
+# python-dotenv accepts unquoted values with spaces, so a perfectly valid
+# `OPENRESEARCH_RUNPOD_GPU_TYPE=NVIDIA GeForce RTX 4090` line made bash run
+# `GeForce` as a command and kill the container with exit 127 under set -e
+# (and `source` would happily execute $(...) in values). Vars already set in
+# the container environment (compose `environment:`, `docker run -e`) keep
+# winning over .env — the normal compose precedence; without that, a copied
+# .env.example silently overrode the compose-set OPENRESEARCH_DATABASE_URL
+# and broke event-store persistence.
 if [[ -f /app/.env ]]; then
-    _pre_env="$(export -p)"
-    set -a
-    # shellcheck disable=SC1091
-    source /app/.env
-    set +a
-    eval "$_pre_env"
-    unset _pre_env
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+        [[ -z "$_line" || "$_line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$_line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        _key="${BASH_REMATCH[1]}"
+        _value="${BASH_REMATCH[2]}"
+        if [[ "$_value" =~ ^\"(.*)\"$ ]]; then _value="${BASH_REMATCH[1]}"; fi
+        if [[ "$_value" =~ ^\'(.*)\'$ ]]; then _value="${BASH_REMATCH[1]}"; fi
+        if [[ -z "${!_key+x}" ]]; then
+            export "${_key}=${_value}"
+        fi
+    done < /app/.env
+    unset _line _key _value
 fi
 
 # --- SSH key injection (Railway / env-only deployments) ---------------------
