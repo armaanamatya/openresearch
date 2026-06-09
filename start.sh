@@ -43,7 +43,14 @@ env_value_from_file() {
     return 1
 }
 
-# 1. Default sandbox for the dashboard. Honor explicit override.
+# 1. Default sandbox for the dashboard: shell env > .env > runpod.
+# Consulting .env here matters: this export becomes real process env, which
+# pydantic-settings ranks ABOVE the .env file — exporting "runpod"
+# unconditionally would silently shadow a `OPENRESEARCH_DEFAULT_SANDBOX=local`
+# line the operator put in .env.
+if [[ -z "${OPENRESEARCH_DEFAULT_SANDBOX:-}" ]]; then
+    OPENRESEARCH_DEFAULT_SANDBOX="$(env_value_from_file OPENRESEARCH_DEFAULT_SANDBOX "${ENV_FILE}" || true)"
+fi
 export OPENRESEARCH_DEFAULT_SANDBOX="${OPENRESEARCH_DEFAULT_SANDBOX:-runpod}"
 echo "[start.sh] Dashboard default sandbox: ${OPENRESEARCH_DEFAULT_SANDBOX}"
 
@@ -55,7 +62,9 @@ if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
         export OPENRESEARCH_RUNPOD_SSH_KEY_PATH
     fi
     if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-        ssh_key_path="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"
+        # Parameter expansion, NOT `eval echo`: the value comes from .env and
+        # eval would execute anything shell-special pasted into it.
+        ssh_key_path="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"
         if [[ -f "${ssh_key_path}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
             derived_pub="$(ssh-keygen -y -f "${ssh_key_path}" 2>/dev/null || true)"
             if [[ -n "${derived_pub}" ]]; then
@@ -110,5 +119,24 @@ else
     echo "[start.sh] Runpod preflight not required for sandbox=${OPENRESEARCH_DEFAULT_SANDBOX}."
 fi
 
+# 2b. Docker preflight: build_environment runs a real local `docker build`
+# for every sandbox EXCEPT local (including runpod — the pod boots its own
+# image, but the local build still hard-requires a daemon). Catch the missing
+# daemon here with an actionable message instead of a mid-run
+# SandboxRuntimeError(backend_unavailable).
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        echo "[start.sh] Docker daemon not reachable, but sandbox=${OPENRESEARCH_DEFAULT_SANDBOX} requires one for build_environment."
+        echo "[start.sh] Start Docker Desktop/OrbStack, or set OPENRESEARCH_DEFAULT_SANDBOX=local, or bypass with START_SKIP_PREFLIGHT=1."
+        exit 1
+    fi
+    echo "[start.sh] Docker daemon reachable."
+fi
+
 # 3. Boot the API.
+if [[ ! -x .venv/bin/uvicorn ]]; then
+    echo "[start.sh] .venv/bin/uvicorn not found. Create the venv first:"
+    echo "[start.sh]   python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt"
+    exit 1
+fi
 exec .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000

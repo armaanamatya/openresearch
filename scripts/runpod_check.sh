@@ -172,7 +172,7 @@ fi
 ok "SSH key path set (${OPENRESEARCH_RUNPOD_SSH_KEY_PATH})"
 
 if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    SSH_KEY_CANDIDATE="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+    SSH_KEY_CANDIDATE="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"  # expand ~ (no eval — value is .env-supplied)
     if [[ -f "${SSH_KEY_CANDIDATE}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
         DERIVED_PUBLIC_KEY="$(ssh-keygen -y -f "${SSH_KEY_CANDIDATE}" 2>/dev/null || true)"
         if [[ -n "${DERIVED_PUBLIC_KEY}" ]]; then
@@ -234,7 +234,7 @@ warn "validated at pod creation. Use --start-pod for an end-to-end smoke test."
 # ---------------------------------------------------------------------------
 step "4. SSH key"
 
-SSH_KEY="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+SSH_KEY="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"  # expand ~ (no eval — value is .env-supplied)
 SSH_KEY="$(normalize_ssh_key_path "${SSH_KEY}")"
 
 if [[ ! -f "${SSH_KEY}" ]]; then
