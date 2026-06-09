@@ -14,6 +14,7 @@ Regression suite for the 2026-06-09 All-CNN scoreless failure:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -135,3 +136,36 @@ def test_archiver_keeps_paper_stable_artifacts(tmp_path):
     maybe_archive_prior_attempt("proj_y", tmp_path)
     assert (project / "generated_rubric.json").exists()
     assert (project / "parsed_full_text.txt").exists()
+
+
+def test_cli_path_archiver_moves_sidecars_too(tmp_path):
+    """The CLI path (`archive_run_artifacts`) is a SECOND archiver implementation.
+
+    2026-06-09 live re-run: attempt_isolation had just been taught to move
+    rubric_evaluation.json, but the CLI archiver hadn't — the stale eval stayed
+    at the project root, where the report merge would have fabricated the
+    previous attempt's score onto a pre-verify failure. Both archivers now
+    share PER_ATTEMPT_SIDECARS.
+    """
+    from backend.services.runs.archive import archive_run_artifacts
+    from backend.services.runs.attempt_isolation import PER_ATTEMPT_SIDECARS
+
+    project = tmp_path / "proj_cli"
+    project.mkdir()
+    (project / "final_report.json").write_text("{}")  # trigger
+    for name in PER_ATTEMPT_SIDECARS:
+        (project / name).write_text("{}")
+    result = archive_run_artifacts("proj_cli", tmp_path)
+    assert result is not None
+    for name in PER_ATTEMPT_SIDECARS:
+        assert not (project / name).exists(), f"{name} leaked (CLI archive path)"
+        assert (Path(result["attempt_dir"]) / name).is_file()
+
+
+def test_both_archiver_manifests_carry_the_shared_sidecars():
+    """Drift-proof: the shared tuple must be embedded in BOTH manifests."""
+    from backend.services.runs import archive, attempt_isolation
+
+    shared = set(attempt_isolation.PER_ATTEMPT_SIDECARS)
+    assert shared <= set(archive._TOP_LEVEL_FILES)
+    assert shared <= set(attempt_isolation._ARCHIVE_FILES)

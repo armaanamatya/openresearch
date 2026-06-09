@@ -41,6 +41,20 @@ ONE batch invocation instead.
   - All-CNN report re-finalized from real events+eval → `overall_score 0.4908`,
     verdict `partial`, `stop_reason wall_clock_watchdog` (was `None`).
 
+## Live-run addendum (same evening): the SECOND archiver
+The v6 fixed-harness Adam re-run immediately exposed a gap in fix #3: the repo
+has TWO archiver implementations — `attempt_isolation.maybe_archive_prior_attempt`
+(run.py path; the one #3 patched) and `backend/services/runs/archive.py::
+archive_run_artifacts` (CLI/batch path, the one that actually fires under
+`batch_reproduce`). They had drifted independently; the CLI one left all six
+sidecars at the project root. Resolution: `PER_ATTEMPT_SIDECARS` in
+`attempt_isolation.py` is now the single source of truth embedded in BOTH
+manifests, with a drift-proof test
+(`test_both_archiver_manifests_carry_the_shared_sidecars`). The in-flight v6
+run was hot-fixed by hand (stale sidecars moved into its attempt dir before
+its first verify). Lesson: replay validation exercises the code you patched;
+only a live run exercises the path selection.
+
 ## Adam 0.83 gap — what remains agent-side
 The 0.831→0.762 delta decomposes into: a wasted first experiment
 (`scope_shape_violation` — eliminated by #1/#4), rubric-leaf misses both runs
