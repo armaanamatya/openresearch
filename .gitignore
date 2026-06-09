@@ -157,3 +157,11 @@ reprolab.db-wal
 frontend/tmp-screens
 frontend/tmp-screens/
 /playwright/
+
+# Runtime-mutated artifacts (the code recreates/regenerates all of these;
+# tracking them meant permanent dirty-tree churn — audit 2026-06-09)
+/findings/*.log
+/data/calibration.json
+# Next.js regenerates next-env.d.ts on dev/build (dev vs build variants
+# differ, so a tracked copy churns on every workflow switch)
+frontend/next-env.d.ts

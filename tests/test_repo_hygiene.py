@@ -40,3 +40,18 @@ def test_tracked_run_artifacts_within_whitelist():
         "tracked runs/ artifacts outside the whitelist (nested or heavy logs): "
         f"{offenders}"
     )
+
+
+def test_no_tracked_but_gitignored_files():
+    """A file that is both tracked and gitignored is a contradiction: git
+    silently stops reporting local changes to it, and it usually means an
+    ignore rule was added without `git rm --cached` (how 6.5MB under
+    paper-repro-bes-docs/ lingered after commit 3203c17 ignored the dir).
+    Either track it (remove the ignore rule) or untrack it — never both."""
+    out = subprocess.check_output(
+        ["git", "ls-files", "-i", "-c", "--exclude-standard"], cwd=_REPO
+    ).decode()
+    offenders = [ln for ln in out.splitlines() if ln]
+    assert offenders == [], (
+        f"files tracked despite matching .gitignore (git rm --cached them): {offenders}"
+    )

@@ -8,8 +8,8 @@ import { test, expect } from "@playwright/test";
 // The library filter test needs two seeded fake-runs on disk so the
 // library table renders real rows. Seed them with:
 //
-//   tools/seed-fake-run.sh prj_diffusion_smoke
-//   tools/seed-fake-run.sh prj_completed_smoke
+//   scripts/seed-fake-run.sh prj_diffusion_smoke
+//   scripts/seed-fake-run.sh prj_completed_smoke
 //   sed -i '' 's/"status": "running"/"status": "completed"/' \
 //     runs/prj_completed_smoke/demo_status.json
 //

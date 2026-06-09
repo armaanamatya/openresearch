@@ -14,20 +14,27 @@ htmlcov/
 
 # Node / Next
 **/node_modules/
-frontend/.next/dev/
-frontend/.next/cache/
 frontend/tsconfig.tsbuildinfo
-.next/
+# **/.next/ (not bare .next/): the stale 15MB frontend/.next was entering
+# every build context — stage 2 rebuilds it anyway.
+**/.next/
 
 # Local state
 .env
 .env.*
 !.env.example
 runs/
+logs/
 _test_logs/
 *.db
 *.db-*
 openresearch.db.*
+
+# Non-runtime artifacts (docs/media never used inside the image; the two
+# root PDFs MUST stay in-context — they are runtime fixtures, live_runs.py)
+paper-repro-bes-docs/
+findings/
+best_runs/
 
 # Tooling / VCS
 .git/

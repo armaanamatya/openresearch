@@ -99,11 +99,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Bring the pre-built Python venv from stage 1.
 COPY --from=python-deps /opt/venv /opt/venv
 
-# App layout.
+# App layout. (start.sh is deliberately NOT copied: it is the host launcher —
+# it references .venv/bin/uvicorn, which does not exist in this image; the
+# container boots via /entrypoint.sh below.)
 WORKDIR /app
 COPY backend/ ./backend/
 COPY pyproject.toml ./
-COPY start.sh ./
 COPY third_party/ ./third_party/
 COPY paperbench1.pdf ./paperbench1.pdf
 COPY demo_paper.pdf ./demo_paper.pdf
