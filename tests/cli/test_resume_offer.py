@@ -1,20 +1,20 @@
-"""Tests for PR-π Module D — CLI orphan sweep + resume offer.
+"""Tests for PR-π Module D — CLI orphan sweep + interrupted-run detection.
 
-Tests the _offer_resume helper from backend.cli:
-  - Detects an interrupted prior run and prompts on TTY.
-  - Returns False when no prior run exists.
-  - Returns False when stdin is not a TTY.
+Tests the _detect_interrupted_run helper from backend.cli (which replaced
+_offer_resume: the old [Y/n] prompt promised an RLM resume that has no read
+path — args.resume is consumed only by the rdr handler — so the CLI now
+detects and reports instead of prompting; audit 2026-06-09):
+  - Returns (iterations, last_rubric) for an interrupted prior run.
+  - Returns None when no prior run exists / status is not interrupted.
+  - Never prompts.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-import pytest
-
-from backend.cli import _offer_resume, _count_iterations, _read_last_rubric
+from backend.cli import _detect_interrupted_run, _count_iterations, _read_last_rubric
 
 
 # ---------------------------------------------------------------------------
@@ -34,11 +34,11 @@ def _write_iterations(run_dir: Path, count: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _offer_resume
+# _detect_interrupted_run
 # ---------------------------------------------------------------------------
 
-def test_resume_offer_on_interrupted_prior_run(tmp_path: Path) -> None:
-    """When status=interrupted, isatty()=True, user answers 'y' → returns True."""
+def test_detects_interrupted_prior_run(tmp_path: Path) -> None:
+    """status=interrupted → (iteration count, last rubric) is returned."""
     run_dir = tmp_path / "prj_X"
     _write_status(run_dir, {
         "projectId": "prj_X",
@@ -47,71 +47,55 @@ def test_resume_offer_on_interrupted_prior_run(tmp_path: Path) -> None:
     })
     _write_iterations(run_dir, 2)
 
-    with (
-        patch("sys.stdin") as mock_stdin,
-        patch("builtins.input", return_value="y"),
-    ):
-        mock_stdin.isatty.return_value = True
-        result = _offer_resume(run_dir)
+    result = _detect_interrupted_run(run_dir)
 
-    assert result is True
+    assert result == (2, 0.0)
 
 
-def test_no_resume_offer_when_no_prior_run(tmp_path: Path) -> None:
-    """Empty project_dir (no demo_status.json) → returns False immediately."""
+def test_none_when_no_prior_run(tmp_path: Path) -> None:
+    """Empty project_dir (no demo_status.json) → None immediately."""
     run_dir = tmp_path / "prj_nonexistent"
     # Do NOT create run_dir at all.
-
-    result = _offer_resume(run_dir)
-
-    assert result is False
+    assert _detect_interrupted_run(run_dir) is None
 
 
-def test_no_resume_offer_on_non_tty(tmp_path: Path) -> None:
-    """When isatty()=False, no prompt is shown and function returns False."""
-    run_dir = tmp_path / "prj_Y"
-    _write_status(run_dir, {
-        "projectId": "prj_Y",
-        "status": "interrupted",
-        "runMode": "rlm",
-    })
-
-    with (
-        patch("sys.stdin") as mock_stdin,
-        patch("builtins.input") as mock_input,
-    ):
-        mock_stdin.isatty.return_value = False
-        result = _offer_resume(run_dir)
-
-    assert result is False
-    mock_input.assert_not_called()
-
-
-def test_no_resume_offer_when_status_not_interrupted(tmp_path: Path) -> None:
-    """When prior run status is 'failed' (not interrupted) → no offer."""
+def test_none_when_status_not_interrupted(tmp_path: Path) -> None:
+    """Prior run status 'failed' (not interrupted) → None."""
     run_dir = tmp_path / "prj_Z"
     _write_status(run_dir, {"projectId": "prj_Z", "status": "failed"})
+    assert _detect_interrupted_run(run_dir) is None
+
+
+def test_none_on_corrupt_status_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "prj_corrupt"
+    run_dir.mkdir()
+    (run_dir / "demo_status.json").write_text("{not json", encoding="utf-8")
+    assert _detect_interrupted_run(run_dir) is None
+
+
+def test_detection_never_prompts(tmp_path: Path) -> None:
+    """Detection must be side-effect free — no input() even on interrupted."""
+    run_dir = tmp_path / "prj_no_prompt"
+    _write_status(run_dir, {"projectId": "prj_no_prompt", "status": "interrupted"})
 
     with patch("builtins.input") as mock_input:
-        result = _offer_resume(run_dir)
+        result = _detect_interrupted_run(run_dir)
 
-    assert result is False
+    assert result == (0, 0.0)
     mock_input.assert_not_called()
 
 
-def test_resume_offer_declined_returns_false(tmp_path: Path) -> None:
-    """User answers 'n' → function returns False."""
-    run_dir = tmp_path / "prj_decline"
-    _write_status(run_dir, {"projectId": "prj_decline", "status": "interrupted"})
+def test_reports_last_rubric_from_final_report(tmp_path: Path) -> None:
+    run_dir = tmp_path / "prj_with_rubric"
+    _write_status(run_dir, {"projectId": "prj_with_rubric", "status": "interrupted"})
+    (run_dir / "final_report.json").write_text(
+        json.dumps({"rubric": {"overall_score": 0.45}}), encoding="utf-8"
+    )
 
-    with (
-        patch("sys.stdin") as mock_stdin,
-        patch("builtins.input", return_value="n"),
-    ):
-        mock_stdin.isatty.return_value = True
-        result = _offer_resume(run_dir)
+    result = _detect_interrupted_run(run_dir)
 
-    assert result is False
+    assert result is not None
+    assert abs(result[1] - 0.45) < 1e-6
 
 
 # ---------------------------------------------------------------------------

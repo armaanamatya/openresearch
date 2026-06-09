@@ -1326,12 +1326,25 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     else:
-        # PR-π Module D — resume offer: check for a prior interrupted run BEFORE
-        # archiving so rlm_state/ is still readable for the iteration count.
+        # PR-π Module D — interrupted-run notice. This is the rlm/rlm-pure
+        # path (rdr dispatched above), and RLM checkpoint-resume has NO read
+        # path yet: repl_state.pickle + rlm_state/ are write-only, and
+        # args.resume is consumed only by the rdr handler. The old code here
+        # prompted "Resume from last checkpoint? [Y/n]" and then archived the
+        # checkpoints and started fresh regardless of the answer — a lie to
+        # the operator (audit 2026-06-09). Say what actually happens instead.
         _presumed_pid_early = getattr(args, "project_id", None) or project_id_for(source)
         _prior_project_dir = runs_root / _presumed_pid_early
-        if not getattr(args, "resume", False) and _offer_resume(_prior_project_dir):
-            args.resume = True
+        _prior_interrupted = _detect_interrupted_run(_prior_project_dir)
+        if _prior_interrupted is not None:
+            _iter, _rubric = _prior_interrupted
+            print(
+                f"Detected interrupted prior run for {_prior_project_dir.name} "
+                f"(iter={_iter}, last_rubric={_rubric:.2f}). RLM-mode resume is "
+                "not implemented; its state will be archived to attempts/ and "
+                "a fresh attempt started. (RDR-mode runs support --resume.)",
+                file=sys.stderr,
+            )
 
         # Archive prior-attempt artifacts (final_report.*, experiment_runs.jsonl,
         # cost_ledger.jsonl, dashboard_events.jsonl, rlm_state/, etc.) under
@@ -2090,40 +2103,26 @@ def _read_last_rubric(project_dir: Path) -> float:
     return 0.0
 
 
-def _offer_resume(project_dir: Path) -> bool:
-    """Check for an interrupted prior run and offer to resume.
+def _detect_interrupted_run(project_dir: Path) -> tuple[int, float] | None:
+    """Detect an interrupted prior run; return (iterations, last_rubric).
 
-    Returns True if the user agreed to resume (or non-interactively the
-    run is skipped). Returns False if there is no prior interrupted run or
-    the user declined. Only prompts when stdin is a TTY.
+    Returns None when there is no prior run, the status file is unreadable,
+    or the prior status is anything other than ``interrupted``. Detection
+    only — it never prompts: this replaced ``_offer_resume``, whose
+    "Resume from last checkpoint? [Y/n]" promise was a no-op on the RLM path
+    (args.resume is consumed only by the rdr handler, and the rlm path
+    archived the checkpoints regardless of the answer).
     """
-    import sys
-
     status_path = project_dir / "demo_status.json"
     if not status_path.exists():
-        return False
+        return None
     try:
         prior = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
+        return None
     if prior.get("status") != "interrupted":
-        return False
-
-    last_iter = _count_iterations(project_dir)
-    last_rubric = _read_last_rubric(project_dir)
-    print(
-        f"Detected interrupted prior run for {project_dir.name} "
-        f"(iter={last_iter}, last_rubric={last_rubric:.2f})."
-    )
-
-    if not sys.stdin.isatty():
-        return False
-
-    try:
-        answer = input("Resume from last checkpoint? [Y/n] ").strip().lower()
-    except EOFError:
-        return False
-    return answer in {"", "y", "yes"}
+        return None
+    return _count_iterations(project_dir), _read_last_rubric(project_dir)
 
 
 def _module_main(argv: list[str] | None = None) -> None:

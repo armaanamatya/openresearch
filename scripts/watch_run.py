@@ -21,7 +21,10 @@ import json
 import time
 from pathlib import Path
 
-_TERMINAL = {"completed", "failed", "stopped"}
+# Must cover EVERY terminal RunStatus (live_runs.py RunStatus Literal):
+# killed (CLI signal handler) and interrupted (orphan sweep) were missing,
+# so the monitor looped forever on those runs unless --max-min was set.
+_TERMINAL = {"completed", "failed", "stopped", "killed", "interrupted"}
 
 
 def _read_json(p: Path):
