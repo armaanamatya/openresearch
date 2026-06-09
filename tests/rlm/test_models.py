@@ -61,7 +61,8 @@ def _reload_models(monkeypatch_env: dict | None = None):
 class TestResolveByName:
     """resolve_root_model(name) returns the correct RootModel."""
 
-    def test_gpt5_resolves(self):
+    def test_gpt5_resolves(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # A1-H1 pattern: presence-checked at resolve time
         from backend.agents.rlm.models import resolve_root_model
 
         m = resolve_root_model("gpt-5")

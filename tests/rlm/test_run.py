@@ -30,6 +30,13 @@ def _no_provider_keys(monkeypatch):
     an 862-second 429-retry stall inside the suite (audit 2026-06-09)."""
     for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "FEATHERLESS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
+    # …then plant a FAKE OpenAI key so root-model RESOLUTION is deterministic
+    # across hosts: with no keys at all, a dev Mac with `claude login` resolves
+    # claude-oauth via the Keychain while a keyless CI runner raises
+    # "Root model ... requires OPENAI_API_KEY" before the fake RLM is even
+    # constructed (first CI run, 2026-06-09). The fake value cannot reach a
+    # real API: these tests stub the RLM engine and run stub primitives.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key-never-used")
 
 
 # ---------------------------------------------------------------------------

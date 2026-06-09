@@ -241,7 +241,11 @@ class TestAzureOpenAI:
 
 class TestPlainOpenAI:
 
-    def test_openai_plain_routes_to_openai_client(self):
+    def test_openai_plain_routes_to_openai_client(self, monkeypatch):
+        # The OpenAI SDK constructor presence-checks a key; locally one leaks
+        # in from .env via load_dotenv, but a keyless CI runner raised
+        # OpenAIError here (first CI run, 2026-06-09). Never used for I/O.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key-never-used")
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
         root = _make_root_model(
