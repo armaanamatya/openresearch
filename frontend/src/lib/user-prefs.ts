@@ -3,7 +3,7 @@ import type { DemoAccelerator, DemoGpuParallelism } from "@/lib/demo/demo-run-ty
 const KEY = "openresearch:user-prefs";
 // Provider selection is stored under its own key (D3) so it doesn't
 // collide with the existing user-prefs shape.
-const PROVIDER_KEY = "openresearch.lab.providerSelection";
+const PROVIDER_KEY = "reprolab.lab.providerSelection";
 
 export interface UserPrefs {
   model?: string;

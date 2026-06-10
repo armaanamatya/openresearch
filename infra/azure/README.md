@@ -218,9 +218,9 @@ Report any validation errors back to the engineering team before proceeding to a
 | `node_resource_group` | Quota / capacity checks |
 | `kubelet_identity_client_id` | AcrPull + Files role confirmation |
 | `workload_identity_client_id` | Helm SA annotation (critical) |
-| `acr_login_server` | `OPENRESEARCH_AZURE_ACR_LOGIN_SERVER` |
-| `storage_account_name` | `OPENRESEARCH_AZURE_STORAGE_ACCOUNT` (Blob artifact bus account) |
-| `blob_container_name` | `OPENRESEARCH_AZURE_BLOB_CONTAINER` |
-| `files_share_name` | `OPENRESEARCH_AZURE_FILES_SHARE` |
+| `acr_login_server` | `REPROLAB_AZURE_ACR_LOGIN_SERVER` |
+| `storage_account_name` | `REPROLAB_AZURE_STORAGE_ACCOUNT` (Blob artifact bus account) |
+| `blob_container_name` | `REPROLAB_AZURE_BLOB_CONTAINER` |
+| `files_share_name` | `REPROLAB_AZURE_FILES_SHARE` |
 | `files_storage_account_name` | Helm `storage.filesAccountName` — the account hosting the active Files share. Same as `storage_account_name` when `files_premium=false`; the dedicated Premium FileStorage account when `files_premium=true`. Always pass this (not `storage_account_name`) to the StorageClass. |
-| `gpu_nodepool_name` | `OPENRESEARCH_AZURE_NODE_POOL_NAME` |
+| `gpu_nodepool_name` | `REPROLAB_AZURE_NODE_POOL_NAME` |

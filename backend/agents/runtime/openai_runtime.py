@@ -162,7 +162,7 @@ def _build_openai_agent(
 
 
 def _openai_safe_name(name: str) -> str:
-    """Encode a canonical OpenResearch agent id as an OpenAI-safe identifier.
+    """Encode a canonical ReproLab agent id as an OpenAI-safe identifier.
 
     OpenAI handoff tool names are derived from ``Agent.name``. Hyphenated
     canonical ids like ``paper-understanding`` become invalid function names
@@ -176,7 +176,7 @@ def _openai_safe_name(name: str) -> str:
         else f"_x{ord(char):02x}_"
         for char in name
     )
-    return f"openresearch_{encoded or 'agent'}"
+    return f"reprolab_{encoded or 'agent'}"
 
 
 def _build_tools(

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _QUOTE_TRUNCATE = 240
 _DDG_URL = "https://html.duckduckgo.com/html/"
 _DDG_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; OpenResearch/0.1; research-agent)",
+    "User-Agent": "Mozilla/5.0 (compatible; ReproLab/0.1; research-agent)",
 }
 
 # Regex to extract DuckDuckGo HTML search results.

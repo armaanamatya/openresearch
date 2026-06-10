@@ -285,6 +285,79 @@ def _primitive_failure_details(result: Any) -> tuple[str | None, dict[str, Any]]
     return (str(error) if error is not None else None), detail
 
 
+# Chat-steering injection (2026-06-10). The steering contract asks the root to
+# call check_user_messages() at every iteration start — but a non-cooperating
+# root simply never does (both live Adam/All-CNN runs ignored time-critical
+# operator steering for hours while burning GPU on work the messages would have
+# prevented). Primitive results are the one channel the root ALWAYS reads, so
+# unread messages ride along there. A separate injection cursor caps delivery
+# at once per message; check_user_messages keeps its own cursor untouched so
+# the formal flow (and respond_to_user) is unchanged.
+_STEERING_INJECT_CURSOR = "_steering_inject_cursor.json"
+_STEERING_INJECT_PRIMITIVES = frozenset({
+    "run_experiment", "verify_against_rubric", "implement_baseline",
+    "plan_reproduction", "propose_improvements",
+})
+
+
+def _inject_operator_messages(name: str, result: Any, ctx: "RunContext") -> Any:
+    """Attach unread operator chat messages to a primitive's dict result.
+
+    Fail-soft and flag-gated (``OPENRESEARCH_INJECT_STEERING=0`` disables). Returns
+    ``result`` unchanged unless ``name`` is a steering-injection primitive, the
+    result is a dict, and unread user messages exist.
+    """
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+
+    try:
+        if _os.environ.get(
+            "OPENRESEARCH_INJECT_STEERING", ""
+        ).strip().lower() in ("0", "false", "off"):
+            return result
+        if name not in _STEERING_INJECT_PRIMITIVES or not isinstance(result, dict):
+            return result
+        msgs_path = _Path(ctx.project_dir) / "user_messages.jsonl"
+        if not msgs_path.exists():
+            return result
+        lines = [
+            ln for ln in msgs_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+        ]
+        cursor_path = _Path(ctx.project_dir) / _STEERING_INJECT_CURSOR
+        offset = 0
+        if cursor_path.exists():
+            try:
+                offset = int(_json.loads(cursor_path.read_text(encoding="utf-8")).get("offset", 0))
+            except Exception:  # noqa: BLE001 — corrupt cursor → start over (idempotent-ish)
+                offset = 0
+        fresh: list[str] = []
+        for ln in lines[offset:]:
+            try:
+                d = _json.loads(ln)
+            except Exception:  # noqa: BLE001 — tolerate a torn line
+                continue
+            if isinstance(d, dict) and d.get("role") == "user" and str(d.get("content", "")).strip():
+                fresh.append(str(d["content"])[:600])
+        if fresh:
+            result = dict(result)
+            result["operator_messages"] = fresh[-3:]
+            result["operator_messages_note"] = (
+                "Unread operator steering attached by the harness — read and act "
+                "on it NOW, then acknowledge via respond_to_user()."
+            )
+        try:
+            cursor_path.write_text(
+                _json.dumps({"offset": len(lines)}), encoding="utf-8"
+            )
+        except OSError:
+            logger.debug("steering injection: cursor write failed (non-fatal)")
+        return result
+    except Exception:  # noqa: BLE001 — injection must never break a primitive result
+        logger.debug("steering injection skipped (non-fatal)", exc_info=True)
+        return result
+
+
 def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callable[..., Any]:
     """Close `fn` over `ctx`, adding primitive_call emission and a cost-ledger row.
 
@@ -519,6 +592,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     update_context_map(ctx.project_dir, name, result)
                 except Exception:  # noqa: BLE001 — orientation cache must never break a call
                     pass
+            result = _inject_operator_messages(name, result, ctx)
             return result
         finally:
             # Finalize the worker report if one was opened

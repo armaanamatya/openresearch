@@ -106,7 +106,7 @@ def test_execute_in_sandbox_reads_metrics_from_code_root(
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
 
     result = primitives.run_experiment(
-        str(code_dir), "openresearch/test:env-abc", ctx=ctx
+        str(code_dir), "reprolab/test:env-abc", ctx=ctx
     )
     assert result["success"] is True
     assert result["metrics"] == expected_metrics, (
@@ -157,7 +157,7 @@ def test_execute_in_sandbox_fails_soft_on_malformed_metrics_json(
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
 
     result = primitives.run_experiment(
-        str(code_dir), "openresearch/test:env-abc", ctx=ctx
+        str(code_dir), "reprolab/test:env-abc", ctx=ctx
     )
     # Should not raise and should fall back to empty metrics
     assert result["metrics"] == {}, (

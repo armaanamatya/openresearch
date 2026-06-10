@@ -38,7 +38,7 @@ def _make_frey_fact() -> CuratedFact:
 def _write_compliant_train(code_dir: Path, helper_name: str) -> Path:
     """Write a minimal compliant train.py that imports and calls the helper."""
     content = (
-        f"from _openresearch_curated import {helper_name}\n"
+        f"from _reprolab_curated import {helper_name}\n"
         f"\n"
         f"data = {helper_name}()\n"
         f"print('loaded', data.shape)\n"
@@ -68,7 +68,7 @@ class TestRenderHelperModule:
         mfact = manifest["facts"][0]
         assert mfact["helper_name"] == fact.helper_name
         assert mfact["helper_hash"] == fact.helper_hash
-        assert f"from _openresearch_curated import {fact.helper_name}" == mfact["required_import"]
+        assert f"from _reprolab_curated import {fact.helper_name}" == mfact["required_import"]
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestVerifyShadowedHelper:
         # train.py imports the helper BUT also defines a shadowing function
         train_py = tmp_path / "train.py"
         train_py.write_text(
-            f"from _openresearch_curated import {fact.helper_name}\n"
+            f"from _reprolab_curated import {fact.helper_name}\n"
             f"\n"
             f"def {fact.helper_name}():\n"
             f"    # Override with NYU URL (the wrong way)\n"
@@ -151,7 +151,7 @@ class TestVerifyBannedLiteral:
         # train.py contains the banned NYU URL
         train_py = tmp_path / "train.py"
         train_py.write_text(
-            f"from _openresearch_curated import {fact.helper_name}\n"
+            f"from _reprolab_curated import {fact.helper_name}\n"
             f"\n"
             f"url = 'https://cs.nyu.edu/~roweis/data/frey_rawface.mat'\n"
             f"data = {fact.helper_name}()\n",
@@ -175,7 +175,7 @@ class TestVerifyHelperHashMismatch:
         manifest = write_curated_artifacts(tmp_path, [fact])
 
         # Tamper with the helper module after writing
-        curated_py = tmp_path / "_openresearch_curated.py"
+        curated_py = tmp_path / "_reprolab_curated.py"
         original = curated_py.read_text(encoding="utf-8")
         curated_py.write_text(original + "\n# TAMPERED\n", encoding="utf-8")
 
@@ -202,7 +202,7 @@ class TestSeverityAdvisory:
             severity=Severity.ADVISORY,
             helper_name="load_advisory",
             helper_body="def load_advisory():\n    return None\n",
-            required_import="from _openresearch_curated import load_advisory",
+            required_import="from _reprolab_curated import load_advisory",
             banned_literals=(),
             helper_hash="abc123",
         )
@@ -343,8 +343,8 @@ class TestWriteCuratedArtifactsEmpty:
     def test_empty_facts_writes_no_files(self, tmp_path):
         manifest = write_curated_artifacts(tmp_path, [])
         assert manifest == {"version": KNOWLEDGE_CHANNEL_VERSION, "facts": []}
-        assert not (tmp_path / "_openresearch_curated.py").exists()
-        assert not (tmp_path / "_openresearch_curated_manifest.json").exists()
+        assert not (tmp_path / "_reprolab_curated.py").exists()
+        assert not (tmp_path / "_reprolab_curated_manifest.json").exists()
 
 
 # ---------------------------------------------------------------------------

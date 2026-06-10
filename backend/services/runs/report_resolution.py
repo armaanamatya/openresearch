@@ -98,6 +98,34 @@ def normalized_score(
     return overall
 
 
+_IMPL_RANK_ORDER: dict[str, int] = {"faithful": 2, "partial": 1, "broken": 0}
+
+
+def two_axis_fidelity_key(report: dict) -> tuple[int, float] | None:
+    """Fidelity-first ranking key for a two-axis (schema>=2) report, else None.
+
+    Ranks by the implementation (fidelity) axis so a faithful reproduction that
+    REFUTES the paper outranks a broken-but-high-rubric-score attempt — the
+    replication outcome is a badge, never a rank penalty (A5 / decision 7).
+    Returns ``None`` for legacy reports so their score-based ranking is
+    byte-for-byte unchanged.
+    """
+    impl = report.get("implementation_verdict")
+    schema = report.get("schema_version", 1)
+    if impl is None and (not isinstance(schema, int) or schema < 2):
+        return None
+    rank = _IMPL_RANK_ORDER.get(impl, 0)
+    repro = report.get("reproducibility")
+    fid = repro.get("fidelity_score") if isinstance(repro, dict) else None
+    if fid is None:
+        fid = report.get("overall_score")
+    try:
+        fid_f = float(fid) if fid is not None else 0.0
+    except (TypeError, ValueError):
+        fid_f = 0.0
+    return (rank, fid_f)
+
+
 # ---------------------------------------------------------------------------
 # ResolvedReport
 # ---------------------------------------------------------------------------
@@ -205,6 +233,12 @@ def resolve_best_report(run_dir: Path) -> ResolvedReport:
             score_key: tuple = (float("-inf"), -1)
         else:
             score_key = (ns, 0)
+        # A5 — fidelity-first for two-axis reports: a faithful attempt (even one
+        # that refutes the paper) outranks a broken-but-high-score attempt, so
+        # the honest negative result is the one surfaced.  Legacy reports get a
+        # neutral (-1, score) prefix → their score ordering is unchanged.
+        ta = two_axis_fidelity_key(report)
+        fidelity_key = ta if ta is not None else (-1, score_key[0])
         # Tie-break 1: completed_at (lexicographic; None sorts last).
         completed_at = report.get("completed_at") or ""
         # Tie-break 2: file mtime (newer = better).
@@ -212,7 +246,7 @@ def resolve_best_report(run_dir: Path) -> ResolvedReport:
             mtime = path.stat().st_mtime
         except OSError:
             mtime = 0.0
-        return (score_key, completed_at, mtime)
+        return (fidelity_key, score_key, completed_at, mtime)
 
     best_report, best_path, best_is_attempt = max(candidates, key=_rank)
 
@@ -229,4 +263,5 @@ __all__ = [
     "extract_scores",
     "normalized_score",
     "resolve_best_report",
+    "two_axis_fidelity_key",
 ]

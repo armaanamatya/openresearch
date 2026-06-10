@@ -112,6 +112,43 @@ def harden_requirements(
     return kept, dropped
 
 
+# A requirements line pip can plausibly install: blank/comment, an option line
+# (-r/-e/--index-url...), a URL/VCS/path install, a PEP 508 direct reference
+# ("pkg @ https://..."), or "name[extras] <version-spec/marker>".  Anything else
+# (agent prose like "(Section 5.2)", truncated sentences) aborts the WHOLE
+# `pip install -r` — the 2026-06-07 Adam attempt lost its first experiment to
+# `Invalid requirement: '(Section'` and only found out via the import smoke.
+_VALID_REQ_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^\]]*\])?\s*([<>=!~;@].*)?$"
+)
+
+
+def sanitize_requirements(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Drop lines pip would reject outright. Returns ``(kept, invalid)``.
+
+    Conservative: keeps blanks, comments, option lines, URL/VCS/path installs,
+    and anything shaped like a PEP 508 requirement. Only drops lines that can
+    never parse (leading punctuation, embedded prose) — pip aborts the entire
+    install file on the first such line, taking every valid dependency with it.
+    """
+    kept: list[str] = []
+    invalid: list[str] = []
+    for ln in lines:
+        s = ln.strip()
+        if (
+            not s
+            or s.startswith("#")
+            or s.startswith("-")
+            or s.startswith(("git+", "hg+", "svn+", "bzr+", "http://", "https://", "file:"))
+            or s.startswith(("./", "../", "/", "~"))
+            or _VALID_REQ_RE.match(s)
+        ):
+            kept.append(ln)
+        else:
+            invalid.append(s)
+    return kept, invalid
+
+
 def pin_install_specs(base_tag: str) -> list[str]:
     """The exact core pins to install BEFORE the agent's deps for ``base_tag``.
 
@@ -133,4 +170,5 @@ __all__ = [
     "base_tag_for",
     "harden_requirements",
     "pin_install_specs",
+    "sanitize_requirements",
 ]

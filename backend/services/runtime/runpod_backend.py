@@ -279,7 +279,7 @@ class RunpodBackend(RuntimeBackend):
         ready = ssh_ready or await self._wait_for_pod_ssh(pod_id)
         remote_base = _join_posix(
             self.volume_mount_path,
-            "openresearch",
+            "reprolab",
             _safe_name(config.project_id),
             _safe_name(config.run_id),
         )
@@ -1078,7 +1078,7 @@ class RunpodBackend(RuntimeBackend):
                 timeout=60,
             ) as client:
                 # Belt-and-suspenders: verify the pod's name still has our
-                # prefix (`openresearch-…`) before issuing the DELETE. If the
+                # prefix (`reprolab-…`) before issuing the DELETE. If the
                 # name doesn't match, refuse — covers the case where a pod
                 # ID was added to our allowlist via some future code path
                 # but the pod was actually created by someone else.
@@ -1093,11 +1093,11 @@ class RunpodBackend(RuntimeBackend):
                         return
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
-                    if pod_name and not pod_name.startswith("openresearch-"):
+                    if pod_name and not pod_name.startswith("reprolab-"):
                         raise SandboxRuntimeError(
                             RuntimeCauseKind.backend_unavailable,
                             f"Refusing to delete pod {pod_id!r} (name {pod_name!r}): "
-                            "name does not start with 'openresearch-' — not ours.",
+                            "name does not start with 'reprolab-' — not ours.",
                         )
                 except SandboxRuntimeError:
                     raise
@@ -1159,10 +1159,10 @@ class RunpodBackend(RuntimeBackend):
                         return
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
-                    if pod_name and not pod_name.startswith("openresearch-"):
+                    if pod_name and not pod_name.startswith("reprolab-"):
                         _log.warning(
                             "atexit cleanup: refusing to delete pod %r (name %r): "
-                            "name does not start with 'openresearch-'.",
+                            "name does not start with 'reprolab-'.",
                             pod_id,
                             pod_name,
                         )
@@ -1449,7 +1449,7 @@ def _ssh_port(port_mappings: dict[Any, Any]) -> int | None:
 
 
 def _pod_name(config: SandboxConfig) -> str:
-    return f"openresearch-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
+    return f"reprolab-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
 
 
 def _safe_name(value: str) -> str:

@@ -1521,6 +1521,24 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _existing_guidance = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
         _hint_id = args.paper_hint
         _hint_text = f"[paper-hint {_hint_id}] {_paper_hint_obj.guidance}"
+        # Module A: when OPENRESEARCH_FIDELITY_EVIDENCE is armed and this hint declares a
+        # structured_evidence requirement, surface the LITERAL dict so the agent passes the
+        # exact contract to rubric_guard.assert_metrics_schema(...) — enforcement then fires
+        # deterministically rather than depending on the agent inferring it from prose.
+        _se = getattr(_paper_hint_obj, "structured_evidence", None)
+        _fid = _os.environ.get("OPENRESEARCH_FIDELITY_EVIDENCE", "").strip().lower()
+        if _se and _fid not in ("", "0", "false", "no", "off"):
+            import json as _json
+            _hint_text += (
+                "\n\nSTRUCTURED-EVIDENCE CONTRACT — pass this EXACT dict at the end of "
+                "train.py:\n  assert_metrics_schema(metrics, required_keys=[...], "
+                f"structured_evidence={_json.dumps(_se)})\n"
+                "Every listed history method needs per-epoch curves under "
+                "history.<experiment>.<method>; every sweep's results must live in "
+                "metrics.json (not only logs); every series must be an ARRAY over t. A missing "
+                "one raises RubricGuardFailure with the exact gap so you repair it before the "
+                "run finalizes."
+            )
         _os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (
             f"{_hint_text}\n\n{_existing_guidance}" if _existing_guidance else _hint_text
         )
@@ -1566,14 +1584,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # __post_init__ treats a missing/empty value as "no invariants").
     if _paper_hint_obj is not None and _paper_hint_obj.invariants:
         import json as _json_mod
-        _os.environ["OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
-            [inv.model_dump() for inv in _paper_hint_obj.invariants]
+        _os.environ["OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(            [inv.model_dump() for inv in _paper_hint_obj.invariants]
         )
     else:
         # No hint (or hint with empty invariants list) — ensure any stale env var
         # from a previous run in the same process is cleared.
         _os.environ.pop("OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON", None)
-
     # #7 benchmark integrity: paper-hint blocked_resources ∪ operator --blacklist
     # → OPENRESEARCH_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
     # ctx.blocked_terms → every agent spec's RuntimeGuard (Unit A). Curated

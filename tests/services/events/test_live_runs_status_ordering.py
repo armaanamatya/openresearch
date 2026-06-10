@@ -29,7 +29,7 @@ def _render() -> str:
     return _python_script(
         request,
         project_id="prj_test_ordering_inv",
-        runs_root=Path("/tmp/openresearch_test_runs"),
+        runs_root=Path("/tmp/reprolab_test_runs"),
         uploaded_paper={"path": "/tmp/x.pdf", "fileName": "x.pdf"},
     )
 

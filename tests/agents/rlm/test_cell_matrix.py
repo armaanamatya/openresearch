@@ -546,8 +546,15 @@ class TestAggregateCellMetrics:
         gap_items = {g["item"] for g in scope["gaps"]}
         assert gap_items == {"qwen2_5_7b", "webshop"}
 
-    def test_malformed_cells_skipped_not_raised(self):
-        """A cell missing axes, a non-dict cell, and a non-dict result don't raise."""
+    def test_malformed_cells_derived_not_dropped(self):
+        """A cell missing axes is DERIVED into the tree (never silently dropped),
+        a non-dict cell and a non-dict result still don't raise.
+
+        2026-06-09: the old contract silently skipped axis-less cells — an
+        All-CNN run trained 14 cells to paper-grade accuracy and aggregated to
+        ``per_model={}``. Axis-less cells now land under derived axes (the cell
+        id as model_key, ``default`` env/baseline).
+        """
         cells = [
             {"id": "noaxes__s42", "seed": 42},                # missing model/env/baseline
             "not-a-dict",                                      # type: ignore[list-item]
@@ -561,9 +568,13 @@ class TestAggregateCellMetrics:
             "noaxes__s42": "bad-record",                       # non-dict record
         }
         out = aggregate_cell_metrics(matrix_result, cells)
-        # Only the well-formed cell survives into the tree.
-        assert list(out["per_model"].keys()) == ["m1"]
-        assert out["status"] == "complete"
+        # The well-formed cell lands under its explicit axes; the axis-less cell
+        # is preserved under derived axes with a failed leaf (its record was
+        # unusable), so the gap is VISIBLE instead of silently vanishing.
+        assert set(out["per_model"].keys()) == {"m1", "noaxes__s42"}
+        derived_leaf = out["per_model"]["noaxes__s42"]["default"]["default"]
+        assert derived_leaf["status"] == "failed"
+        assert out["status"] == "partial"
 
     def test_empty_inputs(self):
         out = aggregate_cell_metrics({}, [])

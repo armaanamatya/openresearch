@@ -25,7 +25,7 @@ Burn down the 47 confirmed backend weaknesses **in value order**, one tiny teste
 ## 3. Guardrails (non-negotiable — same discipline that kept P0–P3 clean)
 1. **No hallucination.** Every change cites a real `file:line` you read. If a finding's evidence doesn't reproduce, mark it dropped and move on — don't invent.
 2. **Only tighten existing logic.** No new dependencies, no rewrites, no new frameworks. Narrow fixes.
-3. **Behavioral changes ship default-on behind a `OPENRESEARCH_*` env hatch**; anything that can move a rubric score ships **observe-first** (log the would-change delta, enforcement OFF) and is flipped only after one real SDAR run confirms no spurious loss.
+3. **Behavioral changes ship default-on behind a `REPROLAB_*` env hatch**; anything that can move a rubric score ships **observe-first** (log the would-change delta, enforcement OFF) and is flipped only after one real SDAR run confirms no spurious loss.
 4. **One finding (or one tight cluster) per commit**, each with its test, so a regression is attributable.
 5. **Phase exit gate = new tests green AND `pytest tests/ -q` full-suite zero-regression.** Ship a phase's tests before starting the next.
 

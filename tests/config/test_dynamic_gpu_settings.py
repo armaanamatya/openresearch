@@ -78,8 +78,4 @@ def test_default_runpod_image_has_cuda_dev_headers():
     # Reverted to -devel- after the SDAR run silently failed on a chained
     # `pip install bitsandbytes && python train.py`. Override via the env var
     # when a paper genuinely doesn't need dev headers.
-    #
-    # Assert the class DEFAULT, not Settings() — the latter picks up a local
-    # .env OPENRESEARCH_RUNPOD_IMAGE override, which makes this host-dependent.
-    default_image = Settings.model_fields["runpod_image"].default
-    assert "devel" in default_image and "runtime" not in default_image
+    assert "devel" in Settings().runpod_image and "runtime" not in Settings().runpod_image

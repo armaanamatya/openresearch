@@ -160,8 +160,8 @@ class LocalDockerBackend(RuntimeBackend):
         image = await self._ensure_image(config)
         name = _container_name(config)
         labels = {
-            "openresearch.project_id": config.project_id,
-            "openresearch.run_id": config.run_id,
+            "reprolab.project_id": config.project_id,
+            "reprolab.run_id": config.run_id,
             **config.labels,
         }
         volumes = {
@@ -435,7 +435,7 @@ class LocalDockerBackend(RuntimeBackend):
             return config.image
 
         context, dockerfile_arg = _resolve_build_context(config.dockerfile_path, config.build_context)
-        tag = config.image or f"openresearch/{config.project_id}:{config.run_id}"
+        tag = config.image or f"reprolab/{config.project_id}:{config.run_id}"
         try:
             build_kwargs: dict[str, Any] = {
                 "path": str(context),
@@ -471,7 +471,7 @@ class LocalDockerBackend(RuntimeBackend):
 def _container_name(config: SandboxConfig) -> str:
     safe_project = _safe_name(config.project_id)
     safe_run = _safe_name(config.run_id)
-    return f"openresearch-{safe_project}-{safe_run}"
+    return f"reprolab-{safe_project}-{safe_run}"
 
 
 def _safe_name(value: str) -> str:

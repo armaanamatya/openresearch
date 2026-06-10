@@ -234,7 +234,7 @@ def test_stub_keys_are_a_subset_of_real_schema(make_context, tmp_path):
         "detect_environment": ({"core_contribution": "A PyTorch agent."},),
         "build_environment": ({"dockerfile": "FROM python:3.11-slim\n"},),
         "plan_reproduction": ({"core_contribution": "x"}, {"framework": "pytorch"}),
-        "run_experiment": ("/tmp/code", "openresearch/test:env-x"),
+        "run_experiment": ("/tmp/code", "reprolab/test:env-x"),
     }
 
     for name, expected_fields in schema_fields_for.items():

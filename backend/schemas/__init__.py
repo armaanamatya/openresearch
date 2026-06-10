@@ -1,1 +1,1 @@
-"""OpenResearch domain schemas and contracts."""
+"""ReproLab domain schemas and contracts."""

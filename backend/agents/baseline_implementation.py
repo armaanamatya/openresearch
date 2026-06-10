@@ -64,12 +64,15 @@ def _copy_source_pdf_to_code_root(runs_root: Path, project_id: str, code_dir: Pa
 _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "cell_scheduler.py",
     "gpu_cell_runner.py",
+    "dead_training_guard.py",  # zero-dep dead-training early-stop detector (imported by gpu_cell_runner)
     "sdar_env_base.py",
     "agentic_rollout.py",
     "search_qa_env.py",
     "alfworld_env.py",
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
+    "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
+    "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
 )
 
 
@@ -574,6 +577,31 @@ _PER_MODEL_METRICS_BLOCK_BASE = (
     "If only one model variant is evaluated, omit `per_model` entirely; the flat\n"
     "format is sufficient. Never fabricate `per_model` entries for variants you\n"
     "did not actually run — use `scope.models_skipped` instead.\n"
+    "\n\nCONVERGENCE / TRAINING-COST CLAIMS — record the TRAJECTORY, not only finals:\n"
+    "Many papers' HEADLINE claim is about HOW a method reaches its result — faster\n"
+    "convergence, lower training cost, better sample efficiency, fewer iterations to a\n"
+    "target — NOT the final scalar (which frequently ties across methods once every\n"
+    "method has converged). A `metrics.json` carrying only FINAL accuracy/loss\n"
+    "STRUCTURALLY cannot evidence such a claim, and the grader will (correctly) be\n"
+    "unable to confirm it — `final_acc(adam) ≈ final_acc(sgd)` looks like a NON-result\n"
+    "even when the paper's real claim (`adam converges faster`) is fully reproduced.\n"
+    "  - If the paper compares optimizers/methods/configs on convergence speed,\n"
+    "    training cost, sample efficiency, or ANY per-epoch / per-step behavior, your\n"
+    "    `metrics.json` MUST include the per-epoch (or per-step) TRAJECTORY for each\n"
+    "    method alongside the finals, e.g.:\n"
+    "      \"history\": {\n"
+    "        \"<method>\": {\"epoch\": [0,1,2,...],\n"
+    "                       \"train_loss\": [...], \"train_cost\": [...],\n"
+    "                       \"val_metric\": [...]},\n"
+    "        ...one entry per method compared, on a COMMON x-axis...\n"
+    "      }\n"
+    "  - Use IDENTICAL initialization (same seed/weights) and a COMMON x-axis (same\n"
+    "    epochs/steps) across every method compared — that direct comparability IS the\n"
+    "    claim; without it the curves cannot be read against each other.\n"
+    "  - Train LONG ENOUGH for the claimed effect to appear: an advantage the paper\n"
+    "    shows over the first K epochs must be run for at least K epochs, or the\n"
+    "    ordering it demonstrates simply will not be present in your data.\n"
+    "  - Keep the final scalars too — the trajectory is ADDITIVE, never a replacement.\n"
 )
 
 
@@ -1156,6 +1184,27 @@ _RUBRIC_GUARD_BLOCK = (
     "The guard is unconditional — even when the run is a smoke-test, schema\n"
     "completeness must hold; a smoke-test that writes 1 sample is fine, a\n"
     "smoke-test that writes 0 keys is not.\n"
+    "\n"
+    "STRUCTURED EVIDENCE (convergence / sweep / time-series claims): when the\n"
+    "paper's HEADLINE claim is about convergence SPEED, a parameter sweep, or a\n"
+    "time-series (your extra guidance will say so and name the exact families),\n"
+    "final scalars alone score ~0 on the evaluation-protocol leaves. In that case:\n"
+    "  - ALSO emit `convergence_evidence.py` as a top-level file under code/\n"
+    "    (paste its source verbatim from\n"
+    "    `backend/agents/rlm/convergence_evidence.py` — zero non-stdlib deps), and\n"
+    "  - pass `structured_evidence={...}` to `assert_metrics_schema`, matching the\n"
+    "    families your guidance names, e.g.\n"
+    "      assert_metrics_schema(metrics, required_keys=[...],\n"
+    "          structured_evidence={'history_methods': ['adam','sgd_nesterov', ...],\n"
+    "                               'sweeps': ['<sweep_name>'],\n"
+    "                               'series': ['regret']})\n"
+    "    where `history.<exp>.<method>` carries per-epoch curves on a COMMON x-axis\n"
+    "    with IDENTICAL initialization across methods, every named sweep's results\n"
+    "    live in metrics.json (not only logs), and every named series is an ARRAY\n"
+    "    over t (never a lone scalar). A missing curve / sweep / series then raises\n"
+    "    RubricGuardFailure with the exact gap so you repair it BEFORE finalizing.\n"
+    "    (This enforcement is active only when OPENRESEARCH_FIDELITY_EVIDENCE is set; the\n"
+    "    call is harmless otherwise.)\n"
 )
 
 
@@ -2072,7 +2121,7 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
     supp = ("\n\nNotes per dataset:\n" + "\n".join(notes_lines)) if notes_lines else ""
 
     # PR-ξ: prepend a hard import contract for STRICT-severity recipes whose
-    # helper has already been written to _openresearch_curated.py. This makes the
+    # helper has already been written to _reprolab_curated.py. This makes the
     # contract structurally unavoidable rather than advisory-text-only.
     strict_contracts: list[str] = []
     for r in data_recipes:
@@ -2084,10 +2133,10 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
             strict_contracts.append(
                 f"  Dataset: {r.get('canonical_name', hn)}\n"
                 f"    In train.py you MUST write:\n"
-                f"        from _openresearch_curated import {hn}\n"
+                f"        from _reprolab_curated import {hn}\n"
                 f"    and CALL {hn}(...) to obtain the dataset. "
                 f"Do NOT inline the loader body.\n"
-                f"    The helper is already written at code_dir/_openresearch_curated.py.\n"
+                f"    The helper is already written at code_dir/_reprolab_curated.py.\n"
                 + (
                     "    Banned literal patterns (will fail postflight if found in train.py):\n"
                     + "".join(f"        {b}\n" for b in banned)
@@ -2336,6 +2385,19 @@ def _compute_constraint_guidance(
     if override:
         guidance += override
 
+    # 6.5 Prior-attempt measured evidence (2026-06-10, flag-gated). Past
+    # attempts' per-cell results ride into the prompt so the implementer keeps
+    # configs that measurably worked instead of re-deriving them from scratch
+    # (the All-CNN lr "repair" killed a cell whose working config sat in the
+    # previous attempt's archive). Fail-soft + capped inside the module.
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm import prior_attempt_evidence as _pae
+            if _pae.is_enabled():
+                guidance += _pae.build_evidence_block(project_dir)
+        except Exception:  # noqa: BLE001 — evidence is advisory, never fatal
+            logger.debug("prior_attempt_evidence block skipped", exc_info=True)
+
     # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
@@ -2509,7 +2571,7 @@ async def run_with_sdk(
             if r is not None
         ] or None
 
-    # PR-ξ γ: knowledge channel — write _openresearch_curated.py + manifest before
+    # PR-ξ γ: knowledge channel — write _reprolab_curated.py + manifest before
     # the sub-agent is invoked. Facts are derived from the resolved data_recipes
     # so the channel is independent of whether plan_reproduction succeeded.
     from backend.agents import baseline_knowledge as _bk

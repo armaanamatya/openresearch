@@ -1,4 +1,4 @@
-"""Literature sources for OpenResearch evaluation methodology.
+"""Literature sources for ReproLab evaluation methodology.
 
 All papers, benchmarks, and tools referenced in our eval design.
 Organized by category for citation in papers and documentation.

@@ -101,7 +101,7 @@ async def _fetch_pdf_bytes(source_kind: str, source: str) -> tuple[bytes, str]:
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=httpx.Timeout(30.0, connect=10.0),
-        headers={"user-agent": "OpenResearch/estimator"},
+        headers={"user-agent": "ReproLab/estimator"},
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()

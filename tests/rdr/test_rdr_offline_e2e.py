@@ -80,7 +80,7 @@ def _patch_primitives(monkeypatch: Any) -> None:
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.build_environment",
-        lambda spec, ctx: {"ok": True, "image_tag": "openresearch/test:stub", "error": "", "attempts": 1},
+        lambda spec, ctx: {"ok": True, "image_tag": "reprolab/test:stub", "error": "", "attempts": 1},
     )
     monkeypatch.setattr(
         "backend.agents.rdr.controller.run_experiment",

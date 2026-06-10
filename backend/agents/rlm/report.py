@@ -177,10 +177,11 @@ class RLMFinalReport(BaseModel):
     stop_reason: dict | None = Field(
         default=None,
         description=(
-            "Set when the run STOPPED on an un-recoverable capacity/OOM condition "
-            "rather than completing (2026-05-31): "
-            "{kind: 'oom_shrink_exhausted'|'capacity_exhausted', detail, "
-            "per_gpu_vram_gb, models_skipped, environments_skipped, gaps}. "
+            "Set when the run STOPPED rather than completing: capacity/OOM "
+            "terminals (2026-05-31: {kind: 'oom_shrink_exhausted'|"
+            "'capacity_exhausted', detail, per_gpu_vram_gb, models_skipped, "
+            "environments_skipped, gaps}) and hard-stop finalizers (2026-06-09: "
+            "{kind: 'wall_clock_watchdog'|'sigterm', detail}). "
             "None on a normally-completed run."
         ),
     )
@@ -866,9 +867,18 @@ def build_final_report(
     except Exception:  # noqa: BLE001 — gap surfacing augments the report, never fatal
         logger.exception("report: data-unavailable gap merge failed")
 
+    # Paper identity (2026-06-09): the root's self-reported paper block is often
+    # junk ({} or {"id": "", "title": "paper_text"}), which makes the leaderboard
+    # and report header anonymous. The harness KNOWS the arXiv id (ctx) — fill it
+    # in when the root didn't. Root-provided non-empty values always win.
+    _paper = dict(parsed.get("paper") or {})
+    _ctx_arxiv = getattr(ctx, "arxiv_id", None)
+    if _ctx_arxiv and not (_paper.get("id") or "").strip():
+        _paper["id"] = str(_ctx_arxiv)
+
     kwargs: dict[str, Any] = {
         "verdict": verdict,
-        "paper": parsed.get("paper") or {},
+        "paper": _paper,
         "reproduction_summary": summary,
         "baseline_metrics": baseline_metrics,
         "paper_claims": parsed.get("paper_claims") or {},
@@ -1368,17 +1378,42 @@ def write_final_report_rlm(
             import json as _json
             deep = _json.loads(eval_path.read_text())
             current = dict(report.rubric or {})
+            # `current.get(key) is None` (not `key not in current`): the rubric
+            # default block carries overall_score/meets_target/target_score as
+            # explicit None, which the old membership test treated as "already
+            # present" — a hard-stopped run shipped overall_score=None while
+            # rubric_evaluation.json held the real number (2026-06-09 All-CNN
+            # 0.471). Safe because attempt isolation archives the eval file
+            # per-attempt, so an existing file always belongs to THIS attempt.
             for key in ("leaf_scores", "weak_leaves", "leaf_count", "graded",
                         "rubric_source", "coverage_pct", "compute_adjusted_score",
-                        "compute_scope"):
-                if key in deep and deep[key] is not None and key not in current:
+                        "compute_scope", "overall_score", "target_score",
+                        "meets_target"):
+                if key in deep and deep[key] is not None and current.get(key) is None:
                     current[key] = deep[key]
             report.rubric = current
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
 
     # --- JSON (canonical) ---
+    # Two-axis reproducibility verdict (live finalize path, U11): when enabled and the
+    # producer artifacts exist, attach implementation/replication verdicts + schema=2 and
+    # project the legacy verdict from FIDELITY (A4).  Operates on the serialized dict so
+    # RLMFinalReport needs no new fields; syncs the model verdict so the .preserved/timing
+    # gates below agree.  Fail-soft → plain model dump on any error; byte-for-byte
+    # unchanged when OPENRESEARCH_TWO_AXIS_VERDICT is off.
     json_content = report.model_dump_json(indent=2)
+    try:
+        from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
+        _report_dict = report.model_dump()
+        if _attach_two_axis(_report_dict, project_dir):
+            try:
+                report.verdict = _report_dict.get("verdict", report.verdict)
+            except Exception:  # noqa: BLE001 — model may be frozen; the dict stays authoritative
+                pass
+            json_content = json.dumps(_report_dict, indent=2)
+    except Exception:  # noqa: BLE001 — two-axis attach is best-effort, never blocks the write
+        logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
     _atomic_write(json_path, json_content)
 
     # --- Markdown (human-readable) ---

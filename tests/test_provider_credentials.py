@@ -93,7 +93,7 @@ def test_empty_strings_normalized_to_none() -> None:
 def _clean_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # The dev shell exports real API keys; without scrubbing them the .env
     # precedence path is impossible to exercise (shell export > .env for
-    # non-OPENRESEARCH keys). Tests that assert on a specific env-var origin
+    # non-REPROLAB keys). Tests that assert on a specific env-var origin
     # must call this first.
     for k in (
         "ANTHROPIC_API_KEY",

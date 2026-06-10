@@ -44,6 +44,7 @@ __all__ = [
     "STATUS_SKIPPED",
     "STATUS_ERROR",
     "STATUS_TIMEOUT",
+    "STATUS_TRAINING_DIVERGED",
     # Data type
     "CellResult",
     # Pure helpers
@@ -69,6 +70,7 @@ STATUS_OOM_FAILED = "oom_failed"
 STATUS_SKIPPED = "skipped"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
+STATUS_TRAINING_DIVERGED = "training_diverged"  # dead-training early-stop (repairable)
 
 
 # ---------------------------------------------------------------------------

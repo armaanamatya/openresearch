@@ -1610,11 +1610,24 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     report["overall_score"] = score["overall_score"]
     report["meets_target"] = meets_target
 
+    # Two-axis reproducibility verdict (U11 / A4): when OPENRESEARCH_TWO_AXIS_VERDICT
+    # is enabled, this attaches implementation_verdict ⟂ replication_verdict, sets
+    # schema_version=2, and projects report["verdict"] from the FIDELITY axis — so
+    # a faithful-but-contradicted run is NOT collapsed to "failed" by the blended-
+    # score reconcile below.  Fail-soft: returns False (legacy path) on any error.
+    applied_two_axis = False
+    try:
+        from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
+        applied_two_axis = _attach_two_axis(report, run_dir)
+    except Exception as exc:  # noqa: BLE001 — two-axis is best-effort, never blocks the report
+        logger.warning("amend_final_report: two-axis verdict failed (%s) — using legacy reconcile", exc)
+
     # Reconcile the self-reported verdict against the authoritative leaf score.
     # Symptom: the `ftrl` run wrote verdict="reproduced" at overall_score=0.0.
     # This must happen BEFORE the atomic write and before _rerender_report_markdown
     # so the markdown re-render picks up the corrected verdict automatically.
-    if "verdict" in report:
+    # SKIPPED for two-axis (schema>=2) reports — their verdict is fidelity-projected.
+    if not applied_two_axis and "verdict" in report:
         try:
             from backend.agents.rlm.report import reconcile_verdict_with_score  # lazy import
             report["verdict"] = reconcile_verdict_with_score(

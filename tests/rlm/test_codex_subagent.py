@@ -18,7 +18,7 @@ def _enable_codex(monkeypatch: pytest.MonkeyPatch, *, max_calls: str = "3") -> N
     monkeypatch.setenv("OPENRESEARCH_CODEX_TIMEOUT_S", "9")
     monkeypatch.setenv("OPENRESEARCH_CODEX_MAX_CALLS_PER_RUN", max_calls)
     monkeypatch.setenv("OPENRESEARCH_CODEX_MAX_OUTPUT_CHARS", "120")
-    monkeypatch.setenv("OPENRESEARCH_CODEX_PROFILE", "openresearch-readwrite")
+    monkeypatch.setenv("OPENRESEARCH_CODEX_PROFILE", "reprolab-readwrite")
     monkeypatch.setenv(
         "OPENRESEARCH_CODEX_ALLOWED_TASKS",
         "implementation_repair,test_debugging,dockerfile_repair,requirements_repair",

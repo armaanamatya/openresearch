@@ -9,6 +9,6 @@ output "acr_name" {
 }
 
 output "login_server" {
-  description = "ACR login server hostname (e.g. prefixacr.azurecr.io). Set as OPENRESEARCH_AZURE_ACR_LOGIN_SERVER."
+  description = "ACR login server hostname (e.g. prefixacr.azurecr.io). Set as REPROLAB_AZURE_ACR_LOGIN_SERVER."
   value       = azurerm_container_registry.main.login_server
 }

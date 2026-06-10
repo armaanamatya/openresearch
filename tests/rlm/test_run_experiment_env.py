@@ -78,7 +78,7 @@ def test_run_experiment_rebuilds_image_from_project_dockerfile(
 
     def fake_build_environment(env_spec, *, ctx):
         seen["dockerfile"] = env_spec.get("dockerfile")
-        return {"ok": True, "image_tag": "openresearch/test:env-REBUILT",
+        return {"ok": True, "image_tag": "reprolab/test:env-REBUILT",
                 "error": "", "attempts": 1}
 
     async def fake_exec(code_path, env_id, commands, *, project_id, run_id,
@@ -89,10 +89,10 @@ def test_run_experiment_rebuilds_image_from_project_dockerfile(
     monkeypatch.setattr(primitives, "build_environment", fake_build_environment)
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
 
-    run_experiment(str(code_dir), "openresearch/test:env-STALE", ctx=ctx)
+    run_experiment(str(code_dir), "reprolab/test:env-STALE", ctx=ctx)
 
     assert seen["dockerfile"] == dockerfile_text
-    assert seen["env_id"] == "openresearch/test:env-REBUILT", (
+    assert seen["env_id"] == "reprolab/test:env-REBUILT", (
         "the experiment must run the rebuilt image, not the stale env_id arg"
     )
 
@@ -117,8 +117,8 @@ def test_run_experiment_falls_back_to_env_id_without_dockerfile(
     monkeypatch.setattr(primitives, "build_environment", fake_build_environment)
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
 
-    run_experiment(str(code_dir), "openresearch/test:env-check", ctx=ctx)
-    assert seen["env_id"] == "openresearch/test:env-check"
+    run_experiment(str(code_dir), "reprolab/test:env-check", ctx=ctx)
+    assert seen["env_id"] == "reprolab/test:env-check"
 
 
 def test_run_experiment_fails_soft_on_rebuild_failure(
@@ -139,7 +139,7 @@ def test_run_experiment_fails_soft_on_rebuild_failure(
     monkeypatch.setattr(primitives, "build_environment", fake_build_environment)
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
 
-    result = run_experiment(str(code_dir), "openresearch/test:env-STALE", ctx=ctx)
+    result = run_experiment(str(code_dir), "reprolab/test:env-STALE", ctx=ctx)
     assert result["success"] is False
     assert "rebuild" in result["error"]
     assert "unknown base image" in result["error"]

@@ -327,7 +327,7 @@ async def _query_runpod_status(project_id: str, sandbox_mode: str | None, settin
             "api_error": str(exc),
         }
 
-    prefix = f"openresearch-{_safe_runpod_name_part(project_id)}-"
+    prefix = f"reprolab-{_safe_runpod_name_part(project_id)}-"
     matching = [
         pod
         for pod in pods
@@ -504,7 +504,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     service = run_service or FileLiveRunService(runs_root=effective_runs_root)
 
     app = FastAPI(
-        title="OpenResearch Agent",
+        title="ReproLab Agent",
         version=__version__,
         debug=settings.debug,
         lifespan=_make_lifespan(),
@@ -591,7 +591,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                headers={"user-agent": "OpenResearch/0.1 (+https://github.com/anthropics/openresearch)"},
+                headers={"user-agent": "ReproLab/0.1 (+https://github.com/anthropics/openresearch)"},
             ) as client:
                 response = await client.get(fetch_url)
         except httpx.HTTPError as exc:

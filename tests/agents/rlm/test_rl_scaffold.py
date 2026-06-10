@@ -133,11 +133,11 @@ def test_skip_on_env_sentinel(tmp_path, monkeypatch):
 
 
 def test_skip_on_sentinel_file(tmp_path, monkeypatch):
-    """code/.openresearch_rl_scaffold file → rewriter must skip."""
+    """code/.reprolab_rl_scaffold file → rewriter must skip."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
     monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
-    (tmp_path / ".openresearch_rl_scaffold").touch()
+    (tmp_path / ".reprolab_rl_scaffold").touch()
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
     cmds = ["python rl_launch.py"]
     result = _resolve_distributed_launch(cmds, code, 4)
@@ -164,7 +164,7 @@ def test_default_unchanged_no_sentinel(tmp_path, monkeypatch):
 
     monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     # Ensure sentinel file is NOT present.
-    sentinel = tmp_path / ".openresearch_rl_scaffold"
+    sentinel = tmp_path / ".reprolab_rl_scaffold"
     if sentinel.exists():
         sentinel.unlink()
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
@@ -180,7 +180,7 @@ def test_skip_env_sentinel_false_does_not_skip(tmp_path, monkeypatch):
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
     monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "0")
-    sentinel = tmp_path / ".openresearch_rl_scaffold"
+    sentinel = tmp_path / ".reprolab_rl_scaffold"
     if sentinel.exists():
         sentinel.unlink()
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")

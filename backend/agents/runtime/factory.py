@@ -311,10 +311,10 @@ def has_provider_credentials(provider: ProviderName | str | None = None) -> bool
 def configure_openai_agents_sdk_credentials(
     set_default_openai_key: Callable[..., Any] | None,
 ) -> None:
-    """Bridge OpenResearch settings into the OpenAI Agents SDK credential hooks.
+    """Bridge ReproLab settings into the OpenAI Agents SDK credential hooks.
 
     The OpenAI Agents SDK can read ``OPENAI_API_KEY`` / ``OPENAI_ADMIN_KEY``
-    directly. OpenResearch also supports ``OPENRESEARCH_*`` aliases and ``.env`` via
+    directly. ReproLab also supports ``OPENRESEARCH_*`` aliases and ``.env`` via
     Settings, so this function performs the provider-specific bridge once,
     before any Agents SDK objects are constructed.
     """

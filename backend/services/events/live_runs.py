@@ -498,7 +498,7 @@ class FileLiveRunService:
         # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
         # pointing to a different user's home) must not override the
         # project-level .env which reflects the operator's deliberate config.
-        # Non-OPENRESEARCH keys (API keys, PATH tweaks, etc.) respect the
+        # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
         # standard precedence: shell export > .env.
         dotenv_path = self.repo_root / ".env"
         if dotenv_path.is_file():
@@ -1014,8 +1014,8 @@ class FileLiveRunService:
                 _write_minimal_pdf(code_pdf, title=title)
                 shutil.copyfile(code_pdf, raw_pdf)
         else:
-            display_name = "openresearch-demo-paper.pdf"
-            title = "OpenResearch PPO Reproducibility Demo"
+            display_name = "reprolab-demo-paper.pdf"
+            title = "ReproLab PPO Reproducibility Demo"
             fixture_pdf = self._fixture_pdf_path()
             if fixture_pdf is not None:
                 shutil.copyfile(fixture_pdf, code_pdf)
@@ -1062,12 +1062,12 @@ class FileLiveRunService:
         report_path = code_dir / "final_benchmark_report.md"
         comparison_path = code_dir / "paperbench_comparison.json"
         log_path = logs_dir / "paperbench_eval.log"
-        manifest_path = code_dir / "openresearch_manifest.json"
+        manifest_path = code_dir / "reprolab_manifest.json"
         readme_path = code_dir / "README.md"
 
         benchmark = {
             "benchmarkName": "PaperBench-style final benchmark",
-            "paperbenchTaskId": "openresearch-demo/ppo-cartpole-v1",
+            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
             "overallScore": 91.4 if not uploaded else 0.0,
             "targetMetric": "mean_reward",
             "targetValue": 475.0,
@@ -1130,7 +1130,7 @@ class FileLiveRunService:
                     "root_files": [
                         "paper.pdf",
                         "README.md",
-                        "openresearch_manifest.json",
+                        "reprolab_manifest.json",
                         "paperbench_comparison.json",
                         "final_benchmark_report.md",
                     ],
@@ -1519,7 +1519,7 @@ def _paperbench_log(project_id: str, benchmark: dict[str, Any], uploaded: bool) 
         )
     return "\n".join(
         [
-            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task openresearch-demo/ppo-cartpole-v1",
+            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task reprolab-demo/ppo-cartpole-v1",
             f"2026-05-10T09:30:13Z paperbench-eval INFO project={project_id}",
             "2026-05-10T09:30:14Z paperbench-eval INFO validating source artifact code/paper.pdf",
             "2026-05-10T09:30:15Z paperbench-eval INFO checking generated code root manifest",
@@ -1536,7 +1536,7 @@ def _generated_codebase_readme(
     source_pdf: dict[str, Any],
     uploaded: bool,
 ) -> str:
-    source_mode = "uploaded lab paper" if uploaded else "built-in OpenResearch demo paper"
+    source_mode = "uploaded lab paper" if uploaded else "built-in ReproLab demo paper"
     return f"""# Generated Reproduction Codebase
 
 This directory is the generated code root for `{project_id}`.
@@ -1562,7 +1562,7 @@ python train.py
 - `paperbench_comparison.json` - structured benchmark comparison
 - `final_benchmark_report.md` - human-readable benchmark report
 - `logs/paperbench_eval.log` - PaperBench-style evaluator log
-- `openresearch_manifest.json` - source and artifact manifest
+- `reprolab_manifest.json` - source and artifact manifest
 """
 
 
@@ -1692,7 +1692,7 @@ def _initial_status(
         status.update(
             {
                 "sourceKind": "workspace_fixture",
-                "sourceLabel": "OpenResearch PPO demo paper",
+                "sourceLabel": "ReproLab PPO demo paper",
                 "sourceNote": (
                     "This demo uses a checked-in PPO-style paper PDF, a deterministic generated "
                     "codebase, and a PaperBench-style final benchmark comparison."

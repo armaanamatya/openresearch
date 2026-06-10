@@ -4,6 +4,8 @@ import { useState } from "react";
 import type { CSSProperties } from "react";
 import type { RlmRunState, PrimitiveCallView } from "../../../hooks/use-rlm-run";
 import type { DemoWorkerReport, DemoReportsSummary } from "../../../lib/demo/demo-run-types";
+import { TwoAxisVerdictCard, isTwoAxisReport } from "./two-axis-verdict-card";
+import type { TwoAxisReport } from "./two-axis-verdict-card";
 import styles from "./report-rail.module.css";
 
 export interface ReportRailProps {
@@ -14,6 +16,13 @@ export interface ReportRailProps {
   workerReports?: DemoWorkerReport[];
   primitiveCalls?: PrimitiveCallView[];
   reportsSummary?: DemoReportsSummary;
+  /**
+   * Two-axis reproducibility verdict fields from final_report.json.
+   * Rendered ONLY when schema_version >= 2 / implementation_verdict is present.
+   * Legacy runs (schema_version < 2 or absent) are completely unaffected.
+   * U17 — agent-codegen-tdd-hardening-handoff.md Part A decision 6.
+   */
+  twoAxisReport?: TwoAxisReport | null;
   style?: CSSProperties;
 }
 
@@ -99,6 +108,7 @@ export function ReportRail({
   workerReports = [],
   primitiveCalls = [],
   reportsSummary,
+  twoAxisReport = null,
   style,
 }: ReportRailProps) {
   const hasCost = report?.costUsd != null;
@@ -117,6 +127,11 @@ export function ReportRail({
 
   return (
     <aside className={styles.rail} style={style} aria-label="Report rail">
+      {/* ── Two-axis verdict card (schema_version >= 2 runs only) ── */}
+      {twoAxisReport && isTwoAxisReport(twoAxisReport) && (
+        <TwoAxisVerdictCard report={twoAxisReport} />
+      )}
+
       {/* ── Verdict pill ─────────────────────────────────────── */}
       <div
         className={`${styles.verdict} ${verdictClass}`}

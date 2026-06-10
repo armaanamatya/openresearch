@@ -1,1 +1,1 @@
-"""Persistence layer for OpenResearch backend."""
+"""Persistence layer for ReproLab backend."""

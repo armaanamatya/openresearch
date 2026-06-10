@@ -133,7 +133,7 @@ def test_run_experiment_threads_sandbox_mode_to_execute_in_sandbox(
         return {"metrics": {}, "success": True, "logs": ""}
 
     monkeypatch.setattr(primitives, "_execute_in_sandbox", fake_exec)
-    result = run_experiment(str(code_dir), "openresearch/test:env", ctx=ctx)
+    result = run_experiment(str(code_dir), "reprolab/test:env", ctx=ctx)
 
     assert result["success"] is True
     assert captured.get("sandbox_mode") is SandboxMode.docker
@@ -180,7 +180,7 @@ def test_run_experiment_does_not_block_on_shutdown_when_worker_wedges(
     ctx.deadline_utc = datetime.now(timezone.utc) - timedelta(seconds=60)
 
     start = time.monotonic()
-    result = run_experiment(str(code_dir), "openresearch/test:env", ctx=ctx)
+    result = run_experiment(str(code_dir), "reprolab/test:env", ctx=ctx)
     elapsed = time.monotonic() - start
 
     # Release the wedged worker so the thread can exit cleanly.

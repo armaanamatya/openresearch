@@ -171,7 +171,8 @@ docker compose up --build
 |---|---|---|
 | `OPENAI_API_KEY` | One auth path | Root model when `--model gpt-5` (the default root). |
 | `ANTHROPIC_API_KEY` | Optional | Sub-agents (Sonnet) and `--model claude`. **Leave empty to use Claude CLI OAuth** (`claude login`). A no-credit key does *not* fall back to OAuth — it hard-fails; see `CLAUDE.md` → "RLM auth". |
-| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` |
+| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
+| `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) — see the [Azure guide](docs/guides/azure-kubernetes-gpu-setup.md) |
 | `OPENRESEARCH_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
 | `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
 | `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |

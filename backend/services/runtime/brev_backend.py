@@ -455,7 +455,7 @@ class BrevBackend(RuntimeBackend):
     ) -> Sandbox:
         ready = ssh_ready or await self._wait_for_instance_ssh(instance_id)
         remote_base = _join_posix(
-            "/home", self.ssh_user, "openresearch",
+            "/home", self.ssh_user, "reprolab",
             _safe_name(config.project_id),
             _safe_name(config.run_id),
         )
@@ -908,7 +908,7 @@ def _extract_artifact_tar(data: bytes, destination: Path) -> None:
 
 
 def _instance_name(config: SandboxConfig) -> str:
-    return f"openresearch-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
+    return f"reprolab-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
 
 
 def _safe_name(value: str) -> str:
