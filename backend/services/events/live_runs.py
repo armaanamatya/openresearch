@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -848,7 +849,7 @@ class FileLiveRunService:
             stderr.close()
             stdout.close()
 
-        meta.update({"pid": process.pid, "updatedAt": _now()})
+        meta.update({"pid": process.pid, "pidHost": socket.gethostname(), "updatedAt": _now()})
         await asyncio.to_thread(self._write_status, project_id, meta)
 
         # Launch the stderr watchdog as a fire-and-forget asyncio task.
@@ -2245,6 +2246,9 @@ def _pid_exists(pid: Any) -> bool:
         return False
     try:
         os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # EPERM means the process exists but belongs to another user — alive.
         return True
     except OSError:
         return False

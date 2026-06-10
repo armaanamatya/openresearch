@@ -141,3 +141,66 @@ def test_sweep_uses_mtime_when_updated_at_missing(tmp_path: Path) -> None:
     assert len(reports) == 1
     status = json.loads(status_path.read_text(encoding="utf-8"))
     assert status["status"] == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-06-09: cross pid-namespace / cross-user false-orphan fixes
+# ---------------------------------------------------------------------------
+
+
+def test_pid_alive_treats_eperm_as_alive(monkeypatch) -> None:
+    """EPERM from os.kill(pid, 0) means the process EXISTS but belongs to
+    another user — it must read as alive, not dead (a backend server running
+    under a different OS user must not sweep a live CLI run)."""
+
+    def _kill_eperm(_pid, _sig):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr("backend.services.events.run_liveness.os.kill", _kill_eperm)
+    assert _pid_alive(12345) is True
+
+
+def test_sweep_skips_pid_from_other_host(tmp_path: Path) -> None:
+    """A pid minted on another host / pid namespace (e.g. a host-launched CLI
+    run seen by the containerized backend via the bind-mounted runs/) cannot be
+    probed with os.kill — liveness is UNKNOWN, so the sweep must skip it (same
+    posture as the absent-pid case)."""
+    run_dir = tmp_path / "prj_other_host"
+    _write_status(
+        run_dir,
+        {
+            "projectId": "prj_other_host",
+            "status": "running",
+            "pid": 99999,  # dead in OUR namespace — irrelevant, it isn't ours
+            "pidHost": "some-other-machine",
+            "updatedAt": _old_iso(500),
+        },
+    )
+
+    reports = sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    assert reports == []
+    status = json.loads((run_dir / "demo_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "running"
+    assert not (run_dir / "final_report.json").exists()
+
+
+def test_sweep_still_marks_orphan_when_pid_host_matches(tmp_path: Path) -> None:
+    """Same-host snapshots (pidHost == our hostname) keep full sweep behavior."""
+    import socket
+
+    run_dir = tmp_path / "prj_same_host"
+    _write_status(
+        run_dir,
+        {
+            "projectId": "prj_same_host",
+            "status": "running",
+            "pid": 99999,
+            "pidHost": socket.gethostname(),
+            "updatedAt": _old_iso(500),
+        },
+    )
+
+    reports = sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    assert [r.project_id for r in reports] == ["prj_same_host"]

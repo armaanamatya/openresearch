@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -667,10 +668,17 @@ def _write_demo_status(
     # Liveness prereq: run_liveness.sweep_orphaned_runs deliberately skips
     # runs without a pid ("absent-pid means unknown, not dead"), so a
     # SIGKILLed CLI/batch run used to show status=running forever — only the
-    # API spawn path stamped one (live_runs.py). For CLI runs this process IS
-    # the run; for API runs the parent already wrote the same subprocess pid
-    # and **existing keeps it.
-    payload.setdefault("pid", os.getpid())
+    # API spawn path stamped one (live_runs.py). run.py always executes inside
+    # the run process itself, so an unconditional overwrite is always correct:
+    # on the API path the parent recorded this same subprocess pid
+    # (live_runs.py spawn, no shell), and on CLI re-runs of a reused project
+    # dir a setdefault would inherit a DEAD prior attempt's pid (demo_status
+    # is not in attempt_isolation's archive set), getting a live run falsely
+    # swept as orphaned. pidHost scopes the pid to the namespace that minted
+    # it — a containerized sweeper must not os.kill-probe host pids through
+    # the bind-mounted runs/ (see run_liveness.sweep_orphaned_runs).
+    payload["pid"] = os.getpid()
+    payload["pidHost"] = socket.gethostname()
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1201,6 +1209,13 @@ def _update_cost_summary_loop(
 
     Reads cost_ledger.jsonl and merges ``cost_summary`` into the existing
     demo_status.json via an atomic tmp-write. Fail-soft — never crashes the run.
+
+    Also refreshes ``updatedAt`` (audit 2026-06-09): this loop is the only
+    periodic writer during a run, so the refresh turns the orphan sweeper's
+    staleness gate (run_liveness, default 120s) into a genuine process-written
+    heartbeat — a LIVE run never looks stale, regardless of pid-namespace or
+    user-id visibility from the sweeping process. When this process dies the
+    refresh stops, staleness accrues, and the sweep proceeds as designed.
     """
     while not stop_event.wait(timeout=interval_s):
         try:
@@ -1214,6 +1229,10 @@ def _update_cost_summary_loop(
                 except Exception:  # noqa: BLE001
                     existing = {}
             existing["cost_summary"] = summary
+            if str(existing.get("status") or "") == "running":
+                existing["updatedAt"] = (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
             tmp = status_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             os.replace(tmp, status_path)

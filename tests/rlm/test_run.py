@@ -402,16 +402,24 @@ class TestWriteDemoStatus:
         _write_demo_status(tmp_path, "running")
         assert self._load(tmp_path)["pid"] == os.getpid()
 
-    def test_does_not_clobber_existing_pid(self, tmp_path):
-        """API-spawned runs get their subprocess pid stamped by the parent
-        (live_runs.py); the run's own writes must keep it."""
+    def test_overwrites_inherited_stale_pid_with_own(self, tmp_path):
+        """Audit 2026-06-09 (inverts the old test_does_not_clobber_existing_pid,
+        whose premise was false): run.py always executes inside the run process
+        itself, so the overwrite is a no-op for API runs (the parent stamped the
+        SAME subprocess pid, live_runs.py spawn) and a correctness fix for CLI
+        re-runs of a reused project dir — a setdefault inherited a DEAD prior
+        attempt's pid (demo_status.json is not in attempt_isolation's archive
+        set), and the orphan sweep then falsely interrupted the LIVE run."""
         import json
+        import os
+        import socket
 
         (tmp_path / "demo_status.json").write_text(
-            json.dumps({"pid": 424242}), encoding="utf-8"
+            json.dumps({"pid": 424242, "pidHost": "stale-old-host"}), encoding="utf-8"
         )
         _write_demo_status(tmp_path, "running")
-        assert self._load(tmp_path)["pid"] == 424242
+        assert self._load(tmp_path)["pid"] == os.getpid()
+        assert self._load(tmp_path)["pidHost"] == socket.gethostname()
 
 
 # ---------------------------------------------------------------------------

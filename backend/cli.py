@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1022,7 +1023,10 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
             "primitiveProvider": "real",
             # Liveness prereq (audit 2026-06-09): without a pid the orphan
             # sweep skips this run; the pipeline runs in this same process.
+            # pidHost scopes the pid to the host that minted it (a
+            # containerized sweeper can't probe host pids).
             "pid": os.getpid(),
+            "pidHost": socket.gethostname(),
         }
         _ds_path.write_text(json.dumps(_ds_payload, indent=2), encoding="utf-8")
         print(f"[rlm] wrote demo_status.json (status=running)", file=sys.stderr)
