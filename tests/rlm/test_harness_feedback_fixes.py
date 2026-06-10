@@ -211,3 +211,32 @@ def test_plan_reproduction_string_compute_scope_warns_the_agent(make_context, tm
     assert result["compute_scope"] is None
     warnings = result.get("warnings") or []
     assert any("compute_scope" in w and "is_clipped" in w for w in warnings)
+
+
+def test_single_model_multi_dataset_accepts_cells_route_shape():
+    """The cells-route aggregate (per_model[model][env][baseline], env keys
+    carrying the dataset) can never have a top-level per_dataset dict — the
+    single-model multi-dataset branch used to hard-fail every such run
+    (2026-06-10 All-CNN v2 scope_shape_violation with 14 converged cells on
+    disk). Env keys across models now satisfy dataset coverage."""
+    scope = ScopeSpec(datasets=["CIFAR-10", "CIFAR-100"])
+    metrics = {
+        "status": "partial",
+        "per_model": {
+            "a_base": {"cifar10_noaug": {"base": {"status": "ok", "metric": 0.87}}},
+            "c_allcnn": {"cifar100_aug": {"allcnn": {"status": "ok", "metric": 0.66}}},
+        },
+        "scope": {"models_run": ["a_base", "c_allcnn"]},
+    }
+    assert _validate_scope_metrics(scope, metrics) is None
+
+
+def test_single_model_multi_dataset_still_flags_missing_dataset():
+    scope = ScopeSpec(datasets=["CIFAR-10", "CIFAR-100"])
+    metrics = {
+        "per_model": {
+            "a_base": {"cifar10_noaug": {"base": {"status": "ok"}}},
+        },
+    }
+    hint = _validate_scope_metrics(scope, metrics)
+    assert hint is not None and "CIFAR-100" in hint

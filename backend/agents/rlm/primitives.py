@@ -4381,6 +4381,21 @@ def _validate_scope_metrics(
         # Single-model + multi-dataset: per_dataset at top level (no per_model nesting).
         pd = metrics.get("per_dataset")
         if not isinstance(pd, dict) or not pd:
+            # Accept the cells-route canonical shape too (2026-06-10 All-CNN v2):
+            # the harness aggregate is per_model[model][env][baseline] where the
+            # env keys carry the dataset (cifar10_noaug, cifar100_aug, ...) — it
+            # structurally NEVER has a top-level per_dataset dict, so demanding
+            # one here mis-fired on every multi-dataset cells.json run. Treat
+            # the union of env keys across models as the dataset key set.
+            per_model = metrics.get("per_model")
+            if isinstance(per_model, dict) and per_model:
+                env_keys: set[str] = set()
+                for model_metrics in per_model.values():
+                    if isinstance(model_metrics, dict):
+                        env_keys.update(k for k in model_metrics if isinstance(k, str))
+                if env_keys:
+                    pd = {k: True for k in env_keys}
+        if not isinstance(pd, dict) or not pd:
             return (
                 f"per_dataset_required: scope is multi-dataset {datasets}. "
                 f"Write metrics.json with a top-level per_dataset dict keyed by "
