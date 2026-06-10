@@ -475,3 +475,25 @@ OFF) projects the legacy verdict from root-writable `rlm_state/` artifacts
 when that flag is on, a forging root could bypass the gate by writing a green
 certificate. Acceptable while default-off; gate-order needs revisiting before
 the flag ever defaults on.
+
+### Round-5 continuation: last verification gaps closed
+
+- `make check` (the documented aggregate gate): green end-to-end.
+- Full `docker compose up --build` smoke on the final configuration:
+  healthcheck **healthy**, `/health` + `/lab` 200, **uid 10001** confirmed in
+  the running compose stack (an earlier smoke had silently used a stale
+  `openresearch/app:latest` tag — rebuilt and re-verified).
+- **Playwright e2e executed for the first time in this audit**: 18 passed,
+  1 skipped, **3 failed — all pre-existing UI-side regressions** (Playwright
+  is not in CI, so these were invisible):
+  1. `rlm-lab.spec.ts` — the page renders **two** `node-detail-sidebar`
+     elements (identical aria-labels, both collapsed) → strict-mode locator
+     violation. Looks like an accidental double render from the recent
+     CollapsiblePanel work. Genuine UI bug.
+  2. `lab-smoke-interactive.spec.ts` (library status filter) — seeded
+     `prj_diffusion_smoke` row never appears in the library table.
+  3. `reports.spec.ts` — "worker reports" section text not found for a
+     seeded run.
+  Left for the UI track (UI components are deliberately out of this audit's
+  lane); none affect the backend pipeline, API, or the verified compose
+  deployment. Consider adding a Playwright job to CI once green.
