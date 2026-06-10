@@ -436,6 +436,17 @@ def _make_lifespan():
         except Exception as exc:
             logger.warning("periodic_liveness_sweep start failed (non-fatal): %s", exc)
 
+        # Opt-in runs retention (audit 2026-06-10): no-op unless the operator
+        # sets OPENRESEARCH_RUNS_RETENTION_DAYS > 0 — deleting run artifacts
+        # is an operator decision, so the shipped default stays manual
+        # (scripts/prune_runs.py). Same stop event as the liveness sweep.
+        try:
+            from backend.services.runs.retention import periodic_retention_sweep
+
+            periodic_retention_sweep(_runs_root(), stop_event=_liveness_stop)
+        except Exception as exc:
+            logger.warning("periodic_retention_sweep start failed (non-fatal): %s", exc)
+
         yield
 
         # Shutdown

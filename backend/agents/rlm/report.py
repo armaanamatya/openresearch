@@ -1445,7 +1445,38 @@ def write_final_report_rlm(
     try:
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
         _report_dict = report.model_dump()
+        _gate_approved_verdict = report.verdict
         if _attach_two_axis(_report_dict, project_dir):
+            # Gate-order hardening (audit 2026-06-10): two-axis runs AFTER the
+            # evidence gate and projects the verdict from ROOT-WRITABLE
+            # rlm_state/ artifacts (fidelity_certificate.json, repro_spec.json)
+            # — without this clamp, a forging root could write a green
+            # certificate and UPGRADE a gate-downgraded 'failed' back to
+            # 'reproduced'. An upgrade therefore requires the same unforgeable
+            # trust signal the gate uses: >=1 success-compatible in-process
+            # run_experiment call. Downgrades and equal verdicts are always
+            # allowed (A4's faithful-but-contradicted != failed is a downgrade
+            # protection, not an upgrade); None (no ledger — replay/postmortem)
+            # keeps content-only trust, matching the gate's posture.
+            _rank = {"failed": 0, "partial": 1, "reproduced": 2}
+            _new_v = str(_report_dict.get("verdict") or "")
+            if (
+                _rank.get(_new_v, 0) > _rank.get(str(_gate_approved_verdict or ""), 0)
+                and run_experiment_ok_calls is not None
+                and run_experiment_ok_calls <= 0
+            ):
+                logger.warning(
+                    "report: two-axis verdict upgrade %r -> %r clamped — no "
+                    "success-compatible run_experiment call backs the artifacts",
+                    _gate_approved_verdict, _new_v,
+                )
+                _report_dict["verdict"] = _gate_approved_verdict
+                _repro = _report_dict.get("reproducibility")
+                if isinstance(_repro, dict):
+                    _repro["verdict_clamped"] = (
+                        "upgrade to %r refused: zero success-compatible "
+                        "run_experiment calls in this attempt" % _new_v
+                    )
             try:
                 report.verdict = _report_dict.get("verdict", report.verdict)
             except Exception:  # noqa: BLE001 — model may be frozen; the dict stays authoritative

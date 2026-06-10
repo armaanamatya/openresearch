@@ -117,7 +117,10 @@ per-job cleanup, cost limits, and rollback from a fresh cloud account.
   node:20-bookworm-slim pinned by sha256; bump deliberately)
 - production-grade queue/scheduler
 - multi-node run ownership
-- automatic run retention policy (manual: `scripts/prune_runs.py`)
+- ~~automatic run retention policy~~ — done 2026-06-10, opt-in:
+  `OPENRESEARCH_RUNS_RETENTION_DAYS=N` prunes terminal runs older than N days
+  hourly (honors `.preserved`; unset/0 = off; manual path stays
+  `scripts/prune_runs.py`)
 - compose resource limits for every sandbox child
 - ~~frontend healthcheck in compose~~ — done 2026-06-10 (the compose
   healthcheck now curls BOTH :8000/health and :3000)

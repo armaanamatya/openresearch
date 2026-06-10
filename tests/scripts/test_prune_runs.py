@@ -77,3 +77,65 @@ def test_all_terminal_statuses_are_eligible(tmp_path: Path) -> None:
 
 def test_missing_runs_root_is_a_noop(tmp_path: Path) -> None:
     assert prune_runs.prune(tmp_path / "nope", older_than_days=14, delete=True) == []
+
+
+# ---------------------------------------------------------------------------
+# Opt-in periodic retention (audit 2026-06-10): backend.services.runs.retention
+# ---------------------------------------------------------------------------
+
+
+def test_retention_disabled_by_default(monkeypatch):
+    from backend.services.runs import retention
+
+    monkeypatch.delenv("OPENRESEARCH_RUNS_RETENTION_DAYS", raising=False)
+    assert retention.retention_days_from_env() is None
+    import threading
+    assert retention.periodic_retention_sweep(
+        Path("/nonexistent"), stop_event=threading.Event()
+    ) is None
+
+
+def test_retention_env_parsing(monkeypatch):
+    from backend.services.runs import retention
+
+    monkeypatch.setenv("OPENRESEARCH_RUNS_RETENTION_DAYS", "14")
+    assert retention.retention_days_from_env() == 14.0
+    monkeypatch.setenv("OPENRESEARCH_RUNS_RETENTION_DAYS", "0")
+    assert retention.retention_days_from_env() is None
+    monkeypatch.setenv("OPENRESEARCH_RUNS_RETENTION_DAYS", "not-a-number")
+    assert retention.retention_days_from_env() is None
+
+
+def test_sweep_once_honors_all_guards(tmp_path):
+    """The destructive periodic unit applies the same keep rules as the CLI."""
+    import json
+    import os
+    import time as _time
+    from backend.services.runs import retention
+
+    old = _time.time() - 30 * 86400
+    # terminal + old → pruned
+    doomed = tmp_path / "prj_doomed"
+    doomed.mkdir()
+    (doomed / "demo_status.json").write_text(json.dumps({"status": "completed"}))
+    os.utime(doomed / "demo_status.json", (old, old))
+    os.utime(doomed, (old, old))
+    # terminal + old + .preserved → kept
+    kept = tmp_path / "prj_preserved"
+    kept.mkdir()
+    (kept / "demo_status.json").write_text(json.dumps({"status": "completed"}))
+    (kept / ".preserved").write_text("")
+    os.utime(kept / "demo_status.json", (old, old))
+    os.utime(kept, (old, old))
+    # running → kept regardless of age
+    live = tmp_path / "prj_live"
+    live.mkdir()
+    (live / "demo_status.json").write_text(json.dumps({"status": "running"}))
+    os.utime(live / "demo_status.json", (old, old))
+    os.utime(live, (old, old))
+
+    selected = retention.sweep_once(tmp_path, older_than_days=14)
+
+    assert [p.name for p in selected] == ["prj_doomed"]
+    assert not doomed.exists()
+    assert kept.exists() and live.exists()

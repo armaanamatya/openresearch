@@ -5540,9 +5540,16 @@ def run_experiment(
                     }
                 elif "RUNPOD_TRANSIENT_500" in exc_msg:
                     # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # — advance the ladder so the run doesn't dead-end. Bounded
-                    # by dynamic_gpu_max_escalations so a request-shape bug
-                    # cannot burn the whole catalog.
+                    # infra hiccups — advance the ladder so the run doesn't dead-end.
+                    # This is intentionally the same path as CAPACITY_EXHAUSTED
+                    # because: (a) the 500 may itself be capacity under a different
+                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
+                    # with exponential backoff before bubbling up here, so a genuine
+                    # transient would have recovered. BUG-NEW-049: consider adding
+                    # a same-tier retry before escalating if TRANSIENT_500 is the
+                    # sole failure mode (CAPACITY_EXHAUSTED still escalates
+                    # immediately). Bounded by dynamic_gpu_max_escalations so a
+                    # request-shape bug cannot burn the whole catalog.
                     infra_error_kind = "runpod_transient_500"
                     result = {
                         "success": False, "metrics": {},

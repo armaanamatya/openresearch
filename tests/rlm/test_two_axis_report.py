@@ -203,3 +203,77 @@ def test_ambiguous_claim_blocks_contradiction(monkeypatch, tmp_path):
     report = {"verdict": "partial", "rubric": _rubric()}
     assert tar.compute_and_attach(report, tmp_path) is True
     assert report["replication_verdict"] == "inconclusive"
+
+
+# ---------------------------------------------------------------------------
+# Gate-order hardening (audit 2026-06-10): two-axis runs AFTER the evidence
+# gate and reads ROOT-WRITABLE rlm_state/ artifacts — an UPGRADE of the
+# verdict must be backed by the gate's unforgeable trust signal (>=1
+# success-compatible in-process run_experiment call). Downgrades stay free.
+# ---------------------------------------------------------------------------
+
+
+def _forged_green_artifacts(tmp_path):
+    _write(tmp_path, "code/metrics.json", {"status": "ok", "per_model": {"m": {"v": 1.0}}})
+    _write(tmp_path, "rlm_state/fidelity_certificate.json", _green_certificate())
+    scope = {"model": "Qwen2.5-3B", "dataset": "ALFWorld", "split": "test"}
+    _write(tmp_path, "rlm_state/repro_spec.json",
+           {"claims": [_claim([9.0, 9.2], scope=scope, measured_scope=scope)]})
+
+
+def test_forged_artifacts_cannot_upgrade_failed_verdict(monkeypatch, tmp_path):
+    """A root that forges a green certificate + spec via its REPL open() must
+    NOT lift a gate-downgraded 'failed' when zero success-compatible
+    run_experiment calls back the artifacts."""
+    monkeypatch.setenv(_FLAG, "1")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
+    _forged_green_artifacts(tmp_path)
+
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+    report = RLMFinalReport(verdict="failed", rubric=_rubric())
+    write_final_report_rlm(
+        report, tmp_path,
+        run_experiment_calls=1,        # one call happened...
+        run_experiment_ok_calls=0,     # ...but it FAILED (outcome stamp)
+    )
+
+    written = json.loads((tmp_path / "final_report.json").read_text())
+    assert written["verdict"] == "failed"  # the clamp held
+    assert "verdict_clamped" in written["reproducibility"]
+    # The two-axis diagnostics stay attached (informative, just not authoritative).
+    assert written["implementation_verdict"] == "faithful"
+
+
+def test_real_success_allows_two_axis_upgrade(monkeypatch, tmp_path):
+    """With >=1 success-compatible call the A4 projection applies normally."""
+    monkeypatch.setenv(_FLAG, "1")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
+    _forged_green_artifacts(tmp_path)  # same artifacts — now backed by a real call
+
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+    report = RLMFinalReport(verdict="failed", rubric=_rubric())
+    write_final_report_rlm(
+        report, tmp_path,
+        run_experiment_calls=1,
+        run_experiment_ok_calls=1,
+    )
+
+    written = json.loads((tmp_path / "final_report.json").read_text())
+    assert written["verdict"] == "reproduced"
+    assert "verdict_clamped" not in written["reproducibility"]
+
+
+def test_none_ledger_keeps_replay_behavior(monkeypatch, tmp_path):
+    """Replay/postmortem (no ledger): content-only trust — no clamp, matching
+    the evidence gate's own None posture (test_live_write_path_attaches_verdict
+    already covers the upgrade; this pins that the clamp does not over-fire)."""
+    monkeypatch.setenv(_FLAG, "1")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
+    _forged_green_artifacts(tmp_path)
+
+    from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
+    report = RLMFinalReport(verdict="failed", rubric=_rubric())
+    write_final_report_rlm(report, tmp_path)  # no counts → None
+
+    written = json.loads((tmp_path / "final_report.json").read_text())
+    assert written["verdict"] == "reproduced"
