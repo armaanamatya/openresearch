@@ -26,6 +26,7 @@ import pytest
 from backend.agents.rlm.report import (
     RLMFinalReport,
     run_experiment_call_count,
+    run_experiment_success_count,
     write_final_report_rlm,
 )
 
@@ -64,7 +65,7 @@ def test_forged_row_with_zero_run_experiment_calls_is_downgraded(
 
     written = json.loads(json_path.read_text(encoding="utf-8"))
     assert written["verdict"] == "failed", "a forged success row (0 ledger calls) must not survive"
-    assert "not backed by a real experiment" in written["reproduction_summary"]
+    assert "not backed by a real successful experiment" in written["reproduction_summary"]
 
 
 def test_real_success_row_with_a_backing_run_experiment_call_stays_partial(
@@ -238,3 +239,127 @@ def test_session_appends_after_seeding_still_count(tmp_path: Path) -> None:
 
     assert run_experiment_call_count(_Ctx()) == 1
     assert ledger.total_usd() == 0.0  # cumulative cost math untouched by scoping
+
+
+# ---------------------------------------------------------------------------
+# Per-row provenance (audit 2026-06-10) — closes the former KNOWN RESIDUAL #2:
+# one real-but-FAILED run_experiment call + a forged success row passed the
+# >=1 total-count check. The outcome stamp written by binding.wrap_primitive
+# ("ok"/"failed"/"raised") now distinguishes them.
+# ---------------------------------------------------------------------------
+
+
+def _ledger_with_one_call(outcome: str):
+    from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
+
+    ledger = RunCostLedger(project_id="p")
+    ledger.append(
+        CostLedgerEntry(
+            timestamp=datetime.now(timezone.utc),
+            agent_id="run_experiment",
+            attempt_index=0,
+            provider="openai",
+            model="gpt-5",
+            outcome=outcome,
+        )
+    )
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    return _Ctx()
+
+
+def test_one_real_failed_call_plus_forged_success_row_is_downgraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE residual: run a real container that FAILS (1 ledger call, outcome
+    'failed'), then forge a success row via the REPL's open(). The >=1 total
+    count used to bless it; the success-compatible count now rejects it."""
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    _forge_success_row(tmp_path)
+    ctx = _ledger_with_one_call("failed")
+
+    assert run_experiment_call_count(ctx) == 1  # the old check alone would pass
+    assert run_experiment_success_count(ctx) == 0
+
+    report = RLMFinalReport(
+        verdict="reproduced",
+        reproduction_summary="claimed reproduction",
+        baseline_metrics={"accuracy": 0.95},
+    )
+    json_path, _ = write_final_report_rlm(
+        report,
+        tmp_path,
+        run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+    )
+
+    assert _written_verdict(json_path) == "failed"
+
+
+def test_real_successful_call_still_backs_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    _forge_success_row(tmp_path)  # here it stands in for the REAL success row
+    ctx = _ledger_with_one_call("ok")
+
+    report = RLMFinalReport(
+        verdict="partial",
+        reproduction_summary="real run",
+        baseline_metrics={"accuracy": 0.95},
+    )
+    json_path, _ = write_final_report_rlm(
+        report,
+        tmp_path,
+        run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+    )
+
+    assert _written_verdict(json_path) == "partial"
+
+
+def test_unstamped_legacy_rows_stay_success_compatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-compat: outcome='' (legacy doubles, pre-stamp artifacts) must never
+    over-downgrade — only explicit failed/raised stamps refuse to back a row."""
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    _forge_success_row(tmp_path)
+    ctx = _ledger_with_one_call("")
+
+    assert run_experiment_success_count(ctx) == 1
+
+    report = RLMFinalReport(
+        verdict="partial",
+        reproduction_summary="legacy path",
+        baseline_metrics={"accuracy": 0.95},
+    )
+    json_path, _ = write_final_report_rlm(
+        report,
+        tmp_path,
+        run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+    )
+
+    assert _written_verdict(json_path) == "partial"
+
+
+def test_outcome_round_trips_through_jsonl() -> None:
+    """to_json/from_json must carry the stamp; old rows without it parse fine."""
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    entry = CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc),
+        agent_id="run_experiment",
+        attempt_index=0,
+        provider="openai",
+        model="gpt-5",
+        outcome="failed",
+    )
+    assert CostLedgerEntry.from_json(entry.to_json()).outcome == "failed"
+
+    legacy = entry.to_json()
+    del legacy["outcome"]
+    assert CostLedgerEntry.from_json(legacy).outcome == ""

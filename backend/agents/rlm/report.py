@@ -1142,6 +1142,7 @@ def _apply_evidence_gate(
     project_dir: Path,
     *,
     run_experiment_calls: int | None = None,
+    run_experiment_ok_calls: int | None = None,
 ) -> RLMFinalReport:
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
@@ -1193,14 +1194,22 @@ def _apply_evidence_gate(
     (``_persist_experiment_result`` only writes from inside ``run_experiment``), so the
     cross-check never downgrades a real reproduction.
 
+    PER-ROW PROVENANCE (2026-06-10, closes former residual #2): ``run_experiment_ok_calls``
+    counts in-process ledger rows whose ``outcome`` stamp (written by
+    ``binding.wrap_primitive``: "ok"/"failed"/"raised") is success-compatible. A root
+    that makes one real-but-FAILED ``run_experiment`` call and then forges a success
+    row used to pass the ``>= 1`` total-count check; now a success+metrics row with
+    ZERO success-compatible calls is forged too. Unknown-outcome rows ("" — legacy
+    doubles, pre-stamp artifacts) stay success-compatible so old paths never
+    over-downgrade; in the real pipeline every run_experiment row is stamped.
+
     KNOWN RESIDUALS (not closed here): (1) the predicate checks that *a* success+metrics
-    row exists, not that ``baseline_metrics`` is *tied to* that row. (2) the count
-    cross-check catches a forge with ZERO ``run_experiment`` calls; a root that calls
-    ``run_experiment`` once (it runs a real container and *fails*) and then forges a
-    success row still passes the ``>= 1`` count (1 success row, 1 ledger call). Both are
-    narrower; ``_verify_scope_evidence`` partially covers model/env tags. Documented gaps;
-    the audit's nonce idea is defeated by the root copying a nonce out of an existing row,
-    so the ledger count is the robust primary defense.
+    row exists, not that ``baseline_metrics`` is *tied to* that row. (2) a root whose
+    ``run_experiment`` REALLY succeeded once can still forge a BETTER success row
+    alongside it (provenance ties the verdict to a real success, not the numbers to
+    the row); ``_verify_scope_evidence`` partially covers model/env tags. Documented
+    gaps; the audit's nonce idea is defeated by the root copying a nonce out of an
+    existing row, so the ledger count is the robust primary defense.
 
     Disable with ``OPENRESEARCH_EVIDENCE_GATE=0`` (legacy ``REPROLAB_`` prefix
     bridged at import by config._apply_legacy_env_aliases).
@@ -1209,26 +1218,29 @@ def _apply_evidence_gate(
         return report
     content_evidence = _has_experiment_evidence(project_dir)
     # Forged iff there IS a success+metrics row on disk but the authoritative ledger
-    # count proves run_experiment never ran (the row was written by something other
-    # than the real primitive). None => unknown ledger => skip the cross-check.
-    forged_evidence = (
-        content_evidence
-        and run_experiment_calls is not None
-        and run_experiment_calls <= 0
+    # proves no real primitive call backs it: either run_experiment never ran at all
+    # (total count 0) or every in-process call ENDED in failure/raise (ok-count 0 —
+    # per-row provenance, 2026-06-10). None => unknown ledger => skip that check.
+    forged_evidence = content_evidence and (
+        (run_experiment_calls is not None and run_experiment_calls <= 0)
+        or (run_experiment_ok_calls is not None and run_experiment_ok_calls <= 0)
     )
     has_real_evidence = content_evidence and not forged_evidence
     if report.verdict in {"reproduced", "partial"} and not has_real_evidence:
         if forged_evidence:
             note = (
                 " [evidence_gap] Downgraded to 'failed': experiment_runs.jsonl has a "
-                "success+metrics row but the authoritative cost-ledger trace shows 0 "
-                "run_experiment calls — the row is not backed by a real experiment "
-                "(forged/unbacked evidence)."
+                "success+metrics row but the authoritative cost-ledger trace shows no "
+                "run_experiment call that ENDED successfully in this attempt — the "
+                "row is not backed by a real successful experiment (forged/unbacked "
+                "evidence)."
             )
             logger.warning(
                 "report: evidence gate downgraded verdict to 'failed' — FORGED "
-                "experiment evidence (success row on disk but run_experiment ledger "
-                "count is 0)"
+                "experiment evidence (success row on disk; run_experiment ledger "
+                "calls=%s, success-compatible=%s)",
+                run_experiment_calls,
+                run_experiment_ok_calls,
             )
         elif (
             (run_experiment_calls is None or run_experiment_calls >= 1)
@@ -1315,11 +1327,35 @@ def run_experiment_call_count(ctx: RunContext) -> int | None:
         return None
 
 
+def run_experiment_success_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls whose per-row ``outcome`` stamp is
+    success-compatible ("ok" or unknown ""). See
+    ``RunCostLedger.session_success_compatible_count`` — this is the gate input
+    that closes the one-real-failed-call-plus-forged-row residual (2026-06-10).
+    ``None`` when no ledger is available (gate skips the check)."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_success_compatible_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and (getattr(e, "outcome", "") or "") in ("", "ok")
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def write_final_report_rlm(
     report: RLMFinalReport,
     project_dir: Path,
     *,
     run_experiment_calls: int | None = None,
+    run_experiment_ok_calls: int | None = None,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -1347,7 +1383,10 @@ def write_final_report_rlm(
     # threaded from callers that have ``ctx``) lets the gate reject a forged
     # experiment_runs.jsonl row; ``None`` falls back to a content-only check.
     report = _apply_evidence_gate(
-        report, project_dir, run_experiment_calls=run_experiment_calls
+        report,
+        project_dir,
+        run_experiment_calls=run_experiment_calls,
+        run_experiment_ok_calls=run_experiment_ok_calls,
     )
 
     project_dir.mkdir(parents=True, exist_ok=True)

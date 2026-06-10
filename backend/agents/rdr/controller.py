@@ -35,6 +35,7 @@ from backend.agents.rlm.report import (
     RLMFinalReport,
     reconcile_verdict_with_score,
     run_experiment_call_count,
+    run_experiment_success_count,
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
@@ -1424,7 +1425,8 @@ async def run_rdr(
     )
 
     json_path, _md_path = write_final_report_rlm(
-        report, ctx.project_dir, run_experiment_calls=run_experiment_call_count(ctx)
+        report, ctx.project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx)
     )
 
     # ------------------------------------------------------------------

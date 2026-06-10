@@ -296,7 +296,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
     the existing ``primitive_call`` events still fire via ``dashboard``.
     """
 
-    def _ledger() -> None:
+    def _ledger(outcome: str = "") -> None:
         """Append a cost-ledger row for this primitive invocation.
 
         Reads ctx.llm_client._last_usage (populated by ClaudeLlmClient.complete)
@@ -305,6 +305,12 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         agent engine path (implement_baseline — engine writes its own entry),
         _last_usage stays at the zeroed value and the entry records 0 tokens,
         which is correct.
+
+        ``outcome`` is the per-row provenance stamp (audit 2026-06-10): "ok"
+        (returned non-failure), "failed" (returned a failure-shaped dict), or
+        "raised". The evidence gate consumes it via
+        ``RunCostLedger.session_success_compatible_count`` so a real-but-FAILED
+        run_experiment call can no longer back a forged success row.
         """
         usage: dict = {}
         llm_client = getattr(ctx, "llm_client", None)
@@ -319,6 +325,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             provider=ctx.provider,
             model=ctx.model,
             usage=usage,
+            outcome=outcome,
         ))
 
     def _emit_extra(event: dict) -> None:
@@ -485,7 +492,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     pass
                 ctx.dashboard.primitive_call(name, "error", result_summary=summary)
                 _emit_primitive_resource(ctx, primitive=name, boundary="end")
-                _ledger()
+                _ledger("raised")
                 logger.warning("primitive %s raised %s", name, type(exc).__name__)
                 raise
             # Most primitives are fail-soft: on failure they RETURN a failure-shaped
@@ -502,7 +509,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 coerced=coerced,
             )
             _emit_primitive_resource(ctx, primitive=name, boundary="end")
-            _ledger()
+            _ledger("failed" if failed else "ok")
             if failed:
                 logger.warning(
                     "primitive %s returned a failure: %s",
