@@ -48,8 +48,14 @@ Docker daemon. Do not expose this compose stack on an untrusted network.
 ## Persistence
 
 Run artifacts and the compose SQLite DB live under `runs/`. The path is
-gitignored. Preserve it when debugging or comparing runs; prune it intentionally
-with `scripts/prune_runs.py`.
+mostly gitignored via a whitelist idiom in `.gitignore`: everything under
+`/runs/**` is ignored, but the small high-value per-run diagnostics are
+deliberately re-included and tracked in git (`final_report.json`,
+`final_report.md`, `demo_status.json`, `batch_child.log`,
+`experiment_runs.jsonl`, `cost_ledger.jsonl`, `tokens_total.json`). Heavy
+artifacts (per-run `.venv/`, `code/`, `rlm_state/` checkpoints) and the
+SQLite DB itself stay ignored. Preserve `runs/` when debugging or comparing
+runs; prune it intentionally with `scripts/prune_runs.py`.
 
 SQLite URL gotcha:
 

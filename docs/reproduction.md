@@ -105,7 +105,12 @@ npm test
 ```
 
 Playwright browser checks are separate because they need browser binaries and a
-running app:
+slow production build — `npx playwright test` builds and starts its own Next
+server on port 3001 (`webServer` in `frontend/playwright.config.ts`). Do not
+pre-start an app on :3001: `reuseExistingServer` is `false`, so an occupied port
+fails the run (set `LAB_BASE_URL` to point at an external server instead). The
+specs are fixture-driven and do not require a running backend; the test server
+proxies `/api/demo/*` to `http://127.0.0.1:8000` when one is up:
 
 ```bash
 cd frontend
