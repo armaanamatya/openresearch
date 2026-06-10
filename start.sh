@@ -26,22 +26,12 @@ cd "$(dirname "$0")"
 PREFLIGHT="${1:-${PREFLIGHT_SCRIPT:-scripts/runpod_check.sh}}"
 ENV_FILE=".env"
 
-env_value_from_file() {
-    local key="$1"
-    local file="$2"
-    [[ -f "${file}" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        if [[ "$line" =~ ^[[:space:]]*${key}=(.*)$ ]]; then
-            local value="${BASH_REMATCH[1]}"
-            if [[ "$value" =~ ^\"(.*)\"$ ]]; then value="${BASH_REMATCH[1]}"; fi
-            if [[ "$value" =~ ^\'(.*)\'$ ]]; then value="${BASH_REMATCH[1]}"; fi
-            printf "%s" "$value"
-            return 0
-        fi
-    done < "${file}"
-    return 1
-}
+# Shared dotenv-grammar .env reader (env_value_from_file). Extracted so the
+# parse is pinned to python-dotenv's semantics by
+# tests/scripts/test_env_file_parsers.py — the old inline copy kept trailing
+# `# comments` in values and the corrupted export outranked pydantic's own
+# parse (hard ValidationError on Literal fields at boot).
+. scripts/lib/env_file.sh
 
 # 1. Default sandbox for the dashboard: shell env > .env > runpod.
 # Consulting .env here matters: this export becomes real process env, which

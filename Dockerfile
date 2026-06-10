@@ -131,6 +131,9 @@ COPY --from=frontend /frontend/next.config.ts ./frontend/next.config.ts
 RUN mkdir -p /app/runs
 
 # Single entrypoint runs both servers and forwards signals to children.
+# load_env.sh is the python-dotenv-delegating .env loader the entrypoint
+# sources (kept as a separate file so tests pin its parse to dotenv_values).
+COPY docker/load_env.sh /load_env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

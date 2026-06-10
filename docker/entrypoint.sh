@@ -12,25 +12,18 @@ cd /app
 # python-dotenv accepts unquoted values with spaces, so a perfectly valid
 # `OPENRESEARCH_RUNPOD_GPU_TYPE=NVIDIA GeForce RTX 4090` line made bash run
 # `GeForce` as a command and kill the container with exit 127 under set -e
-# (and `source` would happily execute $(...) in values). Vars already set in
-# the container environment (compose `environment:`, `docker run -e`) keep
-# winning over .env — the normal compose precedence; without that, a copied
-# .env.example silently overrode the compose-set OPENRESEARCH_DATABASE_URL
-# and broke event-store persistence.
-if [[ -f /app/.env ]]; then
-    while IFS= read -r _line || [[ -n "$_line" ]]; do
-        [[ -z "$_line" || "$_line" =~ ^[[:space:]]*# ]] && continue
-        [[ "$_line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-        _key="${BASH_REMATCH[1]}"
-        _value="${BASH_REMATCH[2]}"
-        if [[ "$_value" =~ ^\"(.*)\"$ ]]; then _value="${BASH_REMATCH[1]}"; fi
-        if [[ "$_value" =~ ^\'(.*)\'$ ]]; then _value="${BASH_REMATCH[1]}"; fi
-        if [[ -z "${!_key+x}" ]]; then
-            export "${_key}=${_value}"
-        fi
-    done < /app/.env
-    unset _line _key _value
-fi
+# (and `source` would happily execute $(...) in values). The parse itself is
+# delegated to python-dotenv inside load_env.sh — a hand-rolled bash loop
+# here kept inline `# comments` in values, and since the exported process env
+# OUTRANKS pydantic-settings' own (correct) env_file parse, .env.example's
+# own suggested `OPENRESEARCH_DEFAULT_SANDBOX=local   # ...` line crashed
+# Settings() on the Literal field and restart-looped the container (audit
+# 2026-06-09). Vars already set in the container environment (compose
+# `environment:`, `docker run -e`) keep winning over .env — the normal
+# compose precedence; without that, a copied .env.example silently overrode
+# the compose-set OPENRESEARCH_DATABASE_URL and broke event-store persistence.
+. /load_env.sh
+load_env_file /app/.env /opt/venv/bin/python
 
 # --- SSH key injection (Railway / env-only deployments) ---------------------
 # Railway can't mount files, so inject the private key as a base64 env var.
