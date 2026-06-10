@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import io
 import socket
 from pathlib import Path
 from urllib.error import HTTPError, URLError

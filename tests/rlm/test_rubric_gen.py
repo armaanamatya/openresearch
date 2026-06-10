@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from backend.agents.rlm.rubric_gen import generate_rubric_tree, _is_placeholder_requirement
 from backend.evals.paperbench.leaf_scorer import flatten_leaves, roll_up
@@ -301,7 +300,6 @@ def test_placeholder_leaves_rejected():
     had empty placeholders because the LLM failed to extract concrete values.
     """
     # Unit-level: _is_placeholder_requirement catches known patterns
-    from backend.agents.rlm.rubric_gen import _is_placeholder_requirement
 
     # Only a genuinely empty / comma-only parenthetical is a placeholder
     # (F-32): the regex is the last-resort net for truly empty templates.

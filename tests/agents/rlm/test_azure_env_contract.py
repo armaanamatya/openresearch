@@ -20,12 +20,9 @@ This test is pure (no azure package, no K8s, no subprocess) and runs in <1s.
 from __future__ import annotations
 
 import ast
-import importlib
-import re
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Module paths
@@ -166,8 +163,8 @@ class TestAzureEnvContract:
 
         missing = entrypoint_runner_vars - injected
         assert not missing, (
-            f"P0-fix-1 / env-contract regression: the entrypoint reads these env vars "
-            f"that the runner does NOT inject:\n"
+            "P0-fix-1 / env-contract regression: the entrypoint reads these env vars "
+            "that the runner does NOT inject:\n"
             + "\n".join(f"  {k}" for k in sorted(missing))
             + "\n\nThis would cause silent Blob I/O failures in every pod."
         )

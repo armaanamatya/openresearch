@@ -48,7 +48,6 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import httpx
 
 _log = logging.getLogger(__name__)
 

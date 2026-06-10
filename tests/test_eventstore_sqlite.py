@@ -15,7 +15,6 @@ from backend.eventstore.interface import (
 from backend.eventstore.sqlite_store import SqliteEventStore
 from backend.messaging.envelope import (
     AggregateId,
-    EventEnvelope,
     make_envelope,
 )
 from backend.messaging.event import (

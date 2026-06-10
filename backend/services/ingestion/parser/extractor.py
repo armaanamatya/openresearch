@@ -140,7 +140,6 @@ class VisionAugmentingExtractor:
         project_id: str,
         base: ParseResult,
     ) -> ParseResult:
-        import fitz  # type: ignore[import-not-found]
 
         # Pages referenced by existing figures (0-indexed).
         figure_pages: set[int] = {fig.page for fig in base.figures}

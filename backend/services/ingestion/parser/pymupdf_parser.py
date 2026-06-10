@@ -14,7 +14,6 @@ follow-up.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING

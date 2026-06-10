@@ -13,18 +13,16 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from backend.agents.rdr.controller import run_rdr, _split_clusters_by_parallelism
-from backend.agents.rdr.models import Artifacts, RubricLeaf, WorkCluster
+from backend.agents.rdr.models import Artifacts, WorkCluster
 
 from tests.rdr.test_controller import (
     FakeBundle,
-    _make_cluster,
     _make_leaf,
     _patch_primitives,
     _patch_score,

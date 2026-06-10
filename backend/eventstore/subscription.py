@@ -16,7 +16,6 @@ this is fine for our scale (low-thousands of events/sec). A push model
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Iterator

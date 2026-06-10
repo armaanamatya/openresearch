@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.schemas import GpuPlan, GpuRequirements
 from backend.services.runtime.runpod_backend import RunpodBackend

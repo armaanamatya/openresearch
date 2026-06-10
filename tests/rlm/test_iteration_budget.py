@@ -15,14 +15,11 @@ Covers:
 
 from __future__ import annotations
 
-import os
 
-import pytest
 
 from backend.agents.rlm.forced_iteration import (
     ForcedIterationPolicy,
     apply_forced_iteration_patch,
-    forced_iteration_policy,
 )
 
 apply_forced_iteration_patch()

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -218,7 +218,6 @@ class TestJsonSerializationCaching:
     ) -> None:
         """In the poll loop when state changes, model_dump(mode='json') must NOT be
         called — the SSE payload must use json.loads(cached_json_string) instead."""
-        import asyncio
         from backend.services.events.live_runs import FileLiveRunService, LiveRunState
 
         runs_root = tmp_path / "runs"

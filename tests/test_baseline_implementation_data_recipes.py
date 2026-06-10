@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.baseline_implementation import _data_recipes_binding_block
 

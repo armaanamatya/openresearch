@@ -175,7 +175,7 @@ def decompose(
                 title=node["requirements"],
                 leaves=leaves,
                 dominant_category=dom_cat,
-                weight=sum(l.weight for l in leaves),
+                weight=sum(lf.weight for lf in leaves),
                 paper_citations=list(seen_cites),
             )
         )

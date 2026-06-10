@@ -11,14 +11,12 @@ I2: verify_against_rubric read rubric.get("areas", []) — always [] on a
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.primitives import (
     METRICS_FILENAME,
-    _execute_in_sandbox,
     verify_against_rubric,
 )
 
@@ -45,7 +43,6 @@ async def _make_fake_execute(code_path, env_id, commands, *, project_id, run_id)
 def _patched_execute_returning_success(code_path, env_id, commands, *,
                                        project_id, run_id):
     """Sync wrapper: returns a coroutine whose result has success=True and no logs."""
-    import asyncio
 
     async def _inner():
         return {
@@ -88,7 +85,7 @@ def test_execute_in_sandbox_reads_metrics_from_code_root(
         # The real code then reads metrics.json from code_path on the host.
         import json as _json
         from pathlib import Path as _Path
-        from backend.agents.rlm.primitives import METRICS_FILENAME as _MF, _cap_logs
+        from backend.agents.rlm.primitives import METRICS_FILENAME as _MF
 
         metrics: dict = {}
         for candidate in (

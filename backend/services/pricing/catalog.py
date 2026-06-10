@@ -10,7 +10,6 @@ Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §catalog.py
 from __future__ import annotations
 
 import logging
-import warnings
 from datetime import datetime, timezone
 
 from backend.services.pricing.schemas import GpuPriceEntry, ModelPriceEntry

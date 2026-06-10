@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
-from backend.agents.rlm.primitives import plan_reproduction, _METRICS_SHAPE_INSTRUCTION
+from backend.agents.rlm.primitives import plan_reproduction
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -296,7 +295,6 @@ class GRPOScaffold:
                 return_outputs: bool = False,
                 **kwargs: Any,
             ) -> "torch.Tensor":
-                import torch  # lazy
 
                 # Delegate to parent for GRPO base loss + reward computation.
                 grpo_loss = super().compute_loss(

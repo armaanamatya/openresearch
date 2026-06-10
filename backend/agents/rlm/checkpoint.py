@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar
 
-from backend.eventstore.interface import ConcurrencyError, EventStore
+from backend.eventstore.interface import EventStore
 from backend.messaging.envelope import (
     CorrelationId,
     EventEnvelope,

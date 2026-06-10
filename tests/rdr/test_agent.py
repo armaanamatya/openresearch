@@ -13,10 +13,9 @@ from typing import Any
 
 import pytest
 
-from backend.agents.rdr.agent import reproduce, _snapshot_repo_root_entries, _cleanup_repo_root_escape
+from backend.agents.rdr.agent import reproduce
 from backend.agents.rdr.models import (
     AgentContext,
-    Artifacts,
     CitedSection,
     RubricLeaf,
     WorkCluster,

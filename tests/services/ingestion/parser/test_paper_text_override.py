@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from backend.services.ingestion.parser.service import (
     _resolve_full_text,

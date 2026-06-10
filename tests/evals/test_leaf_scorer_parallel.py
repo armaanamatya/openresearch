@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from backend.evals.paperbench.leaf_scorer import score_reproduction
 

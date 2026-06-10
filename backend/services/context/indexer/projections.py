@@ -11,7 +11,6 @@ later when concurrency / persistence matters.
 
 from __future__ import annotations
 
-from typing import Iterable
 
 from backend.services.context.indexer.model import Chunk, SourceRef
 

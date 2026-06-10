@@ -11,7 +11,6 @@ import pytest
 def _tesseract_functional() -> bool:
     """Return True only if tesseract binary is present AND can actually OCR an image."""
     try:
-        import io
         import pytesseract
         from PIL import Image
 

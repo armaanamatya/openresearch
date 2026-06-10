@@ -17,7 +17,7 @@ Each recipe carries:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

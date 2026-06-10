@@ -48,7 +48,7 @@ class FlakyRuntime:
         self.calls += 1
         if self.calls <= self.fail_times:
             raise self.exc
-            yield  # noqa: unreachable — makes this an async generator
+            yield  # type: ignore[misc]  # unreachable — makes this an async generator
         for ev in self.tail:
             yield ev
 

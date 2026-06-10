@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.agents.worker_reports import (
     WORKER_TYPE_RDR_CLUSTER,

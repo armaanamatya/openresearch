@@ -2089,7 +2089,7 @@ def _data_recipes_binding_block(data_recipes: list[dict] | None) -> str:
                 f"Do NOT inline the loader body.\n"
                 f"    The helper is already written at code_dir/_openresearch_curated.py.\n"
                 + (
-                    f"    Banned literal patterns (will fail postflight if found in train.py):\n"
+                    "    Banned literal patterns (will fail postflight if found in train.py):\n"
                     + "".join(f"        {b}\n" for b in banned)
                     if banned else ""
                 )
@@ -2770,7 +2770,6 @@ async def patch_mode_run_with_sdk(
     (no valid diff in response, diff apply failure) returns ``(False, reason)``
     so the caller can fall back to a full rewrite.
     """
-    from backend.agents.runtime.invoke import collect_agent_text
 
     project_dir = Path(runs_root) / project_id
     code_dir = project_dir / "code"

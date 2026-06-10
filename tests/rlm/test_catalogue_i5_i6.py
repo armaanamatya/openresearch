@@ -15,7 +15,6 @@ I6 — concurrent runs 429 with no backoff:
 
 from __future__ import annotations
 
-import time
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 

@@ -12,9 +12,9 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from backend.config import get_settings
 from backend.services.pricing.estimator import estimate_paper_budget
@@ -54,7 +54,8 @@ async def estimate_budget(request: Request) -> JSONResponse:
         if recipe_mode_raw not in ("strict", "compressed", "both"):
             recipe_mode_raw = "both"
 
-        import tempfile, os
+        import tempfile
+        import os
         suffix = ".pdf"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(pdf_bytes)

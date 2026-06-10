@@ -15,7 +15,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm.report import _aggregate_tokens_total, write_tokens_total
 

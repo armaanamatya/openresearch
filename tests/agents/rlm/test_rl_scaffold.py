@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import os
 import json
-import re
-import importlib
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -32,7 +29,7 @@ import pytest
 def test_opsd_gate_is_detached_no_grad():
     """g_t must be constructed with .detach() — gradient MUST NOT flow through it."""
     torch = pytest.importorskip("torch")
-    from backend.agents.rlm.rl_scaffold import opsd_custom_loss_term, BETA, LAMBDA
+    from backend.agents.rlm.rl_scaffold import opsd_custom_loss_term
 
     logp_s = torch.tensor([-1.0, -2.0, -0.5], requires_grad=True)
     logp_t = torch.tensor([-1.5, -1.8, -0.3], requires_grad=False)

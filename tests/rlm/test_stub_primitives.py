@@ -207,7 +207,6 @@ def test_stub_keys_are_a_subset_of_real_schema(make_context, tmp_path):
     """
     from backend.agents.schemas import (
         EnvironmentSpec,
-        ImprovementHypothesis,
         ReproductionContract,
         TrainingRecipe,
     )

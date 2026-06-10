@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from backend.agents.rlm.report import build_final_report
 from rlm.core.types import RLMChatCompletion

@@ -12,7 +12,6 @@ from __future__ import annotations
 import signal
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm import exclusion as X
 from backend.services.runtime import env_cache as EC

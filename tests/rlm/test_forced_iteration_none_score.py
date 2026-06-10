@@ -8,7 +8,6 @@ Verifies that:
 """
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.rlm.forced_iteration import (
     ForcedIterationPolicy,

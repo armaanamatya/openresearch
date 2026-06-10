@@ -1,0 +1,69 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// L0 access-bootstrap parameters — DeepInvent environment
+//
+// Usage:
+//   cp main.bicepparam.example main.bicepparam
+//   # Fill in every <PLACEHOLDER> below
+//   az deployment sub create \
+//     --location <AZURE_REGION> \
+//     --template-file main.bicep \
+//     --parameters main.bicepparam
+//
+// NEVER commit main.bicepparam (it contains real subscription-specific IDs).
+// It is listed in .gitignore.
+// ──────────────────────────────────────────────────────────────────────────────
+
+using 'main.bicep'
+
+// Azure region for both resource groups.
+// Must match the region you plan to use for Terraform L1.
+// Common choices: eastus, westus3, swedencentral, northeurope
+param location = '<AZURE_REGION>'
+
+// Name of the main resource group (Terraform will import this after L0 runs).
+// Default 'rg-reprolab' — change only if it conflicts with an existing RG.
+param mainRgName = 'rg-reprolab'
+
+// Create the tfstate RG in the same deployment.
+// Set to false only if the bootstrap RG already exists and you are re-running.
+param createTfstateRg = true
+
+// Name of the Terraform remote-state resource group.
+// Must match var.state_resource_group_name in infra/azure/bootstrap/.
+param tfstateRgName = 'rg-reprolab-tfstate'
+
+// Tags applied to both resource groups.
+param tags = {
+  project:     'reprolab'
+  environment: 'production'
+  client:      'deepinvent'
+  managedBy:   'bicep-l0'
+}
+
+// Object ID of the Entra group (or user / service principal) that will run
+// Terraform day-to-day.
+//
+// Find an Entra group:
+//   az ad group show --group "<GROUP_DISPLAY_NAME>" --query id -o tsv
+// Find a user:
+//   az ad user show --id "<UPN_OR_EMAIL>" --query id -o tsv
+// Find a service principal:
+//   az ad sp show --id "<APP_ID>" --query id -o tsv
+//
+// Use the same value as operator_entra_group_object_id in main.tfvars.
+param principalId = '<OPERATOR_ENTRA_GROUP_OBJECT_ID>'
+
+// Type of the principal above.
+// 'Group'            — Entra security group (recommended for teams)
+// 'User'             — individual Entra user
+// 'ServicePrincipal' — app registration or managed identity
+param principalType = 'Group'
+
+// Object ID of the GitHub Actions OIDC service principal created by
+// admin-bootstrap.sh.  Leave as '' to skip deploy-principal grants.
+//
+// Find after running admin-bootstrap.sh:
+//   az ad sp show --id "<APP_CLIENT_ID>" --query id -o tsv
+//
+// admin-bootstrap.sh passes this automatically when calling 'az deployment sub create'.
+param deployPrincipalId = ''

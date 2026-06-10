@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from backend.services.ingestion.parser.model import section_id_for
 from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
 
 fitz = pytest.importorskip("fitz")  # PyMuPDF

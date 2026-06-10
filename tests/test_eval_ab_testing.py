@@ -1,6 +1,5 @@
 """Tests for Bayesian A/B testing system."""
 
-import pytest
 
 from backend.evals.ab_testing import (
     BayesianABTest,
@@ -8,7 +7,6 @@ from backend.evals.ab_testing import (
     MultiMetricABTest,
     NormalPosterior,
 )
-from backend.evals.schemas import ABTestResult
 
 
 class TestBetaPosterior:

@@ -12,7 +12,6 @@ from typing import Any
 
 from backend.agents.resilience.failures import (
     AuthenticationError,
-    GuardViolation,
     QuotaExhausted,
     RateLimited,
     RuntimeFailure,

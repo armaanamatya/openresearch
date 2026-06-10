@@ -21,7 +21,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm import run_watchdog as rw
 

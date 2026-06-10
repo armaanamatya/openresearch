@@ -75,7 +75,6 @@ def _make_local_ctx(tmp_path) -> SimpleNamespace:
 
     We supply the real SandboxMode.local enum so .value == "local".
     """
-    from pathlib import Path
     from backend.agents.dashboard_emitter import DashboardEmitter
     from backend.agents.resilience.cost import RunCostLedger
     from backend.agents.rlm.context import RunContext

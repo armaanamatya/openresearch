@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
 
 from backend.services.pricing.token_accumulator import TokenAccumulator
 

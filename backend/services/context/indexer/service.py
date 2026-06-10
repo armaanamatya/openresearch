@@ -11,7 +11,6 @@ Single command: `StartIndexing(project_id)`.
 
 from __future__ import annotations
 
-from typing import List
 
 from pydantic import ConfigDict
 
@@ -35,7 +34,6 @@ from backend.services.context.indexer.events import (
     ChunkCreated,
     IndexingCompleted,
     IndexingFailed,
-    IndexingStarted,
     SourceRegistered,
 )
 from backend.services.context.indexer.model import (

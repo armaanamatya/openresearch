@@ -12,7 +12,6 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from backend.agents.runtime.factory import (
     _has_claude_subscription_oauth,

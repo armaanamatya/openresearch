@@ -16,7 +16,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm.report import reconcile_verdict_with_score
 from backend.evals.paperbench.leaf_scorer import amend_final_report

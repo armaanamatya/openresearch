@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm import requirements_derive as rd
 

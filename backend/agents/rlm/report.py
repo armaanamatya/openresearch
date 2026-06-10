@@ -12,7 +12,6 @@ import ast
 import json
 import logging
 import os
-import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -1754,8 +1753,8 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
     lines.append("## Cost")
     lines.append("")
     cost = report.cost
-    lines.append(f"| Category | USD |")
-    lines.append(f"|---|---|")
+    lines.append("| Category | USD |")
+    lines.append("|---|---|")
     lines.append(f"| Primitive-internal LLM | ${cost.get('primitives', 0.0):.6f} |")
     lines.append(f"| **Total LLM** | **${cost.get('llm_usd', 0.0):.6f}** |")
     lines.append("")

@@ -7,7 +7,6 @@ stopped/failed helpers.
 import json
 import signal
 
-import pytest
 
 from backend import cli
 

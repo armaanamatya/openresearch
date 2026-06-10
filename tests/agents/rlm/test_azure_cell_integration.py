@@ -465,7 +465,7 @@ class TestHappyPathEndToEnd:
         result = run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
         for cell in cells:
             assert result[cell["id"]]["gpu"].startswith("aks:"), (
-                f"gpu label should start with 'aks:' for K8s-dispatched cells"
+                "gpu label should start with 'aks:' for K8s-dispatched cells"
             )
 
 

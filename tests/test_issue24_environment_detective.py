@@ -12,23 +12,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.agents.environment_detective import (
     run_offline,
     _generate_dockerfile,
     _infer_framework,
-    _infer_python_version,
     _dataset_packages,
-    _generate_assumptions,
 )
 from backend.agents.schemas import (
-    Assumption,
     DatasetRequirement,
     EnvironmentSpec,
     MetricSpec,
     PaperClaimMap,
-    RiskLevel,
     TrainingRecipe,
 )
 

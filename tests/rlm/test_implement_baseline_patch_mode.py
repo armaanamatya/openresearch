@@ -170,10 +170,9 @@ def test_apply_unified_diff_addition_only() -> None:
 
 
 import asyncio
-from unittest.mock import AsyncMock, patch as mock_patch
+from unittest.mock import patch as mock_patch
 from pathlib import Path
 import tempfile
-import os
 
 
 async def _run_patch_mode(

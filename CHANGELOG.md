@@ -17,6 +17,19 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (infra — Bicep migration L0/L1, OIDC pipeline, uv lock + ruff)
+- `infra/azure/bicep/` — full Bicep port of the Terraform L1 (network, AKS, GPU nodepool, ACR, storage, identity) plus a new `monitoring.bicep` (Log Analytics + diagnostic settings, security-baseline). Three deliberate parity breaks fixing latent never-deployed TF defects (storage `publicNetworkAccess`, CSI SMB shared-key, kubelet `listKeys`) — see `infra/azure/bicep/MIGRATION.md`. Terraform stays in-tree, deprecated, until live parity is proven.
+- `infra/azure/bicep/main.bicep` + `rg-grants.bicep` (L0) — subscription-scope RG creation + scoped grants; pipeline principal gets Contributor + ABAC-constrained RBAC Administrator (assignable roles limited to the four L1 data-plane roles), main RG only.
+- `infra/azure/bicep/bootstrap/` — `admin-bootstrap.sh` (one-time admin path: app registration + environment-scoped federated credential + what-if-gated L0 deploy) and `pipeline-identity.bicep` (Contributor-only adoption path: UAMI + GitHub federation for pre-existing RGs, e.g. `rg-sciartgen-external`).
+- `.github/workflows/infra-deploy.yml` — PR validation (bicep build/lint, deliberately zero Azure credentials — no `pull_request` OIDC federation exists), and an environment-gated, branch-pinned deploy job (what-if preview + deployment stack). Codex security review 2026-06-10 drove the PR-credential removal, deny-settings correction, and least-privilege grants.
+- `uv.lock` (153 pkgs) + `.python-version` (3.12) — locked Python env via uv; pip/requirements.txt path unchanged. `hermes-agent` removed from extras (its exact pins are unlockable; install per `backend/hermes_audit/providers.py`).
+- `[tool.ruff]` in `pyproject.toml` + CI `lint` job (`uv lock --check` + `ruff check`, both pinned) — 652 baseline violations → 0 (355 auto-fixed, 7 hand-fixed, rest config-scoped). Fixed a real latent `NameError` in `primitives.py::_run_baseline_subprocess` (missing `Path` import) surfaced by un-suppressing F821.
+
+### Changed (lab — minimizable score panels keep the constellation graph visible)
+- `frontend/src/components/lab/rlm/collapsible-panel.tsx` + `.module.css` — reusable minimizable wrapper (slim header with chevron + live summary, a height-capped internally-scrolling body, collapse state persisted per key in `localStorage`). Wraps `ScorecardPanel` (rubric scores) and `RubricBreakdown` (leaf scores) so neither can grow to consume the whole column.
+- `frontend/src/components/lab/rlm/rlm-lab.module.css` — floored the `.workspace` (graph) band at `min-height: clamp(220px, 34vh, 520px)` so the constellation canvas stays visible at all times, including after a run finishes or fails. Previously the unbounded score bands squeezed the `flex: 1 1 0` graph band to zero once a full run's leaf scores landed.
+- `frontend/src/components/lab/rlm/collapsible-panel.test.tsx` — guard: default-expanded body, minimize/restore, persisted + hydrated collapse state, `defaultCollapsed`. See `learn.md` 2026-05-31.
+
 ### Added (night — constellation UI + dynamic sandbox capability + outcome canonicalization)
 - `frontend/src/components/lab/rlm/constellation-canvas.tsx` (695 LOC) + `layout-constellation.ts` (234 LOC) — replace the 4-node Reingold-Tilford tree with a force-directed graph that visualizes every primitive call and every mini-RLM, with progressive disclosure so the default view stays clean.
 - `frontend/src/components/lab/rlm/layout-constellation.test.ts` — pinned: empty input, 1+3 candidates, 50-primitive density (no-overlap under `forceCollide(radius+14)`), deterministic seed.

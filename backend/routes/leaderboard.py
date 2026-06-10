@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.services.events.leaderboard_cache import evict_missing, get_or_load
+from backend.services.events.leaderboard_cache import evict_missing
 from backend.services.runs.report_resolution import (
     extract_scores,
     resolve_best_report,

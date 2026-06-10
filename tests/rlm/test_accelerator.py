@@ -5,8 +5,6 @@ All network I/O is monkeypatched — no real HTTP calls are made.
 
 from __future__ import annotations
 
-import os
-import importlib
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -186,7 +184,6 @@ class TestResolveLocal:
 
     def test_model_mismatch_logs_warning(self, monkeypatch):
         """FIX 3: a WARNING is logged when the requested model is not in the served list."""
-        import logging
         monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
         monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
         monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "local")

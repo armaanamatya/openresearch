@@ -1,6 +1,5 @@
 """Tests for the image-exists guard in build_environment (D1-D5)."""
 
-import pytest
 import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.primitives import build_environment
 

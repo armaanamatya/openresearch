@@ -1620,6 +1620,7 @@ def _drive_baseline_child(
     *next* attempt gets a brand-new, un-poisoned process.
     """
     import multiprocessing as _mp
+    from pathlib import Path
     from types import SimpleNamespace as _NS
 
     from backend.agents.rlm.baseline_runner import run_baseline_in_child

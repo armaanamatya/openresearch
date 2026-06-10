@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.primitives import (
     _BACKOFF_BASE_S,
     _MAX_TRANSIENT_RETRIES,
@@ -70,7 +69,7 @@ def _make_fake_service(call_results):
     from datetime import datetime, timezone
 
     async def fake_exec(cmd):
-        from backend.services.runtime.interface import ExecResult, RuntimeCauseKind
+        from backend.services.runtime.interface import ExecResult
         return ExecResult(
             command=cmd.command,
             exit_code=0,

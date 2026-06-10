@@ -848,7 +848,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     print(f"[rdr] runs_root : {runs_root}", file=sys.stderr)
     print(f"[rdr] sandbox   : {sandbox_mode.value}", file=sys.stderr)
     if resume:
-        print(f"[rdr] resume    : True", file=sys.stderr)
+        print("[rdr] resume    : True", file=sys.stderr)
 
     try:
         rdr_result = asyncio.run(
@@ -1029,7 +1029,7 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
             "pidHost": socket.gethostname(),
         }
         _ds_path.write_text(json.dumps(_ds_payload, indent=2), encoding="utf-8")
-        print(f"[rlm] wrote demo_status.json (status=running)", file=sys.stderr)
+        print("[rlm] wrote demo_status.json (status=running)", file=sys.stderr)
 
     # Route by mode: default 'rlm' → hybrid; 'rlm-pure' → pure RLM.
     mode = getattr(args, "mode", "rlm")
@@ -1815,7 +1815,6 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     print(f"{'='*60}\n", file=sys.stderr)
 
     # --- Phase 2: Agent Pipeline ---
-    user_hints = [h.strip() for h in args.hints.split(",")] if args.hints else None
     # (#7) The blacklist is resolved + published to OPENRESEARCH_BLOCKED_TERMS_JSON in
     # the paper-hint env block above (this was a dead `blacklist_terms` line that
     # computed the value and discarded it — the benchmark-integrity bug #7 fixes).

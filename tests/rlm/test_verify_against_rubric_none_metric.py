@@ -5,7 +5,6 @@ Bug: _rubric_areas called float(e.get("score", 0.0)) on an entry with an
 explicit score=None, crashing every VAE run whose Frey Face metrics were None.
 """
 import json
-import pytest
 
 from backend.agents.rlm.primitives import verify_against_rubric, _rubric_areas
 
@@ -67,8 +66,6 @@ def test_verify_against_rubric_none_metric_no_typeerror(make_context, tmp_path):
     # Write a final_report.json with scope.gaps declaring frey_face unavailable.
     # _detect_data_unavailable_leaves reads scope.gaps from final_report.json
     # and data_load_failures from code/outputs/metrics.json.
-    import json
-    from pathlib import Path
     project_dir = tmp_path / "test_proj"
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "final_report.json").write_text(json.dumps({

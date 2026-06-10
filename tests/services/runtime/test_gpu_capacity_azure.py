@@ -17,7 +17,6 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -97,7 +96,6 @@ def test_describe_azure_free_gpu_ids_match_node_count(monkeypatch):
 def test_describe_azure_default_vram_is_80():
     """Default azure_per_gpu_vram_gb must be 80.0 (A100-80GB spec)."""
     for k in ("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB",):
-        import os
         os.environ.pop(k, None)
     _reset_settings_cache()
     s = Settings(_env_file=None)

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -334,7 +334,6 @@ async def test_sync_refuses_path_escape(tmp_path: Path) -> None:
     # easily, so we use the _relative_posix helper's output directly.
     # The simplest approach: subclass FakeSFTP to return a crafted entry whose
     # resolved local path escapes tmp_path.
-    from backend.services.runtime.runpod_backend import _relative_posix
 
     # Craft a fake entry that, when joined with local_root, resolves outside.
     # We do this by putting a long relative path with ".." components in the
@@ -401,7 +400,6 @@ async def test_sync_handles_missing_remote_artifacts_dir(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_sync_preserves_remote_mtime_on_local(tmp_path: Path) -> None:
     """After copying a file, local mtime is set to match remote mtime."""
-    import os
 
     remote_mtime = 1_234_567.0
     file_data = b"fresh data"

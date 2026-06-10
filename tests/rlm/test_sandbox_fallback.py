@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 import backend.agents.rlm.primitives as primitives
 from backend.agents.execution import SandboxMode
