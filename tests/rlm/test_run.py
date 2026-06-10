@@ -542,6 +542,15 @@ def test_run_writes_secret_free_config_snapshot(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENRESEARCH_CONTEXT_MAP", "on")  # a flag that should appear
     monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "rpa_fake")  # must be excluded
     monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "shh")  # must be excluded
+    # Value-borne secrets (audit 2026-06-09): names pass the KEY/SECRET/TOKEN/
+    # PASSWORD filter but the VALUES carry credentials.
+    monkeypatch.setenv(
+        "OPENRESEARCH_DATABASE_URL", "postgresql://dbuser:dbpass@db.internal/openresearch"
+    )  # exact-name denylisted
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND", "hf login --token tok_xyz")
+    monkeypatch.setenv(
+        "OPENRESEARCH_LOCAL_TORCH_INDEX_URL", "https://idxuser:idxpass@pypi.internal/whl/cu121"
+    )  # kept, but userinfo redacted
 
     class _FakeRLM:
         def __init__(self, **kwargs): ...
@@ -570,3 +579,100 @@ def test_run_writes_secret_free_config_snapshot(monkeypatch, tmp_path):
     assert "rpa_fake" not in flat and "shh" not in flat, "secrets leaked into run_config.json"
     assert "OPENRESEARCH_RUNPOD_API_KEY" not in cfg["env_flags"]
     assert "OPENRESEARCH_DEMO_SECRET" not in cfg["env_flags"]
+    # Value-borne secrets: denylisted names dropped entirely, URL userinfo redacted.
+    assert "OPENRESEARCH_DATABASE_URL" not in cfg["env_flags"]
+    assert "OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND" not in cfg["env_flags"]
+    assert "dbpass" not in flat and "tok_xyz" not in flat
+    assert cfg["env_flags"]["OPENRESEARCH_LOCAL_TORCH_INDEX_URL"] == (
+        "https://***@pypi.internal/whl/cu121"
+    )
+    assert "idxpass" not in flat
+
+
+# ---------------------------------------------------------------------------
+# arXiv rubric-generation wiring (audit 2026-06-09)
+# ---------------------------------------------------------------------------
+# The stub-mode guard (correctly) skips the paid generate_rubric_tree call in
+# every pipeline test, which left the wiring — rubric_spec assignment,
+# generated_rubric.json persistence, the rubric-less fallback — covered by
+# ZERO tests: a key rename or a dropped assignment would ship green and
+# silently produce unscoreable arXiv runs. These tests mock the generator
+# (no network, no stub mode) and assert the wiring end-to-end.
+
+
+def _fake_rlm_capturing_context(captured: dict):
+    import json
+
+    class _FakeRLM:
+        def __init__(self, **kwargs): ...
+
+        def completion(self, *args, **kwargs):
+            # run.py calls rlm.completion(context_dict, prompt) — the REPL
+            # context is the first positional argument.
+            if args and isinstance(args[0], dict):
+                captured.update(args[0])
+            raw = json.dumps({"verdict": "failed", "baseline_metrics": {}, "rubric": {}})
+            return type("R", (), {"response": raw, "usage_summary": None, "metadata": {}})()
+
+    return _FakeRLM
+
+
+def test_arxiv_run_generates_and_persists_rubric(monkeypatch, tmp_path):
+    import asyncio
+    import json
+    import backend.agents.rlm.run as run_mod
+
+    monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
+    canned = {"name": "Canned Rubric", "children": [{"name": "leaf", "weight": 1.0}]}
+    calls: list[dict] = []
+
+    def _fake_generate(paper_text, llm_client, *, paper_title=""):
+        calls.append({"paper_text": paper_text, "llm_client": llm_client, "title": paper_title})
+        return canned
+
+    monkeypatch.setattr(
+        "backend.agents.rlm.rubric_gen.generate_rubric_tree", _fake_generate
+    )
+    captured_context: dict = {}
+    monkeypatch.setattr(run_mod, "RLM", _fake_rlm_capturing_context(captured_context))
+
+    asyncio.run(run_mod.run_pipeline_rlm(
+        project_id="rubric_wiring",
+        runs_root=tmp_path,
+        workspace_claim_map={"entries": [{"title": "T", "excerpt": "x" * 600}]},
+        model="gpt-5",
+        provider="openai",
+    ))
+
+    assert len(calls) == 1, "generate_rubric_tree must be called exactly once"
+    assert "x" * 600 in calls[0]["paper_text"]
+    assert calls[0]["llm_client"] is not None
+    assert captured_context["rubric_spec"] == canned, "rubric must reach the REPL context"
+    persisted = json.loads(
+        (tmp_path / "rubric_wiring" / "generated_rubric.json").read_text(encoding="utf-8")
+    )
+    assert persisted == canned
+
+
+def test_arxiv_run_proceeds_rubricless_when_generation_fails(monkeypatch, tmp_path):
+    import asyncio
+    import backend.agents.rlm.run as run_mod
+
+    monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
+    monkeypatch.setattr(
+        "backend.agents.rlm.rubric_gen.generate_rubric_tree",
+        lambda *a, **k: None,
+    )
+    captured_context: dict = {}
+    monkeypatch.setattr(run_mod, "RLM", _fake_rlm_capturing_context(captured_context))
+
+    asyncio.run(run_mod.run_pipeline_rlm(
+        project_id="rubric_fallback",
+        runs_root=tmp_path,
+        workspace_claim_map={"entries": [{"title": "T", "excerpt": "x" * 600}]},
+        model="gpt-5",
+        provider="openai",
+    ))
+
+    assert not captured_context.get("rubric_spec"), "fallback must stay rubric-less"
+    assert not (tmp_path / "rubric_fallback" / "generated_rubric.json").exists()

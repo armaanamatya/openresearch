@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import threading
@@ -599,6 +600,27 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "paper text degraded — proceeding with lossy workspace fallback "
         f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
     )
+
+
+# Exact-name denylist for the run_config.json env snapshot: knobs whose VALUES
+# routinely carry credentials even though their names lack KEY/SECRET/TOKEN/
+# PASSWORD. OPENRESEARCH_DATABASE_URL is a deployment knob (a credentialed
+# postgres DSN embeds user:pass), not a launch parameter; the bootstrap
+# command is arbitrary shell that may inline tokens (e.g. an hf login).
+_ENV_SNAPSHOT_DENY_EXACT = frozenset({
+    "OPENRESEARCH_DATABASE_URL",
+    "OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND",
+})
+
+
+def _redact_env_value(value: str) -> str:
+    """Strip URL userinfo (``user:pass@``) before persisting a snapshot value.
+
+    Durably covers the URL-shaped class — OPENRESEARCH_LOCAL_TORCH_INDEX_URL,
+    OPENRESEARCH_ACCELERATOR_BASE_URL, and any future ``*_URL`` knob pointing
+    at a private index with embedded credentials.
+    """
+    return re.sub(r"(?<=://)[^/@\s]+@", "***@", value)
 
 
 def _write_demo_status(
@@ -1399,9 +1421,10 @@ async def run_pipeline_rlm(
             ),
             "max_pod_seconds": getattr(run_budget, "max_pod_seconds", None) if run_budget is not None else None,
             "env_flags": {
-                k: v
+                k: _redact_env_value(v)
                 for k, v in sorted(os.environ.items())
                 if k.startswith("OPENRESEARCH_")
+                and k not in _ENV_SNAPSHOT_DENY_EXACT
                 and not any(t in k for t in ("KEY", "SECRET", "TOKEN", "PASSWORD"))
             },
         }
@@ -1410,11 +1433,6 @@ async def run_pipeline_rlm(
         os.replace(_cfg_tmp, project_dir / "run_config.json")
     except Exception:  # noqa: BLE001 — the snapshot must never block a run
         logger.exception("run_pipeline_rlm: could not write run_config.json")
-
-    # Local sandboxes have no /workspace volume — repoint the dataset root at a
-    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
-    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
-    _ensure_local_data_root(sandbox_mode, runs_root)
 
     # Local sandboxes have no /workspace volume — repoint the dataset root at a
     # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)

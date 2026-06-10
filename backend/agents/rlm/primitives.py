@@ -1149,7 +1149,8 @@ def _normalize_runpod_from_line(dockerfile: str) -> str:
     The root model sometimes constructs env_spec dicts with non-existent runpod
     image tags (e.g. ``runpod/pytorch:1.12.1``).  When the FROM line references
     any ``runpod/`` image that doesn't match the settings-configured
-    ``REPROLAB_RUNPOD_IMAGE``, swap it in.  Non-runpod FROM lines (e.g.
+    ``OPENRESEARCH_RUNPOD_IMAGE`` (``config.runpod_image``), swap it in.
+    Non-runpod FROM lines (e.g.
     ``python:3.11-slim``) are left untouched — they're valid CPU images.
     """
     from backend.config import get_settings
@@ -1272,12 +1273,15 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         }, PrimitiveOutcome.repairable)
 
     # Normalize runpod/ FROM line (ported from feat/rlm-wedge-hardening
-    # 82e9806). The root model sometimes hallucinates a non-existent runpod
-    # image tag (e.g. runpod/pytorch:1.12.1). When sandbox_mode is "runpod",
-    # replace any runpod/ FROM reference with the settings-configured image
-    # to prevent manifest-not-found failures.
-    if _sb_key == "runpod":
-        dockerfile = _normalize_runpod_from_line(dockerfile)
+    # 82e9806; gate dropped 2026-06-09). The root model sometimes hallucinates
+    # a non-existent runpod image tag (e.g. runpod/pytorch:1.12.1) — a
+    # guaranteed manifest-not-found at `docker build`. Unconditional on the
+    # build paths that reach here (docker/auto/local-docker; the runpod
+    # sandbox returned via its short-circuit above, which made the old
+    # `if _sb_key == "runpod"` gate unreachable dead code). The function
+    # self-gates: only runpod/ FROM lines that mismatch the configured image
+    # are rewritten; python:3.11-slim etc. pass through untouched.
+    dockerfile = _normalize_runpod_from_line(dockerfile)
 
     attempts, ok, tag, error = 0, False, "", ""
     try:
