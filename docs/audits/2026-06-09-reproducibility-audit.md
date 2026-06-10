@@ -335,3 +335,47 @@ Additional documentation hardening in this continuation:
 | Docs freshness | `make docs-check`; `make check` | PASS | `14 current-state docs, 3 tracked PDFs`; OK | none |
 | Env/config validation | `docker compose config`; `make smoke`; settings imported during app factory boot | PASS | compose env wins for DB URL; app factory booted | `.env` can still leak credentials into tests without stronger socket blocking |
 | Local run / health check | compose health check and pre-existing local backend process | PASS | compose `/health` OK; existing local uvicorn on `:8000` was not killed | no real paper reproduction run launched in this continuation |
+
+---
+
+## Addendum — Round 3: adversarial review of the audit's own changes
+
+On "recheck and continue," two multi-agent review passes were run over the
+session's own work: a fact-check of the four new tier-2 docs (every testable
+claim verified against code, findings adversarially re-verified) and a
+five-group adversarial code review of all session commits (RLM ports, merge
+conflict resolutions, docker/entrypoint/start.sh, CI + test adaptations, ops
+scripts), with every finding independently re-verified against the current
+tree before counting. Result: 2 confirmed doc inaccuracies + 11 confirmed
+code findings (3 medium, 8 low). All 13 are fixed and test-covered.
+
+### Confirmed findings → fixes
+
+| # | Sev | Finding | Fix (commit) |
+|---|-----|---------|--------------|
+| 1 | MED | Evidence-gate forge cross-check defeated across a warm retry: `ctx.cost_ledger` is seeded from the root-writable `cost_ledger.jsonl` at run start, so a forged ledger row from a crashed prior attempt satisfied the "unforgeable in-memory count" (empirically reproduced) | `RunCostLedger.session_call_count` — only in-process appends count; seeding stays for budget continuity (`87f9622`) |
+| 2 | MED | finalize-on-timeout partials never pass the gate: a `partial_timeout` row (harness-loaded metrics) was forced to `failed` with a factually wrong note — the fatal-path `partial` verdict was dead code for the exact scenario the 2026-06-08 redesign salvages | Second-tier `evidence_cap`: cap at `partial`, gated on ≥1 in-process ledger call; note text corrected (`87f9622`) |
+| 3 | MED | Containerized sweeper falsely interrupted live host-launched runs: compose bind-mounts `./runs`, host pids don't exist in the container's pid namespace, and nothing refreshed `updatedAt` during a run | `pidHost` stamped by all 3 writers + sweeper skips mismatches; EPERM now reads alive; 30s cost daemon refreshes `updatedAt` (true heartbeat) (`05aeed5`) |
+| 4 | MED | Both .env shell parsers kept inline ` # comments` in values; the corrupted export outranks pydantic's correct parse → hard `ValidationError` boot crash on `.env.example`'s own suggested header line; container restart loop | Entrypoint delegates parsing to python-dotenv itself (`docker/load_env.sh`); start.sh gets a dotenv-faithful bash lib (`319cd6e`) |
+| 5 | LOW | `run_config.json` persisted value-borne secrets (credentialed `OPENRESEARCH_DATABASE_URL` DSN, bootstrap command) | Exact-name denylist + URL-userinfo redaction (`19a0106`) |
+| 6 | LOW | `_normalize_runpod_from_line` landed dead-on-arrival (its runpod gate sits after the runpod short-circuit return); CLAUDE.md promised a protection that never ran | Unconditional after the shape guard (self-gating); docs corrected (`19a0106`) |
+| 7 | LOW | Parsers dropped dotenv-valid `export KEY=` / `KEY = v` lines; duplicate keys were first-wins (dotenv: last-wins) — split-brain flags between Docker and local | Same parser rewrite (`319cd6e`) |
+| 8 | LOW | CRLF .env corrupted values (trailing `\r`, kept literal quotes) | CR strip + dotenv delegation (`319cd6e`) |
+| 9 | LOW | `setdefault("pid")` inherited a DEAD prior attempt's pid on reused project dirs → live run falsely swept | Unconditional overwrite (run.py executes inside the run process); old test premise inverted (`05aeed5`) |
+| 10 | LOW | Stub-mode rubric-gen skip left the arXiv rubric wiring covered by zero tests | Two mocked pipeline tests (generate→context+persist; None→rubric-less) (`19a0106`) |
+| 11 | LOW | Doc fixes: `reproduction.md` Playwright claim (self-starting webServer on :3001, `reuseExistingServer:false`), `infra.md` "runs/ is gitignored" (whitelist idiom tracks 7 artifact types) | Corrections applied (`f54c437`) |
+
+Also: deduplicated a doubled `_ensure_local_data_root` merge artifact in
+`run.py`; merged PR #101 (main's docs-freshness CI confirmed green on the
+merge commit, run 27252417055).
+
+### Verification (round 3)
+
+| Check | Result |
+|---|---|
+| Backend suite (`pytest tests/ -n auto`) | **4485 passed**, 9 skipped, 1 xfailed, 38.1s (+14 new regression tests) |
+| Frontend (`lint` / `tsc --noEmit` / `vitest`) | clean / clean / 291 passed |
+| `make docs-check` | OK (14 current-state docs) |
+| Shell syntax (`bash -n` × 4 files) | OK |
+| `docker build` (new `load_env.sh` COPY) | exit 0 |
+| In-container boot proof | image booted with a mounted `.env` containing the previously boot-crashing line `OPENRESEARCH_DEFAULT_SANDBOX=local   # …` → `/health` 200 (`Settings()`' Literal field would have raised on any corrupted value) |
