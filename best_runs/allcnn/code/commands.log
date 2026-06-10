@@ -1,0 +1,17 @@
+# All-CNN (arXiv 1412.6806) reproduction — command history
+# Project: prj_0a3202fc187bb692
+# Implemented: 2026-06-10
+
+# Assumptions applied: A001, A002, A003, A004, ENV001, ENV-RT1
+
+# The harness uses cells.json + train_cell.py for the matrix.
+# Each cell trains ONE (model, variant, dataset) combo on ONE GPU.
+# 14 cells total; 3 GPUs run up to 3 in parallel.
+
+# Manual smoke test (run inside the sandbox):
+# REPROLAB_SMOKE_STEPS=1 REPROLAB_CELL_PARAMS='{"id":"c_allcnn__cifar10_noaug__s42","model_key":"c_allcnn","base_model":"c","variant":"allcnn","env":"cifar10_noaug","dataset":"cifar10","num_classes":10,"augment":false,"seed":42}' REPROLAB_CELL_OUTPUT_DIR=/tmp/smoke_out OUTPUT_DIR=/tmp/smoke_out python train_cell.py
+
+# Full single-cell run example:
+# REPROLAB_CELL_PARAMS='{"id":"c_allcnn__cifar10_noaug__s42","model_key":"c_allcnn","base_model":"c","variant":"allcnn","env":"cifar10_noaug","dataset":"cifar10","num_classes":10,"augment":false,"seed":42}' REPROLAB_CELL_OUTPUT_DIR=$OUTPUT_DIR/c_allcnn python train_cell.py
+
+# The harness reads cells.json and runs all 14 cells, aggregating metrics.

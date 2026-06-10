@@ -57,8 +57,14 @@ def _canon_cell_id(raw: str) -> str:
 
 def _summarise_cell(m: dict[str, Any]) -> str | None:
     """One compact fragment for a per-cell metrics dict, or None if unusable."""
-    if not isinstance(m, dict) or "per_model" in m:
-        return None  # an aggregate, not a per-cell leaf
+    if not isinstance(m, dict):
+        return None
+    # Aggregate-vs-cell discrimination: agents may nest per_model/per_dataset
+    # fragments INSIDE per-cell files (2026-06-10 All-CNN grid #2 did), so the
+    # presence of per_model alone is NOT an aggregate signal — only a per_model
+    # WITHOUT any cell-level scalar metric is.
+    if "per_model" in m and not any(m.get(k) is not None for k in _METRIC_KEYS):
+        return None
     parts: list[str] = []
     status = m.get("status")
     if isinstance(status, str) and status:

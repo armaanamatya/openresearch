@@ -1,9 +1,10 @@
 # Best runs
 
-End-to-end reproductions from the OpenResearch agent — two clean single runs (Adam, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
+End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
+| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.696 | 1 | 8.5h |
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
@@ -13,6 +14,28 @@ Each subdirectory carries the final report (`final_report.json` + `.md`), the au
 The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-back attempts from 2026-05-31→06-01 — three infrastructure failures (GPU contention, a launch crash, a dead dataset endpoint) and one scored `partial` — each with its own run logs and token-usage logs. See [`sdar/README.md`](sdar/README.md) for the per-attempt breakdown and the campaign token table.
 
 ---
+
+## All-CNN — GPU-scale CIFAR grid with an in-run repair loop
+
+A 14-cell training grid (models A/B/C × base/strided/convpool/all-conv variants,
+350 epochs each on CIFAR-10, plus All-CNN-C on CIFAR-10+aug and CIFAR-100):
+the first grid dead-trained half its cells on a shared learning rate; the
+harness's dead-training divergence report drove an in-run repair (per-cell lr
+probe) whose second grid resurrected `c_base` and `c_strided` to paper level.
+
+| Measured (final grid, test error %) | base | strided | convpool | all-conv |
+|---|---:|---:|---:|---:|
+| Model A | **12.86** | 64.82 | 71.33 | 90.0 |
+| Model B | **10.77** | **13.27** | 90.0 | 90.0 |
+| Model C | **9.99** | **10.52** | 90.0 | 90.0 |
+
+Bold = paper-grade (the paper's CIFAR-10 table spans ~9–16% for these
+configurations; 90% = chance, an honest dead cell — recorded, not hidden). The
+per-cell results incl. each cell's probed learning rate are in
+[`allcnn/cells_results.json`](allcnn/cells_results.json); the leaf-by-leaf
+grading (`allcnn/rubric_evaluation.json`) shows exactly which claims earned the
+0.696 and which leaves (the all-conv/convpool families, the Section-4
+ReLU-masking figure, ImageNet) hold the remaining headroom.
 
 ## Adam — what the agent extracted, what it re-derived
 

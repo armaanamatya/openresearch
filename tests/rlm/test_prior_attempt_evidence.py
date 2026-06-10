@@ -93,3 +93,21 @@ def test_guidance_hook_integration(tmp_path, monkeypatch):
     monkeypatch.delenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE")
     guidance_off = _compute_constraint_guidance("local", None, project_dir=tmp_path)
     assert "PRIOR-ATTEMPT MEASURED EVIDENCE" not in guidance_off
+
+
+def test_cell_with_nested_per_model_fragment_still_summarised(tmp_path):
+    """2026-06-10 All-CNN grid #2: per-cell files nest their own per_model/
+    per_dataset fragments — they are cells (they carry scalar metrics), not
+    aggregates, and must not be skipped."""
+    _write_cell(tmp_path, "20260610T000000-000000-gggggg", "r1",
+                "a_base__cifar10_noaug__s42",
+                {"status": "ok", "test_error_pct": 12.86, "best_lr": 0.05,
+                 "per_model": {"a_base": {}}, "per_dataset": {"cifar10": {}}})
+    block = build_evidence_block(tmp_path)
+    assert "a_base_cifar10_noaug" in block and "test_error_pct=12.86" in block
+
+
+def test_true_aggregate_without_scalars_still_skipped(tmp_path):
+    _write_cell(tmp_path, "20260610T000000-000000-hhhhhh", "r1",
+                "agg_like", {"status": "complete", "per_model": {"m": {}}, "scope": {}})
+    assert build_evidence_block(tmp_path) == ""

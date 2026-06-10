@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "wall_clock_s": 30530.3,
+  "primitive_wall_clock_s": {
+    "check_user_messages": 0.0,
+    "understand_section": 0.014,
+    "extract_hyperparameters": 0.003,
+    "resolve_gpu_requirements": 0.004,
+    "heartbeat": 0.005,
+    "detect_environment": 0.198,
+    "build_environment": 0.002,
+    "plan_reproduction": 82.249,
+    "implement_baseline": 1638.059,
+    "run_experiment": 28250.788,
+    "verify_against_rubric": 158.916,
+    "propose_improvements": 56.973,
+    "record_candidate_outcome": 0.011
+  },
+  "primitive_call_counts": {
+    "check_user_messages": 1,
+    "understand_section": 3,
+    "extract_hyperparameters": 2,
+    "resolve_gpu_requirements": 1,
+    "heartbeat": 7,
+    "detect_environment": 1,
+    "build_environment": 1,
+    "plan_reproduction": 1,
+    "implement_baseline": 2,
+    "run_experiment": 2,
+    "verify_against_rubric": 1,
+    "propose_improvements": 1,
+    "record_candidate_outcome": 1
+  },
+  "gpu_hours": 7.8474,
+  "gpu_type": "rtx4090",
+  "gpu_count": 1,
+  "iterations": 1,
+  "rubric_score": 0.6960629921259842,
+  "computed_at_utc": "2026-06-10T08:26:39.626539+00:00"
+}

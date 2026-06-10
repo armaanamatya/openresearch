@@ -1,0 +1,89 @@
+{
+  "_comment": "All Convolutional Net (arXiv 1412.6806) reproduction config",
+  "paper": "Striving for Simplicity: The All Convolutional Net",
+  "arxiv_id": "1412.6806",
+  "training": {
+    "optimizer": "SGD",
+    "momentum": 0.9,
+    "nesterov": false,
+    "weight_decay": 0.001,
+    "batch_size": 128,
+    "epochs": 350,
+    "lr_schedule_milestones": [200, 250, 300],
+    "lr_schedule_gamma": 0.1,
+    "lr_candidates": [0.25, 0.1, 0.05, 0.01],
+    "lr_probe_epochs": 15,
+    "lr_probe_subset_size": 5000,
+    "seed": 42
+  },
+  "regularization": {
+    "dropout_input": 0.2,
+    "dropout_hidden": 0.5,
+    "weight_decay": 0.001
+  },
+  "data": {
+    "cifar10_train_size": 50000,
+    "cifar10_test_size": 10000,
+    "cifar100_train_size": 50000,
+    "cifar100_test_size": 10000,
+    "preprocessing": "GCN + ZCA whitening (Goodfellow et al. 2013, epsilon=0.1)",
+    "augmentation_train": "RandomCrop(32, padding=5) + RandomHorizontalFlip",
+    "augmentation_test": "none"
+  },
+  "models": {
+    "A_base": "5x5 conv blocks with max-pooling (Table 1 base)",
+    "B_base": "NIN variant: 5x5 + 1x1 conv per block before pool",
+    "C_base": "Two 3x3 convs per block with max-pooling",
+    "A_strided": "Model A with pool removed, preceding conv stride 2",
+    "B_strided": "Model B with pool removed, preceding 1x1 conv stride 2",
+    "C_strided": "Model C with pool removed, second 3x3 stride 2",
+    "A_convpool": "Model A + 3x3 conv before each pool",
+    "B_convpool": "Model B + 3x3 conv before each pool",
+    "C_convpool": "Model C + 3x3 conv before each pool (3 total per block)",
+    "A_allcnn": "Model A: pool replaced with 3x3 stride-2 conv",
+    "B_allcnn": "Model B: pool replaced with 3x3 stride-2 conv",
+    "C_allcnn": "All-CNN-C: pool replaced with 3x3 stride-2 conv (headline model)"
+  },
+  "classifier_head": {
+    "description": "D(0.5) -> Conv(3x3, 192) -> Conv(1x1, 192) -> Conv(1x1, nc) -> GlobalAvgPool",
+    "no_fully_connected_layers": true
+  },
+  "environment": {
+    "python": "3.11",
+    "pytorch": "2.2.0",
+    "torchvision": "0.17.0",
+    "numpy": "1.26.4"
+  },
+  "assumptions": [
+    {
+      "id": "A001",
+      "detail": "Architecture: Model C uses two 3x3 convs per block (replacing 5x5+1x1 of B with 3x3+3x3)",
+      "evidence": "Published implementations of All-CNN-C achieve ~9.1% consistent with two 3x3s"
+    },
+    {
+      "id": "A002",
+      "detail": "LR selection: probe 15 epochs on 5k subset, then full 350-epoch run",
+      "evidence": "Paper says gamma selected from {0.25, 0.1, 0.05, 0.01} per model"
+    },
+    {
+      "id": "A003",
+      "detail": "MaxPool padding=1 to maintain power-of-2 spatial dims (32->16->8)",
+      "evidence": "Standard CIFAR practice; ensures GAP works on 8x8 features"
+    },
+    {
+      "id": "A004",
+      "detail": "ImageNet excluded: not auto-downloadable, requires manual setup",
+      "evidence": "ImageNet requires registration at image-net.org, ~150GB; cannot fetch in container"
+    },
+    {
+      "id": "ENV001", "detail": "pytorch version not explicitly stated in paper", "chosen_value": "2.2.0"
+    },
+    {
+      "id": "ENV-RT1", "detail": "3x CUDA GPU (24GB each) available, using cuda:0 per cell"
+    }
+  ],
+  "deviations": [
+    "ImageNet experiment OUT OF SCOPE (requires manual download, licensing)",
+    "LR selected via short probe rather than full grid search over all models simultaneously"
+  ]
+}

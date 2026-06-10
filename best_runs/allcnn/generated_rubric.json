@@ -1,0 +1,247 @@
+{
+  "id": "c7711639354746f188c4041f7e553827",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "2847325f7b0544e9b367531862c70017",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.31496062992125984,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "38ca679d24824ba48f280e92ffc6a986",
+          "requirements": "The code implements All-CNN-C exactly as derived from base model C: every layer is a 3x3 convolution with ReLU activation sigma(x)=max(x,0) per Eq. 2, and each max-pooling layer of base model C is replaced by a 3x3 convolution with stride r=2 whose number of output channels equals the number of input channels, as specified in Section 2 (replacement option 2) and Table 2.",
+          "weight": 0.3,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "ce4ce00fee5f465b959e6293d4a37150",
+          "requirements": "All three derived variants of Section 3.1 / Table 2 are implemented and distinguishable in code: Strided-CNN-C (max-pooling removed and the stride of the preceding convolution increased by 1), ConvPool-CNN-C (a dense convolution with the same kernel size as the pooling layer inserted before each max-pooling layer), and All-CNN-C (pooling replaced by a stride-2 convolution).",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "a67c5ed41ca94cda93b228a44f30266c",
+          "requirements": "Every network ends with a 1-by-1 convolution producing 10 class outputs (CIFAR-10), followed by global averaging over all spatial positions and a softmax \u2014 no fully connected layers anywhere in the classifier head \u2014 as described in Section 2 and Table 1.",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "54861e05899b4882baaae0c4441d0c22",
+          "requirements": "Base models A, B, and C are implemented per Table 1: model B is the Network-in-Network variant with exactly one 1-by-1 convolution after each normal convolution layer, and model C replaces all 5x5 convolutions of model B with 3x3 convolutions, as stated in Section 3.1.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "72c04f1e8d064f62a0ef84a0255adeb6",
+          "requirements": "The guided backpropagation visualization of Section 4 / Figure 1 is implemented with the exact masking rule: when propagating back through a ReLU, the signal is zeroed wherever EITHER the bottom (forward-pass) input OR the top gradient is negative, and it is implemented alongside the plain backpropagation (bottom-only mask) and 'deconvnet' (top-gradient-only mask) baselines for comparison.",
+          "weight": 0.1,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "ecadb66065584e5c99918e930a844dc6",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.11811023622047244,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "de868c3e147c4ad0a73eb2ae84cccd58",
+          "requirements": "CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009) are loaded with their standard train/test splits, and all images are whitened and contrast normalized following Goodfellow et al. (2013), as stated in Section 3.2.",
+          "weight": 0.4,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "11b78ad6c75e4f0fb4ea6ccdfeafe35e",
+          "requirements": "Data augmentation, when used, consists only of adding horizontally flipped examples of all images and randomly translated versions with a maximum translation of 5 pixels in each dimension, matching the augmentation protocol of Section 3.2 (following Goodfellow et al., 2013 and Lin et al., 2014); no other augmentations are applied in the augmented CIFAR runs.",
+          "weight": 0.35,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2fedfc2ab4324c8bae19b2a658167f81",
+          "requirements": "The ImageNet experiment uses the ILSVRC-2012 subset of ImageNet for training, and validation images are evaluated only on the center 224x224 patch, as described in the ImageNet experiment section (Section 3.3) and Table 6.",
+          "weight": 0.25,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f489640dd4c5433a8de57a8916a5524e",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.15748031496062992,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "14507cd4d6ba45caa0a27a3d9feafe30",
+          "requirements": "CIFAR training runs use vanilla SGD with fixed momentum 0.9, a total of 350 epochs, the learning-rate schedule S=[200,250,300] with gamma multiplied by 0.1 at each schedule epoch, and the learning rate gamma selected from the fixed set [0.25, 0.1, 0.05, 0.01] per model, as specified in Section 3.2; these values appear in the run configs/logs.",
+          "weight": 0.35,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "a340acd690ea46c2b9aa681eb7ff447b",
+          "requirements": "All CIFAR models are regularized exactly as in Section 3.2: dropout probability 20% on the input image, dropout 50% after each pooling layer (or after the layer replacing pooling), and weight decay lambda=0.001 on all models; values are verifiable in configs and training logs.",
+          "weight": 0.25,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "4f159bcda5474754a439d1b31fdabe95",
+          "requirements": "Executed run artifacts (training logs, checkpoints, or per-run metrics files) exist for the CIFAR-10 ablation of Table 3 covering base models A, B, C and their Strided-CNN, ConvPool-CNN, and All-CNN derived variants, demonstrating the comparison grid was actually trained rather than only defined.",
+          "weight": 0.25,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "943b23980b7247658948a04905043883",
+          "requirements": "The CIFAR-100 experiment reuses the All-CNN-C model with all hyperparameters (learning rate and its schedule) kept fixed from the CIFAR-10 setting, as stated in the CIFAR-100 experiment paragraph of Section 3 referencing Table 4; if the ImageNet run is attempted, it trains the upscaled All-CNN-B (12 convolutional layers, conv1-conv12) for 450,000 iterations with batch size 64, initial gamma=0.01 divided by 10 every 200,000 iterations, and weight decay lambda=0.0005 per Section 3.3 and Table 6.",
+          "weight": 0.15,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "6d0804522892466091ee51ca34f670bf",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.15748031496062992,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "a744265d9b6145e7b8214c9023e70d0c",
+          "requirements": "CIFAR-10 evaluation reports test-set classification error (%) without augmentation for each base and derived model, reporting only the result for the best gamma from the set [0.25, 0.1, 0.05, 0.01] per model, matching the Table 3 / Section 3.2 protocol.",
+          "weight": 0.35,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "95697d806f2e4a8c854b4a1a3d0c6078",
+          "requirements": "Separate with-augmentation and without-augmentation CIFAR-10 test-error numbers are produced for All-CNN-C (the All-CNN adapted from base model C) so they are comparable to the state-of-the-art comparison in Table 4.",
+          "weight": 0.25,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "ae26810e1b8d4a87bdbfaf80c82a2fbe",
+          "requirements": "If the ImageNet experiment is run, the metric computed is Top-1 validation error on ILSVRC-2012 evaluated only on the center 224x224 patch, matching the evaluation protocol of Section 3.3.",
+          "weight": 0.2,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "eed454da0d6f4c6283b6096d0e28f4d3",
+          "requirements": "Model parameter counts are computed and reported (in millions) for the compared models, allowing verification of the paper's claims that the ImageNet network has fewer than 10 million parameters (6 times less than Krizhevsky et al., 2012) and that the Table 4 comparison is fair with respect to parameter count.",
+          "weight": 0.2,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "506145f6c7e14050ac7d5d9085e1a6b9",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.19685039370078738,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "5a0fefb75cbc45ecb37604a61b2d6b59",
+          "requirements": "Reproduced base model A achieves approximately 12.5% test error on CIFAR-10 without augmentation, matching the result reported in Section 3.2 (Table 3).",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "a5a403bfb5724465906dece88a3e93a0",
+          "requirements": "The reproduced Table 3 ablation reproduces the paper's three qualitative trends from Section 3.2: (1) Strided-CNN variants (pooling removed, preceding stride increased) perform worse than their base models; (2) All-CNN variants (pooling replaced by a stride-2 convolution) match or improve on their base models; (3) All-CNN and ConvPool-CNN variants perform approximately on par, showing the gain is not solely due to added parameters.",
+          "weight": 0.35,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "038023d10342462ba3cc4631f2028e2b",
+          "requirements": "Reproduced All-CNN-C test error on CIFAR-10 is competitive with the paper's Table 4 comparison \u2014 i.e., it outperforms the cited prior results from Goodfellow et al. (2013) Maxout and Lin et al. (2014) Network in Network in both the with-augmentation and without-augmentation settings, as claimed in Section 3.2.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "b3ebf49af5b54642ab1f9c79f64d4ea0",
+          "requirements": "If the ImageNet experiment is run, the upscaled All-CNN-B achieves Top-1 validation error close to the reported 41.2% on ILSVRC-2012 (center 224x224 patch) with fewer than 10 million parameters, per Section 3.3.",
+          "weight": 0.15,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "d79057442bb9423a93a4b7ab396aa852",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.05511811023622048,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "58c6011a30b14f14997a149de21a63d1",
+          "requirements": "The repository contains explicit architecture definitions (config files or model-building code) for all models of Table 1 (base A, B, C) and Table 2 (Strided-CNN-C, ConvPool-CNN-C, All-CNN-C), plus the ImageNet network of Table 6 if attempted, together with the training scripts used to run them.",
+          "weight": 0.4,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "712eaf9e892e44df8207abb28dc31c05",
+          "requirements": "Every reported number is traceable to a produced artifact: per-model training logs and a metrics file (e.g., metrics.json or equivalent) record the CIFAR-10/CIFAR-100 test errors and the chosen learning rate gamma for each Table 3 / Table 4 entry reproduced.",
+          "weight": 0.35,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9cb6fa0dd8164f4e81ec18c298b06e70",
+          "requirements": "If the visualization analysis of Section 4 is reproduced, the repository contains the generated visualization images comparing backpropagation, 'deconvnet', and guided backpropagation (analogous to Figures 2-5), including first-layer filter visualizations and higher-layer reconstructions, produced by checked-in visualization code.",
+          "weight": 0.25,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}
