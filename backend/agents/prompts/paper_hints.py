@@ -173,8 +173,21 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "ATOMICALLY as cells finish so a timeout truncates the tail, not "
             "finished work. CIFAR-100 (All-CNN, with aug) comes only AFTER all "
             "CIFAR-10 cells land. The ImageNet experiment is OUT OF SCOPE on "
-            "this budget: declare it in scope.gaps explicitly — never fake or "
-            "silently omit it."
+            "this budget: write it MECHANICALLY into metrics.json as "
+            "scope.gaps=[{'item': 'ImageNet', 'reason': 'out of compute scope "
+            "(operator-bounded)'}] — a declared gap is excluded from scoring; "
+            "an undeclared one scores 0. Never fake or silently omit it.\n"
+            "CHEAP RUBRIC EVIDENCE the prior attempt left on the table: "
+            "(a) MEASURE per-model parameter counts (count_parameters at model "
+            "build) and record them under per_model[*].param_count — the paper's "
+            "tables compare them; (b) after the best All-CNN model trains, "
+            "produce the paper's Section-4 visualization: guided-backprop / "
+            "deconv ReLU-masking saliency for a few CIFAR images (~50 lines of "
+            "hooks), saved as fig_relu_masking.png + a JSON sidecar; (c) if a "
+            "PRIOR-ATTEMPT MEASURED EVIDENCE block is present in this prompt, "
+            "treat it as ground truth: restore configs that hit paper-grade "
+            "errors verbatim, and only probe lr for cells with no working "
+            "config in ANY attempt."
         ),
         default_scope=ScopeSpec(
             datasets=[

@@ -2374,6 +2374,19 @@ def _compute_constraint_guidance(
     if override:
         guidance += override
 
+    # 6.5 Prior-attempt measured evidence (2026-06-10, flag-gated). Past
+    # attempts' per-cell results ride into the prompt so the implementer keeps
+    # configs that measurably worked instead of re-deriving them from scratch
+    # (the All-CNN lr "repair" killed a cell whose working config sat in the
+    # previous attempt's archive). Fail-soft + capped inside the module.
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm import prior_attempt_evidence as _pae
+            if _pae.is_enabled():
+                guidance += _pae.build_evidence_block(project_dir)
+        except Exception:  # noqa: BLE001 — evidence is advisory, never fatal
+            logger.debug("prior_attempt_evidence block skipped", exc_info=True)
+
     # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
