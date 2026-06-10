@@ -56,7 +56,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 import threading
 import time
@@ -75,11 +74,8 @@ from backend.agents.rlm.cell_scheduler import (  # noqa: E402
     STATUS_OK,
     STATUS_OOM_FAILED,
     STATUS_SKIPPED,
-    STATUS_TIMEOUT,
     CellResult,
     deadline_from_timeout,
-    clamp_cell_timeout,
-    headline_metric,
     is_resume_armed,
     load_cell_manifest,
     should_skip_cell,

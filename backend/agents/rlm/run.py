@@ -93,7 +93,6 @@ from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback
 # auto-recover from (slice, question) misuse of rlm_query/llm_query — the
 # library API is single-prompt; the misuse routed the question as a model name
 # and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
-from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch
 # BUG-NEW-043 (ported 2026-06-09): surface real traceback when rlm._subcall's
 # child completion raises; upstream catches with `str(e)` and we get only
 # "maximum recursion depth exceeded" with no file/line. Mech-understanding
