@@ -12,7 +12,7 @@ Contains the placement-independent logic that both cell runners need identically
   fingerprint-match + not force-listed.
 * ``write_cell_manifest`` — write the authoritative per-cell resume manifest
   (fail-soft).
-* ``is_resume_armed`` — read the ``REPROLAB_RESUME_CELLS`` env var once.
+* ``is_resume_armed`` — read the ``OPENRESEARCH_RESUME_CELLS`` env var once.
 * ``deadline_from_timeout`` — compute a monotonic deadline from an optional
   timeout in seconds.
 * ``clamp_cell_timeout`` — clamp a per-cell timeout to the remaining matrix
@@ -232,12 +232,12 @@ def write_cell_manifest(
 
 
 def is_resume_armed() -> bool:
-    """Return True when ``REPROLAB_RESUME_CELLS`` env var is truthy.
+    """Return True when ``OPENRESEARCH_RESUME_CELLS`` env var is truthy.
 
     Centralises the single env-var read so both runners stay in sync if the
     variable name ever changes.
     """
-    return bool(os.environ.get("REPROLAB_RESUME_CELLS", "").strip())
+    return bool(os.environ.get("OPENRESEARCH_RESUME_CELLS", "").strip())
 
 
 def deadline_from_timeout(timeout_s: float | None) -> float | None:

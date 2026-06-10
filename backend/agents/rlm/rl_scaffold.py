@@ -517,7 +517,7 @@ def _visible_device_count() -> int:
 
 def main() -> int:
     n = _visible_device_count()
-    vllm_server_port = int(os.environ.get("REPROLAB_VLLM_PORT", "8000"))
+    vllm_server_port = int(os.environ.get("OPENRESEARCH_VLLM_PORT", "8000"))
 
     if n <= 1:
         # Single-GPU or CPU: trainer handles its own vLLM generation.
@@ -537,12 +537,12 @@ def main() -> int:
         **os.environ,
         **NCCL_ENV,
         "CUDA_VISIBLE_DEVICES": ",".join(str(d) for d in trainer_devices),
-        "REPROLAB_VLLM_HOST": "localhost",
-        "REPROLAB_VLLM_PORT": str(vllm_server_port),
+        "OPENRESEARCH_VLLM_HOST": "localhost",
+        "OPENRESEARCH_VLLM_PORT": str(vllm_server_port),
     }
 
     # Start vLLM server (model name from env or train.py convention).
-    vllm_model = os.environ.get("REPROLAB_MODEL_NAME", "")
+    vllm_model = os.environ.get("OPENRESEARCH_MODEL_NAME", "")
     vllm_proc = subprocess.Popen(
         [
             sys.executable, "-m", "vllm.entrypoints.openai.api_server",

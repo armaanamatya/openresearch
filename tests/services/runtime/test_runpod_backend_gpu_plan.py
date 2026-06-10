@@ -42,7 +42,7 @@ def test_backend_uses_gpu_plan_when_provided():
 def test_backend_back_compat_no_plan_uses_settings():
     """When gpu_plan is None, backend falls back to legacy Settings defaults."""
     backend = RunpodBackend(api_key="dummy", gpu_plan=None)
-    # Default per repo: REPROLAB_RUNPOD_GPU_TYPE="NVIDIA GeForce RTX 4090"
+    # Default per repo: OPENRESEARCH_RUNPOD_GPU_TYPE="NVIDIA GeForce RTX 4090"
     assert "RTX 4090" in backend.gpu_type or "4090" in backend.gpu_type
     assert backend.gpu_count == 1
 

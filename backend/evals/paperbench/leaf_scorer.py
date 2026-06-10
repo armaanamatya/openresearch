@@ -827,7 +827,7 @@ def _detect_data_unavailable_leaves(
 # Conservative: fire only on UNAMBIGUOUS proof language, and NEVER when the leaf
 # also asks for an empirical artifact (code/metrics/figure), since a leaf like
 # "verify the convergence claim empirically via the loss curve" IS gradeable.
-# Flag-gated (REPROLAB_EXCLUDE_THEORY_LEAVES, default OFF) + fail-soft.
+# Flag-gated (OPENRESEARCH_EXCLUDE_THEORY_LEAVES, default OFF) + fail-soft.
 _THEORY_MARKERS: tuple[str, ...] = (
     "theorem", "regret bound", "regret analysis", "convergence proof",
     "proof of", "prove that", "proof that", "lemma", "corollary",
@@ -841,8 +841,8 @@ _EMPIRICAL_MARKERS: tuple[str, ...] = (
 
 
 def _theory_leaf_exclusion_enabled() -> bool:
-    """True when ``REPROLAB_EXCLUDE_THEORY_LEAVES`` is truthy (default OFF — opt-in)."""
-    return os.environ.get("REPROLAB_EXCLUDE_THEORY_LEAVES", "").strip().lower() in (
+    """True when ``OPENRESEARCH_EXCLUDE_THEORY_LEAVES`` is truthy (default OFF — opt-in)."""
+    return os.environ.get("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -1174,7 +1174,7 @@ def finalize_rescore(
             extra_scope=extra_scope,
         )
         # Layer 3: theory-only leaves are inapplicable to a code repro — exclude them
-        # from the re-roll-up too (no-op unless REPROLAB_EXCLUDE_THEORY_LEAVES is on).
+        # from the re-roll-up too (no-op unless OPENRESEARCH_EXCLUDE_THEORY_LEAVES is on).
         skip_set = frozenset(set(unavailable) | _detect_theory_only_leaves(leaves))
         new_overall = roll_up(tree, leaf_scores, skip_set)
         if new_overall is None or raw_no_excl is None:
@@ -1618,7 +1618,7 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     report["overall_score"] = score["overall_score"]
     report["meets_target"] = meets_target
 
-    # Two-axis reproducibility verdict (U11 / A4): when REPROLAB_TWO_AXIS_VERDICT
+    # Two-axis reproducibility verdict (U11 / A4): when OPENRESEARCH_TWO_AXIS_VERDICT
     # is enabled, this attaches implementation_verdict ⟂ replication_verdict, sets
     # schema_version=2, and projects report["verdict"] from the FIDELITY axis — so
     # a faithful-but-contradicted run is NOT collapsed to "failed" by the blended-

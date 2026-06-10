@@ -20,7 +20,7 @@ exactly like ``rubric_guard.py`` / ``gpu_cell_runner.py``. Two jobs:
    so the agent CANNOT silently ship final-scalars-only when the paper makes convergence/sweep
    claims.
 
-Flag-gated: everything is inert unless ``REPROLAB_FIDELITY_EVIDENCE`` is truthy. Off → the
+Flag-gated: everything is inert unless ``OPENRESEARCH_FIDELITY_EVIDENCE`` is truthy. Off → the
 checks return "nothing missing" and the derivations are still pure/no-ops, so non-convergence
 papers and the byte-for-byte-unchanged path stay unaffected.
 """
@@ -40,11 +40,11 @@ __all__ = [
     "figure_axis_matches",
 ]
 
-ENV_FLAG = "REPROLAB_FIDELITY_EVIDENCE"
+ENV_FLAG = "OPENRESEARCH_FIDELITY_EVIDENCE"
 
 
 def is_enabled() -> bool:
-    """True when the fidelity-evidence layer is armed (``REPROLAB_FIDELITY_EVIDENCE`` truthy).
+    """True when the fidelity-evidence layer is armed (``OPENRESEARCH_FIDELITY_EVIDENCE`` truthy).
 
     Mirror of ``execution_smoke.is_enabled()`` — a single env read so the gate name lives
     in exactly one place. Default OFF: an unset/empty/``0``/``false`` value is disabled.

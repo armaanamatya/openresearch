@@ -205,7 +205,7 @@ def assert_metrics_schema(
                             ``{"history_methods": [...], "sweeps": [...],
                             "series": ["regret"]}``).  Enforced via
                             :func:`convergence_evidence.missing_structured_evidence`
-                            ONLY when ``REPROLAB_FIDELITY_EVIDENCE`` is set — so an
+                            ONLY when ``OPENRESEARCH_FIDELITY_EVIDENCE`` is set — so an
                             unset flag or a None value is a no-op.  Turns
                             "curves/sweeps computed but left in logs" (the
                             2026-06-09 Adam 0.21 eval-protocol crash) into an
@@ -277,7 +277,7 @@ def assert_metrics_schema(
 
     # Structured-evidence enforcement (Module A): when the paper makes convergence /
     # sweep / time-series claims, final scalars alone score 0 on the eval-protocol leaves.
-    # The check is itself flag-gated (``REPROLAB_FIDELITY_EVIDENCE``) inside
+    # The check is itself flag-gated (``OPENRESEARCH_FIDELITY_EVIDENCE``) inside
     # convergence_evidence, so an unset flag → empty list → no behaviour change. The import
     # is lazy + guarded so rubric_guard keeps working when the sibling helper was not copied
     # into the sandbox (degrades to "nothing missing", never a hard import error).

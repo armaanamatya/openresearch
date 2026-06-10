@@ -27,7 +27,7 @@ Design contract:
     block a run.  A corrupt JSONL line is skipped, not raised.
   * Versioned key prefix (``v1:``) so a future contract change can
     invalidate the cache without a manual purge.
-  * Opt-out per run via ``REPROLAB_PRIMITIVE_CACHE=disabled``.
+  * Opt-out per run via ``OPENRESEARCH_PRIMITIVE_CACHE=disabled``.
 
 Cached with extra care (Lane A — warm retry):
 
@@ -78,7 +78,7 @@ CACHEABLE_PRIMITIVES: Final[frozenset[str]] = frozenset({
 })
 
 _CACHE_FILENAME: Final[str] = "primitive_cache.jsonl"
-_DISABLE_ENV_VAR: Final[str] = "REPROLAB_PRIMITIVE_CACHE"
+_DISABLE_ENV_VAR: Final[str] = "OPENRESEARCH_PRIMITIVE_CACHE"
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,7 @@ _CACHE_VALIDATORS: Final[dict[str, Any]] = {
 
 
 def is_enabled() -> bool:
-    """Return False when ``REPROLAB_PRIMITIVE_CACHE=disabled`` is set."""
+    """Return False when ``OPENRESEARCH_PRIMITIVE_CACHE=disabled`` is set."""
     return os.environ.get(_DISABLE_ENV_VAR, "enabled").lower() != "disabled"
 
 

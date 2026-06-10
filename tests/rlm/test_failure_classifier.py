@@ -222,7 +222,7 @@ def test_disk_exhausted_from_enospc_trace() -> None:
     ):
         klass, fix = classify_failure({"success": False, "error": err})
         assert klass == "disk_exhausted", f"{err!r} → {klass}"
-        assert "disk" in fix.lower() or "REPROLAB_DISK_FLOOR_GB" in fix
+        assert "disk" in fix.lower() or "OPENRESEARCH_DISK_FLOOR_GB" in fix
 
 
 # ---------------------------------------------------------------------------

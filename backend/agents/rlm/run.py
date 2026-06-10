@@ -118,7 +118,7 @@ logger = logging.getLogger(__name__)
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
 # 2026-05-25 — the rlm/ctx wall-clock ceiling is FULLY USER-CONTROLLED. When no
-# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set, rlm's
+# ``--max-wall-clock`` flag (or OPENRESEARCH_MAX_WALL_CLOCK_S env var) is set, rlm's
 # own between-iteration timeout and every per-primitive deadline are unbounded —
 # the user mandate is "no truncation of a long reproduction unless the operator
 # opts in." 2026-06-01 — but "unbounded" must NOT mean "can hang forever with no
@@ -127,7 +127,7 @@ _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query rec
 # partial report and hard-exits. The 2026-06-01 SDAR run hung ~3h inside one
 # synchronous run_experiment (every soft bound collapsed to None, watchdog unarmed),
 # the user killed it, and NO final_report was written — this backstop closes that
-# gap. Opt fully out with REPROLAB_WATCHDOG_HARD_CEILING_S=0.
+# gap. Opt fully out with OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0.
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
@@ -138,11 +138,11 @@ def _watchdog_hard_ceiling_s() -> float:
     """Always-on watchdog backstop (seconds), used when no explicit wall-clock is set.
 
     Read at arm-time (not import-time) so tests and operators can tune it via
-    ``REPROLAB_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
+    ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
     entirely, restoring the pre-2026-06-01 fully-unbounded behaviour. A malformed
     value falls back to the 14h default rather than crashing the run.
     """
-    raw = os.environ.get("REPROLAB_WATCHDOG_HARD_CEILING_S", "").strip()
+    raw = os.environ.get("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "").strip()
     if raw == "":
         return _WATCHDOG_HARD_CEILING_DEFAULT_S
     try:
@@ -409,8 +409,8 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     regardless; the fallback is loud (a WARNING with the underlying exception)
     — it degrades, it never silently masks.
     """
-    if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
-        return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
+    if os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1":
+        return build_stub_custom_tools(ctx), "stub (OPENRESEARCH_RLM_STUB_PRIMITIVES=1)"
     try:
         from backend.agents.rlm.binding import build_custom_tools
 
@@ -595,7 +595,7 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
             f"Parser likely failed. Re-run ingestion or set "
-            f"REPROLAB_ALLOW_LOSSY_PAPER_TEXT=true."
+            f"OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT=true."
         )
     logger.warning(
         "paper text degraded — proceeding with lossy workspace fallback "
@@ -1076,7 +1076,7 @@ def _arm_watchdog(
         deadline_s = ceiling
         logger.warning(
             "run_pipeline_rlm: no explicit wall-clock ceiling; arming the always-on "
-            "watchdog backstop at %.0fs (REPROLAB_WATCHDOG_HARD_CEILING_S=0 disables)",
+            "watchdog backstop at %.0fs (OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0 disables)",
             deadline_s,
         )
     def _fire() -> None:
@@ -1498,7 +1498,7 @@ async def run_pipeline_rlm(
     # wall_clock_s is intentionally Optional[float] — None means unbounded
     # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
     # the operator must opt-in to a ceiling via --max-wall-clock or
-    # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
+    # OPENRESEARCH_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
     # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
     wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
     if run_budget is not None and run_budget.max_wall_clock_seconds:
@@ -1575,12 +1575,12 @@ async def run_pipeline_rlm(
     # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
     # before Settings construction; consumed here so RunContext carries it and
     # resolve_gpu_requirements can bypass the LLM VRAM estimate).
-    _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
+    _vram_override_env = os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB")
     _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
 
-    # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
+    # Per-run ScopeSpec from OPENRESEARCH_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
     # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
-    _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
+    _scope_json = os.environ.get("OPENRESEARCH_SCOPE_SPEC_JSON", "").strip()
     if _scope_json:
         from backend.agents.schemas import ScopeSpec as _ScopeSpec
         _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
@@ -1871,7 +1871,7 @@ async def run_pipeline_rlm(
     settings = get_settings()
     min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
     # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
-    _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
+    _raw_max_iter = os.environ.get("OPENRESEARCH_MAX_RLM_ITERATIONS", "").strip()
     _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
 
     def _emit_forced_iteration_warning(message: str) -> None:

@@ -24,7 +24,7 @@ import pytest
 
 # --------------------------------------------------------------------------- A
 def test_bootstrap_strips_torch_repin_and_pins_core(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_DISABLE_ENV_PIN", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_DISABLE_ENV_PIN", raising=False)
     from backend.agents.rlm.primitives import _local_core_bootstrap_commands
 
     req = tmp_path / "requirements.txt"
@@ -45,7 +45,7 @@ def test_bootstrap_strips_torch_repin_and_pins_core(tmp_path: Path, monkeypatch)
 
 
 def test_bootstrap_disable_flag_uses_legacy(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_DISABLE_ENV_PIN", "1")
+    monkeypatch.setenv("OPENRESEARCH_DISABLE_ENV_PIN", "1")
     from backend.agents.rlm.primitives import _local_core_bootstrap_commands
 
     req = tmp_path / "requirements.txt"
@@ -60,7 +60,7 @@ def test_bootstrap_disable_flag_uses_legacy(tmp_path: Path, monkeypatch) -> None
 
 
 def test_bootstrap_no_torch_index_is_raw(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_DISABLE_ENV_PIN", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_DISABLE_ENV_PIN", raising=False)
     from backend.agents.rlm.primitives import _local_core_bootstrap_commands
 
     req = tmp_path / "requirements.txt"
@@ -99,7 +99,7 @@ def test_venv_cuda_lib_dirs_prefers_experiment_venv(tmp_path: Path) -> None:
 
     exp = tmp_path / "exp"
     (exp / "lib" / "python3.12" / "site-packages" / "torch" / "lib").mkdir(parents=True)
-    dirs = _venv_cuda_lib_dirs({"REPROLAB_EXPERIMENT_VENV": str(exp), "VIRTUAL_ENV": "/nope"})
+    dirs = _venv_cuda_lib_dirs({"OPENRESEARCH_EXPERIMENT_VENV": str(exp), "VIRTUAL_ENV": "/nope"})
     assert any(str(exp) in d for d in dirs)
 
 
@@ -120,7 +120,7 @@ def test_venv_cuda_lib_dirs_follows_base_inherit_pth(tmp_path: Path) -> None:
     run_site.mkdir(parents=True)  # per-run venv has NO torch of its own
     (run_site / "_reprolab_base_inherit.pth").write_text(str(base_site) + "\n", encoding="utf-8")
 
-    dirs = _venv_cuda_lib_dirs({"REPROLAB_EXPERIMENT_VENV": str(run)})
+    dirs = _venv_cuda_lib_dirs({"OPENRESEARCH_EXPERIMENT_VENV": str(run)})
     assert str(base_site / "torch" / "lib") in dirs            # followed the .pth to the base
     assert str(base_site / "nvidia" / "cuda_cupti" / "lib") in dirs
 
@@ -139,7 +139,7 @@ def test_venv_cuda_lib_dirs_own_torch_ranks_before_base(tmp_path: Path) -> None:
     (run_site / "torch" / "lib").mkdir(parents=True)
     (run_site / "_reprolab_base_inherit.pth").write_text(str(base_site) + "\n", encoding="utf-8")
 
-    dirs = _venv_cuda_lib_dirs({"REPROLAB_EXPERIMENT_VENV": str(run)})
+    dirs = _venv_cuda_lib_dirs({"OPENRESEARCH_EXPERIMENT_VENV": str(run)})
     assert dirs.index(str(run_site / "torch" / "lib")) < dirs.index(str(base_site / "torch" / "lib"))
 
 
@@ -153,10 +153,10 @@ def test_venv_cuda_lib_dirs_skips_executable_pth_lines(tmp_path: Path) -> None:
     site = run / "lib" / "python3.12" / "site-packages"
     site.mkdir(parents=True)
     (site / "distutils-precedence.pth").write_text(
-        "import os; os.environ.setdefault('REPROLAB_X', '1')\n", encoding="utf-8"
+        "import os; os.environ.setdefault('OPENRESEARCH_X', '1')\n", encoding="utf-8"
     )
     (site / "comment.pth").write_text("# not a path\n", encoding="utf-8")
-    assert _venv_cuda_lib_dirs({"REPROLAB_EXPERIMENT_VENV": str(run)}) == []  # no torch, no crash
+    assert _venv_cuda_lib_dirs({"OPENRESEARCH_EXPERIMENT_VENV": str(run)}) == []  # no torch, no crash
 
 
 # --------------------------------------------------------------------------- C

@@ -1,6 +1,6 @@
 """Run-scoped root-logger configuration (Tier 2a).
 
-When REPROLAB_LOG_DIR (or REPROLAB_RUNS_ROOT, used as the fallback for the
+When OPENRESEARCH_LOG_DIR (or OPENRESEARCH_RUNS_ROOT, used as the fallback for the
 common case where the dev launcher sets only the latter) is defined,
 installs two FileHandlers on the root logger:
 
@@ -53,16 +53,16 @@ class _JsonlFormatter(logging.Formatter):
 
 
 def _resolve_run_dir() -> Optional[Path]:
-    """REPROLAB_LOG_DIR wins when set; falls back to REPROLAB_RUNS_ROOT.
+    """OPENRESEARCH_LOG_DIR wins when set; falls back to OPENRESEARCH_RUNS_ROOT.
 
     The dev launchers (``scripts/dev.ps1`` / ``scripts/dev.sh``) currently
-    only export ``REPROLAB_RUNS_ROOT`` — letting that double as the log
+    only export ``OPENRESEARCH_RUNS_ROOT`` — letting that double as the log
     directory keeps the launcher contract simple. Operators who want the
     pipeline workspaces and the consolidated log to live in *different*
     directories can set both env vars explicitly.
     """
-    value = os.environ.get("REPROLAB_LOG_DIR") or os.environ.get(
-        "REPROLAB_RUNS_ROOT"
+    value = os.environ.get("OPENRESEARCH_LOG_DIR") or os.environ.get(
+        "OPENRESEARCH_RUNS_ROOT"
     )
     if not value:
         return None
@@ -340,7 +340,7 @@ def get_recorder() -> Optional[AgentTranscriptRecorder]:
     """Return the recorder for the current asyncio task, if any.
 
     Returns ``None`` outside an active ``_invoke_agent`` scope OR when
-    REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is unset. Callers in
+    OPENRESEARCH_LOG_DIR / OPENRESEARCH_RUNS_ROOT is unset. Callers in
     resilience/engine.py should treat ``None`` as "don't record" and
     branch silently.
     """

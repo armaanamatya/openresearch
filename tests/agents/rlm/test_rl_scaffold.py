@@ -5,11 +5,11 @@ Covers:
   - Rewriter skip-on-sentinel (all three detection surfaces)
   - Default-unchanged: rewriter skip-on-sentinel does NOT fire for normal commands
   - Metrics schema via finalize_metrics (RubricGuardFailure on missing key)
-  - Opt-in-OFF parity: _compute_constraint_guidance output with REPROLAB_RL_SCAFFOLD
+  - Opt-in-OFF parity: _compute_constraint_guidance output with OPENRESEARCH_RL_SCAFFOLD
     unset is byte-identical to the pre-scaffold baseline
 
 No GPU or TRL/vLLM installation required for any test here.
-The smoke-test (1-step GRPO on a tiny model) is gated behind REPROLAB_RL_SCAFFOLD_SMOKE=1
+The smoke-test (1-step GRPO on a tiny model) is gated behind OPENRESEARCH_RL_SCAFFOLD_SMOKE=1
 so CI can run it optionally without a full trl install.
 """
 from __future__ import annotations
@@ -125,21 +125,21 @@ def _make_train_py(tmp_path: Path, body: str) -> Path:
 
 
 def test_skip_on_env_sentinel(tmp_path, monkeypatch):
-    """REPROLAB_RL_SCAFFOLD=1 → rewriter must skip even with distributed markers."""
+    """OPENRESEARCH_RL_SCAFFOLD=1 → rewriter must skip even with distributed markers."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
-    monkeypatch.setenv("REPROLAB_RL_SCAFFOLD", "1")
+    monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "1")
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
     cmds = ["python rl_launch.py"]
     result = _resolve_distributed_launch(cmds, code, 4)
-    assert result == cmds, "Must return commands unchanged when REPROLAB_RL_SCAFFOLD=1"
+    assert result == cmds, "Must return commands unchanged when OPENRESEARCH_RL_SCAFFOLD=1"
 
 
 def test_skip_on_sentinel_file(tmp_path, monkeypatch):
     """code/.reprolab_rl_scaffold file → rewriter must skip."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
-    monkeypatch.delenv("REPROLAB_RL_SCAFFOLD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     (tmp_path / ".reprolab_rl_scaffold").touch()
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
     cmds = ["python rl_launch.py"]
@@ -151,7 +151,7 @@ def test_skip_on_command_marker(tmp_path, monkeypatch):
     """Command containing '# reprolab:rl-scaffold-owns-launch' → rewriter must skip."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
-    monkeypatch.delenv("REPROLAB_RL_SCAFFOLD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
     cmds = [
         "pip install -r requirements.txt",
@@ -165,7 +165,7 @@ def test_default_unchanged_no_sentinel(tmp_path, monkeypatch):
     """Without any sentinel, the rewriter must still wrap distributed scripts."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
-    monkeypatch.delenv("REPROLAB_RL_SCAFFOLD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     # Ensure sentinel file is NOT present.
     sentinel = tmp_path / ".reprolab_rl_scaffold"
     if sentinel.exists():
@@ -179,10 +179,10 @@ def test_default_unchanged_no_sentinel(tmp_path, monkeypatch):
 
 
 def test_skip_env_sentinel_false_does_not_skip(tmp_path, monkeypatch):
-    """REPROLAB_RL_SCAFFOLD=0 must NOT trigger the skip."""
+    """OPENRESEARCH_RL_SCAFFOLD=0 must NOT trigger the skip."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
-    monkeypatch.setenv("REPROLAB_RL_SCAFFOLD", "0")
+    monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "0")
     sentinel = tmp_path / ".reprolab_rl_scaffold"
     if sentinel.exists():
         sentinel.unlink()
@@ -277,10 +277,10 @@ def test_write_metrics_incremental(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_opt_in_off_guidance_unchanged(tmp_path, monkeypatch):
-    """With REPROLAB_RL_SCAFFOLD unset, _compute_constraint_guidance output
-    must be byte-identical to the output with REPROLAB_RL_SCAFFOLD=0
+    """With OPENRESEARCH_RL_SCAFFOLD unset, _compute_constraint_guidance output
+    must be byte-identical to the output with OPENRESEARCH_RL_SCAFFOLD=0
     (i.e., the block is NOT injected)."""
-    monkeypatch.delenv("REPROLAB_RL_SCAFFOLD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     from backend.agents.baseline_implementation import _compute_constraint_guidance
 
     baseline_off = _compute_constraint_guidance(
@@ -288,7 +288,7 @@ def test_opt_in_off_guidance_unchanged(tmp_path, monkeypatch):
         gpu_mode="auto",
     )
 
-    monkeypatch.setenv("REPROLAB_RL_SCAFFOLD", "0")
+    monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "0")
     # Reload is not needed — the env var is read inside the function each call.
     off_explicit = _compute_constraint_guidance(
         sandbox_mode="local",
@@ -296,7 +296,7 @@ def test_opt_in_off_guidance_unchanged(tmp_path, monkeypatch):
     )
 
     assert baseline_off == off_explicit, (
-        "Guidance with REPROLAB_RL_SCAFFOLD unset vs =0 must be identical"
+        "Guidance with OPENRESEARCH_RL_SCAFFOLD unset vs =0 must be identical"
     )
 
     # Verify RL scaffold block is NOT present in either.
@@ -305,8 +305,8 @@ def test_opt_in_off_guidance_unchanged(tmp_path, monkeypatch):
 
 
 def test_opt_in_on_injects_scaffold_block(tmp_path, monkeypatch):
-    """With REPROLAB_RL_SCAFFOLD=1, the _RL_SCAFFOLD_BLOCK must be present."""
-    monkeypatch.setenv("REPROLAB_RL_SCAFFOLD", "1")
+    """With OPENRESEARCH_RL_SCAFFOLD=1, the _RL_SCAFFOLD_BLOCK must be present."""
+    monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "1")
     from backend.agents.baseline_implementation import _compute_constraint_guidance
 
     guidance = _compute_constraint_guidance(
@@ -325,10 +325,10 @@ def test_opt_in_off_vs_on_differ(monkeypatch):
     must appear in the ON guidance but not the OFF guidance."""
     from backend.agents.baseline_implementation import _compute_constraint_guidance
 
-    monkeypatch.delenv("REPROLAB_RL_SCAFFOLD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     guidance_off = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 
-    monkeypatch.setenv("REPROLAB_RL_SCAFFOLD", "1")
+    monkeypatch.setenv("OPENRESEARCH_RL_SCAFFOLD", "1")
     guidance_on = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 
     assert guidance_off != guidance_on, "Guidance must differ between opt-in OFF and ON"
@@ -369,15 +369,15 @@ def test_rl_launch_template_has_sentinel():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(
-    not os.environ.get("REPROLAB_RL_SCAFFOLD_SMOKE"),
-    reason="REPROLAB_RL_SCAFFOLD_SMOKE not set — skipping full trl smoke test",
+    not os.environ.get("OPENRESEARCH_RL_SCAFFOLD_SMOKE"),
+    reason="OPENRESEARCH_RL_SCAFFOLD_SMOKE not set — skipping full trl smoke test",
 )
 def test_grpo_scaffold_one_step_smoke(tmp_path):
     """1-step GRPO on a tiny model: gen → loss → step → metrics_path written.
 
     Requires: trl==0.16.1, transformers, torch, HuggingFaceTB/SmolLM-135M (or
     a model available locally), and one free GPU.
-    Gate: REPROLAB_RL_SCAFFOLD_SMOKE=1 (never set in CI — devs opt in explicitly).
+    Gate: OPENRESEARCH_RL_SCAFFOLD_SMOKE=1 (never set in CI — devs opt in explicitly).
     """
     from datasets import Dataset
     from backend.agents.rlm.rl_scaffold import GRPOScaffold, opsd_custom_loss_term
@@ -385,7 +385,7 @@ def test_grpo_scaffold_one_step_smoke(tmp_path):
     def dummy_reward(completions, **kwargs):
         return [1.0] * len(completions)
 
-    model_name = os.environ.get("REPROLAB_SMOKE_MODEL", "HuggingFaceTB/SmolLM-135M")
+    model_name = os.environ.get("OPENRESEARCH_SMOKE_MODEL", "HuggingFaceTB/SmolLM-135M")
     metrics_path = tmp_path / "metrics.json"
 
     scaffold = GRPOScaffold(

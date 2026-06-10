@@ -184,7 +184,7 @@ def test_c3_completion_cli_path_increments_sink(monkeypatch):
     import backend.agents.rlm.claude_oauth_client as mod
     from backend.agents.rlm.claude_oauth_client import ClaudeOauthClient
 
-    monkeypatch.setenv("REPROLAB_RLM_ROOT_TRANSPORT", "cli")
+    monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_TRANSPORT", "cli")
 
     cli_usage = {
         "input_tokens": 800,
@@ -320,7 +320,7 @@ def test_c4_calibration_auto_runs_at_finalize(tmp_path, monkeypatch):
     original = getattr(report_mod, "recompute_calibration", None)
 
     # We need to ensure the env-var opt-out is NOT set.
-    monkeypatch.delenv("REPROLAB_UPDATE_CALIBRATION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_UPDATE_CALIBRATION", raising=False)
 
     # Patch via monkeypatch on the import inside the function
     import backend.services.pricing.calibration as cal_mod
@@ -354,7 +354,7 @@ def test_c4_calibration_skipped_for_failed_verdict(tmp_path, monkeypatch):
 
     report = RLMFinalReport(verdict="failed", reproduction_summary="failed run")
 
-    monkeypatch.delenv("REPROLAB_UPDATE_CALIBRATION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_UPDATE_CALIBRATION", raising=False)
 
     called_with: list[Path] = []
 
@@ -371,7 +371,7 @@ def test_c4_calibration_skipped_for_failed_verdict(tmp_path, monkeypatch):
 
 
 def test_c4_calibration_skipped_when_opt_out(tmp_path, monkeypatch):
-    """Setting REPROLAB_UPDATE_CALIBRATION=false suppresses the auto-call."""
+    """Setting OPENRESEARCH_UPDATE_CALIBRATION=false suppresses the auto-call."""
     from backend.agents.rlm.report import write_final_report_rlm, RLMFinalReport
 
     project_dir = tmp_path / "runs" / "test_run"
@@ -380,7 +380,7 @@ def test_c4_calibration_skipped_when_opt_out(tmp_path, monkeypatch):
 
     report = RLMFinalReport(verdict="partial", reproduction_summary="opt-out test")
 
-    monkeypatch.setenv("REPROLAB_UPDATE_CALIBRATION", "false")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
 
     called_with: list[Path] = []
 

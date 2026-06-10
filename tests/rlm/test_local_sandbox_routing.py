@@ -188,7 +188,7 @@ def test_build_environment_local_outcome_is_ok(
 
 # ---------------------------------------------------------------------------
 # A3: build_environment runpod no-op (2026-05-30)
-# The pod boots REPROLAB_RUNPOD_IMAGE over SSH; the local build is never used
+# The pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH; the local build is never used
 # and HARD-FAILED when the base image wasn't pullable from docker.io.
 # ---------------------------------------------------------------------------
 

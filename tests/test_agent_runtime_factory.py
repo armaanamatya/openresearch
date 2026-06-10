@@ -18,7 +18,7 @@ from backend.agents.runtime import (
 
 
 def test_selected_provider_accepts_aliases(monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_LLM_PROVIDER", raising=False)
 
     assert selected_provider("anthropic") == "anthropic"
     assert selected_provider("claude") == "anthropic"
@@ -27,7 +27,7 @@ def test_selected_provider_accepts_aliases(monkeypatch) -> None:
 
 
 def test_selected_provider_reads_env(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENRESEARCH_LLM_PROVIDER", "openai")
 
     assert selected_provider() == "openai"
 
@@ -45,6 +45,14 @@ def test_validate_provider_credentials_checks_matching_env(monkeypatch) -> None:
     # inherits subscription auth); pin it absent so this test deterministically
     # exercises the missing-credentials path regardless of the host environment.
     monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    # ...and the macOS Keychain OAuth probe also satisfies the Anthropic check
+    # on a dev Mac with `claude login` — pin the probe to a miss too.
+    import types as _types
+
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.subprocess.run",
+        lambda *_a, **_k: _types.SimpleNamespace(returncode=44, stdout="", stderr=""),
+    )
     monkeypatch.setattr(
         "backend.agents.runtime.factory.get_settings",
         lambda **_: SimpleNamespace(
@@ -286,6 +294,14 @@ def test_has_provider_credentials_anthropic_returns_false_when_unset(monkeypatch
         lambda **_: SimpleNamespace(anthropic_api_key="", openai_api_key="", openai_admin_key=""),
     )
     monkeypatch.setattr("backend.agents.runtime.factory.shutil.which", lambda _: None)
+    # Pin the macOS Keychain OAuth probe to a miss (dev Macs with `claude
+    # login` would otherwise return True here).
+    import types as _types
+
+    monkeypatch.setattr(
+        "backend.agents.runtime.factory.subprocess.run",
+        lambda *_a, **_k: _types.SimpleNamespace(returncode=44, stdout="", stderr=""),
+    )
     assert has_provider_credentials("anthropic") is False
 
 

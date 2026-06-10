@@ -103,17 +103,17 @@ def main() -> int:
     # The cell runner (gpu_cell_runner.py) now owns GPU placement — one process
     # per cell pinned via CUDA_VISIBLE_DEVICES — so run_experiment skips the legacy
     # torchrun re-launch entirely. No torchrun-wrap reconciliation flag is needed.
-    env["REPROLAB_MIN_TRAIN_WALL_S"] = "120"
+    env["OPENRESEARCH_MIN_TRAIN_WALL_S"] = "120"
     # GPU count is owned by the lease + cell runner (one GPU per cell,
     # min(free_gpus, cells) in parallel); no force-single/multi flag needed.
-    env["REPROLAB_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
+    env["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (REPO / guidance_file).read_text(encoding="utf-8")
 
     # Distinct-run identity (so each run is its own leaderboard row + readable
     # title). The leaderboard keys rows by run-dir NAME, but the project_id is
     # locked to the paper by ingest (project_id_for(source); a mismatched
     # --project-id raises UnknownProject). So before launching we preserve any
     # PRIOR completed run as its own timestamped dir (the new run then starts
-    # fresh under the canonical id), and stamp REPROLAB_RUN_TITLE so the report
+    # fresh under the canonical id), and stamp OPENRESEARCH_RUN_TITLE so the report
     # carries a human label. A run still actively writing is never clobbered.
     try:
         from backend.cli import _source_from_cli
@@ -144,16 +144,16 @@ def main() -> int:
     run_title = os.environ.get("SDAR_RUN_TITLE", "").strip() or (
         f"SDAR full · {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')}"
     )
-    env["REPROLAB_RUN_TITLE"] = run_title
+    env["OPENRESEARCH_RUN_TITLE"] = run_title
     _log(f"run title: {run_title}")
 
     # Robust paper-text fidelity: point ingest at a pre-extracted full-text blob
     # so the RLM root gets the WHOLE paper even if the live arXiv fetch/parse
     # transiently degrades to lossy chunk-reassembly. parser/service.py honors
-    # REPROLAB_PAPER_TEXT_PATH (>=1KB) with precedence over a degraded cascade.
+    # OPENRESEARCH_PAPER_TEXT_PATH (>=1KB) with precedence over a degraded cascade.
     _paper_text = REPO / "runs" / ".cache" / "paper_text" / "2605.15155.txt"
     if _paper_text.is_file() and _paper_text.stat().st_size >= 1024:
-        env["REPROLAB_PAPER_TEXT_PATH"] = str(_paper_text)
+        env["OPENRESEARCH_PAPER_TEXT_PATH"] = str(_paper_text)
         _log(f"paper-text override → {_paper_text.name} ({_paper_text.stat().st_size} bytes)")
     else:
         _log(f"warn: no paper-text override at {_paper_text}; relying on live parse")
@@ -166,7 +166,7 @@ def main() -> int:
         return "" if str(raw).strip().lower() in ("none", "off", "0", "") else f"{flag} {raw} "
 
     if str(max_iters).strip().lower() in ("none", "off", "0", ""):
-        env.pop("REPROLAB_MAX_RLM_ITERATIONS", None)  # belt-and-suspenders: no inherited cap
+        env.pop("OPENRESEARCH_MAX_RLM_ITERATIONS", None)  # belt-and-suspenders: no inherited cap
 
     extra = (
         f"--paper-hint 2605.15155 --scope-spec {REPO / scope_spec} "

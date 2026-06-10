@@ -231,7 +231,7 @@ def rollout_episode(
     # prompt; on later turns it is the prior step's observation (possibly "").
     next_context_text: str | None = None
     # Phase 4A (Codex blocker): accumulate per-step INTERMEDIATE shaped rewards
-    # (0.0 unless REPROLAB_ALFWORLD_SHAPING is on) so reward shaping reaches the GRPO
+    # (0.0 unless OPENRESEARCH_ALFWORLD_SHAPING is on) so reward shaping reaches the GRPO
     # training return assembled below. Terminal reward/success stay separate (info).
     shaped_sum: float = 0.0
 

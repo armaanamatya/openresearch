@@ -17,7 +17,7 @@ def _apply_legacy_env_aliases() -> None:
     For every still-set variable in either spelling, fill in the missing
     counterpart (never overwriting an explicitly-set value) so deployments and
     shells using either prefix keep working. The shipped code currently reads
-    ``REPROLAB_*``; docs may use ``OPENRESEARCH_*``. Runs once at import,
+    either prefix; canonical is ``OPENRESEARCH_*``. Runs once at import,
     before any ``Settings()`` is constructed. Mirrors *process* env vars only.
     """
     for key, val in list(os.environ.items()):
@@ -32,7 +32,7 @@ _apply_legacy_env_aliases()
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="REPROLAB_",
+        env_prefix="OPENRESEARCH_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -100,6 +100,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "ANTHROPIC_API_KEY",
+            "OPENRESEARCH_ANTHROPIC_API_KEY",
             "REPROLAB_ANTHROPIC_API_KEY",
         ),
     )
@@ -107,6 +108,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "OPENAI_API_KEY",
+            "OPENRESEARCH_OPENAI_API_KEY",
             "REPROLAB_OPENAI_API_KEY",
         ),
     )
@@ -114,6 +116,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "OPENAI_ADMIN_KEY",
+            "OPENRESEARCH_OPENAI_ADMIN_KEY",
             "REPROLAB_OPENAI_ADMIN_KEY",
         ),
     )
@@ -187,6 +190,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "RUNPOD_API_KEY",
+            "OPENRESEARCH_RUNPOD_API_KEY",
             "REPROLAB_RUNPOD_API_KEY",
         ),
     )
@@ -431,6 +435,7 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "APIFY_API_TOKEN",
+            "OPENRESEARCH_APIFY_API_TOKEN",
             "REPROLAB_APIFY_API_TOKEN",
         ),
     )

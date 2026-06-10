@@ -20,13 +20,13 @@ def _leaf(lid: str, req: str, cat: str = "") -> dict:
 
 
 def test_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("REPROLAB_EXCLUDE_THEORY_LEAVES", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", raising=False)
     leaves = [_leaf("t1", "Prove the O(√T) regret bound (Theorem 4.1).")]
     assert _detect_theory_only_leaves(leaves) == set()
 
 
 def test_excludes_pure_theory_when_enabled(monkeypatch):
-    monkeypatch.setenv("REPROLAB_EXCLUDE_THEORY_LEAVES", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "1")
     leaves = [
         _leaf("t1", "Prove the O(√T) regret bound stated in Theorem 4.1."),
         _leaf("t2", "Reproduce the lemma establishing the convergence guarantee."),
@@ -36,14 +36,14 @@ def test_excludes_pure_theory_when_enabled(monkeypatch):
 
 
 def test_keeps_empirically_gradeable_theory_leaf(monkeypatch):
-    monkeypatch.setenv("REPROLAB_EXCLUDE_THEORY_LEAVES", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "1")
     # mentions "theorem" but ALSO asks for a loss-curve plot → a reproduction CAN satisfy it
     leaves = [_leaf("m1", "Verify the convergence theorem empirically via the loss curve plot.")]
     assert _detect_theory_only_leaves(leaves) == set()
 
 
 def test_score_excludes_theory_from_denominator(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_EXCLUDE_THEORY_LEAVES", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "1")
     run = tmp_path / "run"
     (run / "code").mkdir(parents=True)
     (run / "code" / "train.py").write_text("print('x')\n", encoding="utf-8")

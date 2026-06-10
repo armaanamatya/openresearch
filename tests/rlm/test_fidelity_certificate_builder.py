@@ -35,7 +35,7 @@ from backend.agents.rlm.reproducibility_verdict import (
 )
 from backend.agents.rlm.two_axis_report import load_certificate
 
-_FLAG = "REPROLAB_TWO_AXIS_VERDICT"
+_FLAG = "OPENRESEARCH_TWO_AXIS_VERDICT"
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -224,7 +224,7 @@ def test_repairable_outcome_records_repair_attempt_via_tool_wrapper(make_context
     repair_policy_holder.append(policy)
 
     # Second tool call — now the holder is populated, so record_repair_attempt fires.
-    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
         wrapped["run_experiment"]["tool"]()
 
     assert policy._repair_iter_count == 1
@@ -266,7 +266,7 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
     repl = LocalREPL()
     repl.locals["report"] = "{'score': 0.0}"
 
-    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
         # Simulate run_experiment call (records the repair attempt).
         wrapped["run_experiment"]["tool"]()
         # In production the real run_experiment primitive also feeds the

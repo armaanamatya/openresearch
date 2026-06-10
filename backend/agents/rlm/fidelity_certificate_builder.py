@@ -28,7 +28,7 @@ in ``reproducibility_verdict.py`` and consumed by ``two_axis_report.load_certifi
                                     code/outputs/**/metrics.json exists.
 
 Design principles (mirrors the locked spec):
-  * Flag-gated: does nothing (and writes no file) unless REPROLAB_TWO_AXIS_VERDICT
+  * Flag-gated: does nothing (and writes no file) unless OPENRESEARCH_TWO_AXIS_VERDICT
     is truthy.  The gate keeps existing behaviour byte-for-byte unchanged when off.
   * Fail-soft: any internal exception leaves the existing certificate intact (or
     writes a not-green one) rather than blocking the run.  A not-green cert means
@@ -100,10 +100,10 @@ _TEST_SCRIPT = "test_reproduction.py"
 
 # How long to wait for a single test run (seconds).  Generous but bounded —
 # the invariant tests run on CPU with tiny data.
-_DEFAULT_TEST_TIMEOUT_S = int(os.environ.get("REPROLAB_FIDELITY_TEST_TIMEOUT_S", "120"))
+_DEFAULT_TEST_TIMEOUT_S = int(os.environ.get("OPENRESEARCH_FIDELITY_TEST_TIMEOUT_S", "120"))
 
 # How long to wait for a single MUTATED test run.  Should fail fast.
-_MUTATION_TIMEOUT_S = int(os.environ.get("REPROLAB_FIDELITY_MUTATION_TIMEOUT_S", "60"))
+_MUTATION_TIMEOUT_S = int(os.environ.get("OPENRESEARCH_FIDELITY_MUTATION_TIMEOUT_S", "60"))
 
 _VALID_PROFILES = frozenset({"static", "forward_pass", "multi_step", "trace", "end_to_end"})
 
@@ -113,7 +113,7 @@ _VALID_PROFILES = frozenset({"static", "forward_pass", "multi_step", "trace", "e
 # ---------------------------------------------------------------------------
 
 def _is_enabled() -> bool:
-    return os.environ.get("REPROLAB_TWO_AXIS_VERDICT", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_TWO_AXIS_VERDICT", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -215,7 +215,7 @@ def _run_tests(code_dir: Path, *, timeout_s: int, extra_env: dict[str, str] | No
     (rubric_guard, sdar_env_base, etc.) resolve correctly — mirroring the flat
     sandbox where train.py runs.
 
-    We set REPROLAB_SMOKE_STEPS=1 so any forward-pass calls inside the test stay
+    We set OPENRESEARCH_SMOKE_STEPS=1 so any forward-pass calls inside the test stay
     cheap (1 step), and CUDA_LAUNCH_BLOCKING=1 so device-side errors appear at
     the correct line.
 
@@ -224,7 +224,7 @@ def _run_tests(code_dir: Path, *, timeout_s: int, extra_env: dict[str, str] | No
     python = _find_python()
     env = dict(os.environ)
     env.update({
-        "REPROLAB_SMOKE_STEPS": "1",
+        "OPENRESEARCH_SMOKE_STEPS": "1",
         "CUDA_LAUNCH_BLOCKING": "1",
     })
     if extra_env:
@@ -508,7 +508,7 @@ def build_certificate(
     callers can inspect it without re-reading from disk.  The dict keys EXACTLY
     match what ``two_axis_report.load_certificate`` expects.
 
-    When ``REPROLAB_TWO_AXIS_VERDICT`` is off, returns a not-green stub dict
+    When ``OPENRESEARCH_TWO_AXIS_VERDICT`` is off, returns a not-green stub dict
     (``invariant_tests_ran=False``) without writing any file — byte-for-byte
     preserves existing behaviour.
 

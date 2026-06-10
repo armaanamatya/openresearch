@@ -6,7 +6,7 @@ where Docker is unavailable, but it is not an isolation boundary.
 
 Execution-reliability redesign (2026-06-08, local-scoped): ``exec`` STREAMS both
 pipes to a live log + heartbeat sidecar (so a long run is observable while it
-runs) and enforces a **stall** window (no liveness for ``REPROLAB_EXPERIMENT_STALL_S``
+runs) and enforces a **stall** window (no liveness for ``OPENRESEARCH_EXPERIMENT_STALL_S``
 → ``exec_stalled``) independently from the **hard** budget cap (the ``timeout``
 param → ``exec_timeout``). Liveness = ANY of {new stdout/stderr line, checkpoint
 mtime bump, GPU-util on the pinned physical ids, process-tree CPU-util} — a real
@@ -58,7 +58,7 @@ def _venv_cuda_lib_dirs(env: dict[str, str]) -> list[str]:
     found inside a venv site-packages (the per-run venv or a ``.pth``-referenced base
     venv) — never a bare system CUDA path — so it cannot break an already-working torch.
     """
-    venv = (env.get("REPROLAB_EXPERIMENT_VENV") or env.get("VIRTUAL_ENV") or "").strip()
+    venv = (env.get("OPENRESEARCH_EXPERIMENT_VENV") or env.get("VIRTUAL_ENV") or "").strip()
     if not venv:
         return []
     try:
@@ -114,7 +114,7 @@ _PROGRESS_GLOBS = ("*.pt", "*.ckpt", "*.safetensors", "metrics.json")
 
 def _stall_window_s(env: dict[str, str]) -> float:
     """Resolve the stall window from the merged env (``0`` disables). Fail-soft."""
-    raw = (env.get("REPROLAB_EXPERIMENT_STALL_S", "") or "").strip()
+    raw = (env.get("OPENRESEARCH_EXPERIMENT_STALL_S", "") or "").strip()
     if not raw:
         return _DEFAULT_STALL_S
     try:
@@ -125,7 +125,7 @@ def _stall_window_s(env: dict[str, str]) -> float:
 
 
 def _gpu_liveness_enabled(env: dict[str, str]) -> bool:
-    return (env.get("REPROLAB_EXPERIMENT_GPU_LIVENESS", "1") or "1").strip().lower() not in (
+    return (env.get("OPENRESEARCH_EXPERIMENT_GPU_LIVENESS", "1") or "1").strip().lower() not in (
         "0", "false", "no", "off",
     )
 

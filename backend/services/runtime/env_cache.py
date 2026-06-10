@@ -8,7 +8,7 @@ Search-QA-only run skips: **ALFWorld** (a multi-GB one-time ``alfworld-download`
 manager makes all three:
 
 * **idempotent + host-shared** — ALFWorld data and the dense Search-QA index are
-  built/downloaded ONCE into a shared cache dir (``REPROLAB_ENV_CACHE_DIR``,
+  built/downloaded ONCE into a shared cache dir (``OPENRESEARCH_ENV_CACHE_DIR``,
   default ``<runs_root>/.cache/envs``) and reused by every later run/cell;
 * **ref-counted** — ONE WebShop server backs N concurrent leases and is torn down
   only when the last lease releases;
@@ -26,8 +26,8 @@ manager makes all three:
 
 DENSE RETRIEVER (2026-06-01): the dense E5/wiki-18 path is **opt-in + configurable**
 so a cold or offline host degrades to BM25 rather than blocking the grid on a
-multi-GB build. ``REPROLAB_SEARCH_QA_DENSE`` must be truthy to attempt anything;
-``REPROLAB_SEARCH_QA_INDEX_REPO`` names a HF repo holding a prebuilt FAISS index +
+multi-GB build. ``OPENRESEARCH_SEARCH_QA_DENSE`` must be truthy to attempt anything;
+``OPENRESEARCH_SEARCH_QA_INDEX_REPO`` names a HF repo holding a prebuilt FAISS index +
 passage store (snapshot-downloaded, cached, reused). Absent either, Search-QA
 provisions ``SEARCH_QA_RETRIEVER=bm25`` and the env's BM25/overlap retriever runs.
 
@@ -70,7 +70,7 @@ __all__ = [
     "FULL_SCOPE_ENV_GUIDANCE",
 ]
 
-# Guidance appended to REPROLAB_BASELINE_EXTRA_GUIDANCE (by backend/cli.py) when the
+# Guidance appended to OPENRESEARCH_BASELINE_EXTRA_GUIDANCE (by backend/cli.py) when the
 # effective scope keeps the SDAR paper environments active. Tells the agent to use
 # the SHIPPED concrete agentic env modules (copied into code/ as harness helpers)
 # rather than re-implementing ALFWorld / WebShop / retrieval by hand, to consume the
@@ -120,11 +120,11 @@ _SEARCH_QA = "Search-QA"
 
 
 def default_cache_dir() -> Path:
-    """Resolve the shared env-cache dir from ``REPROLAB_ENV_CACHE_DIR`` or default."""
-    override = os.environ.get("REPROLAB_ENV_CACHE_DIR", "").strip()
+    """Resolve the shared env-cache dir from ``OPENRESEARCH_ENV_CACHE_DIR`` or default."""
+    override = os.environ.get("OPENRESEARCH_ENV_CACHE_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    runs_root = os.environ.get("REPROLAB_RUNS_ROOT", "").strip() or "runs"
+    runs_root = os.environ.get("OPENRESEARCH_RUNS_ROOT", "").strip() or "runs"
     return (Path(runs_root) / ".cache" / "envs").resolve()
 
 
@@ -241,9 +241,9 @@ def _default_probe(url: str, *, timeout_s: float = 2.0) -> bool:
 def _search_qa_encoder() -> str:
     """The e5 encoder the dense index was built with — the query encoder MUST match
     it (same dimension + semantics) or FAISS search errors. The prebuilt wiki-18
-    indexes are e5-base-v2; override with ``REPROLAB_SEARCH_QA_ENCODER`` for an index
+    indexes are e5-base-v2; override with ``OPENRESEARCH_SEARCH_QA_ENCODER`` for an index
     built with a different e5 variant."""
-    return os.environ.get("REPROLAB_SEARCH_QA_ENCODER", "").strip() or "intfloat/e5-base-v2"
+    return os.environ.get("OPENRESEARCH_SEARCH_QA_ENCODER", "").strip() or "intfloat/e5-base-v2"
 
 
 def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
@@ -252,10 +252,10 @@ def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
     Returns the index dir on success, ``None`` to fall back to BM25 — NEVER raises.
     Opt-in + configurable so a cold/offline host degrades gracefully:
 
-      * ``REPROLAB_SEARCH_QA_DENSE`` must be truthy to attempt anything;
-      * ``REPROLAB_SEARCH_QA_INDEX_REPO`` — a HF repo holding a prebuilt FAISS index
+      * ``OPENRESEARCH_SEARCH_QA_DENSE`` must be truthy to attempt anything;
+      * ``OPENRESEARCH_SEARCH_QA_INDEX_REPO`` — a HF repo holding a prebuilt FAISS index
         + passage store; snapshot-downloaded into ``cache_dir`` when set (fastest,
-        no local embedding). ``REPROLAB_SEARCH_QA_INDEX_REPO_TYPE`` selects the HF
+        no local embedding). ``OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE`` selects the HF
         repo type (default ``dataset``).
 
     The downloaded artifact is cached under ``cache_dir`` and reused by
@@ -263,31 +263,31 @@ def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
     corpus + embed with e5 on GPU) is intentionally left to a follow-up — the repo
     download keeps the common case fast and the BM25 fallback keeps every host live.
     """
-    flag = os.environ.get("REPROLAB_SEARCH_QA_DENSE", "").strip().lower()
+    flag = os.environ.get("OPENRESEARCH_SEARCH_QA_DENSE", "").strip().lower()
     if flag not in ("1", "true", "yes", "on"):
         return None
     # A pre-staged local index (operator placed the FAISS index + corpus on a roomy
     # disk already, e.g. via a one-time download) — use it directly, no network call.
-    direct = os.environ.get("REPROLAB_SEARCH_QA_INDEX_DIR", "").strip()
+    direct = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_DIR", "").strip()
     if direct:
         ddir = Path(direct)
         if ddir.is_dir() and (any(ddir.rglob("*.index")) or any(ddir.rglob("*.faiss"))):
             return ddir
         logger.warning(
-            "env_cache: REPROLAB_SEARCH_QA_INDEX_DIR=%s has no .index/.faiss file; "
+            "env_cache: OPENRESEARCH_SEARCH_QA_INDEX_DIR=%s has no .index/.faiss file; "
             "falling through to repo download / BM25.", direct,
         )
-    repo = os.environ.get("REPROLAB_SEARCH_QA_INDEX_REPO", "").strip()
+    repo = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO", "").strip()
     if not repo:
         logger.info(
-            "env_cache: REPROLAB_SEARCH_QA_DENSE set but REPROLAB_SEARCH_QA_INDEX_REPO "
+            "env_cache: OPENRESEARCH_SEARCH_QA_DENSE set but OPENRESEARCH_SEARCH_QA_INDEX_REPO "
             "is empty — using BM25 (set the repo to enable dense E5 retrieval)."
         )
         return None
     try:
         from huggingface_hub import snapshot_download  # lazy: only the real path needs it
 
-        repo_type = os.environ.get("REPROLAB_SEARCH_QA_INDEX_REPO_TYPE", "dataset").strip() or "dataset"
+        repo_type = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE", "dataset").strip() or "dataset"
         dest = cache_dir / "search_qa_index"
         dest.mkdir(parents=True, exist_ok=True)
         snapshot_download(
@@ -412,7 +412,7 @@ class EnvCacheManager:
         ``alfworld-download``), idempotent across runs/cells. The per-cell **env
         object** reuse (build ``AlfredTWEnv`` once and ``reset()`` it in place
         across episodes, the ~82× reload tax) lives in
-        ``alfworld_env.ALFWorldEnv`` behind ``REPROLAB_ALFWORLD_ENV_REUSE`` — a
+        ``alfworld_env.ALFWorldEnv`` behind ``OPENRESEARCH_ALFWORLD_ENV_REUSE`` — a
         rollout-loop concern, not a data-cache one. The data cache that A1's env
         reuse builds on top of is exactly this method's output.
         """

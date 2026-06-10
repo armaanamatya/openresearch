@@ -3,7 +3,7 @@
 This is the integration seam between the pure decision engine
 (``reproducibility_verdict.py``) and the on-disk ``final_report.json``.  It is:
 
-  * **flag-gated** — off unless ``REPROLAB_TWO_AXIS_VERDICT`` is truthy, so the
+  * **flag-gated** — off unless ``OPENRESEARCH_TWO_AXIS_VERDICT`` is truthy, so the
     existing single-score behaviour is byte-for-byte unchanged by default;
   * **additive** — it adds ``reproducibility`` + top-level mirror fields and sets
     ``schema_version=2``, leaving ``overall_score`` / ``rubric`` intact for the
@@ -53,12 +53,12 @@ def _truthy(value: str | None) -> bool:
 
 def is_enabled() -> bool:
     """Two-axis verdict is opt-in (default OFF). Escape hatch: unset the flag."""
-    return _truthy(os.environ.get("REPROLAB_TWO_AXIS_VERDICT"))
+    return _truthy(os.environ.get("OPENRESEARCH_TWO_AXIS_VERDICT"))
 
 
 def _min_seeds_for_contradiction() -> int:
     """User-configurable seed floor for a contradiction (Q2); minimum 2."""
-    raw = os.environ.get("REPROLAB_MIN_SEEDS_FOR_CONTRADICTION")
+    raw = os.environ.get("OPENRESEARCH_MIN_SEEDS_FOR_CONTRADICTION")
     try:
         return max(2, int(raw)) if raw else _DEFAULT_MIN_SEEDS
     except (TypeError, ValueError):

@@ -16,8 +16,8 @@ GPU placement at the harness level:
   As each subprocess exits, the freed GPU immediately accepts the next cell
   from the queue.
 * On CUDA-OOM the cell is **retried** on a free GPU with reduced footprint
-  (``REPROLAB_CELL_BATCH_SCALE=0.5`` then ``0.25``, plus
-  ``REPROLAB_CELL_GRAD_CHECKPOINT=1``) before being marked ``oom_failed``.
+  (``OPENRESEARCH_CELL_BATCH_SCALE=0.5`` then ``0.25``, plus
+  ``OPENRESEARCH_CELL_GRAD_CHECKPOINT=1``) before being marked ``oom_failed``.
 
 Copyable helper — mirror of the ``rubric_guard.py`` pattern.
 The ``implement_baseline`` prompt instructs the agent to copy this file into
@@ -204,16 +204,16 @@ def _run_cell_subprocess(
     ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True``
         Reduces allocator fragmentation on long training loops.
 
-    ``REPROLAB_CELL_BATCH_SCALE=<batch_scale>``
+    ``OPENRESEARCH_CELL_BATCH_SCALE=<batch_scale>``
         Set on OOM retries so the cell script can reduce its batch size.
 
-    ``REPROLAB_CELL_GRAD_CHECKPOINT=1``
+    ``OPENRESEARCH_CELL_GRAD_CHECKPOINT=1``
         Set on OOM retries to enable gradient checkpointing in the cell script.
 
-    ``REPROLAB_CELL_OUTPUT_DIR=<output_dir>``
+    ``OPENRESEARCH_CELL_OUTPUT_DIR=<output_dir>``
         Canonical output directory for ``metrics.json`` and artifacts.
 
-    ``REPROLAB_CELL_PARAMS=<json>``
+    ``OPENRESEARCH_CELL_PARAMS=<json>``
         Full cell dict serialised as JSON, so the cell script can read its
         own parameters without parsing argv.
     """
@@ -228,16 +228,16 @@ def _run_cell_subprocess(
         child_env["PATH"] = _interp_bin + os.pathsep + child_env.get("PATH", "")
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
     child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    child_env["REPROLAB_CELL_OUTPUT_DIR"] = str(output_dir)
-    child_env["REPROLAB_CELL_PARAMS"] = json.dumps(cell)
+    child_env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
+    child_env["OPENRESEARCH_CELL_PARAMS"] = json.dumps(cell)
 
     if batch_scale is not None:
-        child_env["REPROLAB_CELL_BATCH_SCALE"] = str(batch_scale)
-        child_env["REPROLAB_CELL_GRAD_CHECKPOINT"] = "1" if grad_checkpoint else "0"
+        child_env["OPENRESEARCH_CELL_BATCH_SCALE"] = str(batch_scale)
+        child_env["OPENRESEARCH_CELL_GRAD_CHECKPOINT"] = "1" if grad_checkpoint else "0"
     else:
         # Clear any inherited values from a parent run.
-        child_env.pop("REPROLAB_CELL_BATCH_SCALE", None)
-        child_env.pop("REPROLAB_CELL_GRAD_CHECKPOINT", None)
+        child_env.pop("OPENRESEARCH_CELL_BATCH_SCALE", None)
+        child_env.pop("OPENRESEARCH_CELL_GRAD_CHECKPOINT", None)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -357,7 +357,7 @@ def run_matrix(
         cell_script:         Path to the single-cell trainer script.  The script
                              trains exactly ONE cell on ``cuda:0`` (its only
                              visible GPU), reads parameters from env vars
-                             ``REPROLAB_CELL_PARAMS`` / ``REPROLAB_CELL_OUTPUT_DIR``
+                             ``OPENRESEARCH_CELL_PARAMS`` / ``OPENRESEARCH_CELL_OUTPUT_DIR``
                              and argv ``--cell-id`` / ``--output-dir``, and writes
                              ``metrics.json`` to its output directory.
         output_root:         Root directory; each cell writes to
@@ -400,7 +400,7 @@ def run_matrix(
 
     Resume (cell-level checkpoint, Track B):
 
-    When the env var ``REPROLAB_RESUME_CELLS`` is truthy, ``run_matrix`` reads
+    When the env var ``OPENRESEARCH_RESUME_CELLS`` is truthy, ``run_matrix`` reads
     each cell's ``output_dir/cell_manifest.json`` BEFORE launching it.  If the
     manifest's ``status == "ok"`` AND its stored ``fingerprint`` equals
     ``fingerprints[cell_id]`` AND the cell is not in ``force_cells``, the cell is
@@ -419,14 +419,14 @@ def run_matrix(
       physically cannot access a second card.
     * Concurrency never exceeds ``min(max_parallel, len(gpus))``.
     * GPU ids in ``gpus`` are the only ids ever assigned.
-    * OOM retries pass ``REPROLAB_CELL_BATCH_SCALE`` and
-      ``REPROLAB_CELL_GRAD_CHECKPOINT=1`` as env vars; the cell script is
+    * OOM retries pass ``OPENRESEARCH_CELL_BATCH_SCALE`` and
+      ``OPENRESEARCH_CELL_GRAD_CHECKPOINT=1`` as env vars; the cell script is
       responsible for honouring them.
     """
     if not cells:
         return {}
 
-    # Resume (Track B): armed by REPROLAB_RESUME_CELLS. When armed, a cell whose
+    # Resume (Track B): armed by OPENRESEARCH_RESUME_CELLS. When armed, a cell whose
     # prior manifest is status=ok + fingerprint-matched + not force-listed is
     # skipped without launching a subprocess. Unset → every cell always runs.
     _resume_armed = is_resume_armed()

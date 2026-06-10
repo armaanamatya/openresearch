@@ -53,7 +53,7 @@ _DEFAULT_NAMESPACE = "reprolab"
 _DEFAULT_PENDING_TIMEOUT_S = 900
 _DEFAULT_TTL_AFTER_FINISHED_S = 3600
 _DEFAULT_BACKOFF_LIMIT = 0
-# No floating :latest default — callers must supply REPROLAB_AZURE_BASE_IMAGE.
+# No floating :latest default — callers must supply OPENRESEARCH_AZURE_BASE_IMAGE.
 _DEFAULT_BASE_IMAGE = ""
 
 
@@ -235,7 +235,7 @@ class AksJobBackend(RuntimeBackend):
         if not img.strip():
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
-                "AKS backend: REPROLAB_AZURE_BASE_IMAGE (or azure_base_image setting) is not set. "
+                "AKS backend: OPENRESEARCH_AZURE_BASE_IMAGE (or azure_base_image setting) is not set. "
                 "Set it to a pinned ACR tag, e.g. myacr.azurecr.io/reprolab/aks-cell-base:20260603.",
             )
         return img
@@ -357,7 +357,7 @@ class AksJobBackend(RuntimeBackend):
         """Submit a short K8s Job running *command*, wait, capture logs, return ExecResult.
 
         The Job runs the base-image wrapper in exec mode (passes the command via
-        the ``REPROLAB_EXEC_COMMAND`` environment variable).  On infra failures
+        the ``OPENRESEARCH_EXEC_COMMAND`` environment variable).  On infra failures
         raises ``SandboxRuntimeError(backend_unavailable, ...)``.
         """
         started_at = datetime.now(timezone.utc)
@@ -366,8 +366,8 @@ class AksJobBackend(RuntimeBackend):
         job_name = _job_name(sandbox.config.run_id, suffix="exec")
 
         env_vars = dict(sandbox.config.environment)
-        env_vars["REPROLAB_EXEC_COMMAND"] = command
-        env_vars["REPROLAB_EXEC_MODE"] = "1"
+        env_vars["OPENRESEARCH_EXEC_COMMAND"] = command
+        env_vars["OPENRESEARCH_EXEC_MODE"] = "1"
 
         job_manifest = _build_exec_job_manifest(
             job_name=job_name,
@@ -706,7 +706,7 @@ def _build_exec_job_manifest(
     and requests ``nvidia.com/gpu: <gpu_count>`` resources.  When *gpu_sku* is None
     the spec falls back to the cluster default (1 GPU, no explicit nodeSelector).
     """
-    # REPROLAB_EXEC_COMMAND is already injected by the caller via ``environment``;
+    # OPENRESEARCH_EXEC_COMMAND is already injected by the caller via ``environment``;
     # do NOT append it again here — that would produce a duplicate env var whose
     # behaviour is unspecified by Kubernetes.
     env_list = [{"name": k, "value": str(v)} for k, v in sorted(environment.items())]

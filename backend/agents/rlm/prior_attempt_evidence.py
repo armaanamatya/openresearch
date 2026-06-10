@@ -13,7 +13,7 @@ configs that measurably worked and change only what measurably failed. It is
 evidence, not advice: values come straight from the per-cell ``metrics.json``
 files the cells themselves wrote.
 
-Flag-gated (``REPROLAB_PRIOR_ATTEMPT_EVIDENCE``, default off) and fail-soft:
+Flag-gated (``OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE``, default off) and fail-soft:
 any error yields an empty block. Pure stdlib; no LLM calls.
 """
 
@@ -28,7 +28,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_FLAG = "REPROLAB_PRIOR_ATTEMPT_EVIDENCE"
+ENV_FLAG = "OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE"
 
 # Strip seed suffixes + collapse separators so cell ids join across attempts
 # ("a_base_cifar10_noaug" == "a_base__cifar10_noaug__s42").

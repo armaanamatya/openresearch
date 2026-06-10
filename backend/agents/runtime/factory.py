@@ -184,7 +184,7 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
     """Resolve the requested provider from argument, env, or settings."""
     raw = (
         provider
-        or os.getenv("REPROLAB_LLM_PROVIDER")
+        or os.getenv("OPENRESEARCH_LLM_PROVIDER")
         or get_settings().llm_provider
         or "anthropic"
     )
@@ -232,7 +232,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             raise ProviderConfigurationError(
                 provider=resolved,
                 reason=(
-                    "REPROLAB_LLM_AUTH_STRATEGY=api_only requires a funded "
+                    "OPENRESEARCH_LLM_AUTH_STRATEGY=api_only requires a funded "
                     "ANTHROPIC_API_KEY but none was found.  Either set the API "
                     "key, or switch the strategy to 'auto' / 'oauth_only'."
                 ),
@@ -241,7 +241,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             raise ProviderConfigurationError(
                 provider=resolved,
                 reason=(
-                    "REPROLAB_LLM_AUTH_STRATEGY=oauth_only requires a logged-in "
+                    "OPENRESEARCH_LLM_AUTH_STRATEGY=oauth_only requires a logged-in "
                     "Claude Code CLI subscription but none was detected.  Run "
                     "`claude login` or switch the strategy to 'auto' / 'api_only'."
                 ),
@@ -251,7 +251,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
                 provider=resolved,
                 reason=(
                     "Anthropic credentials are missing; set ANTHROPIC_API_KEY "
-                    "or REPROLAB_ANTHROPIC_API_KEY, or install and log in to "
+                    "or OPENRESEARCH_ANTHROPIC_API_KEY, or install and log in to "
                     "the Claude Code CLI (`claude login`)."
                 ),
             )
@@ -266,8 +266,8 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             provider=resolved,
             reason=(
                 "OpenAI credentials are missing; set OPENAI_API_KEY "
-                "or REPROLAB_OPENAI_API_KEY, or set OPENAI_ADMIN_KEY "
-                "or REPROLAB_OPENAI_ADMIN_KEY"
+                "or OPENRESEARCH_OPENAI_API_KEY, or set OPENAI_ADMIN_KEY "
+                "or OPENRESEARCH_OPENAI_ADMIN_KEY"
             ),
         )
     return resolved

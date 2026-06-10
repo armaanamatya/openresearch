@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 #
 # Intentionally EXCLUDES ``implement_baseline`` and ``run_experiment`` — both
 # have existing, separately-designed caps (4h aclose watchdog and
-# REPROLAB_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
+# OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
 # The default for any primitive NOT in the table is 1800 s (30 min).
 # ---------------------------------------------------------------------------
 
@@ -303,7 +303,7 @@ _STEERING_INJECT_PRIMITIVES = frozenset({
 def _inject_operator_messages(name: str, result: Any, ctx: "RunContext") -> Any:
     """Attach unread operator chat messages to a primitive's dict result.
 
-    Fail-soft and flag-gated (``REPROLAB_INJECT_STEERING=0`` disables). Returns
+    Fail-soft and flag-gated (``OPENRESEARCH_INJECT_STEERING=0`` disables). Returns
     ``result`` unchanged unless ``name`` is a steering-injection primitive, the
     result is a dict, and unread user messages exist.
     """
@@ -313,7 +313,7 @@ def _inject_operator_messages(name: str, result: Any, ctx: "RunContext") -> Any:
 
     try:
         if _os.environ.get(
-            "REPROLAB_INJECT_STEERING", ""
+            "OPENRESEARCH_INJECT_STEERING", ""
         ).strip().lower() in ("0", "false", "off"):
             return result
         if name not in _STEERING_INJECT_PRIMITIVES or not isinstance(result, dict):

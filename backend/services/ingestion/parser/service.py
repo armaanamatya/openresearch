@@ -84,7 +84,7 @@ def write_parsed_full_text(project_dir: Path, text: str | None) -> None:
 
 
 def _load_paper_text_override() -> str | None:
-    """Read REPROLAB_PAPER_TEXT_PATH override text, or return None.
+    """Read OPENRESEARCH_PAPER_TEXT_PATH override text, or return None.
 
     Returns the file's UTF-8 text when:
     - the env var is set and non-empty,
@@ -94,7 +94,7 @@ def _load_paper_text_override() -> str | None:
     Returns None (silently or with a logged warning) in all other cases —
     the caller must treat None as "override not available".
     """
-    override_path_str = os.environ.get("REPROLAB_PAPER_TEXT_PATH", "").strip()
+    override_path_str = os.environ.get("OPENRESEARCH_PAPER_TEXT_PATH", "").strip()
     if not override_path_str:
         return None
     override_path = Path(override_path_str)
@@ -102,20 +102,20 @@ def _load_paper_text_override() -> str | None:
         text = override_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         _logger.warning(
-            "REPROLAB_PAPER_TEXT_PATH=%r not found; override ignored",
+            "OPENRESEARCH_PAPER_TEXT_PATH=%r not found; override ignored",
             override_path_str,
         )
         return None
     except OSError as exc:
         _logger.warning(
-            "REPROLAB_PAPER_TEXT_PATH=%r unreadable (%s); override ignored",
+            "OPENRESEARCH_PAPER_TEXT_PATH=%r unreadable (%s); override ignored",
             override_path_str,
             exc,
         )
         return None
     if len(text.encode("utf-8")) < _FULL_TEXT_MIN_BYTES:
         _logger.warning(
-            "REPROLAB_PAPER_TEXT_PATH=%r is shorter than %d bytes; override ignored",
+            "OPENRESEARCH_PAPER_TEXT_PATH=%r is shorter than %d bytes; override ignored",
             override_path_str,
             _FULL_TEXT_MIN_BYTES,
         )
@@ -144,7 +144,7 @@ def _resolve_full_text(cascade_text: str | None) -> str | None:
     override_text = _load_paper_text_override()
     if override_text is not None:
         _logger.warning(
-            "parsed_full_text source: REPROLAB_PAPER_TEXT_PATH override "
+            "parsed_full_text source: OPENRESEARCH_PAPER_TEXT_PATH override "
             "(%d bytes) — cascade result was absent or <1KB",
             len(override_text.encode("utf-8")),
         )
@@ -234,7 +234,7 @@ class ParserAppService:
                 retryable=exc.retryable,
             )
             self._append(parsed, parsed_agg_id, [failure], cid)
-            # Cascade parse failed: check whether the REPROLAB_PAPER_TEXT_PATH
+            # Cascade parse failed: check whether the OPENRESEARCH_PAPER_TEXT_PATH
             # override can rescue the blob before we delete it (review I6 / T18).
             # _resolve_full_text(None) returns the override text when available,
             # otherwise None — which causes write_parsed_full_text to delete any
@@ -274,7 +274,7 @@ class ParserAppService:
             self._append(parsed, parsed_agg_id, events, cid)
 
         # Step 4: store full text as a blob (atomic write), append ParsingCompleted.
-        # _resolve_full_text applies the REPROLAB_PAPER_TEXT_PATH override when the
+        # _resolve_full_text applies the OPENRESEARCH_PAPER_TEXT_PATH override when the
         # cascade result is absent/short; a good cascade result always wins.
         blob_dir = self._runs_root / project_id
         blob_dir.mkdir(parents=True, exist_ok=True)

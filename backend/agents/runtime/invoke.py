@@ -67,14 +67,14 @@ def _is_transient_transport_error(message: str | None) -> bool:
 def _transport_attempts() -> int:
     """Total attempts (= retries + 1) for a transient sub-agent transport failure.
 
-    ``REPROLAB_SUBAGENT_TRANSPORT_RETRIES`` (default 2 retries => 3 attempts);
+    ``OPENRESEARCH_SUBAGENT_TRANSPORT_RETRIES`` (default 2 retries => 3 attempts);
     ``0`` disables retry (1 attempt).
     """
-    raw = os.environ.get("REPROLAB_SUBAGENT_TRANSPORT_RETRIES", "").strip()
+    raw = os.environ.get("OPENRESEARCH_SUBAGENT_TRANSPORT_RETRIES", "").strip()
     try:
         retries = int(raw) if raw else 2
     except ValueError:
-        logger.warning("invalid REPROLAB_SUBAGENT_TRANSPORT_RETRIES=%r; using 2", raw)
+        logger.warning("invalid OPENRESEARCH_SUBAGENT_TRANSPORT_RETRIES=%r; using 2", raw)
         retries = 2
     return max(1, retries + 1)
 
@@ -83,12 +83,12 @@ def _transport_backoff_s(attempt: int) -> float:
     """Exponential backoff before retrying attempt N (1-indexed): base * 2**(N-1).
 
     Default base 8s => 8, 16, 32 ... Bounded well under the implement_baseline
-    pre-emit stall budget (``REPROLAB_PRE_EMIT_STALL_S``, default 900s) so a
-    backoff never trips the code_dir watchdog. ``REPROLAB_SUBAGENT_TRANSPORT_BACKOFF_S``
+    pre-emit stall budget (``OPENRESEARCH_PRE_EMIT_STALL_S``, default 900s) so a
+    backoff never trips the code_dir watchdog. ``OPENRESEARCH_SUBAGENT_TRANSPORT_BACKOFF_S``
     overrides the base.
     """
     try:
-        base = float(os.environ.get("REPROLAB_SUBAGENT_TRANSPORT_BACKOFF_S", "8") or 8)
+        base = float(os.environ.get("OPENRESEARCH_SUBAGENT_TRANSPORT_BACKOFF_S", "8") or 8)
     except ValueError:
         base = 8.0
     return base * (2 ** max(0, attempt - 1))
@@ -135,7 +135,7 @@ async def collect_agent_text(
     selected_runtime = runtime or make_runtime(provider)
     started_at = datetime.now(timezone.utc).isoformat()
     # #7 benchmark integrity: when the caller didn't pass an explicit blocklist,
-    # seed it from the curated env-var seam (REPROLAB_BLOCKED_TERMS_JSON, set by
+    # seed it from the curated env-var seam (OPENRESEARCH_BLOCKED_TERMS_JSON, set by
     # cli.py). collect_agent_text is the single chokepoint EVERY agent flows
     # through (baseline-implementation, rdr, patch-mode, future callers), so this
     # makes the RuntimeGuard uniform and un-forgettable — no per-caller threading

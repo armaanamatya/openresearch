@@ -17,7 +17,7 @@ This helper does two things:
    missing — "identical init" becomes verifiable rather than asserted.
 
 Pure-stdlib + torch/numpy optional (imported lazily, guarded) so it copies into an agent
-sandbox like ``rubric_guard.py``. Flag-gated on ``REPROLAB_FIDELITY_EVIDENCE`` — but the
+sandbox like ``rubric_guard.py``. Flag-gated on ``OPENRESEARCH_FIDELITY_EVIDENCE`` — but the
 snapshot/restore/fingerprint functions are useful regardless and never depend on the flag for
 correctness (the flag only governs whether the harness *requires* the evidence).
 """
@@ -35,11 +35,11 @@ __all__ = [
     "init_fingerprint",
 ]
 
-ENV_FLAG = "REPROLAB_FIDELITY_EVIDENCE"
+ENV_FLAG = "OPENRESEARCH_FIDELITY_EVIDENCE"
 
 
 def is_enabled() -> bool:
-    """True when the fidelity-evidence layer is armed (``REPROLAB_FIDELITY_EVIDENCE`` truthy)."""
+    """True when the fidelity-evidence layer is armed (``OPENRESEARCH_FIDELITY_EVIDENCE`` truthy)."""
     val = os.environ.get(ENV_FLAG, "").strip().lower()
     return val not in ("", "0", "false", "no", "off")
 

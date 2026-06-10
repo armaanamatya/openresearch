@@ -88,12 +88,12 @@ def test_smoke_skips_relative_imports(tmp_path: Path):
 
 
 def test_is_enabled_reads_flag(monkeypatch):
-    monkeypatch.delenv("REPROLAB_PREFLIGHT_SMOKE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_SMOKE", raising=False)
     assert preflight_smoke.is_enabled() is False
     for v in ("1", "true", "yes", "on", "ON"):
-        monkeypatch.setenv("REPROLAB_PREFLIGHT_SMOKE", v)
+        monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_SMOKE", v)
         assert preflight_smoke.is_enabled() is True
-    monkeypatch.setenv("REPROLAB_PREFLIGHT_SMOKE", "0")
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_SMOKE", "0")
     assert preflight_smoke.is_enabled() is False
 
 

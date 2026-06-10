@@ -137,7 +137,7 @@ The primitives below are callable in the REPL.  They are domain operations
 that wrap the paper-reproduction pipeline stages.  Their exact signatures and
 descriptions are listed here:
 
-[[REPROLAB_CUSTOM_TOOLS_SECTION]]
+[[OPENRESEARCH_CUSTOM_TOOLS_SECTION]]
 
 ALGORITHM-2 GUARD (critical):
   NEVER pass a whole `context` value to a primitive.
@@ -610,14 +610,14 @@ def build_system_prompt(
     # the auto-generated primitive tool docs. Without that placeholder the root
     # model would never see the primitive signatures at all.
     body = body.replace("{", "{{").replace("}", "}}")
-    result = body.replace("[[REPROLAB_CUSTOM_TOOLS_SECTION]]", "{custom_tools_section}")
+    result = body.replace("[[OPENRESEARCH_CUSTOM_TOOLS_SECTION]]", "{custom_tools_section}")
     # A1-M4: assert exactly one placeholder so rlm's .format() call never KeyErrors
     # or silently omits the primitive signatures.
     count = result.count("{custom_tools_section}")
     assert count == 1, (  # noqa: S101 — invariant: exactly one injection point
         f"build_system_prompt: expected exactly 1 {{custom_tools_section}} placeholder "
         f"after brace-escape, found {count}. Check _PRIMITIVES_SECTION for duplicate or "
-        f"missing [[REPROLAB_CUSTOM_TOOLS_SECTION]] markers."
+        f"missing [[OPENRESEARCH_CUSTOM_TOOLS_SECTION]] markers."
     )
     return result
 

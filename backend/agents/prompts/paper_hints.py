@@ -3,7 +3,7 @@
 Each entry in ``PAPER_HINTS`` is a :class:`PaperHint` carrying three independent
 layers that compose with operator-set configuration:
 
-  - ``guidance``: appended to ``REPROLAB_BASELINE_EXTRA_GUIDANCE`` so the agent
+  - ``guidance``: appended to ``OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`` so the agent
     sees the paper-specific algorithmic invariants in its baseline-implementation
     prompt (existing hook in ``backend/agents/baseline_implementation.py``).
   - ``default_scope``: a :class:`ScopeSpec` providing the rubric-default models /

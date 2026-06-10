@@ -101,7 +101,7 @@ _CAPABILITIES = StoreCapabilities(
 
 def _extract_path(database_url: str) -> str:
     """Mirror teammate's `Database._path` extraction so we point at the
-    same file when given the same `REPROLAB_DATABASE_URL`."""
+    same file when given the same `OPENRESEARCH_DATABASE_URL`."""
     return database_url.replace("sqlite:///", "")
 
 

@@ -488,7 +488,7 @@ class TestSeedBundleFromMetrics:
 class TestExtractAndWrite:
     """LLM wrapper — tests the flag-gate, fail-soft, and reconciliation logic."""
 
-    _FLAG = "REPROLAB_TWO_AXIS_VERDICT"
+    _FLAG = "OPENRESEARCH_TWO_AXIS_VERDICT"
 
     def _make_llm(self, first_response: str, blinded_response: str = "") -> Any:
         """Build a mock LlmClient with two sequential responses."""

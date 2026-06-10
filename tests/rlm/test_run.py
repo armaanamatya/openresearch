@@ -174,7 +174,7 @@ class TestContextMetadata:
 class TestResolveCustomTools:
 
     def test_forced_stub_returns_nine_tools(self, tmp_path, make_context, monkeypatch):
-        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
         assert len(tools) == 9
@@ -186,7 +186,7 @@ class TestResolveCustomTools:
     def test_uses_real_binding_when_present(self, tmp_path, make_context, monkeypatch):
         """binding.py is merged in — resolution binds the real primitive
         layer, not the stub. This is the default path."""
-        monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
         assert len(tools) == 17  # RLM primitives + codex_repair + read_context_map (PEEK-lite)
@@ -201,7 +201,7 @@ class TestResolveCustomTools:
         post-merge, so absence is simulated by blocking it in sys.modules."""
         import sys
 
-        monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
         # None in sys.modules makes `import backend.agents.rlm.binding` raise ImportError.
         monkeypatch.setitem(sys.modules, "backend.agents.rlm.binding", None)
 
@@ -218,7 +218,7 @@ class TestResolveCustomTools:
         import sys
         import types
 
-        monkeypatch.delenv("REPROLAB_RLM_STUB_PRIMITIVES", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
 
         fake_binding = types.ModuleType("backend.agents.rlm.binding")
 
@@ -491,7 +491,7 @@ def test_stub_run_is_honestly_observable_in_artifacts(monkeypatch, tmp_path):
     import json
     import backend.agents.rlm.run as run_mod
 
-    monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+    monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
 
     class _FakeRLM:
         def __init__(self, **kwargs): ...

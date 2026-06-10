@@ -14,7 +14,7 @@ Design (robust + low-false-positive):
     false-positive rate is essentially zero.
   * It runs with ``CUDA_VISIBLE_DEVICES=""`` (never touches the GPU) and inherits the
     sandbox's isolation (network/mem/fs controls, hard command timeout).
-  * Gated behind ``REPROLAB_PREFLIGHT_SMOKE`` (default OFF) — opt-in, since even an
+  * Gated behind ``OPENRESEARCH_PREFLIGHT_SMOKE`` (default OFF) — opt-in, since even an
     import executes code; the sandbox is the isolation boundary.
 
 The emitted script is self-contained (stdlib only) because it runs in the sandbox
@@ -127,8 +127,8 @@ print("PREFLIGHT IMPORT SMOKE OK — %d dependency root(s) resolve" % len(probed
 
 
 def is_enabled() -> bool:
-    """True when ``REPROLAB_PREFLIGHT_SMOKE`` is truthy (default OFF — opt-in)."""
-    return os.environ.get("REPROLAB_PREFLIGHT_SMOKE", "").strip().lower() in (
+    """True when ``OPENRESEARCH_PREFLIGHT_SMOKE`` is truthy (default OFF — opt-in)."""
+    return os.environ.get("OPENRESEARCH_PREFLIGHT_SMOKE", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 

@@ -25,7 +25,7 @@ only the cells the edit actually touched.
 We deliberately do **NOT** hash ``train_cell.py`` itself.  That file is the
 single shared single-cell trainer, regenerated wholesale on every codegen pass,
 so hashing it would invalidate *every* cell on *every* warm-retry — defeating
-resume.  The ``REPROLAB_TRAINER_VERSION`` env var stands in: bump it to force a
+resume.  The ``OPENRESEARCH_TRAINER_VERSION`` env var stands in: bump it to force a
 matrix-wide re-run when the trainer's behaviour genuinely changed.
 
 Pure stdlib (``hashlib`` / ``json`` / ``os`` / ``pathlib``).  Fail-soft: a
@@ -69,26 +69,26 @@ SHARED_HELPER_FILES: tuple[str, ...] = (
     "agentic_rollout.py",
 )
 
-# Behaviour-affecting env vars folded into the fingerprint.  REPROLAB_TRAINER_VERSION
+# Behaviour-affecting env vars folded into the fingerprint.  OPENRESEARCH_TRAINER_VERSION
 # is the deliberate stand-in for the un-hashed (codegen-churning) train_cell.py:
 # bump it to force a matrix-wide re-run.  Missing vars contribute "".
 FLAG_ALLOWLIST: tuple[str, ...] = (
-    "REPROLAB_ALFWORLD_SHAPED_REWARD",
-    "REPROLAB_ALFWORLD_MAX_TURNS",
-    "REPROLAB_SEARCH_QA_DENSE",
-    "REPROLAB_TRAINER_VERSION",
+    "OPENRESEARCH_ALFWORLD_SHAPED_REWARD",
+    "OPENRESEARCH_ALFWORLD_MAX_TURNS",
+    "OPENRESEARCH_SEARCH_QA_DENSE",
+    "OPENRESEARCH_TRAINER_VERSION",
 )
 
 # Env-scoping for allow-listed flags (2026-06-02 integration fix). A flag whose
 # prefix names an env is folded into ONLY that env's cells' fingerprints — so
-# flipping REPROLAB_ALFWORLD_SHAPED_REWARD re-runs the ALFWorld cells but leaves
+# flipping OPENRESEARCH_ALFWORLD_SHAPED_REWARD re-runs the ALFWorld cells but leaves
 # the Search-QA cells untouched (the same split guarantee the helper files give).
-# A flag matching no prefix (e.g. REPROLAB_TRAINER_VERSION) is GLOBAL: folded into
+# A flag matching no prefix (e.g. OPENRESEARCH_TRAINER_VERSION) is GLOBAL: folded into
 # every cell, so bumping it forces a matrix-wide re-run.
 FLAG_ENV_PREFIXES: dict[str, str] = {
-    "REPROLAB_ALFWORLD_": "alfworld",
-    "REPROLAB_SEARCH_QA_": "search_qa",
-    "REPROLAB_WEBSHOP_": "webshop",
+    "OPENRESEARCH_ALFWORLD_": "alfworld",
+    "OPENRESEARCH_SEARCH_QA_": "search_qa",
+    "OPENRESEARCH_WEBSHOP_": "webshop",
 }
 
 # The subset of a cell dict that affects its training output.  Sorted before
@@ -157,8 +157,8 @@ def _flag_values(env: Mapping[str, str] | None, env_name: str) -> dict[str, str]
 
     Env-scoped flags (those whose prefix names an env in :data:`FLAG_ENV_PREFIXES`)
     are included ONLY when they belong to this cell's env; global flags (no env
-    prefix, e.g. ``REPROLAB_TRAINER_VERSION``) are always included.  This is what
-    makes flipping ``REPROLAB_ALFWORLD_SHAPED_REWARD`` re-run only the ALFWorld
+    prefix, e.g. ``OPENRESEARCH_TRAINER_VERSION``) are always included.  This is what
+    makes flipping ``OPENRESEARCH_ALFWORLD_SHAPED_REWARD`` re-run only the ALFWorld
     cells and leave the Search-QA cells' fingerprints unchanged.  Values are read
     from ``env`` (or ``os.environ`` when ``None``); a missing var contributes ``""``.
     """
