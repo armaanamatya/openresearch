@@ -88,11 +88,16 @@ from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # no
 # BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
 # root model can diagnose failures rather than concluding primitives unavailable.
 from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
+# BUG-NEW-033 (ported 2026-06-10 from pipeline-validation-mech-understanding):
+# auto-recover from (slice, question) misuse of rlm_query/llm_query — the
+# library API is single-prompt; the misuse routed the question as a model name
+# and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
+from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch
 # BUG-NEW-043 (ported 2026-06-09): surface real traceback when rlm._subcall's
 # child completion raises; upstream catches with `str(e)` and we get only
 # "maximum recursion depth exceeded" with no file/line. Mech-understanding
 # 2026-05-29 lost two sub-RLMs to this. (The branch's BUG-NEW-033
-# rlm_query_misuse_patch was NOT ported — that module never reached the trunk.)
+# rlm_query_misuse_patch is ported too — imported above, 2026-06-10.)
 from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
 # BUG-NEW-043 (belt+braces): the default recursion limit is 1000; the
 # mech-understanding paper's LaTeX-dense prompt blew it via some unknown deep

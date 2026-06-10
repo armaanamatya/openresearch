@@ -48,7 +48,7 @@ PROPERTY 2 — YOUR OUTPUT IS BUILT AS A REPL VARIABLE
   window because it is constructed in memory, not in model tokens.
 
 PROPERTY 3 — SUB-CALLS ARE PROGRAMMATIC
-  `llm_query(prompt)` and `rlm_query(context_slice, query)` are Python functions
+  `llm_query(prompt)` and `rlm_query(prompt)` are Python functions
   available in the REPL.  Call them from loops and conditionals — they are not
   tool-use blocks in the API request; they are first-class REPL callables.  Write
   code that orchestrates them: iterate over sections, batch multiple slices,
@@ -152,7 +152,16 @@ Primitives operate on slices and structured specifications you assemble.  Use
 `context` before assembling inputs for the heavy-weight primitives.
 
 When you need structured information from a long passage (>10,000 chars), prefer
-`rlm_query(slice, specific_question)` over `understand_section(slice)`.
+`rlm_query` over `understand_section(slice)`. The library API takes a SINGLE
+composed prompt — call it as:
+
+    answer = rlm_query(f"{slice}\n\nQuestion: {specific_question}")
+
+NEVER call `rlm_query(slice, question)` as two positional args — the second
+positional parameter is `model`, and a question-shaped string there will be
+routed to the CLI as a model name, returning a CLI error string as the
+"answer". (A runtime guard auto-recovers and warns, but compose the prompt
+yourself to avoid the warning.)
 `rlm_query` spawns a sub-RLM that focuses entirely on your question and returns
 a tight answer; `understand_section` returns a generic schema that you must then
 re-process.  For short slices, the primitives remain optimal.  The same applies
