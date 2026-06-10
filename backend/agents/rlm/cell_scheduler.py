@@ -53,6 +53,7 @@ __all__ = [
     "should_skip_cell",
     "write_cell_manifest",
     "is_resume_armed",
+    "cap_overall_budget",
     "deadline_from_timeout",
     "clamp_cell_timeout",
 ]
@@ -238,6 +239,36 @@ def is_resume_armed() -> bool:
     variable name ever changes.
     """
     return bool(os.environ.get("REPROLAB_RESUME_CELLS", "").strip())
+
+
+def cap_overall_budget(
+    overall_timeout_s: float | None,
+    remaining_run_s: float | None,
+    *,
+    reserve_s: float = 2700.0,
+    floor_s: float = 900.0,
+) -> float | None:
+    """Cap a matrix's overall budget by the RUN's remaining wall clock.
+
+    2026-06-10 Adam v6: the cell grid got ``per_cell_timeout × waves`` of
+    budget with no knowledge of the run-level deadline, ran straight into the
+    14h watchdog, and the process was hard-killed mid-cell (salvaged at 0.151)
+    — when the runner's own deadline machinery could have TRIMMED the tail
+    cells to honest ``timeout`` leaves at the boundary and returned a
+    scoreable partial.
+
+    ``reserve_s`` is held back for verify + report after the grid. The result
+    never drops below ``floor_s`` (or half the remaining time, if smaller) so
+    a late-run matrix still gets a real chance rather than an instant trim.
+    Returns ``overall_timeout_s`` unchanged when the remaining time is unknown
+    or non-positive (no-limit semantics preserved).
+    """
+    if remaining_run_s is None or remaining_run_s <= 0:
+        return overall_timeout_s
+    budget = max(remaining_run_s - reserve_s, min(remaining_run_s * 0.5, floor_s))
+    if overall_timeout_s is None or overall_timeout_s <= 0:
+        return budget
+    return min(overall_timeout_s, budget)
 
 
 def deadline_from_timeout(timeout_s: float | None) -> float | None:
