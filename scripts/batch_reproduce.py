@@ -244,9 +244,17 @@ def _install_signal_handlers(alloc: Any) -> None:
                 except OSError:
                     pass
 
-        # Release all known active leases
+        # Release OWN leases only (2026-06-10): active_leases() returns EVERY
+        # lease in the shared file, including other live batch invocations'.
+        # A duplicate launcher's shutdown used to release a sibling's lease,
+        # and the freshly "free" cards were immediately re-leased to a second
+        # run while the first was still training on them (the Adam-v7 /
+        # All-CNN-v3 GPU collision). Filter by holder pid.
         try:
+            _own_pid = os.getpid()
             for lease in alloc.active_leases():
+                if getattr(lease, "pid", None) != _own_pid:
+                    continue
                 try:
                     alloc.release(lease.lease_id)
                 except Exception as exc:  # noqa: BLE001
