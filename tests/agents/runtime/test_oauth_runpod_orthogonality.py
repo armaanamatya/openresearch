@@ -15,7 +15,7 @@ def test_runpod_backend_init_does_not_read_anthropic_api_key(monkeypatch):
     """Guard: RunpodBackend must not read ANTHROPIC_API_KEY when constructed
     under an OAuth-mode run. The pod runs ML code, not LLM calls."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "test-key")
+    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "test-key")
     from backend.services.runtime.runpod_backend import RunpodBackend
     backend = RunpodBackend(api_key="test-key")  # no Anthropic env var present
     # No exception, no read attempt.

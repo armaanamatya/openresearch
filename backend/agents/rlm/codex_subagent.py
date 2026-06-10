@@ -97,7 +97,7 @@ EventSink = Callable[[str, dict], None]
 
 
 def _resolve_codex_cli() -> str | None:
-    configured = os.environ.get("OPENRESEARCH_CODEX_CLI_PATH", "").strip()
+    configured = os.environ.get("REPROLAB_CODEX_CLI_PATH", "").strip()
     if configured:
         return configured
     return shutil.which("codex")

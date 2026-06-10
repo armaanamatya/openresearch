@@ -169,6 +169,7 @@ def assert_metrics_schema(
     required_artifacts: list[str] | None = None,
     artifact_dir: str | Path | None = None,
     metrics_shape: list[dict] | None = None,
+    structured_evidence: dict[str, Any] | None = None,
 ) -> None:
     """Raise :class:`RubricGuardFailure` if metrics / artifacts are incomplete.
 
@@ -198,6 +199,17 @@ def assert_metrics_schema(
                             guesswork.  When empty or None, falls back to the
                             existing fingerprint matcher against ``required_keys``
                             (backward compat).
+        structured_evidence: Optional per-paper declaration of convergence /
+                            sweep / time-series evidence the rubric's
+                            eval-protocol leaves require (e.g.
+                            ``{"history_methods": [...], "sweeps": [...],
+                            "series": ["regret"]}``).  Enforced via
+                            :func:`convergence_evidence.missing_structured_evidence`
+                            ONLY when ``REPROLAB_FIDELITY_EVIDENCE`` is set — so an
+                            unset flag or a None value is a no-op.  Turns
+                            "curves/sweeps computed but left in logs" (the
+                            2026-06-09 Adam 0.21 eval-protocol crash) into an
+                            actionable repair signal.
 
     Raises:
         RubricGuardFailure: When any required key is absent OR any required
@@ -263,7 +275,24 @@ def assert_metrics_schema(
             if not _artifact_matches(resolved_dir, pattern):
                 missing_artifacts.append(pattern)
 
-    if not missing_keys and not missing_artifacts:
+    # Structured-evidence enforcement (Module A): when the paper makes convergence /
+    # sweep / time-series claims, final scalars alone score 0 on the eval-protocol leaves.
+    # The check is itself flag-gated (``REPROLAB_FIDELITY_EVIDENCE``) inside
+    # convergence_evidence, so an unset flag → empty list → no behaviour change. The import
+    # is lazy + guarded so rubric_guard keeps working when the sibling helper was not copied
+    # into the sandbox (degrades to "nothing missing", never a hard import error).
+    missing_evidence: list[str] = []
+    if structured_evidence:
+        try:
+            try:
+                import convergence_evidence as _ce  # sandbox-copied sibling
+            except ImportError:
+                from backend.agents.rlm import convergence_evidence as _ce
+            missing_evidence = _ce.missing_structured_evidence(metrics, structured_evidence)
+        except Exception:  # noqa: BLE001 — never block a run on a guard-helper hiccup
+            missing_evidence = []
+
+    if not missing_keys and not missing_artifacts and not missing_evidence:
         return
 
     present_keys_sample: list[str] = sorted(_walk_keys(metrics))[:20]
@@ -271,6 +300,7 @@ def assert_metrics_schema(
         "rubric_guard": "schema_violation",
         "missing_keys": missing_keys,
         "missing_artifacts": missing_artifacts,
+        "missing_structured_evidence": missing_evidence,
         "artifact_dir": str(_resolve_artifact_dir(artifact_dir)) if required_artifacts else None,
         "present_keys_sample": present_keys_sample,
         "hint": (
@@ -278,6 +308,13 @@ def assert_metrics_schema(
             "areas. Fix train.py so every required key is written to "
             "metrics.json AND every required artifact exists under "
             "$OUTPUT_DIR before the script exits."
+            + (
+                " For missing_structured_evidence: the paper's claims are about "
+                "convergence/sweeps/time-series — write the per-epoch trajectory "
+                "('history'), the full sweep results, and any regret/time-series as "
+                "ARRAYS in metrics.json (not only final scalars or stdout logs)."
+                if missing_evidence else ""
+            )
         ),
     }
     raise RubricGuardFailure(json.dumps(detail))

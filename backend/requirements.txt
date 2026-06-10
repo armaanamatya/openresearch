@@ -1,4 +1,4 @@
-# OpenResearch backend — pinned runtime dependencies.
+# ReproLab backend — pinned runtime dependencies.
 # Source of truth: ../pyproject.toml. Keep in sync.
 # Install with: pip install -r backend/requirements.txt
 # (For development tooling, also install backend/requirements-dev.txt.)

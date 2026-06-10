@@ -14,7 +14,7 @@ from backend.agents.resilience.budget import RunBudget
 
 def test_backend_for_sandbox_mode_returns_runpod_backend_for_runpod_mode(monkeypatch):
     """Sandbox mode 'runpod' must construct a real RunpodBackend, not fall back to docker."""
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "fake-key")
+    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "fake-key")
     # Stub ensure_runpod_available so the SSH-key check doesn't trip.
     with patch("backend.services.runtime.ensure_runpod_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode
@@ -28,7 +28,7 @@ def test_backend_for_sandbox_mode_returns_runpod_backend_for_runpod_mode(monkeyp
 
 def test_backend_for_sandbox_mode_propagates_run_budget(monkeypatch):
     """The run_budget passed in must reach RunpodBackend._run_budget."""
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "fake-key")
+    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "fake-key")
     budget = RunBudget(max_pod_seconds=300.0)
     with patch("backend.services.runtime.ensure_runpod_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode

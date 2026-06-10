@@ -11,7 +11,7 @@ Suite covers:
   * Job Failed (non-zero exit) → "error".
   * overall_timeout → "error" before submission.
   * Pending beyond pending_timeout → "error" with "capacity_exhausted:" prefix.
-  * resume skip path (OPENRESEARCH_RESUME_CELLS).
+  * resume skip path (REPROLAB_RESUME_CELLS).
   * every input cell present in the result (completeness).
   * gpus_per_cell != 1 → every cell "error".
   * budget cap → cells beyond cap "error".
@@ -533,7 +533,7 @@ class TestPendingTimeout:
 
 
 # ---------------------------------------------------------------------------
-# 8. Resume skip (OPENRESEARCH_RESUME_CELLS)
+# 8. Resume skip (REPROLAB_RESUME_CELLS)
 # ---------------------------------------------------------------------------
 
 class TestResume:
@@ -565,7 +565,7 @@ class TestResume:
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.77})
 
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         cells = [{"id": "r0"}]
         results = run_matrix(
             cells,
@@ -587,7 +587,7 @@ class TestResume:
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.5})
 
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         cells = [{"id": "r1"}]
         results = run_matrix(
             cells,
@@ -610,7 +610,7 @@ class TestResume:
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.6})
 
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         cells = [{"id": "r2"}]
         results = run_matrix(
             cells,
@@ -633,7 +633,7 @@ class TestResume:
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.3})
 
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         cells = [{"id": "r3"}]
         results = run_matrix(
             cells,
@@ -1945,7 +1945,7 @@ class TestJobStatusNoneGuard:
 
 
 # ---------------------------------------------------------------------------
-# 26. P0-fix-1 — env-var names in Job manifest (runner injects OPENRESEARCH_AZURE_*)
+# 26. P0-fix-1 — env-var names in Job manifest (runner injects REPROLAB_AZURE_*)
 # ---------------------------------------------------------------------------
 
 class TestEnvVarNamesInManifest:
@@ -1953,15 +1953,15 @@ class TestEnvVarNamesInManifest:
 
     # Canonical contract: runner injects these names; entrypoint reads the same names.
     _REQUIRED_ENV_NAMES = {
-        "OPENRESEARCH_CELL_ID",
-        "OPENRESEARCH_CELL_PARAMS",
-        "OPENRESEARCH_CELL_OUTPUT_DIR",
-        "OPENRESEARCH_CELL_MAX_OOM_RETRIES",
-        "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",   # P0-fix-1: was OPENRESEARCH_BLOB_ACCOUNT
-        "OPENRESEARCH_AZURE_BLOB_CONTAINER",     # P0-fix-1: was OPENRESEARCH_BLOB_CONTAINER
-        "OPENRESEARCH_BLOB_CODE_PREFIX",
-        "OPENRESEARCH_BLOB_OUTPUT_PREFIX",
-        "OPENRESEARCH_CACHE_MOUNT",
+        "REPROLAB_CELL_ID",
+        "REPROLAB_CELL_PARAMS",
+        "REPROLAB_CELL_OUTPUT_DIR",
+        "REPROLAB_CELL_MAX_OOM_RETRIES",
+        "REPROLAB_AZURE_STORAGE_ACCOUNT",   # P0-fix-1: was REPROLAB_BLOB_ACCOUNT
+        "REPROLAB_AZURE_BLOB_CONTAINER",     # P0-fix-1: was REPROLAB_BLOB_CONTAINER
+        "REPROLAB_BLOB_CODE_PREFIX",
+        "REPROLAB_BLOB_OUTPUT_PREFIX",
+        "REPROLAB_CACHE_MOUNT",
     }
 
     def test_manifest_contains_all_required_env_names(
@@ -1989,7 +1989,7 @@ class TestEnvVarNamesInManifest:
     def test_old_blob_account_name_not_injected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The old OPENRESEARCH_BLOB_ACCOUNT name (pre-fix) must NOT appear."""
+        """The old REPROLAB_BLOB_ACCOUNT name (pre-fix) must NOT appear."""
         cells = [{"id": "env1"}]
         k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
         kjcr._k8s_clients_override = k8s
@@ -2001,13 +2001,13 @@ class TestEnvVarNamesInManifest:
             k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
         )
         env_names = {e["name"] for e in env_list}
-        assert "OPENRESEARCH_BLOB_ACCOUNT" not in env_names, (
-            "OPENRESEARCH_BLOB_ACCOUNT is the old name (pre-fix); entrypoint reads "
-            "OPENRESEARCH_AZURE_STORAGE_ACCOUNT.  Remove the old name."
+        assert "REPROLAB_BLOB_ACCOUNT" not in env_names, (
+            "REPROLAB_BLOB_ACCOUNT is the old name (pre-fix); entrypoint reads "
+            "REPROLAB_AZURE_STORAGE_ACCOUNT.  Remove the old name."
         )
-        assert "OPENRESEARCH_BLOB_CONTAINER" not in env_names, (
-            "OPENRESEARCH_BLOB_CONTAINER is the old name (pre-fix); entrypoint reads "
-            "OPENRESEARCH_AZURE_BLOB_CONTAINER.  Remove the old name."
+        assert "REPROLAB_BLOB_CONTAINER" not in env_names, (
+            "REPROLAB_BLOB_CONTAINER is the old name (pre-fix); entrypoint reads "
+            "REPROLAB_AZURE_BLOB_CONTAINER.  Remove the old name."
         )
 
 

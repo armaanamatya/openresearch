@@ -883,13 +883,13 @@ async def test_exec_without_gpu_plan_no_node_selector_in_submitted_job(tmp_path:
 
 
 # ---------------------------------------------------------------------------
-# P0: OPENRESEARCH_EXEC_COMMAND injected exactly once
+# P0: REPROLAB_EXEC_COMMAND injected exactly once
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_exec_command_env_var_appears_exactly_once(tmp_path: Path):
-    """OPENRESEARCH_EXEC_COMMAND must appear exactly once in the submitted Job manifest.
+    """REPROLAB_EXEC_COMMAND must appear exactly once in the submitted Job manifest.
 
     Regression guard for the double-injection bug: exec() injected it via
     env_vars AND _build_exec_job_manifest appended it again → duplicate env var.
@@ -903,9 +903,9 @@ async def test_exec_command_env_var_appears_exactly_once(tmp_path: Path):
 
     assert len(batch_api.created_jobs) == 1
     env_list = batch_api.created_jobs[0]["body"]["spec"]["template"]["spec"]["containers"][0]["env"]
-    exec_cmd_entries = [e for e in env_list if e["name"] == "OPENRESEARCH_EXEC_COMMAND"]
+    exec_cmd_entries = [e for e in env_list if e["name"] == "REPROLAB_EXEC_COMMAND"]
     assert len(exec_cmd_entries) == 1, (
-        f"OPENRESEARCH_EXEC_COMMAND appeared {len(exec_cmd_entries)} time(s) in the env list; "
+        f"REPROLAB_EXEC_COMMAND appeared {len(exec_cmd_entries)} time(s) in the env list; "
         "expected exactly 1."
     )
     assert exec_cmd_entries[0]["value"] == "python train.py"
@@ -964,7 +964,7 @@ async def test_exec_submitted_job_has_gpu_toleration(tmp_path: Path):
 
 def test_base_image_empty_raises_clear_error():
     """When azure_base_image is empty/unset, _base_image() raises backend_unavailable
-    with a message pointing to OPENRESEARCH_AZURE_BASE_IMAGE."""
+    with a message pointing to REPROLAB_AZURE_BASE_IMAGE."""
     fake_settings = _make_fake_settings(azure_base_image="")
     backend = AksJobBackend(settings=fake_settings)
 
@@ -973,7 +973,7 @@ def test_base_image_empty_raises_clear_error():
 
     assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
     msg = str(exc_info.value)
-    assert "OPENRESEARCH_AZURE_BASE_IMAGE" in msg or "azure_base_image" in msg.lower()
+    assert "REPROLAB_AZURE_BASE_IMAGE" in msg or "azure_base_image" in msg.lower()
 
 
 @pytest.mark.asyncio

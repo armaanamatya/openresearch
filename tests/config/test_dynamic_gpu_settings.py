@@ -25,14 +25,14 @@ def _isolate_settings_cache():
 def test_default_values_match_spec(monkeypatch):
     # A pytest plugin (deepeval) calls load_dotenv() on the repo .env, leaking
     # its values into os.environ for the whole session — which shadows the code
-    # defaults this test verifies (e.g. .env sets OPENRESEARCH_DYNAMIC_GPU_ENABLED=
+    # defaults this test verifies (e.g. .env sets REPROLAB_DYNAMIC_GPU_ENABLED=
     # false, and env > .env > default). Clear the asserted vars from os.environ
     # AND disable the .env file so we assert the true Field defaults, hermetically.
     for _k in (
-        "OPENRESEARCH_DYNAMIC_GPU_ENABLED", "OPENRESEARCH_FORCE_SINGLE_GPU",
-        "OPENRESEARCH_MAX_GPU_USD_PER_HOUR", "OPENRESEARCH_MAX_RUN_GPU_USD",
-        "OPENRESEARCH_DYNAMIC_GPU_HEADROOM", "OPENRESEARCH_DYNAMIC_GPU_FALLBACK_VRAM_GB",
-        "OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS",
+        "REPROLAB_DYNAMIC_GPU_ENABLED", "REPROLAB_FORCE_SINGLE_GPU",
+        "REPROLAB_MAX_GPU_USD_PER_HOUR", "REPROLAB_MAX_RUN_GPU_USD",
+        "REPROLAB_DYNAMIC_GPU_HEADROOM", "REPROLAB_DYNAMIC_GPU_FALLBACK_VRAM_GB",
+        "REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS",
     ):
         monkeypatch.delenv(_k, raising=False)
     s = Settings(_env_file=None)
@@ -46,13 +46,13 @@ def test_default_values_match_spec(monkeypatch):
 
 
 def test_env_var_overrides(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_ENABLED", "false")
-    monkeypatch.setenv("OPENRESEARCH_FORCE_SINGLE_GPU", "false")
-    monkeypatch.setenv("OPENRESEARCH_MAX_GPU_USD_PER_HOUR", "2.5")
-    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "3.0")
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_HEADROOM", "1.5")
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_FALLBACK_VRAM_GB", "40")
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_ENABLED", "false")
+    monkeypatch.setenv("REPROLAB_FORCE_SINGLE_GPU", "false")
+    monkeypatch.setenv("REPROLAB_MAX_GPU_USD_PER_HOUR", "2.5")
+    monkeypatch.setenv("REPROLAB_MAX_RUN_GPU_USD", "3.0")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_HEADROOM", "1.5")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_FALLBACK_VRAM_GB", "40")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
     s = Settings()
     assert s.dynamic_gpu_enabled is False
     assert s.force_single_gpu is False
@@ -64,8 +64,8 @@ def test_env_var_overrides(monkeypatch):
 
 
 def test_empty_cost_caps_treated_as_no_cap(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_MAX_GPU_USD_PER_HOUR", "0")
-    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "0")
+    monkeypatch.setenv("REPROLAB_MAX_GPU_USD_PER_HOUR", "0")
+    monkeypatch.setenv("REPROLAB_MAX_RUN_GPU_USD", "0")
     s = Settings()
     # 0 is allowed numerically; consumer treats 0 as "no cap" (see resolver test).
     assert s.max_gpu_usd_per_hour == 0.0
@@ -79,8 +79,4 @@ def test_default_runpod_image_has_cuda_dev_headers():
     # Reverted to -devel- after the SDAR run silently failed on a chained
     # `pip install bitsandbytes && python train.py`. Override via the env var
     # when a paper genuinely doesn't need dev headers.
-    #
-    # Assert the class DEFAULT, not Settings() — the latter picks up a local
-    # .env OPENRESEARCH_RUNPOD_IMAGE override, which makes this host-dependent.
-    default_image = Settings.model_fields["runpod_image"].default
-    assert "devel" in default_image and "runtime" not in default_image
+    assert "devel" in Settings().runpod_image and "runtime" not in Settings().runpod_image

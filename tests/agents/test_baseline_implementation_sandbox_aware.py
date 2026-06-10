@@ -414,7 +414,7 @@ class TestDatasetSetupBlock:
         assert "load_dataset" in prompt
 
     def test_dataset_setup_present_for_runpod(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", raising=False)
+        monkeypatch.delenv("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", raising=False)
         captured = _capture_prompt(monkeypatch)
         runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
         asyncio.run(run_with_sdk(
@@ -431,7 +431,7 @@ class TestDatasetSetupBlock:
         DATASET-SETUP guidance must use THAT root and never leak the RunPod-only
         /workspace path (the 2026-05-29 SDAR env_load_failed root cause)."""
         data_root = str(tmp_path / "data_cache")
-        monkeypatch.setenv("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", data_root)
+        monkeypatch.setenv("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", data_root)
         captured = _capture_prompt(monkeypatch)
         runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
         asyncio.run(run_with_sdk(

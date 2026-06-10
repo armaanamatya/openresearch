@@ -1,4 +1,4 @@
-"""OpenResearch Evaluation System.
+"""ReproLab Evaluation System.
 
 Evaluation surfaces:
   * PaperBench scoring — leaf-scorer, rubric accounting, submission validation

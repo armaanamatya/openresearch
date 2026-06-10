@@ -158,7 +158,7 @@ def test_setup_routes_by_name(tmp_path: Path, monkeypatch):
 
 
 def test_default_cache_dir_honours_override(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_ENV_CACHE_DIR", str(tmp_path / "envs"))
+    monkeypatch.setenv("REPROLAB_ENV_CACHE_DIR", str(tmp_path / "envs"))
     assert EC.default_cache_dir() == (tmp_path / "envs").resolve()
 
 

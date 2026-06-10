@@ -944,6 +944,86 @@ def _check_env_interface_contract(
 # ---------------------------------------------------------------------------
 
 
+def _check_harness_import(
+    tree: ast.AST,
+    path: Path,
+    violations: list[PreflightViolation],
+) -> None:
+    """Flag UNGUARDED imports of the harness ``backend`` package (hard).
+
+    The ``backend`` package exists only in the harness repo — it is never
+    installed into the sandbox/per-run venv, so ``import backend...`` in
+    agent-written code is a guaranteed ``ModuleNotFoundError`` at runtime
+    (2026-06-08 Adam attempt: ``train.py`` died on ``No module named
+    'backend'`` and cost a full experiment cycle before the import smoke
+    caught it).
+
+    An import wrapped in ``try/except ImportError`` (or broader) is the
+    sanctioned copy-helper pattern — ``gpu_cell_runner.py`` etc. fall back to
+    the flat sandbox import — and is NOT flagged.
+    """
+    guarded_spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        catches_import = False
+        for handler in node.handlers:
+            if handler.type is None:
+                catches_import = True  # bare except catches ImportError too
+                break
+            names = (
+                [handler.type]
+                if not isinstance(handler.type, ast.Tuple)
+                else list(handler.type.elts)
+            )
+            for n in names:
+                ident = n.id if isinstance(n, ast.Name) else getattr(n, "attr", "")
+                if ident in ("ImportError", "ModuleNotFoundError", "Exception", "BaseException"):
+                    catches_import = True
+                    break
+            if catches_import:
+                break
+        if catches_import:
+            end = getattr(node, "end_lineno", None) or node.lineno
+            guarded_spans.append((node.lineno, end))
+
+    def _is_guarded(lineno: int) -> bool:
+        return any(start <= lineno <= end for start, end in guarded_spans)
+
+    for node in ast.walk(tree):
+        roots: list[str] = []
+        if isinstance(node, ast.Import):
+            roots = [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots = [node.module.split(".")[0]]
+        if "backend" not in roots:
+            continue
+        if _is_guarded(node.lineno):
+            continue
+        violations.append(
+            PreflightViolation(
+                file=path.name,
+                line=node.lineno,
+                class_name=None,
+                missing_attr=None,
+                suggested_fix=(
+                    "The harness package `backend` is not importable inside the "
+                    "sandbox — it only exists in the harness repo. Import the "
+                    "flat copied module instead (e.g. `import rubric_guard` / "
+                    "`import gpu_cell_runner`), or guard with "
+                    "`try: import <flat>  except ImportError: from backend... "
+                    "import <name>` if the code must also run in-repo."
+                ),
+                severity="hard",
+                detail=(
+                    f"{path.name}:{node.lineno} imports the harness `backend` "
+                    "package unguarded — guaranteed ModuleNotFoundError in the "
+                    "sandbox/per-run venv."
+                ),
+            )
+        )
+
+
 def _parse_with_syntax_check(
     path: Path,
     out: list[PreflightViolation],
@@ -1059,6 +1139,11 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
             _check_swallowed_backward_oom(tree, path, violations)
         except Exception:  # noqa: BLE001
             logger.debug("preflight_ast: _check_swallowed_backward_oom failed on %s", path.name)
+
+        try:
+            _check_harness_import(tree, path, violations)
+        except Exception:  # noqa: BLE001
+            logger.debug("preflight_ast: _check_harness_import failed on %s", path.name)
 
     # SDAR teacher/student env interface contract — needs its OWN recursive walk
     # (``rglob``), independent of ``py_files`` above which only globs one level.

@@ -15,7 +15,7 @@ def test_execution_profile_efficient_caps_at_30_turns_and_80_tool_calls() -> Non
       * 20 minute wall-clock cap
 
     Hitting any of these raises AgentLimitExceeded with partial output
-    preserved (see docs/archive/learn.md 2026-05-09)."""
+    preserved (see learn.md 2026-05-09)."""
 
     profile = ExecutionProfile.from_mode("efficient")
 
@@ -55,13 +55,13 @@ def test_execution_profile_gpu_modes_set_resource_intent() -> None:
     max_gpu = ExecutionProfile.from_mode("max", gpu_mode="max")
 
     assert off.gpu_mode is GpuMode.off
-    assert off.sandbox_environment["OPENRESEARCH_GPU_MODE"] == "off"
+    assert off.sandbox_environment["REPROLAB_GPU_MODE"] == "off"
     assert prefer.gpu_mode is GpuMode.prefer
-    assert prefer.sandbox_environment["OPENRESEARCH_GPU_MODE"] == "prefer"
+    assert prefer.sandbox_environment["REPROLAB_GPU_MODE"] == "prefer"
     assert prefer.sandbox_environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     assert max_gpu.gpu_mode is GpuMode.max
     assert max_gpu.sandbox_cpus >= prefer.sandbox_cpus
-    assert max_gpu.sandbox_environment["OPENRESEARCH_GPU_MODE"] == "max"
+    assert max_gpu.sandbox_environment["REPROLAB_GPU_MODE"] == "max"
 
 
 def test_sandbox_mode_auto_defaults_to_runpod_for_all_user_modes() -> None:

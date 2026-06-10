@@ -151,7 +151,7 @@ async def test_bare_coroutine_shim_warns_and_returns_value() -> None:
 
 @pytest.mark.asyncio
 async def test_isolation_disabled_awaits_factory_directly(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_SDK_ISOLATION_DISABLED", "true")
+    monkeypatch.setenv("REPROLAB_SDK_ISOLATION_DISABLED", "true")
     runner = make_run_isolated(max_retries=3)
 
     async def coro() -> str:

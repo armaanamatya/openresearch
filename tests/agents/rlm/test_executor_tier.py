@@ -6,20 +6,20 @@ from backend.agents.rlm.executor import ExecutorPlan, resolve_executor
 
 
 def test_default_returns_none(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_EXECUTOR", raising=False)
+    monkeypatch.delenv("REPROLAB_EXECUTOR", raising=False)
     assert resolve_executor() is None
-    monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "sonnet")
+    monkeypatch.setenv("REPROLAB_EXECUTOR", "sonnet")
     assert resolve_executor() is None
 
 
 def test_unknown_mode_falls_back(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "gpt9")
+    monkeypatch.setenv("REPROLAB_EXECUTOR", "gpt9")
     assert resolve_executor() is None
 
 
 def test_qwen_probe_ok_returns_plan(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "qwen")
-    monkeypatch.setenv("OPENRESEARCH_EXECUTOR_MODEL", "Qwen/Qwen2.5-Coder-14B-Instruct")
+    monkeypatch.setenv("REPROLAB_EXECUTOR", "qwen")
+    monkeypatch.setenv("REPROLAB_EXECUTOR_MODEL", "Qwen/Qwen2.5-Coder-14B-Instruct")
     monkeypatch.setattr(ex, "_probe", lambda *a, **k: True)
     plan = resolve_executor()
     assert isinstance(plan, ExecutorPlan)
@@ -29,6 +29,6 @@ def test_qwen_probe_ok_returns_plan(monkeypatch):
 
 
 def test_qwen_probe_fail_falls_back_to_sonnet(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "qwen")
+    monkeypatch.setenv("REPROLAB_EXECUTOR", "qwen")
     monkeypatch.setattr(ex, "_probe", lambda *a, **k: False)
     assert resolve_executor() is None

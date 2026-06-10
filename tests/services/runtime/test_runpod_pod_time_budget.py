@@ -115,7 +115,7 @@ async def test_exec_destroy_failure_does_not_swallow_budget_exhausted(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_exec_persistent_pod_emits_error_log_when_budget_exhausted(tmp_path, caplog):
-    """Persistent pods (OPENRESEARCH_RUNPOD_POD_ID) are intentionally not in
+    """Persistent pods (REPROLAB_RUNPOD_POD_ID) are intentionally not in
     _owned_pod_ids, so destroy() returns successfully without actually deleting
     the pod. That silent no-op was the worst-case failure mode of this feature:
     the operator thinks the budget killed the pod, but it keeps billing.
@@ -152,7 +152,7 @@ def test_runpod_backend_reads_api_key_from_env(monkeypatch, tmp_path):
     """Regression guard: if the env-var fallback in __init__ were dropped,
     a backend constructed without an explicit api_key= would silently have
     empty credentials and only fail later at the API call."""
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "env-fake-key-abc123")
+    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "env-fake-key-abc123")
     backend = RunpodBackend()
     assert backend.api_key == "env-fake-key-abc123"
 

@@ -89,18 +89,18 @@ _MAX_ADMISSIBLE_CHARS = 1500
 #: default OFF — with neither set, this module is BYTE-IDENTICAL to the sparse
 #: terminal-``float(won)`` reward it shipped with.
 #:
-#: ``OPENRESEARCH_ALFWORLD_ENV_REUSE`` (A1): construct the underlying TextWorld env
+#: ``REPROLAB_ALFWORLD_ENV_REUSE`` (A1): construct the underlying TextWorld env
 #:   ONCE per :class:`ALFWorldEnv` instance and ``reset()`` it in place across
 #:   episodes instead of rebuilding ``AlfredTWEnv`` every :meth:`reset` (the ~82×
 #:   reload tax). Pure perf — semantics are identical; gated only so flag-off is
 #:   provably the original reconstruct-every-episode path.
-#: ``OPENRESEARCH_ALFWORLD_SHAPING`` (A2): emit dense INTERMEDIATE
+#: ``REPROLAB_ALFWORLD_SHAPING`` (A2): emit dense INTERMEDIATE
 #:   :attr:`StepResult.reward` for sub-goal progress (reaching the target object /
 #:   opening the correct receptacle). The terminal ``float(won)`` stays the
 #:   SEPARATE authoritative signal — shaping NEVER touches ``info["won"]`` nor the
 #:   terminal reward. Off ⇒ intermediate reward is exactly ``0.0``.
-_ENV_REUSE_FLAG = "OPENRESEARCH_ALFWORLD_ENV_REUSE"
-_SHAPING_FLAG = "OPENRESEARCH_ALFWORLD_SHAPING"
+_ENV_REUSE_FLAG = "REPROLAB_ALFWORLD_ENV_REUSE"
+_SHAPING_FLAG = "REPROLAB_ALFWORLD_SHAPING"
 
 #: Per-sub-goal shaped credit (only emitted when :data:`_SHAPING_FLAG` is on).
 #: Small relative to the terminal reward (1.0) so shaping can seed a non-zero
@@ -357,7 +357,7 @@ class ALFWorldEnv(AgenticEnv):
 
         # A1 (construct-once): cache of the underlying TextWorld batched env so a
         # later episode resets it in place rather than rebuilding AlfredTWEnv.
-        # Only populated/consumed when OPENRESEARCH_ALFWORLD_ENV_REUSE is on.
+        # Only populated/consumed when REPROLAB_ALFWORLD_ENV_REUSE is on.
         self._tw_cache: Any | None = None
         self._tw_cache_built: int = 0  # count of real constructions (for the A1 test)
 

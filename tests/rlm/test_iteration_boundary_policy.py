@@ -64,7 +64,7 @@ def test_iteration_boundary_history_resets_on_iteration_advance():
 
 def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
     """F-06: on_iteration_advance must fire at each real REPL turn boundary
-    (OpenResearchRLMLogger.log), not only inside a FINAL_VAR refusal path.
+    (ReproLabRLMLogger.log), not only inside a FINAL_VAR refusal path.
 
     Without it, one failing run_experiment in two DIFFERENT iterations
     accumulates to len>=2 and falsely refuses the next legitimate FINAL_VAR —
@@ -73,7 +73,7 @@ def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
     """
     from rlm.core.types import RLMIteration
 
-    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
+    from backend.agents.rlm.sse_bridge import ReproLabRLMLogger
 
     p = _policy()
 
@@ -82,7 +82,7 @@ def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
         _forced_iteration_policy = p
 
     ctx = _Ctx()
-    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+    logger = ReproLabRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
 
     def _iter() -> RLMIteration:
         return RLMIteration(

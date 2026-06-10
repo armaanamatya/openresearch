@@ -29,36 +29,36 @@ def _isolate_settings_cache():
 
 
 _AZURE_ENVVARS = [
-    "OPENRESEARCH_AZURE_RESOURCE_GROUP",
-    "OPENRESEARCH_AZURE_REGION",
-    "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",
-    "OPENRESEARCH_AZURE_BLOB_CONTAINER",
-    "OPENRESEARCH_AZURE_FILES_SHARE",
-    "OPENRESEARCH_AZURE_ACR_LOGIN_SERVER",
-    "OPENRESEARCH_AZURE_AKS_CLUSTER",
-    "OPENRESEARCH_AZURE_NAMESPACE",
-    "OPENRESEARCH_AZURE_SERVICE_ACCOUNT",
-    "OPENRESEARCH_AZURE_NODE_POOL_NAME",
-    "OPENRESEARCH_AZURE_PER_GPU_VRAM_GB",
-    "OPENRESEARCH_AZURE_MAX_NODES",
-    "OPENRESEARCH_AZURE_BASE_IMAGE",
-    "OPENRESEARCH_AZURE_GPU_USD_PER_HOUR",
-    "OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS",
-    "OPENRESEARCH_AZURE_PENDING_TIMEOUT_SECONDS",
-    "OPENRESEARCH_AZURE_GPU_SKUS",
-    "OPENRESEARCH_AZURE_TTL_SECONDS_AFTER_FINISHED",
-    "OPENRESEARCH_AZURE_JOB_BACKOFF_LIMIT",
-    "OPENRESEARCH_AZURE_CACHE_MOUNT_PATH",
-    "OPENRESEARCH_AZURE_WATCH_POLL_INTERVAL_S",
-    "OPENRESEARCH_AZURE_OOM_BATCH_SCALE_STEP1",
-    "OPENRESEARCH_AZURE_OOM_BATCH_SCALE_FLOOR",
-    "OPENRESEARCH_AZURE_BOOTSTRAP_PIP_TIMEOUT_S",
+    "REPROLAB_AZURE_RESOURCE_GROUP",
+    "REPROLAB_AZURE_REGION",
+    "REPROLAB_AZURE_STORAGE_ACCOUNT",
+    "REPROLAB_AZURE_BLOB_CONTAINER",
+    "REPROLAB_AZURE_FILES_SHARE",
+    "REPROLAB_AZURE_ACR_LOGIN_SERVER",
+    "REPROLAB_AZURE_AKS_CLUSTER",
+    "REPROLAB_AZURE_NAMESPACE",
+    "REPROLAB_AZURE_SERVICE_ACCOUNT",
+    "REPROLAB_AZURE_NODE_POOL_NAME",
+    "REPROLAB_AZURE_PER_GPU_VRAM_GB",
+    "REPROLAB_AZURE_MAX_NODES",
+    "REPROLAB_AZURE_BASE_IMAGE",
+    "REPROLAB_AZURE_GPU_USD_PER_HOUR",
+    "REPROLAB_AZURE_BOOT_TIMEOUT_SECONDS",
+    "REPROLAB_AZURE_PENDING_TIMEOUT_SECONDS",
+    "REPROLAB_AZURE_GPU_SKUS",
+    "REPROLAB_AZURE_TTL_SECONDS_AFTER_FINISHED",
+    "REPROLAB_AZURE_JOB_BACKOFF_LIMIT",
+    "REPROLAB_AZURE_CACHE_MOUNT_PATH",
+    "REPROLAB_AZURE_WATCH_POLL_INTERVAL_S",
+    "REPROLAB_AZURE_OOM_BATCH_SCALE_STEP1",
+    "REPROLAB_AZURE_OOM_BATCH_SCALE_FLOOR",
+    "REPROLAB_AZURE_BOOTSTRAP_PIP_TIMEOUT_S",
 ]
 
 
 @pytest.fixture
 def clean_azure_env(monkeypatch):
-    """Remove all OPENRESEARCH_AZURE_* env vars so defaults are exercised."""
+    """Remove all REPROLAB_AZURE_* env vars so defaults are exercised."""
     for k in _AZURE_ENVVARS:
         monkeypatch.delenv(k, raising=False)
 
@@ -111,22 +111,22 @@ def test_force_sandbox_literal_accepts_azure(clean_azure_env):
 
 def test_azure_env_var_overrides(monkeypatch):
     """Env-var overrides must reach the Settings fields."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_RESOURCE_GROUP", "my-rg")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_REGION", "westus2")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_STORAGE_ACCOUNT", "mysa")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_BLOB_CONTAINER", "mycontainer")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_FILES_SHARE", "myshare")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_ACR_LOGIN_SERVER", "my.azurecr.io")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_AKS_CLUSTER", "my-aks")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_NAMESPACE", "myns")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_SERVICE_ACCOUNT", "mysa")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_NODE_POOL_NAME", "mygpu")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "40.0")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "8")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_BASE_IMAGE", "my.azurecr.io/reprolab:latest")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_GPU_USD_PER_HOUR", "3.50")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS", "600")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PENDING_TIMEOUT_SECONDS", "300")
+    monkeypatch.setenv("REPROLAB_AZURE_RESOURCE_GROUP", "my-rg")
+    monkeypatch.setenv("REPROLAB_AZURE_REGION", "westus2")
+    monkeypatch.setenv("REPROLAB_AZURE_STORAGE_ACCOUNT", "mysa")
+    monkeypatch.setenv("REPROLAB_AZURE_BLOB_CONTAINER", "mycontainer")
+    monkeypatch.setenv("REPROLAB_AZURE_FILES_SHARE", "myshare")
+    monkeypatch.setenv("REPROLAB_AZURE_ACR_LOGIN_SERVER", "my.azurecr.io")
+    monkeypatch.setenv("REPROLAB_AZURE_AKS_CLUSTER", "my-aks")
+    monkeypatch.setenv("REPROLAB_AZURE_NAMESPACE", "myns")
+    monkeypatch.setenv("REPROLAB_AZURE_SERVICE_ACCOUNT", "mysa")
+    monkeypatch.setenv("REPROLAB_AZURE_NODE_POOL_NAME", "mygpu")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "40.0")
+    monkeypatch.setenv("REPROLAB_AZURE_MAX_NODES", "8")
+    monkeypatch.setenv("REPROLAB_AZURE_BASE_IMAGE", "my.azurecr.io/reprolab:latest")
+    monkeypatch.setenv("REPROLAB_AZURE_GPU_USD_PER_HOUR", "3.50")
+    monkeypatch.setenv("REPROLAB_AZURE_BOOT_TIMEOUT_SECONDS", "600")
+    monkeypatch.setenv("REPROLAB_AZURE_PENDING_TIMEOUT_SECONDS", "300")
 
     s = Settings()
     assert s.azure_resource_group == "my-rg"
@@ -165,15 +165,15 @@ def test_azure_gpu_skus_default(clean_azure_env):
 
 
 def test_azure_gpu_skus_json_env_override(monkeypatch):
-    """OPENRESEARCH_AZURE_GPU_SKUS as a JSON array env var parses to the right list."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_GPU_SKUS", '["azure_a100_80","azure_a100_80x2"]')
+    """REPROLAB_AZURE_GPU_SKUS as a JSON array env var parses to the right list."""
+    monkeypatch.setenv("REPROLAB_AZURE_GPU_SKUS", '["azure_a100_80","azure_a100_80x2"]')
     s = Settings(_env_file=None)
     assert s.azure_gpu_skus == ["azure_a100_80", "azure_a100_80x2"]
 
 
 def test_azure_gpu_skus_single_element_override(monkeypatch):
-    """OPENRESEARCH_AZURE_GPU_SKUS with a single SKU parses correctly."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_GPU_SKUS", '["v100_32"]')
+    """REPROLAB_AZURE_GPU_SKUS with a single SKU parses correctly."""
+    monkeypatch.setenv("REPROLAB_AZURE_GPU_SKUS", '["v100_32"]')
     s = Settings(_env_file=None)
     assert s.azure_gpu_skus == ["v100_32"]
 
@@ -191,13 +191,13 @@ def test_azure_max_nodes_canonical_cap(clean_azure_env):
 
 def test_azure_new_fields_env_overrides(monkeypatch):
     """Env-var overrides for the 7 new operational knob fields."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_TTL_SECONDS_AFTER_FINISHED", "7200")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_JOB_BACKOFF_LIMIT", "2")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_CACHE_MOUNT_PATH", "/mnt/custom-cache")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_WATCH_POLL_INTERVAL_S", "10.0")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_OOM_BATCH_SCALE_STEP1", "0.75")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_OOM_BATCH_SCALE_FLOOR", "0.5")
-    monkeypatch.setenv("OPENRESEARCH_AZURE_BOOTSTRAP_PIP_TIMEOUT_S", "300")
+    monkeypatch.setenv("REPROLAB_AZURE_TTL_SECONDS_AFTER_FINISHED", "7200")
+    monkeypatch.setenv("REPROLAB_AZURE_JOB_BACKOFF_LIMIT", "2")
+    monkeypatch.setenv("REPROLAB_AZURE_CACHE_MOUNT_PATH", "/mnt/custom-cache")
+    monkeypatch.setenv("REPROLAB_AZURE_WATCH_POLL_INTERVAL_S", "10.0")
+    monkeypatch.setenv("REPROLAB_AZURE_OOM_BATCH_SCALE_STEP1", "0.75")
+    monkeypatch.setenv("REPROLAB_AZURE_OOM_BATCH_SCALE_FLOOR", "0.5")
+    monkeypatch.setenv("REPROLAB_AZURE_BOOTSTRAP_PIP_TIMEOUT_S", "300")
 
     s = Settings(_env_file=None)
     assert s.azure_ttl_seconds_after_finished == 7200

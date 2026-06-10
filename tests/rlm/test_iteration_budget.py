@@ -162,7 +162,7 @@ def test_wall_clock_floor_beats_budget_cap() -> None:
 
 def test_none_max_iterations_disables_cap(monkeypatch) -> None:
     """When max_rlm_iterations is None and env var absent, cap is disabled."""
-    monkeypatch.delenv("OPENRESEARCH_MAX_RLM_ITERATIONS", raising=False)
+    monkeypatch.delenv("REPROLAB_MAX_RLM_ITERATIONS", raising=False)
     policy = _make_policy(
         iteration=100,
         max_rlm_iterations=None,
@@ -179,7 +179,7 @@ def test_none_max_iterations_disables_cap(monkeypatch) -> None:
 
 def test_cap_read_from_env_var(monkeypatch) -> None:
     """When max_rlm_iterations is None on the object, env var is consulted."""
-    monkeypatch.setenv("OPENRESEARCH_MAX_RLM_ITERATIONS", "3")
+    monkeypatch.setenv("REPROLAB_MAX_RLM_ITERATIONS", "3")
     policy = _make_policy(
         iteration=3,
         max_rlm_iterations=None,  # should fall back to env var
@@ -192,7 +192,7 @@ def test_cap_read_from_env_var(monkeypatch) -> None:
 
 def test_env_var_not_active_below_limit(monkeypatch) -> None:
     """Env-var cap does not fire when current_iteration < env-var cap."""
-    monkeypatch.setenv("OPENRESEARCH_MAX_RLM_ITERATIONS", "10")
+    monkeypatch.setenv("REPROLAB_MAX_RLM_ITERATIONS", "10")
     policy = _make_policy(
         iteration=2,
         max_rlm_iterations=None,
@@ -209,7 +209,7 @@ def test_env_var_not_active_below_limit(monkeypatch) -> None:
 
 def test_zero_max_iterations_disables_cap(monkeypatch) -> None:
     """max_rlm_iterations=0 disables the cap (0 means 'no cap')."""
-    monkeypatch.delenv("OPENRESEARCH_MAX_RLM_ITERATIONS", raising=False)
+    monkeypatch.delenv("REPROLAB_MAX_RLM_ITERATIONS", raising=False)
     policy = _make_policy(
         iteration=0,
         max_rlm_iterations=0,

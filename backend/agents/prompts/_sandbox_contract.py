@@ -36,7 +36,7 @@ runpod sandboxes — write scripts to the contract and they work on all three.
 
 ## Environment variables (set for every command, every sandbox mode)
 - `OUTPUT_DIR`            -> writable artifact directory; use for ALL outputs
-- `OPENRESEARCH_ARTIFACT_DIR` -> alias of OUTPUT_DIR
+- `REPROLAB_ARTIFACT_DIR` -> alias of OUTPUT_DIR
 - `MPLCONFIGDIR`          -> `$OUTPUT_DIR/.matplotlib` (matplotlib cache target)
 - `PYTHONUNBUFFERED`      -> `1`
 

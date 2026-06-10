@@ -4,7 +4,7 @@ Pinned guarantees:
 
   * make_key is deterministic and version-prefixed
   * Allow-list gate: only CACHEABLE_PRIMITIVES are cached
-  * Disable env var (OPENRESEARCH_PRIMITIVE_CACHE=disabled) short-circuits both put and get
+  * Disable env var (REPROLAB_PRIMITIVE_CACHE=disabled) short-circuits both put and get
   * maybe_get returns None on every fail-soft path (no file, no dir, corrupt JSON, wrong shape)
   * put is fail-soft: corrupted FS path doesn't raise
   * Round-trip: put -> maybe_get returns the same dict

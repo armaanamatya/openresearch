@@ -66,17 +66,17 @@ def _root_sdk_max_retries() -> int:
     Defaults higher than the shared sub-agent budget (2) because an EMPTY root
     completion ends the entire reproduction loop — paying one or two extra
     retries is cheap insurance against a premature exit. Override with
-    ``OPENRESEARCH_RLM_ROOT_SDK_MAX_RETRIES``.
+    ``REPROLAB_RLM_ROOT_SDK_MAX_RETRIES``.
     """
     import os
 
-    raw = os.environ.get("OPENRESEARCH_RLM_ROOT_SDK_MAX_RETRIES", "").strip()
+    raw = os.environ.get("REPROLAB_RLM_ROOT_SDK_MAX_RETRIES", "").strip()
     if not raw:
         return 4
     try:
         return max(0, int(raw))
     except ValueError:
-        logger.warning("rlm_query: invalid OPENRESEARCH_RLM_ROOT_SDK_MAX_RETRIES=%r", raw)
+        logger.warning("rlm_query: invalid REPROLAB_RLM_ROOT_SDK_MAX_RETRIES=%r", raw)
         return 4
 
 

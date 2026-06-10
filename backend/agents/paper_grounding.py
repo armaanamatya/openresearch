@@ -46,6 +46,52 @@ def _token_overlap(name: str, paper_text: str) -> float:
     return matched / len(tokens)
 
 
+# A groundable NAME is short and single-line. Anything longer / multi-line is
+# LLM prose or a serialized structure — ungrepable against the paper text and
+# guaranteed to fire a false "not found in paper text" warning (2026-06-08:
+# values like "Based on the provided excerpt:\n\n**ML ..." and
+# "[{'name': 'CIFAR-10', 'source': 'torchvision', ...}]" flooded the warnings
+# on every run while real contamination would have drowned in the noise).
+_MAX_NAME_CHARS = 80
+
+
+def _extract_name(value: object) -> str | None:
+    """Coerce a claim-map entry to a groundable name string, or None to skip.
+
+    Handles the shapes agents actually emit: plain names, dicts carrying a
+    name-like key, serialized dict/list literals, and free prose (skipped).
+    """
+    if isinstance(value, dict):
+        for key in ("name", "id", "dataset", "title"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner.strip():
+                value = inner
+                break
+        else:
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    # Serialized structure ("[{...}]" / "{...}") → recover the name field.
+    if s.startswith(("[", "{")):
+        import ast as _ast
+        import json as _json
+        for parser in (_json.loads, _ast.literal_eval):
+            try:
+                parsed = parser(s)
+            except Exception:  # noqa: BLE001 — try the next parser
+                continue
+            if isinstance(parsed, list) and parsed:
+                parsed = parsed[0]
+            if isinstance(parsed, dict):
+                return _extract_name(parsed)
+            break
+        return None
+    if "\n" in s or len(s) > _MAX_NAME_CHARS:
+        return None  # prose, not a name — unverifiable, never warn on it
+    return s
+
+
 def _is_grounded(value: str, paper_text: str, threshold: float) -> bool:
     """Return True if value appears to be grounded in paper_text."""
     norm_value = _normalize(value)
@@ -87,16 +133,18 @@ def assert_paper_grounded(
     """
     violations: list[GroundingViolation] = []
 
-    # Check top-level datasets list
+    # Check top-level datasets list (dict entries / serialized literals are
+    # reduced to their name field; prose entries are unverifiable → skipped)
     for ds in (paper_claim_map.get("datasets") or []):
-        if not isinstance(ds, str) or not ds.strip():
+        name = _extract_name(ds)
+        if name is None:
             continue
-        if not _is_grounded(ds, paper_text, min_overlap_threshold):
+        if not _is_grounded(name, paper_text, min_overlap_threshold):
             violations.append(GroundingViolation(
                 field="datasets",
-                value=ds,
+                value=name,
                 suggestion=(
-                    f"'{ds}' not found in paper text — verify the dataset name "
+                    f"'{name}' not found in paper text — verify the dataset name "
                     f"matches the paper's wording exactly"
                 ),
             ))
@@ -106,15 +154,15 @@ def assert_paper_grounded(
         if not isinstance(claim, dict):
             continue
         for field_name in ("dataset", "method", "metric"):
-            val = claim.get(field_name)
-            if not isinstance(val, str) or not val.strip():
+            name = _extract_name(claim.get(field_name))
+            if name is None:
                 continue
-            if not _is_grounded(val, paper_text, min_overlap_threshold):
+            if not _is_grounded(name, paper_text, min_overlap_threshold):
                 violations.append(GroundingViolation(
                     field=field_name,
-                    value=val,
+                    value=name,
                     suggestion=(
-                        f"'{val}' (claim.{field_name}) not found in paper text — "
+                        f"'{name}' (claim.{field_name}) not found in paper text — "
                         f"check if this name is from a different paper"
                     ),
                 ))

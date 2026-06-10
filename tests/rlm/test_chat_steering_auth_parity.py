@@ -132,8 +132,8 @@ def test_post_message_endpoint_works_regardless_of_root_model(monkeypatch, tmp_p
     # Isolate runs root and settings cache.
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
-    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
+    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
     _reset_settings_cache()
 
     try:

@@ -432,7 +432,7 @@ class CodexCliProvider:
     This is the OpenAI-side subscription fallback matching
     ``ClaudeCodeSdkProvider``: it uses the operator's existing ``codex login``
     session rather than an ``OPENAI_API_KEY``. The OAuth token remains opaque to
-    OpenResearch; the CLI owns refresh and expiry handling.
+    ReproLab; the CLI owns refresh and expiry handling.
     """
 
     name = "codex_cli"
@@ -465,7 +465,7 @@ class CodexCliProvider:
         cli = self._cli_path()
         if cli is None:
             raise RuntimeError("codex CLI not on PATH")
-        with tempfile.TemporaryDirectory(prefix="openresearch-codex-audit-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="reprolab-codex-audit-") as tmp:
             out_path = Path(tmp) / "last_message.txt"
             result = subprocess.run(
                 [

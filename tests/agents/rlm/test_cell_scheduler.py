@@ -10,7 +10,7 @@ Tests cover:
     manifest, fingerprint mismatch, match → True).
   * write_cell_manifest: full payload written, completed_at absent when now_iso
     is None, OSError swallowed, caller prefix appears in logged warning.
-  * is_resume_armed: reads OPENRESEARCH_RESUME_CELLS correctly.
+  * is_resume_armed: reads REPROLAB_RESUME_CELLS correctly.
   * deadline_from_timeout: None / zero / positive.
   * clamp_cell_timeout: all combinations of None/set per_cell / overall deadline.
 """
@@ -331,19 +331,19 @@ class TestWriteCellManifest:
 class TestIsResumeArmed:
     def test_truthy_values(self, monkeypatch):
         for val in ("1", "true", "yes", "on"):
-            monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", val)
+            monkeypatch.setenv("REPROLAB_RESUME_CELLS", val)
             assert is_resume_armed() is True
 
     def test_unset_returns_false(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         assert is_resume_armed() is False
 
     def test_empty_string_returns_false(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "")
         assert is_resume_armed() is False
 
     def test_whitespace_only_returns_false(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "   ")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "   ")
         assert is_resume_armed() is False
 
 

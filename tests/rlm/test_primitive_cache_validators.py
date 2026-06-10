@@ -268,7 +268,7 @@ def test_every_cacheable_primitive_has_a_validator() -> None:
 
 
 def test_disable_env_var_short_circuits_maybe_get(tmp_path: Path, monkeypatch) -> None:
-    """The CLI's --no-cache sets OPENRESEARCH_PRIMITIVE_CACHE=disabled. Even a
+    """The CLI's --no-cache sets REPROLAB_PRIMITIVE_CACHE=disabled. Even a
     valid cache entry must be skipped when the env var is set."""
     key = pc.make_key("understand_section", payload={"text_slice": "abc"})
     good_entry = {

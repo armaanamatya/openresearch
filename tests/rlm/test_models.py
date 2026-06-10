@@ -105,7 +105,7 @@ class TestLayeredDefault:
 
     def test_default_with_openai_key(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
+        monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
         # Re-import so ROOT_MODELS is fresh; resolve_root_model reads env at call time.
         mod = _reload_models()
         result = mod.resolve_root_model(None)
@@ -114,7 +114,7 @@ class TestLayeredDefault:
     def test_default_without_openai_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
-        monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
+        monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # qwen3-coder default needs it (A1-H1)
         # Patch OAuth so this test is deterministic regardless of local claude login.
         monkeypatch.setattr(
@@ -127,14 +127,14 @@ class TestLayeredDefault:
 
     def test_env_var_overrides_fallback(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "claude")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "claude")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         mod = _reload_models()
         result = mod.resolve_root_model(None)
         assert result.key == "claude"
 
     def test_explicit_name_beats_env_var(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "claude")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "claude")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         from backend.agents.rlm.models import resolve_root_model
 
@@ -222,14 +222,14 @@ class TestEnvVarSlugOverride:
     """OpenRouter slugs can be overridden via env vars (config-driven, not hardcoded)."""
 
     def test_qwen_slug_env_var(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_SLUG_QWEN", "qwen/qwen3-custom-test")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_SLUG_QWEN", "qwen/qwen3-custom-test")
         mod = _reload_models()
         assert mod.ROOT_MODELS["qwen3-coder"].backend_kwargs["model_name"] == (
             "qwen/qwen3-custom-test"
         )
 
     def test_kimi_slug_env_var(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_SLUG_KIMI", "moonshotai/kimi-custom")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_SLUG_KIMI", "moonshotai/kimi-custom")
         mod = _reload_models()
         assert mod.ROOT_MODELS["kimi-k2.5"].backend_kwargs["model_name"] == (
             "moonshotai/kimi-custom"

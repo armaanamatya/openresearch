@@ -53,9 +53,9 @@ class TestResolveOff:
 
 class TestResolveEndpoint:
     def test_returns_endpoint_when_probe_ok(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://host:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "my-model")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "tok-123")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://host:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "my-model")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "tok-123")
 
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
@@ -70,19 +70,19 @@ class TestResolveEndpoint:
         assert ep.is_azure is False
 
     def test_raises_when_url_missing(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
-        with pytest.raises(AcceleratorError, match="OPENRESEARCH_ACCELERATOR_BASE_URL"):
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
+        with pytest.raises(AcceleratorError, match="REPROLAB_ACCELERATOR_BASE_URL"):
             resolve_accelerator("endpoint")
 
     def test_raises_when_model_missing(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://host:8001/v1")
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_MODEL", raising=False)
-        with pytest.raises(AcceleratorError, match="OPENRESEARCH_ACCELERATOR_MODEL"):
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://host:8001/v1")
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_MODEL", raising=False)
+        with pytest.raises(AcceleratorError, match="REPROLAB_ACCELERATOR_MODEL"):
             resolve_accelerator("endpoint")
 
     def test_raises_when_probe_fails(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://host:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "m")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://host:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "m")
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_false
         ):
@@ -90,9 +90,9 @@ class TestResolveEndpoint:
                 resolve_accelerator("endpoint")
 
     def test_default_api_key_is_local(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://host:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "m")
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_API_KEY", raising=False)
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://host:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "m")
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_API_KEY", raising=False)
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
         ):
@@ -107,8 +107,8 @@ class TestResolveEndpoint:
 
 class TestResolveLocal:
     def test_returns_endpoint_when_probe_ok(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
         ):
@@ -123,7 +123,7 @@ class TestResolveLocal:
         The contract is documented: the server may simply not be running yet;
         callers should fall back to the default Sonnet/OAuth path.
         """
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_false
         ):
@@ -131,8 +131,8 @@ class TestResolveLocal:
         assert ep is None
 
     def test_default_url_and_model_used_when_env_absent(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_MODEL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_MODEL", raising=False)
         captured = {}
 
         def _capture(url, **kw):
@@ -147,10 +147,10 @@ class TestResolveLocal:
         assert "Qwen" in ep.model
 
     def test_api_key_from_env_passed_to_probe_and_endpoint(self, monkeypatch):
-        """FIX 2: OPENRESEARCH_ACCELERATOR_API_KEY is forwarded to probe_endpoint and the endpoint."""
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "my-secret-key")
+        """FIX 2: REPROLAB_ACCELERATOR_API_KEY is forwarded to probe_endpoint and the endpoint."""
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "my-secret-key")
         captured = {}
 
         def _capture(url, *, api_key=None, **kw):
@@ -169,10 +169,10 @@ class TestResolveLocal:
         assert ep.api_key == "my-secret-key"
 
     def test_default_api_key_is_local_when_env_absent(self, monkeypatch):
-        """FIX 2: api_key defaults to 'local' when OPENRESEARCH_ACCELERATOR_API_KEY is unset."""
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_API_KEY", raising=False)
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        """FIX 2: api_key defaults to 'local' when REPROLAB_ACCELERATOR_API_KEY is unset."""
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_API_KEY", raising=False)
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
 
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
@@ -187,9 +187,9 @@ class TestResolveLocal:
     def test_model_mismatch_logs_warning(self, monkeypatch):
         """FIX 3: a WARNING is logged when the requested model is not in the served list."""
         import logging
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "local")
 
         # Served list contains a different model
         import json
@@ -237,13 +237,13 @@ class TestResolveLocal:
 
 class TestResolveRunpod:
     def test_raises_when_no_url_set_explicit(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         with pytest.raises(AcceleratorError, match="auto-provisioning not yet implemented"):
             resolve_accelerator("runpod")
 
     def test_returns_endpoint_when_url_set_and_probe_ok(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "my-model")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "my-model")
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
         ):
@@ -252,8 +252,8 @@ class TestResolveRunpod:
         assert ep.kind == "runpod"
 
     def test_raises_when_url_set_but_probe_fails_explicit(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "my-model")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "my-model")
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_false
         ):
@@ -310,7 +310,7 @@ class TestResolveAzure:
 class TestResolveAuto:
     def test_returns_none_when_no_providers_satisfied(self, monkeypatch):
         """No GPU, no runpod env, no azure creds → None."""
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
 
@@ -325,8 +325,8 @@ class TestResolveAuto:
         assert ep is None
 
     def test_prefers_local_when_gpu_present_and_probe_ok(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_BASE_URL", "http://127.0.0.1:8001/v1")
+        monkeypatch.setenv("REPROLAB_ACCELERATOR_MODEL", "Qwen/Qwen2.5-Coder-32B")
 
         with patch(
             "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
@@ -340,7 +340,7 @@ class TestResolveAuto:
         assert ep.kind == "local"
 
     def test_falls_back_to_azure_when_local_unavailable(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://r.openai.azure.com")
         monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-dep")
@@ -357,7 +357,7 @@ class TestResolveAuto:
         assert ep.kind == "azure"
 
     def test_returns_none_when_no_gpu_no_azure(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
 
@@ -373,7 +373,7 @@ class TestResolveAuto:
 
     def test_never_raises(self, monkeypatch):
         """auto mode must not raise even when something unexpected breaks."""
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
+        monkeypatch.delenv("REPROLAB_ACCELERATOR_BASE_URL", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
 

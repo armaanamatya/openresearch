@@ -4,11 +4,11 @@ Spec: ``docs/superpowers/specs/2026-06-07-bes-integration/phase-4-frontier-and-h
 
 Two GATED, default-OFF behaviours are added to ``alfworld_env.ALFWorldEnv``:
 
-  * **A1 (``OPENRESEARCH_ALFWORLD_ENV_REUSE``)** — construct the underlying TextWorld
+  * **A1 (``REPROLAB_ALFWORLD_ENV_REUSE``)** — construct the underlying TextWorld
     env once per instance and ``reset()`` it in place across episodes instead of
     rebuilding it every episode (the ~82× reload tax). Flag OFF ⇒ rebuild every
     episode (byte-identical to the original).
-  * **A2 (``OPENRESEARCH_ALFWORLD_SHAPING``)** — emit dense INTERMEDIATE sub-goal
+  * **A2 (``REPROLAB_ALFWORLD_SHAPING``)** — emit dense INTERMEDIATE sub-goal
     progress credit on non-terminal steps, while the terminal ``float(won)`` /
     ``info["won"]`` stay the SEPARATE authoritative signal. Flag OFF ⇒ every
     intermediate step's reward is exactly ``0.0`` (byte-identical to the original
@@ -117,7 +117,7 @@ def _clear_phase4_flags(monkeypatch):
 
 
 def test_shaping_off_intermediate_reward_is_zero():
-    """With OPENRESEARCH_ALFWORLD_SHAPING unset, every non-terminal step rewards 0.0.
+    """With REPROLAB_ALFWORLD_SHAPING unset, every non-terminal step rewards 0.0.
 
     This is the byte-identical baseline: even a step that WOULD earn shaped credit
     (reaching the apple, opening the fridge) returns exactly 0.0 when the flag is
@@ -281,13 +281,13 @@ def test_extract_target_noun(goal, expected):
 
 def test_flag_on_helper_truthy_values(monkeypatch):
     for truthy in ("1", "true", "TRUE", "yes", "on", "On"):
-        monkeypatch.setenv("OPENRESEARCH_TEST_FLAG_X", truthy)
-        assert alfworld_env._flag_on("OPENRESEARCH_TEST_FLAG_X") is True
+        monkeypatch.setenv("REPROLAB_TEST_FLAG_X", truthy)
+        assert alfworld_env._flag_on("REPROLAB_TEST_FLAG_X") is True
     for falsy in ("0", "false", "no", "off", "", "  "):
-        monkeypatch.setenv("OPENRESEARCH_TEST_FLAG_X", falsy)
-        assert alfworld_env._flag_on("OPENRESEARCH_TEST_FLAG_X") is False
-    monkeypatch.delenv("OPENRESEARCH_TEST_FLAG_X", raising=False)
-    assert alfworld_env._flag_on("OPENRESEARCH_TEST_FLAG_X") is False
+        monkeypatch.setenv("REPROLAB_TEST_FLAG_X", falsy)
+        assert alfworld_env._flag_on("REPROLAB_TEST_FLAG_X") is False
+    monkeypatch.delenv("REPROLAB_TEST_FLAG_X", raising=False)
+    assert alfworld_env._flag_on("REPROLAB_TEST_FLAG_X") is False
 
 
 def test_shaped_step_reward_is_zero_when_flag_off():

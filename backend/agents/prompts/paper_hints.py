@@ -3,7 +3,7 @@
 Each entry in ``PAPER_HINTS`` is a :class:`PaperHint` carrying three independent
 layers that compose with operator-set configuration:
 
-  - ``guidance``: appended to ``OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`` so the agent
+  - ``guidance``: appended to ``REPROLAB_BASELINE_EXTRA_GUIDANCE`` so the agent
     sees the paper-specific algorithmic invariants in its baseline-implementation
     prompt (existing hook in ``backend/agents/baseline_implementation.py``).
   - ``default_scope``: a :class:`ScopeSpec` providing the rubric-default models /
@@ -148,17 +148,87 @@ PAPER_HINTS: dict[str, PaperHint] = {
     # end — a wall-clock timeout fired mid-sweep and zeroed the four finished
     # families. This hint caps + cell-structures the sweep so each config is
     # independently bounded and partial results survive a timeout.
+    "1412.6806": PaperHint(
+        guidance=(
+            "All-CNN (1412.6806) — the rubric's dominant lever is the CIFAR-10 "
+            "model-comparison table: models A/B/C, each as base / strided-CNN / "
+            "ConvPool-CNN / All-CNN variants (12 combos; headline: All-CNN-C "
+            "~9.1% test error without augmentation, and the strided/all-conv "
+            "variants matching or beating their pooling counterparts).\n"
+            "LEARNING-RATE PROTOCOL (the #1 prior-run killer — single global "
+            "lr=0.05 dead-trained ConvPool/base variants on three attempts): "
+            "the paper selects gamma PER MODEL from {0.25, 0.1, 0.05, 0.01}. "
+            "Run a SHORT lr probe per (model, variant) — a few epochs, pick "
+            "the best by val accuracy — THEN launch the full 350-epoch run at "
+            "each model's own lr. Never share one lr across architectures. "
+            "Recipe: SGD momentum 0.9, weight decay 0.001, lr x0.1 at epochs "
+            "[200, 250, 300], 350 epochs total, dropout 20% on input + 50% "
+            "after pooling (or its replacement), global-contrast-normalization "
+            "+ ZCA whitening.\n"
+            "STRUCTURE: emit cells.json with ONE cell per (model, variant, "
+            "dataset) and EXPLICIT model_key/env/baseline axes per cell (e.g. "
+            "model_key='c_allcnn', env='cifar10_noaug', baseline='allcnn') "
+            "plus that cell's chosen lr; train_cell.py writes a FLAT per-cell "
+            "metrics.json with test_error_pct. Aggregate per_model entries "
+            "ATOMICALLY as cells finish so a timeout truncates the tail, not "
+            "finished work. CIFAR-100 (All-CNN, with aug) comes only AFTER all "
+            "CIFAR-10 cells land. The ImageNet experiment is OUT OF SCOPE on "
+            "this budget: write it MECHANICALLY into metrics.json as "
+            "scope.gaps=[{'item': 'ImageNet', 'reason': 'out of compute scope "
+            "(operator-bounded)'}] — a declared gap is excluded from scoring; "
+            "an undeclared one scores 0. Never fake or silently omit it.\n"
+            "CHEAP RUBRIC EVIDENCE the prior attempt left on the table: "
+            "(a) MEASURE per-model parameter counts (count_parameters at model "
+            "build) and record them under per_model[*].param_count — the paper's "
+            "tables compare them; (b) after the best All-CNN model trains, "
+            "produce the paper's Section-4 visualization: guided-backprop / "
+            "deconv ReLU-masking saliency for a few CIFAR images (~50 lines of "
+            "hooks), saved as fig_relu_masking.png + a JSON sidecar; (c) if a "
+            "PRIOR-ATTEMPT MEASURED EVIDENCE block is present in this prompt, "
+            "treat it as ground truth: restore configs that hit paper-grade "
+            "errors verbatim, and only probe lr for cells with no working "
+            "config in ANY attempt."
+        ),
+        default_scope=ScopeSpec(
+            datasets=[
+                DatasetSlice(name="CIFAR-10"),
+                DatasetSlice(name="CIFAR-100"),
+            ],
+            seeds=[1],
+        ),
+    ),
     "1412.6980": PaperHint(
         guidance=(
-            "Adam (1412.6980) timeout-survival structure: the VAE bias-correction "
-            "sweep is the long pole (~21 configs = beta2 x lr x optimizer, each x 20 "
-            "epochs). CAP it to a smallest-config-first subset (NOT the full grid) and "
-            "structure it as `cells.json` cells (one cell per config in train_cell.py), "
-            "never a monolithic in-process loop, so the harness bounds each config and "
-            "its metrics land incrementally. The four quick families (MNIST-MLP, MNIST "
-            "logistic-regression, IMDB, CIFAR10) are cheap: write metrics.json "
-            "ATOMICALLY as each completes (never only at the end) so a timeout truncates "
-            "the tail, not finished work."
+            "Adam (1412.6980) — PRIORITY #1: reproduce ALL SIX experiment families and "
+            "aggregate EACH into metrics.json `per_model[<experiment>]` with MEASURED SCALAR "
+            "values. A metrics.json that contains only one experiment scores ~0 on BOTH "
+            "Result-match and Eval-protocol — breadth across experiments is the dominant "
+            "lever. The six families: (1) MNIST logistic-regression, (2) IMDB BoW, (3) MNIST "
+            "MLP, (4) CIFAR-10 CNN, (5) VAE bias-correction, (6) VAE LR sweep (Fig 4). Do the "
+            "FOUR CHEAP families (1-4) FIRST and write their per_model[...] entries (with real "
+            "accuracy/NLL scalars) BEFORE touching any VAE work; write metrics.json ATOMICALLY "
+            "as each family completes so a timeout truncates the tail, not finished work.\n"
+            "The VAE LR sweep (6) is the LONG POLE — do it LAST and CAP it to a "
+            "smallest-config-first subset (NOT the full ~21-config grid); structure the VAE "
+            "sweep as `cells.json` cells (one per config), never a monolithic loop. The "
+            "bias-corrected VAE config can DIVERGE at high LR (NaN reconstruction -> CUDA "
+            "`input_val >= 0 && <= 1` assert) — clamp/sigmoid the decoder output to [0,1] (or "
+            "use BCE-with-logits) and guard NaN so a diverging config records a (bad) ELBO "
+            "scalar instead of CRASHING the cell.\n"
+            "ADDITIVE convergence evidence — ONLY after the per_model scalars for all six "
+            "families are in (never instead of them): the paper's headline claims are about "
+            "CONVERGENCE SPEED, so also emit a per-epoch `history` block "
+            "(history.<experiment>.<optimizer> = {epoch:[...], <metric>:[...]}) on a COMMON "
+            "x-axis with identical init across optimizers (fair_comparison.snapshot_init_state "
+            "once -> restore_init_state before each optimizer -> record init_fingerprint per "
+            "optimizer in provenance.json); write the VAE sweep results under metrics.json "
+            "`vae_lr_sweep`; emit cumulative `regret` as a time-series ARRAY (not a scalar); "
+            "render fig_4 as loss-vs-log10(alpha) with a LOG x-axis (axis sidecar JSON). "
+            "CIFAR-10 uses global-contrast-normalization + ZCA whitening; the MLP/MNIST panel "
+            "includes AdaDelta + SFO baselines. Call "
+            "rubric_guard.assert_metrics_schema(structured_evidence=...) at the end of "
+            "train.py so a missing curve/sweep/series is repaired — but get the six per_model "
+            "scalars landing FIRST."
         ),
         default_scope=ScopeSpec(
             datasets=[
@@ -168,6 +238,13 @@ PAPER_HINTS: dict[str, PaperHint] = {
             ],
             seeds=[1],
         ),
+        structured_evidence={
+            "history_methods": [
+                "adam", "sgd_nesterov", "adagrad", "adamax", "rmsprop", "adadelta",
+            ],
+            "sweeps": ["vae_lr_sweep"],
+            "series": ["regret"],
+        },
     ),
 }
 

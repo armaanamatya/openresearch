@@ -42,7 +42,7 @@ def _reset_settings_cache():
 @pytest.fixture(autouse=True)
 def _isolate_settings_cache():
     """Drop the cached Settings around every test in this module so changes to
-    OPENRESEARCH_RUNS_ROOT / OPENRESEARCH_DEMO_SECRET take effect, and so we never leak
+    REPROLAB_RUNS_ROOT / REPROLAB_DEMO_SECRET take effect, and so we never leak
     a test-specific Settings object into other modules' tests.
     """
     _reset_settings_cache()
@@ -53,11 +53,11 @@ def _isolate_settings_cache():
 
 
 def _fresh_app(monkeypatch, runs_root: Path, *, demo_secret: str = ""):
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
     if demo_secret:
-        monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", demo_secret)
+        monkeypatch.setenv("REPROLAB_DEMO_SECRET", demo_secret)
     else:
-        monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+        monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
     _reset_settings_cache()
 
     from backend.app import create_app

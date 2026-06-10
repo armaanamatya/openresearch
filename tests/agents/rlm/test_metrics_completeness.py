@@ -55,7 +55,7 @@ def test_partial_one_model_measured_is_ok():
 
 
 def test_toggle_off(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_METRICS_COMPLETENESS_CHECK", "0")
+    monkeypatch.setenv("REPROLAB_METRICS_COMPLETENESS_CHECK", "0")
     assert _v({"status": "running", "per_model": {"m": {}}}) is None
 
 

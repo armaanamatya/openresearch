@@ -112,8 +112,8 @@ def rlm_offline_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
 
     def _run(base: Path, project_id: str = "artifact-contract-test") -> Path:
-        monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
-        monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
+        monkeypatch.setenv("REPROLAB_RLM_STUB_PRIMITIVES", "1")
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
 
         db_url = f"sqlite:///{base / 'contract_test.db'}"

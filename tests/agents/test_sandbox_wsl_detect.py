@@ -5,7 +5,7 @@ Covers:
 - _docker_reachable() via shutil.which + subprocess.run
 - resolve_sandbox_mode("auto") WSL routing
 - Explicit docker choice is never overridden
-- OPENRESEARCH_FORCE_SANDBOX env override takes precedence
+- REPROLAB_FORCE_SANDBOX env override takes precedence
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def test_resolve_auto_on_wsl_no_docker_returns_local(monkeypatch):
     """On WSL with no reachable docker, auto → local."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
+    monkeypatch.delenv("REPROLAB_FORCE_SANDBOX", raising=False)
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
@@ -161,7 +161,7 @@ def test_resolve_auto_on_wsl_with_docker_uses_default(monkeypatch):
 
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
+    monkeypatch.delenv("REPROLAB_FORCE_SANDBOX", raising=False)
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: True)
 
@@ -178,7 +178,7 @@ def test_explicit_docker_not_overridden_on_wsl(monkeypatch):
     """Explicit sandbox='docker' is never overridden, even on WSL without docker daemon."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
+    monkeypatch.delenv("REPROLAB_FORCE_SANDBOX", raising=False)
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
@@ -189,11 +189,11 @@ def test_explicit_docker_not_overridden_on_wsl(monkeypatch):
     _docker_reachable.cache_clear()
 
 
-def test_OPENRESEARCH_FORCE_SANDBOX_still_wins(monkeypatch):
-    """OPENRESEARCH_FORCE_SANDBOX=runpod overrides even WSL+no-docker auto resolution."""
+def test_REPROLAB_FORCE_SANDBOX_still_wins(monkeypatch):
+    """REPROLAB_FORCE_SANDBOX=runpod overrides even WSL+no-docker auto resolution."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.setenv("OPENRESEARCH_FORCE_SANDBOX", "runpod")
+    monkeypatch.setenv("REPROLAB_FORCE_SANDBOX", "runpod")
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
@@ -202,4 +202,4 @@ def test_OPENRESEARCH_FORCE_SANDBOX_still_wins(monkeypatch):
 
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
+    monkeypatch.delenv("REPROLAB_FORCE_SANDBOX", raising=False)

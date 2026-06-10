@@ -1,4 +1,4 @@
-"""Agent system prompts for OpenResearch specialist agents (RLM path)."""
+"""Agent system prompts for ReproLab specialist agents (RLM path)."""
 
 from backend.agents.prompts.baseline_implementation import BASELINE_IMPLEMENTATION_PROMPT
 from backend.agents.prompts.improvement import (

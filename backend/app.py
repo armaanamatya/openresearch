@@ -63,7 +63,7 @@ def _runs_root() -> Path:
     import os as _os
     from backend.config import get_settings as _gs
     s = _gs()
-    env_val = _os.environ.get("OPENRESEARCH_RUNS_ROOT")
+    env_val = _os.environ.get("REPROLAB_RUNS_ROOT")
     if s.runs_root is not None:
         return Path(s.runs_root)
     if env_val:
@@ -326,7 +326,7 @@ async def _query_runpod_status(project_id: str, sandbox_mode: str | None, settin
             "api_error": str(exc),
         }
 
-    prefix = f"openresearch-{_safe_runpod_name_part(project_id)}-"
+    prefix = f"reprolab-{_safe_runpod_name_part(project_id)}-"
     matching = [
         pod
         for pod in pods
@@ -402,14 +402,14 @@ def _make_lifespan():
     async def lifespan(app: FastAPI):
         # Startup
         _pod_sweep_enabled = (
-            bool(os.environ.get("OPENRESEARCH_RUNPOD_API_KEY"))
-            and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower()
+            bool(os.environ.get("REPROLAB_RUNPOD_API_KEY"))
+            and os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower()
             not in {"false", "0", "no", "off"}
         )
         scheduler = PodSweepScheduler()
         if _pod_sweep_enabled:
             try:
-                max_age = int(os.environ.get("OPENRESEARCH_POD_SWEEP_MAX_AGE_S", "7200"))
+                max_age = int(os.environ.get("REPROLAB_POD_SWEEP_MAX_AGE_S", "7200"))
                 summary = await asyncio.to_thread(
                     sweep_stale_pods,
                     max_age_seconds=max_age,
@@ -441,7 +441,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from pathlib import Path as _Path
     settings = get_settings()
     # Tier 2a — install pipeline.log + pipeline.jsonl on the root logger when
-    # OPENRESEARCH_LOG_DIR / OPENRESEARCH_RUNS_ROOT is set. No-op otherwise.
+    # REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is set. No-op otherwise.
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
 
@@ -452,7 +452,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # env var being baked into the cmd shim. Reading os.environ directly
     # here removes Settings as a possible failure point, and we still benefit
     # from Settings when env is unset (e.g. tests).
-    env_runs_root = _os.environ.get("OPENRESEARCH_RUNS_ROOT")
+    env_runs_root = _os.environ.get("REPROLAB_RUNS_ROOT")
     effective_runs_root = settings.runs_root
     if effective_runs_root is None and env_runs_root:
         effective_runs_root = _Path(env_runs_root)
@@ -461,7 +461,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # captures the FULL story per-process so we can compare reloader vs
     # worker. backend.log only seems to capture stdout from one of them.
     print(
-        f"[openresearch] runs_root: settings={settings.runs_root!r} "
+        f"[reprolab] runs_root: settings={settings.runs_root!r} "
         f"env={env_runs_root!r} effective={effective_runs_root!r} "
         f"pid={_os.getpid()} cwd={_os.getcwd()!r}",
         flush=True,
@@ -473,7 +473,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
         marker_root.mkdir(parents=True, exist_ok=True)
         (marker_root / f"_create_app_pid{_os.getpid()}.txt").write_text(
             f"settings.runs_root={settings.runs_root!r}\n"
-            f"env OPENRESEARCH_RUNS_ROOT={env_runs_root!r}\n"
+            f"env REPROLAB_RUNS_ROOT={env_runs_root!r}\n"
             f"effective={effective_runs_root!r}\n"
             f"cwd={_os.getcwd()}\n"
             f"argv={_sys.argv}\n",
@@ -482,13 +482,13 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     except Exception:
         pass
 
-    # Honor OPENRESEARCH_RUNS_ROOT so dev.ps1 / dev.sh actually colocate pipeline
+    # Honor REPROLAB_RUNS_ROOT so dev.ps1 / dev.sh actually colocate pipeline
     # workspaces with the launch's server logs. When unset, FileLiveRunService
     # falls back to <repo>/runs as before.
     service = run_service or FileLiveRunService(runs_root=effective_runs_root)
 
     app = FastAPI(
-        title="OpenResearch Agent",
+        title="ReproLab Agent",
         version=__version__,
         debug=settings.debug,
         lifespan=_make_lifespan(),
@@ -575,7 +575,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                headers={"user-agent": "OpenResearch/0.1 (+https://github.com/anthropics/openresearch)"},
+                headers={"user-agent": "ReproLab/0.1 (+https://github.com/anthropics/openresearch)"},
             ) as client:
                 response = await client.get(fetch_url)
         except httpx.HTTPError as exc:

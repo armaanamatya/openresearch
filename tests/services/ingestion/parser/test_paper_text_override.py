@@ -1,4 +1,4 @@
-"""Tests for the OPENRESEARCH_PAPER_TEXT_PATH override hook in parser/service.py.
+"""Tests for the REPROLAB_PAPER_TEXT_PATH override hook in parser/service.py.
 
 Covers:
 - override used when cascade result is empty/short,
@@ -47,34 +47,34 @@ def _write_override(tmp_path: Path, content: str, name: str = "override.txt") ->
 def test_override_no_op_when_env_unset(tmp_path: Path):
     """No env var → returns None immediately."""
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("OPENRESEARCH_PAPER_TEXT_PATH", None)
+        os.environ.pop("REPROLAB_PAPER_TEXT_PATH", None)
         result = _load_paper_text_override()
     assert result is None
 
 
 def test_override_returns_text_when_file_exists_and_large_enough(tmp_path: Path):
     p = _write_override(tmp_path, _LONG_OVERRIDE)
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": str(p)}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": str(p)}):
         result = _load_paper_text_override()
     assert result == _LONG_OVERRIDE
 
 
 def test_override_ignored_when_file_missing(tmp_path: Path):
     missing = str(tmp_path / "does_not_exist.txt")
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": missing}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": missing}):
         result = _load_paper_text_override()
     assert result is None  # missing → ignore, no crash
 
 
 def test_override_ignored_when_file_too_short(tmp_path: Path):
     p = _write_override(tmp_path, _SHORT_TEXT)
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": str(p)}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": str(p)}):
         result = _load_paper_text_override()
     assert result is None  # too short → ignore
 
 
 def test_override_ignored_when_empty_string_env(tmp_path: Path):
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": "  "}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": "  "}):
         result = _load_paper_text_override()
     assert result is None  # whitespace-only → no-op
 
@@ -87,7 +87,7 @@ def test_override_ignored_when_empty_string_env(tmp_path: Path):
 def test_resolve_cascade_good_wins_over_override(tmp_path: Path):
     """A good cascade result keeps itself even when an override is set."""
     p = _write_override(tmp_path, _LONG_OVERRIDE)
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": str(p)}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": str(p)}):
         result = _resolve_full_text(_GOOD_TEXT)
     assert result == _GOOD_TEXT, "cascade result >= 1KB must win over override"
 
@@ -95,7 +95,7 @@ def test_resolve_cascade_good_wins_over_override(tmp_path: Path):
 def test_resolve_override_wins_when_cascade_empty(tmp_path: Path):
     """When cascade returns empty, the override is used."""
     p = _write_override(tmp_path, _LONG_OVERRIDE)
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": str(p)}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": str(p)}):
         result = _resolve_full_text(None)
     assert result == _LONG_OVERRIDE
 
@@ -103,7 +103,7 @@ def test_resolve_override_wins_when_cascade_empty(tmp_path: Path):
 def test_resolve_override_wins_when_cascade_short(tmp_path: Path):
     """When cascade returns text < 1KB, the override is used."""
     p = _write_override(tmp_path, _LONG_OVERRIDE)
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": str(p)}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": str(p)}):
         result = _resolve_full_text(_SHORT_TEXT)
     assert result == _LONG_OVERRIDE
 
@@ -111,7 +111,7 @@ def test_resolve_override_wins_when_cascade_short(tmp_path: Path):
 def test_resolve_returns_none_when_cascade_empty_and_no_override(tmp_path: Path):
     """No cascade, no override → returns None (stale blob will be deleted)."""
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("OPENRESEARCH_PAPER_TEXT_PATH", None)
+        os.environ.pop("REPROLAB_PAPER_TEXT_PATH", None)
         result = _resolve_full_text(None)
     assert result is None
 
@@ -119,7 +119,7 @@ def test_resolve_returns_none_when_cascade_empty_and_no_override(tmp_path: Path)
 def test_resolve_no_op_when_env_unset_and_cascade_good():
     """Good cascade + no env var → cascade returned unchanged."""
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("OPENRESEARCH_PAPER_TEXT_PATH", None)
+        os.environ.pop("REPROLAB_PAPER_TEXT_PATH", None)
         result = _resolve_full_text(_GOOD_TEXT)
     assert result == _GOOD_TEXT
 
@@ -131,7 +131,7 @@ def test_resolve_missing_override_file_no_crash_returns_cascade(tmp_path: Path):
     (not raising an exception) so ingest can proceed.
     """
     missing = str(tmp_path / "gone.txt")
-    with patch.dict(os.environ, {"OPENRESEARCH_PAPER_TEXT_PATH": missing}):
+    with patch.dict(os.environ, {"REPROLAB_PAPER_TEXT_PATH": missing}):
         result = _resolve_full_text(None)
     assert result is None  # missing file → graceful fallback, no crash
 

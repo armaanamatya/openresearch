@@ -1,4 +1,4 @@
-"""Tests for the `openresearch paperbench` CLI subcommand.
+"""Tests for the `reprolab paperbench` CLI subcommand.
 
 These tests exercise list/summary/run (dry mode)/status against a synthetic
 mini bundle in tmp_path, so they require no LLM credentials and no network.

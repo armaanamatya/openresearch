@@ -68,7 +68,7 @@ class ChromaEmbeddingStore:
 
     def __init__(
         self,
-        collection_name: str = "openresearch_chunks",
+        collection_name: str = "reprolab_chunks",
         persist_directory: str | None = None,
     ) -> None:
         try:
@@ -76,7 +76,7 @@ class ChromaEmbeddingStore:
         except ImportError as exc:
             raise EmbeddingStoreError(
                 "chromadb is not installed. Install with: "
-                "pip install openresearch-backend[semantic]"
+                "pip install reprolab-backend[semantic]"
             ) from exc
 
         if persist_directory:
@@ -175,7 +175,7 @@ class ChromaEmbeddingStore:
 
 
 def try_create_chroma_store(
-    collection_name: str = "openresearch_chunks",
+    collection_name: str = "reprolab_chunks",
     persist_directory: str | None = None,
 ) -> ChromaEmbeddingStore | None:
     """Try to create a ChromaEmbeddingStore; return None if chromadb is not installed."""

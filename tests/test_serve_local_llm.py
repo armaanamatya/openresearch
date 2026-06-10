@@ -90,35 +90,35 @@ def test_terminate_child_signals_process_group_not_just_pid():
 # urllib is imported inside _probe_accelerator, so patch the stdlib target directly.
 
 def test_batch_probe_200_is_reachable(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_API_KEY", raising=False)
+    monkeypatch.delenv("REPROLAB_ACCELERATOR_API_KEY", raising=False)
     with patch("urllib.request.urlopen", return_value=_ctx(SimpleNamespace(status=200))):
         assert batch._probe_accelerator("127.0.0.1", 8001) is True
 
 
 def test_batch_probe_401_counts_as_reachable(monkeypatch):
     """vLLM with --api-key returns 401 to an unauthenticated probe; server IS up."""
-    monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+    monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "local")
     err = urllib.error.HTTPError("http://h", 401, "Unauthorized", {}, None)
     with patch("urllib.request.urlopen", side_effect=err):
         assert batch._probe_accelerator("127.0.0.1", 8001) is True
 
 
 def test_batch_probe_403_counts_as_reachable(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+    monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "local")
     err = urllib.error.HTTPError("http://h", 403, "Forbidden", {}, None)
     with patch("urllib.request.urlopen", side_effect=err):
         assert batch._probe_accelerator("127.0.0.1", 8001) is True
 
 
 def test_batch_probe_connection_refused_is_not_reachable(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_API_KEY", raising=False)
+    monkeypatch.delenv("REPROLAB_ACCELERATOR_API_KEY", raising=False)
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
         assert batch._probe_accelerator("127.0.0.1", 8001) is False
 
 
 def test_batch_probe_sends_auth_header(monkeypatch):
     """Verify the Authorization header is sent so an api-key-protected vLLM responds."""
-    monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_API_KEY", "tok-abc")
+    monkeypatch.setenv("REPROLAB_ACCELERATOR_API_KEY", "tok-abc")
     captured = {}
 
     def _fake_urlopen(req, timeout=None):

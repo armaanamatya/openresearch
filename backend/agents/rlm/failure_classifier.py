@@ -75,7 +75,7 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "runpod/pytorch base image already provides them",
         "network_flake":
             "transient — the next attempt should succeed; consider mounting a "
-            "persistent pip cache via OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID",
+            "persistent pip cache via REPROLAB_RUNPOD_NETWORK_VOLUME_ID",
         "cuda_oom":
             "reduce batch size in train.py or escalate to a larger-VRAM SKU "
             "(Lane gpu_escalation handles the latter automatically)",
@@ -84,7 +84,7 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "lower batch size, or raise the Docker/container memory floor",
         "runpod_capacity":
             "RunPod has no available instances of the requested SKU — escalator "
-            "advances the ladder automatically; ensure OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS "
+            "advances the ladder automatically; ensure REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS "
             "is high enough or switch tier (SECURE has better availability than COMMUNITY)",
         "runpod_transient_500":
             "bare 500 from RunPod — automatic ladder advance; if the next SKU also "
@@ -101,14 +101,14 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "switch to the torchvision direct-fetch path",
         "exec_timeout":
             "the per-command 4h cap fired; reduce train.py epochs OR set "
-            "OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S higher",
+            "REPROLAB_RUN_EXPERIMENT_TIMEOUT_S higher",
         "exec_stalled":
             "the run was killed because it produced NO output, no checkpoint write, and no "
-            "GPU/CPU activity for the stall window (OPENRESEARCH_EXPERIMENT_STALL_S) — a genuine "
+            "GPU/CPU activity for the stall window (REPROLAB_EXPERIMENT_STALL_S) — a genuine "
             "hang, likely a deadlocked dataloader / distributed collective or a frozen "
             "download. Make the step emit periodic progress (a print or a checkpoint write), "
             "avoid an un-timed blocking call (add a timeout to downloads / collectives), and "
-            "if it is a real long-but-quiet phase raise OPENRESEARCH_EXPERIMENT_STALL_S",
+            "if it is a real long-but-quiet phase raise REPROLAB_EXPERIMENT_STALL_S",
         "partial_timeout":
             "the experiment timed out but the families that completed were preserved and "
             "scored (not zeroed) — finish the rest by bounding the long pole: emit cells.json "
@@ -137,7 +137,7 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "gradient_checkpointing), shard across GPUs with torchrun+FSDP, and let OOM "
             "fail loudly (do not catch+skip the backward pass)",
         "insufficient_train_steps":
-            "training ran fewer optimizer steps than OPENRESEARCH_MIN_TRAIN_STEPS — increase "
+            "training ran fewer optimizer steps than REPROLAB_MIN_TRAIN_STEPS — increase "
             "epochs/steps so the model actually converges",
         "code_bug":
             "a dataset/env/model loader raised a Python exception (TypeError, "
@@ -152,8 +152,8 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "the RL loop (print zero-shot accuracy; fix answer extraction/matching), and "
             "ensure optimizer.step() actually runs",
         "disk_exhausted":
-            "free disk fell below OPENRESEARCH_DISK_FLOOR_GB or an HF cache dir exceeded "
-            "OPENRESEARCH_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
+            "free disk fell below REPROLAB_DISK_FLOOR_GB or an HF cache dir exceeded "
+            "REPROLAB_HF_CACHE_CAP_GB mid-run — a dataset/model download ballooned. Stream "
             "+ slice datasets (never a full natural_questions-style download), use lighter "
             "variants, or raise the floor/cap if the footprint is legitimately large",
         "incomplete_metrics":

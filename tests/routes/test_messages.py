@@ -19,8 +19,8 @@ def _isolate_settings(monkeypatch, tmp_path):
     """Each test gets an isolated runs_root and a fresh settings cache."""
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
-    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
+    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
     _reset_settings_cache()
     yield runs_root
     _reset_settings_cache()
@@ -91,7 +91,7 @@ def test_multiple_messages_accumulate(client, existing_run):
 
 
 def test_post_message_rejects_missing_demo_secret(monkeypatch, _isolate_settings, existing_run):
-    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
     _reset_settings_cache()
     from backend.app import create_app
 

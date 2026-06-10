@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 # Env-var keys
 # ---------------------------------------------------------------------------
 
-_ENV_ROOT_MODEL = "OPENRESEARCH_RLM_ROOT_MODEL"
+_ENV_ROOT_MODEL = "REPROLAB_RLM_ROOT_MODEL"
 
 # OpenRouter slug overrides — fall back to spec-default slugs if unset.
-_ENV_SLUG_QWEN_ROOT = "OPENRESEARCH_RLM_ROOT_SLUG_QWEN"
-_ENV_SLUG_QWEN_SUB = "OPENRESEARCH_RLM_SUB_SLUG_QWEN"
-_ENV_SLUG_KIMI_ROOT = "OPENRESEARCH_RLM_ROOT_SLUG_KIMI"
-_ENV_SLUG_KIMI_SUB = "OPENRESEARCH_RLM_SUB_SLUG_KIMI"
+_ENV_SLUG_QWEN_ROOT = "REPROLAB_RLM_ROOT_SLUG_QWEN"
+_ENV_SLUG_QWEN_SUB = "REPROLAB_RLM_SUB_SLUG_QWEN"
+_ENV_SLUG_KIMI_ROOT = "REPROLAB_RLM_ROOT_SLUG_KIMI"
+_ENV_SLUG_KIMI_SUB = "REPROLAB_RLM_SUB_SLUG_KIMI"
 
 
 # Default slugs used when env vars are absent.
@@ -420,7 +420,7 @@ def list_root_model_choices() -> list[dict[str, object]]:
 # whichever name they have at hand. The DEFAULT mapping prefers `claude-oauth`
 # for Sonnet-class names — most local dev runs have OAuth available (no API key
 # needed) and the OAuth client uses Sonnet by default. Users who explicitly want
-# the API-key path can set OPENRESEARCH_RLM_ROOT_MODEL=claude to override.
+# the API-key path can set REPROLAB_RLM_ROOT_MODEL=claude to override.
 
 _MODEL_ALIASES: dict[str, str] = {
     # Lab UI dropdown values
@@ -463,7 +463,7 @@ def resolve_root_model(name: str | None) -> RootModel:
 
     Resolution order:
     1. If *name* is provided (non-``None``, non-empty), look it up directly.
-    2. If *name* is ``None`` (or empty), check ``OPENRESEARCH_RLM_ROOT_MODEL`` env var.
+    2. If *name* is ``None`` (or empty), check ``REPROLAB_RLM_ROOT_MODEL`` env var.
     3. If that is also unset, use the layered default:
        ``"gpt-5"`` when ``OPENAI_API_KEY`` is set, else ``"qwen3-coder"``.
 

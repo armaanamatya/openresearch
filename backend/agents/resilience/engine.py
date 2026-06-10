@@ -246,7 +246,7 @@ async def _run_single_attempt(
 
     # Tier 2b — fan stream events into the per-agent transcript recorder
     # (set by orchestrator._invoke_agent via contextvar). Returns None when
-    # OPENRESEARCH_LOG_DIR / OPENRESEARCH_RUNS_ROOT is unset, in which case the
+    # REPROLAB_LOG_DIR / REPROLAB_RUNS_ROOT is unset, in which case the
     # rec.record_* branches no-op. Imported once outside the hot loop.
     from backend.observability.run_logging import get_recorder
     rec = get_recorder()

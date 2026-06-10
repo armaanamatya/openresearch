@@ -52,7 +52,7 @@ output "workload_identity_resource_id" {
 # ─── Container registry ──────────────────────────────────────────────────────
 
 output "acr_login_server" {
-  description = "ACR login server hostname (e.g. prefix.azurecr.io). Set as OPENRESEARCH_AZURE_ACR_LOGIN_SERVER."
+  description = "ACR login server hostname (e.g. prefix.azurecr.io). Set as REPROLAB_AZURE_ACR_LOGIN_SERVER."
   value       = module.acr.login_server
 }
 
@@ -64,17 +64,17 @@ output "acr_id" {
 # ─── Storage ─────────────────────────────────────────────────────────────────
 
 output "storage_account_name" {
-  description = "Name of the storage account hosting Blob artifacts and Azure Files cache. Set as OPENRESEARCH_AZURE_STORAGE_ACCOUNT."
+  description = "Name of the storage account hosting Blob artifacts and Azure Files cache. Set as REPROLAB_AZURE_STORAGE_ACCOUNT."
   value       = module.storage.storage_account_name
 }
 
 output "blob_container_name" {
-  description = "Name of the private Blob container (artifact bus). Set as OPENRESEARCH_AZURE_BLOB_CONTAINER."
+  description = "Name of the private Blob container (artifact bus). Set as REPROLAB_AZURE_BLOB_CONTAINER."
   value       = module.storage.blob_container_name
 }
 
 output "files_share_name" {
-  description = "Name of the Azure Files share (RWX HF_HOME / pip cache). Set as OPENRESEARCH_AZURE_FILES_SHARE."
+  description = "Name of the Azure Files share (RWX HF_HOME / pip cache). Set as REPROLAB_AZURE_FILES_SHARE."
   value       = module.storage.files_share_name
 }
 

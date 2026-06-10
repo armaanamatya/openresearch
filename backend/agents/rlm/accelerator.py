@@ -13,13 +13,13 @@ Supported providers (``mode`` arg to :func:`resolve_accelerator`):
                    Azure → ``None``.  Never raises; returns ``None`` on any
                    miss.
 * ``"local"``    — on-device vLLM server expected at
-                   ``OPENRESEARCH_ACCELERATOR_BASE_URL`` (default
+                   ``REPROLAB_ACCELERATOR_BASE_URL`` (default
                    ``http://127.0.0.1:8001/v1``).  The server itself is started
                    by ``scripts/serve_local_llm.py``; this module just resolves
                    and probes.  Returns ``None`` when the probe fails (server not
                    up) — for explicit ``"local"`` the caller gets ``None``, not an
                    exception, because the server may simply not be running yet.
-* ``"runpod"``   — scaffold: if ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is already set
+* ``"runpod"``   — scaffold: if ``REPROLAB_ACCELERATOR_BASE_URL`` is already set
                    to a RunPod proxy URL, uses it; otherwise raises
                    :class:`AcceleratorError` for explicit mode, or returns
                    ``None`` for ``"auto"``.  Full auto-provisioning is a future
@@ -29,7 +29,7 @@ Supported providers (``mode`` arg to :func:`resolve_accelerator`):
                    :class:`AcceleratorError` when creds are missing in explicit
                    mode; returns ``None`` in ``"auto"``.
 * ``"endpoint"`` — arbitrary user-supplied OpenAI-compatible endpoint from
-                   ``OPENRESEARCH_ACCELERATOR_BASE_URL``.  Raises
+                   ``REPROLAB_ACCELERATOR_BASE_URL``.  Raises
                    :class:`AcceleratorError` when the env var is absent.
 
 Adding a new provider
@@ -188,7 +188,7 @@ def _check_served_model(base_url: str, requested_model: str, *, api_key: str) ->
         if served_ids and requested_model not in served_ids:
             _log.warning(
                 "accelerator[local]: requested model %r is NOT in the served model list %r — "
-                "completions will likely return 404; set OPENRESEARCH_ACCELERATOR_MODEL to one of "
+                "completions will likely return 404; set REPROLAB_ACCELERATOR_MODEL to one of "
                 "the served ids or restart the server with the correct model",
                 requested_model,
                 served_ids,
@@ -200,18 +200,18 @@ def _check_served_model(base_url: str, requested_model: str, *, api_key: str) ->
 def _resolve_local(*, explicit: bool) -> AcceleratorEndpoint | None:
     """Resolve the on-device vLLM provider.
 
-    Reads ``OPENRESEARCH_ACCELERATOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
-    ``OPENRESEARCH_ACCELERATOR_MODEL`` (default Qwen2.5-Coder-32B-Instruct), and
-    ``OPENRESEARCH_ACCELERATOR_API_KEY`` (default ``"local"``).
+    Reads ``REPROLAB_ACCELERATOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
+    ``REPROLAB_ACCELERATOR_MODEL`` (default Qwen2.5-Coder-32B-Instruct), and
+    ``REPROLAB_ACCELERATOR_API_KEY`` (default ``"local"``).
 
     Probes the endpoint; returns ``None`` when the probe fails regardless of
     whether the call was explicit or from ``"auto"`` — the server simply may
     not be running yet, and a ``None`` return lets callers fall back to the
     default Sonnet/OAuth path without a hard error.
     """
-    base_url = os.environ.get("OPENRESEARCH_ACCELERATOR_BASE_URL", _DEFAULT_LOCAL_BASE_URL)
-    model = os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
-    api_key = os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+    base_url = os.environ.get("REPROLAB_ACCELERATOR_BASE_URL", _DEFAULT_LOCAL_BASE_URL)
+    model = os.environ.get("REPROLAB_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
+    api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
 
     if probe_endpoint(base_url, api_key=api_key):
         _check_served_model(base_url, model, api_key=api_key)
@@ -234,7 +234,7 @@ def _resolve_local(*, explicit: bool) -> AcceleratorEndpoint | None:
 def _resolve_runpod(*, explicit: bool) -> AcceleratorEndpoint | None:
     """Resolve the RunPod accelerator provider.
 
-    Scaffold implementation.  If ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is already
+    Scaffold implementation.  If ``REPROLAB_ACCELERATOR_BASE_URL`` is already
     set to a RunPod vLLM proxy URL, validate it with a probe and return the
     endpoint.  Otherwise:
 
@@ -261,18 +261,18 @@ def _resolve_runpod(*, explicit: bool) -> AcceleratorEndpoint | None:
     ``backend.services.runtime.runpod_backend``, call ``create_sandbox`` with a
     minimal ``SandboxConfig`` whose ``image`` is the vLLM container, then
     extract the public IP from the returned ``Sandbox`` object and store it in
-    ``OPENRESEARCH_ACCELERATOR_BASE_URL`` for the remainder of the process so
+    ``REPROLAB_ACCELERATOR_BASE_URL`` for the remainder of the process so
     subsequent ``_resolve_runpod`` calls hit the existing pod.
     """
-    proxy_url = os.environ.get("OPENRESEARCH_ACCELERATOR_BASE_URL", "").strip()
-    model = os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
+    proxy_url = os.environ.get("REPROLAB_ACCELERATOR_BASE_URL", "").strip()
+    model = os.environ.get("REPROLAB_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
 
     if proxy_url:
         if probe_endpoint(proxy_url):
             return AcceleratorEndpoint(
                 base_url=proxy_url,
                 model=model,
-                api_key=os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local"),
+                api_key=os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local"),
                 kind="runpod",
             )
         _log.warning(
@@ -290,11 +290,11 @@ def _resolve_runpod(*, explicit: bool) -> AcceleratorEndpoint | None:
     if explicit:
         raise AcceleratorError(
             "runpod accelerator auto-provisioning not yet implemented — "
-            "set OPENRESEARCH_ACCELERATOR_BASE_URL to a running RunPod vLLM endpoint, "
+            "set REPROLAB_ACCELERATOR_BASE_URL to a running RunPod vLLM endpoint, "
             "or use --accelerator local"
         )
     _log.info(
-        "accelerator[runpod]: OPENRESEARCH_ACCELERATOR_BASE_URL not set; "
+        "accelerator[runpod]: REPROLAB_ACCELERATOR_BASE_URL not set; "
         "skipping runpod provider in auto mode"
     )
     return None
@@ -349,37 +349,37 @@ def _resolve_azure(*, explicit: bool) -> AcceleratorEndpoint | None:
 def _resolve_endpoint(*, explicit: bool) -> AcceleratorEndpoint | None:
     """Resolve a user-supplied arbitrary OpenAI-compatible endpoint.
 
-    Reads ``OPENRESEARCH_ACCELERATOR_BASE_URL`` (required),
-    ``OPENRESEARCH_ACCELERATOR_MODEL`` (required; no default because the caller
-    must know what is served), and ``OPENRESEARCH_ACCELERATOR_API_KEY``
+    Reads ``REPROLAB_ACCELERATOR_BASE_URL`` (required),
+    ``REPROLAB_ACCELERATOR_MODEL`` (required; no default because the caller
+    must know what is served), and ``REPROLAB_ACCELERATOR_API_KEY``
     (default ``"local"``).
 
-    Raises :class:`AcceleratorError` when ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is
+    Raises :class:`AcceleratorError` when ``REPROLAB_ACCELERATOR_BASE_URL`` is
     absent.
     """
-    base_url = os.environ.get("OPENRESEARCH_ACCELERATOR_BASE_URL", "").strip()
+    base_url = os.environ.get("REPROLAB_ACCELERATOR_BASE_URL", "").strip()
     if not base_url:
         if explicit:
             raise AcceleratorError(
-                "accelerator mode 'endpoint' requires OPENRESEARCH_ACCELERATOR_BASE_URL to be set."
+                "accelerator mode 'endpoint' requires REPROLAB_ACCELERATOR_BASE_URL to be set."
             )
         return None
 
-    model = os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", "").strip()
+    model = os.environ.get("REPROLAB_ACCELERATOR_MODEL", "").strip()
     if not model:
         if explicit:
             raise AcceleratorError(
-                "accelerator mode 'endpoint' requires OPENRESEARCH_ACCELERATOR_MODEL to be set."
+                "accelerator mode 'endpoint' requires REPROLAB_ACCELERATOR_MODEL to be set."
             )
         return None
 
-    api_key = os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
+    api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
 
     if not probe_endpoint(base_url):
         if explicit:
             raise AcceleratorError(
                 f"Accelerator endpoint {base_url!r} did not respond to a health probe. "
-                "Ensure the server is running and OPENRESEARCH_ACCELERATOR_BASE_URL is correct."
+                "Ensure the server is running and REPROLAB_ACCELERATOR_BASE_URL is correct."
             )
         _log.info("accelerator[endpoint]: probe failed at %s; returning None", base_url)
         return None
@@ -466,7 +466,7 @@ def _resolve_auto(*, sandbox_mode: object) -> AcceleratorEndpoint | None:
 
     Priority order:
     1. On-device NVIDIA GPU present AND local endpoint probes OK → ``"local"``.
-    2. Sandbox is RunPod AND ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is set → ``"runpod"``.
+    2. Sandbox is RunPod AND ``REPROLAB_ACCELERATOR_BASE_URL`` is set → ``"runpod"``.
     3. Azure credentials present → ``"azure"``.
     4. None (caller keeps Sonnet/OAuth path).
 

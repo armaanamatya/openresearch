@@ -4,15 +4,15 @@ local Qwen via vLLM instead of Sonnet, to save Sonnet usage / rate-limit budget.
 Mirrors :func:`backend.agents.rlm.accelerator.resolve_accelerator`: env-driven,
 pluggable, health-probed with graceful fallback to the default Sonnet executor.
 
-Selection (``OPENRESEARCH_EXECUTOR``):
+Selection (``REPROLAB_EXECUTOR``):
   - ``sonnet`` / unset / ``off``      → None (default Claude/Sonnet executor)
   - ``qwen`` / ``local`` / ``vllm``   → OpenAI runtime on a local OpenAI-compatible
                                         endpoint (vLLM-served Qwen)
-  - ``endpoint``                      → same, against ``OPENRESEARCH_EXECUTOR_BASE_URL``
+  - ``endpoint``                      → same, against ``REPROLAB_EXECUTOR_BASE_URL``
 
-Env: ``OPENRESEARCH_EXECUTOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
-``OPENRESEARCH_EXECUTOR_MODEL`` (default ``Qwen/Qwen2.5-Coder-32B-Instruct``),
-``OPENRESEARCH_EXECUTOR_API_KEY`` (default ``local``).
+Env: ``REPROLAB_EXECUTOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
+``REPROLAB_EXECUTOR_MODEL`` (default ``Qwen/Qwen2.5-Coder-32B-Instruct``),
+``REPROLAB_EXECUTOR_API_KEY`` (default ``local``).
 """
 
 from __future__ import annotations
@@ -62,21 +62,21 @@ def resolve_executor() -> ExecutorPlan | None:
     tier is selected AND the endpoint health-probes OK; otherwise falls back to the
     default (``None``) with a warning so a missing/booting vLLM never breaks the run.
     """
-    mode = (os.environ.get("OPENRESEARCH_EXECUTOR") or "").strip().lower()
+    mode = (os.environ.get("REPROLAB_EXECUTOR") or "").strip().lower()
     if mode in _DEFAULT_MODES:
         return None
     if mode not in _VLLM_MODES:
-        logger.warning("unknown OPENRESEARCH_EXECUTOR=%r; using the default Sonnet executor", mode)
+        logger.warning("unknown REPROLAB_EXECUTOR=%r; using the default Sonnet executor", mode)
         return None
 
-    base_url = (os.environ.get("OPENRESEARCH_EXECUTOR_BASE_URL") or _DEFAULT_BASE_URL).strip()
-    api_key = (os.environ.get("OPENRESEARCH_EXECUTOR_API_KEY") or _DEFAULT_KEY).strip()
-    model = (os.environ.get("OPENRESEARCH_EXECUTOR_MODEL") or _DEFAULT_MODEL).strip()
+    base_url = (os.environ.get("REPROLAB_EXECUTOR_BASE_URL") or _DEFAULT_BASE_URL).strip()
+    api_key = (os.environ.get("REPROLAB_EXECUTOR_API_KEY") or _DEFAULT_KEY).strip()
+    model = (os.environ.get("REPROLAB_EXECUTOR_MODEL") or _DEFAULT_MODEL).strip()
 
     if not _probe(base_url, api_key):
         logger.warning(
             "executor tier %r requested but %s did not health-probe — falling back to "
-            "the default Sonnet executor (set OPENRESEARCH_EXECUTOR_BASE_URL or start vLLM)",
+            "the default Sonnet executor (set REPROLAB_EXECUTOR_BASE_URL or start vLLM)",
             mode, base_url,
         )
         return None

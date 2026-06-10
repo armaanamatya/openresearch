@@ -1,5 +1,5 @@
 output "mi_client_id" {
-  description = "Client ID of the workload managed identity. Set as the 'azure.workload.identity/client-id' annotation on the Kubernetes ServiceAccount in Helm L2, and as OPENRESEARCH_AZURE_WORKLOAD_CLIENT_ID in the orchestrator."
+  description = "Client ID of the workload managed identity. Set as the 'azure.workload.identity/client-id' annotation on the Kubernetes ServiceAccount in Helm L2, and as REPROLAB_AZURE_WORKLOAD_CLIENT_ID in the orchestrator."
   value       = azurerm_user_assigned_identity.workload.client_id
 }
 
