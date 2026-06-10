@@ -91,13 +91,13 @@ def is_aclose_race(exc: BaseException) -> bool:
 
 
 def _max_retries_from_env() -> int:
-    raw = os.environ.get("OPENRESEARCH_SDK_MAX_RETRIES", "").strip()
+    raw = os.environ.get("REPROLAB_SDK_MAX_RETRIES", "").strip()
     if not raw:
         return _DEFAULT_MAX_RETRIES
     try:
         return max(0, int(raw))
     except ValueError:
-        logger.warning("sdk_isolation: invalid OPENRESEARCH_SDK_MAX_RETRIES=%r", raw)
+        logger.warning("sdk_isolation: invalid REPROLAB_SDK_MAX_RETRIES=%r", raw)
         return _DEFAULT_MAX_RETRIES
 
 
@@ -153,7 +153,7 @@ class RunIsolated:
         if not retryable:
             attempts_allowed = 0
 
-        if os.environ.get("OPENRESEARCH_SDK_ISOLATION_DISABLED", "").lower() in {"true", "1", "yes"}:
+        if os.environ.get("REPROLAB_SDK_ISOLATION_DISABLED", "").lower() in {"true", "1", "yes"}:
             result = await factory()
             self.last_outcome = IsolationOutcome(kind="ok", attempt_count=1)
             return result
@@ -286,7 +286,7 @@ def make_run_isolated(
 ) -> RunIsolated:
     """Create a configured SDK isolation callable.
 
-    Pre: ``max_retries`` is ``None`` to read ``OPENRESEARCH_SDK_MAX_RETRIES`` or a
+    Pre: ``max_retries`` is ``None`` to read ``REPROLAB_SDK_MAX_RETRIES`` or a
     non-negative integer retry budget.
     Post: returns a reusable callable whose ``last_outcome`` reflects the most
     recent call.
@@ -313,7 +313,7 @@ async def run_isolated(
     Post: returns the coroutine result and stores diagnostics on
     ``run_isolated.last_outcome``.
     Side effects: starts worker threads unless isolation is disabled via
-    ``OPENRESEARCH_SDK_ISOLATION_DISABLED``.
+    ``REPROLAB_SDK_ISOLATION_DISABLED``.
     Exceptions raised: propagates real exceptions; raises ``IsolationFailure``
     when retryable pre-result aclose races are exhausted.
     """

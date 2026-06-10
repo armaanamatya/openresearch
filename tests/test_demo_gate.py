@@ -129,7 +129,7 @@ def test_gate_accepts_correct_secret():
 
 
 def test_runs_endpoint_rejects_missing_secret(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
     from backend.config import get_settings
     get_settings(_force_reload=True)
     try:
@@ -151,7 +151,7 @@ def test_runs_endpoint_rejects_missing_secret(monkeypatch):
 
 
 def test_delete_run_rejects_missing_secret(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
     from backend.config import get_settings
     get_settings(_force_reload=True)
     try:
@@ -173,7 +173,7 @@ def test_delete_run_rejects_missing_secret(monkeypatch):
 
 
 def test_phase2_mutating_route_rejects_missing_secret(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "topsecret")
     from backend.config import get_settings
     get_settings(_force_reload=True)
     try:
@@ -199,7 +199,7 @@ def test_phase2_mutating_route_rejects_missing_secret(monkeypatch):
 
 
 def test_unhandled_route_error_returns_json(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
     from backend.config import get_settings
     get_settings(_force_reload=True)
     try:

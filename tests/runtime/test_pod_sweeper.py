@@ -167,12 +167,12 @@ def test_parse_age_handles_malformed() -> None:
 
 
 def test_list_pods_no_api_key_returns_empty(monkeypatch) -> None:
-    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     assert ps.list_pods(api_key=None) == []
 
 
 def test_delete_pod_no_api_key_returns_false(monkeypatch) -> None:
-    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     assert ps.delete_pod("any-id", api_key=None) is False

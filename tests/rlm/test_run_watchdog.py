@@ -3,7 +3,7 @@
 Twelve guarantees pinned here:
 
   1. Default config matches the documented thresholds (300 / 1200 / 30 s).
-  2. ``OPENRESEARCH_WATCHDOG_DISABLED=true`` short-circuits run_watchdog.
+  2. ``REPROLAB_WATCHDOG_DISABLED=true`` short-circuits run_watchdog.
   3. ``from_env`` honours custom thresholds + ignores non-numeric junk.
   4. ``collect_staleness`` returns ``verdict="ok"`` when NO signal file exists
      (bootstrap-grace — can't classify nothing).
@@ -51,9 +51,9 @@ def test_default_config_thresholds() -> None:
 
 
 def test_from_env_overrides(monkeypatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_WARN_SECONDS", "120")
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_KILL_SECONDS", "900")
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_POLL_INTERVAL_SECONDS", "10")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_WARN_SECONDS", "120")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_KILL_SECONDS", "900")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS", "10")
     c = rw.WatchdogConfig.from_env()
     assert c.warn_after_seconds == 120.0
     assert c.kill_after_seconds == 900.0
@@ -61,7 +61,7 @@ def test_from_env_overrides(monkeypatch) -> None:
 
 
 def test_from_env_ignores_junk(monkeypatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_WARN_SECONDS", "not-a-number")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_WARN_SECONDS", "not-a-number")
     c = rw.WatchdogConfig.from_env()
     assert c.warn_after_seconds == 600.0  # default preserved (10 min)
 
@@ -72,13 +72,13 @@ def test_from_env_ignores_junk(monkeypatch) -> None:
 
 
 def test_is_enabled_default(monkeypatch) -> None:
-    monkeypatch.delenv("OPENRESEARCH_WATCHDOG_DISABLED", raising=False)
+    monkeypatch.delenv("REPROLAB_WATCHDOG_DISABLED", raising=False)
     assert rw.is_enabled() is True
 
 
 @pytest.mark.parametrize("val", ["true", "True", "TRUE", "1", "yes", "on"])
 def test_is_enabled_disabled_via_env(monkeypatch, val) -> None:
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_DISABLED", val)
+    monkeypatch.setenv("REPROLAB_WATCHDOG_DISABLED", val)
     assert rw.is_enabled() is False
 
 
@@ -217,7 +217,7 @@ def test_all_stale_past_kill_returns_kill(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_disabled_via_env_returns_immediately(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_WATCHDOG_DISABLED", "true")
+    monkeypatch.setenv("REPROLAB_WATCHDOG_DISABLED", "true")
     fired = []
 
     async def _on_warn(r): fired.append(("warn", r))

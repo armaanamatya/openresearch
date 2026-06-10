@@ -83,7 +83,7 @@ class RunpodBackend(RuntimeBackend):
     ) -> None:
         self.api_key = (
             api_key
-            or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
+            or os.environ.get("REPROLAB_RUNPOD_API_KEY")
             or os.environ.get("RUNPOD_API_KEY")
             or ""
         ).strip()
@@ -118,7 +118,7 @@ class RunpodBackend(RuntimeBackend):
         # error — defense in depth on top of ``delete_on_destroy=false``
         # so a logic bug or rogue caller can never delete a pod created
         # outside our process (e.g. a coworker's pod on the same account,
-        # or a persistent pod attached via OPENRESEARCH_RUNPOD_POD_ID).
+        # or a persistent pod attached via REPROLAB_RUNPOD_POD_ID).
         self._owned_pod_ids: set[str] = set()
         self._run_budget = run_budget
 
@@ -137,7 +137,7 @@ class RunpodBackend(RuntimeBackend):
         if not self.api_key:
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
-                "Runpod API key is missing. Set OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY.",
+                "Runpod API key is missing. Set REPROLAB_RUNPOD_API_KEY or RUNPOD_API_KEY.",
             )
         if not self.ssh_key_path.exists():
             raise SandboxRuntimeError(
@@ -154,7 +154,7 @@ class RunpodBackend(RuntimeBackend):
         config.resolved_artifact_root().mkdir(parents=True, exist_ok=True)
         image = self.image_name or config.image
 
-        # Persistent-pod mode: OPENRESEARCH_RUNPOD_POD_ID points at an existing pod.
+        # Persistent-pod mode: REPROLAB_RUNPOD_POD_ID points at an existing pod.
         # If it's RUNNING, attach. If it's missing/stopped, fall through to
         # create a new pod (and log the new ID prominently so the user can
         # update .env). Either way the resulting pod is never deleted on
@@ -164,7 +164,7 @@ class RunpodBackend(RuntimeBackend):
             if attached is not None:
                 return attached
             _log.warning(
-                "OPENRESEARCH_RUNPOD_POD_ID=%r is unusable; creating a new persistent pod. "
+                "REPROLAB_RUNPOD_POD_ID=%r is unusable; creating a new persistent pod. "
                 "Update .env with the new pod id printed below to reuse it next run.",
                 self.pod_id,
             )
@@ -172,7 +172,7 @@ class RunpodBackend(RuntimeBackend):
             pod_id = str(pod["id"])
             _log.warning(
                 "RUNPOD_PERSISTENT_POD_CREATED pod_id=%s name=%s — "
-                "set OPENRESEARCH_RUNPOD_POD_ID=%s in .env to reuse it.",
+                "set REPROLAB_RUNPOD_POD_ID=%s in .env to reuse it.",
                 pod_id,
                 pod.get("name") or _pod_name(config),
                 pod_id,
@@ -185,7 +185,7 @@ class RunpodBackend(RuntimeBackend):
                 # We created it but it failed to come up; user will see it
                 # in their dashboard with the warned id. We do NOT delete
                 # because the user opted into persistent mode by setting
-                # OPENRESEARCH_RUNPOD_POD_ID.
+                # REPROLAB_RUNPOD_POD_ID.
                 raise
 
         # Per-run create-and-(maybe-)destroy mode (existing behavior).
@@ -279,7 +279,7 @@ class RunpodBackend(RuntimeBackend):
         ready = ssh_ready or await self._wait_for_pod_ssh(pod_id)
         remote_base = _join_posix(
             self.volume_mount_path,
-            "openresearch",
+            "reprolab",
             _safe_name(config.project_id),
             _safe_name(config.run_id),
         )
@@ -318,7 +318,7 @@ class RunpodBackend(RuntimeBackend):
                     )
             except BudgetExhausted:
                 # Track whether destroy actually deleted the pod. For persistent
-                # pods (OPENRESEARCH_RUNPOD_POD_ID), the pod_id is intentionally not
+                # pods (REPROLAB_RUNPOD_POD_ID), the pod_id is intentionally not
                 # in _owned_pod_ids so destroy() returns without deleting —
                 # which means the pod keeps billing. The operator must see this
                 # explicitly, not buried as an INFO log inside destroy().
@@ -337,7 +337,7 @@ class RunpodBackend(RuntimeBackend):
                     if not pod_was_owned:
                         _log.error(
                             "RUNPOD_BUDGET_EXHAUSTED_PERSISTENT_POD_NOT_DELETED "
-                            "sandbox_id=%s — persistent pod (OPENRESEARCH_RUNPOD_POD_ID) "
+                            "sandbox_id=%s — persistent pod (REPROLAB_RUNPOD_POD_ID) "
                             "is unowned by this backend, destroy skipped; pod is STILL "
                             "RUNNING and billing. Stop it manually via the RunPod dashboard.",
                             sandbox.sandbox_id,
@@ -527,7 +527,7 @@ class RunpodBackend(RuntimeBackend):
                     exc_info=True,
                 )
         self._connections.pop(sandbox.sandbox_id, None)
-        # Persistent pods (attached via OPENRESEARCH_RUNPOD_POD_ID, or any pod
+        # Persistent pods (attached via REPROLAB_RUNPOD_POD_ID, or any pod
         # not in our ownership allowlist) are never deleted. The
         # _delete_pod guard would also refuse, but short-circuiting here
         # avoids a noisy SandboxRuntimeError and keeps logs clean.
@@ -667,7 +667,7 @@ class RunpodBackend(RuntimeBackend):
             env.setdefault("TRANSFORMERS_CACHE", f"{mount}/cache/hf/transformers")
             env.setdefault("TORCH_HOME", f"{mount}/cache/torch")
             # Make the cache dirs exist before any pip install runs.
-            env.setdefault("OPENRESEARCH_BOOTSTRAP_MKDIRS", f"{mount}/cache/pip {mount}/cache/hf {mount}/cache/torch")
+            env.setdefault("REPROLAB_BOOTSTRAP_MKDIRS", f"{mount}/cache/pip {mount}/cache/hf {mount}/cache/torch")
 
         # Map gpu_mode to RunPod compute type.
         # "off"          → CPU-only pod (no GPU allocation, lower cost).
@@ -1078,7 +1078,7 @@ class RunpodBackend(RuntimeBackend):
                 timeout=60,
             ) as client:
                 # Belt-and-suspenders: verify the pod's name still has our
-                # prefix (`openresearch-…`) before issuing the DELETE. If the
+                # prefix (`reprolab-…`) before issuing the DELETE. If the
                 # name doesn't match, refuse — covers the case where a pod
                 # ID was added to our allowlist via some future code path
                 # but the pod was actually created by someone else.
@@ -1086,11 +1086,11 @@ class RunpodBackend(RuntimeBackend):
                     info = await client.get(f"/pods/{pod_id}")
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
-                    if pod_name and not pod_name.startswith("openresearch-"):
+                    if pod_name and not pod_name.startswith("reprolab-"):
                         raise SandboxRuntimeError(
                             RuntimeCauseKind.backend_unavailable,
                             f"Refusing to delete pod {pod_id!r} (name {pod_name!r}): "
-                            "name does not start with 'openresearch-' — not ours.",
+                            "name does not start with 'reprolab-' — not ours.",
                         )
                 except SandboxRuntimeError:
                     raise
@@ -1142,10 +1142,10 @@ class RunpodBackend(RuntimeBackend):
                     info = client.get(f"/pods/{pod_id}")
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
-                    if pod_name and not pod_name.startswith("openresearch-"):
+                    if pod_name and not pod_name.startswith("reprolab-"):
                         _log.warning(
                             "atexit cleanup: refusing to delete pod %r (name %r): "
-                            "name does not start with 'openresearch-'.",
+                            "name does not start with 'reprolab-'.",
                             pod_id,
                             pod_name,
                         )
@@ -1341,21 +1341,21 @@ def ensure_runpod_available() -> None:
     settings = get_settings(_force_reload=True)
     api_key = (
         settings.runpod_api_key
-        or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
+        or os.environ.get("REPROLAB_RUNPOD_API_KEY")
         or os.environ.get("RUNPOD_API_KEY")
         or ""
     ).strip()
     if not api_key:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            "RunPod sandbox is selected but OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
+            "RunPod sandbox is selected but REPROLAB_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
         )
     ssh_key_path = _normalize_ssh_key_path(settings.runpod_ssh_key_path or None)
     if not ssh_key_path.exists():
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
             f"RunPod sandbox is selected but SSH private key was not found: {ssh_key_path}. "
-            "Set OPENRESEARCH_RUNPOD_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
+            "Set REPROLAB_RUNPOD_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
         )
 
 
@@ -1429,7 +1429,7 @@ def _ssh_port(port_mappings: dict[Any, Any]) -> int | None:
 
 
 def _pod_name(config: SandboxConfig) -> str:
-    return f"openresearch-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
+    return f"reprolab-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
 
 
 def _safe_name(value: str) -> str:

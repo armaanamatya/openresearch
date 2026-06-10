@@ -27,8 +27,8 @@ def _isolate_settings_cache():
 
 
 def _fresh_app(monkeypatch, *, runs_root_tmp):
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root_tmp))
-    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root_tmp))
+    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
     from backend.app import create_app
     return TestClient(create_app())
 

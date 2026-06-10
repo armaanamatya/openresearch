@@ -1,4 +1,4 @@
-"""Pin the run_experiment timeout default + OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S
+"""Pin the run_experiment timeout default + REPROLAB_RUN_EXPERIMENT_TIMEOUT_S
 env-var override (2026-05-23 evening fix).
 
 B2 of the paper sweep (prj_77b7294aed1bf872) sat for the full 2-hour
@@ -26,7 +26,7 @@ def test_default_aggregate_timeout_is_None_no_cap(monkeypatch, tmp_path):
     Without env var or run-budget, resolve_experiment_timeout_s returns the
     mode-specific default (7200 for efficient/unknown, 21600 for max)."""
     # Ensure env var is unset for this test
-    monkeypatch.delenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
 
     # Capture the timeout value passed to .result(...) by patching the
     # ThreadPoolExecutor's submitted future. We don't want to actually run
@@ -80,8 +80,8 @@ def test_default_aggregate_timeout_is_None_no_cap(monkeypatch, tmp_path):
 
 
 def test_env_var_override_takes_effect(monkeypatch, tmp_path):
-    """OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=600 → cap becomes 600 s."""
-    monkeypatch.setenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", "600")
+    """REPROLAB_RUN_EXPERIMENT_TIMEOUT_S=600 → cap becomes 600 s."""
+    monkeypatch.setenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", "600")
 
     from backend.agents.rlm import primitives
 
@@ -117,14 +117,14 @@ def test_env_var_override_takes_effect(monkeypatch, tmp_path):
         primitives.run_experiment(str(code_dir), env_id="stub:latest", ctx=ctx)
 
     assert captured.get("timeout") == 600.0, (
-        f"env var OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=600 was ignored; "
+        f"env var REPROLAB_RUN_EXPERIMENT_TIMEOUT_S=600 was ignored; "
         f"got {captured.get('timeout')!r}."
     )
 
 
 def test_invalid_env_var_falls_back_to_default(monkeypatch, tmp_path):
-    """OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=garbage → falls back silently."""
-    monkeypatch.setenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", "not-a-number")
+    """REPROLAB_RUN_EXPERIMENT_TIMEOUT_S=garbage → falls back silently."""
+    monkeypatch.setenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", "not-a-number")
 
     from backend.agents.rlm import primitives
 

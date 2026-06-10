@@ -6,7 +6,7 @@ verifies:
   * GPU pool schedules N cells across N gpus, each cell getting exactly one id.
   * Concurrency never exceeds len(gpus).
   * OOM-retry path: a cell that OOMs once then succeeds → status ok, retries=1,
-    OPENRESEARCH_CELL_BATCH_SCALE carried to retry.
+    REPROLAB_CELL_BATCH_SCALE carried to retry.
   * Retries exhausted → oom_failed without raising.
   * discover_visible_gpus parses UUID and integer-index forms.
   * Results aggregation is complete (every input cell present in output dict).

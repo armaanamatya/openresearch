@@ -37,6 +37,13 @@ except ImportError:  # pragma: no cover — Windows
 # persist across attempts so the next run does not re-ingest or re-generate
 # them.  (Codex finding B1: generated_rubric.json was previously in this list
 # by mistake.)
+# PER_ATTEMPT_SIDECARS is the shared single source of truth with the run.py-path
+# archiver (attempt_isolation.py) — the two manifests drifted independently
+# until 2026-06-09, when this CLI-path archiver left rubric_evaluation.json at
+# the project root and a fresh attempt inherited the previous attempt's graded
+# leaves. Add new per-attempt sidecars THERE, not here.
+from backend.services.runs.attempt_isolation import PER_ATTEMPT_SIDECARS
+
 _TOP_LEVEL_FILES: tuple[str, ...] = (
     "final_report.json",
     "final_report.md",
@@ -56,7 +63,7 @@ _TOP_LEVEL_FILES: tuple[str, ...] = (
     # must persist across attempts (Codex finding B1).
     # NOTE: raw_paper.pdf, paper_html.html, raw_paper.html,
     # parsed_full_text.txt, paperMeta.json are likewise excluded.
-)
+) + PER_ATTEMPT_SIDECARS
 
 # Whole directories moved if they exist.
 _TOP_LEVEL_DIRS: tuple[str, ...] = ("rlm_state", "outputs", "reports")

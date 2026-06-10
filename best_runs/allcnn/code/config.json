@@ -1,100 +1,89 @@
 {
+  "_comment": "All Convolutional Net (arXiv 1412.6806) reproduction config",
   "paper": "Striving for Simplicity: The All Convolutional Net",
-  "authors": "Springenberg, Dosovitskiy, Brox, Riedmiller",
-  "venue": "ICLR 2015 Workshop",
-  "arxiv": "1412.6806",
-
-  "cifar_training": {
+  "arxiv_id": "1412.6806",
+  "training": {
     "optimizer": "SGD",
     "momentum": 0.9,
+    "nesterov": false,
     "weight_decay": 0.001,
-    "n_epochs": 350,
     "batch_size": 128,
+    "epochs": 350,
     "lr_schedule_milestones": [200, 250, 300],
-    "lr_gamma": 0.1,
+    "lr_schedule_gamma": 0.1,
     "lr_candidates": [0.25, 0.1, 0.05, 0.01],
+    "lr_probe_epochs": 15,
+    "lr_probe_subset_size": 5000,
+    "seed": 42
+  },
+  "regularization": {
     "dropout_input": 0.2,
-    "dropout_pool": 0.5
+    "dropout_hidden": 0.5,
+    "weight_decay": 0.001
   },
-
-  "imagenet_training": {
-    "optimizer": "SGD",
-    "momentum": 0.9,
-    "weight_decay": 0.0005,
-    "n_iterations": 450000,
-    "batch_size": 64,
-    "initial_lr": 0.01,
-    "lr_decay_factor": 10,
-    "lr_decay_every_iterations": 200000,
-    "evaluation": "center_224x224_crop"
+  "data": {
+    "cifar10_train_size": 50000,
+    "cifar10_test_size": 10000,
+    "cifar100_train_size": 50000,
+    "cifar100_test_size": 10000,
+    "preprocessing": "GCN + ZCA whitening (Goodfellow et al. 2013, epsilon=0.1)",
+    "augmentation_train": "RandomCrop(32, padding=5) + RandomHorizontalFlip",
+    "augmentation_test": "none"
   },
-
-  "preprocessing": {
-    "gcn": true,
-    "gcn_scale": 55.0,
-    "zca_whitening": true,
-    "zca_eps": 0.1,
-    "cifar10_normalize_mean": [0.4914, 0.4822, 0.4465],
-    "cifar10_normalize_std": [0.2470, 0.2435, 0.2616]
+  "models": {
+    "A_base": "5x5 conv blocks with max-pooling (Table 1 base)",
+    "B_base": "NIN variant: 5x5 + 1x1 conv per block before pool",
+    "C_base": "Two 3x3 convs per block with max-pooling",
+    "A_strided": "Model A with pool removed, preceding conv stride 2",
+    "B_strided": "Model B with pool removed, preceding 1x1 conv stride 2",
+    "C_strided": "Model C with pool removed, second 3x3 stride 2",
+    "A_convpool": "Model A + 3x3 conv before each pool",
+    "B_convpool": "Model B + 3x3 conv before each pool",
+    "C_convpool": "Model C + 3x3 conv before each pool (3 total per block)",
+    "A_allcnn": "Model A: pool replaced with 3x3 stride-2 conv",
+    "B_allcnn": "Model B: pool replaced with 3x3 stride-2 conv",
+    "C_allcnn": "All-CNN-C: pool replaced with 3x3 stride-2 conv (headline model)"
   },
-
-  "augmentation": {
-    "horizontal_flip": true,
-    "max_translation_pixels": 5,
-    "note": "Pad with 5 pixels on each side, random crop back to 32x32"
+  "classifier_head": {
+    "description": "D(0.5) -> Conv(3x3, 192) -> Conv(1x1, 192) -> Conv(1x1, nc) -> GlobalAvgPool",
+    "no_fully_connected_layers": true
   },
-
-  "cifar_architectures": {
-    "note": "12 variants: 3 base models x 4 pool modes",
-    "base_models": {
-      "A": "5x5 spatial convolutions",
-      "B": "NiN: 5x5 + 1x1 after each spatial conv",
-      "C": "Two stacked 3x3 replace each 5x5"
+  "environment": {
+    "python": "3.11",
+    "pytorch": "2.2.0",
+    "torchvision": "0.17.0",
+    "numpy": "1.26.4"
+  },
+  "assumptions": [
+    {
+      "id": "A001",
+      "detail": "Architecture: Model C uses two 3x3 convs per block (replacing 5x5+1x1 of B with 3x3+3x3)",
+      "evidence": "Published implementations of All-CNN-C achieve ~9.1% consistent with two 3x3s"
     },
-    "pool_modes": {
-      "base": "Standard max-pooling (3x3, stride=2)",
-      "strided": "Last spatial conv has stride=2 (absorbs pool, same params as base)",
-      "convpool": "Extra 3x3 conv before pool (adds params, keeps pool)",
-      "allcnn": "Extra 3x3 stride=2 conv replaces pool (same params as convpool)"
+    {
+      "id": "A002",
+      "detail": "LR selection: probe 15 epochs on 5k subset, then full 350-epoch run",
+      "evidence": "Paper says gamma selected from {0.25, 0.1, 0.05, 0.01} per model"
     },
-    "stage_channels": {
-      "stage1_in": 3,
-      "stage1_out": 96,
-      "stage2_in": 96,
-      "stage2_out": 192,
-      "stage3_final": [192, 192, "num_classes"]
+    {
+      "id": "A003",
+      "detail": "MaxPool padding=1 to maintain power-of-2 spatial dims (32->16->8)",
+      "evidence": "Standard CIFAR practice; ensures GAP works on 8x8 features"
     },
-    "dropout": {
-      "input": 0.2,
-      "after_each_pool": 0.5
+    {
+      "id": "A004",
+      "detail": "ImageNet excluded: not auto-downloadable, requires manual setup",
+      "evidence": "ImageNet requires registration at image-net.org, ~150GB; cannot fetch in container"
+    },
+    {
+      "id": "ENV001", "detail": "pytorch version not explicitly stated in paper", "chosen_value": "2.2.0"
+    },
+    {
+      "id": "ENV-RT1", "detail": "3x CUDA GPU (24GB each) available, using cuda:0 per cell"
     }
-  },
-
-  "imagenet_architecture": {
-    "name": "All-CNN-B",
-    "n_layers": 12,
-    "layer_names": ["conv1", "conv2", "conv3", "conv4", "conv5", "conv6",
-                    "conv7", "conv8", "conv9", "conv10", "conv11", "conv12"],
-    "conv1": {"filters": 96, "kernel": 11, "stride": 4},
-    "conv2": {"filters": 96, "kernel": 1, "stride": 1},
-    "conv3": {"filters": 96, "kernel": 3, "stride": 2, "role": "pool_replacement"},
-    "conv4": {"filters": 256, "kernel": 5, "stride": 1, "padding": 2},
-    "conv5": {"filters": 256, "kernel": 1, "stride": 1},
-    "conv6": {"filters": 256, "kernel": 3, "stride": 2, "role": "pool_replacement"},
-    "conv7": {"filters": 384, "kernel": 3, "stride": 1, "padding": 1},
-    "conv8": {"filters": 384, "kernel": 1, "stride": 1},
-    "conv9": {"filters": 384, "kernel": 3, "stride": 2, "role": "pool_replacement"},
-    "conv10": {"filters": 1024, "kernel": 3, "stride": 1, "padding": 0, "note": "valid"},
-    "conv11": {"filters": 1024, "kernel": 1, "stride": 1},
-    "conv12": {"filters": 1000, "kernel": 1, "stride": 1},
-    "global_avg_pool": true
-  },
-
-  "guided_backprop": {
-    "description": "Combines deconvnet and standard backprop masks at each ReLU",
-    "rule": "zero an entry if top_gradient < 0 OR bottom_activation < 0",
-    "formula": "guided_grad = incoming_grad * (incoming_grad > 0) * (forward_act > 0)"
-  },
-
-  "assumptions_applied": ["A001", "A002", "A003", "A004", "A005", "A006", "ENV001", "ENV002"]
+  ],
+  "deviations": [
+    "ImageNet experiment OUT OF SCOPE (requires manual download, licensing)",
+    "LR selected via short probe rather than full grid search over all models simultaneously"
+  ]
 }

@@ -1,5 +1,5 @@
 output "storage_account_name" {
-  description = "Name of the storage account. Set as OPENRESEARCH_AZURE_STORAGE_ACCOUNT."
+  description = "Name of the storage account. Set as REPROLAB_AZURE_STORAGE_ACCOUNT."
   value       = azurerm_storage_account.main.name
 }
 
@@ -9,7 +9,7 @@ output "storage_account_id" {
 }
 
 output "blob_container_name" {
-  description = "Name of the private artifact Blob container. Set as OPENRESEARCH_AZURE_BLOB_CONTAINER."
+  description = "Name of the private artifact Blob container. Set as REPROLAB_AZURE_BLOB_CONTAINER."
   value       = azurerm_storage_container.artifacts.name
 }
 
@@ -19,7 +19,7 @@ output "blob_container_resource_id" {
 }
 
 output "files_share_name" {
-  description = "Name of the active Azure Files share (Standard or Premium). Set as OPENRESEARCH_AZURE_FILES_SHARE."
+  description = "Name of the active Azure Files share (Standard or Premium). Set as REPROLAB_AZURE_FILES_SHARE."
   value       = var.files_share_name
 }
 

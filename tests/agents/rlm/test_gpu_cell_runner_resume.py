@@ -1,6 +1,6 @@
 """Tests for gpu_cell_runner's cell-level resume (Track B).
 
-Resume is gated on the env var ``OPENRESEARCH_RESUME_CELLS``.  When armed, a cell
+Resume is gated on the env var ``REPROLAB_RESUME_CELLS``.  When armed, a cell
 whose prior ``cell_manifest.json`` is status=ok + fingerprint-matched + not in
 ``force_cells`` is recorded ``status="skipped"`` WITHOUT launching a subprocess.
 
@@ -40,7 +40,7 @@ import json
 import os
 import sys
 
-out = os.environ["OPENRESEARCH_CELL_OUTPUT_DIR"]
+out = os.environ["REPROLAB_CELL_OUTPUT_DIR"]
 os.makedirs(out, exist_ok=True)
 
 # Sentinel proving THIS process actually launched.  Append so multiple launches
@@ -94,7 +94,7 @@ class TestResumeSkip:
     def test_matching_fingerprint_is_skipped_without_launch(
         self, tmp_path, cell_script, monkeypatch
     ):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP_MATCH")
 
@@ -110,7 +110,7 @@ class TestResumeSkip:
         assert not _sentinel(out, "c0").exists()
 
     def test_skipped_cell_keeps_prior_metrics(self, tmp_path, cell_script, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP")
         results = run_matrix(
@@ -121,7 +121,7 @@ class TestResumeSkip:
 
     def test_mixed_skip_and_run(self, tmp_path, cell_script, monkeypatch):
         """One matched (skip) + one unmatched (run) in the same matrix."""
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP0")
         _seed_prior_ok_cell(out, "c1", "OLD")  # stale fingerprint → must run
@@ -143,7 +143,7 @@ class TestResumeSkip:
 
 class TestResumeRerun:
     def test_fingerprint_mismatch_reruns(self, tmp_path, cell_script, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "STORED_OLD")
 
@@ -156,7 +156,7 @@ class TestResumeRerun:
         assert _sentinel(out, "c0").exists()  # the trainer ran
 
     def test_force_cells_reruns_on_match(self, tmp_path, cell_script, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP")
 
@@ -171,7 +171,7 @@ class TestResumeRerun:
 
     def test_flag_unset_always_runs(self, tmp_path, cell_script, monkeypatch):
         # Resume NOT armed → a perfectly-matching prior cell STILL re-runs.
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP")
 
@@ -185,7 +185,7 @@ class TestResumeRerun:
 
     def test_no_fingerprint_for_cell_runs(self, tmp_path, cell_script, monkeypatch):
         # Armed but no current fingerprint to compare → cannot assert unchanged → run.
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP")
         results = run_matrix(
@@ -197,7 +197,7 @@ class TestResumeRerun:
 
     def test_no_prior_manifest_runs(self, tmp_path, cell_script, monkeypatch):
         # Armed + fingerprint supplied, but the cell has never run (no manifest).
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         results = run_matrix(
             [_cell("c0")], cell_script, output_root=out, gpus=["0"],
@@ -208,7 +208,7 @@ class TestResumeRerun:
 
     def test_prior_failed_manifest_reruns(self, tmp_path, cell_script, monkeypatch):
         """A prior NON-ok manifest never authorises a skip, even if fp matches."""
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         output_dir = out / "c0"
         output_dir.mkdir(parents=True)
@@ -232,7 +232,7 @@ class TestManifestWriting:
     def test_ok_cell_writes_manifest_with_fingerprint(
         self, tmp_path, cell_script, monkeypatch
     ):
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         out = tmp_path / "outputs"
         run_matrix(
             [_cell("c0")], cell_script, output_root=out, gpus=["0"],
@@ -248,7 +248,7 @@ class TestManifestWriting:
     def test_manifest_omits_completed_at_when_now_iso_none(
         self, tmp_path, cell_script, monkeypatch
     ):
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         out = tmp_path / "outputs"
         run_matrix(
             [_cell("c0")], cell_script, output_root=out, gpus=["0"],
@@ -260,7 +260,7 @@ class TestManifestWriting:
     def test_manifest_fingerprint_null_when_not_supplied(
         self, tmp_path, cell_script, monkeypatch
     ):
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         out = tmp_path / "outputs"
         run_matrix([_cell("c0")], cell_script, output_root=out, gpus=["0"])
         manifest = json.loads((out / "c0" / CELL_MANIFEST_NAME).read_text())
@@ -268,7 +268,7 @@ class TestManifestWriting:
 
     def test_failed_cell_writes_manifest(self, tmp_path, monkeypatch):
         """A non-OOM error is terminal → it must also write a manifest."""
-        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        monkeypatch.delenv("REPROLAB_RESUME_CELLS", raising=False)
         out = tmp_path / "outputs"
         # A script that always exits non-zero with a NON-OOM message → status=error.
         bad = tmp_path / "bad_cell.py"
@@ -288,7 +288,7 @@ class TestManifestWriting:
         self, tmp_path, cell_script, monkeypatch
     ):
         """A skip reuses the prior manifest verbatim — no rewrite needed."""
-        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        monkeypatch.setenv("REPROLAB_RESUME_CELLS", "1")
         out = tmp_path / "outputs"
         _seed_prior_ok_cell(out, "c0", "FP")
         before = (out / "c0" / CELL_MANIFEST_NAME).read_text()

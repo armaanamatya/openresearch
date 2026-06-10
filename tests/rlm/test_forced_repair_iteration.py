@@ -1,7 +1,7 @@
 """Tests for the PR-α followup repair-iteration floor in ForcedIterationPolicy.
 
 The repair-iteration floor refuses FINAL_VAR when the last run_experiment
-returned a repairable outcome AND fewer than OPENRESEARCH_MIN_REPAIR_ITERATIONS
+returned a repairable outcome AND fewer than REPROLAB_MIN_REPAIR_ITERATIONS
 repair attempts have been made.
 
 Scenarios tested:
@@ -10,7 +10,7 @@ Scenarios tested:
 2. After N=MIN_REPAIR calls → (False, None)
 3. remaining_s=30 (below floor) → (False, None) regardless of repair state
 4. No record_repair_attempt called → default behavior unchanged
-5. OPENRESEARCH_MIN_REPAIR_ITERATIONS=0 → repair policy disabled entirely
+5. REPROLAB_MIN_REPAIR_ITERATIONS=0 → repair policy disabled entirely
 6. min_iterations=0 (rubric policy disabled) but repair still fires
 7. No rubric data yet but repair fires
 8. on_repair_refusal callback invoked with correct SSE code when set
@@ -88,7 +88,7 @@ def test_one_repair_attempt_refuses_final_var() -> None:
 
 def test_after_min_repair_calls_accepts() -> None:
     """Once repair_iter_count reaches MIN, FINAL_VAR is accepted."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         policy.record_repair_attempt("preflight_blocked")
         policy.record_repair_attempt("preflight_blocked")
@@ -101,7 +101,7 @@ def test_after_min_repair_calls_accepts() -> None:
 
 def test_exactly_min_repair_calls_accepts() -> None:
     """repair_iter_count == MIN_REPAIR → accept (floor reached)."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "3"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "3"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         for _ in range(3):
             policy.record_repair_attempt("code_error")
@@ -142,7 +142,7 @@ def test_wall_clock_exactly_60s_bypasses_repair_check() -> None:
 
 def test_wall_clock_just_above_floor_repair_refuses() -> None:
     """remaining_s=61 → above floor → repair check applies."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(
             score=0.0, target=0.6, iteration=2, min_iterations=2, remaining_s=61.0,
         )
@@ -181,12 +181,12 @@ def test_no_repair_attempt_below_floor_still_refuses_rubric() -> None:
 
 
 # -----------------------------------------------------------------------
-# 5. OPENRESEARCH_MIN_REPAIR_ITERATIONS=0 disables repair policy
+# 5. REPROLAB_MIN_REPAIR_ITERATIONS=0 disables repair policy
 # -----------------------------------------------------------------------
 
 def test_min_repair_zero_disables_repair_policy() -> None:
-    """OPENRESEARCH_MIN_REPAIR_ITERATIONS=0 → repair policy disabled; FINAL_VAR accepted."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "0"}):
+    """REPROLAB_MIN_REPAIR_ITERATIONS=0 → repair policy disabled; FINAL_VAR accepted."""
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "0"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         policy.record_repair_attempt("preflight_blocked")
 
@@ -201,7 +201,7 @@ def test_min_repair_zero_disables_repair_policy() -> None:
 
 def test_repair_fires_even_when_rubric_policy_disabled() -> None:
     """min_iterations=0 disables rubric checks; repair floor still enforced."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(
             score=0.0, target=0.6, iteration=2, min_iterations=0,  # rubric disabled
         )
@@ -220,7 +220,7 @@ def test_repair_fires_even_when_rubric_policy_disabled() -> None:
 
 def test_repair_fires_when_no_rubric_data() -> None:
     """No verify_against_rubric yet (score=None) but repair attempt recorded → refuse."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(
             score=None, target=None, iteration=1, min_iterations=2,
         )
@@ -255,7 +255,7 @@ def test_on_repair_refusal_callback_receives_message() -> None:
 
 def test_pending_refusal_code_is_forced_repair_iteration() -> None:
     """should_refuse sets _pending_refusal_code='forced_repair_iteration' on repair refusal."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         policy.record_repair_attempt("preflight_blocked")
 
@@ -267,7 +267,7 @@ def test_pending_refusal_code_is_forced_repair_iteration() -> None:
 
 def test_pending_refusal_code_is_forced_iteration_on_rubric_refusal() -> None:
     """Rubric-floor refusal sets _pending_refusal_code='forced_iteration' (default)."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(score=0.1, target=0.9, iteration=1, min_iterations=2)
         # No repair attempt.
 
@@ -287,7 +287,7 @@ def test_pending_refusal_code_is_forced_iteration_on_rubric_refusal() -> None:
 
 def test_repair_does_not_fire_when_rubric_satisfied() -> None:
     """Score >= target → rubric is satisfied; repair floor does NOT block."""
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(
             score=0.9, target=0.6, iteration=2, min_iterations=2,
         )
@@ -312,7 +312,7 @@ def test_patched_final_var_blocks_on_repair_refusal() -> None:
     repl = LocalREPL()
     repl.locals["report"] = "{'score': 0.0}"
 
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         policy.record_repair_attempt("preflight_blocked")
 
@@ -340,7 +340,7 @@ def test_patched_final_var_accepts_after_repair_floor_met() -> None:
     repl = LocalREPL()
     repl.locals["report"] = "{'score': 0.0}"
 
-    with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
+    with patch.dict(os.environ, {"REPROLAB_MIN_REPAIR_ITERATIONS": "2"}):
         policy = _make_policy(score=0.0, target=0.6, iteration=2, min_iterations=2)
         policy.record_repair_attempt("preflight_blocked")
         policy.record_repair_attempt("preflight_blocked")

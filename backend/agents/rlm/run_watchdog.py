@@ -48,7 +48,7 @@ Design contract:
     actionable.
   * ``on_kill`` is invoked AT MOST ONCE — repeated kill verdicts in
     subsequent poll cycles are a no-op.
-  * Disable entirely via ``OPENRESEARCH_WATCHDOG_DISABLED=true`` — the
+  * Disable entirely via ``REPROLAB_WATCHDOG_DISABLED=true`` — the
     coroutine returns immediately, no polling.
 """
 
@@ -93,10 +93,10 @@ class KillVerdict(str, enum.Enum):
 # ---------------------------------------------------------------------------
 
 
-_DISABLE_ENV_VAR: str = "OPENRESEARCH_WATCHDOG_DISABLED"
-_WARN_ENV_VAR: str = "OPENRESEARCH_WATCHDOG_WARN_SECONDS"
-_KILL_ENV_VAR: str = "OPENRESEARCH_WATCHDOG_KILL_SECONDS"
-_POLL_ENV_VAR: str = "OPENRESEARCH_WATCHDOG_POLL_INTERVAL_SECONDS"
+_DISABLE_ENV_VAR: str = "REPROLAB_WATCHDOG_DISABLED"
+_WARN_ENV_VAR: str = "REPROLAB_WATCHDOG_WARN_SECONDS"
+_KILL_ENV_VAR: str = "REPROLAB_WATCHDOG_KILL_SECONDS"
+_POLL_ENV_VAR: str = "REPROLAB_WATCHDOG_POLL_INTERVAL_SECONDS"
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ def effective_idle_threshold(primitive_name: str | None, config: "WatchdogConfig
 
 
 def is_enabled() -> bool:
-    """Return ``False`` when ``OPENRESEARCH_WATCHDOG_DISABLED=true``.  Case-insensitive."""
+    """Return ``False`` when ``REPROLAB_WATCHDOG_DISABLED=true``.  Case-insensitive."""
     return os.environ.get(_DISABLE_ENV_VAR, "").lower() not in {"true", "1", "yes", "on"}
 
 
@@ -592,7 +592,7 @@ async def run_watchdog(
     ``task.cancel()`` to stop the watchdog when the protected coroutine
     finishes.  This coroutine handles ``CancelledError`` cleanly.
 
-    Disabled: returns immediately when ``OPENRESEARCH_WATCHDOG_DISABLED=true``.
+    Disabled: returns immediately when ``REPROLAB_WATCHDOG_DISABLED=true``.
 
     On-kill semantics (Lane N): the callback may decide to recover the
     sandbox instead of destroying it.  If it returns ``KillVerdict.RECOVERED``

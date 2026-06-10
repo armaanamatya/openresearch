@@ -27,13 +27,13 @@ def _reset_settings_cache():
 @pytest.fixture(autouse=True)
 def _isolate_settings(monkeypatch, tmp_path):
     _reset_settings_cache()
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(tmp_path / "runs"))
     yield
     _reset_settings_cache()
 
 
 def _fresh_app(monkeypatch, runs_root: Path):
-    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
     _reset_settings_cache()
     from backend.app import create_app
     return create_app()

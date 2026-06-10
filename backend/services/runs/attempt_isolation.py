@@ -58,6 +58,29 @@ except ImportError:  # pragma: no cover — Windows
 # Archive manifest
 # ---------------------------------------------------------------------------
 
+# Per-attempt sidecar FILES — the SINGLE SOURCE OF TRUTH shared by BOTH
+# archivers: this module (the run.py path) and backend/services/runs/archive.py
+# (the CLI path, `archive_run_artifacts`). 2026-06-09: rubric_evaluation.json /
+# rubric_tree.json were missing from the archive manifests — a fresh attempt
+# inherited the PREVIOUS attempt's graded leaves (every 0-iteration attempt in
+# the 06-08/06-09 cluster reported weak_leaves it never produced, and
+# write_final_report_rlm's merge + leaf_scorer.finalize_rescore both read these
+# files assuming they belong to the current attempt). The telemetry sidecars
+# (timing/tokens/worker_reports) leak the same way into the next attempt's
+# report rendering and fidelity evidence. The same evening's live re-run then
+# showed the TWO archivers had drifted independently — the CLI one still leaked
+# everything this module had just been taught to move. Hence one shared tuple;
+# extend it HERE, never in archive.py. All entries are per-attempt run
+# products; their absence at fresh-attempt start is handled everywhere.
+PER_ATTEMPT_SIDECARS: tuple[str, ...] = (
+    "rubric_evaluation.json",
+    "rubric_tree.json",
+    "timing.json",
+    "tokens_total.json",
+    "worker_reports.jsonl",
+    "environment_spec.json",
+)
+
 # Top-level files moved if present.
 _ARCHIVE_FILES: tuple[str, ...] = (
     "final_report.json",
@@ -67,7 +90,7 @@ _ARCHIVE_FILES: tuple[str, ...] = (
     "dashboard_events.jsonl",
     "user_messages.jsonl",
     "_user_message_cursor.json",
-)
+) + PER_ATTEMPT_SIDECARS
 
 # Sub-paths inside rlm_state/ that are moved per-attempt.
 # gpu_escalation_state.json is intentionally included (A2): the escalation

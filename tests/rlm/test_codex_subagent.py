@@ -14,20 +14,20 @@ from backend.config import get_settings
 
 
 def _enable_codex(monkeypatch: pytest.MonkeyPatch, *, max_calls: str = "3") -> None:
-    monkeypatch.setenv("OPENRESEARCH_CODEX_SUBAGENT", "1")
-    monkeypatch.setenv("OPENRESEARCH_CODEX_TIMEOUT_S", "9")
-    monkeypatch.setenv("OPENRESEARCH_CODEX_MAX_CALLS_PER_RUN", max_calls)
-    monkeypatch.setenv("OPENRESEARCH_CODEX_MAX_OUTPUT_CHARS", "120")
-    monkeypatch.setenv("OPENRESEARCH_CODEX_PROFILE", "openresearch-readwrite")
+    monkeypatch.setenv("REPROLAB_CODEX_SUBAGENT", "1")
+    monkeypatch.setenv("REPROLAB_CODEX_TIMEOUT_S", "9")
+    monkeypatch.setenv("REPROLAB_CODEX_MAX_CALLS_PER_RUN", max_calls)
+    monkeypatch.setenv("REPROLAB_CODEX_MAX_OUTPUT_CHARS", "120")
+    monkeypatch.setenv("REPROLAB_CODEX_PROFILE", "reprolab-readwrite")
     monkeypatch.setenv(
-        "OPENRESEARCH_CODEX_ALLOWED_TASKS",
+        "REPROLAB_CODEX_ALLOWED_TASKS",
         "implementation_repair,test_debugging,dockerfile_repair,requirements_repair",
     )
     get_settings(_force_reload=True)
 
 
 def test_flag_off_returns_disabled(make_context, tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_SUBAGENT", "0")
+    monkeypatch.setenv("REPROLAB_CODEX_SUBAGENT", "0")
     get_settings(_force_reload=True)
 
     result = codex_repair(
@@ -45,7 +45,7 @@ def test_flag_off_returns_disabled(make_context, tmp_path, monkeypatch):
 
 
 def test_codex_unavailable_returns_typed_unavailable(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_CODEX_CLI_PATH", raising=False)
+    monkeypatch.delenv("REPROLAB_CODEX_CLI_PATH", raising=False)
     monkeypatch.setattr(codex_mod.shutil, "which", lambda name: None)
 
     result = run_codex_subagent(
@@ -62,7 +62,7 @@ def test_codex_unavailable_returns_typed_unavailable(tmp_path, monkeypatch):
 
 
 def test_timeout_kills_process_and_returns_timed_out(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
 
     def fake_run(args, **kwargs):
         if args[1:3] == ["login", "status"]:
@@ -79,7 +79,7 @@ def test_timeout_kills_process_and_returns_timed_out(tmp_path, monkeypatch):
 
 
 def test_output_truncation(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
 
     def fake_run(args, **kwargs):
         if args[1:3] == ["login", "status"]:
@@ -201,7 +201,7 @@ def test_max_calls_per_run_enforced(make_context, tmp_path, monkeypatch):
 
 
 def test_no_auth_file_contents_are_read_or_logged(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
     auth_path = tmp_path / ".codex" / "auth.json"
     auth_path.parent.mkdir()
     auth_path.write_text("SECRET_AUTH_TOKEN", encoding="utf-8")
@@ -238,7 +238,7 @@ def test_no_auth_file_contents_are_read_or_logged(tmp_path, monkeypatch):
 
 
 def test_changed_files_parsed_if_possible(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
     target = tmp_path / "bug.py"
     target.write_text("x =\n", encoding="utf-8")
 
@@ -256,7 +256,7 @@ def test_changed_files_parsed_if_possible(tmp_path, monkeypatch):
 
 
 def test_subprocess_failure_fail_softs(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
 
     def fake_run(args, **kwargs):
         if args[1:3] == ["login", "status"]:
@@ -273,7 +273,7 @@ def test_subprocess_failure_fail_softs(tmp_path, monkeypatch):
 
 
 def test_event_emission_does_not_crash_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_CODEX_CLI_PATH", "/usr/bin/codex")
+    monkeypatch.setenv("REPROLAB_CODEX_CLI_PATH", "/usr/bin/codex")
 
     def fake_run(args, **kwargs):
         if args[1:3] == ["login", "status"]:

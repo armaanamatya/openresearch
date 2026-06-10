@@ -190,7 +190,7 @@ def sanitize_iteration(
 
     Args:
         iteration: The raw ``RLMIteration`` from the ``rlms`` library.
-        index:     1-based iteration counter (supplied by ``OpenResearchRLMLogger``).
+        index:     1-based iteration counter (supplied by ``ReproLabRLMLogger``).
         sentinels: Optional list of corpus sentinels (first ``_SENTINEL_LEN``
                    chars of each corpus value).  When provided, stdout/stderr
                    prefixes are run through :func:`redact_corpus` (M-REDACT /
@@ -286,11 +286,11 @@ def _locals_metadata(locals_: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 9.2 OpenResearchRLMLogger
+# 9.2 ReproLabRLMLogger
 # ---------------------------------------------------------------------------
 
 
-class OpenResearchRLMLogger(RLMLogger):
+class ReproLabRLMLogger(RLMLogger):
     """``RLMLogger`` subclass that sanitizes every iteration before emission.
 
     The base ``RLMLogger.log()`` method is intentionally NOT called — doing so
@@ -401,7 +401,7 @@ def make_emit(dashboard: DashboardEmitter) -> Callable[[dict], None]:
 
     ``DashboardEmitter._emit`` opens and writes the JSONL file without a lock.
     This closure owns a ``threading.Lock`` so that the worker thread (via
-    ``OpenResearchRLMLogger``) and the ``rlm`` callback thread (via
+    ``ReproLabRLMLogger``) and the ``rlm`` callback thread (via
     ``on_subcall_start`` / ``on_subcall_complete``) never interleave writes.
 
     Args:
@@ -885,7 +885,7 @@ def build_run_warning_event(
 __all__ = [
     "RUBRIC_AREA_PARTIAL_THRESHOLD",
     "RUBRIC_AREA_PASS_THRESHOLD",
-    "OpenResearchRLMLogger",
+    "ReproLabRLMLogger",
     "build_cluster_artifact_emitted",
     "build_cluster_scored",
     "build_cluster_started",

@@ -41,6 +41,16 @@
       ],
       "risk": "low",
       "verified_by": null
+    },
+    {
+      "assumption_id": "ENV-RT1",
+      "detail": "Runtime hardware (harness-measured)",
+      "chosen_value": "3\u00d7 CUDA GPU available to this run (24 GB VRAM each). Regardless of what the paper mentions, prefer CUDA and scale experiments (epochs, model sizes, grids) to this hardware rather than planning CPU-only smoke runs.",
+      "evidence": [
+        "harness describe_capacity probe: 3 free GPU(s), per-GPU budget 24.0 GB"
+      ],
+      "risk": "low",
+      "verified_by": "harness"
     }
   ],
   "compatibility_notes": "Generated for pytorch==2.2.0 on CPU.",

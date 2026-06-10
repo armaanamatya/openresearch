@@ -2,7 +2,7 @@
 
 Covers the wiring (not the source resolution, which is Unit B): to_runtime_spec
 seeds the spec's RuntimeGuard from blocked_terms, fails closed on an empty tool
-list, and RunContext auto-loads blocked_terms from OPENRESEARCH_BLOCKED_TERMS_JSON.
+list, and RunContext auto-loads blocked_terms from REPROLAB_BLOCKED_TERMS_JSON.
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ def _dummy_run_context(**overrides) -> RunContext:
 
 
 def test_runcontext_autoloads_blocked_terms_from_env(monkeypatch):
-    """RunContext picks up blocked_terms from OPENRESEARCH_BLOCKED_TERMS_JSON (subprocess seam)."""
-    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps([_PAPER_REPO, "  ", "github.com/x/y"]))
+    """RunContext picks up blocked_terms from REPROLAB_BLOCKED_TERMS_JSON (subprocess seam)."""
+    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps([_PAPER_REPO, "  ", "github.com/x/y"]))
     ctx = _dummy_run_context()
     # Whitespace-only entries are dropped.
     assert ctx.blocked_terms == (_PAPER_REPO, "github.com/x/y")
@@ -92,19 +92,19 @@ def test_runcontext_autoloads_blocked_terms_from_env(monkeypatch):
 
 def test_runcontext_caller_blocked_terms_not_overridden_by_env(monkeypatch):
     """A caller-supplied blocked_terms wins over the env var (tests / explicit wiring)."""
-    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps(["github.com/from/env"]))
+    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps(["github.com/from/env"]))
     ctx = _dummy_run_context(blocked_terms=("github.com/from/caller",))
     assert ctx.blocked_terms == ("github.com/from/caller",)
 
 
 def test_runcontext_no_env_means_empty_blocklist(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_BLOCKED_TERMS_JSON", raising=False)
+    monkeypatch.delenv("REPROLAB_BLOCKED_TERMS_JSON", raising=False)
     ctx = _dummy_run_context()
     assert ctx.blocked_terms == ()
 
 
 def test_runcontext_malformed_env_never_crashes(monkeypatch):
     """A bad env value must never crash a run — it degrades to an empty blocklist."""
-    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", "{not valid json")
+    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", "{not valid json")
     ctx = _dummy_run_context()
     assert ctx.blocked_terms == ()

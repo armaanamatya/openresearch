@@ -90,7 +90,7 @@ class ForcedIterationPolicy:
     # PR-ι.1 — hard per-run iteration cap.  When current_iteration() >=
     # max_rlm_iterations, FINAL_VAR is ACCEPTED unconditionally (the budget is
     # exhausted and we must not loop indefinitely).  None disables this check.
-    # Read from OPENRESEARCH_MAX_RLM_ITERATIONS env var (default 5).
+    # Read from REPROLAB_MAX_RLM_ITERATIONS env var (default 5).
     max_rlm_iterations: int | None = None
     # Callable invoked when the iteration budget is exceeded.
     on_budget_exceeded: Callable[[str], None] | None = None
@@ -114,7 +114,7 @@ class ForcedIterationPolicy:
     refusal_count: int = 0
     # PR-α followup — repair-iteration counter.  Incremented each time
     # run_experiment returns outcome="repairable" (preflight_blocked, code
-    # error, etc.).  When _repair_iter_count < OPENRESEARCH_MIN_REPAIR_ITERATIONS
+    # error, etc.).  When _repair_iter_count < REPROLAB_MIN_REPAIR_ITERATIONS
     # the policy refuses FINAL_VAR, forcing the root to attempt another repair.
     _repair_iter_count: int = field(default=0, compare=False, repr=False)
     _last_repair_failure_class: str | None = field(default=None, compare=False, repr=False)
@@ -217,7 +217,7 @@ class ForcedIterationPolicy:
         if _max_iter is None:
             # Fall back to env var so callers that predate max_rlm_iterations
             # still get the cap without re-constructing the policy object.
-            _raw = os.environ.get("OPENRESEARCH_MAX_RLM_ITERATIONS", "").strip()
+            _raw = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
             _max_iter = int(_raw) if _raw.isdigit() and int(_raw) > 0 else None
         if _max_iter is not None and _max_iter > 0 and self.current_iteration is not None:
             cur = self.current_iteration()
@@ -258,8 +258,8 @@ class ForcedIterationPolicy:
 
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
-        # policy is disabled via OPENRESEARCH_MIN_RUBRIC_ITERATIONS=0.
-        min_repair = int(os.environ.get("OPENRESEARCH_MIN_REPAIR_ITERATIONS", "2"))
+        # policy is disabled via REPROLAB_MIN_RUBRIC_ITERATIONS=0.
+        min_repair = int(os.environ.get("REPROLAB_MIN_REPAIR_ITERATIONS", "2"))
         _repair_refuse = (
             min_repair > 0
             and self._last_repair_failure_class is not None
@@ -339,7 +339,7 @@ class ForcedIterationPolicy:
         # 4.6. PR-α followup — repair iteration floor.  Even when the rubric
         # iteration floor is satisfied, refuse FINAL_VAR if the last
         # run_experiment returned a repairable outcome AND fewer than
-        # OPENRESEARCH_MIN_REPAIR_ITERATIONS repair attempts have been made.
+        # REPROLAB_MIN_REPAIR_ITERATIONS repair attempts have been made.
         # This prevents the root from giving up after a single preflight
         # failure (e.g. AST-caught code bugs) without trying to fix them.
         if _repair_refuse:

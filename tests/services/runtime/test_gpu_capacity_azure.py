@@ -58,7 +58,7 @@ def test_describe_azure_backend_kind():
 
 def test_describe_azure_num_gpus_equals_azure_max_nodes(monkeypatch):
     """num_gpus must equal azure_max_nodes from Settings."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "6")
+    monkeypatch.setenv("REPROLAB_AZURE_MAX_NODES", "6")
     _reset_settings_cache()
     result = _describe_azure(_azure_ctx())
     assert result.num_gpus == 6
@@ -66,7 +66,7 @@ def test_describe_azure_num_gpus_equals_azure_max_nodes(monkeypatch):
 
 def test_describe_azure_per_gpu_vram_equals_azure_per_gpu_vram_gb(monkeypatch):
     """per_gpu_vram_gb must equal azure_per_gpu_vram_gb from Settings."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "40.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "40.0")
     _reset_settings_cache()
     result = _describe_azure(_azure_ctx())
     assert result.per_gpu_vram_gb == pytest.approx(40.0)
@@ -88,7 +88,7 @@ def test_describe_azure_can_escalate_false():
 
 def test_describe_azure_free_gpu_ids_match_node_count(monkeypatch):
     """free_gpu_ids must be ("0", "1", ...) up to azure_max_nodes."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "3")
+    monkeypatch.setenv("REPROLAB_AZURE_MAX_NODES", "3")
     _reset_settings_cache()
     result = _describe_azure(_azure_ctx())
     assert result.free_gpu_ids == ("0", "1", "2")
@@ -96,7 +96,7 @@ def test_describe_azure_free_gpu_ids_match_node_count(monkeypatch):
 
 def test_describe_azure_default_vram_is_80():
     """Default azure_per_gpu_vram_gb must be 80.0 (A100-80GB spec)."""
-    for k in ("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB",):
+    for k in ("REPROLAB_AZURE_PER_GPU_VRAM_GB",):
         import os
         os.environ.pop(k, None)
     _reset_settings_cache()
@@ -157,7 +157,7 @@ def _azure_ctx_with_dir(project_dir) -> SimpleNamespace:
 
 def test_no_plan_falls_back_to_settings(tmp_path, monkeypatch):
     """No gpu_plan.json on disk → per_gpu_vram_gb comes from Settings."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     ctx = _azure_ctx_with_dir(tmp_path)
     result = _describe_azure(ctx)
@@ -167,7 +167,7 @@ def test_no_plan_falls_back_to_settings(tmp_path, monkeypatch):
 
 def test_azure_plan_on_disk_overrides_vram(tmp_path, monkeypatch):
     """An azure gpu_plan.json (short_name starts with 'azure_') → vram_gb=24 used."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     _make_gpu_plan(tmp_path, short_name="azure_a10_24", cloud_type="ONDEMAND", vram_gb=24)
     ctx = _azure_ctx_with_dir(tmp_path)
@@ -179,7 +179,7 @@ def test_azure_plan_on_disk_overrides_vram(tmp_path, monkeypatch):
 
 def test_azure_plan_ondemand_cloud_type_overrides_vram(tmp_path, monkeypatch):
     """cloud_type='ONDEMAND' (even without 'azure_' prefix) is treated as azure plan."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     _make_gpu_plan(tmp_path, short_name="h100_80", cloud_type="ONDEMAND", vram_gb=48)
     ctx = _azure_ctx_with_dir(tmp_path)
@@ -189,7 +189,7 @@ def test_azure_plan_ondemand_cloud_type_overrides_vram(tmp_path, monkeypatch):
 
 def test_corrupt_gpu_plan_falls_back_to_settings(tmp_path, monkeypatch):
     """Corrupt/unreadable gpu_plan.json → fail-soft; settings value used, no raise."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     rlm_state = tmp_path / "rlm_state"
     rlm_state.mkdir(parents=True, exist_ok=True)
@@ -203,7 +203,7 @@ def test_corrupt_gpu_plan_falls_back_to_settings(tmp_path, monkeypatch):
 
 def test_non_azure_plan_uses_settings(tmp_path, monkeypatch):
     """A RunPod COMMUNITY plan on disk → not an azure plan → settings vram used."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     _make_gpu_plan(tmp_path, short_name="rtx4090_24", cloud_type="COMMUNITY", vram_gb=24)
     ctx = _azure_ctx_with_dir(tmp_path)
@@ -214,7 +214,7 @@ def test_non_azure_plan_uses_settings(tmp_path, monkeypatch):
 
 def test_num_gpus_always_comes_from_azure_max_nodes(tmp_path, monkeypatch):
     """Plan's gpu_count is irrelevant; num_gpus is always azure_max_nodes."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "4")
+    monkeypatch.setenv("REPROLAB_AZURE_MAX_NODES", "4")
     _reset_settings_cache()
     # Azure plan with gpu_count=8 — should NOT affect num_gpus
     _make_gpu_plan(tmp_path, short_name="azure_a100_80", cloud_type="ONDEMAND",
@@ -227,7 +227,7 @@ def test_num_gpus_always_comes_from_azure_max_nodes(tmp_path, monkeypatch):
 
 def test_no_project_dir_on_ctx_falls_back_to_settings(monkeypatch):
     """ctx without project_dir attr → settings path taken (no AttributeError)."""
-    monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")
+    monkeypatch.setenv("REPROLAB_AZURE_PER_GPU_VRAM_GB", "80.0")
     _reset_settings_cache()
     ctx = _azure_ctx()  # no project_dir attribute
     result = _describe_azure(ctx)

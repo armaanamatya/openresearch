@@ -3,10 +3,10 @@
 Spec: docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md
 
 Covers:
-  - Opt-in OFF parity: with OPENRESEARCH_SDAR_BASELINES unset, _compute_constraint_guidance
-    output is byte-identical to the output with OPENRESEARCH_SDAR_BASELINES=0 (block NOT
+  - Opt-in OFF parity: with REPROLAB_SDAR_BASELINES unset, _compute_constraint_guidance
+    output is byte-identical to the output with REPROLAB_SDAR_BASELINES=0 (block NOT
     injected) — absolute default-OFF behaviour preservation.
-  - Opt-in ON injection: with OPENRESEARCH_SDAR_BASELINES=1 the _SDAR_BASELINES_BLOCK is
+  - Opt-in ON injection: with REPROLAB_SDAR_BASELINES=1 the _SDAR_BASELINES_BLOCK is
     present and names the three missing baselines (opsd / skill_sd / rlsd), the
     populated skill_context, the curves.json artifact (gate_mean/gap/opsd_loss/reward),
     and the ZJU-REAL/SDAR provenance link.
@@ -26,14 +26,14 @@ from backend.agents.baseline_implementation import (
     _compute_constraint_guidance,
 )
 
-_FLAG = "OPENRESEARCH_SDAR_BASELINES"
+_FLAG = "REPROLAB_SDAR_BASELINES"
 
 
 # ---------------------------------------------------------------------------
 # Opt-in OFF parity
 # ---------------------------------------------------------------------------
 def test_opt_in_off_guidance_unchanged(monkeypatch):
-    """With OPENRESEARCH_SDAR_BASELINES unset, guidance must be byte-identical to =0."""
+    """With REPROLAB_SDAR_BASELINES unset, guidance must be byte-identical to =0."""
     monkeypatch.delenv(_FLAG, raising=False)
     baseline_off = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 
@@ -41,7 +41,7 @@ def test_opt_in_off_guidance_unchanged(monkeypatch):
     off_explicit = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 
     assert baseline_off == off_explicit, (
-        "Guidance with OPENRESEARCH_SDAR_BASELINES unset vs =0 must be identical"
+        "Guidance with REPROLAB_SDAR_BASELINES unset vs =0 must be identical"
     )
     # The block must be absent from both.
     assert "SDAR BASELINE COVERAGE" not in baseline_off
@@ -58,7 +58,7 @@ def test_falsey_values_do_not_inject(monkeypatch, falsey):
     monkeypatch.setenv(_FLAG, falsey)
     got = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 
-    assert got == base, f"OPENRESEARCH_SDAR_BASELINES={falsey!r} must not inject the block"
+    assert got == base, f"REPROLAB_SDAR_BASELINES={falsey!r} must not inject the block"
     assert "SDAR BASELINE COVERAGE" not in got
 
 
@@ -67,7 +67,7 @@ def test_falsey_values_do_not_inject(monkeypatch, falsey):
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("truthy", ["1", "true", "yes"])
 def test_opt_in_on_injects_block(monkeypatch, truthy):
-    """With OPENRESEARCH_SDAR_BASELINES truthy, the block + key strings must appear."""
+    """With REPROLAB_SDAR_BASELINES truthy, the block + key strings must appear."""
     monkeypatch.setenv(_FLAG, truthy)
     guidance = _compute_constraint_guidance(sandbox_mode="local", gpu_mode="auto")
 

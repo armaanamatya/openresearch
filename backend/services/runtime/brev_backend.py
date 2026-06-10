@@ -109,7 +109,7 @@ class BrevBackend(RuntimeBackend):
     Parameters
     ----------
     api_key:
-        Brev API token (``BREV_API_KEY`` / ``OPENRESEARCH_BREV_API_KEY``).
+        Brev API token (``BREV_API_KEY`` / ``REPROLAB_BREV_API_KEY``).
         Used for ``brev login --token`` on the first call that needs the CLI.
     cli_path:
         Path to the ``brev`` binary.  Defaults to whatever ``PATH`` resolves.
@@ -139,7 +139,7 @@ class BrevBackend(RuntimeBackend):
     instance_id:
         When set, ``create_sandbox`` attaches to this pre-existing instance
         rather than creating a new one.  The instance is never deleted on
-        destroy (same semantics as ``OPENRESEARCH_RUNPOD_POD_ID``).
+        destroy (same semantics as ``REPROLAB_RUNPOD_POD_ID``).
     """
 
     def __init__(
@@ -162,7 +162,7 @@ class BrevBackend(RuntimeBackend):
     ) -> None:
         self.api_key = (
             api_key
-            or os.environ.get("OPENRESEARCH_BREV_API_KEY")
+            or os.environ.get("REPROLAB_BREV_API_KEY")
             or os.environ.get("BREV_API_KEY")
             or ""
         ).strip()
@@ -213,7 +213,7 @@ class BrevBackend(RuntimeBackend):
             if attached is not None:
                 return attached
             _log.warning(
-                "OPENRESEARCH_BREV_INSTANCE_ID=%r is unusable; creating a new instance. "
+                "REPROLAB_BREV_INSTANCE_ID=%r is unusable; creating a new instance. "
                 "Update .env with the new instance ID printed below to reuse it.",
                 self.instance_id,
             )
@@ -456,7 +456,7 @@ class BrevBackend(RuntimeBackend):
     ) -> Sandbox:
         ready = ssh_ready or await self._wait_for_instance_ssh(instance_id)
         remote_base = _join_posix(
-            "/home", self.ssh_user, "openresearch",
+            "/home", self.ssh_user, "reprolab",
             _safe_name(config.project_id),
             _safe_name(config.run_id),
         )
@@ -740,7 +740,7 @@ class BrevBackend(RuntimeBackend):
                 RuntimeCauseKind.backend_unavailable,
                 "Brev sandbox is selected but no API key is configured and no cached "
                 "session was found in ~/.brev/. "
-                "Set OPENRESEARCH_BREV_API_KEY or BREV_API_KEY, or run 'brev login' first.",
+                "Set REPROLAB_BREV_API_KEY or BREV_API_KEY, or run 'brev login' first.",
                 retryable=False,
             )
 
@@ -782,7 +782,7 @@ class BrevBackend(RuntimeBackend):
 def ensure_brev_available() -> None:
     """Fail fast when Brev is selected but local credentials or CLI are absent."""
     api_key = (
-        os.environ.get("OPENRESEARCH_BREV_API_KEY")
+        os.environ.get("REPROLAB_BREV_API_KEY")
         or os.environ.get("BREV_API_KEY")
         or ""
     ).strip()
@@ -792,7 +792,7 @@ def ensure_brev_available() -> None:
     if not api_key and not session_ok:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            "Brev sandbox is selected but OPENRESEARCH_BREV_API_KEY or BREV_API_KEY is not set "
+            "Brev sandbox is selected but REPROLAB_BREV_API_KEY or BREV_API_KEY is not set "
             "and no cached session was found in ~/.brev/. "
             "Run 'brev login' or set the env var.",
             retryable=False,
@@ -805,13 +805,13 @@ def ensure_brev_available() -> None:
             retryable=False,
         )
     ssh_key_path = _normalize_ssh_key_path(
-        os.environ.get("OPENRESEARCH_BREV_SSH_KEY_PATH") or None
+        os.environ.get("REPROLAB_BREV_SSH_KEY_PATH") or None
     )
     if not ssh_key_path.exists():
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
             f"Brev sandbox is selected but SSH private key was not found: {ssh_key_path}. "
-            "Set OPENRESEARCH_BREV_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
+            "Set REPROLAB_BREV_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
             retryable=False,
         )
 
@@ -909,7 +909,7 @@ def _extract_artifact_tar(data: bytes, destination: Path) -> None:
 
 
 def _instance_name(config: SandboxConfig) -> str:
-    return f"openresearch-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
+    return f"reprolab-{_safe_name(config.project_id)}-{_safe_name(config.run_id)}"
 
 
 def _safe_name(value: str) -> str:

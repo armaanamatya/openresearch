@@ -32,6 +32,6 @@ spec:
     # The default of 64 provides sufficient headroom for 2 concurrent 8-cell runs
     # each with up to 2 OOM escalations plus 1 hr of TTL-retained finished Jobs.
     # Raise this value (override in envs/<env>/helm-values.yaml) if you increase
-    # parallelism or OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS beyond 2.
+    # parallelism or REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS beyond 2.
     # ---------------------------------------------------------------------------
     count/jobs.batch: {{ .Values.resourceQuota.maxJobs | quote }}

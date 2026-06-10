@@ -218,7 +218,7 @@ def _canonicalize_url_term(value: str) -> str:
 _normalize_guard_text = _canonicalize_url_term
 
 
-def blocked_terms_from_env(env_var: str = "OPENRESEARCH_BLOCKED_TERMS_JSON") -> tuple[str, ...]:
+def blocked_terms_from_env(env_var: str = "REPROLAB_BLOCKED_TERMS_JSON") -> tuple[str, ...]:
     """Parse the #7 benchmark-integrity blocklist from its JSON-list env var.
 
     The single subprocess seam: ``cli.py`` unions the curated sources (bundle

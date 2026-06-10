@@ -54,7 +54,7 @@ makes this bug class **structurally impossible** and 10-50× faster rollouts.
   `backend/services/runtime/local_gpu_allocator.py::free_devices(...)`. Your
   smoke test must run on **one** free GPU (or CPU) — never grab the box.
 - **Do not disturb the FSDP default.** The scaffold path is opt-in
-  (`OPENRESEARCH_RL_SCAFFOLD=1` or a per-run flag). With it off, behavior is
+  (`REPROLAB_RL_SCAFFOLD=1` or a per-run flag). With it off, behavior is
   byte-identical to today. All existing tests must stay green.
 - **Coexist with the distributed-launch rewriter.** See §5 — the separate-server
   topology conflicts with `_resolve_distributed_launch`; you must add a clean
@@ -97,7 +97,7 @@ makes this bug class **structurally impossible** and 10-50× faster rollouts.
   `from accelerate`, `Accelerator(`, `torch.distributed`, `fully_shard`, etc.
 - Rewrite (ngpu≥2 + marker): `python train.py …` →
   `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 accelerate launch --config_file
-  _openresearch_fsdp.yaml --num_processes <ngpu> --num_machines 1
+  _reprolab_fsdp.yaml --num_processes <ngpu> --num_machines 1
   --main_process_port <free> train.py …` (template ~line 2416).
 - `_write_fsdp_accelerate_config` (line 2278), `_nccl_env_prefix` (line 2329).
 - **Problem:** with separate-server vLLM, wrapping the WHOLE `train.py` in
@@ -158,7 +158,7 @@ The scaffold owns a 2-tier launch inside the sandbox:
 1. **vLLM rollout server** on dedicated free GPU(s): `trl vllm-serve` (or the
    programmatic equivalent) bound to a partition of `CUDA_VISIBLE_DEVICES`.
 2. **FSDP trainer** on the remaining GPUs via `accelerate launch` with a config
-   the scaffold writes (NOT `_openresearch_fsdp.yaml` — its own, FSDP1, bf16,
+   the scaffold writes (NOT `_reprolab_fsdp.yaml` — its own, FSDP1, bf16,
    matched to the trainer GPU count), pointed at the vLLM server URL.
 
 **Coexistence with `_resolve_distributed_launch` (pick the cleanest, justify in
@@ -167,9 +167,9 @@ the PR):**
   train.py` form (e.g. the agent's `commands.json` runs `python rl_launch.py`,
   an orchestrator that starts vLLM then `accelerate launch`s the trainer), and
   add a **single guard** in `_resolve_distributed_launch` that **skips rewriting
-  when a scaffold sentinel is present** (e.g. a `# openresearch:rl-scaffold-owns-launch`
-  marker in the command or a `code/.openresearch_rl_scaffold` file, or
-  `OPENRESEARCH_RL_SCAFFOLD=1`). Add a focused test for the skip.
+  when a scaffold sentinel is present** (e.g. a `# reprolab:rl-scaffold-owns-launch`
+  marker in the command or a `code/.reprolab_rl_scaffold` file, or
+  `REPROLAB_RL_SCAFFOLD=1`). Add a focused test for the skip.
 - Keep the NCCL env prefix applied to the trainer launch (reuse
   `_nccl_env_prefix()`).
 

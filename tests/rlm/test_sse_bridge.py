@@ -4,7 +4,7 @@ Critical tests:
 - C2 regression: the paper corpus sentinel NEVER appears in sanitize_iteration output.
 - stdout/stderr reduced to metadata.
 - response bounding to ≤4 000 chars.
-- OpenResearchRLMLogger.log() emits and checkpoints, does NOT call super().log().
+- ReproLabRLMLogger.log() emits and checkpoints, does NOT call super().log().
 - make_emit serializes via a threading.Lock.
 """
 
@@ -21,7 +21,7 @@ import pytest
 from rlm.core.types import CodeBlock, REPLResult, RLMIteration
 
 from backend.agents.rlm.sse_bridge import (
-    OpenResearchRLMLogger,
+    ReproLabRLMLogger,
     build_candidate_outcome_event,
     build_candidate_proposed_event,
     build_rubric_score_event,
@@ -303,10 +303,10 @@ class TestSanitizeIterationShape:
 
 
 # ---------------------------------------------------------------------------
-# OpenResearchRLMLogger
+# ReproLabRLMLogger
 # ---------------------------------------------------------------------------
 
-class TestOpenResearchRLMLogger:
+class TestReproLabRLMLogger:
 
     def _make_logger(self):
         emitted = []
@@ -317,7 +317,7 @@ class TestOpenResearchRLMLogger:
         mock_checkpointer = MagicMock()
         mock_checkpointer.record.side_effect = lambda clean: checkpointed.append(clean)
 
-        logger = OpenResearchRLMLogger(emit=emit, checkpointer=mock_checkpointer)
+        logger = ReproLabRLMLogger(emit=emit, checkpointer=mock_checkpointer)
         return logger, emitted, checkpointed, mock_checkpointer
 
     def test_log_emits_repl_iteration_event(self):
@@ -340,7 +340,7 @@ class TestOpenResearchRLMLogger:
         assert clean["iteration"] == 1
 
     def test_log_does_not_call_super_log(self):
-        """OpenResearchRLMLogger.log() must NEVER call super().log() — that would
+        """ReproLabRLMLogger.log() must NEVER call super().log() — that would
         capture the raw RLMIteration (corpus) in the base class's _iterations list."""
         logger, _, _, _ = self._make_logger()
 

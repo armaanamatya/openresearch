@@ -92,10 +92,10 @@ spec:
             - name: AZURE_CLIENT_ID
               # [TF: workload_identity_client_id]
               value: "REPLACE_WITH_MI_CLIENT_ID"
-            - name: OPENRESEARCH_STORAGE_ACCOUNT
+            - name: REPROLAB_STORAGE_ACCOUNT
               # [TF: storage_account_name]
               value: "REPLACE_WITH_STORAGE_ACCOUNT"
-            - name: OPENRESEARCH_BLOB_CONTAINER
+            - name: REPROLAB_BLOB_CONTAINER
               # [TF: blob_container_name]
               value: "REPLACE_WITH_BLOB_CONTAINER"
             - name: SMOKE_BLOB_NAME
@@ -126,8 +126,8 @@ spec:
               python3 - <<'PYEOF'
               import os, sys, datetime
 
-              account = os.environ["OPENRESEARCH_STORAGE_ACCOUNT"]
-              container = os.environ["OPENRESEARCH_BLOB_CONTAINER"]
+              account = os.environ["REPROLAB_STORAGE_ACCOUNT"]
+              container = os.environ["REPROLAB_BLOB_CONTAINER"]
               blob_name = os.environ["SMOKE_BLOB_NAME"]
 
               try:

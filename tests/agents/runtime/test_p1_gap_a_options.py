@@ -66,7 +66,7 @@ def test_root_options_empty_tools_omits_allowed_tools():
 
 
 def test_hermetic_on_by_default(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_SDK_HERMETIC", raising=False)
+    monkeypatch.delenv("REPROLAB_SDK_HERMETIC", raising=False)
     assert _hermetic_enabled() is True
     spec = AGENT_REGISTRY["baseline-implementation"].to_runtime_spec("anthropic")
     kw = _agent_options_kwargs(spec, {}, {})
@@ -74,7 +74,7 @@ def test_hermetic_on_by_default(monkeypatch):
 
 
 def test_hermetic_off_via_hatch_keeps_tool_restriction(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_SDK_HERMETIC", "false")
+    monkeypatch.setenv("REPROLAB_SDK_HERMETIC", "false")
     assert _hermetic_enabled() is False
     spec = AGENT_REGISTRY["baseline-implementation"].to_runtime_spec("anthropic")
     kw = _agent_options_kwargs(spec, {}, {})
@@ -86,8 +86,8 @@ def test_hermetic_off_via_hatch_keeps_tool_restriction(monkeypatch):
 
 def test_hermetic_hatch_value_parsing(monkeypatch):
     for off in ("0", "false", "no", "off", "False", "OFF"):
-        monkeypatch.setenv("OPENRESEARCH_SDK_HERMETIC", off)
+        monkeypatch.setenv("REPROLAB_SDK_HERMETIC", off)
         assert _hermetic_enabled() is False, off
     for on in ("1", "true", "yes", "anything-else"):
-        monkeypatch.setenv("OPENRESEARCH_SDK_HERMETIC", on)
+        monkeypatch.setenv("REPROLAB_SDK_HERMETIC", on)
         assert _hermetic_enabled() is True, on

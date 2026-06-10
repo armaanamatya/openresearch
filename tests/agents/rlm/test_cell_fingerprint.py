@@ -217,11 +217,11 @@ class TestSensitivity:
         assert before != after
 
     def test_trainer_version_flag_flips(self, tmp_path):
-        """OPENRESEARCH_TRAINER_VERSION stands in for the un-hashed train_cell.py."""
+        """REPROLAB_TRAINER_VERSION stands in for the un-hashed train_cell.py."""
         _seed_helpers(tmp_path)
         cell = _cell("alfworld")
-        before = compute_fingerprint(cell, tmp_path, env={"OPENRESEARCH_TRAINER_VERSION": "1"})
-        after = compute_fingerprint(cell, tmp_path, env={"OPENRESEARCH_TRAINER_VERSION": "2"})
+        before = compute_fingerprint(cell, tmp_path, env={"REPROLAB_TRAINER_VERSION": "1"})
+        after = compute_fingerprint(cell, tmp_path, env={"REPROLAB_TRAINER_VERSION": "2"})
         assert before != after
 
     def test_non_allowlisted_env_var_ignored(self, tmp_path):
@@ -253,8 +253,8 @@ class TestFlagEnvScoping:
 
     def test_alfworld_flag_flips_alfworld_not_search_qa(self, tmp_path):
         _seed_helpers(tmp_path)
-        off = {"OPENRESEARCH_ALFWORLD_SHAPED_REWARD": "0"}
-        on = {"OPENRESEARCH_ALFWORLD_SHAPED_REWARD": "1"}
+        off = {"REPROLAB_ALFWORLD_SHAPED_REWARD": "0"}
+        on = {"REPROLAB_ALFWORLD_SHAPED_REWARD": "1"}
         assert (
             compute_fingerprint(_cell("alfworld"), tmp_path, env=off)
             != compute_fingerprint(_cell("alfworld"), tmp_path, env=on)
@@ -266,8 +266,8 @@ class TestFlagEnvScoping:
 
     def test_search_qa_flag_flips_search_qa_not_alfworld(self, tmp_path):
         _seed_helpers(tmp_path)
-        off = {"OPENRESEARCH_SEARCH_QA_DENSE": "0"}
-        on = {"OPENRESEARCH_SEARCH_QA_DENSE": "1"}
+        off = {"REPROLAB_SEARCH_QA_DENSE": "0"}
+        on = {"REPROLAB_SEARCH_QA_DENSE": "1"}
         assert (
             compute_fingerprint(_cell("search_qa"), tmp_path, env=off)
             != compute_fingerprint(_cell("search_qa"), tmp_path, env=on)
@@ -279,8 +279,8 @@ class TestFlagEnvScoping:
 
     def test_global_trainer_version_flips_every_env(self, tmp_path):
         _seed_helpers(tmp_path)
-        v1 = {"OPENRESEARCH_TRAINER_VERSION": "1"}
-        v2 = {"OPENRESEARCH_TRAINER_VERSION": "2"}
+        v1 = {"REPROLAB_TRAINER_VERSION": "1"}
+        v2 = {"REPROLAB_TRAINER_VERSION": "2"}
         for env_name in ("alfworld", "search_qa", "webshop"):
             assert (
                 compute_fingerprint(_cell(env_name), tmp_path, env=v1)

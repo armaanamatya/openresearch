@@ -7,7 +7,7 @@ Critical tests:
 - context and _private keys are excluded from both artifacts.
 - Corpus sentinel NEVER appears in the JSON file text (redact_corpus guard).
 - repl_state.pickle is written and loadable; un-picklable values are tombstoned.
-- OpenResearchRLMLogger with snapshot_writer=None still works (back-compat).
+- ReproLabRLMLogger with snapshot_writer=None still works (back-compat).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest
 from rlm.core.types import CodeBlock, REPLResult, RLMIteration
 
 from backend.agents.rlm.repl_snapshot import ReplSnapshotWriter
-from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
+from backend.agents.rlm.sse_bridge import ReproLabRLMLogger
 
 
 # ---------------------------------------------------------------------------
@@ -351,18 +351,18 @@ class TestWriteExceptionSafe:
 
 
 # ---------------------------------------------------------------------------
-# Test: OpenResearchRLMLogger back-compat — snapshot_writer=None
+# Test: ReproLabRLMLogger back-compat — snapshot_writer=None
 # ---------------------------------------------------------------------------
 
-class TestOpenResearchRLMLoggerBackCompat:
-    """Issue #62 DC#4 — OpenResearchRLMLogger with snapshot_writer=None must still work."""
+class TestReproLabRLMLoggerBackCompat:
+    """Issue #62 DC#4 — ReproLabRLMLogger with snapshot_writer=None must still work."""
 
     def test_logger_without_snapshot_writer_logs_normally(self):
         """snapshot_writer=None (default) must not break emit or checkpoint."""
         emitted = []
         mock_checkpointer = MagicMock()
 
-        logger = OpenResearchRLMLogger(
+        logger = ReproLabRLMLogger(
             emit=lambda e: emitted.append(e),
             checkpointer=mock_checkpointer,
         )
@@ -379,7 +379,7 @@ class TestOpenResearchRLMLoggerBackCompat:
         mock_checkpointer = MagicMock()
         writer = ReplSnapshotWriter(project_dir=tmp_path)
 
-        logger = OpenResearchRLMLogger(
+        logger = ReproLabRLMLogger(
             emit=lambda e: emitted.append(e),
             checkpointer=mock_checkpointer,
             snapshot_writer=writer,

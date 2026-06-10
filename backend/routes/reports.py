@@ -3,7 +3,7 @@
 GET /runs/{project_id}/reports → {workers: [...], summary: {...}}
 
 Returns 200 with empty arrays when the reports directory doesn't exist.
-Not gated by OPENRESEARCH_DEMO_SECRET (read-only introspection data).
+Not gated by REPROLAB_DEMO_SECRET (read-only introspection data).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ router = APIRouter()
 def _runs_root() -> Path:
     import os
     s = get_settings()
-    env_val = os.environ.get("OPENRESEARCH_RUNS_ROOT")
+    env_val = os.environ.get("REPROLAB_RUNS_ROOT")
     if s.runs_root is not None:
         return Path(s.runs_root)
     if env_val:

@@ -85,7 +85,7 @@ def test_oom_with_empty_ladder_fails_with_cost_summary(ctx):
 
 def test_max_escalations_cap_honored(ctx, monkeypatch):
     """If max_escalations=1, second OOM must not trigger a third attempt."""
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "1")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "1")
     # Bust the settings cache so the env var is picked up.
     import backend.config as _config
     _config._settings_cache = None

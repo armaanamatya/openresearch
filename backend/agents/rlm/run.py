@@ -7,7 +7,7 @@
      ``binding.py`` if importable, else the deterministic stub provider,
   3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
   4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
-     iteration through :class:`OpenResearchRLMLogger`,
+     iteration through :class:`ReproLabRLMLogger`,
   5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
 
 Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
@@ -58,7 +58,7 @@ from backend.agents.rlm.report import (
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
-    OpenResearchRLMLogger,
+    ReproLabRLMLogger,
     build_run_complete_event,
     build_run_warning_event,
     make_emit,
@@ -118,7 +118,7 @@ logger = logging.getLogger(__name__)
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
 # 2026-05-25 — the rlm/ctx wall-clock ceiling is FULLY USER-CONTROLLED. When no
-# ``--max-wall-clock`` flag (or OPENRESEARCH_MAX_WALL_CLOCK_S env var) is set, rlm's
+# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set, rlm's
 # own between-iteration timeout and every per-primitive deadline are unbounded —
 # the user mandate is "no truncation of a long reproduction unless the operator
 # opts in." 2026-06-01 — but "unbounded" must NOT mean "can hang forever with no
@@ -127,7 +127,7 @@ _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query rec
 # partial report and hard-exits. The 2026-06-01 SDAR run hung ~3h inside one
 # synchronous run_experiment (every soft bound collapsed to None, watchdog unarmed),
 # the user killed it, and NO final_report was written — this backstop closes that
-# gap. Opt fully out with OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0.
+# gap. Opt fully out with REPROLAB_WATCHDOG_HARD_CEILING_S=0.
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
@@ -138,11 +138,11 @@ def _watchdog_hard_ceiling_s() -> float:
     """Always-on watchdog backstop (seconds), used when no explicit wall-clock is set.
 
     Read at arm-time (not import-time) so tests and operators can tune it via
-    ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
+    ``REPROLAB_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
     entirely, restoring the pre-2026-06-01 fully-unbounded behaviour. A malformed
     value falls back to the 14h default rather than crashing the run.
     """
-    raw = os.environ.get("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "").strip()
+    raw = os.environ.get("REPROLAB_WATCHDOG_HARD_CEILING_S", "").strip()
     if raw == "":
         return _WATCHDOG_HARD_CEILING_DEFAULT_S
     try:
@@ -409,8 +409,8 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     regardless; the fallback is loud (a WARNING with the underlying exception)
     — it degrades, it never silently masks.
     """
-    if os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1":
-        return build_stub_custom_tools(ctx), "stub (OPENRESEARCH_RLM_STUB_PRIMITIVES=1)"
+    if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
+        return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
     try:
         from backend.agents.rlm.binding import build_custom_tools
 
@@ -595,7 +595,7 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
             f"Parser likely failed. Re-run ingestion or set "
-            f"OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT=true."
+            f"REPROLAB_ALLOW_LOSSY_PAPER_TEXT=true."
         )
     logger.warning(
         "paper text degraded — proceeding with lossy workspace fallback "
@@ -824,7 +824,7 @@ def _fatal_primitive_result(ctx: RunContext | None) -> tuple[str, dict] | None:
     return (str(getattr(ctx, "_last_primitive_name", "unknown")), result)
 
 
-class _FatalBackendGateLogger(OpenResearchRLMLogger):
+class _FatalBackendGateLogger(ReproLabRLMLogger):
     """Logger hook that aborts before RLM appends fatal REPL output to history."""
 
     def log(self, iteration: Any) -> None:
@@ -954,6 +954,46 @@ def _finalize_fatal_primitive_abort(
     )
 
 
+def _salvage_partial_report(
+    report: "RLMFinalReport", project_dir: Path, *, stop_kind: str, stop_detail: str,
+) -> "float | None":
+    """Fold the run's already-earned evidence into a hard-stop report (in place).
+
+    2026-06-09 All-CNN: the watchdog shipped ``rubric.overall_score=None`` +
+    ``verdict="failed"`` while the run had recorded a real 0.49 rubric score —
+    the hard-stop path bypassed ``build_final_report`` and with it the
+    best-of-run floor. This helper applies the floor from dashboard events,
+    reconciles the verdict against the salvaged score (downgrade-only ceiling,
+    starting from the honest "partial" claim), and attaches a structured
+    ``stop_reason``. Fail-soft: any error leaves the bare report intact.
+    Returns the salvaged overall score (or None).
+    """
+    score: float | None = None
+    try:
+        from backend.agents.rlm.report import (
+            _apply_best_of_run_floor,
+            reconcile_verdict_with_score,
+        )
+        rubric = _apply_best_of_run_floor(dict(report.rubric or {}), project_dir)
+        raw = rubric.get("overall_score")
+        score = float(raw) if raw is not None else None
+        if score is not None:
+            report.rubric = rubric
+            report.verdict = reconcile_verdict_with_score("partial", score)
+            report.reproduction_summary = (
+                (report.reproduction_summary or "")
+                + f"\n\n[salvage] Best rubric score recorded before the stop: "
+                f"{score:.3f} (best_of_run) — preserved in this report."
+            ).strip()
+    except Exception:  # noqa: BLE001 — salvage must never block the report write
+        logger.exception("run_pipeline_rlm: hard-stop salvage failed (shipping bare report)")
+    try:
+        report.stop_reason = {"kind": stop_kind, "detail": stop_detail}
+    except Exception:  # noqa: BLE001 — schema drift must not block the write
+        logger.debug("run_pipeline_rlm: could not attach stop_reason", exc_info=True)
+    return score
+
+
 def _hard_stop_with_report(
     *,
     project_dir: Path,
@@ -962,13 +1002,19 @@ def _hard_stop_with_report(
     summary: str,
     status_error: str,
     exit_code: int,
+    stop_kind: str = "hard_stop",
 ) -> None:
-    """Ship a partial ``failed`` report, emit ``run_complete``, flip demo_status, and
+    """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
     watchdog and the SIGTERM finalizer (2026-06-01). Every step is best-effort so a
-    failure writing one artifact never blocks the others or the exit.
+    failure writing one artifact never blocks the others or the exit. The report
+    carries the run's best recorded rubric score + a reconciled verdict (salvage,
+    2026-06-09) instead of an unconditional scoreless ``failed``.
     """
     report = RLMFinalReport(verdict="failed", reproduction_summary=summary, iterations=done)
+    salvaged_score = _salvage_partial_report(
+        report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
+    )
     try:
         write_final_report_rlm(report, project_dir)
     except Exception:  # noqa: BLE001
@@ -978,7 +1024,7 @@ def _hard_stop_with_report(
             build_run_complete_event(
                 status="failed",
                 iterations=done,
-                rubric_score=None,
+                rubric_score=salvaged_score,
                 cost_usd=None,
                 final_report_path=str(project_dir / "final_report.json"),
             )
@@ -1030,7 +1076,7 @@ def _arm_watchdog(
         deadline_s = ceiling
         logger.warning(
             "run_pipeline_rlm: no explicit wall-clock ceiling; arming the always-on "
-            "watchdog backstop at %.0fs (OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0 disables)",
+            "watchdog backstop at %.0fs (REPROLAB_WATCHDOG_HARD_CEILING_S=0 disables)",
             deadline_s,
         )
     def _fire() -> None:
@@ -1053,6 +1099,7 @@ def _arm_watchdog(
                 f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
+            stop_kind="wall_clock_watchdog",
         )
 
     import time as _time
@@ -1127,6 +1174,7 @@ def _install_sigterm_finalizer(
             ),
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
+            stop_kind="sigterm",
         )
 
     try:
@@ -1441,11 +1489,6 @@ async def run_pipeline_rlm(
     except Exception:  # noqa: BLE001 — the snapshot must never block a run
         logger.exception("run_pipeline_rlm: could not write run_config.json")
 
-    # Local sandboxes have no /workspace volume — repoint the dataset root at a
-    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
-    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
-    _ensure_local_data_root(sandbox_mode, runs_root)
-
     # 1. Observability + budget.
     cost_ledger = RunCostLedger.load_jsonl(
         project_dir / "cost_ledger.jsonl", project_id=project_id, attach_path=True
@@ -1455,7 +1498,7 @@ async def run_pipeline_rlm(
     # wall_clock_s is intentionally Optional[float] — None means unbounded
     # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
     # the operator must opt-in to a ceiling via --max-wall-clock or
-    # OPENRESEARCH_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
+    # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
     # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
     wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
     if run_budget is not None and run_budget.max_wall_clock_seconds:
@@ -1532,12 +1575,12 @@ async def run_pipeline_rlm(
     # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
     # before Settings construction; consumed here so RunContext carries it and
     # resolve_gpu_requirements can bypass the LLM VRAM estimate).
-    _vram_override_env = os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB")
+    _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
     _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
 
-    # Per-run ScopeSpec from OPENRESEARCH_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
+    # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
     # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
-    _scope_json = os.environ.get("OPENRESEARCH_SCOPE_SPEC_JSON", "").strip()
+    _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
     if _scope_json:
         from backend.agents.schemas import ScopeSpec as _ScopeSpec
         _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
@@ -1828,7 +1871,7 @@ async def run_pipeline_rlm(
     settings = get_settings()
     min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
     # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
-    _raw_max_iter = os.environ.get("OPENRESEARCH_MAX_RLM_ITERATIONS", "").strip()
+    _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
     _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
 
     def _emit_forced_iteration_warning(message: str) -> None:
@@ -2165,6 +2208,27 @@ def _finalize(
                     ))
         except Exception:  # noqa: BLE001 — diagnostic only; never block report write
             logger.debug("_finalize: suspicious_partial check raised", exc_info=True)
+
+    # Two-axis reproducibility verdict producers (U14/U16, flag-gated + fail-soft):
+    # write repro_spec.json (claims) + fidelity_certificate.json so write_final_report_rlm
+    # can attach the verdict.  No-ops entirely unless OPENRESEARCH_TWO_AXIS_VERDICT is set.
+    try:
+        from backend.agents.rlm import repro_spec_extractor, fidelity_certificate_builder
+        if repro_spec_extractor.is_enabled():
+            _paper_txt = ""
+            _ptxt = project_dir / "parsed_full_text.txt"
+            if _ptxt.exists():
+                _paper_txt = _ptxt.read_text(encoding="utf-8", errors="replace")
+            repro_spec_extractor.extract_and_write(
+                None, project_dir,
+                llm_client=getattr(ctx, "llm_client", None),
+                paper_text=_paper_txt,
+            )
+            fidelity_certificate_builder.build_certificate(
+                project_dir, arxiv_id=getattr(ctx, "arxiv_id", None),
+            )
+    except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
+        logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),

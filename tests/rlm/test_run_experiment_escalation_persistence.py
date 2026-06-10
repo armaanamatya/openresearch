@@ -84,7 +84,7 @@ def test_persisted_escalation_count_loads_on_run_experiment(tmp_path, monkeypatc
     records escalations_used=2. On the next call the cap is already met and
     the experiment should not escalate again (loop exits after the first OOM).
     """
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "2")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "2")
     import backend.config as _config
     _config._settings_cache = None
 
@@ -121,7 +121,7 @@ def test_escalation_count_persists_after_advance(tmp_path, monkeypatch):
     """After a successful ladder advance, gpu_escalation_state.json must be
     written with the updated escalations_used count.
     """
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
     import backend.config as _config
     _config._settings_cache = None
 
@@ -161,7 +161,7 @@ def test_escalation_count_accumulates_across_calls(tmp_path, monkeypatch):
     """Two sequential run_experiment calls each advancing once accumulate to
     escalations_used=2 in the persisted state file.
     """
-    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "5")
+    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "5")
     import backend.config as _config
     _config._settings_cache = None
 
