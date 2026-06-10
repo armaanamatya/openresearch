@@ -113,6 +113,12 @@ class RunCostLedger:
         # line-tearing is structurally impossible.
         self._buffer: list[dict] = []
         self._lock: threading.Lock = threading.Lock()
+        # Entries present at construction time were seeded from disk (load_jsonl
+        # of the root-writable cost_ledger.jsonl on a warm retry) and are NOT
+        # trustworthy as a record of in-process primitive calls. Appends always
+        # go to the end of the list under _lock, so entries[_seeded_len:] is
+        # exactly the rows recorded by THIS process (binding.wrap_primitive).
+        self._seeded_len: int = len(self.entries)
 
     def append(self, entry: CostLedgerEntry) -> None:
         """Append an entry to the in-memory list and the write buffer.
@@ -151,6 +157,21 @@ class RunCostLedger:
 
     def total_usd(self) -> float:
         return round(sum(entry.estimated_usd or 0.0 for entry in self.entries), 8)
+
+    def session_call_count(self, agent_id: str) -> int:
+        """Count entries appended IN THIS PROCESS for ``agent_id``.
+
+        Excludes rows seeded from disk at ``load_jsonl`` time: those live in the
+        root-writable ``cost_ledger.jsonl`` and can be forged through the REPL's
+        live ``open()``, then re-ingested on a warm retry of the same project
+        dir. Only post-construction appends (made by ``binding.wrap_primitive``
+        inside the orchestrator) are trusted. Budget math (``total_usd``)
+        intentionally stays cumulative across retries — this counter is the
+        trust signal, not the cost accumulator.
+        """
+        return sum(
+            1 for entry in self.entries[self._seeded_len :] if entry.agent_id == agent_id
+        )
 
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:
         raw: dict[ProviderName, dict[str, Any]] = {}

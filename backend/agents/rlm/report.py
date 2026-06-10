@@ -1097,6 +1097,46 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     return False
 
 
+def _has_partial_timeout_evidence(project_dir: Path) -> bool:
+    """True iff ``experiment_runs.jsonl`` has a HARNESS-finalized partial row:
+    non-empty dict ``metrics`` AND (``failure_class == "partial_timeout"`` or
+    ``partial_timeout is True``).
+
+    These rows come from ``primitives._finalize_timeout_result`` — the 2026-06-08
+    exec-reliability redesign loads the on-disk partial ``metrics.json`` written by
+    the training process itself when a run hits ``exec_timeout``/``exec_stalled``,
+    so the metrics are real completed work, not agent-attested numbers. They are
+    deliberately NOT accepted by ``_has_experiment_evidence`` (success is False),
+    but they justify capping a verdict at "partial" instead of forcing "failed".
+    Fail-soft: any I/O / parse error returns False.
+    """
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return False
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if not (
+                entry.get("failure_class") == "partial_timeout"
+                or entry.get("partial_timeout") is True
+            ):
+                continue
+            metrics = entry.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _apply_evidence_gate(
     report: RLMFinalReport,
     project_dir: Path,
@@ -1127,6 +1167,16 @@ def _apply_evidence_gate(
     downgrades to "failed", not "partial". The partial numbers remain real for
     *scoring* (the leaf scorer still grades the code), but they no longer license a
     success-ish VERDICT. This is the strictness #1 deliberately chose.
+
+    PARTIAL-TIMEOUT TIER (2026-06-09): one narrow exception to that strictness —
+    a row finalized by the harness itself on ``exec_timeout``/``exec_stalled``
+    (``failure_class == "partial_timeout"``, metrics loaded from the on-disk
+    ``metrics.json`` the training process wrote; see
+    ``primitives._finalize_timeout_result``) caps the verdict at "partial" instead
+    of forcing "failed", provided the ledger shows ≥1 in-process ``run_experiment``
+    call (or no ledger is available). These metrics are harness-loaded completed
+    work, not agent-attested numbers, and "failed" would misdescribe exactly the
+    runs the 2026-06-08 finalize-on-timeout redesign exists to salvage.
 
     FORGED-EVIDENCE cross-check (2026-05-30, audit finding): ``_has_experiment_evidence``
     reads ``experiment_runs.jsonl`` CONTENT only. The root model's REPL keeps ``open()``
@@ -1180,11 +1230,45 @@ def _apply_evidence_gate(
                 "experiment evidence (success row on disk but run_experiment ledger "
                 "count is 0)"
             )
+        elif (
+            (run_experiment_calls is None or run_experiment_calls >= 1)
+            and _has_partial_timeout_evidence(project_dir)
+        ):
+            # Second tier (2026-06-09): the only evidence is a timeout-finalized
+            # partial — run_experiment ended early (exec_timeout/exec_stalled)
+            # after some work wrote real metrics, which the harness itself loaded
+            # from disk (primitives._finalize_timeout_result). Forcing "failed"
+            # here would misdescribe the run the finalize-on-timeout redesign was
+            # built for; cap at "partial" instead. A REPL-forged partial row with
+            # 0 in-process run_experiment calls does NOT reach this tier (the
+            # ledger condition above) and falls through to the hard downgrade.
+            note = (
+                " [evidence_cap] Verdict capped at 'partial': the experiment "
+                "evidence is a timeout-finalized partial — run_experiment ended "
+                "early (exec_timeout/exec_stalled) after real metrics were "
+                "written; no cleanly-successful run backs a full reproduction "
+                "claim."
+            )
+            if report.verdict == "reproduced":
+                logger.warning(
+                    "report: evidence gate capped verdict 'reproduced' -> 'partial' "
+                    "(only timeout-finalized partial evidence)"
+                )
+                report.verdict = "partial"
+            report.reproduction_summary = (
+                report.reproduction_summary or ""
+            ).rstrip() + note
+            return report
         else:
             note = (
-                " [evidence_gap] Downgraded to 'failed': no run_experiment produced "
-                "metrics and baseline_metrics is empty — this run has no experiment "
-                "evidence to support a reproduction claim."
+                " [evidence_gap] Downgraded to 'failed': no cleanly-successful "
+                "(success=True) run_experiment row with metrics exists to back "
+                "the reproduction claim"
+                + (
+                    " and baseline_metrics is empty."
+                    if not report.baseline_metrics
+                    else "."
+                )
             )
             logger.warning(
                 "report: evidence gate downgraded verdict to 'failed' (no experiment evidence)"
@@ -1198,13 +1282,18 @@ def run_experiment_call_count(ctx: RunContext) -> int | None:
     """Authoritative count of ``run_experiment`` invocations from the **in-memory**
     cost ledger — the one trusted signal the root model's REPL cannot forge.
 
-    ``ctx.cost_ledger.entries`` is a Python list mutated only by ``binding.wrap_primitive``
-    (the orchestrator), never re-read from the root-writable ``cost_ledger.jsonl``.
-    ``wrap_primitive`` appends exactly one row per primitive call on EVERY path —
-    success, fail-soft return, raise, and timeout (``binding._ledger()`` at both the
-    return site and the ``except`` site) — including zero-token primitives like
-    ``run_experiment``. So a count of 0 means ``run_experiment`` **genuinely never ran**,
-    and any ``success+metrics`` row in ``experiment_runs.jsonl`` was written by something
+    SESSION-SCOPED (2026-06-09 audit fix): ``ctx.cost_ledger`` IS seeded from the
+    root-writable ``cost_ledger.jsonl`` at run start (``RunCostLedger.load_jsonl``
+    in ``run_pipeline_rlm`` — intentional, for cross-retry budget continuity), so
+    counting **all** entries would let a root forge a ``run_experiment`` ledger row
+    in run 1, crash without a report (warm retry preserves both jsonl files), and
+    have run 2 ingest the forged row and pass this cross-check. The count therefore
+    uses ``RunCostLedger.session_call_count``, which only sees entries appended
+    **in this process** by ``binding.wrap_primitive`` — appended exactly once per
+    primitive call on EVERY path (success, fail-soft return, raise, timeout),
+    including zero-token primitives like ``run_experiment``. So a count of 0 means
+    ``run_experiment`` genuinely never ran *in this attempt*, and any
+    ``success+metrics`` row in ``experiment_runs.jsonl`` was written by something
     other than the real primitive (i.e. forged via the REPL's ``open()``).
 
     Returns the count, or ``None`` if no ledger is available (the gate then falls back
@@ -1214,6 +1303,11 @@ def run_experiment_call_count(ctx: RunContext) -> int | None:
     if ledger is None:
         return None
     try:
+        counter = getattr(ledger, "session_call_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        # Ledger-shaped test double without the method: fall back to a full scan
+        # (no seeding concern — doubles are built in-process).
         return sum(
             1 for e in ledger.entries if getattr(e, "agent_id", None) == "run_experiment"
         )

@@ -112,6 +112,68 @@ def test_fatal_finalize_writes_failed_status_and_failed_report(make_context, tmp
     assert any(event.get("event") == "run_fatal" for event in emitted)
 
 
+def test_fatal_finalize_with_timeout_partial_evidence_caps_at_partial(make_context, tmp_path):
+    # Audit 2026-06-09: a HARNESS-finalized partial (exec_timeout/exec_stalled →
+    # primitives._finalize_timeout_result loads the on-disk metrics.json and
+    # stamps failure_class=partial_timeout) is real completed work — the verdict
+    # caps at "partial" with an evidence_cap note, instead of the forced "failed"
+    # the balance_too_low case above correctly gets. This is the wall-clock-expiry
+    # scenario the 2026-06-08 finalize-on-timeout redesign was built for.
+    ctx = make_context(tmp_path)
+    result = {
+        "success": False,
+        "metrics": {"accuracy": 0.61},
+        "error": "exec_timeout: wall clock exhausted after 4/5 families",
+        "failure_class": "partial_timeout",
+        "outcome": "fatal",
+    }
+    abort = _FatalPrimitiveAbort(primitive_name="run_experiment", result=result)
+    (ctx.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({
+            "timestamp": "2026-06-09T00:00:00+00:00",
+            "success": False,
+            "metrics": {"accuracy": 0.61},
+            "failure_class": "partial_timeout",
+            "partial_timeout": True,
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    # The timeout row was persisted by a REAL run_experiment call — record it in
+    # the in-process ledger exactly as binding.wrap_primitive would. Without this
+    # the gate's forge cross-check (session count == 0) rightly forces "failed".
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    ctx.cost_ledger.append(
+        CostLedgerEntry(
+            timestamp=datetime.now(timezone.utc),
+            agent_id="run_experiment",
+            attempt_index=0,
+            provider="openai",
+            model="gpt-5",
+        )
+    )
+
+    run_result = _finalize_fatal_primitive_abort(
+        abort=abort,
+        ctx=ctx,
+        iterations=1,
+        project_dir=ctx.project_dir,
+        emit=lambda _e: None,
+        tools_label="real",
+    )
+
+    report = json.loads((ctx.project_dir / "final_report.json").read_text(encoding="utf-8"))
+
+    assert run_result.status == "failed"  # the RUN still ended fatally
+    assert report["verdict"] == "partial"  # ...but the verdict reflects the real partial work
+    assert "evidence_cap" in report["reproduction_summary"]
+    assert "evidence_gap" not in report["reproduction_summary"]
+    assert report["baseline_metrics"] == {"accuracy": 0.61}
+
+
 # ---------------------------------------------------------------------------
 # PR-α followup integration: repairable outcome → record_repair_attempt →
 # forced_iteration_policy refuses FINAL_VAR

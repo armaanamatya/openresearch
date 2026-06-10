@@ -148,3 +148,93 @@ def test_run_experiment_call_count_none_when_no_ledger() -> None:
         cost_ledger = None
 
     assert run_experiment_call_count(_Ctx()) is None
+
+
+def _forge_ledger_row(project_dir: Path) -> None:
+    """Write the exact cost_ledger.jsonl shape a forging REPL would append
+    (the to_json field names CostLedgerEntry.from_json round-trips)."""
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    project_dir.mkdir(parents=True, exist_ok=True)
+    entry = CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc),
+        agent_id="run_experiment",
+        attempt_index=0,
+        provider="openai",
+        model="gpt-5",
+    )
+    with (project_dir / "cost_ledger.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry.to_json()) + "\n")
+
+
+def test_warm_retry_does_not_trust_disk_seeded_ledger_rows(tmp_path: Path) -> None:
+    """Audit 2026-06-09: the cross-check counter must be session-scoped.
+
+    Exploit it closes: in run 1 the root forges BOTH a success row in
+    experiment_runs.jsonl AND a run_experiment row in cost_ledger.jsonl via its
+    live ``open()``; run 1 dies without final_report.json (SIGKILL/OOM), so
+    attempt isolation archives nothing; run 2 warm-retries the same project dir
+    and ``RunCostLedger.load_jsonl`` re-ingests the forged ledger row. Counting
+    seeded rows would yield 1 and let the forged verdict ship.
+    """
+    from backend.agents.resilience.cost import RunCostLedger
+
+    _forge_ledger_row(tmp_path)
+    ledger = RunCostLedger.load_jsonl(tmp_path / "cost_ledger.jsonl", project_id="p")
+    assert len(ledger.entries) == 1  # seeding itself still works (budget continuity)
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    assert run_experiment_call_count(_Ctx()) == 0
+
+
+def test_warm_retry_forged_files_yield_failed_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end warm-retry forge: forged evidence row + forged (re-ingested)
+    ledger row must still downgrade to 'failed'."""
+    from backend.agents.resilience.cost import RunCostLedger
+
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    _forge_success_row(tmp_path)
+    _forge_ledger_row(tmp_path)
+    ledger = RunCostLedger.load_jsonl(tmp_path / "cost_ledger.jsonl", project_id="p")
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    report = RLMFinalReport(
+        verdict="reproduced",
+        reproduction_summary="claimed reproduction",
+        baseline_metrics={"accuracy": 0.95},
+    )
+    json_path, _ = write_final_report_rlm(
+        report, tmp_path, run_experiment_calls=run_experiment_call_count(_Ctx())
+    )
+
+    assert _written_verdict(json_path) == "failed"
+
+
+def test_session_appends_after_seeding_still_count(tmp_path: Path) -> None:
+    """Budget seeding must not break the legit path: a REAL in-process
+    run_experiment call after warm-retry seeding counts."""
+    from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
+
+    _forge_ledger_row(tmp_path)  # stale/seeded row (untrusted)
+    ledger = RunCostLedger.load_jsonl(tmp_path / "cost_ledger.jsonl", project_id="p")
+    ledger.append(
+        CostLedgerEntry(
+            timestamp=datetime.now(timezone.utc),
+            agent_id="run_experiment",
+            attempt_index=1,
+            provider="openai",
+            model="gpt-5",
+        )
+    )
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    assert run_experiment_call_count(_Ctx()) == 1
+    assert ledger.total_usd() == 0.0  # cumulative cost math untouched by scoping
