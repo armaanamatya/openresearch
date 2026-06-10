@@ -42,7 +42,6 @@ async function captureScreenshot(page: import("@playwright/test").Page, label: s
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const file = path.join(SCREENSHOT_DIR, `${ts}-${label}.png`);
   await page.screenshot({ path: file, fullPage: true });
-  // eslint-disable-next-line no-console
   console.log(`[lab-watch] screenshot: ${file}`);
   return file;
 }
@@ -86,7 +85,6 @@ function attachConsoleCapture(page: import("@playwright/test").Page) {
     // analysis but don't fail the test (Next.js dev mode produces benign
     // warnings on hot-reload that would create perpetual false positives).
     if (warnings.length > 0) {
-      // eslint-disable-next-line no-console
       console.log(`[lab-watch] ${warnings.length} console warning(s):\n${warnings.join("\n")}`);
     }
     expect(errors, "console / page errors during /lab load").toEqual([]);
