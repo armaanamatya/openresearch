@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
 # OpenResearch
 
-> **Doc status:** Current · last verified 2026-06-03 against `backend/` + `CLAUDE.md`.
+> **Doc status:** Current · last verified 2026-06-09 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
 > anything the code, [`system_overview.md`](system_overview.md), or
 > [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is enforced by `make docs-check`
@@ -203,8 +203,7 @@ See `.env.example` for the full list.
 
 ```bash
 # Backend tests
-.venv/bin/python -m pytest tests/ -n auto       # all (~340 files / ~3,600 tests, <1 min parallel)
-.venv/bin/python -m pytest tests/ -n auto        # parallel
+.venv/bin/python -m pytest tests/ -n auto       # all (~340 files / ~4,400 tests, <1 min parallel)
 .venv/bin/python -m pytest tests/rlm/            # RLM tests only
 
 # Frontend
@@ -289,6 +288,10 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 | [docs/design/rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM-as-orchestrator architecture reference | 1 |
 | [docs/design/project-rebuild-spec.md](docs/design/project-rebuild-spec.md) | Closest thing to a PRD: the *what*/*why*, framework-agnostic | 1 |
 | [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas, invariants | 2 |
+| [docs/reproduction.md](docs/reproduction.md) | Fresh-clone reproduction path, smoke checks, expected outputs | 2 |
+| [docs/architecture.md](docs/architecture.md) | Current backend/frontend/RLM topology and artifact model | 2 |
+| [docs/infra.md](docs/infra.md) | Docker, compose, persistence, RunPod, Azure/Kubernetes status | 2 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common install, auth, Docker, SQLite, RunPod, and port failures | 2 |
 | [docs/guides/setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions | 3 |
 | [docs/guides/deployment.md](docs/guides/deployment.md) | Deployment guide | 3 |
 | [docs/runbooks/e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook | 3 |

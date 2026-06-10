@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-05-24 -->
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
 # OpenResearch Agent — Developer Setup Guide
 
-> **Doc status:** Current · last verified 2026-05-24. If a command here fails,
+> **Doc status:** Current · last verified 2026-06-09. If a command here fails,
 > `CLAUDE.md` and `.env.example` are authoritative.
 
 Everything a contributor needs to install and configure before working on OpenResearch.
@@ -178,8 +178,8 @@ sudo apt install -y nodejs
 Frontend setup (run from repo root):
 
 ```bash
-cd frontend   # once the frontend directory exists
-npm install
+cd frontend
+npm ci
 ```
 
 ## 6. Python dependencies
@@ -187,12 +187,11 @@ npm install
 From the repo root (with your venv activated):
 
 ```bash
-pip install -r requirements.txt
-# or, equivalently:
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 ```
 
 `requirements.txt` at the repo root delegates to `backend/requirements.txt`.
+Install `backend/requirements-dev.txt` too for pytest and parallel test runs.
 Key packages installed by the backend runtime set:
 
 | Package | Purpose |

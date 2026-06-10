@@ -11,6 +11,10 @@
 README.md
 system_overview.md
 CLAUDE.md
+docs/reproduction.md
+docs/architecture.md
+docs/infra.md
+docs/troubleshooting.md
 docs/policies/documentation.md
 docs/design/rlm-pivot-brief.md
 docs/design/project-rebuild-spec.md

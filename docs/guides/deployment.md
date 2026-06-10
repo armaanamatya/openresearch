@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-05-18 -->
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
 # Production Deployment
 
-> **Doc status:** Current · last verified 2026-05-18. Cross-check against
+> **Doc status:** Current · last verified 2026-06-09. Cross-check against
 > `docker-compose.yml`, `Dockerfile`, and `railway.json` before deploying.
 
 ## Overview
@@ -113,7 +113,7 @@ In Docker Compose, the database is stored inside the `runs/` volume:
 
 ```yaml
 environment:
-  - OPENRESEARCH_DATABASE_URL=sqlite:///app/runs/openresearch.db
+  - OPENRESEARCH_DATABASE_URL=sqlite:////app/runs/openresearch.db
 ```
 
 ---

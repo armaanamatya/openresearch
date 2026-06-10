@@ -278,3 +278,60 @@ step). Pushed: `origin/bes` @ `2302ddb`.
 needs owner sign-off — list in `docs/audit-initial.md` §2); GEPA subsystem
 product decision; BUG-NEW-033 misuse patch; RLM checkpoint-resume read path;
 socket-level test-network hermeticity; non-root container user.
+
+---
+
+## Addendum — Codex continuation recovery and final validation
+
+Continuation started from a clean `bes` checkout at `4d15886` (`origin/bes`).
+The interrupted Makefile edit was already committed and syntactically valid;
+there were no staged or unstaged repo changes. A pre-existing backend process
+was already listening on `:8000` (`.venv/bin/uvicorn ... --port 8000`), so the
+compose runtime smoke used temporary alternate host ports and left that process
+alone.
+
+Additional documentation hardening in this continuation:
+
+- Added the missing canonical docs requested by the audit brief:
+  `docs/reproduction.md`, `docs/architecture.md`, `docs/infra.md`, and
+  `docs/troubleshooting.md`.
+- Added those docs to `docs/policies/current-docs.txt` so `docs-check` enforces
+  freshness markers and internal links.
+- Refreshed README setup/test pointers and fixed stale setup/deployment command
+  drift (`npm ci`, combined backend requirements install, four-slash container
+  SQLite URL).
+- Removed two unused eslint-disable comments in `frontend/e2e/lab-watch.spec.ts`.
+
+### Ops capability audit
+
+| Capability | Classification | Files / functions | How to test | Current blocker / limitation |
+|---|---|---|---|---|
+| Running Playwright/browser tasks repeatedly | Implemented but unverified in this continuation | `frontend/e2e/lab-watch.spec.ts`, `scripts/loops/lab_watch_loop.sh` | Start frontend/backend, then run `LAB_BASE_URL=http://localhost:3000 LAB_WATCH_MAX_CYCLES=1 scripts/loops/lab_watch_loop.sh` | Browser binaries and live UI needed; not part of `make check` |
+| Running a background process every few minutes | Implemented | `scripts/loops/lab_watch_loop.sh`; app lifespan hook for `periodic_liveness_sweep` in `backend/app.py` | Set `LAB_WATCH_INTERVAL_S=300`; inspect `/tmp/lab-watch-loop.log`; unit/integration coverage via backend tests | Shell loop is operator-managed, not a durable scheduler |
+| Updating background state/logs | Implemented and verified by tests | `demo_status.json` writers in `backend/cli.py` and `backend/services/events/live_runs.py`; `dashboard_events.jsonl`; `code/.exec_live.log` | Run a local reproduction and tail `runs/<id>/demo_status.json` / `dashboard_events.jsonl` | Full scheduled artifact workflow still manual |
+| Generating a document/output artifact on a schedule | Partially implemented | `final_report.{json,md}` writers in RLM/RDR paths; `scripts/loops/*` can poll/watch | Complete a run and inspect `runs/<id>/final_report.md` | No first-class scheduler that periodically creates reports without an active run |
+| Detecting dead/stuck runs | Implemented and verified by tests | `backend/services/events/run_liveness.py`, local exec heartbeat/stall code in `backend/agents/rlm/primitives.py` | Run pytest liveness/watchdog tests; kill a child run and query run status | SIGKILL is still unhandleable at process level; reconciliation is best-effort |
+| Killing/restarting unhealthy processes | Partially implemented | `scripts/loops/kill_and_restart.sh`, CLI signal handling in `backend/cli.py`, entrypoint child teardown | Use a disposable run and invoke `scripts/loops/kill_and_restart.sh <id> <n> <pdf>` | Script is SDAR/retry-sprint oriented, not a generic supervisor |
+| Viewing local output/status from browser or local link | Implemented and compose-verified | `/lab`, `/leaderboard`, `/library`, `frontend/src/app/api/demo/*`, backend run routes | Compose smoke: `curl -I http://127.0.0.1:13000/lab` returned 200 | Browser visual Playwright pass not run in this continuation |
+| Persisting outputs in a clean directory structure | Implemented and documented | `runs/<project_id>/`, `run_config.json`, `demo_status.json`, ledgers, `code/`, reports | Start a run and inspect `runs/<id>/`; unit tests cover run_config secrets exclusion | `runs/` can still grow unbounded without operator cleanup |
+| Cleaning old runs safely | Implemented but unscheduled | `scripts/prune_runs.py`, `tests/scripts/test_prune_runs.py` | `python scripts/prune_runs.py --dry-run`; pytest prune tests | No automatic retention policy; `.preserved` policy relies on operator use |
+| Reproducing a run from logs/config | Partially implemented | `run_config.json`, `dashboard_events.jsonl`, `experiment_runs.jsonl`, `cost_ledger.jsonl` | Inspect `runs/<id>/run_config.json` and rerun equivalent CLI command | RLM checkpoint resume read path and load-bearing `--seed` remain open |
+
+### Validation matrix
+
+| Area | Command | Result | Evidence / notes | Remaining issue |
+|---|---|---|---|---|
+| Git state | `git status --short`; `git branch --show-current`; `git log --oneline --decorate -n 8` | PASS | clean at recovery; branch `bes`; HEAD `4d15886` before continuation edits | Dirty until this addendum/docs commit is created |
+| Makefile syntax/help | `make help`; `make smoke` | PASS | help printed canonical targets; smoke printed `app factory OK`, `CLI OK`, `compose OK` | none |
+| Backend clean dependency install | `uv venv --python 3.12 --seed /private/tmp/.../venv`; `pip install -r backend/requirements.txt -r backend/requirements-dev.txt` | PASS | resolved and installed successfully in throwaway Python 3.12.12 venv | system `python3` 3.14 still has broken ensurepip on this host |
+| Frontend install resolution | `cd frontend && npm ci --dry-run --no-audit --no-fund` | PASS | dry run completed; platform bindings remained optional | dry-run only, per requested command |
+| Backend tests | `.venv/bin/python -m pytest tests/ -q -n auto`; `make check` | PASS | `4471 passed, 9 skipped, 1 xfailed`; rerun inside `make check`: same pass count in 32.26s | 20 warnings; optional `faiss`, `chromadb`, `torch` tests skipped |
+| Frontend lint/types/tests | `npm run lint`; `npx tsc --noEmit`; `npm test`; `make check` | PASS | eslint clean after stale-disable cleanup; tsc clean; vitest `291 passed` | Playwright e2e not run |
+| Docker build | `docker build -t openresearch:audit .` | PASS | build completed using cached layers; image tagged `openresearch:audit` | root runtime image and docker socket risk remain |
+| Compose config | `docker compose config`; `docker compose config -q` | PASS | backend bound to `127.0.0.1:8000`; DB URL `sqlite:////app/runs/openresearch.db` | none |
+| Compose runtime health | `docker compose -p openresearch_audit -f docker-compose.yml -f /private/tmp/openresearch-compose-audit.yml up -d --no-build`; `curl /health`; `curl -I /lab`; `docker compose ... down` | PASS | container healthy; `/health` returned `{"status":"ok","version":"0.1.0"}`; `/lab` returned HTTP 200; project torn down | used alternate host ports because a pre-existing backend occupied `8000` |
+| Shell syntax | `bash -n start.sh`; `bash -n docker/entrypoint.sh` | PASS | no syntax errors | none |
+| Start-script failure modes | throwaway copies of `start.sh` with `OPENRESEARCH_DEFAULT_SANDBOX=local`, `docker`, and `runpod` | PASS | local skipped Docker; docker warned when Docker CLI absent from PATH; missing `.venv/bin/uvicorn` printed install command | runpod temp-copy skipped missing preflight script; real repo has it |
+| Docs freshness | `make docs-check`; `make check` | PASS | `14 current-state docs, 3 tracked PDFs`; OK | none |
+| Env/config validation | `docker compose config`; `make smoke`; settings imported during app factory boot | PASS | compose env wins for DB URL; app factory booted | `.env` can still leak credentials into tests without stronger socket blocking |
+| Local run / health check | compose health check and pre-existing local backend process | PASS | compose `/health` OK; existing local uvicorn on `:8000` was not killed | no real paper reproduction run launched in this continuation |

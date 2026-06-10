@@ -12,7 +12,7 @@
 # This compose mounts the host docker socket so the inner agent pipeline's
 # LocalDockerBackend can spawn sandbox containers against the host daemon
 # (no nested DinD). For prod, use the RunPodBackend instead — see
-# docs/guides/setup-guide.md §"Remote GPU support with Runpod".
+# docs/infra.md and docs/reproduction.md.
 
 services:
   app:
