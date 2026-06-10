@@ -15,9 +15,11 @@ The root `Dockerfile` is a three-stage build:
    the frontend stage, copies backend and frontend build output, then boots
    `docker/entrypoint.sh` under `tini`.
 
-The image runs both FastAPI and Next.js. It currently runs as root and installs
-`docker.io` so local Docker sandbox operations can talk to a mounted host socket.
-That is acceptable for local smoke/dev, not a hardened production boundary.
+The image runs both FastAPI and Next.js as the non-root `app` user
+(uid 10001, since 2026-06-10) and installs `docker.io` so local Docker
+sandbox operations can talk to a mounted host socket (granted via compose
+`group_add`). Socket access is still effective host-root by design; the
+processes themselves are unprivileged.
 
 ## Entrypoint
 
@@ -105,7 +107,12 @@ per-job cleanup, cost limits, and rollback from a fresh cloud account.
 
 ## Not Supported Yet
 
-- non-root hardened runtime image
+- ~~non-root hardened runtime image~~ — done 2026-06-10: both servers run as
+  uid 10001 (`app`); the docker socket is granted via compose `group_add`
+  (`OPENRESEARCH_DOCKER_GID`, default 0 for macOS Docker Desktop). Socket
+  group membership remains root-equivalent on the host by design
+  (LocalDockerBackend needs it); the hardening is that the PROCESSES are
+  no longer uid 0.
 - digest-pinned base images
 - production-grade queue/scheduler
 - multi-node run ownership

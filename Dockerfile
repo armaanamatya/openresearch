@@ -137,5 +137,19 @@ COPY docker/load_env.sh /load_env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Non-root runtime user (audit 2026-06-10). Both servers run as `app`; the
+# docker-socket capability is granted at runtime via compose `group_add`
+# (see docker-compose.yml) — membership in the socket's group is still
+# root-equivalent ON THE HOST by design (LocalDockerBackend needs it for
+# inner sandbox runs), but the processes themselves no longer run as root:
+# no root-owned FS writes, no setuid surface, container escapes land on an
+# unprivileged uid. The runs/ volume is chowned at first boot by compose's
+# bind mount semantics on macOS; on Linux ensure ./runs is writable by
+# uid 10001 (or run `chown -R 10001 runs/`).
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+USER app
+ENV HOME=/home/app
+
 EXPOSE 8000 3000
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
