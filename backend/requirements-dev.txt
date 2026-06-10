@@ -10,5 +10,6 @@
 pytest>=9.0.2,<10
 pytest-asyncio>=0.23
 pytest-xdist>=3.5            # parallel test execution
-pytest-rerunfailures>=14     # rerun flaky network tests
+pytest-rerunfailures>=14     # --reruns for flaky tests (suite is network-free since 2026-06-10)
 pytest-repeat>=0.9           # `-n` repeat for determinism checks
+pytest-socket>=0.8           # network hermeticity: tests cannot reach real hosts (loopback+unix allowed)

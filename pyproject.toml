@@ -39,6 +39,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.2,<10",
+    "pytest-socket>=0.8",
 ]
 azure = [
     "azure-identity>=1.16,<2",
@@ -67,3 +68,9 @@ include = ["backend*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# Socket-level network hermeticity (audit 2026-06-10): no test may reach a
+# real network host. Loopback stays open (TestClient/uvicorn-style tests),
+# unix sockets stay open (docker SDK doubles). This is the structural fix for
+# the 862s-stall class: a leaked .env credential can no longer turn a test
+# into a live API call — it dies instantly with SocketConnectBlockedError.
+addopts = "--disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1"

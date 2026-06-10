@@ -26,7 +26,7 @@ pip install -r backend/requirements-dev.txt   # adds pytest + parallel runners
 .venv/bin/python -m pytest tests/                       # all
 .venv/bin/python -m pytest tests/ -n auto               # parallel (needs requirements-dev)
 .venv/bin/python -m pytest tests/path/to/test_x.py::test_name   # single
-.venv/bin/python -m pytest tests/ --reruns 2            # rerun flaky network tests
+.venv/bin/python -m pytest tests/ --reruns 2            # rerun flaky tests (suite is socket-hermetic: pytest-socket blocks non-loopback)
 ```
 
 Pytest config in `pyproject.toml` (`testpaths=["tests"]`, `pythonpath=["."]`). No repo-level lint/format step.
