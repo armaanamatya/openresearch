@@ -379,3 +379,99 @@ merge commit, run 27252417055).
 | Shell syntax (`bash -n` × 4 files) | OK |
 | `docker build` (new `load_env.sh` COPY) | exit 0 |
 | In-container boot proof | image booted with a mounted `.env` containing the previously boot-crashing line `OPENRESEARCH_DEFAULT_SANDBOX=local   # …` → `/health` 200 (`Settings()`' Literal field would have raised on any corrupted value) |
+
+---
+
+## Addendum — Round 4 (2026-06-10): "do all" — every parked item resolved
+
+### Ports and security hardening
+
+- **BUG-NEW-033 ported** (the last orphaned fix): `rlm_query_misuse_patch.py`
+  auto-recovers the `(slice, question)` misuse of `rlm_query`/`llm_query`
+  (the two-arg form routed the question as a CLI model name and shipped the
+  CLI error string as `paper_claims`); system prompt now teaches the composed
+  single-prompt form. Tests added (the source branch had none).
+- **In-run forge residual closed** (per-row ledger provenance):
+  `CostLedgerEntry.outcome` ("ok"/"failed"/"raised") is stamped by
+  `binding.wrap_primitive` on every exit path including the contract-guard
+  rejection; the evidence gate now requires ≥1 success-compatible in-process
+  `run_experiment` call to back a success row. A real-but-failed call + a
+  forged row no longer passes. Remaining (narrower) residual re-documented:
+  one REAL success can still shelter a forged sibling row.
+- **Socket-level test hermeticity**: pytest-socket addopts
+  (`--disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1`) — the
+  862s-stall class is structurally impossible; canary tests prove the guard
+  is armed.
+- **Non-root container**: both servers run as uid 10001; docker socket via
+  compose `group_add` (`OPENRESEARCH_DOCKER_GID`); SSH-key injection moved to
+  `$HOME/.ssh`. Verified in-container: `/health` 200 as `app`,
+  `docker.from_env().ping()` OK, `runs/` writable.
+
+### Trunk events (the hard part of the day)
+
+origin/main moved +149 (the azure-fork merge: score-integrity, steering
+injection, attempt isolation, All-CNN showcase) — re-merged into bes. The
+incoming code had regressed the `REPROLAB_→OPENRESEARCH_` rename across ~20
+files (main has no test CI; the regression broke the local suite's disk-floor
+fixture). Fixed structurally: all env-name literals normalized (153 files),
+`Settings.env_prefix` flipped to the canonical `OPENRESEARCH_` (bridge keeps
+legacy exports working), credential fields gained canonical AliasChoices, the
+AKS in-Job entrypoint renamed with a dual-spelling injection shim for pinned
+ACR images. A symbol-level two-parent audit caught a ~361-line `primitives.py`
+region dropped by conflict resolution (restored; `plan_reproduction` taken
+from main to keep its new compute_scope warnings).
+
+Mid-session the parallel track pushed its OWN merge of main into bes (plus
+Azure Bicep, RunPod 404-idempotent teardown, UI panels, and a new uv-lock+ruff
+CI lint job) — the two reunifications were reconciled commit-by-commit
+(legacy credential aliases kept; their cleaner test fixes adopted; their
+`cap_overall_budget` and dead-code removals taken; my provenance threading
+and image-compat shim kept). Two CI-only regressions caught and fixed by the
+new gates: a stale `uv.lock`, and ruff `--fix` stripping noqa-less re-exports.
+
+### Branch GC (verified, executed)
+
+22 remote branches deleted: 15 fully-merged ancestors of the final trunk,
+3 whose every fix is ported and test-covered (`feat/rlm-wedge-hardening`,
+`pipeline-validation-mech-understanding`,
+`feat/integrate-perf-accelerator-into-stability`), 2 stale single-commit
+cleanups superseded by this audit, and 2 GEPA siblings (tagged
+`archive/gepa-*` first). Kept: `azure` (active local worktree),
+`run-archives` (only copy of archived run data), `localqwen` (uncertain
+supersession), `feat/gepa-integration` (below).
+
+### GEPA decision: ADOPT-LATER (evidence-gated)
+
+Multi-agent assessment of `origin/feat/gepa-integration` (~910 LOC
+prompt-optimization subsystem, 36/37 hermetic tests, well-engineered
+fail-soft): a direct merge is infeasible (101 conflicted files from
+duplicated lineage; 2 semantic conflicts: its anytime-scoring duplicates the
+finalize-on-timeout mechanism, its BUG-NEW-050 fallback weakens the evidence
+gate). The only field evidence shows ZERO accepted candidates (pre-timeout-fix)
+and no post-fix run. Decision per the repo's own validate-don't-build rule:
+**entry gate** = one $0 claude-oauth A/B showing post-fix GEPA accepts
+candidates and moves a rubric score on ≥1 paper — if not run by the next
+audit cycle, downgrade to drop. Re-land = hand re-application of the
+GEPA-only payload (~8 hook edits), never a git merge; required fixes at
+re-land: OPENRESEARCH_GEPA_* names, socket-gate the live-API test, route
+`gepa_*` SSE through sanitization, make off-mode fully inert.
+
+### Checkpoint-resume: resolved as DOCUMENTED-BLOCKED
+
+`rlms 0.1.1`'s `RLM.completion(prompt, root_prompt)` takes no message
+history and spawns a fresh environment per call — true mid-run REPL resume
+requires upstream library support. The practical resume value already ships
+at the three layers where time/money go: the primitive warm-retry cache
+(`primitive_cache.jsonl`), cell-grid resume (`OPENRESEARCH_RESUME_CELLS` +
+skipped-cell aggregation), and prior-attempt evidence injection into the
+implementer prompt (main, 2026-06-09). `checkpoint.py` stays emit-only by
+design (its sanitized log cannot reconstruct REPL state).
+
+### Flagged for owner awareness
+
+Main's two-axis verdict feature (`OPENRESEARCH_TWO_AXIS_VERDICT`, default
+OFF) projects the legacy verdict from root-writable `rlm_state/` artifacts
+(`fidelity_certificate.json`, `repro_spec.json`) AFTER the evidence gate —
+when that flag is on, a forging root could bypass the gate by writing a green
+certificate. Acceptable while default-off; gate-order needs revisiting before
+the flag ever defaults on.
