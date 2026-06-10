@@ -120,3 +120,28 @@ def test_smoke_steps_env_restored(monkeypatch, tmp_path):
     monkeypatch.delenv("REPROLAB_SMOKE_STEPS", raising=False)
     _run(monkeypatch, tmp_path, _mock_run_matrix("ok", write_metrics={"x": 1.0}))
     assert "REPROLAB_SMOKE_STEPS" not in os.environ
+
+
+def test_crash_log_tail_read_from_disk_when_record_has_none(monkeypatch, tmp_path):
+    """run_matrix records carry no log content — the per-cell log lives on disk.
+
+    2026-06-10 Adam v6: a PermissionError traceback (hardcoded /artifacts output
+    dir) never reached the agent; repair_context said only "status=error". The
+    smoke must fall back to <output_root>/_cell_smoke/<cid>.log.
+    """
+    def _fn(cells, cell_script, *, output_root, **kw):
+        cid = cells[0]["id"]
+        out = Path(output_root)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{cid}.log").write_text(
+            "Traceback (most recent call last):\n"
+            "PermissionError: [Errno 13] Permission denied: '/artifacts'\n",
+            encoding="utf-8",
+        )
+        return {cid: {"status": "error", "error": "exit 1"}}  # NO log key
+
+    out = _run(monkeypatch, tmp_path, _fn)
+    assert out is not None and out["failure_class"] == "cell_smoke_failed"
+    detail = out["repair_context"]["detail"]
+    assert "PermissionError" in detail and "/artifacts" in detail
+    assert "exit 1" in out["error"]

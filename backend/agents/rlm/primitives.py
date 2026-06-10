@@ -4634,10 +4634,25 @@ def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_
         cell_res = res.get(cid) or {}
         status = cell_res.get("status")
         log_tail = str(cell_res.get("log") or cell_res.get("logs") or "")[-1500:]
+        if not log_tail.strip():
+            # run_matrix records don't embed log content — the per-cell log lives
+            # on disk at <output_root>/<cid>.log. Without this fallback the
+            # repair_context said only "status=error" and the agent never saw the
+            # traceback (2026-06-10 Adam v6: a PermissionError on a hardcoded
+            # /artifacts output dir reached the agent as a bare status).
+            try:
+                log_tail = (smoke_out / f"{cid}.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )[-1500:]
+            except OSError:
+                log_tail = ""
         # OOM has its own shrink-retry ladder; a timeout means the cell ran but did not
         # honor the 1-step cap (soft pass).  Only a genuine crash blocks + repairs.
         if status not in ("ok", "oom_failed", "timeout", None):
-            return _cell_smoke_repair("cell_smoke_failed", cid, f"status={status}", log_tail)
+            detail = f"status={status}"
+            if cell_res.get("error"):
+                detail += f"; {str(cell_res.get('error'))[:200]}"
+            return _cell_smoke_repair("cell_smoke_failed", cid, detail, log_tail)
         if status == "ok":
             bad = _smoke_metrics_violation(smoke_out, cid)
             if bad is not None:
