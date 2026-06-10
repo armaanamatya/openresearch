@@ -17,7 +17,9 @@
 # --------------------------------------------------------------------------- #
 # Stage 1 — Python dependency build                                            #
 # --------------------------------------------------------------------------- #
-FROM python:3.12-slim AS python-deps
+# Digest-pinned (audit 2026-06-10): a moving :3.12-slim tag silently
+# changes the build between runs; bump deliberately by updating the digest.
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-deps
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -47,7 +49,7 @@ RUN pip install --upgrade pip wheel \
 # --------------------------------------------------------------------------- #
 # Stage 2 — Frontend build                                                     #
 # --------------------------------------------------------------------------- #
-FROM node:20-bookworm-slim AS frontend
+FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS frontend
 
 WORKDIR /frontend
 
@@ -68,7 +70,7 @@ RUN rm -rf .next/dev .next/cache \
 # --------------------------------------------------------------------------- #
 # Stage 3 — Runtime image                                                      #
 # --------------------------------------------------------------------------- #
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \

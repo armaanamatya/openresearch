@@ -113,10 +113,12 @@ per-job cleanup, cost limits, and rollback from a fresh cloud account.
   group membership remains root-equivalent on the host by design
   (LocalDockerBackend needs it); the hardening is that the PROCESSES are
   no longer uid 0.
-- digest-pinned base images
+- ~~digest-pinned base images~~ — done 2026-06-10 (python:3.12-slim and
+  node:20-bookworm-slim pinned by sha256; bump deliberately)
 - production-grade queue/scheduler
 - multi-node run ownership
-- automatic run retention policy
+- automatic run retention policy (manual: `scripts/prune_runs.py`)
 - compose resource limits for every sandbox child
-- frontend healthcheck in compose
+- ~~frontend healthcheck in compose~~ — done 2026-06-10 (the compose
+  healthcheck now curls BOTH :8000/health and :3000)
 
