@@ -33,6 +33,20 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-05-31 — The run graph vanished once a run finished: unbounded sibling panels squeezed the `flex:1` graph band to zero
+
+**Symptom.** In the RLM lab, the constellation graph shrank as a run progressed and was entirely gone once the run finished or failed — the leaf-score and rubric-score panels filled the page, with no way to minimize them.
+
+**Root cause.** `RlmLab` is a vertical flex column. `ScorecardPanel` (rubric scores) and `RubricBreakdown` (leaf scores) are full-width bands stacked *above* the `.workspace` graph band, with no height cap. The graph band is `flex: 1 1 0; min-height: 0`, so as those panels grew with content — maxing out when the run terminated and every leaf score landed — they consumed the column and shrank the graph to zero height.
+
+**Fix.** A single `CollapsiblePanel` abstraction wraps both panels: minimizable (state persisted in `localStorage`), with a height-capped, internally-scrolling body so a long leaf list can never claim the whole column. The graph band gets a `min-height: clamp(220px, 34vh, 520px)` floor; the panels carry `min-height: 0` so they yield space first and the floor wins.
+
+**Lesson.** In a flex column, a `flex: 1 1 0; min-height: 0` child collapses to zero whenever its non-flex siblings grow unbounded — content-sized siblings won't shrink below their own content, so `flex-grow` on the victim never reclaims anything. The fix is two-sided: cap/scroll the growing siblings **and** floor the flex child. Never rely on `flex-grow` alone to defend a region's visibility against content-driven neighbors.
+
+**Guardrail.** `frontend/src/components/lab/rlm/collapsible-panel.test.tsx` (minimize/restore + persist/hydrate) plus the `.workspace` `min-height` floor.
+
+---
+
 ## 2026-05-30 — Multi-GPU "shard" was really DDP *replication*; replaced the torchrun-wrap with a harness accelerate+FSDP2 launcher
 
 **Symptom.** The 3B SDAR model OOMed a 24 GB card every time, and the "fix" kept being single-GPU + gradient-checkpointing + tiny batches — a band-aid that re-OOMed under any memory pressure. The multi-GPU attempts that came before (`torchrun`) either stalled (per-rank setup duplication — the 4-rank ALFWorld hang) or still OOMed.

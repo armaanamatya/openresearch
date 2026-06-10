@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.schemas import PaperClaimMap, MetricSpec, DatasetRequirement
 

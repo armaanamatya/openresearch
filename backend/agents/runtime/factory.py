@@ -314,7 +314,7 @@ def configure_openai_agents_sdk_credentials(
     """Bridge ReproLab settings into the OpenAI Agents SDK credential hooks.
 
     The OpenAI Agents SDK can read ``OPENAI_API_KEY`` / ``OPENAI_ADMIN_KEY``
-    directly. ReproLab also supports ``REPROLAB_*`` aliases and ``.env`` via
+    directly. ReproLab also supports ``OPENRESEARCH_*`` aliases and ``.env`` via
     Settings, so this function performs the provider-specific bridge once,
     before any Agents SDK objects are constructed.
     """

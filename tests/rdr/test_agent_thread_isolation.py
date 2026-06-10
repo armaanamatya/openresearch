@@ -15,13 +15,11 @@ import pytest
 
 import backend.agents.rdr.agent as agent_mod
 from backend.agents.rdr.agent import (
-    _THREAD_TEARDOWN_SLACK_S,
     _run_sdk_in_thread,
     reproduce,
 )
 from backend.agents.rdr.models import (
     AgentContext,
-    Artifacts,
     RubricLeaf,
     WorkCluster,
 )

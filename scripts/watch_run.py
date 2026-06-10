@@ -50,9 +50,9 @@ def _summarize_event(e: dict) -> str | None:
     if ev == "run_warning":
         return f"  ⚠️  run_warning[{e.get('code')}]: {str(e.get('message',''))[:160]}"
     if ev == "candidate_proposed":
-        return f"  💡 candidate_proposed"
+        return "  💡 candidate_proposed"
     if ev == "candidate_outcome":
-        return f"  ⚖️  candidate_outcome"
+        return "  ⚖️  candidate_outcome"
     if ev == "experiment_completed":
         d = e.get("data", {})
         ok = d.get("success")

@@ -44,7 +44,7 @@ distinguish "the paper is wrong" from "we could be wrong", it returns
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal
 
 __all__ = [

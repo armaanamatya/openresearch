@@ -3,7 +3,6 @@ Tests for Issue #8: Core schemas for tasks, events, artifacts, and verification 
 Run: pytest tests/test_issue8_core_schemas.py -v
 """
 import json
-from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError

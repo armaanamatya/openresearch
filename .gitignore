@@ -175,3 +175,6 @@ frontend/tmp-screens/
 # Next.js regenerates next-env.d.ts on dev/build (dev vs build variants
 # differ, so a tracked copy churns on every workflow switch)
 frontend/next-env.d.ts
+
+# Local architecture tutorials (not committed)
+/docs/local/

@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from backend.agents.runtime.sdk_isolation import run_isolated
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from backend.services.runtime.gpu_catalog import (
     CATALOG,

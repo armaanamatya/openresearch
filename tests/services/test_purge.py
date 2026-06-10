@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-import pytest
 
 from backend.eventstore.sqlite_store import SqliteEventStore
 from backend.messaging.envelope import AggregateId, make_envelope

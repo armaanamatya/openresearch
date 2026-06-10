@@ -5,7 +5,6 @@ verification, severity semantics, and regression fixtures.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -15,14 +14,12 @@ from backend.agents.baseline_knowledge import (
     KNOWLEDGE_CHANNEL_VERSION,
     CuratedFact,
     Severity,
-    Violation,
     from_recipes,
     render_helper_module,
     verify_emitted_code,
-    violations_to_repair_context,
     write_curated_artifacts,
 )
-from backend.agents.dataset_recipes import DATASET_RECIPES, find_recipe
+from backend.agents.dataset_recipes import find_recipe
 
 
 # ---------------------------------------------------------------------------

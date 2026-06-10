@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -287,7 +286,6 @@ class _FullScoreLlmClient:
 
     def complete(self, *, system: str, user: str) -> str:
         import json as _json
-        import re as _re
         # The tasks block is the first [...] array in the user message that
         # contains leaf_id keys.  Find the first '[' after the heading marker.
         marker = "## Rubric leaf tasks"

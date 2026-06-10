@@ -4,7 +4,7 @@ import math
 import os
 import pytest
 from unittest.mock import MagicMock
-from backend.agents.rlm.primitives import resolve_experiment_timeout_s, EXPERIMENT_TIMEOUT_BY_MODE
+from backend.agents.rlm.primitives import resolve_experiment_timeout_s
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):

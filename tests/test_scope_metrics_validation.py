@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.rlm.primitives import _validate_scope_metrics
 from backend.agents.schemas import ScopeSpec

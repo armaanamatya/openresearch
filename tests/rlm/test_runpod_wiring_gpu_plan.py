@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 from backend.agents.execution import SandboxMode
 from backend.agents.rlm.primitives import _backend_for_sandbox_mode

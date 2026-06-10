@@ -13,7 +13,7 @@ Guards (a) local/runpod/docker still use gpu_cell_runner unchanged,
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

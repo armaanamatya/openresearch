@@ -110,7 +110,6 @@ def test_openai_client_sdk_max_retries():
     # with_429_backoff decorator is a second-line defence if the SDK
     # exhausts its own retries.
     import inspect
-    import textwrap
 
     from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 

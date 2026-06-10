@@ -1697,6 +1697,7 @@ def _drive_baseline_child(
     *next* attempt gets a brand-new, un-poisoned process.
     """
     import multiprocessing as _mp
+    from pathlib import Path
     from types import SimpleNamespace as _NS
 
     from backend.agents.rlm.baseline_runner import run_baseline_in_child
@@ -3023,8 +3024,8 @@ def _resolve_distributed_launch(
     # RL-scaffold sentinel — the scaffold owns its own launch orchestration
     # (vLLM server + accelerate trainer partition), so the harness rewriter
     # must NOT wrap the launch command again.  Three detection surfaces:
-    #   1. Command-line marker: a command containing '# reprolab:rl-scaffold-owns-launch'
-    #   2. Sentinel file:       code_dir/.reprolab_rl_scaffold exists
+    #   1. Command-line marker: a command containing '# openresearch:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.openresearch_rl_scaffold exists
     #   3. Environment var:     OPENRESEARCH_RL_SCAFFOLD=1
     if _os.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         logger.info(
@@ -3033,17 +3034,17 @@ def _resolve_distributed_launch(
             run_id,
         )
         return commands
-    if (code_dir / ".reprolab_rl_scaffold").exists():
+    if (code_dir / ".openresearch_rl_scaffold").exists():
         logger.info(
-            "_resolve_distributed_launch[%s]: skipping rewrite — .reprolab_rl_scaffold "
+            "_resolve_distributed_launch[%s]: skipping rewrite — .openresearch_rl_scaffold "
             "sentinel file present (scaffold owns launch)",
             run_id,
         )
         return commands
-    if any("# reprolab:rl-scaffold-owns-launch" in cmd for cmd in commands):
+    if any("# openresearch:rl-scaffold-owns-launch" in cmd for cmd in commands):
         logger.info(
             "_resolve_distributed_launch[%s]: skipping rewrite — "
-            "'# reprolab:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            "'# openresearch:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
             run_id,
         )
         return commands
@@ -4479,12 +4480,10 @@ def _validate_scope_metrics(
         # Single-model + multi-dataset: per_dataset at top level (no per_model nesting).
         pd = metrics.get("per_dataset")
         if not isinstance(pd, dict) or not pd:
-            # Accept the cells-route canonical shape too (2026-06-10 All-CNN v2):
-            # the harness aggregate is per_model[model][env][baseline] where the
-            # env keys carry the dataset (cifar10_noaug, cifar100_aug, ...) — it
-            # structurally NEVER has a top-level per_dataset dict, so demanding
-            # one here mis-fired on every multi-dataset cells.json run. Treat
-            # the union of env keys across models as the dataset key set.
+            # Cells-route fallback: the grid route writes per_model[model][env]
+            # with no top-level per_dataset; derive dataset coverage from the
+            # union of env keys so a correctly-structured cells.json run isn't
+            # flagged per_dataset_required.
             per_model = metrics.get("per_model")
             if isinstance(per_model, dict) and per_model:
                 env_keys: set[str] = set()
@@ -4651,7 +4650,7 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
     return metrics
 
 
-def _smoke_metrics_violation(smoke_out: Path, cell_id: str) -> str | None:
+def _smoke_metrics_violation(smoke_out: "Path", cell_id: str) -> "str | None":
     """U3 — flag a cell that ran but produced no / NaN metrics (the
     ``degraded_no_metrics`` root cause).  Returns a reason string, or None when fine.
 
@@ -4705,7 +4704,7 @@ def _cell_smoke_repair(failure_class: str, cell_id: str, detail: str, log_tail: 
     }
 
 
-def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_s, ctx) -> dict | None:
+def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_s, ctx) -> "dict | None":
     """U2/U3 — run the SMALLEST cell for a brief smoke BEFORE the full grid.
 
     Catches a non-OOM ``train_cell.py`` code bug (the All-CNN ``cell_execution_error``
@@ -4776,6 +4775,86 @@ def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_
         return None
 
 
+def _hybrid_route_enabled() -> bool:
+    """OPENRESEARCH_HYBRID_EXEC_ROUTE — run cells.json grid AND commands.json in one call.
+
+    Default OFF. The two manifests were mutually exclusive per run_experiment
+    call, so a multi-family paper (Adam: VAE sweep grid + train.py families)
+    had to burn a full iteration renaming cells.json aside to reach its other
+    families — and v6 instead re-ran the whole grid and died at the watchdog.
+    """
+    val = os.environ.get("OPENRESEARCH_HYBRID_EXEC_ROUTE", "").strip().lower()
+    return bool(val) and val not in ("0", "false", "off")
+
+
+def _merge_hybrid_results(grid_result: dict, cmd_result: dict, code_path: str) -> dict:
+    """Fold a successful cells-grid result and the commands-route result into one.
+
+    The agent-written metrics (families, per_dataset) are the base; the grid's
+    ``per_model`` aggregate is grafted under keys the agent didn't write, so
+    neither route's evidence is lost. The merged blob is persisted to
+    ``code/metrics.json`` (what the scorer reads). When the commands route
+    failed, the call stays a repairable failure but CARRIES the merged metrics
+    so the grid work survives into repair context. Fail-soft throughout.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    try:
+        grid_m = grid_result.get("metrics") if isinstance(grid_result.get("metrics"), dict) else {}
+        cmd_m = cmd_result.get("metrics") if isinstance(cmd_result.get("metrics"), dict) else {}
+        merged = dict(cmd_m) if cmd_m else dict(grid_m)
+        if grid_m:
+            gpm = grid_m.get("per_model")
+            if isinstance(gpm, dict) and gpm:
+                target = merged.setdefault("per_model", {})
+                if isinstance(target, dict):
+                    for model_key, tree in gpm.items():
+                        target.setdefault(model_key, tree)
+            # Union honest scope gaps from both routes.
+            g_gaps = ((grid_m.get("scope") or {}).get("gaps") or []) if isinstance(grid_m.get("scope"), dict) else []
+            if g_gaps:
+                scope = merged.setdefault("scope", {})
+                if isinstance(scope, dict):
+                    gaps = scope.setdefault("gaps", [])
+                    if isinstance(gaps, list):
+                        seen = {_json.dumps(g, sort_keys=True, default=str) for g in gaps}
+                        for g in g_gaps:
+                            key = _json.dumps(g, sort_keys=True, default=str)
+                            if key not in seen:
+                                gaps.append(g)
+                                seen.add(key)
+
+        out = dict(cmd_result)
+        out["metrics"] = merged
+        out["logs"] = (
+            str(grid_result.get("logs") or "")
+            + "\n--- hybrid route: commands.json after cells grid ---\n"
+            + str(cmd_result.get("logs") or "")
+        )
+        warnings = list(grid_result.get("contract_warnings") or []) + list(
+            cmd_result.get("contract_warnings") or []
+        )
+        if warnings:
+            out["contract_warnings"] = warnings
+        if not cmd_result.get("success") and grid_result.get("success"):
+            out["error"] = (
+                str(cmd_result.get("error") or "commands route failed")
+                + " — NOTE: the cells.json grid SUCCEEDED and its per_model "
+                "aggregate is preserved in metrics; repair only the commands/"
+                "train.py families."
+            )
+        try:
+            blob = _json.dumps(merged, indent=2, default=str)
+            (_Path(code_path) / "metrics.json").write_text(blob, encoding="utf-8")
+        except OSError:
+            logger.warning("hybrid route: merged metrics.json persist failed")
+        return out
+    except Exception:  # noqa: BLE001 — merging must never lose the primary result
+        logger.exception("hybrid route: merge failed — returning commands result")
+        return cmd_result
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -4793,7 +4872,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner, k8s_job_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, cell_scheduler, gpu_cell_runner, k8s_job_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -4887,6 +4966,26 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
     _n_slots = max(1, len(gpus) // _gpus_per_cell)
     _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Time-budget gate (2026-06-10): the matrix budget must FIT the run's
+    # remaining wall clock (minus a verify+report reserve). Adam v6's 100-epoch
+    # VAE re-grid got `per_cell × waves` of budget with 4h of run left, sailed
+    # into the 14h watchdog, and was hard-killed mid-cell — when run_matrix's
+    # own deadline machinery would have TRIMMED the tail cells to honest
+    # `timeout` leaves and returned a scoreable partial. Fail-soft: unknown
+    # remaining time leaves the legacy budget untouched.
+    _matrix_overall_s: float | None = (timeout_s * max(1, _waves)) if timeout_s else None
+    try:
+        _rem = ctx.remaining_s() if callable(getattr(ctx, "remaining_s", None)) else None
+        _reserve = float(os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+        _capped = cell_scheduler.cap_overall_budget(
+            _matrix_overall_s, _rem, reserve_s=_reserve)
+        if _capped != _matrix_overall_s:
+            logger.info(
+                "run_experiment: matrix budget capped to %.0fs by remaining run "
+                "wall clock (%.0fs, reserve %.0fs)", _capped or -1, _rem or -1, _reserve)
+        _matrix_overall_s = _capped
+    except Exception:  # noqa: BLE001 — the gate must never block the grid
+        logger.debug("run_experiment: matrix time-budget gate skipped", exc_info=True)
     # Cell-level resume (Track B): compute each kept cell's content fingerprint so
     # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
     # OPENRESEARCH_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
@@ -4950,7 +5049,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 output_root=str(artifact_root),
                 gpus=gpus or None,
                 per_cell_timeout_s=timeout_s,
-                overall_timeout_s=timeout_s * max(1, _waves),
+                overall_timeout_s=_matrix_overall_s,
                 gpus_per_cell=_gpus_per_cell,
                 fingerprints=_fingerprints,
                 force_cells=_force_cells or None,
@@ -4962,7 +5061,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             output_root=str(artifact_root),
             gpus=gpus or None,
             per_cell_timeout_s=timeout_s,
-            overall_timeout_s=timeout_s * max(1, _waves),
+            overall_timeout_s=_matrix_overall_s,
             gpus_per_cell=_gpus_per_cell,
             fingerprints=_fingerprints,
             force_cells=_force_cells or None,
@@ -4975,6 +5074,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         models_skipped=models_skipped, environments_skipped=envs_skipped)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
+
     if _axis_notes:
         logs = logs + "\n" + "\n".join(_axis_notes)
 
@@ -4982,6 +5082,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     n_ok = sum(s == "ok" for s in statuses)
     n_oom = sum(s == "oom_failed" for s in statuses)
     n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+
     # Dead-training early-stop (2026-06-09): cells the guard killed because their loss
     # was pinned (network never learned). These are deterministic architecture/init bugs
     # — NOT transient — so they drive a targeted, repairable ``degenerate_training``
@@ -5059,11 +5160,11 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
-    _persist_metrics(metrics)
     _div_note = (
         f" (of which {n_diverged} early-stopped as dead-training: "
         f"{', '.join(_diverged_cells)})" if n_diverged else ""
     )
+    _persist_metrics(metrics)
     return {"success": False, "metrics": metrics, "logs": logs,
             "failure_class": "cell_execution_error",
             "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs)"
@@ -5316,6 +5417,7 @@ def run_experiment(
     # iteration, the cell route uses this value as its artifact root.
     run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     _cell_route_taken = False
+    _hybrid_grid_result: dict | None = None  # set when the hybrid route stashes a grid result
     # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the
     # .exec_heartbeat.json sidecar so a long run is observable in the UI while it runs (and the
     # real-output signal feeds the watchdog's SSE liveness). Daemon thread; stopped once the exec
@@ -5341,6 +5443,20 @@ def run_experiment(
         ):
             result = _execute_cell_matrix(ctx, code_path, _caps, timeout_s=timeout, run_id=run_id)
             _cell_route_taken = True
+            # Hybrid route (2026-06-10, OPENRESEARCH_HYBRID_EXEC_ROUTE, default off):
+            # when BOTH manifests exist and the grid produced a successful
+            # result, ALSO run the agent's commands.json families in this same
+            # call (legacy loop below), then graft the grid aggregate into the
+            # agent-written metrics — multi-family papers stop burning an
+            # iteration renaming cells.json aside.
+            if (
+                _hybrid_route_enabled()
+                and commands
+                and isinstance(result, dict)
+                and result.get("success")
+            ):
+                _hybrid_grid_result = result
+                _cell_route_taken = False
     except Exception:  # noqa: BLE001 — the cell route must never crash the run
         logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
         _cell_route_taken = False
@@ -5758,6 +5874,12 @@ def run_experiment(
                     result = {**result, "contract_violations": _existing}
     except Exception:  # noqa: BLE001 — observability must never block the run
         logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
+
+    # Hybrid route merge (2026-06-10): both manifests ran in this one call —
+    # graft the stashed grid aggregate into the agent-written family metrics so
+    # the scorer sees one combined metrics.json and neither route's work is lost.
+    if _hybrid_grid_result is not None:
+        result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
 
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 

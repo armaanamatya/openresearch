@@ -15,7 +15,6 @@ from backend.agents.rlm.run import (
     _FatalBackendGateLogger,
     _FatalPrimitiveAbort,
     _finalize_fatal_primitive_abort,
-    _outcome_value,
     _record_last_primitive_result_tools,
 )
 

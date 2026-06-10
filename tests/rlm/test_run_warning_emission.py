@@ -1,7 +1,6 @@
 """run_experiment must emit a dashboard_event with code='iteration_boundary_recommended'
 whenever its outcome is repairable or partial_evidence."""
 import json
-import pytest
 from pathlib import Path
 from backend.agents.rlm.primitives import _emit_iteration_boundary_warning
 

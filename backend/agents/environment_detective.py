@@ -129,9 +129,6 @@ def _infer_framework(claim_map: PaperClaimMap) -> tuple[str, str]:
         + claim_map.training_recipe.optimizer
     ).lower()
 
-    # Check recipe's other_hparams for framework clues
-    recipe_text = str(claim_map.training_recipe.other_hparams).lower()
-
     if "tensorflow" in all_text or "tf." in all_text or "keras" in all_text:
         return "tensorflow", "2.15.0"
     if "jax" in all_text or "flax" in all_text:

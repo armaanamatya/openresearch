@@ -120,7 +120,6 @@ def main() -> int:
         project_id = project_id_override
     elif resume:
         # Find most-recently-modified pb_rdr_<paper_id>_* directory.
-        import re as _re
         safe_pid = _safe_dir_name(bundle.paper_id)
         prefix = f"pb_rdr_{safe_pid}_"
         candidates = [

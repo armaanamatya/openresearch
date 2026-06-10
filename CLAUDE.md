@@ -29,7 +29,12 @@ pip install -r backend/requirements-dev.txt   # adds pytest + parallel runners
 .venv/bin/python -m pytest tests/ --reruns 2            # rerun flaky tests (suite is socket-hermetic: pytest-socket blocks non-loopback)
 ```
 
-Pytest config in `pyproject.toml` (`testpaths=["tests"]`, `pythonpath=["."]`). No repo-level lint/format step.
+Pytest config in `pyproject.toml` (`testpaths=["tests"]`, `pythonpath=["."]`).
+
+# Dependency locking + lint (uv at /snap/bin/uv)
+uv venv --python 3.12 && uv sync --frozen   # locked env matching Docker/CI (Python 3.12)
+uvx ruff@0.15.16 check .                    # lint (E4/E7/E9/F defaults; config in pyproject.toml)
+# pip + backend/requirements*.txt still works and the local dev venv may run newer Python (3.14).
 
 ### Frontend (Next.js 16, Node ≥20.19 <21 or ≥22.12)
 

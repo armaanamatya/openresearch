@@ -27,7 +27,6 @@ from backend.evals.paperbench import (
     create_submission_manifest,
     load_paperbench_bundle,
     summarize_rubric,
-    validate_submission_tree,
 )
 from backend.evals.paperbench.bundle import PaperBenchBundle, PaperBenchBundleError
 

@@ -15,7 +15,7 @@ Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 _EPSILON: float = 1e-9  # floor for variance to avoid div-by-zero
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from backend.messaging.event import DomainEvent, register_event
-from backend.schemas.citations import Citation, NonEmptyCitations
+from backend.schemas.citations import NonEmptyCitations
 from backend.schemas.scope import Scope
 
 

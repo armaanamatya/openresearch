@@ -6,25 +6,28 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _apply_legacy_env_aliases() -> None:
     """Backward-compat shim for the 2026-06 env-var rename
-    ``REPROLAB_*`` <-> ``OPENRESEARCH_*`` (main's rename initiative).
+    ``REPROLAB_*`` -> ``OPENRESEARCH_*``.
 
-    For every still-set variable in either spelling, fill in the missing
-    counterpart (never overwriting an explicitly-set value) so deployments and
-    shells using either prefix keep working. The shipped code currently reads
-    either prefix; canonical is ``OPENRESEARCH_*``. Runs once at import,
-    before any ``Settings()`` is constructed. Mirrors *process* env vars only.
+    For every still-set legacy or new variable, fill in the missing counterpart
+    (never overwriting an explicitly-set value) so existing deployments, CI, and
+    shells that still export the old ``REPROLAB_*`` names keep working unchanged.
+    Runs once at import, before any ``Settings()`` is constructed.
+
+    NOTE: this mirrors *process* environment variables only. A pre-existing
+    ``.env`` file that still uses ``REPROLAB_*`` keys should be migrated to
+    ``OPENRESEARCH_*`` (the committed ``.env.example`` already is).
     """
     for key, val in list(os.environ.items()):
         if key.startswith("REPROLAB_"):
-            os.environ.setdefault("OPENRESEARCH_" + key[len("REPROLAB_"):], val)
+            os.environ.setdefault("OPENRESEARCH_" + key[len("REPROLAB_") :], val)
         elif key.startswith("OPENRESEARCH_"):
-            os.environ.setdefault("REPROLAB_" + key[len("OPENRESEARCH_"):], val)
+            os.environ.setdefault("REPROLAB_" + key[len("OPENRESEARCH_") :], val)
 
 
 _apply_legacy_env_aliases()
@@ -44,15 +47,15 @@ class Settings(BaseSettings):
     )
 
     environment: Literal["development", "testing", "production"] = "development"
-    database_url: str = "sqlite:///reprolab.db"
+    database_url: str = "sqlite:///openresearch.db"
     debug: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
 
-    # Per-project blob directory root. Bound to REPROLAB_RUNS_ROOT via the
-    # REPROLAB_ env_prefix above. None = use the call-site default (usually
+    # Per-project blob directory root. Bound to OPENRESEARCH_RUNS_ROOT via the
+    # OPENRESEARCH_ env_prefix above. None = use the call-site default (usually
     # ``<repo>/runs``). The dev launchers (scripts/dev.ps1, scripts/dev.sh)
-    # export REPROLAB_RUNS_ROOT to colocate pipeline workspaces with each
+    # export OPENRESEARCH_RUNS_ROOT to colocate pipeline workspaces with each
     # launch's server logs; without this field, that export was cosmetic.
     runs_root: Path | None = None
     llm_provider: Literal["anthropic", "openai"] = "anthropic"
@@ -65,7 +68,7 @@ class Settings(BaseSettings):
     # ExecutionProfile.agent_wall_clock_seconds for a specific agent so
     # heavy stages like baseline-implementation on complex papers don't
     # die at the profile's blanket 1200s. Example .env:
-    #   REPROLAB_AGENT_WALL_CLOCK_OVERRIDES='{"baseline-implementation": 2400}'
+    #   OPENRESEARCH_AGENT_WALL_CLOCK_OVERRIDES='{"baseline-implementation": 2400}'
     # Unset agents continue to use the profile default. Avoids forcing the
     # whole run to executionMode=max when only one agent needs more time.
     agent_wall_clock_overrides: dict[str, float] = Field(default_factory=dict)
@@ -81,7 +84,7 @@ class Settings(BaseSettings):
 
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,
-    # AND the REPROLAB_-prefixed forms, because some deployments reserve
+    # AND the OPENRESEARCH_-prefixed forms, because some deployments reserve
     # the unprefixed names for a different scope. First match wins.
     #
     # WHY THIS LIVES IN SETTINGS, NOT os.environ:
@@ -130,7 +133,7 @@ class Settings(BaseSettings):
     codex_timeout_s: int = Field(default=900, ge=1)
     codex_max_calls_per_run: int = Field(default=3, ge=0)
     codex_max_output_chars: int = Field(default=12000, ge=100)
-    codex_profile: str = "reprolab-readwrite"
+    codex_profile: str = "openresearch-readwrite"
     codex_allowed_tasks: str = (
         "implementation_repair,test_debugging,dockerfile_repair,"
         "requirements_repair"
@@ -168,7 +171,7 @@ class Settings(BaseSettings):
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
-    # Deployments that must forbid RunPod should set REPROLAB_FORCE_SANDBOX to
+    # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
     force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure"] = ""
@@ -176,7 +179,7 @@ class Settings(BaseSettings):
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
     # "anthropic" in the start-run request; on deployments where the operator
-    # only has OpenAI credentials, REPROLAB_FORCE_LLM_PROVIDER=openai rewrites
+    # only has OpenAI credentials, OPENRESEARCH_FORCE_LLM_PROVIDER=openai rewrites
     # the request server-side so a stale UI default doesn't trigger an
     # unconfigured-provider error mid-pipeline. Empty disables the override.
     force_llm_provider: Literal["", "anthropic", "openai"] = ""
@@ -200,7 +203,7 @@ class Settings(BaseSettings):
     # time (no precompiled wheel → tries to JIT, fails). SDAR run hit this:
     # bitsandbytes silently failed under chained `pip install -q ... && python`,
     # train.py then ModuleNotFoundError'd on transformers. The 14GB cold-start
-    # savings aren't worth the breakage. Override via REPROLAB_RUNPOD_IMAGE
+    # savings aren't worth the breakage. Override via OPENRESEARCH_RUNPOD_IMAGE
     # if you have a paper that genuinely doesn't need dev headers.
     runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
     runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
@@ -430,7 +433,7 @@ class Settings(BaseSettings):
     # token is empty, MCP wiring is skipped entirely (no extra latency,
     # no failed handshake on cold start). The token is read via the
     # ``APIFY_API_TOKEN`` env var (matching Apify's own SDK convention)
-    # OR the ``REPROLAB_APIFY_API_TOKEN`` form.
+    # OR the ``OPENRESEARCH_APIFY_API_TOKEN`` form.
     apify_api_token: str = Field(
         default="",
         validation_alias=AliasChoices(
@@ -444,6 +447,22 @@ class Settings(BaseSettings):
     # Defaults to the builder agents that already do paper / artifact
     # research. Override via .env if a custom agent should also use it.
     apify_arxiv_enabled_agents: str = "artifact-discovery,paper-understanding"
+
+    @model_validator(mode="after")
+    def _fall_back_to_legacy_sqlite_db(self) -> "Settings":
+        """Backward-compat for the 2026-06 DB-file rename ``reprolab.db`` ->
+        ``openresearch.db``.
+
+        If ``database_url`` is still the default and the new ``openresearch.db``
+        does not exist on disk but a legacy ``reprolab.db`` does, keep using the
+        legacy file so existing local installs and mounted volumes don't silently
+        start from an empty database. Explicit ``OPENRESEARCH_DATABASE_URL``
+        overrides are untouched.
+        """
+        if self.database_url == "sqlite:///openresearch.db":
+            if not Path("openresearch.db").exists() and Path("reprolab.db").exists():
+                self.database_url = "sqlite:///reprolab.db"
+        return self
 
 
 _settings_cache: Settings | None = None

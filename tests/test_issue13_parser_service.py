@@ -195,12 +195,6 @@ def test_parser_failure_emits_parsing_failed_event(store, runs_dir, tmp_path):
     """If the parser raises ParseError, the service appends a
     ParsingFailed event and returns False."""
     from backend.services.ingestion.parser.interface import ParseError, Parser
-    from backend.services.ingestion.parser.model import (
-        Reference,
-        Section,
-        section_id_for,
-    )
-    from backend.services.ingestion.parser.interface import ParseResult
 
     class AlwaysFails(Parser):
         @property
@@ -247,7 +241,6 @@ def test_retry_after_failure_with_working_parser_succeeds(
     from backend.services.ingestion.parser.interface import (
         ParseError,
         Parser,
-        ParseResult,
     )
 
     class FlakyParser(Parser):

@@ -11,12 +11,11 @@ Conventions mirror test_runpod_backend_run_usd_cap.py:
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import types
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -652,7 +651,6 @@ def test_module_imports_without_azure_or_kubernetes():
     # out or not — the mere presence of this test file passing proves the module
     # doesn't import azure/kubernetes at module level.  We add an explicit check
     # here as a regression guard.
-    import importlib
 
     # Temporarily hide the optional packages.
     saved = {}

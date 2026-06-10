@@ -2,8 +2,7 @@
 destroy() is idempotent (two calls result in at most one delete API call)."""
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------

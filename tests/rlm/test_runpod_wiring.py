@@ -3,10 +3,8 @@ and propagates run_budget."""
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
-import pytest
 
 from backend.agents.execution import SandboxMode
 from backend.agents.resilience.budget import RunBudget

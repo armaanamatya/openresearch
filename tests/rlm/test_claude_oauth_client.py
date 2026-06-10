@@ -6,7 +6,7 @@ All SDK calls are mocked — no real network or Claude credentials required.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

@@ -176,14 +176,12 @@ def test_live_write_path_unchanged_when_flag_off(monkeypatch, tmp_path):
     """Flag off → final_report.json is the plain model dump (no two-axis fields)."""
     monkeypatch.delenv(_FLAG, raising=False)
     monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
+    # Pin the evidence gate off: this test asserts two-axis flag-off byte
+    # stability, and the gate (a separate, intentional honest-reporting
+    # feature) reconciles an evidence-less 'partial' in an empty project dir
+    # down to 'failed'.
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
     from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
-    # Evidence gate (FM-004): a success-ish verdict needs a success+metrics row
-    # on disk or the writer downgrades it to 'failed' — seed one so this test
-    # exercises the flag-off two-axis path, not the gate.
-    (tmp_path / "experiment_runs.jsonl").write_text(
-        json.dumps({"success": True, "metrics": {"accuracy": 0.9}}) + "\n",
-        encoding="utf-8",
-    )
     report = RLMFinalReport(verdict="partial", rubric=_rubric())
     write_final_report_rlm(report, tmp_path)
     written = json.loads((tmp_path / "final_report.json").read_text())

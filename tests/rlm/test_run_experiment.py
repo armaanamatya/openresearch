@@ -195,7 +195,6 @@ def test_run_experiment_returns_empty_metrics_when_file_missing(
     does not exist on the host — fail-soft, not exception (handoff P0-I1 / review C1).
     """
     import json
-    from pathlib import Path
 
     ctx = make_context(tmp_path)
     code_dir = tmp_path / "code"

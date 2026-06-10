@@ -11,10 +11,8 @@ C4 — write_final_report_rlm calls recompute_calibration best-effort.
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -150,7 +148,6 @@ def test_c2_unknown_model_returns_none():
 
 def test_c3_drain_root_usage_returns_and_clears():
     """drain_root_usage() returns accumulated usage and clears the global dict."""
-    import importlib
     import backend.agents.rlm.claude_oauth_client as mod
 
     # Force the CLI transport for this test so usage is actually accumulated.

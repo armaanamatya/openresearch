@@ -15,10 +15,8 @@ primitives tests + the E2E paper-sweep runs.
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 
 def test_default_aggregate_timeout_is_None_no_cap(monkeypatch, tmp_path):

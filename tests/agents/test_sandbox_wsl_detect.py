@@ -10,10 +10,8 @@ Covers:
 
 from __future__ import annotations
 
-import subprocess
 from unittest.mock import MagicMock
 
-import pytest
 
 from backend.agents.execution import (
     SandboxMode,
@@ -189,7 +187,7 @@ def test_explicit_docker_not_overridden_on_wsl(monkeypatch):
     _docker_reachable.cache_clear()
 
 
-def test_REPROLAB_FORCE_SANDBOX_still_wins(monkeypatch):
+def test_OPENRESEARCH_FORCE_SANDBOX_still_wins(monkeypatch):
     """OPENRESEARCH_FORCE_SANDBOX=runpod overrides even WSL+no-docker auto resolution."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()

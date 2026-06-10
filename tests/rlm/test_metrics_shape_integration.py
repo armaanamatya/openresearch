@@ -11,8 +11,7 @@ Verifies the full contract:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -65,7 +64,6 @@ def test_metrics_shape_flows_to_implement_baseline_prompt(make_context, tmp_path
     implement_baseline guidance block as a METRICS CONTRACT section."""
     from backend.agents.baseline_implementation import (
         _compute_constraint_guidance,
-        _metrics_shape_binding_block,
     )
 
     # 1. Simulate plan_reproduction result with metrics_shape.
@@ -174,7 +172,7 @@ def test_run_experiment_uses_metrics_shape_from_contract(make_context, tmp_path)
     """When ctx.reproduction_contract.metrics_shape is non-empty, run_experiment
     performs a post-run check with the declared paths and attaches violations."""
     from backend.agents.rlm.primitives import run_experiment
-    from backend.agents.schemas import ReproductionContract, MetricPath
+    from backend.agents.schemas import ReproductionContract
 
     # Set up code dir with commands.json and metrics.json (missing the declared path).
     code_dir = tmp_path / "test_proj" / "code"

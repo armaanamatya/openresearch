@@ -17,7 +17,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
 
 from backend.services.runs.attempt_isolation import maybe_archive_prior_attempt
 

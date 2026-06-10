@@ -5,7 +5,6 @@ torch-free: a small ``FakeModel`` exercises snapshot/restore so the suite needs 
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.rlm import fair_comparison as fc
 

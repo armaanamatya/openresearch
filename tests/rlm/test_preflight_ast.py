@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm.preflight_ast import PreflightViolation, scan_code_dir
 

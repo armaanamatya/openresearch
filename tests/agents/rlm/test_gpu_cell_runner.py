@@ -14,17 +14,14 @@ verifies:
 from __future__ import annotations
 
 import json
-import os
 import threading
-from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 import backend.agents.rlm.gpu_cell_runner as gcr
 from backend.agents.rlm.gpu_cell_runner import (
-    CellResult,
     _is_oom,
     _load_metrics,
     discover_visible_gpus,

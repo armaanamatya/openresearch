@@ -4,7 +4,7 @@ This test exercises the FULL orchestrator path end-to-end:
 
     run_pipeline_rlm
       → RLM(backend=<stub>, custom_tools=build_stub_custom_tools(...))
-      → ReproLabRLMLogger.log() (sanitize + checkpoint + emit)
+      → OpenResearchRLMLogger.log() (sanitize + checkpoint + emit)
       → IterationCheckpointer.record() (SQLite event store + snapshot JSONL)
       → build_final_report() + write_final_report_rlm()
       → RLMRunResult
@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch

@@ -11,9 +11,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
 
@@ -64,8 +63,6 @@ def test_last_usage_populated_from_result_message_usage(monkeypatch):
 
     monkeypatch.setattr(ClaudeLlmClient, "_async_complete", _mock_async_complete)
 
-    import concurrent.futures
-    import asyncio as _asyncio
 
     # Patch complete() to run _async_complete without the real ThreadPoolExecutor
     original_complete = ClaudeLlmClient.complete

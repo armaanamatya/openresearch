@@ -8,7 +8,6 @@ each of those 0.0 leaves into an enforced requirement.
 
 from __future__ import annotations
 
-import os
 
 import pytest
 

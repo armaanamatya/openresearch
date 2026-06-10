@@ -494,7 +494,7 @@ class FileLiveRunService:
         env: dict[str, str] = {**os.environ}
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
-        # REPROLAB_* keys in .env are always authoritative: a stale shell
+        # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
         # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
         # pointing to a different user's home) must not override the
         # project-level .env which reflects the operator's deliberate config.
@@ -510,7 +510,7 @@ class FileLiveRunService:
                     if "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip()
-                        # REPROLAB_ settings: .env wins over stale process env.
+                        # OPENRESEARCH_ settings: .env wins over stale process env.
                         # Everything else: only add if not already in env.
                         if k and (k.startswith("OPENRESEARCH_") or k not in env):
                             env[k] = v
@@ -1609,7 +1609,6 @@ def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
         # present, otherwise overall — handles compute_adjusted-only runs and
         # legacy flat rubric_score runs.
         _rubric_score = _adjusted if _adjusted is not None else _overall
-        rubric = report.get("rubric") or {}
         cost = report.get("cost") or {}
         return {
             "benchmark": {

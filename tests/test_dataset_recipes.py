@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.dataset_recipes import (
     DATASET_RECIPES,
-    DatasetRecipe,
     find_recipe,
     find_recipes_in_text,
 )

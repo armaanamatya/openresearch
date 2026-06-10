@@ -6,7 +6,6 @@ regression test that a stale OPENAI_API_KEY in env does not override claude-oaut
 
 from __future__ import annotations
 
-import os
 
 import pytest
 

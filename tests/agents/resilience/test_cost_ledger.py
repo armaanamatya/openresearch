@@ -18,7 +18,6 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
 

@@ -7,7 +7,7 @@
      ``binding.py`` if importable, else the deterministic stub provider,
   3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
   4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
-     iteration through :class:`ReproLabRLMLogger`,
+     iteration through :class:`OpenResearchRLMLogger`,
   5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
 
 Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
@@ -58,7 +58,7 @@ from backend.agents.rlm.report import (
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
-    ReproLabRLMLogger,
+    OpenResearchRLMLogger,
     build_run_complete_event,
     build_run_warning_event,
     make_emit,
@@ -824,7 +824,7 @@ def _fatal_primitive_result(ctx: RunContext | None) -> tuple[str, dict] | None:
     return (str(getattr(ctx, "_last_primitive_name", "unknown")), result)
 
 
-class _FatalBackendGateLogger(ReproLabRLMLogger):
+class _FatalBackendGateLogger(OpenResearchRLMLogger):
     """Logger hook that aborts before RLM appends fatal REPL output to history."""
 
     def log(self, iteration: Any) -> None:
@@ -1488,6 +1488,11 @@ async def run_pipeline_rlm(
         os.replace(_cfg_tmp, project_dir / "run_config.json")
     except Exception:  # noqa: BLE001 — the snapshot must never block a run
         logger.exception("run_pipeline_rlm: could not write run_config.json")
+
+    # Local sandboxes have no /workspace volume — repoint the dataset root at a
+    # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
+    # reads it, so dataset/env setup does not die at os.makedirs. See the helper.
+    _ensure_local_data_root(sandbox_mode, runs_root)
 
     # 1. Observability + budget.
     cost_ledger = RunCostLedger.load_jsonl(

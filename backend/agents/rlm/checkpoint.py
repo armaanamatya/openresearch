@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar
 
-from backend.eventstore.interface import ConcurrencyError, EventStore
+from backend.eventstore.interface import EventStore
 from backend.messaging.envelope import (
     CorrelationId,
     EventEnvelope,
@@ -80,7 +80,7 @@ class IterationCheckpointer:
 
     This is a single-writer object: only one thread calls ``record()`` during a
     run (the ``rlms`` worker thread via :class:`~backend.agents.rlm.sse_bridge.
-    ReproLabRLMLogger`).  The ``expected_version`` counter is therefore
+    OpenResearchRLMLogger`).  The ``expected_version`` counter is therefore
     race-free without additional locking.
 
     On instantiation the version counter is seeded from the event store so that

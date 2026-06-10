@@ -43,7 +43,7 @@ import os
 import re
 import string
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from sdar_env_base import AgenticEnv, StepResult

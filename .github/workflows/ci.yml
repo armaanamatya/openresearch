@@ -70,6 +70,22 @@ jobs:
       # only (verified: build passes with the var unset).
       - run: npm run build
 
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          # Pin uv so the lock-check and ruff invocation are reproducible.
+          version: "0.11.16"
+      - name: Lock check
+        # Fails if uv.lock is out of sync with pyproject.toml.
+        run: uv lock --check
+      - name: Lint
+        # Pin ruff to match the version used when the config was authored.
+        run: uvx ruff@0.15.16 check .
+
   compose-validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5

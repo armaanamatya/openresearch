@@ -6,7 +6,6 @@ Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md
 
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.rlm.models import ROOT_MODELS
 from backend.services.pricing.catalog import (

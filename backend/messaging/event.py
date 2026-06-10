@@ -25,7 +25,6 @@ from pydantic import BaseModel, ConfigDict
 from backend.messaging.envelope import (
     AggregateId,
     EventEnvelope,
-    EventId,
 )
 
 

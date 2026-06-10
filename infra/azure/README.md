@@ -10,9 +10,12 @@
 
 | Layer | What | Managed by | Lifecycle |
 |-------|------|-----------|-----------|
+| **L0 — Access bootstrap** (`infra/azure/bicep/`) | Subscription-scope RG creation + Contributor / User Access Administrator grants to the operator principal | **Bicep** (subscription admin, once) | One-time; stable |
 | **L1 — Azure infra** (this directory) | Resource group, VNet/subnet, AKS cluster, GPU node pool, ACR, storage (Blob + Files), managed identity + role assignments, remote state | **Terraform** | Provisioned once; rarely changes |
 | **L2 — In-cluster scaffold** (`infra/azure/helm/`) | Namespace, workload-identity ServiceAccount, Files PVC, orchestrator RBAC, NVIDIA device plugin, ResourceQuota | **Helm** (applied once per cluster) | Per-cluster; semi-static |
 | **L3 — Runtime** | Per-cell Kubernetes **Jobs** | **Orchestrator code** (`backend/agents/rlm/k8s_job_cell_runner.py`) | Thousands; transient |
+
+**L0 note:** Step 0 below currently requires subscription **Owner** because Terraform creates in-RG role assignments. Running the Bicep L0 bootstrap (`infra/azure/bicep/`) once lets the operator principal hold only RG-scoped Contributor + User Access Administrator — no subscription-level Owner needed for day-to-day `terraform apply`. See `infra/azure/bicep/README.md` for the full deploy + Terraform import handshake.
 
 Terraform managing transient K8s Jobs is an anti-pattern: it causes state churn, drift, and `terraform apply` contention during active runs. The boundary between L1/L2 and L3 is deliberate. Only the durable substrate (cluster, pools, storage, identity) lives here.
 

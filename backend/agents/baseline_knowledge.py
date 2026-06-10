@@ -5,10 +5,9 @@ import ast
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 KNOWLEDGE_CHANNEL_VERSION: int = 1
 
@@ -200,7 +199,6 @@ def verify_emitted_code(train_py_path: Path, manifest: dict, code_dir: Path) -> 
     for fact_entry in facts_list:
         fact_id = fact_entry.get("id", "unknown")
         helper_name = fact_entry.get("helper_name", "")
-        required_import = fact_entry.get("required_import", "")
         banned_literals = fact_entry.get("banned_literals") or []
         expected_hash = fact_entry.get("helper_hash", "")
         severity = _parse_severity(fact_entry.get("severity", "preferred"))

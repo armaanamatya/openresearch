@@ -35,7 +35,7 @@ from backend.agents.baseline_implementation import (
 
 @pytest.fixture(autouse=True)
 def _clear_cloud_env(monkeypatch):
-    """Strip every REPROLAB_*_GPU / VM_SIZE env so tests don't pollute each other."""
+    """Strip every OPENRESEARCH_*_GPU / VM_SIZE env so tests don't pollute each other."""
     for key in (
         "OPENRESEARCH_RUNPOD_GPU_TYPE", "OPENRESEARCH_RUNPOD_GPU_COUNT",
         "OPENRESEARCH_RUNPOD_CLOUD_TYPE", "OPENRESEARCH_RUNPOD_IMAGE",

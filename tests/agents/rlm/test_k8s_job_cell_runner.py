@@ -28,9 +28,7 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import threading
-import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -960,7 +958,6 @@ class TestCellSchedulerAdoption:
     def test_write_cell_manifest_caller_k8s(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                             caplog: pytest.LogCaptureFixture):
         """write_cell_manifest called by the runner must use caller='k8s_job_cell_runner'."""
-        import logging
         cells = [{"id": "wm0"}]
         k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
         kjcr._k8s_clients_override = k8s

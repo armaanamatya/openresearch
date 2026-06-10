@@ -1049,8 +1049,6 @@ async def run_rdr(
         cluster_timeout_s=cluster_timeout_s,
     )
 
-    clusters_failed = sum(1 for art in done.values() if art.failed)
-
     # ------------------------------------------------------------------
     # Step 4: Assemble — write commands.json
     # ------------------------------------------------------------------

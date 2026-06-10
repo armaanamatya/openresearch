@@ -45,8 +45,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
-import traceback
 from pathlib import Path, PurePosixPath
 from typing import Any
 

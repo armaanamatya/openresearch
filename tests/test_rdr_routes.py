@@ -10,7 +10,6 @@ Tests:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,6 @@ from starlette.testclient import TestClient
 
 from backend.app import create_app
 from backend.services.events.live_runs import (
-    FileLiveRunService,
     LiveRunState,
     StartRunRequest,
     sse_event,

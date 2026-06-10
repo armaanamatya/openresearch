@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import os
 import json
-import re
-import importlib
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -32,7 +29,7 @@ import pytest
 def test_opsd_gate_is_detached_no_grad():
     """g_t must be constructed with .detach() — gradient MUST NOT flow through it."""
     torch = pytest.importorskip("torch")
-    from backend.agents.rlm.rl_scaffold import opsd_custom_loss_term, BETA, LAMBDA
+    from backend.agents.rlm.rl_scaffold import opsd_custom_loss_term
 
     logp_s = torch.tensor([-1.0, -2.0, -0.5], requires_grad=True)
     logp_t = torch.tensor([-1.5, -1.8, -0.3], requires_grad=False)
@@ -148,14 +145,14 @@ def test_skip_on_sentinel_file(tmp_path, monkeypatch):
 
 
 def test_skip_on_command_marker(tmp_path, monkeypatch):
-    """Command containing '# reprolab:rl-scaffold-owns-launch' → rewriter must skip."""
+    """Command containing '# openresearch:rl-scaffold-owns-launch' → rewriter must skip."""
     from backend.agents.rlm.primitives import _resolve_distributed_launch
 
     monkeypatch.delenv("OPENRESEARCH_RL_SCAFFOLD", raising=False)
     code = _make_train_py(tmp_path, "from accelerate import Accelerator\n")
     cmds = [
         "pip install -r requirements.txt",
-        "# reprolab:rl-scaffold-owns-launch\npython rl_launch.py",
+        "# openresearch:rl-scaffold-owns-launch\npython rl_launch.py",
     ]
     result = _resolve_distributed_launch(cmds, code, 4)
     assert result == cmds, "Must return commands unchanged when marker is in any command"
@@ -317,7 +314,7 @@ def test_opt_in_on_injects_scaffold_block(tmp_path, monkeypatch):
     assert "trl==0.16.1" in guidance
     assert "BETA = 10.0" in guidance
     assert "LAMBDA = 0.1" in guidance
-    assert "# reprolab:rl-scaffold-owns-launch" in guidance
+    assert "# openresearch:rl-scaffold-owns-launch" in guidance
 
 
 def test_opt_in_off_vs_on_differ(monkeypatch):
@@ -361,7 +358,7 @@ def test_rl_scaffold_imports_without_trl():
 def test_rl_launch_template_has_sentinel():
     """RL_LAUNCH_TEMPLATE string must include the sentinel comment."""
     from backend.agents.rlm.rl_scaffold import RL_LAUNCH_TEMPLATE
-    assert "# reprolab:rl-scaffold-owns-launch" in RL_LAUNCH_TEMPLATE
+    assert "# openresearch:rl-scaffold-owns-launch" in RL_LAUNCH_TEMPLATE
 
 
 # ---------------------------------------------------------------------------

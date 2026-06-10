@@ -362,7 +362,6 @@ def test_read_log_tail_cap_applied_to_combined(tmp_path: Path) -> None:
 # existing start_uploaded_run path so the rest of the pipeline is unchanged.
 # ---------------------------------------------------------------------------
 
-import pytest
 
 
 class _FakeHttpxResponse:

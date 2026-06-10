@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from backend.agents.rlm.binding import (
     PRIMITIVE_TIMEOUT_S,

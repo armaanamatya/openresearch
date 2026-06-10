@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.agents.schemas import GpuPlan, GpuRequirements
+from backend.agents.schemas import GpuRequirements
 from backend.services.runtime.gpu_resolver import (
     GpuResolutionError,
     resolve,
