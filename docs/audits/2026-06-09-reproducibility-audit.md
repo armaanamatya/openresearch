@@ -494,6 +494,21 @@ the flag ever defaults on.
      `prj_diffusion_smoke` row never appears in the library table.
   3. `reports.spec.ts` — "worker reports" section text not found for a
      seeded run.
-  Left for the UI track (UI components are deliberately out of this audit's
-  lane); none affect the backend pipeline, API, or the verified compose
-  deployment. Consider adding a Playwright job to CI once green.
+  All three subsequently RESOLVED in the same session — and #1's root cause
+  turned out to be a genuine product bug, not a test issue:
+  1. The duplicate is Next.js's streamed-Suspense staging container
+     (`<div hidden id="S:0">`, no React fiber) — invisible to users; specs now
+     scope to `:visible`. But chasing it exposed the real bug: the
+     constellation canvas called `setPointerCapture` on pointerDOWN, which
+     retargets the subsequent click to the svg — so **node selection never
+     worked for any user** of the new canvas. Fixed by deferring capture to
+     the first real pan movement (`constellation-canvas.tsx`); the spec now
+     selects via the node's actual `role=button` affordance and expands the
+     collapsed-by-default sidebar.
+  2./3. The seeded specs referenced a `scripts/seed-fake-run.sh` that was
+     never committed. Rebuilt as `scripts/seed_fake_run.py` on the REAL
+     backend builders (`worker_reports.py`) so seeds can't drift from the UI
+     schema (shim kept at the old name); both specs now skip cleanly when
+     unseeded instead of failing against a live unseeded backend.
+  End state: **Playwright 21 passed / 0 failed / 1 skipped** (seeded, live
+  backend). Consider adding a Playwright job to CI.

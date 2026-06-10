@@ -79,6 +79,15 @@ test("? opens shortcut overlay; Esc closes", async ({ page }) => {
 
 
 test("library status filter narrows the table", async ({ page }) => {
+  // Seeded by scripts/seed_fake_run.py; skip cleanly when unseeded (the
+  // dead-backend early-return below covers no-backend, but a LIVE backend
+  // without seeds used to fail here).
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  test.skip(
+    !fs.existsSync(path.join(__dirname, "../../runs/prj_diffusion_smoke")),
+    "run `python scripts/seed_fake_run.py` first",
+  );
   await page.goto(LIBRARY_URL);
   const unavailable = page.getByText(/run library unavailable/i);
   if (await unavailable.isVisible().catch(() => false)) {

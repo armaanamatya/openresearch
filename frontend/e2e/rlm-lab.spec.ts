@@ -19,9 +19,21 @@ test("RLM lab renders the exploration tree from the fixture", async ({ page }) =
   // so this click redirects selection to c1. We confirm the click landed by
   // asserting the sidebar's content shows "learning-rate warmup" (c1's title),
   // not just that the sidebar is visible (which it would be even without the click).
-  await page.getByText("learning-rate warmup").first().click();
-  await expect(page.getByTestId("node-detail-sidebar")).toBeVisible();
-  await expect(
-    page.getByTestId("node-detail-sidebar").getByText("learning-rate warmup")
-  ).toBeVisible();
+  // Select the node through its real affordance: constellation nodes are SVG
+  // <g role="button" aria-label="Select <title>"> (canvas labels truncate to
+  // 12 chars, so text-matching the full title hits unrelated elements).
+  await page.getByRole("button", { name: /select learning-rate warmup/i }).first().click();
+  // :visible — Next.js streamed-Suspense leaves a hidden duplicate of the lab
+  // in a <div hidden id="S:0"> staging container (no React fiber, zero box);
+  // getByTestId strict mode matches it too (diagnosed audit 2026-06-10).
+  const sidebar = page.locator('[data-testid="node-detail-sidebar"]:visible');
+  await expect(sidebar).toBeVisible();
+  // The sidebar defaults to a collapsed rail (Lane Z); selecting a node does
+  // not auto-expand it — expand explicitly before asserting the detail body.
+  const expand = sidebar.getByRole("button", { name: /expand node detail sidebar/i });
+  if (await expand.isVisible().catch(() => false)) {
+    await expand.click();
+  }
+  const openSidebar = page.locator('[data-testid="node-detail-sidebar"]:visible');
+  await expect(openSidebar.getByText("learning-rate warmup")).toBeVisible();
 });
