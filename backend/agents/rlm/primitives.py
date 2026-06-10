@@ -4695,7 +4695,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     from datetime import datetime, timezone
     from pathlib import Path
 
-    from backend.agents.rlm import cell_fingerprint, cell_matrix, gpu_cell_runner, k8s_job_cell_runner
+    from backend.agents.rlm import cell_fingerprint, cell_matrix, cell_scheduler, gpu_cell_runner, k8s_job_cell_runner
 
     code = Path(code_path)
     artifact_root = code / "outputs" / run_id
@@ -4789,6 +4789,26 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
     _n_slots = max(1, len(gpus) // _gpus_per_cell)
     _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Time-budget gate (2026-06-10): the matrix budget must FIT the run's
+    # remaining wall clock (minus a verify+report reserve). Adam v6's 100-epoch
+    # VAE re-grid got `per_cell × waves` of budget with 4h of run left, sailed
+    # into the 14h watchdog, and was hard-killed mid-cell — when run_matrix's
+    # own deadline machinery would have TRIMMED the tail cells to honest
+    # `timeout` leaves and returned a scoreable partial. Fail-soft: unknown
+    # remaining time leaves the legacy budget untouched.
+    _matrix_overall_s: float | None = (timeout_s * max(1, _waves)) if timeout_s else None
+    try:
+        _rem = ctx.remaining_s() if callable(getattr(ctx, "remaining_s", None)) else None
+        _reserve = float(os.environ.get("REPROLAB_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+        _capped = cell_scheduler.cap_overall_budget(
+            _matrix_overall_s, _rem, reserve_s=_reserve)
+        if _capped != _matrix_overall_s:
+            logger.info(
+                "run_experiment: matrix budget capped to %.0fs by remaining run "
+                "wall clock (%.0fs, reserve %.0fs)", _capped or -1, _rem or -1, _reserve)
+        _matrix_overall_s = _capped
+    except Exception:  # noqa: BLE001 — the gate must never block the grid
+        logger.debug("run_experiment: matrix time-budget gate skipped", exc_info=True)
     # Cell-level resume (Track B): compute each kept cell's content fingerprint so
     # run_matrix can (a) record it in the per-cell manifest and (b) — when armed via
     # REPROLAB_RESUME_CELLS — skip a prior ok+unchanged cell. Forced re-runs come from
@@ -4852,7 +4872,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 output_root=str(artifact_root),
                 gpus=gpus or None,
                 per_cell_timeout_s=timeout_s,
-                overall_timeout_s=timeout_s * max(1, _waves),
+                overall_timeout_s=_matrix_overall_s,
                 gpus_per_cell=_gpus_per_cell,
                 fingerprints=_fingerprints,
                 force_cells=_force_cells or None,
@@ -4864,7 +4884,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             output_root=str(artifact_root),
             gpus=gpus or None,
             per_cell_timeout_s=timeout_s,
-            overall_timeout_s=timeout_s * max(1, _waves),
+            overall_timeout_s=_matrix_overall_s,
             gpus_per_cell=_gpus_per_cell,
             fingerprints=_fingerprints,
             force_cells=_force_cells or None,
