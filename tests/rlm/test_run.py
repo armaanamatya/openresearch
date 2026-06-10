@@ -543,14 +543,26 @@ def test_run_writes_secret_free_config_snapshot(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "rpa_fake")  # must be excluded
     monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "shh")  # must be excluded
     # Value-borne secrets (audit 2026-06-09): names pass the KEY/SECRET/TOKEN/
-    # PASSWORD filter but the VALUES carry credentials.
+    # PASSWORD filter but the VALUES carry credentials. The DATABASE_URL must
+    # stay a REAL sqlite URL: the pipeline itself constructs
+    # SqliteEventStore(get_settings().database_url), so a postgres DSN here
+    # crashes the run whenever THIS test is the one that populates the
+    # settings cache (cold-cache CI workers; masked locally by warm caches).
+    # The secret-looking marker lives in the filename instead.
     monkeypatch.setenv(
-        "OPENRESEARCH_DATABASE_URL", "postgresql://dbuser:dbpass@db.internal/openresearch"
+        "OPENRESEARCH_DATABASE_URL", f"sqlite:///{tmp_path}/secret-dbpass-marker.db"
     )  # exact-name denylisted
     monkeypatch.setenv("OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND", "hf login --token tok_xyz")
     monkeypatch.setenv(
         "OPENRESEARCH_LOCAL_TORCH_INDEX_URL", "https://idxuser:idxpass@pypi.internal/whl/cu121"
     )  # kept, but userinfo redacted
+    # Make the cache state deterministic: force an in-test fresh Settings()
+    # (so the env above is actually read on EVERY machine, not just cold
+    # workers); monkeypatch restores the prior cache object on teardown, so
+    # the tmp-path DB URL cannot leak into later tests in this worker.
+    import backend.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_settings_cache", None)
 
     class _FakeRLM:
         def __init__(self, **kwargs): ...
@@ -582,7 +594,7 @@ def test_run_writes_secret_free_config_snapshot(monkeypatch, tmp_path):
     # Value-borne secrets: denylisted names dropped entirely, URL userinfo redacted.
     assert "OPENRESEARCH_DATABASE_URL" not in cfg["env_flags"]
     assert "OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND" not in cfg["env_flags"]
-    assert "dbpass" not in flat and "tok_xyz" not in flat
+    assert "secret-dbpass-marker" not in flat and "tok_xyz" not in flat
     assert cfg["env_flags"]["OPENRESEARCH_LOCAL_TORCH_INDEX_URL"] == (
         "https://***@pypi.internal/whl/cu121"
     )
