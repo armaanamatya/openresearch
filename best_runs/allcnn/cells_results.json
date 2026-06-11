@@ -1,102 +1,102 @@
 {
- "final_grid": "prj_0a3202fc187bb692-e0b728b6",
- "note": "per-cell results of the final repaired grid (attempt of 2026-06-09 23:57, score 0.696)",
+ "final_grid": "prj_0a3202fc187bb692-610b7631",
+ "note": "all 14 cells converged (2026-06-11 run, rubric 0.7395 after the deterministic finalize amendment)",
  "cells": {
-  "a_allcnn__cifar10_noaug__s42": {
+  "a_allcnn_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
-   "best_lr": 0.1,
-   "epochs_run": 350
-  },
-  "a_base__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 12.86,
-   "test_accuracy": 0.8714,
-   "best_lr": 0.01,
-   "epochs_run": 350
-  },
-  "a_convpool__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 71.33,
-   "test_accuracy": 0.2867,
+   "test_error_pct": 13.570000000000004,
+   "test_accuracy": 0.8643,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "a_strided__cifar10_noaug__s42": {
+  "a_base_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 64.82,
-   "test_accuracy": 0.3518,
-   "best_lr": 0.1,
-   "epochs_run": 350
-  },
-  "b_allcnn__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
+   "test_error_pct": 15.610000000000001,
+   "test_accuracy": 0.8439,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "b_base__cifar10_noaug__s42": {
+  "a_convpool_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 10.77,
-   "test_accuracy": 0.8923,
+   "test_error_pct": 11.170000000000002,
+   "test_accuracy": 0.8883,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "b_convpool__cifar10_noaug__s42": {
+  "a_strided_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
+   "test_error_pct": 19.489999999999995,
+   "test_accuracy": 0.8051,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "b_strided__cifar10_noaug__s42": {
+  "b_allcnn_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 13.27,
-   "test_accuracy": 0.8673,
+   "test_error_pct": 14.949999999999996,
+   "test_accuracy": 0.8505,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "c_allcnn__cifar100_aug__s42": {
+  "b_base_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 99.0,
-   "test_accuracy": 0.01,
-   "best_lr": 0.01,
-   "epochs_run": 350
-  },
-  "c_allcnn__cifar10_aug__s42": {
-   "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
-   "best_lr": 0.25,
-   "epochs_run": 350
-  },
-  "c_allcnn__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
-   "best_lr": 0.25,
-   "epochs_run": 350
-  },
-  "c_base__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 9.99,
-   "test_accuracy": 0.9001,
-   "best_lr": 0.1,
-   "epochs_run": 350
-  },
-  "c_convpool__cifar10_noaug__s42": {
-   "status": "ok",
-   "test_error_pct": 90.0,
-   "test_accuracy": 0.1,
+   "test_error_pct": 14.549999999999997,
+   "test_accuracy": 0.8545,
    "best_lr": 0.05,
    "epochs_run": 350
   },
-  "c_strided__cifar10_noaug__s42": {
+  "b_convpool_cifar10_noaug": {
    "status": "ok",
-   "test_error_pct": 10.52,
-   "test_accuracy": 0.8948,
+   "test_error_pct": 12.760000000000005,
+   "test_accuracy": 0.8724,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "b_strided_cifar10_noaug": {
+   "status": "ok",
+   "test_error_pct": 21.640000000000004,
+   "test_accuracy": 0.7836,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_allcnn_cifar100_aug": {
+   "status": "ok",
+   "test_error_pct": 51.38,
+   "test_accuracy": 0.4862,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_allcnn_cifar10_aug": {
+   "status": "ok",
+   "test_error_pct": 23.129999999999995,
+   "test_accuracy": 0.7687,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_allcnn_cifar10_noaug": {
+   "status": "ok",
+   "test_error_pct": 14.81,
+   "test_accuracy": 0.8519,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_base_cifar10_noaug": {
+   "status": "ok",
+   "test_error_pct": 12.180000000000001,
+   "test_accuracy": 0.8782,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_convpool_cifar10_noaug": {
+   "status": "ok",
+   "test_error_pct": 11.309999999999999,
+   "test_accuracy": 0.8869,
+   "best_lr": 0.05,
+   "epochs_run": 350
+  },
+  "c_strided_cifar10_noaug": {
+   "status": "ok",
+   "test_error_pct": 16.45,
+   "test_accuracy": 0.8355,
    "best_lr": 0.05,
    "epochs_run": 350
   }

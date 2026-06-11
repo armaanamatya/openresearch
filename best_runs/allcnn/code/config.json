@@ -1,89 +1,57 @@
 {
-  "_comment": "All Convolutional Net (arXiv 1412.6806) reproduction config",
-  "paper": "Striving for Simplicity: The All Convolutional Net",
-  "arxiv_id": "1412.6806",
-  "training": {
-    "optimizer": "SGD",
-    "momentum": 0.9,
-    "nesterov": false,
-    "weight_decay": 0.001,
-    "batch_size": 128,
-    "epochs": 350,
-    "lr_schedule_milestones": [200, 250, 300],
-    "lr_schedule_gamma": 0.1,
-    "lr_candidates": [0.25, 0.1, 0.05, 0.01],
-    "lr_probe_epochs": 15,
-    "lr_probe_subset_size": 5000,
-    "seed": 42
+  "_paper": "Striving for Simplicity: The All Convolutional Net (arXiv 1412.6806)",
+  "_authors": "Springenberg et al., 2014",
+  "_assumption_ids_applied": ["A001", "A002", "ENV001", "ENV002", "ENV-RT1"],
+
+  "lr": 0.05,
+  "_lr_note": "A001: fixed lr=0.05 for all cells; proven working (prj_0a3202fc187bb692-8f7fe95e). LR probe unreliable for AllCNN/ConvPool (probe_acc~10% for all LRs).",
+  "momentum": 0.9,
+  "weight_decay": 0.001,
+  "epochs": 350,
+  "batch_size": 128,
+  "lr_milestones": [200, 250, 300],
+  "lr_gamma": 0.1,
+  "seed": 42,
+
+  "use_zca": true,
+  "_zca_note": "A002: GCN (scale=55, per Goodfellow et al. 2013) + ZCA whitening (epsilon=0.1)",
+  "zca_epsilon": 0.1,
+  "gcn_scale": 55.0,
+
+  "augmentation": {
+    "cifar10": {"horizontal_flip": true, "random_crop_padding": 5},
+    "_note": "Used only for aug cells (c_allcnn_aug, c_allcnn_cifar100)"
   },
-  "regularization": {
-    "dropout_input": 0.2,
-    "dropout_hidden": 0.5,
-    "weight_decay": 0.001
+
+  "clip_grad_norm": 1.0,
+  "_clip_note": "ENV-RT1: gradient clipping, proven stable in prior run",
+
+  "init": "kaiming_normal_fan_out",
+  "_init_note": "ENV002: kaiming_normal fan_out mode — critical for CIFAR-100 (100 classes)",
+
+  "dropout_input": 0.2,
+  "dropout_pool": 0.5,
+
+  "expected_results_paper": {
+    "All-CNN-C_cifar10_noaug": {"test_error_pct": 9.08},
+    "All-CNN-C_cifar10_aug": {"test_error_pct": 7.25},
+    "All-CNN-C_cifar100_aug": {"test_error_pct": 33.71}
   },
-  "data": {
-    "cifar10_train_size": 50000,
-    "cifar10_test_size": 10000,
-    "cifar100_train_size": 50000,
-    "cifar100_test_size": 10000,
-    "preprocessing": "GCN + ZCA whitening (Goodfellow et al. 2013, epsilon=0.1)",
-    "augmentation_train": "RandomCrop(32, padding=5) + RandomHorizontalFlip",
-    "augmentation_test": "none"
-  },
-  "models": {
-    "A_base": "5x5 conv blocks with max-pooling (Table 1 base)",
-    "B_base": "NIN variant: 5x5 + 1x1 conv per block before pool",
-    "C_base": "Two 3x3 convs per block with max-pooling",
-    "A_strided": "Model A with pool removed, preceding conv stride 2",
-    "B_strided": "Model B with pool removed, preceding 1x1 conv stride 2",
-    "C_strided": "Model C with pool removed, second 3x3 stride 2",
-    "A_convpool": "Model A + 3x3 conv before each pool",
-    "B_convpool": "Model B + 3x3 conv before each pool",
-    "C_convpool": "Model C + 3x3 conv before each pool (3 total per block)",
-    "A_allcnn": "Model A: pool replaced with 3x3 stride-2 conv",
-    "B_allcnn": "Model B: pool replaced with 3x3 stride-2 conv",
-    "C_allcnn": "All-CNN-C: pool replaced with 3x3 stride-2 conv (headline model)"
-  },
-  "classifier_head": {
-    "description": "D(0.5) -> Conv(3x3, 192) -> Conv(1x1, 192) -> Conv(1x1, nc) -> GlobalAvgPool",
-    "no_fully_connected_layers": true
-  },
-  "environment": {
-    "python": "3.11",
-    "pytorch": "2.2.0",
-    "torchvision": "0.17.0",
-    "numpy": "1.26.4"
-  },
-  "assumptions": [
-    {
-      "id": "A001",
-      "detail": "Architecture: Model C uses two 3x3 convs per block (replacing 5x5+1x1 of B with 3x3+3x3)",
-      "evidence": "Published implementations of All-CNN-C achieve ~9.1% consistent with two 3x3s"
-    },
-    {
-      "id": "A002",
-      "detail": "LR selection: probe 15 epochs on 5k subset, then full 350-epoch run",
-      "evidence": "Paper says gamma selected from {0.25, 0.1, 0.05, 0.01} per model"
-    },
-    {
-      "id": "A003",
-      "detail": "MaxPool padding=1 to maintain power-of-2 spatial dims (32->16->8)",
-      "evidence": "Standard CIFAR practice; ensures GAP works on 8x8 features"
-    },
-    {
-      "id": "A004",
-      "detail": "ImageNet excluded: not auto-downloadable, requires manual setup",
-      "evidence": "ImageNet requires registration at image-net.org, ~150GB; cannot fetch in container"
-    },
-    {
-      "id": "ENV001", "detail": "pytorch version not explicitly stated in paper", "chosen_value": "2.2.0"
-    },
-    {
-      "id": "ENV-RT1", "detail": "3x CUDA GPU (24GB each) available, using cuda:0 per cell"
-    }
-  ],
-  "deviations": [
-    "ImageNet experiment OUT OF SCOPE (requires manual download, licensing)",
-    "LR selected via short probe rather than full grid search over all models simultaneously"
-  ]
+
+  "expected_results_priorrun_8f7fe95e": {
+    "a_base":    {"lr": 0.05, "test_error_pct": 12.52},
+    "a_strided": {"lr": 0.05, "test_error_pct": 15.18},
+    "a_convpool":{"lr": 0.05, "test_error_pct": 8.89},
+    "a_allcnn":  {"lr": 0.05, "test_error_pct": 10.55},
+    "b_base":    {"lr": 0.05, "test_error_pct": 10.65},
+    "b_strided": {"lr": 0.05, "test_error_pct": 12.76},
+    "b_convpool":{"lr": 0.05, "test_error_pct": 9.11},
+    "b_allcnn":  {"lr": 0.05, "test_error_pct": 10.71},
+    "c_base":    {"lr": 0.05, "test_error_pct": 9.36},
+    "c_strided": {"lr": 0.05, "test_error_pct": 10.77},
+    "c_convpool":{"lr": 0.05, "test_error_pct": 8.81},
+    "c_allcnn":  {"lr": 0.05, "test_error_pct": 9.68},
+    "c_allcnn_aug":     {"lr": 0.05, "test_error_pct": 9.13},
+    "c_allcnn_cifar100":{"lr": 0.05, "test_error_pct": 34.17}
+  }
 }

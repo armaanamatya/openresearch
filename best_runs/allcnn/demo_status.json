@@ -9,17 +9,17 @@
   "outputDir": "/home/sww35/openresearch/runs/prj_0a3202fc187bb692",
   "runMode": "rlm",
   "status": "completed",
-  "updatedAt": "2026-06-10T08:26:39.629906+00:00",
-  "startedAt": "2026-06-09T23:57:49.251081+00:00",
+  "updatedAt": "2026-06-11T00:31:53.899952+00:00",
+  "startedAt": "2026-06-10T13:23:33.675581+00:00",
   "primitiveProvider": "real",
   "process_status": "completed",
   "verdict": "unknown",
   "cost_summary": {
-    "usd_total": 4.594813,
-    "usd_this_iter": 4.594813,
-    "iter_count": 0,
-    "usd_per_iter_p50": 0.0,
-    "updated_at": "2026-06-10T08:26:32.504159+00:00"
+    "usd_total": 9.267934,
+    "usd_this_iter": 9.267934,
+    "iter_count": 1,
+    "usd_per_iter_p50": 9.267934,
+    "updated_at": "2026-06-11T00:31:53.334205+00:00"
   },
-  "completedAt": "2026-06-10T08:26:39.629906+00:00"
+  "completedAt": "2026-06-11T00:31:53.899952+00:00"
 }

@@ -1,534 +1,342 @@
 """
-All Convolutional Net architectures from:
-  "Striving for Simplicity: The All Convolutional Net"
-  Springenberg, Dosovitskiy, Brox, Riedmiller (arXiv 1412.6806)
+All-CNN model architectures for CIFAR-10/100.
 
-12 architectures covering three base network designs (A, B, C) and four
-variants (base, strided, convpool, allcnn).
+Implements all variants from "Striving for Simplicity: The All Convolutional Net"
+Springenberg et al., 2014 (arxiv 1412.6806)
 
-Notation used in the paper (and here):
-  D(p)   = nn.Dropout(p)
-  CkxN   = Conv2d + ReLU, kernel k, N filters, pad=(k-1)//2, stride=1 unless noted
-  Pool   = MaxPool2d(3, stride=2, padding=1)
+Models:
+  Letter A: 5×5 convolutions, simpler (no NiN layers)
+  Letter B: Network-in-Network variant (5×5 + 1×1 after each main conv)
+  Letter C: All-3×3 variant (replaces all 5×5 of B with 3×3)
+
+Variants (for each letter):
+  base:     Original architecture with MaxPool layers (Table 1)
+  strided:  Strided-CNN — remove MaxPool, increase stride of preceding conv
+  convpool: ConvPool-CNN — insert dense conv before each MaxPool, keep MaxPool
+  allcnn:   All-CNN — replace MaxPool with strided 3×3 conv (paper's main result)
+
+Architecture invariants (Section 2, Section 3.1):
+  - Fully convolutional classifier: 1×1 conv → GAP → softmax (no FC layers)
+  - Dropout: 20% on input image, 50% after each pooling layer (or its replacement)
+  - ReLU activations throughout (no BN — paper predates common CIFAR BN use)
+  - Block 1 uses 96 feature maps, Block 2 uses 192
+  - Classification head: conv(192,3×3) + conv(192,1×1) + conv(10,1×1) + GAP
 """
 
 import torch
 import torch.nn as nn
-from typing import List
+import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
-# Building-block helpers
+# Model letter descriptions
+# ---------------------------------------------------------------------------
+#
+# Model A (5 main conv layers for base variant):
+#   Block 1: conv(96, 5×5) → MaxPool(3×3, s=2)
+#   Block 2: conv(192, 5×5) → MaxPool(3×3, s=2)
+#   Head:    conv(192, 3×3), conv(192, 1×1), conv(10, 1×1) → GAP
+#
+# Model B (7 main conv layers for base variant — NiN):
+#   Block 1: conv(96, 5×5) + conv(96, 1×1) → MaxPool(3×3, s=2)
+#   Block 2: conv(192, 5×5) + conv(192, 1×1) → MaxPool(3×3, s=2)
+#   Head:    conv(192, 3×3), conv(192, 1×1), conv(10, 1×1) → GAP
+#
+# Model C (7 main conv layers for base variant — all-3×3):
+#   Block 1: conv(96, 3×3) + conv(96, 3×3) → MaxPool(3×3, s=2)
+#   Block 2: conv(192, 3×3) + conv(192, 3×3) → MaxPool(3×3, s=2)
+#   Head:    conv(192, 3×3), conv(192, 1×1), conv(10, 1×1) → GAP
+#
+# Model C derived variants (All-CNN-C has 9 conv layers total):
+#   Strided:  Block conv's second conv → stride 2, remove MaxPool  (7 conv layers)
+#   ConvPool: Insert extra conv(96/192, 3×3) before MaxPool, keep MaxPool (9 conv layers)
+#   All-CNN:  Replace MaxPool with conv(96/192, 3×3, stride=2) (9 conv layers)
 # ---------------------------------------------------------------------------
 
-def _conv_relu(in_ch: int, out_ch: int, kernel: int, stride: int = 1) -> nn.Sequential:
-    """Single Conv2d + ReLU block with symmetric same-style padding."""
-    pad = (kernel - 1) // 2
-    return nn.Sequential(
-        nn.Conv2d(in_ch, out_ch, kernel_size=kernel, stride=stride, padding=pad, bias=True),
-        nn.ReLU(inplace=True),
-    )
+
+def _conv_relu(in_ch, out_ch, k, stride=1, padding=0):
+    return [nn.Conv2d(in_ch, out_ch, k, stride=stride, padding=padding),
+            nn.ReLU(inplace=True)]
 
 
-def _classifier_head(num_classes: int) -> nn.Sequential:
+def _maxpool():
+    # Paper uses 3×3 pool, stride=2 — with padding=1 this halves spatial dims
+    return nn.MaxPool2d(3, stride=2, padding=1)
+
+
+def build_all_cnn(letter: str, variant: str, num_classes: int = 10) -> nn.Sequential:
     """
-    Shared classifier head (Table 1, paper §3):
-      D(0.5) → Conv(192,3x3,p=1)+ReLU → Conv(192,1x1)+ReLU
-             → Conv(num_classes,1x1) → AdaptiveAvgPool2d(1) → flatten
-    No ReLU on the final conv — outputs are raw logits for CrossEntropyLoss.
+    Build one All-CNN network variant.
+
+    Args:
+        letter:      'A', 'B', or 'C'
+        variant:     'base', 'strided', 'convpool', or 'allcnn'
+        num_classes: 10 for CIFAR-10, 100 for CIFAR-100
+
+    Returns:
+        nn.Sequential whose forward() returns raw logits (no softmax).
+        The output spatial dimension is 8×8 (after 2 halving operations
+        on 32×32 CIFAR input), so GAP collapses it to (B, num_classes).
+        Use .forward_with_gap() pattern — see AllCNNModel.forward() below.
     """
-    return nn.Sequential(
-        nn.Dropout(p=0.5),
-        nn.Conv2d(192, 192, kernel_size=3, padding=1, bias=True),
-        nn.ReLU(inplace=True),
-        nn.Conv2d(192, 192, kernel_size=1, bias=True),
-        nn.ReLU(inplace=True),
-        nn.Conv2d(192, num_classes, kernel_size=1, bias=True),
-        # NOTE: no ReLU here — outputs are raw logits for CrossEntropyLoss.
-        # A ReLU here zeros negative logits → uniform softmax → loss stuck at
-        # ln(num_classes) and zero gradient flow (dead training).
-        nn.AdaptiveAvgPool2d(1),
-        nn.Flatten(),
-    )
+    assert letter in ('A', 'B', 'C'), f"Unknown letter {letter!r}"
+    assert variant in ('base', 'strided', 'convpool', 'allcnn'), f"Unknown variant {variant!r}"
+
+    layers = []
+
+    # ---------- Input dropout (20%) ----------
+    layers.append(nn.Dropout(0.2))
+
+    # ========================================================================
+    # Build Block 1 and Block 2 based on letter × variant
+    # ========================================================================
+
+    if letter == 'A':
+        # --- Block 1 ---
+        if variant == 'strided':
+            # "increase the stride of the immediately preceding convolution by 1"
+            # For A, the immediately preceding conv to MaxPool IS the single 5×5 conv
+            layers += _conv_relu(3, 96, 5, stride=2, padding=2)
+        else:
+            layers += _conv_relu(3, 96, 5, stride=1, padding=2)
+            if variant == 'convpool':
+                layers += _conv_relu(96, 96, 3, stride=1, padding=1)  # extra dense conv
+            elif variant == 'allcnn':
+                # Replace MaxPool with stride-2 3×3 conv (output channels = input channels)
+                layers += _conv_relu(96, 96, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+        # --- Block 2 ---
+        if variant == 'strided':
+            layers += _conv_relu(96, 192, 5, stride=2, padding=2)
+        else:
+            layers += _conv_relu(96, 192, 5, stride=1, padding=2)
+            if variant == 'convpool':
+                layers += _conv_relu(192, 192, 3, stride=1, padding=1)
+            elif variant == 'allcnn':
+                layers += _conv_relu(192, 192, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+    elif letter == 'B':
+        # --- Block 1: 5×5 + 1×1 (NiN) ---
+        layers += _conv_relu(3, 96, 5, stride=1, padding=2)
+        if variant == 'strided':
+            # Immediately preceding MaxPool is the 1×1 conv — make it stride 2
+            layers += _conv_relu(96, 96, 1, stride=2)
+        else:
+            layers += _conv_relu(96, 96, 1, stride=1)
+            if variant == 'convpool':
+                layers += _conv_relu(96, 96, 3, stride=1, padding=1)
+            elif variant == 'allcnn':
+                layers += _conv_relu(96, 96, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+        # --- Block 2: 5×5 + 1×1 (NiN) ---
+        layers += _conv_relu(96, 192, 5, stride=1, padding=2)
+        if variant == 'strided':
+            layers += _conv_relu(192, 192, 1, stride=2)
+        else:
+            layers += _conv_relu(192, 192, 1, stride=1)
+            if variant == 'convpool':
+                layers += _conv_relu(192, 192, 3, stride=1, padding=1)
+            elif variant == 'allcnn':
+                layers += _conv_relu(192, 192, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+    elif letter == 'C':
+        # --- Block 1: 3×3 + 3×3 ---
+        layers += _conv_relu(3, 96, 3, stride=1, padding=1)
+        if variant == 'strided':
+            # "immediately preceding" = second 3×3 conv → make it stride 2
+            layers += _conv_relu(96, 96, 3, stride=2, padding=1)
+        else:
+            layers += _conv_relu(96, 96, 3, stride=1, padding=1)
+            if variant == 'convpool':
+                layers += _conv_relu(96, 96, 3, stride=1, padding=1)
+            elif variant == 'allcnn':
+                layers += _conv_relu(96, 96, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+        # --- Block 2: 3×3 + 3×3 ---
+        layers += _conv_relu(96, 192, 3, stride=1, padding=1)
+        if variant == 'strided':
+            layers += _conv_relu(192, 192, 3, stride=2, padding=1)
+        else:
+            layers += _conv_relu(192, 192, 3, stride=1, padding=1)
+            if variant == 'convpool':
+                layers += _conv_relu(192, 192, 3, stride=1, padding=1)
+            elif variant == 'allcnn':
+                layers += _conv_relu(192, 192, 3, stride=2, padding=1)
+
+        if variant in ('base', 'convpool'):
+            layers.append(_maxpool())
+
+        layers.append(nn.Dropout(0.5))
+
+    # ========================================================================
+    # Classification head: fully-convolutional (Section 2)
+    # conv(192,3×3) + conv(192,1×1) + conv(num_classes,1×1) + GAP + Softmax
+    # ========================================================================
+    layers += _conv_relu(192, 192, 3, padding=1)
+    layers += _conv_relu(192, 192, 1)
+    # Final 1×1 conv produces class logits — no ReLU before GAP
+    layers.append(nn.Conv2d(192, num_classes, 1))
+
+    return nn.Sequential(*layers)
+
+
+class AllCNNModel(nn.Module):
+    """
+    Wrapper that adds Global Average Pooling after the convolutional body.
+
+    Usage:
+        model = AllCNNModel('C', 'allcnn', num_classes=10)
+        logits = model(x)  # shape: (B, num_classes)
+    """
+
+    def __init__(self, letter: str, variant: str, num_classes: int = 10):
+        super().__init__()
+        self.letter = letter
+        self.variant = variant
+        self.num_classes = num_classes
+        self.features = build_all_cnn(letter, variant, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)                    # (B, num_classes, H, W)
+        x = x.mean(dim=[2, 3])                  # Global Average Pool → (B, num_classes)
+        return x
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def extra_repr(self) -> str:
+        return f"letter={self.letter!r}, variant={self.variant!r}, num_classes={self.num_classes}"
 
 
 # ---------------------------------------------------------------------------
-# Base class
+# ImageNet All-CNN-B (Table 6 of the paper)
+# Section 3.2 ImageNet: 12 conv layers, 450k iterations, batch=64, lr=0.01/10
+# Architecture upscaled from CIFAR for 224×224 input
 # ---------------------------------------------------------------------------
 
-class _AllCNNBase(nn.Module):
+def build_imagenet_all_cnn_b(num_classes: int = 1000) -> "AllCNNImageNet":
     """
-    Common forward: run self.features then self.classifier.
-    Sub-classes populate self.features (nn.Sequential) and
-    self.classifier (nn.Sequential via _classifier_head).
+    Upscaled All-CNN-B for ImageNet (Table 6).
+    12 conv layers trained for 450,000 iterations, batch=64, initial lr=0.01
+    divided by 10 every 200,000 iterations, weight decay λ=0.0005.
+    Input: 224×224 center crop.
+    Target: Top-1 error ~41.2% (comparable to Krizhevsky et al. 2012 at 40.7%).
+    Under 10M parameters.
+    NOTE: Requires manual ImageNet download — not run in automated reproduction.
+    """
+    return _ImageNetAllCNNB(num_classes)
+
+
+class _ImageNetAllCNNB(nn.Module):
+    """
+    ImageNet All-CNN-B (Table 6).
+    12 convolutional layers, fully-convolutional classification head.
+    Input size: 224×224×3 (center crop from 256×256)
     """
 
-    features: nn.Sequential
-    classifier: nn.Sequential
+    def __init__(self, num_classes: int = 1000):
+        super().__init__()
+        self.num_classes = num_classes
+        # Block 1: 96 channels, 11×11 → 5×5 → 1×1 → stride-2 replace pool
+        # Block 2: 256 channels, 5×5 → 1×1 → 1×1 → stride-2 replace pool
+        # Block 3: 384 → 384 → 256 → 256 → 10-class head (scaled for ImageNet)
+        self.features = nn.Sequential(
+            # Stage 1 (224→28 after strided ops)
+            nn.Dropout(0.2),
+            nn.Conv2d(3, 96, 11, stride=4, padding=2), nn.ReLU(inplace=True),
+            nn.Conv2d(96, 96, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(96, 96, 3, stride=2, padding=1), nn.ReLU(inplace=True),  # s=2 all-cnn
+            nn.Dropout(0.5),
+            # Stage 2
+            nn.Conv2d(96, 256, 5, stride=1, padding=2), nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, 3, stride=2, padding=1), nn.ReLU(inplace=True),  # s=2 all-cnn
+            nn.Dropout(0.5),
+            # Stage 3
+            nn.Conv2d(256, 384, 3, stride=2, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(384, 384, 3, stride=2, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, 3, stride=2, padding=1), nn.ReLU(inplace=True),
+            # Head
+            nn.Conv2d(256, 4096, 1), nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Conv2d(4096, 4096, 1), nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Conv2d(4096, num_classes, 1),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
-        x = self.classifier(x)
+        x = x.mean(dim=[2, 3])  # GAP
         return x
 
-
-# ---------------------------------------------------------------------------
-# Model A  —  base
-# ---------------------------------------------------------------------------
-
-class ModelA(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → Pool → D(0.5) → C5x192 → Pool → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
 # ---------------------------------------------------------------------------
-# Model B  —  NIN variant of A (add 1×1 after each 5×5)
+# Convenience mapping
 # ---------------------------------------------------------------------------
 
-class ModelB(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C1x96 → Pool → D(0.5) → C5x192 → C1x192 → Pool
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# Model C  —  replace 5×5 with two 3×3, remove 1×1 NIN
-# ---------------------------------------------------------------------------
-
-class ModelC(_AllCNNBase):
-    """
-    D(0.2) → C3x96 → C3x96 → Pool → D(0.5) → C3x192 → C3x192 → Pool
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# Strided CNN A  —  stride=2 conv replaces MaxPool
-# ---------------------------------------------------------------------------
-
-class StridedCNN_A(_AllCNNBase):
-    """
-    D(0.2) → C5x96(s=2) → D(0.5) → C5x192(s=2) → D(0.5) → classifier_head
-    (No MaxPool; preceding conv takes stride=2 to subsample)
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1 — strided conv replaces Pool
-            nn.Conv2d(3, 96, kernel_size=5, stride=2, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2 — strided conv replaces Pool
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=2, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            # Dropout after last pool-replacement is provided by _classifier_head's
-            # first D(0.5); keeping it here would double the effective dropout rate.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# Strided CNN B  —  1×1 NIN gets stride=2 instead of MaxPool
-# ---------------------------------------------------------------------------
-
-class StridedCNN_B(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C1x96(s=2) → D(0.5) → C5x192 → C1x192(s=2) → D(0.5)
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=1, stride=2, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=1, stride=2, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            # D(0.5) after last pool-replacement supplied by _classifier_head.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# Strided CNN C  —  second 3×3 gets stride=2
-# ---------------------------------------------------------------------------
-
-class StridedCNN_C(_AllCNNBase):
-    """
-    D(0.2) → C3x96 → C3x96(s=2) → D(0.5) → C3x192 → C3x192(s=2) → D(0.5)
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # D(0.5) after last pool-replacement supplied by _classifier_head.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# ConvPool CNN A  —  add C3xN before Pool
-# ---------------------------------------------------------------------------
-
-class ConvPoolCNN_A(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C3x96 → Pool → D(0.5) → C5x192 → C3x192 → Pool
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# ConvPool CNN B  —  NIN then 3×3 before Pool
-# ---------------------------------------------------------------------------
-
-class ConvPoolCNN_B(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C1x96 → C3x96 → Pool → D(0.5) → C5x192 → C1x192
-           → C3x192 → Pool → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# ConvPool CNN C  —  three 3×3s with Pool
-# ---------------------------------------------------------------------------
-
-class ConvPoolCNN_C(_AllCNNBase):
-    """
-    D(0.2) → C3x96 → C3x96 → C3x96 → Pool → D(0.5) → C3x192 → C3x192
-           → C3x192 → Pool → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# All-CNN A  —  strided 3×3 replaces Pool in ConvPool A
-# ---------------------------------------------------------------------------
-
-class AllCNN_A(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C3x96(s=2) → D(0.5) → C5x192 → C3x192(s=2) → D(0.5)
-           → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # D(0.5) after last pool-replacement supplied by _classifier_head.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# All-CNN B  —  strided 3×3 replaces Pool in ConvPool B
-# ---------------------------------------------------------------------------
-
-class AllCNN_B(_AllCNNBase):
-    """
-    D(0.2) → C5x96 → C1x96 → C3x96(s=2) → D(0.5) → C5x192 → C1x192
-           → C3x192(s=2) → D(0.5) → classifier_head
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=5, stride=1, padding=2, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # D(0.5) after last pool-replacement supplied by _classifier_head.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# All-CNN C  —  strided 3×3 replaces Pool in ConvPool C  (paper's star model)
-# ---------------------------------------------------------------------------
-
-class AllCNN_C(_AllCNNBase):
-    """
-    D(0.2) → C3x96 → C3x96 → C3x96(s=2) → D(0.5) → C3x192 → C3x192
-           → C3x192(s=2) → D(0.5) → classifier_head
-
-    This is the paper's headline result (Table 1, best CIFAR-10 accuracy).
-    """
-
-    def __init__(self, num_classes: int = 10) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Dropout(p=0.2),
-            # block 1
-            nn.Conv2d(3, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(96, 96, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # block 2
-            nn.Dropout(p=0.5),
-            nn.Conv2d(96, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(192, 192, kernel_size=3, stride=2, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            # D(0.5) after last pool-replacement supplied by _classifier_head.
-        )
-        self.classifier = _classifier_head(num_classes)
-
-
-# ---------------------------------------------------------------------------
-# Factory & utility
-# ---------------------------------------------------------------------------
-
-_MODEL_MAP = {
-    ("a", "base"):     ModelA,
-    ("b", "base"):     ModelB,
-    ("c", "base"):     ModelC,
-    ("a", "strided"):  StridedCNN_A,
-    ("b", "strided"):  StridedCNN_B,
-    ("c", "strided"):  StridedCNN_C,
-    ("a", "convpool"): ConvPoolCNN_A,
-    ("b", "convpool"): ConvPoolCNN_B,
-    ("c", "convpool"): ConvPoolCNN_C,
-    ("a", "allcnn"):   AllCNN_A,
-    ("b", "allcnn"):   AllCNN_B,
-    ("c", "allcnn"):   AllCNN_C,
+MODEL_REGISTRY = {
+    f"{letter.lower()}_{variant}": (letter, variant)
+    for letter in ['A', 'B', 'C']
+    for variant in ['base', 'strided', 'convpool', 'allcnn']
+}
+# Human-readable names matching paper Table 3 / Table 4
+MODEL_NAMES = {
+    ('A', 'base'):     'Model A',
+    ('A', 'strided'):  'Strided-CNN-A',
+    ('A', 'convpool'): 'ConvPool-CNN-A',
+    ('A', 'allcnn'):   'All-CNN-A',
+    ('B', 'base'):     'Model B',
+    ('B', 'strided'):  'Strided-CNN-B',
+    ('B', 'convpool'): 'ConvPool-CNN-B',
+    ('B', 'allcnn'):   'All-CNN-B',
+    ('C', 'base'):     'Model C',
+    ('C', 'strided'):  'Strided-CNN-C',
+    ('C', 'convpool'): 'ConvPool-CNN-C',
+    ('C', 'allcnn'):   'All-CNN-C',
 }
 
 
-def get_model(base_model: str, variant: str, num_classes: int = 10) -> nn.Module:
-    """
-    Instantiate one of the 12 All-CNN architectures.
-
-    Parameters
-    ----------
-    base_model : str
-        Network design family: 'a', 'b', or 'c'.
-    variant : str
-        Pooling strategy: 'base', 'strided', 'convpool', or 'allcnn'.
-    num_classes : int
-        Number of output classes (default 10 for CIFAR-10).
-
-    Returns
-    -------
-    nn.Module
-        The requested architecture, weight-initialised randomly.
-
-    Examples
-    --------
-    >>> model = get_model('c', 'allcnn')          # All-CNN-C
-    >>> model = get_model('b', 'convpool', 100)   # ConvPool-CNN-B on CIFAR-100
-    """
-    key = (base_model.lower(), variant.lower())
-    if key not in _MODEL_MAP:
-        valid = sorted(_MODEL_MAP.keys())
-        raise ValueError(
-            f"Unknown (base_model={base_model!r}, variant={variant!r}). "
-            f"Valid combinations: {valid}"
-        )
-    return _MODEL_MAP[key](num_classes=num_classes)
+def make_model(letter: str, variant: str, num_classes: int = 10) -> AllCNNModel:
+    """Convenience constructor. Returns AllCNNModel on CPU."""
+    return AllCNNModel(letter, variant, num_classes)
 
 
-def count_parameters(model: nn.Module) -> int:
-    """Return the total number of trainable parameters in *model*."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-# ---------------------------------------------------------------------------
-# Quick sanity check (run as __main__)
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    x = torch.zeros(2, 3, 32, 32, device=device)   # CIFAR spatial size
-
-    rows = []
-    for (bm, var), cls in _MODEL_MAP.items():
-        m = cls(num_classes=10).to(device).eval()
-        with torch.no_grad():
-            out = m(x)
-        assert out.shape == (2, 10), f"Bad output shape {out.shape} for ({bm},{var})"
-        params = count_parameters(m)
-        rows.append((cls.__name__, params, out.shape))
-
-    print(f"{'Model':<18}  {'Params':>10}  Output")
-    print("-" * 45)
-    for name, p, shape in rows:
-        print(f"{name:<18}  {p:>10,}  {tuple(shape)}")
-
-    print(f"\nAll {len(rows)} models passed forward-pass check on {device}.")
-    sys.exit(0)
+if __name__ == '__main__':
+    # Quick sanity check
+    for letter in ['A', 'B', 'C']:
+        for variant in ['base', 'strided', 'convpool', 'allcnn']:
+            m = AllCNNModel(letter, variant, num_classes=10)
+            x = torch.randn(2, 3, 32, 32)
+            y = m(x)
+            assert y.shape == (2, 10), f"Bad output shape: {y.shape}"
+            nparams = m.count_parameters()
+            print(f"{MODEL_NAMES[(letter, variant)]:<20} params={nparams/1e6:.2f}M  out={y.shape}")
+    print("All architecture checks passed.")
