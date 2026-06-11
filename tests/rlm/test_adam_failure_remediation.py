@@ -180,3 +180,77 @@ def test_adam_hint_carries_failure_isolation():
     assert "FAILURE ISOLATION" in g
     assert "last_cells.json" in g
     assert "num_classes" in g
+
+
+# ---------------------------------------------------------------------------
+# B2. ACTIVE route retention (auto-restore when applicable)
+# ---------------------------------------------------------------------------
+
+
+def _repair_setup(tmp_path: Path, *, trainer: bool, stash: bool):
+    ctx = _ctx(tmp_path)
+    code = tmp_path / "code"
+    code.mkdir()
+    if trainer:
+        (code / "train_cell.py").write_text("# per-cell trainer\n")
+    if stash:
+        state = ctx.project_dir / "rlm_state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "last_cells.json").write_text('[{"cell_id": "vae_b1"}]')
+    return ctx, code
+
+
+def test_auto_restores_manifest_when_trainer_survives(tmp_path, monkeypatch):
+    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
+    result = {"ok": True}
+
+    out = _check_cells_manifest_retention(
+        result, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
+        repair_failure_class="cuda_device_assert",
+    )
+    assert json.loads((code / "cells.json").read_text()) == [{"cell_id": "vae_b1"}]
+    assert any("cells_manifest_restored" in w for w in out["contract_warnings"])
+
+
+def test_no_restore_without_trainer(tmp_path, monkeypatch):
+    """Manifest without a per-cell trainer is useless — warn-only."""
+    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    ctx, code = _repair_setup(tmp_path, trainer=False, stash=True)
+    out = _check_cells_manifest_retention(
+        {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
+    )
+    assert not (code / "cells.json").exists()
+    assert any("cells_manifest_dropped" in w for w in out["contract_warnings"])
+
+
+def test_no_restore_after_cells_route_failure(tmp_path, monkeypatch):
+    """The repair may be deliberately abandoning a broken route — warn-only."""
+    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
+    out = _check_cells_manifest_retention(
+        {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
+        repair_failure_class="cell_execution_error",
+    )
+    assert not (code / "cells.json").exists()
+    assert any("cells_manifest_dropped" in w for w in out["contract_warnings"])
+
+
+def test_flag_disables_restore(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPROLAB_CELLS_ROUTE_RETENTION", "0")
+    ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
+    out = _check_cells_manifest_retention(
+        {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
+    )
+    assert not (code / "cells.json").exists()
+    assert any("cells_manifest_dropped" in w for w in out["contract_warnings"])
+
+
+def test_missing_stash_degrades_to_warning(tmp_path, monkeypatch):
+    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    ctx, code = _repair_setup(tmp_path, trainer=True, stash=False)
+    out = _check_cells_manifest_retention(
+        {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
+    )
+    assert not (code / "cells.json").exists()
+    assert any("cells_manifest_dropped" in w for w in out["contract_warnings"])

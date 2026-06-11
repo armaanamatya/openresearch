@@ -352,6 +352,24 @@ def _stash_cells_manifest(code_dir: "Any", ctx: "RunContext") -> bool:
     return True
 
 
+# Failure classes where the CELLS THEMSELVES were the problem — a repair that
+# abandons the route after these may be a deliberate strategy change, so the
+# guard stays advisory instead of restoring the manifest.
+_CELLS_ROUTE_FAILURE_CLASSES: frozenset[str] = frozenset({
+    "cell_execution_error",
+    "cell_smoke_failed",
+})
+
+
+def _cells_route_retention_enabled() -> bool:
+    """Default ON (env_pin precedent); REPROLAB_CELLS_ROUTE_RETENTION=0 disables."""
+    import os
+
+    return os.environ.get("REPROLAB_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
+        "0", "false", "off",
+    )
+
+
 def _check_cells_manifest_retention(
     result: dict,
     *,
@@ -359,20 +377,65 @@ def _check_cells_manifest_retention(
     had_manifest: bool,
     is_repair: bool,
     ctx: "RunContext",
+    repair_failure_class: str = "",
 ) -> dict:
-    """Warn (agent + dashboard) when a repair pass drops the cells manifest.
+    """Route retention when a repair pass drops the cells manifest.
 
-    Advisory, never blocking — a repair may legitimately retire a completed
-    grid. But the agent must make that choice EXPLICITLY: the warning names
-    what was lost (per-cell crash isolation) and where the preserved manifest
-    lives, so the monolithic regression can't happen silently.
+    ACTIVE retention (default ON, REPROLAB_CELLS_ROUTE_RETENTION=0 disables):
+    when the repaired tree STILL carries a per-cell trainer (train_cell.py)
+    and the failure being repaired was not a cells-route failure, the manifest
+    is pure grid DATA the rewrite forgot — restore it from the pre-repair stash
+    so the matrix keeps one-process-per-cell crash isolation.
+
+    Advisory fallback otherwise: restoring a manifest without a trainer is
+    useless, and restoring after a cells-route failure could re-arm the very
+    route the repair deliberately abandoned — those cases get an explicit
+    contract warning naming the trade-off and the stash location instead.
     """
     from pathlib import Path
+    import shutil
 
     if not (is_repair and had_manifest) or result.get("ok") is not True:
         return result
-    if (Path(code_dir) / "cells.json").is_file():
+    manifest = Path(code_dir) / "cells.json"
+    if manifest.is_file():
         return result
+
+    stash = ctx.project_dir / "rlm_state" / "last_cells.json"
+    trainer_present = (Path(code_dir) / "train_cell.py").is_file()
+    cells_route_failure = (
+        str(repair_failure_class or "").strip().lower() in _CELLS_ROUTE_FAILURE_CLASSES
+    )
+
+    if (
+        _cells_route_retention_enabled()
+        and trainer_present
+        and not cells_route_failure
+        and stash.is_file()
+    ):
+        try:
+            shutil.copy2(stash, manifest)
+            note = (
+                "cells_manifest_restored: this repair removed code/cells.json while "
+                "keeping train_cell.py — the harness restored the manifest from "
+                "rlm_state/last_cells.json so the matrix keeps one-process-per-cell "
+                "crash isolation (a monolithic run loses every family to one CUDA "
+                "device-side assert). If you intended to retire the grid, delete "
+                "cells.json explicitly AND say so in the plan."
+            )
+            result.setdefault("contract_warnings", []).append(note)
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "cells_manifest_restored",
+                "message": note,
+            })
+            logger.info("implement_baseline[%s]: %s", ctx.project_id, note)
+            return result
+        except OSError:
+            logger.warning(
+                "implement_baseline[%s]: cells.json restore failed — warn-only",
+                ctx.project_id, exc_info=True,
+            )
+
     note = (
         "cells_manifest_dropped: this repair removed code/cells.json — the matrix "
         "will run MONOLITHIC, so one crash (e.g. a CUDA device-side assert) zeroes "
@@ -2276,6 +2339,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                             harvested, code_dir=code_dir,
                             had_manifest=_had_cells_manifest,
                             is_repair=repair_context is not None, ctx=ctx,
+                            repair_failure_class=str((repair_context or {}).get("failure_class") or ""),
                         )
                         if harvested.get("ok") is True:
                             _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
@@ -2345,6 +2409,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         harvested, code_dir=code_dir,
         had_manifest=_had_cells_manifest,
         is_repair=repair_context is not None, ctx=ctx,
+        repair_failure_class=str((repair_context or {}).get("failure_class") or ""),
     )
     if harvested.get("ok") is True:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
