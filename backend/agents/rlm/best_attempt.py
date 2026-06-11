@@ -326,6 +326,17 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
                     f"{ch['attempt'][:15]} (best attempt had {bscore:.2f}) — "
                     f"champion evidence: {ch['evidence']}"
                 )
+        # Forward-search population step: the cell grid IS a population — for
+        # configs with no proven champion, run small candidate populations
+        # instead of betting one guess per cell (the uniform-lr bet is how the
+        # All-CNN stars regressed while the dead families were being revived).
+        lines.append(
+            "POPULATION RULE for cells without a paper-grade champion: emit "
+            "2 candidate cells with distinct hyperparameters (suffix the ids, "
+            "e.g. _lr005/_lr001) instead of betting on one guess — the grid "
+            "runs them in parallel, and the best result becomes the champion "
+            "automatically. Cells WITH a champion keep its exact config."
+        )
         block = "\n".join(lines)
         if len(block) > max_chars:
             block = block[: max_chars - 15].rstrip() + "\n  (truncated)"
