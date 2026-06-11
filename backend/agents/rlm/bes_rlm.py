@@ -115,6 +115,47 @@ def _rubric_path(ctx: Any) -> Path:
     return Path(ctx.project_dir) / "generated_rubric.json"
 
 
+def _adaptive_decision(ctx: Any, settings: Any) -> dict:
+    """Engage the pool only where selection has variance to remove.
+
+    The allcnn-ab-20260611 pool discriminated weakly (0.549 vs 0.557) because
+    the seeded best-attempt + champion rails already anchor implementation
+    quality on papers with measured history. Deterministic rule: engage on a
+    project with NO prior attempt or a weak best (< bes_adaptive_skip_score);
+    skip when champion-grade history dominates. The decision (either way) is
+    persisted for the A/B report and the experiment_arm stamp.
+    """
+    threshold = float(getattr(settings, "bes_adaptive_skip_score", 0.5) or 0.5)
+    best_score: float | None = None
+    try:
+        from backend.agents.rlm.best_attempt import find_best_attempt
+
+        best = find_best_attempt(Path(ctx.project_dir))
+        if best is not None:
+            best_score = float(best.get("score"))
+    except Exception:  # noqa: BLE001 — unreadable history reads as "no history"
+        logger.debug("bes_rlm: adaptive history probe failed", exc_info=True)
+
+    if best_score is None:
+        decision = {"engage": True, "reason": "no_prior_history"}
+    elif best_score < threshold:
+        decision = {"engage": True, "reason": f"weak_history({best_score:.3f}<{threshold:g})"}
+    else:
+        decision = {"engage": False, "reason": f"strong_history({best_score:.3f}>={threshold:g})"}
+    decision["best_score"] = best_score
+    decision["threshold"] = threshold
+
+    try:
+        state_dir = Path(ctx.project_dir) / "rlm_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "bes_adaptive.json").write_text(
+            json.dumps(decision, indent=2), encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return decision
+
+
 def should_compete(ctx: Any, plan: dict) -> bool:
     """True when this implement_baseline call should run the candidate pool.
 
@@ -142,6 +183,20 @@ def should_compete(ctx: Any, plan: dict) -> bool:
             getattr(ctx, "project_id", "?"), remaining, min_remaining,
         )
         return False
+    try:
+        from backend.config import get_settings
+
+        settings = get_settings()
+        if getattr(settings, "bes_adaptive", False):
+            decision = _adaptive_decision(ctx, settings)
+            logger.info(
+                "bes_rlm[%s]: adaptive gate — engage=%s (%s)",
+                getattr(ctx, "project_id", "?"), decision["engage"], decision["reason"],
+            )
+            if not decision["engage"]:
+                return False
+    except Exception:  # noqa: BLE001 — adaptive gate failure never blocks the pool
+        logger.debug("bes_rlm: adaptive gate errored — pool proceeds", exc_info=True)
     return True
 
 
@@ -492,6 +547,12 @@ def experiment_arm_stamp(project_dir: Path | str) -> dict:
             ]
     except Exception:  # noqa: BLE001 — stamp must never block the report write
         logger.debug("bes_rlm: pool summary unavailable for stamp", exc_info=True)
+    try:
+        adaptive_file = Path(project_dir) / "rlm_state" / "bes_adaptive.json"
+        if adaptive_file.is_file():
+            stamp["bes"]["adaptive"] = json.loads(adaptive_file.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        logger.debug("bes_rlm: adaptive decision unavailable for stamp", exc_info=True)
     return stamp
 
 

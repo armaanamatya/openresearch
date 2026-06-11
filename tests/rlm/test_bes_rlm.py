@@ -392,3 +392,79 @@ def test_reuse_rubric_missing_file_falls_through(tmp_path, monkeypatch):
     from backend.agents.rlm.run import _load_reusable_rubric
     monkeypatch.setenv("REPROLAB_REUSE_RUBRIC", "1")
     assert _load_reusable_rubric(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Adaptive gating (REPROLAB_BES_ADAPTIVE — pool only where selection pays)
+# ---------------------------------------------------------------------------
+
+
+def _adaptive_settings(skip_score: float = 0.5, adaptive: bool = True, n: int = 2):
+    return SimpleNamespace(
+        bes_enabled=True,
+        bes_candidates_per_cluster=n,
+        bes_select_metric="cluster_score",
+        bes_adaptive=adaptive,
+        bes_adaptive_skip_score=skip_score,
+    )
+
+
+def _write_attempt_report(project_dir: Path, score: float) -> None:
+    att = project_dir / "attempts" / "20260610T000000-000000-aaaaaa"
+    att.mkdir(parents=True, exist_ok=True)
+    (att / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "x"},
+        "verdict": "reproduced",
+        "rubric": {"overall_score": score, "meets_target": True, "areas": []},
+    }))
+
+
+def test_adaptive_off_competes_as_before(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.config.get_settings", lambda: _adaptive_settings(adaptive=False))
+    ctx = _ctx(tmp_path)
+    _write_rubric(ctx)
+    _write_attempt_report(Path(ctx.project_dir), 0.9)  # strong history, but adaptive off
+    assert bes_rlm.should_compete(ctx, {}) is True
+
+
+def test_adaptive_engages_on_first_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.config.get_settings", lambda: _adaptive_settings())
+    ctx = _ctx(tmp_path)
+    _write_rubric(ctx)
+    assert bes_rlm.should_compete(ctx, {}) is True
+    decision = json.loads((Path(ctx.project_dir) / "rlm_state" / "bes_adaptive.json").read_text())
+    assert decision["engage"] is True and decision["reason"] == "no_prior_history"
+
+
+def test_adaptive_skips_on_strong_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.config.get_settings", lambda: _adaptive_settings(skip_score=0.5))
+    ctx = _ctx(tmp_path)
+    _write_rubric(ctx)
+    _write_attempt_report(Path(ctx.project_dir), 0.74)
+    assert bes_rlm.should_compete(ctx, {}) is False
+    decision = json.loads((Path(ctx.project_dir) / "rlm_state" / "bes_adaptive.json").read_text())
+    assert decision["engage"] is False
+    assert decision["reason"].startswith("strong_history")
+    assert decision["best_score"] == pytest.approx(0.74)
+
+
+def test_adaptive_engages_on_weak_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.config.get_settings", lambda: _adaptive_settings(skip_score=0.5))
+    ctx = _ctx(tmp_path)
+    _write_rubric(ctx)
+    _write_attempt_report(Path(ctx.project_dir), 0.3)
+    assert bes_rlm.should_compete(ctx, {}) is True
+    decision = json.loads((Path(ctx.project_dir) / "rlm_state" / "bes_adaptive.json").read_text())
+    assert decision["engage"] is True and decision["reason"].startswith("weak_history")
+
+
+def test_adaptive_decision_lands_in_stamp(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.config.get_settings", lambda: _adaptive_settings())
+    state = tmp_path / "rlm_state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "bes_adaptive.json").write_text(json.dumps(
+        {"engage": False, "reason": "strong_history(0.740>=0.5)", "best_score": 0.74, "threshold": 0.5}
+    ))
+    stamp = bes_rlm.experiment_arm_stamp(tmp_path)
+    assert stamp["bes"]["adaptive"]["engage"] is False
+    assert stamp["bes"]["adaptive"]["best_score"] == pytest.approx(0.74)
