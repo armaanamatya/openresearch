@@ -111,3 +111,16 @@ def test_true_aggregate_without_scalars_still_skipped(tmp_path):
     _write_cell(tmp_path, "20260610T000000-000000-hhhhhh", "r1",
                 "agg_like", {"status": "complete", "per_model": {"m": {}}, "scope": {}})
     assert build_evidence_block(tmp_path) == ""
+
+
+def test_cell_champion_marker_spans_attempts(tmp_path):
+    # latest+prior history keeps 2 rows; the champion lives in the OLDEST attempt
+    _write_cell(tmp_path, "20260607T000000-000000-aaaaaa", "r1",
+                "c_base_cifar10", {"status": "ok", "test_error_pct": 9.99, "lr": 0.1})
+    _write_cell(tmp_path, "20260609T000000-000000-bbbbbb", "r1",
+                "c_base_cifar10", {"status": "ok", "test_error_pct": 90.0})
+    _write_cell(tmp_path, "20260610T000000-000000-cccccc", "r1",
+                "c_base_cifar10", {"status": "ok", "test_error_pct": 12.18, "best_lr": 0.05})
+    block = build_evidence_block(tmp_path)
+    line = next(ln for ln in block.splitlines() if "c_base_cifar10" in ln)
+    assert "[CHAMPION]" in line and "test_error_pct=9.99" in line

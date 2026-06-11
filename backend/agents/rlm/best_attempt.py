@@ -215,6 +215,59 @@ def seed_reference_code(project_dir: Path | str) -> str | None:
         return None
 
 
+def _all_scored_attempts(project_dir: Path) -> list[dict[str, Any]]:
+    try:
+        attempts_root = Path(project_dir) / "attempts"
+        if not attempts_root.is_dir():
+            return []
+        out = []
+        for attempt in sorted(p for p in attempts_root.iterdir() if p.is_dir()):
+            report = _read_report(attempt / "final_report.json")
+            if _score_of(report) is not None:
+                out.append({"dir": attempt, "score": _score_of(report), "report": report})
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def leaf_champions(project_dir: Path | str) -> dict[str, dict[str, Any]]:
+    """Per-leaf CHAMPION across ALL scored attempts (forward-search crossover).
+
+    The best single attempt is not the ceiling — champions are scattered
+    across attempts (All-CNN: attempt 2 held the base/strided stars, attempt 3
+    the only converged convpool/all-conv cells). Joined on the stable leaf id;
+    returns ``{leaf_id: {score, evidence, attempt}}``.
+    """
+    champs: dict[str, dict[str, Any]] = {}
+    for att in _all_scored_attempts(Path(project_dir)):
+        for lid, leaf in _leaves(att["report"]).items():
+            try:
+                sc = float(leaf["score"])
+            except (TypeError, ValueError):
+                continue
+            cur = champs.get(lid)
+            if cur is None or sc > cur["score"]:
+                champs[lid] = {
+                    "score": sc,
+                    "evidence": str(leaf.get("justification") or "")[:160],
+                    "attempt": att["dir"].name,
+                }
+    return champs
+
+
+def champion_ceiling(project_dir: Path | str) -> float | None:
+    """Unweighted mean of per-leaf champions — a ROUGH crossover ceiling.
+
+    'If one run reproduced every leaf at its best-ever level simultaneously.'
+    Indicative only (real roll-up is weighted); None when no champions exist.
+    """
+    champs = leaf_champions(project_dir)
+    if not champs:
+        return None
+    vals = [c["score"] for c in champs.values()]
+    return sum(vals) / len(vals)
+
+
 def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 2400) -> str:
     """Implementer-prompt block: best score + seeded-code pointer + regressions."""
     if not _flag_on(ENV_SEED_FLAG):
@@ -248,6 +301,31 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
                         f"  - leaf {r['id'][:8]}: best {r['best']:.2f} vs latest "
                         f"{r['latest']:.2f} — best-run evidence: {r['evidence']}"
                     )
+        # Forward-search crossover: leaves where some OTHER attempt beat the
+        # best attempt — no single run is the ceiling; combine the champions.
+        champs = leaf_champions(project_dir)
+        best_leaves = _leaves(best["report"])
+        cross = []
+        for lid, ch in champs.items():
+            bleaf = best_leaves.get(lid)
+            bscore = float(bleaf["score"]) if bleaf and bleaf.get("score") is not None else 0.0
+            if ch["score"] - bscore >= 0.15 and ch["attempt"] != best["dir"].name:
+                cross.append((lid, ch, bscore))
+        if cross:
+            ceiling = champion_ceiling(project_dir)
+            lines.append(
+                "CROSSOVER TARGETS — leaves where a DIFFERENT attempt beat the "
+                "best one (no single prior run is the ceiling; reproduce ALL "
+                "champions simultaneously"
+                + (f"; rough combined ceiling ≈ {ceiling:.2f}" if ceiling else "")
+                + "):"
+            )
+            for lid, ch, bscore in sorted(cross, key=lambda t: t[1]["score"] - t[2], reverse=True)[:6]:
+                lines.append(
+                    f"  - leaf {lid[:8]}: champion {ch['score']:.2f} in "
+                    f"{ch['attempt'][:15]} (best attempt had {bscore:.2f}) — "
+                    f"champion evidence: {ch['evidence']}"
+                )
         block = "\n".join(lines)
         if len(block) > max_chars:
             block = block[: max_chars - 15].rstrip() + "\n  (truncated)"
@@ -283,8 +361,10 @@ __all__ = [
     "ENV_TARGET_FLOOR_FLAG",
     "REFERENCE_DIR_NAME",
     "best_attempt_guidance_block",
+    "champion_ceiling",
     "find_best_attempt",
     "floored_target",
+    "leaf_champions",
     "leaf_regressions",
     "seed_reference_code",
 ]

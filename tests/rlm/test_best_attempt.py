@@ -116,3 +116,33 @@ def test_floored_target(tmp_path, monkeypatch):
     assert floored_target(tmp_path, 0.9) == 0.9     # higher target kept
     assert floored_target(tmp_path, None) == 0.831  # None -> floor
     assert floored_target(tmp_path / "fresh", 0.6) == 0.6  # no prior -> unchanged
+
+
+def test_leaf_champions_span_attempts(tmp_path):
+    from backend.agents.rlm.best_attempt import champion_ceiling, leaf_champions
+    _attempt(tmp_path, "20260608T000000-0-aa", 0.70, leaves=[
+        {"id": "L1", "score": 1.0, "justification": "base/strided stars"},
+        {"id": "L2", "score": 0.2, "justification": "convpool dead"},
+    ])
+    _attempt(tmp_path, "20260610T000000-0-bb", 0.74, leaves=[
+        {"id": "L1", "score": 0.5},
+        {"id": "L2", "score": 0.9, "justification": "all families converged"},
+    ])
+    champs = leaf_champions(tmp_path)
+    assert champs["L1"]["score"] == 1.0 and champs["L1"]["attempt"].startswith("20260608")
+    assert champs["L2"]["score"] == 0.9 and champs["L2"]["attempt"].startswith("20260610")
+    assert abs(champion_ceiling(tmp_path) - 0.95) < 1e-9  # mean(1.0, 0.9)
+
+
+def test_guidance_block_includes_crossover_targets(tmp_path, monkeypatch):
+    # Best attempt is bb (0.74), but aa holds the L1 champion (1.0 vs bb's 0.5).
+    _attempt(tmp_path, "20260608T000000-0-aa", 0.70, leaves=[
+        {"id": "L1XXXXXX", "score": 1.0, "justification": "stars"},
+    ], code_files={"train.py": "x"})
+    _attempt(tmp_path, "20260610T000000-0-bb", 0.74, leaves=[
+        {"id": "L1XXXXXX", "score": 0.5},
+    ], code_files={"train.py": "y"})
+    monkeypatch.setenv("REPROLAB_SEED_BEST_ATTEMPT", "1")
+    block = best_attempt_guidance_block(tmp_path)
+    assert "CROSSOVER TARGETS" in block
+    assert "champion 1.00 in 20260608T000000" in block
