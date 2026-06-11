@@ -587,3 +587,98 @@ describe("foldExperimentCompleted — perModelMetrics", () => {
     expect(fold(INITIAL_RLM_STATE, ev)).toEqual(fold(INITIAL_RLM_STATE, ev));
   });
 });
+
+// ─── Flat BES candidate events (2026-06-11 live-crash regression) ─────────────
+//
+// rdr/controller.py and bes_rlm.py emit candidate_proposed as a FLAT shape —
+// { candidate_id, cluster_id, score, failed } — with no nested `candidate`
+// object and no iteration/round. Dereferencing ev.candidate.id crashed the
+// whole lab page mid-run. The reducer must normalize this shape, and safeFold
+// must contain anything else.
+
+import { safeFold } from "./use-rlm-run";
+
+describe("fold — flat BES candidate_proposed (live-crash regression)", () => {
+  const flatProposed = {
+    event: "candidate_proposed",
+    timestamp: "2026-06-11T00:00:00.000Z",
+    candidate_id: "rlm_impl_1",
+    cluster_id: "rlm_baseline",
+    score: 0.55,
+    failed: false,
+  } as unknown as RlmDashboardEvent;
+
+  it("does not throw and creates a candidate node from the flat shape", () => {
+    const s = fold(INITIAL_RLM_STATE, flatProposed);
+    const node = s.tree.find((n) => n.id === "candidate-rlm_impl_1");
+    expect(node).toBeDefined();
+    expect(node!.kind).toBe("candidate");
+    expect(node!.title).toBe("rlm_impl_1");
+    expect(node!.candidate?.category).toBe("rlm_baseline");
+  });
+
+  it("marks a failed flat candidate with outcome=failed", () => {
+    const ev = { ...(flatProposed as object), failed: true } as unknown as RlmDashboardEvent;
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.tree.find((n) => n.id === "candidate-rlm_impl_1")!.outcome).toBe("failed");
+  });
+
+  it("drops a candidate_proposed with neither candidate nor candidate_id", () => {
+    const ev = {
+      event: "candidate_proposed",
+      timestamp: "2026-06-11T00:00:00.000Z",
+    } as unknown as RlmDashboardEvent;
+    const s = fold(INITIAL_RLM_STATE, ev);
+    expect(s.tree.filter((n) => n.kind === "candidate")).toHaveLength(0);
+  });
+
+  it("maps the BES outcome 'selected' to promoted on the matching node", () => {
+    const outcome = {
+      event: "candidate_outcome",
+      timestamp: "2026-06-11T00:00:01.000Z",
+      candidate_id: "rlm_impl_1",
+      cluster_id: "rlm_baseline",
+      outcome: "selected",
+      score: 0.55,
+      n_candidates: 3,
+    } as unknown as RlmDashboardEvent;
+    const s = [flatProposed, outcome].reduce(fold, INITIAL_RLM_STATE);
+    expect(s.tree.find((n) => n.id === "candidate-rlm_impl_1")!.outcome).toBe("promoted");
+  });
+
+  it("drops a candidate_outcome without candidate_id", () => {
+    const ev = {
+      event: "candidate_outcome",
+      timestamp: "2026-06-11T00:00:01.000Z",
+      outcome: "promoted",
+    } as unknown as RlmDashboardEvent;
+    expect(() => fold(INITIAL_RLM_STATE, ev)).not.toThrow();
+    expect(fold(INITIAL_RLM_STATE, ev)).toEqual(
+      fold(INITIAL_RLM_STATE, { ...(ev as object) } as RlmDashboardEvent)
+    );
+  });
+});
+
+describe("safeFold — reducer crash containment", () => {
+  it("returns the prior state instead of throwing on a poisoned event", () => {
+    // candidate present but null-prototype trap: candidate.id getter throws.
+    const poisoned = {
+      event: "candidate_proposed",
+      timestamp: "2026-06-11T00:00:00.000Z",
+      iteration: 1,
+      round: 1,
+      get candidate(): never {
+        throw new Error("poisoned payload");
+      },
+    } as unknown as RlmDashboardEvent;
+    const s = safeFold(INITIAL_RLM_STATE, poisoned);
+    // The paper root may have been seeded before the throw — but state must be
+    // a valid RlmRunState, not an exception.
+    expect(s.status).toBe(INITIAL_RLM_STATE.status);
+  });
+
+  it("matches fold for well-formed events", () => {
+    const ev = rlmRunFixture[0];
+    expect(safeFold(INITIAL_RLM_STATE, ev)).toEqual(fold(INITIAL_RLM_STATE, ev));
+  });
+});
