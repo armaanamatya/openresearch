@@ -381,10 +381,10 @@ _CELLS_ROUTE_FAILURE_CLASSES: frozenset[str] = frozenset({
 
 
 def _cells_route_retention_enabled() -> bool:
-    """Default ON (env_pin precedent); REPROLAB_CELLS_ROUTE_RETENTION=0 disables."""
+    """Default ON (env_pin precedent); OPENRESEARCH_CELLS_ROUTE_RETENTION=0 disables."""
     import os
 
-    return os.environ.get("REPROLAB_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
+    return os.environ.get("OPENRESEARCH_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
         "0", "false", "off",
     )
 
@@ -400,7 +400,7 @@ def _check_cells_manifest_retention(
 ) -> dict:
     """Route retention when a repair pass drops the cells manifest.
 
-    ACTIVE retention (default ON, REPROLAB_CELLS_ROUTE_RETENTION=0 disables):
+    ACTIVE retention (default ON, OPENRESEARCH_CELLS_ROUTE_RETENTION=0 disables):
     when the repaired tree STILL carries a per-cell trainer (train_cell.py)
     and the failure being repaired was not a cells-route failure, the manifest
     is pure grid DATA the rewrite forgot — restore it from the pre-repair stash
@@ -1949,7 +1949,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     #
     # arXiv/PDF runs never enter RDR Phase 1 (hybrid bundle guard), so
     # BES-on-RDR cannot reach them. Master-gated by the SAME flags
-    # (REPROLAB_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
+    # (OPENRESEARCH_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
     # implementations, static rubric SELECT, the experiment runs once on the
     # winner restored into code/. Repairs and re-entrant candidate calls
     # (_bes_inner) stay single-shot — BES v1 semantics, mirror of
@@ -5380,6 +5380,22 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                         f"try reducing azure_max_nodes or requesting a quota increase")
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
+    # All-timeout classification (audit 2026-06-11): when the time-budget cap
+    # (cap_overall_budget) floors the matrix budget below even one cell's
+    # runtime, EVERY cell times out — that is a wall-clock condition, not a
+    # code bug, so classify it exec_timeout (the finalize-on-timeout path
+    # scores any partial metrics) instead of cell_execution_error (which
+    # sends the root into a pointless repair loop against correct code).
+    n_timeout = sum(s == "timeout" for s in statuses)
+    if n_ok == 0 and n_oom == 0 and n_err > 0 and n_timeout == n_err:
+        _persist_metrics(metrics)
+        return {"success": False, "metrics": metrics, "logs": logs,
+                "failure_class": "exec_timeout",
+                "cause_kind": "exec_timeout",
+                "error": (f"all {n_timeout} run cell(s) hit the matrix time budget "
+                          f"before finishing — the run's remaining wall clock could "
+                          f"not fit the grid; not a code bug")}
+
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
     _div_note = (
         f" (of which {n_diverged} early-stopped as dead-training: "
@@ -5761,9 +5777,16 @@ def run_experiment(
                     }
                 elif "RUNPOD_TRANSIENT_500" in exc_msg:
                     # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # — advance the ladder so the run doesn't dead-end. Bounded
-                    # by dynamic_gpu_max_escalations so a request-shape bug
-                    # cannot burn the whole catalog.
+                    # infra hiccups — advance the ladder so the run doesn't dead-end.
+                    # This is intentionally the same path as CAPACITY_EXHAUSTED
+                    # because: (a) the 500 may itself be capacity under a different
+                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
+                    # with exponential backoff before bubbling up here, so a genuine
+                    # transient would have recovered. BUG-NEW-049: consider adding
+                    # a same-tier retry before escalating if TRANSIENT_500 is the
+                    # sole failure mode (CAPACITY_EXHAUSTED still escalates
+                    # immediately). Bounded by dynamic_gpu_max_escalations so a
+                    # request-shape bug cannot burn the whole catalog.
                     infra_error_kind = "runpod_transient_500"
                     result = {
                         "success": False, "metrics": {},
@@ -5881,6 +5904,16 @@ def run_experiment(
     # identifiers the persist chokepoint records. run_id/env_id/commands are in
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
     _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
+
+    # Hybrid route merge (2026-06-10; ordering restored 2026-06-11): both
+    # manifests ran in this one call — graft the stashed grid aggregate into
+    # the agent-written family metrics BEFORE finalize-on-timeout and the
+    # success-gated postflight guard chain, so every guard validates the
+    # MERGED result (the 7687d2e merge had displaced this to just before
+    # persist, which made the scope guard see only the family half and let
+    # the grid half bypass all guards).
+    if _hybrid_grid_result is not None:
+        result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
 
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
@@ -6121,11 +6154,6 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — observability must never block the run
         logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
 
-    # Hybrid route merge (2026-06-10): both manifests ran in this one call —
-    # graft the stashed grid aggregate into the agent-written family metrics so
-    # the scorer sees one combined metrics.json and neither route's work is lost.
-    if _hybrid_grid_result is not None:
-        result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
 
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 

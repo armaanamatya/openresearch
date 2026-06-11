@@ -169,3 +169,86 @@ def test_both_archiver_manifests_carry_the_shared_sidecars():
     shared = set(attempt_isolation.PER_ATTEMPT_SIDECARS)
     assert shared <= set(archive._TOP_LEVEL_FILES)
     assert shared <= set(attempt_isolation._ARCHIVE_FILES)
+
+
+# ------------------------------------------------- hard-stop forge closure
+
+
+def test_hard_stop_write_threads_ledger_counts(tmp_path):
+    """Audit 2026-06-11: the watchdog/SIGTERM hard-stop path used to call
+    write_final_report_rlm with NO ledger counts — content-only trust — so a
+    root could forge a success row + a high rubric_score event, wedge past
+    the deadline, and ship a forged 'partial'. With ctx threaded, the forge
+    is rejected exactly like on the FINAL_VAR/fatal paths."""
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
+    from backend.agents.rlm.report import (
+        run_experiment_call_count,
+        run_experiment_success_count,
+    )
+
+    # The forge: success row on disk, high score in the event log...
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"accuracy": 0.95}}) + "\n",
+        encoding="utf-8",
+    )
+    _write_events(tmp_path, [0.9])
+    # ...but the in-process ledger shows run_experiment was never called OK.
+    ledger = RunCostLedger(project_id="p")
+    ledger.append(CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc), agent_id="run_experiment",
+        attempt_index=0, provider="openai", model="gpt-5", outcome="failed",
+    ))
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    report = RLMFinalReport(verdict="failed", reproduction_summary="watchdog", iterations=1)
+    _salvage_partial_report(report, tmp_path, stop_kind="wall_clock_watchdog", stop_detail="x")
+    write_final_report_rlm(
+        report, tmp_path,
+        run_experiment_calls=run_experiment_call_count(_Ctx()),
+        run_experiment_ok_calls=run_experiment_success_count(_Ctx()),
+    )
+
+    written = json.loads((tmp_path / "final_report.json").read_text())
+    assert written["verdict"] == "failed"  # forged partial rejected
+    assert not (tmp_path / ".preserved").exists()
+
+
+def test_hard_stop_with_real_success_keeps_partial(tmp_path):
+    """Safety direction: a LEGIT timeout after a real successful experiment
+    keeps its salvaged 'partial' — the threading must not over-fire."""
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry, RunCostLedger
+    from backend.agents.rlm.report import (
+        run_experiment_call_count,
+        run_experiment_success_count,
+    )
+
+    (tmp_path / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"accuracy": 0.4}}) + "\n",
+        encoding="utf-8",
+    )
+    _write_events(tmp_path, [0.45])
+    ledger = RunCostLedger(project_id="p")
+    ledger.append(CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc), agent_id="run_experiment",
+        attempt_index=0, provider="openai", model="gpt-5", outcome="ok",
+    ))
+
+    class _Ctx:
+        cost_ledger = ledger
+
+    report = RLMFinalReport(verdict="failed", reproduction_summary="watchdog", iterations=1)
+    _salvage_partial_report(report, tmp_path, stop_kind="wall_clock_watchdog", stop_detail="x")
+    write_final_report_rlm(
+        report, tmp_path,
+        run_experiment_calls=run_experiment_call_count(_Ctx()),
+        run_experiment_ok_calls=run_experiment_success_count(_Ctx()),
+    )
+
+    written = json.loads((tmp_path / "final_report.json").read_text())
+    assert written["verdict"] == "partial"

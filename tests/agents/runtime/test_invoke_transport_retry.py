@@ -71,7 +71,7 @@ def _fake_registry(agent_id: str, tmp_path: Path) -> dict:
 @pytest.fixture(autouse=True)
 def _no_backoff(monkeypatch):
     # Zero base backoff so retries are instant in tests.
-    monkeypatch.setenv("REPROLAB_SUBAGENT_TRANSPORT_BACKOFF_S", "0")
+    monkeypatch.setenv("OPENRESEARCH_SUBAGENT_TRANSPORT_BACKOFF_S", "0")
 
 
 def _run(monkeypatch, tmp_path, runtime, agent_id="baseline-implementation"):
@@ -117,7 +117,7 @@ def test_non_transient_does_not_retry(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_retries_disabled(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("REPROLAB_SUBAGENT_TRANSPORT_RETRIES", "0")
+    monkeypatch.setenv("OPENRESEARCH_SUBAGENT_TRANSPORT_RETRIES", "0")
     runtime = FlakyRuntime(fail_times=99, exc=Exception(_TRANSIENT), tail=[StreamText("x")])
     with pytest.raises(Exception, match="error result: success"):
         _run(monkeypatch, tmp_path, runtime)

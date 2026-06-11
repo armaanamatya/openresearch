@@ -369,7 +369,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
     the existing ``primitive_call`` events still fire via ``dashboard``.
     """
 
-    def _ledger() -> None:
+    def _ledger(outcome: str = "") -> None:
         """Append a cost-ledger row for this primitive invocation.
 
         Reads ctx.llm_client._last_usage (populated by ClaudeLlmClient.complete)
@@ -378,6 +378,12 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         agent engine path (implement_baseline — engine writes its own entry),
         _last_usage stays at the zeroed value and the entry records 0 tokens,
         which is correct.
+
+        ``outcome`` is the per-row provenance stamp (audit 2026-06-10): "ok"
+        (returned non-failure), "failed" (returned a failure-shaped dict), or
+        "raised". The evidence gate consumes it via
+        ``RunCostLedger.session_success_compatible_count`` so a real-but-FAILED
+        run_experiment call can no longer back a forged success row.
         """
         usage: dict = {}
         llm_client = getattr(ctx, "llm_client", None)
@@ -392,6 +398,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             provider=ctx.provider,
             model=ctx.model,
             usage=usage,
+            outcome=outcome,
         ))
 
     def _emit_extra(event: dict) -> None:
@@ -558,7 +565,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     pass
                 ctx.dashboard.primitive_call(name, "error", result_summary=summary)
                 _emit_primitive_resource(ctx, primitive=name, boundary="end")
-                _ledger()
+                _ledger("raised")
                 logger.warning("primitive %s raised %s", name, type(exc).__name__)
                 raise
             # Most primitives are fail-soft: on failure they RETURN a failure-shaped
@@ -575,7 +582,17 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 coerced=coerced,
             )
             _emit_primitive_resource(ctx, primitive=name, boundary="end")
-            _ledger()
+            # Three-way stamp (audit 2026-06-11): a harness-finalized timeout
+            # partial gets its own outcome so the gate's cap tier can demand
+            # in-process provenance (a REPL-forged partial_timeout row in
+            # experiment_runs.jsonl can no longer ride a real-but-failed call).
+            if failed and isinstance(result, dict) and (
+                result.get("partial_timeout") is True
+                or result.get("failure_class") == "partial_timeout"
+            ):
+                _ledger("partial_timeout")
+            else:
+                _ledger("failed" if failed else "ok")
             if failed:
                 logger.warning(
                     "primitive %s returned a failure: %s",
@@ -592,6 +609,8 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     update_context_map(ctx.project_dir, name, result)
                 except Exception:  # noqa: BLE001 — orientation cache must never break a call
                     pass
+            # Steering (main 2026-06-09): surface unread operator messages inside
+            # primitive results so the root sees them without polling.
             result = _inject_operator_messages(name, result, ctx)
             return result
         finally:
@@ -728,7 +747,7 @@ def _emit_supplemental(
         # above, so we never reach here for a failed verification.
         score = result.get("overall_score")
         target = result.get("target_score")
-        # Anti-regression target floor (2026-06-11, REPROLAB_TARGET_BEST_FLOOR):
+        # Anti-regression target floor (2026-06-11, OPENRESEARCH_TARGET_BEST_FLOOR):
         # raise the in-run target to the best prior attempt's score so the
         # forced-iteration policy refuses to finish below the proven baseline
         # while budget remains. No-op when the flag is off / no prior attempt.

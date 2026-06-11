@@ -19,7 +19,7 @@ Guardrails:
 
 Default OFF: when the flag is unset, mining is a no-op and the block is "".
 Needs ``arxiv_id``; absent → no-op. Fail-soft throughout. The config shim
-aliases ``OPENRESEARCH_NEGATIVE_LESSONS`` <-> ``REPROLAB_NEGATIVE_LESSONS``.
+aliases ``OPENRESEARCH_NEGATIVE_LESSONS`` <-> ``OPENRESEARCH_NEGATIVE_LESSONS``.
 """
 from __future__ import annotations
 

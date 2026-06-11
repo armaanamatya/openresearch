@@ -100,7 +100,14 @@ def run_offline(
         framework_version=framework_version,
         pip_packages=pip_packages,
         assumptions=assumptions,
-        compatibility_notes=f"Generated for {framework}=={framework_version} on CPU.",
+        # BUG-NEW-047 (ported 2026-06-10 from the archived gepa branch): the old
+        # "on CPU." phrasing made the root conclude compute_scope=CPU-only.
+        compatibility_notes=(
+            f"Generated for {framework}=={framework_version} on local CPU dev machine. "
+            "NOTE: this spec describes the LOCAL environment used to derive package requirements — "
+            "the GPU execution environment (RunPod/local CUDA) provides the GPUs. Do NOT use this "
+            "note to conclude that experiments run CPU-only; set compute_scope from the GPU plan."
+        ),
     )
 
     # Write to disk

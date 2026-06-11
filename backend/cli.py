@@ -1584,12 +1584,14 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # __post_init__ treats a missing/empty value as "no invariants").
     if _paper_hint_obj is not None and _paper_hint_obj.invariants:
         import json as _json_mod
-        _os.environ["OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(            [inv.model_dump() for inv in _paper_hint_obj.invariants]
+        _os.environ["OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON"] = _json_mod.dumps(
+            [inv.model_dump() for inv in _paper_hint_obj.invariants]
         )
     else:
         # No hint (or hint with empty invariants list) — ensure any stale env var
         # from a previous run in the same process is cleared.
         _os.environ.pop("OPENRESEARCH_PAPER_HINT_INVARIANTS_JSON", None)
+
     # #7 benchmark integrity: paper-hint blocked_resources ∪ operator --blacklist
     # → OPENRESEARCH_BLOCKED_TERMS_JSON, which RunContext.__post_init__ loads into
     # ctx.blocked_terms → every agent spec's RuntimeGuard (Unit A). Curated

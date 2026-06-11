@@ -19,7 +19,7 @@ per field, ``MAX_BYTES`` serialized ceiling. Thread-safe (a module lock guards
 the read-modify-write) and fail-soft (any error is swallowed — a broken
 orientation cache must never break a primitive call).
 
-The config shim aliases ``OPENRESEARCH_CONTEXT_MAP`` <-> ``REPROLAB_CONTEXT_MAP``
+The config shim aliases ``OPENRESEARCH_CONTEXT_MAP`` <-> ``OPENRESEARCH_CONTEXT_MAP``
 bidirectionally, so either spelling enables it.
 """
 from __future__ import annotations

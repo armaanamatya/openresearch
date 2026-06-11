@@ -774,8 +774,8 @@ class TestExperimentArmStamp:
                 bes_select_metric="cluster_score",
             ),
         )
-        monkeypatch.delenv("REPROLAB_AB_ARM", raising=False)
-        monkeypatch.delenv("REPROLAB_AB_PAIR_ID", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_AB_ARM", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_AB_PAIR_ID", raising=False)
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         report = RLMFinalReport(**_BASE_REPORT_DICT)
@@ -795,7 +795,7 @@ class TestExperimentArmStamp:
                 bes_select_metric="cluster_score",
             ),
         )
-        monkeypatch.setenv("REPROLAB_AB_PAIR_ID", "allcnn-ab-1")
+        monkeypatch.setenv("OPENRESEARCH_AB_PAIR_ID", "allcnn-ab-1")
         project_dir = tmp_path / "project"
         (project_dir / "rlm_state").mkdir(parents=True)
         (project_dir / "rlm_state" / "bes_candidates.json").write_text(json.dumps({

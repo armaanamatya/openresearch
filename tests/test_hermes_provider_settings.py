@@ -196,6 +196,17 @@ def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     (tmp_path / ".env").write_text(
         "OPENAI_API_KEY=sk-from-dotenv\nRUNPOD_API_KEY=runpod-from-dotenv\n"
     )
+    # Hermeticity: the repo's real .env was loaded into os.environ at import
+    # (load_dotenv), and process env OUTRANKS this tmp dotenv — scrub every
+    # spelling so the test exercises the dotenv path on any machine.
+    for _k in (
+        # BOTH spellings: the import-time bridge mirrors the real keys to the
+        # legacy names, and the AliasChoices read those too (a naming sweep
+        # once collapsed this list and un-scrubbed the legacy copies).
+        "OPENAI_API_KEY", "OPENRESEARCH_OPENAI_API_KEY", "REPROLAB_OPENAI_API_KEY",
+        "RUNPOD_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY", "REPROLAB_RUNPOD_API_KEY",
+    ):
+        monkeypatch.delenv(_k, raising=False)
     monkeypatch.chdir(tmp_path)
     settings = get_settings(_force_reload=True)
 

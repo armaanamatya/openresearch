@@ -27,31 +27,31 @@ LEAVES = [
 
 
 def test_flag_off_returns_empty(monkeypatch):
-    monkeypatch.delenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", raising=False)
     assert _detect_out_of_inclusion_scope_leaves(LEAVES, ["CIFAR-10", "CIFAR-100"]) == set()
 
 
 def test_out_of_scope_dataset_leaf_excluded(monkeypatch):
-    monkeypatch.setenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "1")
     out = _detect_out_of_inclusion_scope_leaves(LEAVES, ["CIFAR-10", "CIFAR-100"])
     assert out == {"L1"}  # pure-ImageNet leaf only
 
 
 def test_mixed_and_datasetless_leaves_kept(monkeypatch):
-    monkeypatch.setenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "1")
     out = _detect_out_of_inclusion_scope_leaves(LEAVES, ["CIFAR-10", "CIFAR-100"])
     assert "L3" not in out  # mentions an in-scope dataset → kept
     assert "L4" not in out  # mentions no dataset → kept
 
 
 def test_no_inclusion_list_means_no_exclusion(monkeypatch):
-    monkeypatch.setenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "1")
     assert _detect_out_of_inclusion_scope_leaves(LEAVES, []) == set()
     assert _detect_out_of_inclusion_scope_leaves(LEAVES, None) == set()
 
 
 def test_digit_aware_matching(monkeypatch):
-    monkeypatch.setenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "1")
     # scope = CIFAR-100 only; a cifar10-only leaf is OUT of scope (cifar100 must
     # not cover cifar10), an imagenet leaf is out, a cifar100 leaf is in.
     leaves = [

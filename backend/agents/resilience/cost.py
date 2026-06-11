@@ -33,6 +33,13 @@ class CostLedgerEntry:
     cache_creation_input_tokens: int = 0
     reasoning_tokens: int = 0
     estimated_usd: float | None = None
+    # Per-row provenance (audit 2026-06-10): how the primitive call ENDED, as
+    # observed by binding.wrap_primitive — "ok" (returned non-failure),
+    # "failed" (returned a failure-shaped dict), "raised" (exception path).
+    # "" = unknown (legacy rows, non-primitive appenders); treated as
+    # success-compatible by the evidence gate so old artifacts never
+    # over-downgrade.
+    outcome: str = ""
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -65,6 +72,7 @@ class CostLedgerEntry:
         model: str,
         usage: dict[str, Any],
         timestamp: datetime | None = None,
+        outcome: str = "",
     ) -> "CostLedgerEntry":
         normalized = {
             "input_tokens": _int(usage.get("input_tokens")),
@@ -82,6 +90,7 @@ class CostLedgerEntry:
             provider=provider,
             model=model,
             estimated_usd=estimate_cost_usd(model, normalized),
+            outcome=outcome,
             **normalized,
         )
 
@@ -171,6 +180,33 @@ class RunCostLedger:
         """
         return sum(
             1 for entry in self.entries[self._seeded_len :] if entry.agent_id == agent_id
+        )
+
+    def session_success_compatible_count(self, agent_id: str) -> int:
+        """In-process entries for ``agent_id`` whose outcome can back a SUCCESS
+        verdict: ``"ok"`` or ``""`` (unknown/legacy — conservative, never
+        over-downgrades). Rows explicitly stamped ``"failed"``/``"raised"`` by
+        ``binding.wrap_primitive`` do NOT count: a root that makes one real but
+        FAILED ``run_experiment`` call and then forges a success row into
+        ``experiment_runs.jsonl`` used to pass the >=1 call cross-check (the
+        documented KNOWN RESIDUAL); with per-row provenance it no longer does.
+        """
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id
+            and (entry.outcome or "") in ("", "ok")
+        )
+
+    def session_partial_timeout_count(self, agent_id: str) -> int:
+        """In-process entries stamped ``partial_timeout`` by the orchestrator
+        (the primitive RETURNED a harness-finalized timeout partial). The gate's
+        partial-cap tier requires >=1 of these — file content alone (forgeable
+        via the REPL's open()) no longer reaches that tier."""
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id and entry.outcome == "partial_timeout"
         )
 
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:

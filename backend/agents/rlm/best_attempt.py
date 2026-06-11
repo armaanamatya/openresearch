@@ -9,7 +9,7 @@ below the proven baseline.
 
 Three rails, each flag-gated and fail-soft:
 
-* ``seed_reference_code`` (``REPROLAB_SEED_BEST_ATTEMPT``) — copy the best
+* ``seed_reference_code`` (``OPENRESEARCH_SEED_BEST_ATTEMPT``) — copy the best
   prior attempt's ``code/`` into ``code/_best_attempt/`` at run start, so the
   implementer can start FROM the proven solution instead of from zero.
 * ``best_attempt_guidance_block`` (same flag) — implementer-prompt block:
@@ -17,7 +17,7 @@ Three rails, each flag-gated and fail-soft:
   list (which rubric leaves the best attempt earned that the latest attempt
   lost, with the best run's evidence summaries) — protect earned leaves before
   chasing new ones.
-* ``floored_target`` (``REPROLAB_TARGET_BEST_FLOOR``) — raise the in-run
+* ``floored_target`` (``OPENRESEARCH_TARGET_BEST_FLOOR``) — raise the in-run
   ``target_score`` to the best prior attempt's score, so the forced-iteration
   policy refuses to finish below the proven baseline while budget remains
   (wall-clock bypass unchanged).
@@ -38,8 +38,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_SEED_FLAG = "REPROLAB_SEED_BEST_ATTEMPT"
-ENV_TARGET_FLOOR_FLAG = "REPROLAB_TARGET_BEST_FLOOR"
+ENV_SEED_FLAG = "OPENRESEARCH_SEED_BEST_ATTEMPT"
+ENV_TARGET_FLOOR_FLAG = "OPENRESEARCH_TARGET_BEST_FLOOR"
 
 REFERENCE_DIR_NAME = "_best_attempt"
 

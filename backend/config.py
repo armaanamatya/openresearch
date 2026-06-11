@@ -104,6 +104,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "ANTHROPIC_API_KEY",
             "OPENRESEARCH_ANTHROPIC_API_KEY",
+            "REPROLAB_ANTHROPIC_API_KEY",
         ),
     )
     openai_api_key: str = Field(
@@ -111,6 +112,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "OPENAI_API_KEY",
             "OPENRESEARCH_OPENAI_API_KEY",
+            "REPROLAB_OPENAI_API_KEY",
         ),
     )
     openai_admin_key: str = Field(
@@ -118,6 +120,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "OPENAI_ADMIN_KEY",
             "OPENRESEARCH_OPENAI_ADMIN_KEY",
+            "REPROLAB_OPENAI_ADMIN_KEY",
         ),
     )
     codex_cli_path: str = ""
@@ -191,6 +194,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "RUNPOD_API_KEY",
             "OPENRESEARCH_RUNPOD_API_KEY",
+            "REPROLAB_RUNPOD_API_KEY",
         ),
     )
     runpod_api_base_url: str = "https://rest.runpod.io/v1"
@@ -238,7 +242,7 @@ class Settings(BaseSettings):
     azure_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     azure_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     azure_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
-    # Empty means the operator MUST set REPROLAB_AZURE_BASE_IMAGE to a PINNED
+    # Empty means the operator MUST set OPENRESEARCH_AZURE_BASE_IMAGE to a PINNED
     # ACR tag (e.g. myregistry.azurecr.io/reprolab:20260603-abc1234). The runner
     # errors clearly on empty rather than defaulting to a floating :latest tag.
     azure_base_image: str = Field(default="", description="Pre-baked ACR base image (build_environment no-op); operator must set to a PINNED ACR tag — never :latest")
@@ -250,9 +254,9 @@ class Settings(BaseSettings):
     # only selects from this list; the OOM escalation ladder (reused from
     # dynamic_gpu_max_escalations — no new field) only advances within it.
     # pydantic-settings 2.x parses this from a JSON array env var:
-    #   REPROLAB_AZURE_GPU_SKUS='["azure_a100_80","azure_a100_80x2"]'
+    #   OPENRESEARCH_AZURE_GPU_SKUS='["azure_a100_80","azure_a100_80x2"]'
     # or from a comma-separated string via the built-in list coercion when
-    # a plain string is supplied (e.g. REPROLAB_AZURE_GPU_SKUS=azure_a100_80,azure_a100_80x2).
+    # a plain string is supplied (e.g. OPENRESEARCH_AZURE_GPU_SKUS=azure_a100_80,azure_a100_80x2).
     # Default = single A100-80 pool = one quota ask at cluster bootstrap.
     azure_gpu_skus: list[str] = Field(
         default_factory=lambda: ["azure_a100_80"],
@@ -446,6 +450,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "APIFY_API_TOKEN",
             "OPENRESEARCH_APIFY_API_TOKEN",
+            "REPROLAB_APIFY_API_TOKEN",
         ),
     )
     apify_arxiv_mcp_url: str = "https://jakub-kopecky--arxiv-mcp-server.apify.actor/sse"

@@ -506,6 +506,15 @@ def _build_job_manifest(
         env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
         env_vars.append({"name": "OPENRESEARCH_CELL_NOW_ISO", "value": now_iso})
+    # Image-compat shim (audit 2026-06-10): the entrypoint baked into a PINNED
+    # ACR image may predate the REPROLAB_->OPENRESEARCH_ rename and read the
+    # legacy names. Inject both spellings until every base image is rebuilt
+    # (the in-repo aks_cell_entrypoint.py reads the canonical names).
+    env_vars.extend(
+        {"name": "OPENRESEARCH_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
+        for e in list(env_vars)
+        if e["name"].startswith("OPENRESEARCH_")
+    )
 
     # GPU count: from plan when available, else 1.
     gpu_count_str: str

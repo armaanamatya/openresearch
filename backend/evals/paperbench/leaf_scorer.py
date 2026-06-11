@@ -873,7 +873,7 @@ _DATASET_TOKENS: tuple[str, ...] = (
 
 
 def _inclusion_scope_exclusion_enabled() -> bool:
-    val = os.environ.get("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "").strip().lower()
+    val = os.environ.get("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "").strip().lower()
     return bool(val) and val not in ("0", "false", "off")
 
 
@@ -890,7 +890,7 @@ def _detect_out_of_inclusion_scope_leaves(
     the agent's prose gap declaration matched nothing). Conservative on two
     axes: only tokens from the fixed ``_DATASET_TOKENS`` catalog count, and a
     leaf is excluded only when it mentions an out-of-scope dataset and NO
-    in-scope one. Empty set unless ``REPROLAB_SCOPE_INCLUSION_EXCLUDE`` is on
+    in-scope one. Empty set unless ``OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE`` is on
     and an inclusion list is provided.
     """
     if not _inclusion_scope_exclusion_enabled() or not inclusion_datasets:
@@ -1235,9 +1235,9 @@ def finalize_rescore(
             extra_scope=extra_scope,
         )
         # Layer 3: theory-only leaves are inapplicable to a code repro — exclude them
-        # from the re-roll-up too (no-op unless REPROLAB_EXCLUDE_THEORY_LEAVES is on).
+        # from the re-roll-up too (no-op unless OPENRESEARCH_EXCLUDE_THEORY_LEAVES is on).
         # Layer 4: leaves about datasets outside the OPERATOR's inclusion scope
-        # (no-op unless REPROLAB_SCOPE_INCLUSION_EXCLUDE is on + a list is given).
+        # (no-op unless OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE is on + a list is given).
         skip_set = frozenset(
             set(unavailable)
             | _detect_theory_only_leaves(leaves)

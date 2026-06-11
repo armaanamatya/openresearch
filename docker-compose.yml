@@ -21,6 +21,15 @@ services:
       dockerfile: Dockerfile
     image: openresearch/app:latest
     restart: unless-stopped
+    # The image runs as non-root uid 10001 (audit 2026-06-10). group_add
+    # grants the docker-socket group so LocalDockerBackend keeps working:
+    #   - macOS (Docker Desktop): the socket is root-group inside the VM —
+    #     the default "0" below is required and is still a hardening win
+    #     (processes aren't uid 0; group 0 only matters for the socket).
+    #   - Linux: set OPENRESEARCH_DOCKER_GID to the host docker group id
+    #     (stat -c %g /var/run/docker.sock) instead of 0.
+    group_add:
+      - "${OPENRESEARCH_DOCKER_GID:-0}"
     ports:
       - "3000:3000"             # Next.js (the gated UI surface)
       # Loopback-only: the frontend reaches the backend server-side over the
@@ -49,7 +58,9 @@ services:
       # The entrypoint guarantees compose `environment:` wins over .env values.
       - OPENRESEARCH_DATABASE_URL=sqlite:////app/runs/openresearch.db
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      # Both surfaces: backend /health AND the Next.js frontend (a dead next
+      # process previously left the container "healthy" on the backend alone).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health && curl -fsSo /dev/null http://localhost:3000/"]
       interval: 15s
       timeout: 3s
       retries: 4

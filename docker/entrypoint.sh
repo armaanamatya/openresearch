@@ -30,10 +30,12 @@ load_env_file /app/.env /opt/venv/bin/python
 # Set OPENRESEARCH_RUNPOD_SSH_KEY_B64 in Railway Variables and this block writes
 # it to disk and points OPENRESEARCH_RUNPOD_SSH_KEY_PATH at it automatically.
 if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_B64:-}" ]]; then
-    mkdir -p /root/.ssh
-    echo "$OPENRESEARCH_RUNPOD_SSH_KEY_B64" | base64 -d > /root/.ssh/runpod_id_rsa
-    chmod 600 /root/.ssh/runpod_id_rsa
-    export OPENRESEARCH_RUNPOD_SSH_KEY_PATH=/root/.ssh/runpod_id_rsa
+    # $HOME-relative (not /root): the container runs as the non-root `app`
+    # user since audit 2026-06-10.
+    mkdir -p "${HOME}/.ssh"
+    echo "$OPENRESEARCH_RUNPOD_SSH_KEY_B64" | base64 -d > "${HOME}/.ssh/runpod_id_rsa"
+    chmod 600 "${HOME}/.ssh/runpod_id_rsa"
+    export OPENRESEARCH_RUNPOD_SSH_KEY_PATH="${HOME}/.ssh/runpod_id_rsa"
 fi
 
 # --- Backend: FastAPI via uvicorn -------------------------------------------

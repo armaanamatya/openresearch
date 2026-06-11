@@ -54,6 +54,8 @@ from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
     run_experiment_call_count,
+    run_experiment_partial_timeout_count,
+    run_experiment_success_count,
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
@@ -88,11 +90,16 @@ from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # no
 # BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
 # root model can diagnose failures rather than concluding primitives unavailable.
 from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
+# BUG-NEW-033 (ported 2026-06-10 from pipeline-validation-mech-understanding):
+# auto-recover from (slice, question) misuse of rlm_query/llm_query — the
+# library API is single-prompt; the misuse routed the question as a model name
+# and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
+from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch  # noqa: F401
 # BUG-NEW-043 (ported 2026-06-09): surface real traceback when rlm._subcall's
 # child completion raises; upstream catches with `str(e)` and we get only
 # "maximum recursion depth exceeded" with no file/line. Mech-understanding
 # 2026-05-29 lost two sub-RLMs to this. (The branch's BUG-NEW-033
-# rlm_query_misuse_patch was NOT ported — that module never reached the trunk.)
+# rlm_query_misuse_patch is ported too — imported above, 2026-06-10.)
 from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
 # BUG-NEW-043 (belt+braces): the default recursion limit is 1000; the
 # mech-understanding paper's LaTeX-dense prompt blew it via some unknown deep
@@ -236,7 +243,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     bk = root_model.backend_kwargs
     sub_bk = root_model.sub_backend_kwargs
 
-    # Optional quality pin (2026-06-11): REPROLAB_PRIMITIVE_LLM_MODEL routes the
+    # Optional quality pin (2026-06-11): OPENRESEARCH_PRIMITIVE_LLM_MODEL routes the
     # shared primitive LlmClient (plan_reproduction, propose_improvements,
     # generate_rubric_tree, repro-spec extraction, tool-recommendation) to an
     # explicit Claude model id (e.g. an Opus id) instead of the claude CLI's
@@ -244,7 +251,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # navigation sub-calls (llm_query/rlm_query) ride the rlm sub-backend /
     # accelerator and the root loop rides backend_kwargs, both unaffected.
     # Unset/empty = today's behavior (CLI default model).
-    _pinned_model = os.environ.get("REPROLAB_PRIMITIVE_LLM_MODEL", "").strip() or None
+    _pinned_model = os.environ.get("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "").strip() or None
 
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
     if backend == "anthropic-oauth":
@@ -931,7 +938,9 @@ def _finalize_fatal_primitive_abort(
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     json_path, _md_path = write_final_report_rlm(
-        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx)
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
 
     try:
@@ -1006,6 +1015,7 @@ def _hard_stop_with_report(
     status_error: str,
     exit_code: int,
     stop_kind: str = "hard_stop",
+    ctx: Any = None,
 ) -> None:
     """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
@@ -1019,7 +1029,17 @@ def _hard_stop_with_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
     try:
-        write_final_report_rlm(report, project_dir)
+        # Evidence-gate trust counts (audit 2026-06-11): without these the
+        # watchdog/SIGTERM path fell back to content-only trust — a forging
+        # root could wedge past the deadline and ship a forged 'partial'
+        # (the exact class the gate closes on the FINAL_VAR/fatal paths).
+        write_final_report_rlm(
+            report,
+            project_dir,
+            run_experiment_calls=run_experiment_call_count(ctx) if ctx is not None else None,
+            run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx) if ctx is not None else None,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
     try:
@@ -1047,6 +1067,7 @@ def _arm_watchdog(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    ctx: Any = None,
 ) -> threading.Timer | None:
     """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
 
@@ -1102,6 +1123,7 @@ def _arm_watchdog(
                 f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
+            ctx=ctx,
             stop_kind="wall_clock_watchdog",
         )
 
@@ -1144,6 +1166,7 @@ def _install_sigterm_finalizer(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    ctx: Any = None,
 ) -> Any:
     """On SIGTERM, ship a partial report before exiting instead of dying silently.
 
@@ -1178,6 +1201,7 @@ def _install_sigterm_finalizer(
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
             stop_kind="sigterm",
+            ctx=ctx,
         )
 
     try:
@@ -1392,7 +1416,7 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
 
 
 def _load_reusable_rubric(project_dir: Path) -> dict | None:
-    """REPROLAB_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
+    """OPENRESEARCH_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
 
     Rubric generation is an LLM call, so every re-run otherwise grades against
     a slightly different rubric — rubric drift alone moves scores. A/B arms
@@ -1401,7 +1425,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
     change, not rubric variance. Default OFF; fail-soft — a missing/corrupt
     file returns None and the caller falls through to generation as before.
     """
-    enabled = os.environ.get("REPROLAB_REUSE_RUBRIC", "").strip().lower() not in (
+    enabled = os.environ.get("OPENRESEARCH_REUSE_RUBRIC", "").strip().lower() not in (
         "", "0", "false", "off",
     )
     if not enabled:
@@ -1414,7 +1438,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
             return existing
     except (OSError, json.JSONDecodeError, ValueError):
         logger.warning(
-            "REPROLAB_REUSE_RUBRIC set but no readable generated_rubric.json — "
+            "OPENRESEARCH_REUSE_RUBRIC set but no readable generated_rubric.json — "
             "falling through to rubric generation"
         )
     return None
@@ -1475,7 +1499,7 @@ async def run_pipeline_rlm(
             project_id, _archived["attempt_dir"], len(_archived["moved"]),
         )
 
-    # Anti-regression seeding (2026-06-11, REPROLAB_SEED_BEST_ATTEMPT): copy the
+    # Anti-regression seeding (2026-06-11, OPENRESEARCH_SEED_BEST_ATTEMPT): copy the
     # best prior attempt's working code into code/_best_attempt/ so the
     # implementer starts FROM the proven solution. Each Adam attempt used to
     # re-derive everything from scratch and routinely landed below the 0.831
@@ -1769,7 +1793,7 @@ async def run_pipeline_rlm(
     # from the paper so the run is scorable (bundle runs already carry one).
     # Stub-primitive runs skip GENERATION only: rubric generation is a REAL paid
     # LLM call (the one non-stubbed network path) — the 862s-suite-stall fix
-    # (audit 2026-06-09). REPROLAB_REUSE_RUBRIC (LLM-free, see
+    # (audit 2026-06-09). OPENRESEARCH_REUSE_RUBRIC (LLM-free, see
     # _load_reusable_rubric) stays active in both modes so A/B arms grade
     # against the SAME pre-seeded rubric.
     _stub_mode = os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1"
@@ -1778,7 +1802,7 @@ async def run_pipeline_rlm(
         if _reused_rubric is not None:
             context_dict["rubric_spec"] = _reused_rubric
             logger.info(
-                "run_pipeline_rlm: REPROLAB_REUSE_RUBRIC — reusing on-disk "
+                "run_pipeline_rlm: OPENRESEARCH_REUSE_RUBRIC — reusing on-disk "
                 "generated_rubric.json (no regeneration)"
             )
     if _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
@@ -1915,12 +1939,14 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        ctx=ctx,
     )
     # Ship a partial report on a graceful SIGTERM kill too (not just on a hang).
     _prev_sigterm = _install_sigterm_finalizer(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        ctx=ctx,
     )
 
     # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
@@ -2291,7 +2317,9 @@ def _finalize(
         logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
     json_path, _md_path = write_final_report_rlm(
-        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx)
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine

@@ -379,3 +379,195 @@ merge commit, run 27252417055).
 | Shell syntax (`bash -n` × 4 files) | OK |
 | `docker build` (new `load_env.sh` COPY) | exit 0 |
 | In-container boot proof | image booted with a mounted `.env` containing the previously boot-crashing line `OPENRESEARCH_DEFAULT_SANDBOX=local   # …` → `/health` 200 (`Settings()`' Literal field would have raised on any corrupted value) |
+
+---
+
+## Addendum — Round 4 (2026-06-10): "do all" — every parked item resolved
+
+### Ports and security hardening
+
+- **BUG-NEW-033 ported** (the last orphaned fix): `rlm_query_misuse_patch.py`
+  auto-recovers the `(slice, question)` misuse of `rlm_query`/`llm_query`
+  (the two-arg form routed the question as a CLI model name and shipped the
+  CLI error string as `paper_claims`); system prompt now teaches the composed
+  single-prompt form. Tests added (the source branch had none).
+- **In-run forge residual closed** (per-row ledger provenance):
+  `CostLedgerEntry.outcome` ("ok"/"failed"/"raised") is stamped by
+  `binding.wrap_primitive` on every exit path including the contract-guard
+  rejection; the evidence gate now requires ≥1 success-compatible in-process
+  `run_experiment` call to back a success row. A real-but-failed call + a
+  forged row no longer passes. Remaining (narrower) residual re-documented:
+  one REAL success can still shelter a forged sibling row.
+- **Socket-level test hermeticity**: pytest-socket addopts
+  (`--disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1`) — the
+  862s-stall class is structurally impossible; canary tests prove the guard
+  is armed.
+- **Non-root container**: both servers run as uid 10001; docker socket via
+  compose `group_add` (`OPENRESEARCH_DOCKER_GID`); SSH-key injection moved to
+  `$HOME/.ssh`. Verified in-container: `/health` 200 as `app`,
+  `docker.from_env().ping()` OK, `runs/` writable.
+
+### Trunk events (the hard part of the day)
+
+origin/main moved +149 (the azure-fork merge: score-integrity, steering
+injection, attempt isolation, All-CNN showcase) — re-merged into bes. The
+incoming code had regressed the `REPROLAB_→OPENRESEARCH_` rename across ~20
+files (main has no test CI; the regression broke the local suite's disk-floor
+fixture). Fixed structurally: all env-name literals normalized (153 files),
+`Settings.env_prefix` flipped to the canonical `OPENRESEARCH_` (bridge keeps
+legacy exports working), credential fields gained canonical AliasChoices, the
+AKS in-Job entrypoint renamed with a dual-spelling injection shim for pinned
+ACR images. A symbol-level two-parent audit caught a ~361-line `primitives.py`
+region dropped by conflict resolution (restored; `plan_reproduction` taken
+from main to keep its new compute_scope warnings).
+
+Mid-session the parallel track pushed its OWN merge of main into bes (plus
+Azure Bicep, RunPod 404-idempotent teardown, UI panels, and a new uv-lock+ruff
+CI lint job) — the two reunifications were reconciled commit-by-commit
+(legacy credential aliases kept; their cleaner test fixes adopted; their
+`cap_overall_budget` and dead-code removals taken; my provenance threading
+and image-compat shim kept). Two CI-only regressions caught and fixed by the
+new gates: a stale `uv.lock`, and ruff `--fix` stripping noqa-less re-exports.
+
+### Branch GC (verified, executed)
+
+22 remote branches deleted: 15 fully-merged ancestors of the final trunk,
+3 whose every fix is ported and test-covered (`feat/rlm-wedge-hardening`,
+`pipeline-validation-mech-understanding`,
+`feat/integrate-perf-accelerator-into-stability`), 2 stale single-commit
+cleanups superseded by this audit, and 2 GEPA siblings (tagged
+`archive/gepa-*` first). Kept: `azure` (active local worktree),
+`run-archives` (only copy of archived run data), `localqwen` (uncertain
+supersession), `feat/gepa-integration` (below).
+
+### GEPA decision: ADOPT-LATER (evidence-gated)
+
+Multi-agent assessment of `origin/feat/gepa-integration` (~910 LOC
+prompt-optimization subsystem, 36/37 hermetic tests, well-engineered
+fail-soft): a direct merge is infeasible (101 conflicted files from
+duplicated lineage; 2 semantic conflicts: its anytime-scoring duplicates the
+finalize-on-timeout mechanism, its BUG-NEW-050 fallback weakens the evidence
+gate). The only field evidence shows ZERO accepted candidates (pre-timeout-fix)
+and no post-fix run. Decision per the repo's own validate-don't-build rule:
+**entry gate** = one $0 claude-oauth A/B showing post-fix GEPA accepts
+candidates and moves a rubric score on ≥1 paper — if not run by the next
+audit cycle, downgrade to drop. Re-land = hand re-application of the
+GEPA-only payload (~8 hook edits), never a git merge; required fixes at
+re-land: OPENRESEARCH_GEPA_* names, socket-gate the live-API test, route
+`gepa_*` SSE through sanitization, make off-mode fully inert.
+
+### Checkpoint-resume: resolved as DOCUMENTED-BLOCKED
+
+`rlms 0.1.1`'s `RLM.completion(prompt, root_prompt)` takes no message
+history and spawns a fresh environment per call — true mid-run REPL resume
+requires upstream library support. The practical resume value already ships
+at the three layers where time/money go: the primitive warm-retry cache
+(`primitive_cache.jsonl`), cell-grid resume (`OPENRESEARCH_RESUME_CELLS` +
+skipped-cell aggregation), and prior-attempt evidence injection into the
+implementer prompt (main, 2026-06-09). `checkpoint.py` stays emit-only by
+design (its sanitized log cannot reconstruct REPL state).
+
+### Flagged for owner awareness
+
+Main's two-axis verdict feature (`OPENRESEARCH_TWO_AXIS_VERDICT`, default
+OFF) projects the legacy verdict from root-writable `rlm_state/` artifacts
+(`fidelity_certificate.json`, `repro_spec.json`) AFTER the evidence gate —
+when that flag is on, a forging root could bypass the gate by writing a green
+certificate. Acceptable while default-off; gate-order needs revisiting before
+the flag ever defaults on.
+
+### Round-5 continuation: last verification gaps closed
+
+- `make check` (the documented aggregate gate): green end-to-end.
+- Full `docker compose up --build` smoke on the final configuration:
+  healthcheck **healthy**, `/health` + `/lab` 200, **uid 10001** confirmed in
+  the running compose stack (an earlier smoke had silently used a stale
+  `openresearch/app:latest` tag — rebuilt and re-verified).
+- **Playwright e2e executed for the first time in this audit**: 18 passed,
+  1 skipped, **3 failed — all pre-existing UI-side regressions** (Playwright
+  is not in CI, so these were invisible):
+  1. `rlm-lab.spec.ts` — the page renders **two** `node-detail-sidebar`
+     elements (identical aria-labels, both collapsed) → strict-mode locator
+     violation. Looks like an accidental double render from the recent
+     CollapsiblePanel work. Genuine UI bug.
+  2. `lab-smoke-interactive.spec.ts` (library status filter) — seeded
+     `prj_diffusion_smoke` row never appears in the library table.
+  3. `reports.spec.ts` — "worker reports" section text not found for a
+     seeded run.
+  All three subsequently RESOLVED in the same session — and #1's root cause
+  turned out to be a genuine product bug, not a test issue:
+  1. The duplicate is Next.js's streamed-Suspense staging container
+     (`<div hidden id="S:0">`, no React fiber) — invisible to users; specs now
+     scope to `:visible`. But chasing it exposed the real bug: the
+     constellation canvas called `setPointerCapture` on pointerDOWN, which
+     retargets the subsequent click to the svg — so **node selection never
+     worked for any user** of the new canvas. Fixed by deferring capture to
+     the first real pan movement (`constellation-canvas.tsx`); the spec now
+     selects via the node's actual `role=button` affordance and expands the
+     collapsed-by-default sidebar.
+  2./3. The seeded specs referenced a `scripts/seed-fake-run.sh` that was
+     never committed. Rebuilt as `scripts/seed_fake_run.py` on the REAL
+     backend builders (`worker_reports.py`) so seeds can't drift from the UI
+     schema (shim kept at the old name); both specs now skip cleanly when
+     unseeded instead of failing against a live unseeded backend.
+  End state: **Playwright 21 passed / 0 failed / 1 skipped** (seeded, live
+  backend) — and the suite now RUNS IN CI: a fifth `e2e` job seeds fixtures
+  via `scripts/seed_fake_run.py`, boots the keyless backend, and runs the
+  full suite (first green: run 27321947802). Its first run immediately
+  caught one more machine-specific artifact: `visual-shots.spec.ts` wrote
+  screenshots to an absolute `/Volumes/...` macOS path AND unconditionally
+  overwrote tracked design PNGs (the worktree churn seen all audit) —
+  now repo-relative, untracked output by default, `UPDATE_DESIGN_SHOTS=1`
+  to refresh the tracked shots deliberately.
+
+---
+
+## Addendum — Round 6 (2026-06-11): adversarial review of rounds 4–5
+
+Six-group adversarial review (find → independently verify) over every commit
+since `2fc80da` — my own rounds 4–5 work AND the parallel track's incoming
+commits, none previously reviewed. **17 confirmed findings, all fixed**:
+
+**High:**
+1. **Watchdog/SIGTERM hard-stop bypassed the entire forge apparatus** — the
+   one report writer that passed no ledger counts, on a root-forcible path
+   (forge a success row + a rubric_score event, wedge past the deadline →
+   forged 'partial' + `.preserved` + leaderboard rank). `ctx` now threads
+   through `_arm_watchdog`/`_install_sigterm_finalizer` into the gate;
+   forge + safety-direction regression tests added.
+2. **BUG-NEW-033 was silently disabled in production**: ruff `--fix` had
+   deleted the `rlm_query_misuse_patch` import (added without `noqa` — the
+   same autofix class as the k8s re-exports, missed in my own commit while
+   its unit tests stayed green). Restored with `noqa`; a source-level guard
+   test now pins the import so autofix breaks CI instead.
+
+**Medium:** RDR mode never outcome-stamped its ledger rows (even RAISED calls
+counted success-compatible — the forge closure was vacuous in `--mode rdr`;
+now stamped with the wrapper's exact classification). The partial-timeout cap
+tier admitted a forged `partial_timeout` row riding one real failed call —
+the tier now requires an in-process `partial_timeout` outcome stamp
+(three-way wrapper stamp + new counter threaded through all four writers).
+The repo's pytest-socket addopts leaked into the PRODUCTION
+fidelity-certificate pytest runs inside `runs/<id>/code` (rootdir discovery
+walks up to the repo pyproject) — neutralized with `-o addopts=` +
+`PYTEST_ADDOPTS` scrub. The 7687d2e merge had displaced the hybrid-route
+merge to AFTER the postflight guard chain (scope guard misfired on
+grid-covered models; grid metrics bypassed all success-gated guards) —
+ordering restored. The deferred pointer capture could strand `dragState` on
+a missed pointerup (ghost-pan on hover) — `buttons===0` guard +
+`onPointerCancel`/`onLostPointerCapture`.
+
+**Low:** retention TOCTOU closed (flock + under-lock re-check + atomic
+rename-aside; the re-check deliberately ignores the dir mtime its own lock
+file bumps); duplicated 80-line block in `claude_oauth_client.py` removed;
+my digest pins had silently moved the runtime to Debian TRIXIE while node
+stayed bookworm 20 (EOL) — both stages now explicitly-bookworm MULTI-ARCH
+INDEX digests on Node 22, single-sourced with CI via `frontend/.nvmrc`;
+seeder re-runs no longer duplicate worker reports; the back-compat shim
+accepts the historically documented invocation; spec headers document the
+real seeder; all-timeout grids classify as `exec_timeout` (wall-clock, score
+the partials) instead of `cell_execution_error` (repair loop);
+`REPROLAB_AZURE_*` comment spellings corrected.
+
+Verified: backend **4794/0**, ruff + uv-lock green, image rebuilt
+(Node 22.22.3 / Debian 12 / uid 10001), Playwright re-run below.
