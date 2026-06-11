@@ -1133,11 +1133,55 @@ def write_final_report_rlm(
             # per-attempt, so an existing file always belongs to THIS attempt.
             for key in ("leaf_scores", "weak_leaves", "leaf_count", "graded",
                         "rubric_source", "coverage_pct", "compute_adjusted_score",
-                        "compute_scope", "overall_score", "target_score",
-                        "meets_target"):
+                        "compute_scope"):
                 if key in deep and deep[key] is not None and current.get(key) is None:
                     current[key] = deep[key]
+            # Authoritative scalar override (2026-06-11 OmniZip): the root has
+            # been observed assembling its final rubric block from STALE REPL
+            # variables — meets_target=False sitting beside overall_score
+            # 0.656 ≥ target 0.6. The eval file (the deterministic leaf
+            # scorer's last verification, attempt-scoped) wins over
+            # root-supplied values — UNLESS the report carries a HIGHER real
+            # score, which is the hard-stop salvage's best-of-run floor and
+            # must never be clobbered by a late, worse verification.
+            try:
+                _cur_o = current.get("overall_score")
+                _deep_o = deep.get("overall_score")
+                _eval_wins = _deep_o is not None and (
+                    _cur_o is None or float(_deep_o) >= float(_cur_o)
+                )
+            except (TypeError, ValueError):
+                _eval_wins = False
+            if _eval_wins:
+                for key in ("overall_score", "target_score", "meets_target"):
+                    if deep.get(key) is not None:
+                        current[key] = deep[key]
+            elif current.get("target_score") is None and deep.get("target_score") is not None:
+                current["target_score"] = deep["target_score"]
+            # Repair meets_target consistency against whichever score stands.
+            try:
+                _o, _t = current.get("overall_score"), current.get("target_score")
+                if _o is not None and _t is not None:
+                    current["meets_target"] = bool(float(_o) >= float(_t))
+            except (TypeError, ValueError):
+                pass
             report.rubric = current
+            # Verdict floor — clean completions only. A meets_target=True report
+            # stamped "partial" understates the deterministic evidence; this is
+            # the mirror image of the reconcile_verdict_with_score ceiling.
+            # Hard-stop (stop_reason set) and degraded paths keep their caps so
+            # a wall-clock-killed run can never claim "reproduced" this way.
+            if (
+                current.get("meets_target") is True
+                and report.verdict == "partial"
+                and report.stop_reason is None
+                and not report.degraded
+            ):
+                logger.info(
+                    "report: verdict floor partial→reproduced "
+                    "(authoritative rubric meets_target=True, clean completion)"
+                )
+                report.verdict = "reproduced"
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
 
