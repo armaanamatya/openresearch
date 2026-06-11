@@ -368,7 +368,14 @@ def _run_one(
     # otherwise be stranded for the whole batch run.
     try:
         # --- 6c: Compute project_id (canonical source-derived id; see helper) ---
+        # --project-id-suffix appends a label so the SAME paper can run in a
+        # separate dir (A/B arms, throwaway probes) while every downstream
+        # consumer — monitor, terminal-report synthesis, venv, leases — tracks
+        # the suffixed dir. Empty (default) = today's canonical behaviour.
         project_id = _canonical_project_id(paper)
+        _suffix = getattr(args, "project_id_suffix", "") or ""
+        if _suffix:
+            project_id = f"{project_id}_{_safe(_suffix)}"
         run_dir = runs_root / project_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -834,6 +841,15 @@ def main() -> int:
         default="",
         metavar="STR",
         help="Extra args appended verbatim to each CLI invocation (shlex.split).",
+    )
+    parser.add_argument(
+        "--project-id-suffix",
+        default="",
+        metavar="STR",
+        help=(
+            "Append '_<suffix>' to the canonical project id so the same paper "
+            "can run in a separate dir (A/B arms). Empty = canonical dir."
+        ),
     )
     parser.add_argument(
         "--accelerator",
