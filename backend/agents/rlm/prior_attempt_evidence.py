@@ -122,12 +122,22 @@ def build_evidence_block(
             (p for p in attempts_root.iterdir() if p.is_dir()), reverse=True
         )
         history: dict[str, list[str]] = {}
+        champions: dict[str, tuple[float, str]] = {}  # cid -> (err%, frag) lowest-err wins
         for idx, attempt in enumerate(attempt_dirs):
             scanned = _scan_attempt(attempt / "code")
             for cid, frag in scanned.items():
                 rows = history.setdefault(cid, [])
                 if len(rows) < _MAX_HISTORY_PER_CELL:
                     rows.append(frag)
+                # Cell-level forward-search crossover: track the all-time champion
+                # (champions are scattered across attempts — no single prior run
+                # holds every cell's best config).
+                m = re.search(r"test_error_pct=([\d.]+)", frag)
+                if m:
+                    err = float(m.group(1))
+                    cur = champions.get(cid)
+                    if cur is None or err < cur[0]:
+                        champions[cid] = (err, frag)
         if not history:
             return ""
 
@@ -143,6 +153,9 @@ def build_evidence_block(
             rendered = " | ".join(
                 f"[{'latest' if i == 0 else 'prior'}] {frag}" for i, frag in enumerate(rows)
             )
+            champ = champions.get(cid)
+            if champ is not None and champ[1] not in rows:
+                rendered += f" | [CHAMPION] {champ[1]}"
             lines.append(f"  {cid}: {rendered}")
         truncated = max(0, len(lines) - max_cells)
         lines = lines[:max_cells]

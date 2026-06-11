@@ -33,6 +33,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "torch_redundancy",          # PyPI torch download failed; base image has it
     "network_flake",             # pip / hf / urllib download truncated
     "cuda_oom",                  # torch.cuda.OutOfMemoryError or similar
+    "cuda_device_assert",        # CUDA device-side assert (out-of-range index / BCE input)
     "oom_killed",                # process/container SIGKILL from memory pressure
     "runpod_capacity",           # RUNPOD_CAPACITY_EXHAUSTED / no instances
     "runpod_transient_500",      # Bare RunPod 500 (treated as escalation trigger)
@@ -79,6 +80,15 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "cuda_oom":
             "reduce batch size in train.py or escalate to a larger-VRAM SKU "
             "(Lane gpu_escalation handles the latter automatically)",
+        "cuda_device_assert":
+            "a kernel hit an out-of-range value — almost always an index or probability "
+            "bug, not memory: validate label range (max(label) < num_classes) and "
+            "embedding/token ids (max(id) < vocab_size) BEFORE training, and clamp/sigmoid "
+            "BCE inputs into [0,1] (or use BCEWithLogitsLoss) so a diverging config records "
+            "a bad scalar instead of crashing. The assert poisons the whole CUDA context — "
+            "run each family/cell in its OWN process (cells.json) or wrap each family in "
+            "try/except with incremental per-family metrics so finished work survives; "
+            "CUDA_LAUNCH_BLOCKING=1 localizes the faulting line",
         "oom_killed":
             "process was killed by the host/container OOM killer; reduce memory use, "
             "lower batch size, or raise the Docker/container memory floor",
@@ -217,8 +227,15 @@ def classify_failure(result: dict) -> tuple[str, str]:
 
         err = str(result.get("error") or "")
         logs = str(result.get("logs") or "")
+        # stdout/stderr tails: the 2026-06-11 Adam device-side assert lived ONLY in
+        # result["stdout"] (error=None, logs empty) and classified as unknown. The
+        # classifier should see what the run actually printed. Tail-bounded so a
+        # multi-MB training log can't slow the substring scans.
+        stdout_tail = str(result.get("stdout") or "")[-8000:]
+        stderr_tail = str(result.get("stderr") or "")[-8000:]
         cause_kind = str(result.get("cause_kind") or "").lower()
-        haystack = (err + " " + logs).lower()
+        haystack_raw = " ".join((err, logs, stdout_tail, stderr_tail))
+        haystack = haystack_raw.lower()
 
         # Pre-flight + watchdog flag fast-paths
         if result.get("pre_flight_blocked"):
@@ -261,6 +278,13 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # the hard wall-clock while actively computing.
         if cause_kind.endswith("exec_stalled") or "stalled: no output" in haystack:
             return ("exec_stalled", _suggest("exec_stalled"))
+
+        # CUDA device-side assert — an out-of-range index / BCE-input bug, NOT memory.
+        # Checked BEFORE cuda_oom: the assert poisons the CUDA context, so later API
+        # calls (empty_cache, allocs) emit misleading secondary errors that can
+        # mention memory; the assert is the root cause.
+        if "device-side assert" in haystack or "device side assert" in haystack:
+            return ("cuda_device_assert", _suggest("cuda_device_assert"))
 
         # CUDA OOM
         if (
@@ -309,7 +333,7 @@ def classify_failure(result: dict) -> tuple[str, str]:
         # ModuleNotFoundError — try to surface which module
         if "modulenotfounderror" in haystack:
             import re as _re
-            m = _re.search(r"no module named ['\"]([\w\.\-]+)['\"]", err + " " + logs, _re.IGNORECASE)
+            m = _re.search(r"no module named ['\"]([\w\.\-]+)['\"]", haystack_raw, _re.IGNORECASE)
             module = m.group(1) if m else ""
             if module.lower() in {"torch", "torchvision", "torchaudio"}:
                 return ("torch_redundancy", _suggest("torch_redundancy"))

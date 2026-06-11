@@ -1,391 +1,379 @@
 {
-  "iteration": 0,
-  "overall_score": 0.6960629921259842,
+  "iteration": 1,
+  "overall_score": 0.6941869918699187,
   "target_score": 0.6,
   "meets_target": true,
-  "leaf_count": 23,
-  "graded": 23,
+  "leaf_count": 22,
+  "graded": 22,
   "rubric_source": "paperbench_bundle",
   "degraded": false,
-  "compute_adjusted_score": 0.6960629921259842,
+  "compute_adjusted_score": 0.6941869918699187,
   "compute_scope": null,
   "coverage_pct": 1.0,
   "areas": [
     {
       "area": "Method and code fidelity to the paper",
-      "score": 0.9,
-      "weight": 0.31496062992125984,
-      "leaves": [
-        {
-          "id": "38ca679d24824ba48f280e92ffc6a986",
-          "label": "The code implements All-CNN-C exactly as derived from base model C: every layer is a 3x3 convolution with ReLU activation sigma(x)=max(x,0) ",
-          "score": 1.0,
-          "status": "pass",
-          "why": "models.py:AllCNN_C uses only 3x3 Conv2d+ReLU(inplace) blocks and replaces each pool with Conv2d(96,96,k=3,stride=2) and Conv2d(192,192,k=3,stride=2) \u2014 output channels equal input channels, matching Table 2's replacement option 2."
-        },
-        {
-          "id": "ce4ce00fee5f465b959e6293d4a37150",
-          "label": "All three derived variants of Section 3.1 / Table 2 are implemented and distinguishable in code: Strided-CNN-C (max-pooling removed and the ",
-          "score": 1.0,
-          "status": "pass",
-          "why": "models.py implements StridedCNN_C (second 3x3 conv stride raised to 2, pools removed), ConvPoolCNN_C (extra 3x3 conv inserted before each MaxPool2d(3,2)), and AllCNN_C (pool replaced by 3x3 stride-2 conv) as distinct classes, and all three trained as separate cells in metrics.jso"
-        },
-        {
-          "id": "a67c5ed41ca94cda93b228a44f30266c",
-          "label": "Every network ends with a 1-by-1 convolution producing 10 class outputs (CIFAR-10), followed by global averaging over all spatial positions ",
-          "score": 1.0,
-          "status": "pass",
-          "why": "models.py:_classifier_head ends with Conv2d(192,num_classes,kernel_size=1) \u2192 AdaptiveAvgPool2d(1) \u2192 Flatten with raw logits for CrossEntropyLoss (softmax in loss); no nn.Linear layer exists anywhere in models.py."
-        },
-        {
-          "id": "54861e05899b4882baaae0c4441d0c22",
-          "label": "Base models A, B, and C are implemented per Table 1: model B is the Network-in-Network variant with exactly one 1-by-1 convolution after eac",
-          "score": 1.0,
-          "status": "pass",
-          "why": "models.py:ModelB has exactly one 1x1 conv (96 and 192) after each 5x5 conv per Table 1, and ModelC uses paired 3x3 convs (96,96 / 192,192) replacing the 5x5s per Table 1; ModelA matches the base A design \u2014 all three are trained in metrics.json (a_base, b_base, c_base)."
-        },
-        {
-          "id": "72c04f1e8d064f62a0ef84a0255adeb6",
-          "label": "The guided backpropagation visualization of Section 4 / Figure 1 is implemented with the exact masking rule: when propagating back through a",
-          "score": 0.0,
-          "status": "fail",
-          "why": "The code listing (models.py, preprocess.py, train scaffolding, per-cell outputs) contains no ReLU-masking visualization code or saliency artifacts at all."
-        }
-      ],
-      "compute_adjusted_score": 0.9
-    },
-    {
-      "area": "Data and preprocessing fidelity",
-      "score": 0.51,
-      "weight": 0.11811023622047244,
-      "leaves": [
-        {
-          "id": "de868c3e147c4ad0a73eb2ae84cccd58",
-          "label": "CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009) are loaded with their standard train/test splits, and all images are whitened and contras",
-          "score": 0.4,
-          "status": "partial",
-          "why": "preprocess.py:preprocess_cifar implements GCN (per-image mean/std) + ZCA whitening (epsilon=0.1, Goodfellow-style) applied to the standard torchvision CIFAR-10 train/test splits (cifar_zca_stats.npz cached per cell), but the CIFAR-100 half of the requirement is entirely absent fr"
-        },
-        {
-          "id": "11b78ad6c75e4f0fb4ea6ccdfeafe35e",
-          "label": "Data augmentation, when used, consists only of adding horizontally flipped examples of all images and randomly translated versions with a ma",
-          "score": 1.0,
-          "status": "pass",
-          "why": "preprocess.py:WhitenedDataset applies only transforms.RandomCrop(32, padding=5) (\u22645-pixel translation per dimension) and RandomHorizontalFlip when augment=True, with no other augmentations defined anywhere; the leaf's 'when used' condition is met by this pipeline."
-        },
-        {
-          "id": "2fedfc2ab4324c8bae19b2a658167f81",
-          "label": "The ImageNet experiment uses the ILSVRC-2012 subset of ImageNet for training, and validation images are evaluated only on the center 224x224",
-          "score": 0.0,
-          "status": "fail",
-          "why": "The evidence contains no ImageNet experiment at all (all 12 metrics.json cells are dataset=cifar10)."
-        }
-      ],
-      "compute_adjusted_score": 0.51
-    },
-    {
-      "area": "Experiment execution and reproducibility",
-      "score": 0.6699999999999999,
-      "weight": 0.15748031496062992,
-      "leaves": [
-        {
-          "id": "14507cd4d6ba45caa0a27a3d9feafe30",
-          "label": "CIFAR training runs use vanilla SGD with fixed momentum 0.9, a total of 350 epochs, the learning-rate schedule S=[200,250,300] with gamma mu",
-          "score": 0.7,
-          "status": "partial",
-          "why": "metrics.json shows epochs_run=350 for all 12 cells and best_lr values drawn exactly from {0.25, 0.1, 0.05, 0.01} per model (e.g. a_base best_lr=0.01, c_allcnn best_lr=0.25), and steps_run=136850 = 350\u00d7391 confirms full-length runs; the momentum/schedule values are the one unconfi"
-        },
-        {
-          "id": "a340acd690ea46c2b9aa681eb7ff447b",
-          "label": "All CIFAR models are regularized exactly as in Section 3.2: dropout probability 20% on the input image, dropout 50% after each pooling layer",
-          "score": 0.7,
-          "status": "partial",
-          "why": "models.py confirms Dropout(p=0.2) on the input of every architecture and Dropout(p=0.5) after each pooling layer or pool-replacement (block-2 dropout plus _classifier_head's leading Dropout(0.5)), exactly per Section 3.2; only the weight-decay value is unverifiable."
-        },
-        {
-          "id": "4f159bcda5474754a439d1b31fdabe95",
-          "label": "Executed run artifacts (training logs, checkpoints, or per-run metrics files) exist for the CIFAR-10 ablation of Table 3 covering base model",
-          "score": 1.0,
-          "status": "pass",
-          "why": "All 12 Table-3 cells (a/b/c \u00d7 base/strided/convpool/allcnn) appear in metrics.json with status ok, epochs_run=350, steps_run=136850, and per-cell output dirs containing .log, metrics.json, training_curves.json, provenance.json, config_used.json, and fig_training.png \u2014 the grid wa"
-        },
-        {
-          "id": "943b23980b7247658948a04905043883",
-          "label": "The CIFAR-100 experiment reuses the All-CNN-C model with all hyperparameters (learning rate and its schedule) kept fixed from the CIFAR-10 s",
-          "score": 0.0,
-          "status": "fail",
-          "why": "The mandatory CIFAR-100 All-CNN-C run is entirely absent from the measured artifacts (the ImageNet clause is conditional and also unattempted)."
-        }
-      ],
-      "compute_adjusted_score": 0.6699999999999999
-    },
-    {
-      "area": "Evaluation protocol and metric correctness",
-      "score": 0.63,
-      "weight": 0.15748031496062992,
-      "leaves": [
-        {
-          "id": "a744265d9b6145e7b8214c9023e70d0c",
-          "label": "CIFAR-10 evaluation reports test-set classification error (%) without augmentation for each base and derived model, reporting only the resul",
-          "score": 1.0,
-          "status": "pass",
-          "why": "metrics.json reports test_error_pct without augmentation (augment:false) for each of the 12 base and derived models, each with a per-model best_lr selected from the fixed set {0.25, 0.1, 0.05, 0.01} (e.g. a_base 12.86%@lr=0.01, c_base 9.99%@lr=0.1), matching the Table 3 reporting"
-        },
-        {
-          "id": "95697d806f2e4a8c854b4a1a3d0c6078",
-          "label": "Separate with-augmentation and without-augmentation CIFAR-10 test-error numbers are produced for All-CNN-C (the All-CNN adapted from base mo",
-          "score": 0.0,
-          "status": "fail",
-          "why": "metrics.json c_allcnn.cifar10_noaug shows test_accuracy=0.1/test_error_pct=90.0 and no augmented counterpart cell exists, so neither a valid no-aug number nor any aug number was produced."
-        },
-        {
-          "id": "ae26810e1b8d4a87bdbfaf80c82a2fbe",
-          "label": "If the ImageNet experiment is run, the metric computed is Top-1 validation error on ILSVRC-2012 evaluated only on the center 224x224 patch, ",
-          "score": 1.0,
-          "status": "pass",
-          "why": "Vacuously satisfied: metrics.json contains only CIFAR-10 cells and no ImageNet experiment was run, so the conditional center-crop Top-1 protocol requirement does not apply."
-        },
-        {
-          "id": "eed454da0d6f4c6283b6096d0e28f4d3",
-          "label": "Model parameter counts are computed and reported (in millions) for the compared models, allowing verification of the paper's claims that the",
-          "score": 0.4,
-          "status": "partial",
-          "why": "models.py defines count_parameters() and a __main__ block that would print per-model param counts, but no measured artifact (metrics.json, provenance, logs) reports parameter counts in millions for the compared models."
-        }
-      ],
-      "compute_adjusted_score": 0.63
-    },
-    {
-      "area": "Result match versus the paper's reported targets",
-      "score": 0.47,
-      "weight": 0.19685039370078738,
-      "leaves": [
-        {
-          "id": "5a0fefb75cbc45ecb37604a61b2d6b59",
-          "label": "Reproduced base model A achieves approximately 12.5% test error on CIFAR-10 without augmentation, matching the result reported in Section 3.",
-          "score": 1.0,
-          "status": "pass",
-          "why": "metrics.json per_model.a_base.cifar10_noaug.base.test_error_pct = 12.86 after 350 epochs (best_lr=0.01), which matches the paper's ~12.5% Table 3 target within reasonable reproduction tolerance."
-        },
-        {
-          "id": "a5a403bfb5724465906dece88a3e93a0",
-          "label": "The reproduced Table 3 ablation reproduces the paper's three qualitative trends from Section 3.2: (1) Strided-CNN variants (pooling removed,",
-          "score": 0.2,
-          "status": "fail",
-          "why": "Only trend (1) holds directionally in metrics.json (strided worse than base: 64.82>12.86, 13.27>10.77, 10.52>9.99), while the central All-CNN claims are inverted by chance-level (0.1 accuracy) measured results for all allcnn and convpool cells."
-        },
-        {
-          "id": "038023d10342462ba3cc4631f2028e2b",
-          "label": "Reproduced All-CNN-C test error on CIFAR-10 is competitive with the paper's Table 4 comparison \u2014 i.e., it outperforms the cited prior result",
-          "score": 0.0,
-          "status": "fail",
-          "why": "metrics.json per_model.c_allcnn.cifar10_noaug.allcnn shows a dead network at 90% test error, directly contradicting the claim that All-CNN-C outperforms the cited prior results."
-        },
-        {
-          "id": "b3ebf49af5b54642ab1f9c79f64d4ea0",
-          "label": "If the ImageNet experiment is run, the upscaled All-CNN-B achieves Top-1 validation error close to the reported 41.2% on ILSVRC-2012 (center",
-          "score": 1.0,
-          "status": "pass",
-          "why": "The requirement is conditional on the ImageNet experiment being run; metrics.json contains only cifar10_noaug cells (12 a/b/c \u00d7 variant entries) and the outputs/ listing shows only CIFAR-10 data, so the ImageNet experiment was not run and the conditional is vacuously satisfied."
-        }
-      ],
-      "compute_adjusted_score": 0.47
-    },
-    {
-      "area": "Artifact completeness and provenance",
       "score": 1.0,
-      "weight": 0.05511811023622048,
+      "weight": 0.3252032520325204,
       "leaves": [
         {
-          "id": "58c6011a30b14f14997a149de21a63d1",
-          "label": "The repository contains explicit architecture definitions (config files or model-building code) for all models of Table 1 (base A, B, C) and",
+          "id": "cc539821da374e24a331345d725c1199",
+          "label": "The All-CNN-C model is implemented exactly as in Table 2 (Section 3.1): every max-pooling layer of base model C is replaced by a 3x3 convolu",
           "score": 1.0,
           "status": "pass",
-          "why": "code/models.py explicitly defines all Table 1 / Table 2 architectures (ModelA/ModelB/ModelC, StridedCNN_C, ConvPoolCNN_C, AllCNN_C \u2014 plus all other variants) with a get_model factory, ImageNet was not attempted (so Table 6 is not required), and training scripts are evidenced by _"
+          "why": "models.py build_all_cnn (letter='C', variant='allcnn') replaces each max-pool with a 3x3 stride-2 conv whose output channels equal input channels (conv 96->96 and 192->192), uses only conv+ReLU layers, and ends with conv(192,1x1)+conv(num_classes,1x1) followed by global average p"
         },
         {
-          "id": "712eaf9e892e44df8207abb28dc31c05",
-          "label": "Every reported number is traceable to a produced artifact: per-model training logs and a metrics file (e.g., metrics.json or equivalent) rec",
+          "id": "a560888e3d6f479ea4e4458844c75cb5",
+          "label": "The three base models A, B, and C from Table 1 (Section 3.1) are implemented: model B as the Network-in-Network variant with one 1-by-1 conv",
           "score": 1.0,
           "status": "pass",
-          "why": "Every reproduced entry in metrics.json carries test_error_pct/test_accuracy plus the chosen learning rate (best_lr, e.g. a_base best_lr=0.01, c_strided best_lr=0.05), and the outputs/ tree shows per-cell <cell>.log, metrics.json, config_used.json, training_curves.json and provena"
+          "why": "models.py implements letter A (single 5x5 conv per block + maxpool), letter B (5x5 conv followed by a 1x1 NiN conv per block), and letter C (two 3x3 convs per block), all topped by the conv(192,3x3)+conv(192,1x1)+conv(num_classes,1x1)+GAP head, matching Table 1; metrics.json show"
         },
         {
-          "id": "9cb6fa0dd8164f4e81ec18c298b06e70",
-          "label": "If the visualization analysis of Section 4 is reproduced, the repository contains the generated visualization images comparing backpropagati",
+          "id": "28ac78f7a60a41a8a3a1565ba439c201",
+          "label": "The Strided-CNN-C variant (Table 2, Section 3.1) is implemented by removing max-pooling and increasing the stride of the convolution layer p",
           "score": 1.0,
           "status": "pass",
-          "why": "The requirement is conditional on the Section 4 visualization analysis being reproduced; the code listing and per-cell outputs contain no visualization code or guided-backprop/deconvnet images (only fig_training.png training curves per cell), so the visualization analysis was not"
+          "why": "models.py letter 'C' variant 'strided' removes the maxpool (no _maxpool() appended for 'strided') and sets stride=2 on the second 3x3 conv of each block (the conv immediately preceding the removed pool), and the a_strided/c_strided cells ran (a_strided metric=0.8051 in metrics.js"
+        },
+        {
+          "id": "d1ee8f2c3c854f75bcb9f97808fd97a9",
+          "label": "The ConvPool-CNN-C variant (Table 2, Section 3.1) is implemented by placing a dense convolution layer, with the same kernel size as the resp",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py variant 'convpool' inserts an extra dense 3x3 conv (_conv_relu(96,96,3)/(192,192,3)) before each retained MaxPool2d(3,stride=2) \u2014 kernel size matching the 3x3 pooling layer \u2014 and c_convpool/a_convpool/b_convpool cells exist in the run outputs listing."
+        },
+        {
+          "id": "b67a800a42674694a56ce6b310f6c95d",
+          "label": "Guided backpropagation is implemented as defined in Section 4 / Figure 1: when backpropagating through a ReLU, values are masked to zero whe",
+          "score": 1.0,
+          "status": "pass",
+          "why": "guided_backprop.py GuidedBackpropReLU.backward_hook computes guided_grad = grad * (forward_input > 0) * (grad > 0), exactly combining the backprop mask and the deconvnet mask, with no use of pooling switches; run_guided_backprop applies it to the all-conv model (AllCNNModel('C','"
         }
       ],
       "compute_adjusted_score": 1.0
+    },
+    {
+      "area": "Data and preprocessing fidelity",
+      "score": 0.82,
+      "weight": 0.10569105691056911,
+      "leaves": [
+        {
+          "id": "0b8f95eba884448288a86968e2b86509",
+          "label": "CIFAR-10 and CIFAR-100 (Krizhevsky & Hinton, 2009) images are whitened and contrast normalized following Goodfellow et al. (2013), as stated",
+          "score": 1.0,
+          "status": "pass",
+          "why": "data.py implements per-sample global contrast normalization (_gcn, scale=55) followed by ZCA whitening with epsilon=0.1 fit on the training set (compute_zca_matrix/ZCAPreprocessor), citing Goodfellow et al. 2013, and cached whitening matrices exist for both datasets (data/zca_cac"
+        },
+        {
+          "id": "a7cced3657bd4330b6531d7af16c64bd",
+          "label": "The data-augmentation runs use exactly the augmentations of Section 3.2: horizontally flipped copies of all images plus random translations ",
+          "score": 0.7,
+          "status": "partial",
+          "why": "data.py _augment implements only horizontal flips plus random translation with max \u00b15 pixels (pad=5 then random crop) and nothing else, matching Section 3.2 except for the named online-flip substitution."
+        },
+        {
+          "id": "b4bce7796dce45a8ac53c148111cc2a7",
+          "label": "The CIFAR-100 experiment reuses the identical All-CNN-C model and identical data pipeline and hyperparameters (learning rate and its schedul",
+          "score": 0.7,
+          "status": "partial",
+          "why": "The c_allcnn_cifar100_aug cell exists in the run outputs and reuses the same AllCNNModel('C','allcnn') code (models.py, num_classes parameterized) and the same data.py GCN+ZCA pipeline (zca_cifar100_eps0.1.npz cache present), but the hyperparameter-identity claim is not verifiabl"
+        }
+      ],
+      "compute_adjusted_score": 0.82
+    },
+    {
+      "area": "Experiment execution and reproducibility",
+      "score": 0.46499999999999997,
+      "weight": 0.1626016260162602,
+      "leaves": [
+        {
+          "id": "a6bed761850b4856b11f85adf490daca",
+          "label": "Training logs/configs show all CIFAR networks trained with stochastic gradient descent with fixed momentum 0.9 for a total of 350 epochs, wi",
+          "score": 0.7,
+          "status": "partial",
+          "why": "metrics.json shows epochs_total=350/epochs_run=350 for the cells, and the a_base train_loss_history exhibits discrete drops exactly at epochs ~200 (0.674\u21920.558) and ~250 (0.520\u21920.498) with a final small plateau shift after ~300, consistent with the S=[200,250,300] \u00d70.1 schedule, "
+        },
+        {
+          "id": "0265a0892c004ef2947ef665aa922adf",
+          "label": "Run artifacts show the learning rate \u03b3 was searched per model over exactly the fixed set {0.25, 0.1, 0.05, 0.01}, with results reported for ",
+          "score": 0.4,
+          "status": "partial",
+          "why": "metrics.json records 'lr': 0.05 and 'best_lr': 0.05 (a value inside the paper's set), indicating a best-LR selection mechanism exists, but the required evidence of a search over exactly the four-value set is absent from the provided artifacts."
+        },
+        {
+          "id": "931320a60c694dc6951ca08a67a6365d",
+          "label": "Configs/code apply dropout with probability 20% on the input image and 50% after each pooling layer (or after the layer replacing pooling), ",
+          "score": 0.7,
+          "status": "partial",
+          "why": "models.py build_all_cnn applies nn.Dropout(0.2) on the input and nn.Dropout(0.5) after each pooling layer or its replacement in every block, exactly matching Section 3.2, but the \u03bb=0.001 weight-decay setting cannot be confirmed."
+        },
+        {
+          "id": "2fb0fff0618746be84f5b7ff621f0542",
+          "label": "The ImageNet run trains the upscaled All-CNN-B with 12 convolutional layers (conv1\u2013conv12, Table 6 in the Appendix) for 450,000 iterations w",
+          "score": 0.0,
+          "status": "fail",
+          "why": "models.py defines a 12-conv _ImageNetAllCNNB class, but the requirement is an executed training run and the evidence affirmatively shows it was never run."
+        }
+      ],
+      "compute_adjusted_score": 0.46499999999999997
+    },
+    {
+      "area": "Evaluation protocol and metric correctness",
+      "score": 0.58,
+      "weight": 0.14634146341463414,
+      "leaves": [
+        {
+          "id": "aabce69c0b4b4abd9f33ec7a4ab66713",
+          "label": "CIFAR-10 and CIFAR-100 results are reported as test error (%) on the standard held-out test sets, separately for the no-augmentation and aug",
+          "score": 0.7,
+          "status": "partial",
+          "why": "metrics.json reports test_error_pct (e.g. a_base 15.61, a_strided 19.49) per cell with an explicit 'augment' flag and separate aug/noaug cell ids across CIFAR-10 and CIFAR-100, matching the Tables 3/4 test-error-percent reporting format, with the named coverage gap on the augment"
+        },
+        {
+          "id": "43e02332314446719d8b8a3066bffac0",
+          "label": "ILSVRC-2012 performance is measured as Top-1 validation error evaluated only on the center 224x224 patch of each validation image, matching ",
+          "score": 0.0,
+          "status": "fail",
+          "why": "There is no measured ImageNet metric in metrics.json and no executed evaluation path; the requirement is entirely unevidenced."
+        },
+        {
+          "id": "d55317608d0e4b91927b3bc490c6b498",
+          "label": "Class probabilities at evaluation are produced by the paper's fully convolutional inference path (Section 2): the topmost 1-by-1 convolution",
+          "score": 1.0,
+          "status": "pass",
+          "why": "models.py ends every network with a 1x1 conv producing num_classes outputs per spatial position and AllCNNModel.forward averages over all positions (x.mean(dim=[2,3])) before the (implicit-softmax) classification \u2014 no nn.Linear/fully connected head exists anywhere in the model co"
+        }
+      ],
+      "compute_adjusted_score": 0.58
+    },
+    {
+      "area": "Result match versus the paper's reported targets",
+      "score": 0.395,
+      "weight": 0.2032520325203252,
+      "leaves": [
+        {
+          "id": "b7325d4fe66147368e9b5d63d05a60f5",
+          "label": "Reproduced base model A achieves approximately 12.5% test error on CIFAR-10 without data augmentation, matching the result reported in Secti",
+          "score": 0.7,
+          "status": "partial",
+          "why": "metrics.json per_model.a_base.cifar10_noaug records test_error_pct=15.61 after a full 350-epoch run (epochs_run=350, lr=0.05) \u2014 a working but noticeably weaker result than the paper's ~12.5%, without contradicting any directional claim."
+        },
+        {
+          "id": "985ca8baab0441a69c93f17eeb61d80c",
+          "label": "The reproduced metrics reproduce the qualitative ordering of Table 3 (Section 3.2): Strided-CNN-C performs worse than base model C, while Al",
+          "score": 0.4,
+          "status": "partial",
+          "why": "Cell outputs for c_base_cifar10_noaug, c_strided_cifar10_noaug, c_convpool_cifar10_noaug and c_allcnn_cifar10_noaug exist (outputs/prj_0a3202fc187bb692-577651d3/c_*/metrics.json), and the analog A-letter trend (a_strided 80.51% < a_base 84.39%) is consistent, but the C-variant nu"
+        },
+        {
+          "id": "d442e584dfd249018d62f1648846c183",
+          "label": "Reproduced All-CNN-C test error on CIFAR-10 (with and/or without augmentation) is at or below the corresponding base-model-C error, reproduc",
+          "score": 0.4,
+          "status": "partial",
+          "why": "The runs exist (outputs/prj_0a3202fc187bb692-577651d3/c_allcnn_cifar10_noaug/metrics.json and c_base_cifar10_noaug/metrics.json are listed) but no measured C-variant error values are readable in the provided evidence, so the central comparison is unverified rather than confirmed."
+        },
+        {
+          "id": "95d26e196ac34873a7adcca08df84e46",
+          "label": "The reproduced ImageNet All-CNN-B achieves a Top-1 validation error close to 41.2% on the ILSVRC-2012 center 224x224 evaluation, with a mode",
+          "score": 0.0,
+          "status": "fail",
+          "why": "Only the architecture stub _ImageNetAllCNNB exists in code/models.py with an explicit not-run note, and no ImageNet cell, log, or measured Top-1 error appears in any metrics file."
+        }
+      ],
+      "compute_adjusted_score": 0.395
+    },
+    {
+      "area": "Artifact completeness and provenance",
+      "score": 0.73,
+      "weight": 0.05691056910569106,
+      "leaves": [
+        {
+          "id": "e592b0de9ab74695a5bdd0c3b73882a4",
+          "label": "The repository contains runnable source code and configs for every evaluated variant \u2014 base models A/B/C, Strided-CNN-A/B/C, ConvPool-CNN-A/",
+          "score": 0.7,
+          "status": "partial",
+          "why": "code/models.py implements all 12 variants (build_all_cnn for letters A/B/C \u00d7 base/strided/convpool/allcnn, MODEL_REGISTRY) with dropout 0.2/0.5 explicit, all 12 cells ran (outputs/prj_*-577651d3/{a,b,c}_{base,strided,convpool,allcnn}_cifar10_noaug), epochs_total=350 and the [200,"
+        },
+        {
+          "id": "ad46e5ab07ad4fe9a66ff4c35cea005b",
+          "label": "Per-run training logs and a machine-readable metrics file (e.g. metrics.json) record the final test error for each model variant on CIFAR-10",
+          "score": 1.0,
+          "status": "pass",
+          "why": "Each variant has a per-cell log and metrics.json (outputs/prj_0a3202fc187bb692-*/[abc]_*_cifar10_noaug/metrics.json + .log, plus c_allcnn_cifar100_aug and c_allcnn_cifar10_aug), and the visible entries record final test_error_pct/test_accuracy with the producing lr and best_lr fi"
+        },
+        {
+          "id": "85042ac08ac94165bddb5a6e8fd606a4",
+          "label": "Saved visualization artifacts exist for the guided-backpropagation method of Section 4: reconstructed feature visualizations for lower layer",
+          "score": 0.4,
+          "status": "partial",
+          "why": "code/guided_backprop.py implements the guided-backprop ReLU rule (GuidedBackpropReLU, run_guided_backprop writing fig_relu_masking.png + guided_backprop.json), but the outputs listing shows only fig_training.png per cell with no guided-backprop artifact present, and the method vi"
+        }
+      ],
+      "compute_adjusted_score": 0.73
     }
   ],
   "leaf_scores": [
     {
-      "id": "eed454da0d6f4c6283b6096d0e28f4d3",
-      "score": 0.4,
-      "justification": "models.py defines count_parameters() and a __main__ block that would print per-model param counts, but no measured artifact (metrics.json, provenance, logs) reports parameter counts in millions for the compared models."
-    },
-    {
-      "id": "5a0fefb75cbc45ecb37604a61b2d6b59",
-      "score": 1.0,
-      "justification": "metrics.json per_model.a_base.cifar10_noaug.base.test_error_pct = 12.86 after 350 epochs (best_lr=0.01), which matches the paper's ~12.5% Table 3 target within reasonable reproduction tolerance."
-    },
-    {
-      "id": "a5a403bfb5724465906dece88a3e93a0",
-      "score": 0.2,
-      "justification": "Only trend (1) holds directionally in metrics.json (strided worse than base: 64.82>12.86, 13.27>10.77, 10.52>9.99), while the central All-CNN claims are inverted by chance-level (0.1 accuracy) measured results for all allcnn and convpool cells."
-    },
-    {
-      "id": "038023d10342462ba3cc4631f2028e2b",
-      "score": 0.0,
-      "justification": "metrics.json per_model.c_allcnn.cifar10_noaug.allcnn shows a dead network at 90% test error, directly contradicting the claim that All-CNN-C outperforms the cited prior results."
-    },
-    {
-      "id": "b3ebf49af5b54642ab1f9c79f64d4ea0",
-      "score": 1.0,
-      "justification": "The requirement is conditional on the ImageNet experiment being run; metrics.json contains only cifar10_noaug cells (12 a/b/c \u00d7 variant entries) and the outputs/ listing shows only CIFAR-10 data, so the ImageNet experiment was not run and the conditional is vacuously satisfied."
-    },
-    {
-      "id": "58c6011a30b14f14997a149de21a63d1",
-      "score": 1.0,
-      "justification": "code/models.py explicitly defines all Table 1 / Table 2 architectures (ModelA/ModelB/ModelC, StridedCNN_C, ConvPoolCNN_C, AllCNN_C \u2014 plus all other variants) with a get_model factory, ImageNet was not attempted (so Table 6 is not required), and training scripts are evidenced by __pycache__/train.cpython-38.pyc and train_cell.cpython-38.pyc together with gpu_cell_runner.py which launches the train_cell.py per-cell trainer."
-    },
-    {
-      "id": "712eaf9e892e44df8207abb28dc31c05",
-      "score": 1.0,
-      "justification": "Every reproduced entry in metrics.json carries test_error_pct/test_accuracy plus the chosen learning rate (best_lr, e.g. a_base best_lr=0.01, c_strided best_lr=0.05), and the outputs/ tree shows per-cell <cell>.log, metrics.json, config_used.json, training_curves.json and provenance.json for each of the 12 cells, making each reported number traceable to artifacts."
-    },
-    {
-      "id": "9cb6fa0dd8164f4e81ec18c298b06e70",
-      "score": 1.0,
-      "justification": "The requirement is conditional on the Section 4 visualization analysis being reproduced; the code listing and per-cell outputs contain no visualization code or guided-backprop/deconvnet images (only fig_training.png training curves per cell), so the visualization analysis was not attempted and the conditional is vacuously satisfied."
-    },
-    {
-      "id": "38ca679d24824ba48f280e92ffc6a986",
-      "score": 1.0,
-      "justification": "models.py:AllCNN_C uses only 3x3 Conv2d+ReLU(inplace) blocks and replaces each pool with Conv2d(96,96,k=3,stride=2) and Conv2d(192,192,k=3,stride=2) \u2014 output channels equal input channels, matching Table 2's replacement option 2."
-    },
-    {
-      "id": "ce4ce00fee5f465b959e6293d4a37150",
-      "score": 1.0,
-      "justification": "models.py implements StridedCNN_C (second 3x3 conv stride raised to 2, pools removed), ConvPoolCNN_C (extra 3x3 conv inserted before each MaxPool2d(3,2)), and AllCNN_C (pool replaced by 3x3 stride-2 conv) as distinct classes, and all three trained as separate cells in metrics.json (c_strided, c_convpool, c_allcnn)."
-    },
-    {
-      "id": "a67c5ed41ca94cda93b228a44f30266c",
-      "score": 1.0,
-      "justification": "models.py:_classifier_head ends with Conv2d(192,num_classes,kernel_size=1) \u2192 AdaptiveAvgPool2d(1) \u2192 Flatten with raw logits for CrossEntropyLoss (softmax in loss); no nn.Linear layer exists anywhere in models.py."
-    },
-    {
-      "id": "54861e05899b4882baaae0c4441d0c22",
-      "score": 1.0,
-      "justification": "models.py:ModelB has exactly one 1x1 conv (96 and 192) after each 5x5 conv per Table 1, and ModelC uses paired 3x3 convs (96,96 / 192,192) replacing the 5x5s per Table 1; ModelA matches the base A design \u2014 all three are trained in metrics.json (a_base, b_base, c_base)."
-    },
-    {
-      "id": "72c04f1e8d064f62a0ef84a0255adeb6",
-      "score": 0.0,
-      "justification": "The code listing (models.py, preprocess.py, train scaffolding, per-cell outputs) contains no ReLU-masking visualization code or saliency artifacts at all."
-    },
-    {
-      "id": "de868c3e147c4ad0a73eb2ae84cccd58",
-      "score": 0.4,
-      "justification": "preprocess.py:preprocess_cifar implements GCN (per-image mean/std) + ZCA whitening (epsilon=0.1, Goodfellow-style) applied to the standard torchvision CIFAR-10 train/test splits (cifar_zca_stats.npz cached per cell), but the CIFAR-100 half of the requirement is entirely absent from the run."
-    },
-    {
-      "id": "11b78ad6c75e4f0fb4ea6ccdfeafe35e",
-      "score": 1.0,
-      "justification": "preprocess.py:WhitenedDataset applies only transforms.RandomCrop(32, padding=5) (\u22645-pixel translation per dimension) and RandomHorizontalFlip when augment=True, with no other augmentations defined anywhere; the leaf's 'when used' condition is met by this pipeline."
-    },
-    {
-      "id": "2fedfc2ab4324c8bae19b2a658167f81",
-      "score": 0.0,
-      "justification": "The evidence contains no ImageNet experiment at all (all 12 metrics.json cells are dataset=cifar10)."
-    },
-    {
-      "id": "14507cd4d6ba45caa0a27a3d9feafe30",
+      "id": "b7325d4fe66147368e9b5d63d05a60f5",
       "score": 0.7,
-      "justification": "metrics.json shows epochs_run=350 for all 12 cells and best_lr values drawn exactly from {0.25, 0.1, 0.05, 0.01} per model (e.g. a_base best_lr=0.01, c_allcnn best_lr=0.25), and steps_run=136850 = 350\u00d7391 confirms full-length runs; the momentum/schedule values are the one unconfirmed detail."
+      "justification": "metrics.json per_model.a_base.cifar10_noaug records test_error_pct=15.61 after a full 350-epoch run (epochs_run=350, lr=0.05) \u2014 a working but noticeably weaker result than the paper's ~12.5%, without contradicting any directional claim."
     },
     {
-      "id": "a340acd690ea46c2b9aa681eb7ff447b",
+      "id": "985ca8baab0441a69c93f17eeb61d80c",
+      "score": 0.4,
+      "justification": "Cell outputs for c_base_cifar10_noaug, c_strided_cifar10_noaug, c_convpool_cifar10_noaug and c_allcnn_cifar10_noaug exist (outputs/prj_0a3202fc187bb692-577651d3/c_*/metrics.json), and the analog A-letter trend (a_strided 80.51% < a_base 84.39%) is consistent, but the C-variant numbers needed to confirm the claimed ordering are not readable in the evidence."
+    },
+    {
+      "id": "d442e584dfd249018d62f1648846c183",
+      "score": 0.4,
+      "justification": "The runs exist (outputs/prj_0a3202fc187bb692-577651d3/c_allcnn_cifar10_noaug/metrics.json and c_base_cifar10_noaug/metrics.json are listed) but no measured C-variant error values are readable in the provided evidence, so the central comparison is unverified rather than confirmed."
+    },
+    {
+      "id": "95d26e196ac34873a7adcca08df84e46",
+      "score": 0.0,
+      "justification": "Only the architecture stub _ImageNetAllCNNB exists in code/models.py with an explicit not-run note, and no ImageNet cell, log, or measured Top-1 error appears in any metrics file."
+    },
+    {
+      "id": "e592b0de9ab74695a5bdd0c3b73882a4",
       "score": 0.7,
-      "justification": "models.py confirms Dropout(p=0.2) on the input of every architecture and Dropout(p=0.5) after each pooling layer or pool-replacement (block-2 dropout plus _classifier_head's leading Dropout(0.5)), exactly per Section 3.2; only the weight-decay value is unverifiable."
+      "justification": "code/models.py implements all 12 variants (build_all_cnn for letters A/B/C \u00d7 base/strided/convpool/allcnn, MODEL_REGISTRY) with dropout 0.2/0.5 explicit, all 12 cells ran (outputs/prj_*-577651d3/{a,b,c}_{base,strided,convpool,allcnn}_cifar10_noaug), epochs_total=350 and the [200,250,300] schedule is evidenced by the train_loss_history drops at epochs 200 and 250 in metrics.json \u2014 but the momentum/weight-decay settings cannot be confirmed from the shown files."
     },
     {
-      "id": "4f159bcda5474754a439d1b31fdabe95",
+      "id": "ad46e5ab07ad4fe9a66ff4c35cea005b",
       "score": 1.0,
-      "justification": "All 12 Table-3 cells (a/b/c \u00d7 base/strided/convpool/allcnn) appear in metrics.json with status ok, epochs_run=350, steps_run=136850, and per-cell output dirs containing .log, metrics.json, training_curves.json, provenance.json, config_used.json, and fig_training.png \u2014 the grid was actually trained, not just defined."
+      "justification": "Each variant has a per-cell log and metrics.json (outputs/prj_0a3202fc187bb692-*/[abc]_*_cifar10_noaug/metrics.json + .log, plus c_allcnn_cifar100_aug and c_allcnn_cifar10_aug), and the visible entries record final test_error_pct/test_accuracy with the producing lr and best_lr fields (e.g. a_base: test_error_pct=15.61, lr=0.05, best_lr=0.05, dataset/augment flags), making each number traceable to its config."
     },
     {
-      "id": "943b23980b7247658948a04905043883",
+      "id": "85042ac08ac94165bddb5a6e8fd606a4",
+      "score": 0.4,
+      "justification": "code/guided_backprop.py implements the guided-backprop ReLU rule (GuidedBackpropReLU, run_guided_backprop writing fig_relu_masking.png + guided_backprop.json), but the outputs listing shows only fig_training.png per cell with no guided-backprop artifact present, and the method visualizes class saliency rather than layer-wise (conv1\u20133/conv6/conv9) feature reconstructions."
+    },
+    {
+      "id": "cc539821da374e24a331345d725c1199",
+      "score": 1.0,
+      "justification": "models.py build_all_cnn (letter='C', variant='allcnn') replaces each max-pool with a 3x3 stride-2 conv whose output channels equal input channels (conv 96->96 and 192->192), uses only conv+ReLU layers, and ends with conv(192,1x1)+conv(num_classes,1x1) followed by global average pooling in AllCNNModel.forward (x.mean(dim=[2,3])) producing class logits."
+    },
+    {
+      "id": "a560888e3d6f479ea4e4458844c75cb5",
+      "score": 1.0,
+      "justification": "models.py implements letter A (single 5x5 conv per block + maxpool), letter B (5x5 conv followed by a 1x1 NiN conv per block), and letter C (two 3x3 convs per block), all topped by the conv(192,3x3)+conv(192,1x1)+conv(num_classes,1x1)+GAP head, matching Table 1; metrics.json shows a_base/b_base/c_base cells actually ran (e.g. a_base test_error_pct=15.61)."
+    },
+    {
+      "id": "28ac78f7a60a41a8a3a1565ba439c201",
+      "score": 1.0,
+      "justification": "models.py letter 'C' variant 'strided' removes the maxpool (no _maxpool() appended for 'strided') and sets stride=2 on the second 3x3 conv of each block (the conv immediately preceding the removed pool), and the a_strided/c_strided cells ran (a_strided metric=0.8051 in metrics.json)."
+    },
+    {
+      "id": "d1ee8f2c3c854f75bcb9f97808fd97a9",
+      "score": 1.0,
+      "justification": "models.py variant 'convpool' inserts an extra dense 3x3 conv (_conv_relu(96,96,3)/(192,192,3)) before each retained MaxPool2d(3,stride=2) \u2014 kernel size matching the 3x3 pooling layer \u2014 and c_convpool/a_convpool/b_convpool cells exist in the run outputs listing."
+    },
+    {
+      "id": "b67a800a42674694a56ce6b310f6c95d",
+      "score": 1.0,
+      "justification": "guided_backprop.py GuidedBackpropReLU.backward_hook computes guided_grad = grad * (forward_input > 0) * (grad > 0), exactly combining the backprop mask and the deconvnet mask, with no use of pooling switches; run_guided_backprop applies it to the all-conv model (AllCNNModel('C','allcnn'))."
+    },
+    {
+      "id": "0b8f95eba884448288a86968e2b86509",
+      "score": 1.0,
+      "justification": "data.py implements per-sample global contrast normalization (_gcn, scale=55) followed by ZCA whitening with epsilon=0.1 fit on the training set (compute_zca_matrix/ZCAPreprocessor), citing Goodfellow et al. 2013, and cached whitening matrices exist for both datasets (data/zca_cache/zca_cifar10_eps0.1.npz and zca_cifar100_eps0.1.npz), evidencing it was actually applied."
+    },
+    {
+      "id": "a7cced3657bd4330b6531d7af16c64bd",
+      "score": 0.7,
+      "justification": "data.py _augment implements only horizontal flips plus random translation with max \u00b15 pixels (pad=5 then random crop) and nothing else, matching Section 3.2 except for the named online-flip substitution."
+    },
+    {
+      "id": "b4bce7796dce45a8ac53c148111cc2a7",
+      "score": 0.7,
+      "justification": "The c_allcnn_cifar100_aug cell exists in the run outputs and reuses the same AllCNNModel('C','allcnn') code (models.py, num_classes parameterized) and the same data.py GCN+ZCA pipeline (zca_cifar100_eps0.1.npz cache present), but the hyperparameter-identity claim is not verifiable from the visible metrics."
+    },
+    {
+      "id": "a6bed761850b4856b11f85adf490daca",
+      "score": 0.7,
+      "justification": "metrics.json shows epochs_total=350/epochs_run=350 for the cells, and the a_base train_loss_history exhibits discrete drops exactly at epochs ~200 (0.674\u21920.558) and ~250 (0.520\u21920.498) with a final small plateau shift after ~300, consistent with the S=[200,250,300] \u00d70.1 schedule, but the momentum value itself is unverified."
+    },
+    {
+      "id": "0265a0892c004ef2947ef665aa922adf",
+      "score": 0.4,
+      "justification": "metrics.json records 'lr': 0.05 and 'best_lr': 0.05 (a value inside the paper's set), indicating a best-LR selection mechanism exists, but the required evidence of a search over exactly the four-value set is absent from the provided artifacts."
+    },
+    {
+      "id": "931320a60c694dc6951ca08a67a6365d",
+      "score": 0.7,
+      "justification": "models.py build_all_cnn applies nn.Dropout(0.2) on the input and nn.Dropout(0.5) after each pooling layer or its replacement in every block, exactly matching Section 3.2, but the \u03bb=0.001 weight-decay setting cannot be confirmed."
+    },
+    {
+      "id": "2fb0fff0618746be84f5b7ff621f0542",
       "score": 0.0,
-      "justification": "The mandatory CIFAR-100 All-CNN-C run is entirely absent from the measured artifacts (the ImageNet clause is conditional and also unattempted)."
+      "justification": "models.py defines a 12-conv _ImageNetAllCNNB class, but the requirement is an executed training run and the evidence affirmatively shows it was never run."
     },
     {
-      "id": "a744265d9b6145e7b8214c9023e70d0c",
-      "score": 1.0,
-      "justification": "metrics.json reports test_error_pct without augmentation (augment:false) for each of the 12 base and derived models, each with a per-model best_lr selected from the fixed set {0.25, 0.1, 0.05, 0.01} (e.g. a_base 12.86%@lr=0.01, c_base 9.99%@lr=0.1), matching the Table 3 reporting protocol."
+      "id": "aabce69c0b4b4abd9f33ec7a4ab66713",
+      "score": 0.7,
+      "justification": "metrics.json reports test_error_pct (e.g. a_base 15.61, a_strided 19.49) per cell with an explicit 'augment' flag and separate aug/noaug cell ids across CIFAR-10 and CIFAR-100, matching the Tables 3/4 test-error-percent reporting format, with the named coverage gap on the augmented table."
     },
     {
-      "id": "95697d806f2e4a8c854b4a1a3d0c6078",
+      "id": "43e02332314446719d8b8a3066bffac0",
       "score": 0.0,
-      "justification": "metrics.json c_allcnn.cifar10_noaug shows test_accuracy=0.1/test_error_pct=90.0 and no augmented counterpart cell exists, so neither a valid no-aug number nor any aug number was produced."
+      "justification": "There is no measured ImageNet metric in metrics.json and no executed evaluation path; the requirement is entirely unevidenced."
     },
     {
-      "id": "ae26810e1b8d4a87bdbfaf80c82a2fbe",
+      "id": "d55317608d0e4b91927b3bc490c6b498",
       "score": 1.0,
-      "justification": "Vacuously satisfied: metrics.json contains only CIFAR-10 cells and no ImageNet experiment was run, so the conditional center-crop Top-1 protocol requirement does not apply."
+      "justification": "models.py ends every network with a 1x1 conv producing num_classes outputs per spatial position and AllCNNModel.forward averages over all positions (x.mean(dim=[2,3])) before the (implicit-softmax) classification \u2014 no nn.Linear/fully connected head exists anywhere in the model code, and the evaluated accuracies in metrics.json (test_accuracy=0.8439) were produced through this path."
     }
   ],
   "weak_leaves": [
     {
-      "id": "038023d10342462ba3cc4631f2028e2b",
+      "id": "95d26e196ac34873a7adcca08df84e46",
       "score": 0.0,
-      "justification": "metrics.json per_model.c_allcnn.cifar10_noaug.allcnn shows a dead network at 90% test error, directly contradicting the claim that All-CNN-C outperforms the cited prior results.",
+      "justification": "Only the architecture stub _ImageNetAllCNNB exists in code/models.py with an explicit not-run note, and no ImageNet cell, log, or measured Top-1 error appears in any metrics file.",
       "area": "Result match versus the paper's reported targets"
     },
     {
-      "id": "72c04f1e8d064f62a0ef84a0255adeb6",
+      "id": "2fb0fff0618746be84f5b7ff621f0542",
       "score": 0.0,
-      "justification": "The code listing (models.py, preprocess.py, train scaffolding, per-cell outputs) contains no ReLU-masking visualization code or saliency artifacts at all.",
-      "area": "Method and code fidelity to the paper"
-    },
-    {
-      "id": "2fedfc2ab4324c8bae19b2a658167f81",
-      "score": 0.0,
-      "justification": "The evidence contains no ImageNet experiment at all (all 12 metrics.json cells are dataset=cifar10).",
-      "area": "Data and preprocessing fidelity"
-    },
-    {
-      "id": "943b23980b7247658948a04905043883",
-      "score": 0.0,
-      "justification": "The mandatory CIFAR-100 All-CNN-C run is entirely absent from the measured artifacts (the ImageNet clause is conditional and also unattempted).",
+      "justification": "models.py defines a 12-conv _ImageNetAllCNNB class, but the requirement is an executed training run and the evidence affirmatively shows it was never run.",
       "area": "Experiment execution and reproducibility"
     },
     {
-      "id": "95697d806f2e4a8c854b4a1a3d0c6078",
+      "id": "43e02332314446719d8b8a3066bffac0",
       "score": 0.0,
-      "justification": "metrics.json c_allcnn.cifar10_noaug shows test_accuracy=0.1/test_error_pct=90.0 and no augmented counterpart cell exists, so neither a valid no-aug number nor any aug number was produced.",
+      "justification": "There is no measured ImageNet metric in metrics.json and no executed evaluation path; the requirement is entirely unevidenced.",
       "area": "Evaluation protocol and metric correctness"
     },
     {
-      "id": "a5a403bfb5724465906dece88a3e93a0",
-      "score": 0.2,
-      "justification": "Only trend (1) holds directionally in metrics.json (strided worse than base: 64.82>12.86, 13.27>10.77, 10.52>9.99), while the central All-CNN claims are inverted by chance-level (0.1 accuracy) measured results for all allcnn and convpool cells.",
+      "id": "985ca8baab0441a69c93f17eeb61d80c",
+      "score": 0.4,
+      "justification": "Cell outputs for c_base_cifar10_noaug, c_strided_cifar10_noaug, c_convpool_cifar10_noaug and c_allcnn_cifar10_noaug exist (outputs/prj_0a3202fc187bb692-577651d3/c_*/metrics.json), and the analog A-letter trend (a_strided 80.51% < a_base 84.39%) is consistent, but the C-variant numbers needed to confirm the claimed ordering are not readable in the evidence.",
       "area": "Result match versus the paper's reported targets"
     },
     {
-      "id": "eed454da0d6f4c6283b6096d0e28f4d3",
+      "id": "d442e584dfd249018d62f1648846c183",
       "score": 0.4,
-      "justification": "models.py defines count_parameters() and a __main__ block that would print per-model param counts, but no measured artifact (metrics.json, provenance, logs) reports parameter counts in millions for the compared models.",
-      "area": "Evaluation protocol and metric correctness"
+      "justification": "The runs exist (outputs/prj_0a3202fc187bb692-577651d3/c_allcnn_cifar10_noaug/metrics.json and c_base_cifar10_noaug/metrics.json are listed) but no measured C-variant error values are readable in the provided evidence, so the central comparison is unverified rather than confirmed.",
+      "area": "Result match versus the paper's reported targets"
     },
     {
-      "id": "de868c3e147c4ad0a73eb2ae84cccd58",
+      "id": "85042ac08ac94165bddb5a6e8fd606a4",
       "score": 0.4,
-      "justification": "preprocess.py:preprocess_cifar implements GCN (per-image mean/std) + ZCA whitening (epsilon=0.1, Goodfellow-style) applied to the standard torchvision CIFAR-10 train/test splits (cifar_zca_stats.npz cached per cell), but the CIFAR-100 half of the requirement is entirely absent from the run.",
-      "area": "Data and preprocessing fidelity"
+      "justification": "code/guided_backprop.py implements the guided-backprop ReLU rule (GuidedBackpropReLU, run_guided_backprop writing fig_relu_masking.png + guided_backprop.json), but the outputs listing shows only fig_training.png per cell with no guided-backprop artifact present, and the method visualizes class saliency rather than layer-wise (conv1\u20133/conv6/conv9) feature reconstructions.",
+      "area": "Artifact completeness and provenance"
+    },
+    {
+      "id": "0265a0892c004ef2947ef665aa922adf",
+      "score": 0.4,
+      "justification": "metrics.json records 'lr': 0.05 and 'best_lr': 0.05 (a value inside the paper's set), indicating a best-LR selection mechanism exists, but the required evidence of a search over exactly the four-value set is absent from the provided artifacts.",
+      "area": "Experiment execution and reproducibility"
+    },
+    {
+      "id": "b7325d4fe66147368e9b5d63d05a60f5",
+      "score": 0.7,
+      "justification": "metrics.json per_model.a_base.cifar10_noaug records test_error_pct=15.61 after a full 350-epoch run (epochs_run=350, lr=0.05) \u2014 a working but noticeably weaker result than the paper's ~12.5%, without contradicting any directional claim.",
+      "area": "Result match versus the paper's reported targets"
     }
   ]
 }

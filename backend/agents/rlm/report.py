@@ -941,11 +941,20 @@ def build_final_report(
             _op_skip_env = list(
                 getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
             )
+            # Operator INCLUSION scope (2026-06-11): datasets the operator scoped
+            # the run TO (paper-hint default_scope / --scope-spec). Leaves about
+            # datasets outside it are operator-sanctioned exclusions in the
+            # re-roll-up (flag-gated inside the detector).
+            _op_include = [
+                getattr(d, "name", None) or str(d)
+                for d in (getattr(getattr(ctx, "scope_spec", None), "datasets", None) or [])
+            ]
             _rescore = _finalize_rescore(
                 ctx.project_dir,
                 operator_skip_models=_op_skip,
                 operator_skip_environments=_op_skip_env,
                 extra_scope=verified_scope,
+                operator_dataset_inclusion=[d for d in _op_include if d],
             )
             if _rescore is not None:
                 _r2 = dict(kwargs.get("rubric") or {})
@@ -962,6 +971,20 @@ def build_final_report(
                         _r2["meets_target"] = bool(_rescore["overall_score"] >= float(_tgt))
                 except (TypeError, ValueError):
                     pass
+                # Floor-after-rescore (2026-06-11): the re-roll-up supersedes the
+                # best-of-run floor to close the scope-gaming hole — but when the
+                # scope DIDN'T move (no exclusions, no operator skips) there is no
+                # gaming surface, and the override just let grader drift bury a
+                # legitimate high-water graded under the IDENTICAL denominator
+                # (All-CNN v3: verify#1 0.712 on the same evidence, verify#2 0.694,
+                # final shipped 0.694). Re-apply the floor ONLY in that no-delta
+                # case; any scope movement keeps the re-roll-up authoritative.
+                if (
+                    not _rescore.get("n_excluded")
+                    and not _op_skip
+                    and not _op_skip_env
+                ):
+                    _r2 = _apply_best_of_run_floor(_r2, ctx.project_dir)
                 kwargs["rubric"] = _r2
                 logger.info(
                     "report: finalize re-roll-up → %.4f (prior=%s, excluded %d leaves, policy=%s)",
@@ -1514,6 +1537,21 @@ def write_final_report_rlm(
             json_content = json.dumps(_report_dict, indent=2)
     except Exception:  # noqa: BLE001 — two-axis attach is best-effort, never blocks the write
         logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
+
+    # --- Experiment-arm stamp (A/B observability, 2026-06-11) ---------------
+    # Label every report with its with/without-BES arm + flag snapshot so
+    # paired runs are explicit for scripts/ab_compare.py and the leaderboard.
+    # Operates on the serialized dict (same pattern as two-axis above) so
+    # RLMFinalReport needs no new fields. Fail-soft — never blocks the write.
+    try:
+        from backend.agents.rlm.bes_rlm import experiment_arm_stamp
+        _stamp = experiment_arm_stamp(project_dir)
+        if _stamp:
+            _d = json.loads(json_content)
+            _d["experiment_arm"] = _stamp
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — stamp is best-effort
+        logger.warning("report: experiment-arm stamp failed (non-fatal)", exc_info=True)
     _atomic_write(json_path, json_content)
 
     # --- Markdown (human-readable) ---

@@ -1,17 +1,66 @@
-# All-CNN (arXiv 1412.6806) reproduction — command history
-# Project: prj_0a3202fc187bb692
-# Implemented: 2026-06-10
+# commands.log — All-CNN Reproduction (prj_0a3202fc187bb692)
+# Paper: "Striving for Simplicity: The All Convolutional Net" (arXiv 1412.6806)
+# Generated: 2026-06-10
 
-# Assumptions applied: A001, A002, A003, A004, ENV001, ENV-RT1
+# ── Smoke test (sanity check, ~2min) ──────────────────────────────────────────
+REPROLAB_SMOKE_STEPS=2 \
+OUTPUT_DIR="$OUTPUT_DIR" \
+  python /code/train.py --smoke-test 2>&1 | tee "$OUTPUT_DIR/smoke_test.log"
 
-# The harness uses cells.json + train_cell.py for the matrix.
-# Each cell trains ONE (model, variant, dataset) combo on ONE GPU.
-# 14 cells total; 3 GPUs run up to 3 in parallel.
+# ── Full training run (all 14 cells, ~8-10h on 2×GPU) ─────────────────────────
+# Each cell: 350 epochs, SGD lr=0.05, momentum=0.9, wd=0.001
+# LR schedule: ×0.1 at epochs [200, 250, 300]
+# ZCA whitening: GCN (scale=55) + ZCA (ε=0.1)
+OUTPUT_DIR="$OUTPUT_DIR" \
+  python /code/train.py \
+    --cells /code/cells.json \
+    --config /code/config.json \
+    2>&1 | tee "$OUTPUT_DIR/train.log"
 
-# Manual smoke test (run inside the sandbox):
-# REPROLAB_SMOKE_STEPS=1 REPROLAB_CELL_PARAMS='{"id":"c_allcnn__cifar10_noaug__s42","model_key":"c_allcnn","base_model":"c","variant":"allcnn","env":"cifar10_noaug","dataset":"cifar10","num_classes":10,"augment":false,"seed":42}' REPROLAB_CELL_OUTPUT_DIR=/tmp/smoke_out OUTPUT_DIR=/tmp/smoke_out python train_cell.py
+# ── Single-cell manual run (for debugging) ────────────────────────────────────
+# Example: run only All-CNN-C on CIFAR-10 (no augmentation)
+REPROLAB_CELL_PARAMS='{"id":"c_allcnn_cifar10_noaug","model_key":"c_allcnn","letter":"C","variant":"allcnn","dataset":"cifar10","num_classes":10,"augment":false,"lr":0.05,"epochs":350,"batch_size":128,"seed":42,"use_zca":true}' \
+REPROLAB_CELL_OUTPUT_DIR="$OUTPUT_DIR/cells/c_allcnn_cifar10_noaug" \
+OUTPUT_DIR="$OUTPUT_DIR" \
+  python /code/train_cell.py \
+    2>&1 | tee "$OUTPUT_DIR/cells/c_allcnn_cifar10_noaug/cell.log"
 
-# Full single-cell run example:
-# REPROLAB_CELL_PARAMS='{"id":"c_allcnn__cifar10_noaug__s42","model_key":"c_allcnn","base_model":"c","variant":"allcnn","env":"cifar10_noaug","dataset":"cifar10","num_classes":10,"augment":false,"seed":42}' REPROLAB_CELL_OUTPUT_DIR=$OUTPUT_DIR/c_allcnn python train_cell.py
+# ── Verify metrics output ─────────────────────────────────────────────────────
+# Expected: cifar10.final_test_accuracy ≈ 0.9032 (error ~9.68%)
+#           cifar10.final_train_loss ≈ 0.05–0.15
+python -c "import json; m=json.load(open('$OUTPUT_DIR/metrics.json')); print(json.dumps(m.get('cifar10',{}), indent=2))"
 
-# The harness reads cells.json and runs all 14 cells, aggregating metrics.
+# ── Check per-model results ───────────────────────────────────────────────────
+python -c "
+import json
+m = json.load(open('$OUTPUT_DIR/metrics.json'))
+pm = m.get('per_model', {})
+for k in sorted(pm.keys()):
+    v = pm[k]
+    err = v.get('test_error_pct','?')
+    print(f'{k:30s}  test_error={err}%  status={v.get(\"status\",\"?\")}')
+"
+# 2026-06-10 Fix: data_root default changed from $OUTPUT_DIR/datasets to /home/sww35/openresearch/runs/.cache/data/data
+# Root cause: CIFAR-10/100 download timed out (Errno 110) — data already cached at writable data root
+# Additional: ZCA matrices precomputed at /home/sww35/openresearch/runs/.cache/data/data/zca_cache/
+# Fix verified with smoke test: exit 0, data loads in 1s, metrics.json populated correctly
+
+# ── 2026-06-10 Debug & repair (prj_0a3202fc187bb692-577651d3 failure) ─────────
+# Root cause: train_cell.py had _DEFAULT_DATA_ROOT hardcoded to host path
+#   /home/sww35/openresearch/runs/.cache/data/data which is NOT accessible inside
+#   a Docker container → torchvision tried to download from internet → connection
+#   timed out (errno 110) on ALL 14 cells → all metrics null → degraded_no_metrics.
+#
+# Fix applied (2026-06-10):
+#   1. Hard-linked CIFAR-10/100 raw data + ZCA cache into code/data/
+#      cp -rl .cache/data/data/cifar-10-batches-py code/data/  [exit 0]
+#      cp -rl .cache/data/data/cifar-100-python   code/data/  [exit 0]
+#      cp -l  .cache/data/data/zca_cache/*.npz    code/data/zca_cache/  [exit 0]
+#   2. Updated _DEFAULT_DATA_ROOT in train_cell.py:
+#      Old: hardcoded "/home/sww35/openresearch/runs/.cache/data/data"
+#      New: probe CODE_DIR/data first (accessible as /code/data in container),
+#           then host cache path, then $OUTPUT_DIR/data (download fallback)
+#
+# Smoke test verified: exit 0
+#   REPROLAB_SMOKE_STEPS=2 OUTPUT_DIR=/tmp/allcnn_smoke_test python3 train_cell.py
+#   → "Files already downloaded and verified" (no network) → GPU training ok

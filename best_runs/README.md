@@ -12,10 +12,11 @@ End-to-end reproductions from the OpenResearch agent — three clean single runs
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
+| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.739 | 2 | 11h08m |
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.831 | 1 | 65m |
-| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.696 | 1 | 8h29m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
+| [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |
 
 Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
 
@@ -61,6 +62,43 @@ all-conv/convpool families still dead-train at the probed rates, the
 Section-4 ReLU-masking figure wasn't produced this run, and the ImageNet
 experiment went undeclared as a scope gap (declared gaps are excluded from
 scoring; undeclared ones score 0).
+## All-CNN — every cell converged
+
+Third evidence-driven attempt (2026-06-11, rubric **0.739**): the prior-attempt
+evidence block carried both earlier grids' measured per-cell results into the
+implementer's prompt, and for the first time **all 14 cells converged** —
+including the all-conv and convpool families that sat at chance (90% error)
+through every previous attempt.
+
+| Measured (final grid, test error %) | base | strided | convpool | all-conv |
+|---|---:|---:|---:|---:|
+| Model A | 15.61 | 19.49 | **11.17** | **13.57** |
+| Model B | **14.55** | 21.64 | **12.76** | **14.95** |
+| Model C | **12.18** | **16.45** | **11.31** | **14.81** |
+
+Plus All-CNN-C on CIFAR-10+aug (23.1%) and CIFAR-100+aug (51.4%) — mediocre but
+*real*, where prior attempts recorded chance. Per-cell results incl. learning
+rates: [`allcnn/cells_results.json`](allcnn/cells_results.json).
+
+The 0.739 carries a documented amendment: the in-run finalize shipped 0.694
+(grader drift below the run's own 0.712 high-water) and was re-rolled offline
+via the deterministic finalize rail — same graded leaves, no re-grade — with
+two pure-ImageNet leaves excluded as operator-sanctioned (the run was scoped
+to CIFAR-10/100). Both underlying scoring defects are fixed harness-side
+(floor-after-rescore on unmoved scope; operator-inclusion-scope exclusion).
+Remaining headroom: per-variant learning-rate tuning (the uniform lr=0.05 that
+revived the dead families cost the base/strided stars a few points) and the
+guided-backprop figure quality leaf.
+
+## Adam — what the agent extracted, what it re-derived
+
+| Paper claim | Expected | Reproduced |
+|---|---|---|
+| CIFAR-10 CNN at 45 epochs: Adam + SGD+Nesterov ≪ AdaGrad | ordering | Adam 0.536, SGD+N 0.473, AdaGrad 0.983 |
+| Bias correction stabilizes training as β₂ → 1 (VAE softplus) | bc < no-bc early | 10 ep: bc −119.87 vs no-bc −97.25 |
+| MNIST logreg training NLL: Adam < SGD+N < AdaGrad | ordering | 0.231 / 0.251 / 0.354 |
+
+All three quantitative claims the agent pulled out of the paper were independently re-derived from agent-authored `train.py`.
 
 ## VAE — close on direction, short on absolute targets
 
@@ -180,3 +218,16 @@ Sidecar coverage varies by run. The refreshed **adam** (0.831) carries the full
 event trace but shipped without the rubric/token
 sidecars (its scored breakdown is embedded in `final_report.json`). The rubric
 breakdown for every run is always available inside `final_report.json`.
+---
+
+## All-CNN A/B — first controlled BES measurement (`allcnn_ab/`)
+
+Two arms, one variable: BES competing candidates (best-of-2 implementation
+selection, static rubric SELECT, experiment runs once on the winner). Same
+commit, same flags otherwise, byte-identical pinned rubric, identical seeded
+history, disjoint GPUs. **BES: 0.7378 · control: 0.6526 (Δ +0.085) — and the
+BES arm cost $1.69 LESS and ran 4 minutes faster**, the up-front candidate
+pool paying for itself in avoided repair cycles. The fidelity-first prompt
+angle won the pool (0.557 vs 0.549). One pair = a directional read (±0.05
+run variance); the Adam pair runs next. Full design, pool record, leaf-level
+moves and caveats: [`allcnn_ab/README.md`](allcnn_ab/README.md).

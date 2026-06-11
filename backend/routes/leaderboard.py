@@ -65,6 +65,11 @@ class LeaderboardRow(BaseModel):
     # attempts: total archived-attempt count for this project (0 = first run).
     status: str = "completed"
     attempts: int = 0
+    # A/B observability (2026-06-11): with/without-BES arm from the report's
+    # experiment_arm stamp. None/False on pre-stamp reports.
+    experiment_arm: str | None = None
+    ab_pair_id: str | None = None
+    bes_enabled: bool = False
 
 
 _TERMINAL_STATUSES: frozenset[str] = frozenset({
@@ -97,6 +102,7 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
     rubric = _as_dict(data.get("rubric"))
     cost = _as_dict(data.get("cost"))
     models = _as_dict(data.get("models"))
+    _arm = _as_dict(data.get("experiment_arm"))
     started_at = data.get("started_at")
     completed_at = data.get("completed_at")
 
@@ -164,6 +170,9 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         verdict=str(data.get("verdict", "failed")),
         status=_status,
         attempts=resolved.attempts_total,
+        experiment_arm=(str(_arm["arm"]) if _arm.get("arm") else None),
+        ab_pair_id=(str(_arm["ab_pair_id"]) if _arm.get("ab_pair_id") else None),
+        bes_enabled=bool(_as_dict(_arm.get("bes")).get("enabled")),
     )
 
 

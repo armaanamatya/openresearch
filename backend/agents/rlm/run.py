@@ -243,10 +243,20 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     bk = root_model.backend_kwargs
     sub_bk = root_model.sub_backend_kwargs
 
+    # Optional quality pin (2026-06-11): REPROLAB_PRIMITIVE_LLM_MODEL routes the
+    # shared primitive LlmClient (plan_reproduction, propose_improvements,
+    # generate_rubric_tree, repro-spec extraction, tool-recommendation) to an
+    # explicit Claude model id (e.g. an Opus id) instead of the claude CLI's
+    # configured default. Scope is ONLY the Claude client paths below —
+    # navigation sub-calls (llm_query/rlm_query) ride the rlm sub-backend /
+    # accelerator and the root loop rides backend_kwargs, both unaffected.
+    # Unset/empty = today's behavior (CLI default model).
+    _pinned_model = os.environ.get("REPROLAB_PRIMITIVE_LLM_MODEL", "").strip() or None
+
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
     if backend == "anthropic-oauth":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-        return ClaudeLlmClient(), "claude-oauth"
+        return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude-oauth")
 
     # 2. OpenAI-compatible custom endpoint (Featherless, vLLM-via-OpenAI, etc.)
     if backend == "openai" and bk.get("base_url"):
@@ -299,7 +309,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # 5. Anthropic raw HTTP — uses ANTHROPIC_API_KEY through claude-agent-sdk's resolution
     if backend == "anthropic":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-        return ClaudeLlmClient(), "claude"
+        return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude")
 
     # 6. Plain OpenAI
     if backend == "openai":
@@ -313,7 +323,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         return OpenAILlmClient(), "gpt-4o-mini"
     from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-    return ClaudeLlmClient(), "claude"
+    return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude")
 
 
 def _resolve_agent_runtime(
@@ -1405,6 +1415,35 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
     )
 
 
+def _load_reusable_rubric(project_dir: Path) -> dict | None:
+    """REPROLAB_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
+
+    Rubric generation is an LLM call, so every re-run otherwise grades against
+    a slightly different rubric — rubric drift alone moves scores. A/B arms
+    (and rubric-stable re-run campaigns) pre-seed the project dir with the
+    reference rubric and set the flag so score deltas measure the HARNESS
+    change, not rubric variance. Default OFF; fail-soft — a missing/corrupt
+    file returns None and the caller falls through to generation as before.
+    """
+    enabled = os.environ.get("REPROLAB_REUSE_RUBRIC", "").strip().lower() not in (
+        "", "0", "false", "off",
+    )
+    if not enabled:
+        return None
+    try:
+        existing = json.loads(
+            (project_dir / "generated_rubric.json").read_text(encoding="utf-8")
+        )
+        if isinstance(existing, dict) and existing:
+            return existing
+    except (OSError, json.JSONDecodeError, ValueError):
+        logger.warning(
+            "REPROLAB_REUSE_RUBRIC set but no readable generated_rubric.json — "
+            "falling through to rubric generation"
+        )
+    return None
+
+
 async def run_pipeline_rlm(
     project_id: str,
     runs_root: Path,
@@ -1459,6 +1498,20 @@ async def run_pipeline_rlm(
             "run_pipeline_rlm[%s]: prior attempt archived to %s (%d item(s))",
             project_id, _archived["attempt_dir"], len(_archived["moved"]),
         )
+
+    # Anti-regression seeding (2026-06-11, REPROLAB_SEED_BEST_ATTEMPT): copy the
+    # best prior attempt's working code into code/_best_attempt/ so the
+    # implementer starts FROM the proven solution. Each Adam attempt used to
+    # re-derive everything from scratch and routinely landed below the 0.831
+    # baseline it had already achieved. Fail-soft + flag-gated inside the module.
+    try:
+        from backend.agents.rlm.best_attempt import seed_reference_code
+        _seeded = seed_reference_code(runs_root / project_id)
+        if _seeded:
+            logger.info("run_pipeline_rlm[%s]: best-attempt reference seeded at %s",
+                        project_id, _seeded)
+    except Exception:  # noqa: BLE001 — seeding must never block the run
+        logger.debug("run_pipeline_rlm: best-attempt seeding skipped", exc_info=True)
 
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
@@ -1738,11 +1791,20 @@ async def run_pipeline_rlm(
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
-    # Stub-primitive runs skip this: rubric generation is a REAL paid LLM call
-    # (the one non-stubbed network path), and under pytest it turned the
-    # leaked .env OPENAI_API_KEY into minutes of 429-retry sleep per run —
-    # the suite's 862s-test stall (audit 2026-06-09).
+    # Stub-primitive runs skip GENERATION only: rubric generation is a REAL paid
+    # LLM call (the one non-stubbed network path) — the 862s-suite-stall fix
+    # (audit 2026-06-09). REPROLAB_REUSE_RUBRIC (LLM-free, see
+    # _load_reusable_rubric) stays active in both modes so A/B arms grade
+    # against the SAME pre-seeded rubric.
     _stub_mode = os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1"
+    if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+        _reused_rubric = _load_reusable_rubric(project_dir)
+        if _reused_rubric is not None:
+            context_dict["rubric_spec"] = _reused_rubric
+            logger.info(
+                "run_pipeline_rlm: REPROLAB_REUSE_RUBRIC — reusing on-disk "
+                "generated_rubric.json (no regeneration)"
+            )
     if _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         logger.info("run_pipeline_rlm: stub mode — skipping LLM rubric generation (run proceeds rubric-less)")
     if not _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):

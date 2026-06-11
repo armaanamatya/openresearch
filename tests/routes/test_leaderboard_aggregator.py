@@ -204,6 +204,8 @@ def test_leaderboard_row_schema_is_pinned(tmp_path: Path):
         "sandbox", "started_at", "completed_at", "verdict",
         # β5: attempt-aware fields
         "status", "attempts",
+        # A/B observability (2026-06-11)
+        "experiment_arm", "ab_pair_id", "bes_enabled",
     }
     assert set(dumped.keys()) == expected_keys, (
         f"LeaderboardRow shape drifted. "
@@ -255,3 +257,42 @@ def test_aggregate_computes_wall_clock_from_timestamps(tmp_path: Path):
                completed_at="2026-05-23T04:15:00+00:00")
     rows = aggregate_leaderboard(tmp_path)
     assert rows[0].wall_clock_s == 300.0
+
+
+def test_experiment_arm_fields_surface_on_rows(tmp_path: Path):
+    """A/B observability (2026-06-11): experiment_arm stamp → row fields."""
+    runs_root = tmp_path
+    run_dir = runs_root / "prj_ab_bes_arm"
+    run_dir.mkdir(parents=True)
+    (run_dir / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "1412.6806", "title": "All-CNN"},
+        "verdict": "partial",
+        "rubric": {"overall_score": 0.7, "meets_target": True, "areas": []},
+        "cost": {"llm_usd": 1.0},
+        "iterations": 3,
+        "started_at": "2026-06-11T00:00:00+00:00",
+        "completed_at": "2026-06-11T04:00:00+00:00",
+        "experiment_arm": {
+            "arm": "bes",
+            "ab_pair_id": "allcnn-ab-20260611",
+            "bes": {"enabled": True, "candidates_per_cluster": 2},
+        },
+    }))
+    legacy_dir = runs_root / "prj_ab_legacy"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "1412.6806", "title": "All-CNN"},
+        "verdict": "partial",
+        "rubric": {"overall_score": 0.6, "meets_target": False, "areas": []},
+        "cost": {}, "iterations": 1,
+        "started_at": None, "completed_at": None,
+    }))
+
+    rows = {r.project_id: r for r in aggregate_leaderboard(runs_root)}
+    bes_row = rows["prj_ab_bes_arm"]
+    assert bes_row.experiment_arm == "bes"
+    assert bes_row.ab_pair_id == "allcnn-ab-20260611"
+    assert bes_row.bes_enabled is True
+    legacy_row = rows["prj_ab_legacy"]
+    assert legacy_row.experiment_arm is None
+    assert legacy_row.bes_enabled is False

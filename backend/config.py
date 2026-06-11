@@ -373,6 +373,17 @@ class Settings(BaseSettings):
     bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8, description="N competing candidates per cluster; 1 = parity")
     bes_select_metric: str = Field(default="cluster_score", description="Candidate SELECT metric (cluster_score | failed_leaves); an unknown value falls back to cluster_score at use-site, so it never aborts the default RDR path")
     bes_splice_enabled: bool = Field(default=False, description="Evolve/splice (v2, deferred) — no-op in v1")
+    # Adaptive gating (2026-06-11, RLM path): compete only where selection has
+    # variance to remove. The allcnn-ab-20260611 pool discriminated weakly
+    # (0.549 vs 0.557) BECAUSE the seeded best-attempt + champion rails already
+    # anchor implementation quality on papers with history — the pool's value
+    # concentrates on FIRST attempts and weak-history papers. When bes_adaptive
+    # is on, the pool engages only if the project has no prior attempt or its
+    # best score is below bes_adaptive_skip_score; the decision is persisted to
+    # rlm_state/bes_adaptive.json and stamped into experiment_arm. Keep OFF for
+    # A/B arms (they need deterministic pool behaviour).
+    bes_adaptive: bool = Field(default=False, description="Engage the RLM candidate pool only on first-attempt / weak-history papers")
+    bes_adaptive_skip_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Best prior attempt score at/above which adaptive mode skips the pool")
 
     # --- Mode-agnostic RDR pre-run gate (Phase 2, default OFF) ---
     rdr_preflight_gate: bool = Field(default=False, description="Run scan_code_dir before run_experiment on the RDR path")

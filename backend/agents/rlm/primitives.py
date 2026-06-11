@@ -347,6 +347,130 @@ def _harvest_baseline_artifacts(
     return _baseline_ok_envelope(path)
 
 
+def _stash_cells_manifest(code_dir: "Any", ctx: "RunContext") -> bool:
+    """If a cells.json exists pre-repair, preserve a copy; return whether it existed.
+
+    The cells route is the failure-isolation contract (one process per cell) —
+    and the 2026-06-11 Adam repair pass dropped it under pressure, rebuilding
+    monolithic and losing the whole matrix to one device-side assert. The copy
+    at rlm_state/last_cells.json lets the agent restore the manifest instead of
+    re-deriving the grid.
+    """
+    from pathlib import Path
+    import shutil
+
+    manifest = Path(code_dir) / "cells.json"
+    if not manifest.is_file():
+        return False
+    try:
+        state_dir = ctx.project_dir / "rlm_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest, state_dir / "last_cells.json")
+    except OSError:
+        logger.warning("implement_baseline: could not stash cells.json", exc_info=True)
+    return True
+
+
+# Failure classes where the CELLS THEMSELVES were the problem — a repair that
+# abandons the route after these may be a deliberate strategy change, so the
+# guard stays advisory instead of restoring the manifest.
+_CELLS_ROUTE_FAILURE_CLASSES: frozenset[str] = frozenset({
+    "cell_execution_error",
+    "cell_smoke_failed",
+})
+
+
+def _cells_route_retention_enabled() -> bool:
+    """Default ON (env_pin precedent); REPROLAB_CELLS_ROUTE_RETENTION=0 disables."""
+    import os
+
+    return os.environ.get("REPROLAB_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
+        "0", "false", "off",
+    )
+
+
+def _check_cells_manifest_retention(
+    result: dict,
+    *,
+    code_dir: "Any",
+    had_manifest: bool,
+    is_repair: bool,
+    ctx: "RunContext",
+    repair_failure_class: str = "",
+) -> dict:
+    """Route retention when a repair pass drops the cells manifest.
+
+    ACTIVE retention (default ON, REPROLAB_CELLS_ROUTE_RETENTION=0 disables):
+    when the repaired tree STILL carries a per-cell trainer (train_cell.py)
+    and the failure being repaired was not a cells-route failure, the manifest
+    is pure grid DATA the rewrite forgot — restore it from the pre-repair stash
+    so the matrix keeps one-process-per-cell crash isolation.
+
+    Advisory fallback otherwise: restoring a manifest without a trainer is
+    useless, and restoring after a cells-route failure could re-arm the very
+    route the repair deliberately abandoned — those cases get an explicit
+    contract warning naming the trade-off and the stash location instead.
+    """
+    from pathlib import Path
+    import shutil
+
+    if not (is_repair and had_manifest) or result.get("ok") is not True:
+        return result
+    manifest = Path(code_dir) / "cells.json"
+    if manifest.is_file():
+        return result
+
+    stash = ctx.project_dir / "rlm_state" / "last_cells.json"
+    trainer_present = (Path(code_dir) / "train_cell.py").is_file()
+    cells_route_failure = (
+        str(repair_failure_class or "").strip().lower() in _CELLS_ROUTE_FAILURE_CLASSES
+    )
+
+    if (
+        _cells_route_retention_enabled()
+        and trainer_present
+        and not cells_route_failure
+        and stash.is_file()
+    ):
+        try:
+            shutil.copy2(stash, manifest)
+            note = (
+                "cells_manifest_restored: this repair removed code/cells.json while "
+                "keeping train_cell.py — the harness restored the manifest from "
+                "rlm_state/last_cells.json so the matrix keeps one-process-per-cell "
+                "crash isolation (a monolithic run loses every family to one CUDA "
+                "device-side assert). If you intended to retire the grid, delete "
+                "cells.json explicitly AND say so in the plan."
+            )
+            result.setdefault("contract_warnings", []).append(note)
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "cells_manifest_restored",
+                "message": note,
+            })
+            logger.info("implement_baseline[%s]: %s", ctx.project_id, note)
+            return result
+        except OSError:
+            logger.warning(
+                "implement_baseline[%s]: cells.json restore failed — warn-only",
+                ctx.project_id, exc_info=True,
+            )
+
+    note = (
+        "cells_manifest_dropped: this repair removed code/cells.json — the matrix "
+        "will run MONOLITHIC, so one crash (e.g. a CUDA device-side assert) zeroes "
+        "every family's work instead of one cell's. If that was not deliberate, "
+        "restore the manifest from rlm_state/last_cells.json (and keep "
+        "train_cell.py) so each config runs in its own process."
+    )
+    result.setdefault("contract_warnings", []).append(note)
+    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+        "code": "cells_manifest_dropped",
+        "message": note,
+    })
+    logger.warning("implement_baseline[%s]: %s", ctx.project_id, note)
+    return result
+
+
 def _failure_class_key(value: object) -> str:
     return str(value or "").strip().lower().replace("-", "_")
 
@@ -1743,7 +1867,7 @@ def _drive_baseline_child(
     )
 
 
-def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
+def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
     `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
@@ -1819,6 +1943,29 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     # the code-writing agent into fix-existing-code mode — the root passes it
     # to retry after run_experiment fails.
     repair_context = plan.get("repair_context")
+
+    # ------------------------------------------------------------------
+    # BES competing candidates on the RLM path (2026-06-11, default OFF).
+    #
+    # arXiv/PDF runs never enter RDR Phase 1 (hybrid bundle guard), so
+    # BES-on-RDR cannot reach them. Master-gated by the SAME flags
+    # (REPROLAB_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
+    # implementations, static rubric SELECT, the experiment runs once on the
+    # winner restored into code/. Repairs and re-entrant candidate calls
+    # (_bes_inner) stay single-shot — BES v1 semantics, mirror of
+    # rdr/controller._dispatch_competing_candidates.
+    # ------------------------------------------------------------------
+    if not _bes_inner and repair_context is None:
+        try:
+            from backend.agents.rlm import bes_rlm as _bes
+
+            if _bes.should_compete(ctx, plan):
+                return _bes.compete(plan, ctx=ctx, implement_fn=implement_baseline)
+        except Exception:  # noqa: BLE001 — BES is advisory; never blocks implementation
+            logger.warning(
+                "implement_baseline: BES compete unavailable — single-shot",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # PR-ι.2 — Patch-mode implement_baseline (killer fix for repeated bugs).
@@ -2112,6 +2259,15 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
+    # Route-retention (2026-06-11): remember whether a cells manifest existed
+    # before this (repair) implementation so its silent disappearance — the
+    # monolithic regression that lost the Adam matrix to one device-side
+    # assert — is surfaced to the agent and the dashboard, with the manifest
+    # preserved for restoration.
+    _had_cells_manifest = (
+        _stash_cells_manifest(code_dir, ctx) if repair_context is not None else False
+    )
+
     _child_holder: dict = {}
     try:
         if _baseline_subprocess_enabled():
@@ -2278,6 +2434,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
                             error_code="sdk_aclose_incomplete_artifacts",
                             error_prefix="implement_baseline SDK cleanup stalled after artifact write",
                         )
+                        harvested = _check_cells_manifest_retention(
+                            harvested, code_dir=code_dir,
+                            had_manifest=_had_cells_manifest,
+                            is_repair=repair_context is not None, ctx=ctx,
+                            repair_failure_class=str((repair_context or {}).get("failure_class") or ""),
+                        )
                         if harvested.get("ok") is True:
                             _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
                         return harvested
@@ -2342,6 +2504,12 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
         return _err
 
     harvested = _harvest_baseline_artifacts(code_dir)
+    harvested = _check_cells_manifest_retention(
+        harvested, code_dir=code_dir,
+        had_manifest=_had_cells_manifest,
+        is_repair=repair_context is not None, ctx=ctx,
+        repair_failure_class=str((repair_context or {}).get("failure_class") or ""),
+    )
     if harvested.get("ok") is True:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
     return harvested
@@ -4361,6 +4529,50 @@ def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool
     return (max(recent) - min(recent)) <= epsilon
 
 
+# Top-level metrics keys that are run metadata / sidecar blocks, never an
+# experiment family — excluded from per_model derivation.
+_PER_MODEL_RESERVED_KEYS: frozenset[str] = frozenset({
+    "status", "scope", "per_model", "per_dataset", "history", "regret",
+    "data_load_failures", "provenance", "config", "config_used", "meta",
+    "metadata", "contract", "notes", "errors", "warnings", "duration_s",
+    "wall_clock_s", "contract_warnings",
+})
+
+
+def _derive_per_model_from_families(metrics: dict) -> tuple[dict, list[str]]:
+    """Mirror family-shaped top-level dicts into an EMPTY per_model.
+
+    2026-06-11 Adam: the repaired run completed all six families
+    (mnist_logreg, imdb_bow, cifar10_cnn, ...) as TOP-LEVEL keys with
+    per_model={} — measured work refused over a naming choice, costing a full
+    repair cycle. Same derive-not-drop principle as
+    cell_matrix.normalize_cell_axes, families-route edition: when per_model is
+    empty/missing but non-reserved dict-valued top-level keys exist, mirror
+    them under per_model so the scope validator and the rubric scorer see the
+    canonical shape. Pure (no I/O); returns (metrics, notes) — notes non-empty
+    only when a derivation happened.
+    """
+    if not isinstance(metrics, dict):
+        return metrics, []
+    pm = metrics.get("per_model")
+    if isinstance(pm, dict) and pm:
+        return metrics, []
+    derived = {
+        k: v
+        for k, v in metrics.items()
+        if k not in _PER_MODEL_RESERVED_KEYS and isinstance(v, dict) and v
+    }
+    if not derived:
+        return metrics, []
+    out = dict(metrics)
+    out["per_model"] = derived
+    return out, [
+        "per_model_derived_from_families: per_model was empty; mirrored top-level "
+        f"family keys {sorted(derived.keys())[:8]} under per_model. Emit "
+        "per_model[<family>] directly next time."
+    ]
+
+
 def _validate_scope_metrics(
     scope_spec: object,
     metrics: dict,
@@ -4480,14 +4692,23 @@ def _validate_scope_metrics(
         # Single-model + multi-dataset: per_dataset at top level (no per_model nesting).
         pd = metrics.get("per_dataset")
         if not isinstance(pd, dict) or not pd:
-            # Cells-route fallback: the grid route writes per_model[model][env]
-            # with no top-level per_dataset; derive dataset coverage from the
-            # union of env keys so a correctly-structured cells.json run isn't
-            # flagged per_dataset_required.
+            # Accept the cells-route canonical shape too (2026-06-10 All-CNN v2):
+            # the harness aggregate is per_model[model][env][baseline] where the
+            # env keys carry the dataset (cifar10_noaug, cifar100_aug, ...) — it
+            # structurally NEVER has a top-level per_dataset dict, so demanding
+            # one here mis-fired on every multi-dataset cells.json run. Treat
+            # the union of env keys across models as the dataset key set.
+            # 2026-06-11 (Adam families route): the dataset can also live in the
+            # per_model KEY ITSELF (per_model['mnist_logreg'] / ['imdb_bow'] /
+            # ['cifar10_cnn'] whose INNER keys are optimizers, not datasets) —
+            # include both levels in the candidate set, else a complete
+            # six-family run is refused for a naming choice.
             per_model = metrics.get("per_model")
             if isinstance(per_model, dict) and per_model:
                 env_keys: set[str] = set()
-                for model_metrics in per_model.values():
+                for fam_key, model_metrics in per_model.items():
+                    if isinstance(fam_key, str):
+                        env_keys.add(fam_key)
                     if isinstance(model_metrics, dict):
                         env_keys.update(k for k in model_metrics if isinstance(k, str))
                 if env_keys:
@@ -5778,6 +5999,31 @@ def run_experiment(
     # structure. A successful run with the wrong shape is a fail-soft error
     # so the agent's next implement_baseline gets it as repair_context.
     if result.get("success") and result.get("metrics"):
+        # Derive-not-drop (2026-06-11): families written as top-level keys with
+        # an empty per_model are a SHAPE choice, not missing measurements —
+        # mirror them in before validating, persist so the rubric scorer reads
+        # the same canonical shape, and tell the agent.
+        _normed_metrics, _family_notes = _derive_per_model_from_families(result["metrics"])
+        if _family_notes:
+            result = {**result, "metrics": _normed_metrics}
+            result.setdefault("contract_warnings", []).extend(_family_notes)
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "per_model_derived",
+                    "message": _family_notes[0][:400],
+                })
+            except Exception:  # noqa: BLE001
+                logger.debug("run_experiment: per_model_derived event emit failed")
+            try:
+                import json as _json
+                import os as _os2
+                _mpath = ctx.project_dir / "code" / "metrics.json"
+                if _mpath.is_file():
+                    _tmp = _mpath.with_suffix(".json.tmp")
+                    _tmp.write_text(_json.dumps(_normed_metrics, indent=2), encoding="utf-8")
+                    _os2.replace(_tmp, _mpath)
+            except Exception:  # noqa: BLE001 — disk sync is best-effort
+                logger.warning("run_experiment: per_model derivation disk sync failed", exc_info=True)
         hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
         if hint is not None:
             # Self-healing scope reduction (2026-05-30): the first few times the

@@ -160,7 +160,17 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
                   </a>
                   {r.title ? <div className={styles.runTitle}>{r.title}</div> : null}
                 </td>
-                <td><span className={styles.modeBadge}>{r.mode}</span></td>
+                <td>
+                  <span className={styles.modeBadge}>{r.mode}</span>
+                  {(r.bes_enabled || r.experiment_arm === "bes") && (
+                    <span
+                      className={styles.besBadge}
+                      title={r.ab_pair_id ? `BES arm · pair ${r.ab_pair_id}` : "BES competing candidates enabled"}
+                    >
+                      BES
+                    </span>
+                  )}
+                </td>
                 <td>{r.execution_mode || <Dash />}</td>
                 <td>{r.models.planner || <Dash />}</td>
                 <td>{r.models.executor || <Dash />}</td>

@@ -1101,6 +1101,15 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
     "whole training. metrics.json + config_used.json are MANDATORY; figures are best-effort.\n"
     "(2026-06-01: an unguarded top-level `import matplotlib` aborted a full training run\n"
     "with zero metrics — a one-line try/except would have saved the whole run.)\n"
+    "MULTI-FAMILY ISOLATION: when train.py runs several experiment families / models\n"
+    "sequentially in ONE process, wrap EACH family in try/except and write metrics.json\n"
+    "incrementally after each family with that family's status='complete' (top-level\n"
+    "status set only at the very end) — one family's crash (a CUDA device-side assert\n"
+    "poisons the entire process) must cost one family, never the measured results of\n"
+    "the others. Prefer the cells.json + train_cell.py route outright: one process per\n"
+    "cell IS the isolation. (2026-06-11: a monolithic Adam repair lost a fully-measured\n"
+    "logreg family — 92.6% accuracy already on disk — to a device-side assert in the\n"
+    "family that ran after it; the whole matrix scored 0.)\n"
 )
 
 
@@ -2398,7 +2407,17 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — evidence is advisory, never fatal
             logger.debug("prior_attempt_evidence block skipped", exc_info=True)
 
-    # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
+    # 6.6 Best-attempt anti-regression block (2026-06-11, flag-gated): the best
+    # prior attempt's score, the pointer to its seeded reference code, and the
+    # leaf-level regression list (what the best earned that the latest lost).
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm.best_attempt import best_attempt_guidance_block
+            guidance += best_attempt_guidance_block(project_dir)
+        except Exception:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("best_attempt guidance block skipped", exc_info=True)
+
+    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
@@ -2407,7 +2426,14 @@ def _compute_constraint_guidance(
     # The guidance is appended verbatim, so the operator is responsible for
     # phrasing it so it doesn't contradict the NO STUB block above.
     import os as _os
-    extra = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
+    # Both spellings: the alias bridge mirrors REPROLAB_<->OPENRESEARCH_ at
+    # IMPORT time only, but bes_rlm._angle_guidance mutates the env at RUNTIME
+    # (per-candidate prompt angles) under the REPROLAB_ name — read both so
+    # the candidate pool diversifies regardless of which prefix won the merge.
+    extra = (
+        _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
+        or _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+    )
     if extra:
         guidance += (
             "\n\nOPERATOR GUIDANCE — per-run scope override:\n"
