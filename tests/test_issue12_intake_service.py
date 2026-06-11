@@ -360,3 +360,43 @@ def test_aggregate_replays_correctly_after_full_lifecycle(service, store, good_p
         fetchers={"pdf_path": PdfPathFetcher(runs_root=Path("/tmp"))},  # not invoked
     )
     assert s2.get_state(pid) is ProjectState.FETCHED
+
+
+# --- RegisterProject with project_id_override (A/B arm lineages) -----------
+
+
+def test_register_with_override_creates_independent_aggregate(service, store, good_pdf):
+    src = PdfPath(path=str(good_pdf))
+    canonical = service.register_project(RegisterProject(source=src))
+    override = f"{canonical}_ab_bes"
+
+    pid = service.register_project(
+        RegisterProject(source=src), project_id_override=override,
+    )
+    assert pid == override
+    # Both aggregates exist, each with its own ProjectCreated carrying ITS id.
+    for the_id in (canonical, override):
+        events = list(store.load(AggregateId(the_id)))
+        assert [e.event_type for e in events] == ["project_created"]
+        assert events[0].payload["project_id"] == the_id
+
+
+def test_override_fetch_resolves_under_override_id(service, store, good_pdf, runs_dir):
+    src = PdfPath(path=str(good_pdf))
+    override = "prj_custom_ab_arm"
+    service.register_project(RegisterProject(source=src), project_id_override=override)
+
+    assert service.fetch_paper(FetchPaper(project_id=override)) is True
+    events = list(store.load(AggregateId(override)))
+    assert [e.event_type for e in events] == ["project_created", "paper_fetched"]
+    # The paper lands in the OVERRIDE run dir, not the canonical one.
+    assert (runs_dir / override / "raw_paper.pdf").exists()
+
+
+def test_register_override_is_idempotent(service, store, good_pdf):
+    src = PdfPath(path=str(good_pdf))
+    override = "prj_custom_idem"
+    a = service.register_project(RegisterProject(source=src), project_id_override=override)
+    b = service.register_project(RegisterProject(source=src), project_id_override=override)
+    assert a == b == override
+    assert len(list(store.load(AggregateId(override)))) == 1

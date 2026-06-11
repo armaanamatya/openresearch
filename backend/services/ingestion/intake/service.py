@@ -102,8 +102,19 @@ class IntakeAppService:
         cmd: RegisterProject,
         *,
         correlation_id: CorrelationId | None = None,
+        project_id_override: str | None = None,
     ) -> str:
-        project_id = project_id_for(cmd.source)
+        """Register the source; returns the project id.
+
+        ``project_id_override`` registers the aggregate under an explicit id
+        instead of the source-derived ``project_id_for(source)`` — this is how
+        the SAME paper runs as an independent lineage (A/B arms): fetch /
+        parse / discovery / indexing all key off the aggregate id, so the
+        override gets its own full ingest into ``runs/<override>/``.
+        Idempotent like the default path. ``None`` (default) = canonical id,
+        byte-identical to prior behaviour.
+        """
+        project_id = project_id_override or project_id_for(cmd.source)
         cid = correlation_id or new_correlation_id()
 
         agg = self._load_aggregate(project_id)

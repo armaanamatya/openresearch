@@ -1644,7 +1644,7 @@ def _drive_baseline_child(
     )
 
 
-def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
+def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
     `plan` is the aggregate dict the root assembles: `{"paper_claim_map":
@@ -1720,6 +1720,29 @@ def implement_baseline(plan: dict, *, ctx: "RunContext") -> dict:
     # the code-writing agent into fix-existing-code mode — the root passes it
     # to retry after run_experiment fails.
     repair_context = plan.get("repair_context")
+
+    # ------------------------------------------------------------------
+    # BES competing candidates on the RLM path (2026-06-11, default OFF).
+    #
+    # arXiv/PDF runs never enter RDR Phase 1 (hybrid bundle guard), so
+    # BES-on-RDR cannot reach them. Master-gated by the SAME flags
+    # (REPROLAB_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
+    # implementations, static rubric SELECT, the experiment runs once on the
+    # winner restored into code/. Repairs and re-entrant candidate calls
+    # (_bes_inner) stay single-shot — BES v1 semantics, mirror of
+    # rdr/controller._dispatch_competing_candidates.
+    # ------------------------------------------------------------------
+    if not _bes_inner and repair_context is None:
+        try:
+            from backend.agents.rlm import bes_rlm as _bes
+
+            if _bes.should_compete(ctx, plan):
+                return _bes.compete(plan, ctx=ctx, implement_fn=implement_baseline)
+        except Exception:  # noqa: BLE001 — BES is advisory; never blocks implementation
+            logger.warning(
+                "implement_baseline: BES compete unavailable — single-shot",
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # PR-ι.2 — Patch-mode implement_baseline (killer fix for repeated bugs).

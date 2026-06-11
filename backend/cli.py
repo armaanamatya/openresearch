@@ -1571,11 +1571,17 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             )
 
     print(f"[ingest 1/6] Registering project for {args.source}", file=sys.stderr)
-    project_id = intake.register_project(RegisterProject(source=source))
     # T15 / handoff P1-I8: when the REST API spawns the CLI it passes --project-id
-    # so the CLI writes to the same runs/<id>/ directory the API watches.  The
-    # override replaces the source-derived id *after* registration so the event-
-    # store aggregate (keyed by the source-derived id) is still created correctly.
+    # so the CLI writes to the same runs/<id>/ directory the API watches.
+    # 2026-06-11: the override is passed INTO registration — a --project-id that
+    # differs from the source-derived id gets its OWN aggregate (same source),
+    # so fetch/parse/index resolve under it instead of raising UnknownProject.
+    # This lets the same paper run as an independent A/B-arm lineage via
+    # batch_reproduce --project-id-suffix.
+    project_id = intake.register_project(
+        RegisterProject(source=source),
+        project_id_override=(getattr(args, "project_id", None) or None),
+    )
     if getattr(args, "project_id", None):
         project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
