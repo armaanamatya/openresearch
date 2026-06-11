@@ -2387,6 +2387,16 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — evidence is advisory, never fatal
             logger.debug("prior_attempt_evidence block skipped", exc_info=True)
 
+    # 6.6 Best-attempt anti-regression block (2026-06-11, flag-gated): the best
+    # prior attempt's score, the pointer to its seeded reference code, and the
+    # leaf-level regression list (what the best earned that the latest lost).
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm.best_attempt import best_attempt_guidance_block
+            guidance += best_attempt_guidance_block(project_dir)
+        except Exception:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("best_attempt guidance block skipped", exc_info=True)
+
     # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:

@@ -720,6 +720,15 @@ def _emit_supplemental(
         # above, so we never reach here for a failed verification.
         score = result.get("overall_score")
         target = result.get("target_score")
+        # Anti-regression target floor (2026-06-11, REPROLAB_TARGET_BEST_FLOOR):
+        # raise the in-run target to the best prior attempt's score so the
+        # forced-iteration policy refuses to finish below the proven baseline
+        # while budget remains. No-op when the flag is off / no prior attempt.
+        try:
+            from backend.agents.rlm.best_attempt import floored_target as _floored_target
+            target = _floored_target(ctx.project_dir, target)
+        except Exception:  # noqa: BLE001 — the floor must never break verify handling
+            pass
         areas = result.get("areas", [])
         if score is not None and isinstance(areas, list):
             # Lane H — stash the latest score so the FINAL_VAR interceptor can

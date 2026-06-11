@@ -1336,6 +1336,20 @@ async def run_pipeline_rlm(
             project_id, _archived["attempt_dir"], len(_archived["moved"]),
         )
 
+    # Anti-regression seeding (2026-06-11, REPROLAB_SEED_BEST_ATTEMPT): copy the
+    # best prior attempt's working code into code/_best_attempt/ so the
+    # implementer starts FROM the proven solution. Each Adam attempt used to
+    # re-derive everything from scratch and routinely landed below the 0.831
+    # baseline it had already achieved. Fail-soft + flag-gated inside the module.
+    try:
+        from backend.agents.rlm.best_attempt import seed_reference_code
+        _seeded = seed_reference_code(runs_root / project_id)
+        if _seeded:
+            logger.info("run_pipeline_rlm[%s]: best-attempt reference seeded at %s",
+                        project_id, _seeded)
+    except Exception:  # noqa: BLE001 — seeding must never block the run
+        logger.debug("run_pipeline_rlm: best-attempt seeding skipped", exc_info=True)
+
     # Status snapshot at run start — GET /runs/{id} reads this; without it a
     # CLI- or script-launched RLM run 404s. Terminal status is set in _finalize.
     # Surface a degraded-paper-text warning here (F-29) so an operator sees the
