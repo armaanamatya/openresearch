@@ -254,3 +254,77 @@ def test_missing_stash_degrades_to_warning(tmp_path, monkeypatch):
     )
     assert not (code / "cells.json").exists()
     assert any("cells_manifest_dropped" in w for w in out["contract_warnings"])
+
+
+# ---------------------------------------------------------------------------
+# D. per_model derivation from family-shaped top-level keys (derive-not-drop)
+# ---------------------------------------------------------------------------
+
+
+def test_derives_per_model_from_family_keys():
+    """The live 2026-06-11 shape: six families top-level, per_model empty."""
+    from backend.agents.rlm.primitives import _derive_per_model_from_families
+
+    metrics = {
+        "status": "completed",
+        "mnist_logreg": {"adam": {"test_accuracy": 92.63}, "sgd": {"test_accuracy": 92.65}},
+        "mnist_mlp": {"adam": {"test_accuracy": 98.1}},
+        "cifar10_cnn": {"adam": {"test_accuracy": 80.2}},
+        "synthetic": {"adam": {"final_loss": 0.01}},
+        "imdb_bow": {"adam": {"test_accuracy": 88.0}},
+        "vae_lr_sweep": {"lr_0.001": {"elbo": -98.0}},
+        "history": {"mnist_logreg": {"adam": {"epoch": [1, 2]}}},
+        "regret": [1.0, 0.5],
+        "per_model": {},
+        "data_load_failures": {},
+        "scope": {"gaps": []},
+    }
+    out, notes = _derive_per_model_from_families(metrics)
+    assert notes and "per_model_derived_from_families" in notes[0]
+    pm = out["per_model"]
+    assert set(pm) == {
+        "mnist_logreg", "mnist_mlp", "cifar10_cnn", "synthetic", "imdb_bow", "vae_lr_sweep",
+    }
+    assert pm["mnist_logreg"]["adam"]["test_accuracy"] == 92.63
+    # Reserved blocks never masquerade as models.
+    assert "history" not in pm and "scope" not in pm and "data_load_failures" not in pm
+
+
+def test_derivation_satisfies_the_live_scope_check():
+    """End-to-end vs the validator: the exact Adam scope now passes."""
+    from backend.agents.rlm.primitives import (
+        _derive_per_model_from_families,
+        _validate_scope_metrics,
+    )
+    from backend.agents.schemas import DatasetSlice, ScopeSpec
+
+    scope = ScopeSpec(datasets=[
+        DatasetSlice(name="MNIST"), DatasetSlice(name="IMDB"), DatasetSlice(name="CIFAR-10"),
+    ])
+    metrics = {
+        "status": "completed",
+        "mnist_logreg": {"adam": {"test_accuracy": 92.63}},
+        "imdb_bow": {"adam": {"test_accuracy": 88.0}},
+        "cifar10_cnn": {"adam": {"test_accuracy": 80.2}},
+        "per_model": {},
+    }
+    assert _validate_scope_metrics(scope, metrics) is not None  # refused before
+    out, notes = _derive_per_model_from_families(metrics)
+    assert notes
+    assert _validate_scope_metrics(scope, out) is None  # passes after
+
+
+def test_no_derivation_when_per_model_populated():
+    from backend.agents.rlm.primitives import _derive_per_model_from_families
+
+    metrics = {"per_model": {"m1": {"acc": 1.0}}, "mnist_logreg": {"adam": {}}}
+    out, notes = _derive_per_model_from_families(metrics)
+    assert notes == [] and out is metrics
+
+
+def test_no_derivation_without_family_shaped_keys():
+    from backend.agents.rlm.primitives import _derive_per_model_from_families
+
+    metrics = {"status": "completed", "per_model": {}, "regret": [1.0], "wall_clock_s": 5.0}
+    out, notes = _derive_per_model_from_families(metrics)
+    assert notes == [] and "per_model" in out and out["per_model"] == {}

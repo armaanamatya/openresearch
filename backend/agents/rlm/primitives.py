@@ -4430,6 +4430,50 @@ def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool
     return (max(recent) - min(recent)) <= epsilon
 
 
+# Top-level metrics keys that are run metadata / sidecar blocks, never an
+# experiment family — excluded from per_model derivation.
+_PER_MODEL_RESERVED_KEYS: frozenset[str] = frozenset({
+    "status", "scope", "per_model", "per_dataset", "history", "regret",
+    "data_load_failures", "provenance", "config", "config_used", "meta",
+    "metadata", "contract", "notes", "errors", "warnings", "duration_s",
+    "wall_clock_s", "contract_warnings",
+})
+
+
+def _derive_per_model_from_families(metrics: dict) -> tuple[dict, list[str]]:
+    """Mirror family-shaped top-level dicts into an EMPTY per_model.
+
+    2026-06-11 Adam: the repaired run completed all six families
+    (mnist_logreg, imdb_bow, cifar10_cnn, ...) as TOP-LEVEL keys with
+    per_model={} — measured work refused over a naming choice, costing a full
+    repair cycle. Same derive-not-drop principle as
+    cell_matrix.normalize_cell_axes, families-route edition: when per_model is
+    empty/missing but non-reserved dict-valued top-level keys exist, mirror
+    them under per_model so the scope validator and the rubric scorer see the
+    canonical shape. Pure (no I/O); returns (metrics, notes) — notes non-empty
+    only when a derivation happened.
+    """
+    if not isinstance(metrics, dict):
+        return metrics, []
+    pm = metrics.get("per_model")
+    if isinstance(pm, dict) and pm:
+        return metrics, []
+    derived = {
+        k: v
+        for k, v in metrics.items()
+        if k not in _PER_MODEL_RESERVED_KEYS and isinstance(v, dict) and v
+    }
+    if not derived:
+        return metrics, []
+    out = dict(metrics)
+    out["per_model"] = derived
+    return out, [
+        "per_model_derived_from_families: per_model was empty; mirrored top-level "
+        f"family keys {sorted(derived.keys())[:8]} under per_model. Emit "
+        "per_model[<family>] directly next time."
+    ]
+
+
 def _validate_scope_metrics(
     scope_spec: object,
     metrics: dict,
@@ -4555,10 +4599,17 @@ def _validate_scope_metrics(
             # structurally NEVER has a top-level per_dataset dict, so demanding
             # one here mis-fired on every multi-dataset cells.json run. Treat
             # the union of env keys across models as the dataset key set.
+            # 2026-06-11 (Adam families route): the dataset can also live in the
+            # per_model KEY ITSELF (per_model['mnist_logreg'] / ['imdb_bow'] /
+            # ['cifar10_cnn'] whose INNER keys are optimizers, not datasets) —
+            # include both levels in the candidate set, else a complete
+            # six-family run is refused for a naming choice.
             per_model = metrics.get("per_model")
             if isinstance(per_model, dict) and per_model:
                 env_keys: set[str] = set()
-                for model_metrics in per_model.values():
+                for fam_key, model_metrics in per_model.items():
+                    if isinstance(fam_key, str):
+                        env_keys.add(fam_key)
                     if isinstance(model_metrics, dict):
                         env_keys.update(k for k in model_metrics if isinstance(k, str))
                 if env_keys:
@@ -5820,6 +5871,31 @@ def run_experiment(
     # structure. A successful run with the wrong shape is a fail-soft error
     # so the agent's next implement_baseline gets it as repair_context.
     if result.get("success") and result.get("metrics"):
+        # Derive-not-drop (2026-06-11): families written as top-level keys with
+        # an empty per_model are a SHAPE choice, not missing measurements —
+        # mirror them in before validating, persist so the rubric scorer reads
+        # the same canonical shape, and tell the agent.
+        _normed_metrics, _family_notes = _derive_per_model_from_families(result["metrics"])
+        if _family_notes:
+            result = {**result, "metrics": _normed_metrics}
+            result.setdefault("contract_warnings", []).extend(_family_notes)
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "per_model_derived",
+                    "message": _family_notes[0][:400],
+                })
+            except Exception:  # noqa: BLE001
+                logger.debug("run_experiment: per_model_derived event emit failed")
+            try:
+                import json as _json
+                import os as _os2
+                _mpath = ctx.project_dir / "code" / "metrics.json"
+                if _mpath.is_file():
+                    _tmp = _mpath.with_suffix(".json.tmp")
+                    _tmp.write_text(_json.dumps(_normed_metrics, indent=2), encoding="utf-8")
+                    _os2.replace(_tmp, _mpath)
+            except Exception:  # noqa: BLE001 — disk sync is best-effort
+                logger.warning("run_experiment: per_model derivation disk sync failed", exc_info=True)
         hint = _validate_scope_metrics(getattr(ctx, "scope_spec", None), result["metrics"])
         if hint is not None:
             # Self-healing scope reduction (2026-05-30): the first few times the
