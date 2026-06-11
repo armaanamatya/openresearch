@@ -870,6 +870,74 @@ def _detect_theory_only_leaves(leaves: list[dict[str, Any]]) -> set[str]:
     return out
 
 
+# Dataset tokens the inclusion-scope detector recognises. Deliberately a small
+# fixed catalog of unambiguous dataset names — NOT free-text matching — so the
+# detector can never be steered by agent prose.
+_DATASET_TOKENS: tuple[str, ...] = (
+    "imagenet", "cifar100", "cifar10", "mnist", "imdb", "svhn", "coco",
+    "wikitext", "librispeech", "ptb", "penn treebank", "celeba", "lsun",
+    "alfworld", "webshop", "squad", "glue",
+)
+
+
+def _inclusion_scope_exclusion_enabled() -> bool:
+    val = os.environ.get("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "").strip().lower()
+    return bool(val) and val not in ("0", "false", "off")
+
+
+def _detect_out_of_inclusion_scope_leaves(
+    leaves: list[dict[str, Any]],
+    inclusion_datasets: list[str] | None,
+) -> set[str]:
+    """Leaf ids about datasets OUTSIDE the operator's declared inclusion scope.
+
+    Operator-sanctioned by construction: ``inclusion_datasets`` comes from the
+    paper-hint / --scope-spec the OPERATOR set, never from agent prose
+    (2026-06-11 All-CNN: the hint scoped the run to CIFAR-10/100, yet three
+    un-runnable ImageNet training leaves stayed in the denominator at 0.0 —
+    the agent's prose gap declaration matched nothing). Conservative on two
+    axes: only tokens from the fixed ``_DATASET_TOKENS`` catalog count, and a
+    leaf is excluded only when it mentions an out-of-scope dataset and NO
+    in-scope one. Empty set unless ``REPROLAB_SCOPE_INCLUSION_EXCLUDE`` is on
+    and an inclusion list is provided.
+    """
+    if not _inclusion_scope_exclusion_enabled() or not inclusion_datasets:
+        return set()
+    included = {d.lower().replace("-", "").replace("_", "").replace(" ", "")
+                for d in inclusion_datasets if isinstance(d, str) and d.strip()}
+
+    def _covered(token: str) -> bool:
+        t = token.replace(" ", "")
+        for inc in included:
+            if t == inc:
+                return True
+            if inc.startswith(t) and not inc[len(t):][:1].isdigit():
+                return True
+            if t.startswith(inc) and not t[len(inc):][:1].isdigit():
+                return True
+        return False
+
+    out: set[str] = set()
+    for leaf in leaves:
+        text = (
+            str(leaf.get("requirements", "")) + " " + str(leaf.get("task_category", ""))
+            + " " + str(leaf.get("sub_tasks", ""))
+        ).lower()
+        # Normalise separators so "CIFAR-10"/"cifar_10"/"penn treebank" all match
+        # their catalog token.
+        text_norm = re.sub(r"[-_\s]+", "", text)
+        mentioned = [t for t in _DATASET_TOKENS if t.replace(" ", "") in text_norm]
+        if not mentioned:
+            continue
+        out_of_scope = [t for t in mentioned if not _covered(t)]
+        in_scope = [t for t in mentioned if _covered(t)]
+        if out_of_scope and not in_scope:
+            lid = str(leaf.get("id", ""))
+            if lid:
+                out.add(lid)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 3. score_reproduction
 # ---------------------------------------------------------------------------
@@ -1108,6 +1176,7 @@ def finalize_rescore(
     operator_skip_environments: list[str] | None = None,
     extra_scope: dict[str, Any] | None = None,
     rubric_tree: dict[str, Any] | None = None,
+    operator_dataset_inclusion: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Phase 0B — deterministic finalize-time re-roll-up of ALREADY-GRADED leaves.
 
@@ -1175,7 +1244,13 @@ def finalize_rescore(
         )
         # Layer 3: theory-only leaves are inapplicable to a code repro — exclude them
         # from the re-roll-up too (no-op unless REPROLAB_EXCLUDE_THEORY_LEAVES is on).
-        skip_set = frozenset(set(unavailable) | _detect_theory_only_leaves(leaves))
+        # Layer 4: leaves about datasets outside the OPERATOR's inclusion scope
+        # (no-op unless REPROLAB_SCOPE_INCLUSION_EXCLUDE is on + a list is given).
+        skip_set = frozenset(
+            set(unavailable)
+            | _detect_theory_only_leaves(leaves)
+            | _detect_out_of_inclusion_scope_leaves(leaves, operator_dataset_inclusion)
+        )
         new_overall = roll_up(tree, leaf_scores, skip_set)
         if new_overall is None or raw_no_excl is None:
             return None
