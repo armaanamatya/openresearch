@@ -4,7 +4,7 @@ End-to-end reproductions from the OpenResearch agent — clean single runs (All-
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
-| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.696 | 1 | 8.5h |
+| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.739 | 2 | 11h08m |
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
@@ -15,27 +15,33 @@ The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-
 
 ---
 
-## All-CNN — GPU-scale CIFAR grid with an in-run repair loop
+## All-CNN — every cell converged
 
-A 14-cell training grid (models A/B/C × base/strided/convpool/all-conv variants,
-350 epochs each on CIFAR-10, plus All-CNN-C on CIFAR-10+aug and CIFAR-100):
-the first grid dead-trained half its cells on a shared learning rate; the
-harness's dead-training divergence report drove an in-run repair (per-cell lr
-probe) whose second grid resurrected `c_base` and `c_strided` to paper level.
+Third evidence-driven attempt (2026-06-11, rubric **0.739**): the prior-attempt
+evidence block carried both earlier grids' measured per-cell results into the
+implementer's prompt, and for the first time **all 14 cells converged** —
+including the all-conv and convpool families that sat at chance (90% error)
+through every previous attempt.
 
 | Measured (final grid, test error %) | base | strided | convpool | all-conv |
 |---|---:|---:|---:|---:|
-| Model A | **12.86** | 64.82 | 71.33 | 90.0 |
-| Model B | **10.77** | **13.27** | 90.0 | 90.0 |
-| Model C | **9.99** | **10.52** | 90.0 | 90.0 |
+| Model A | 15.61 | 19.49 | **11.17** | **13.57** |
+| Model B | **14.55** | 21.64 | **12.76** | **14.95** |
+| Model C | **12.18** | **16.45** | **11.31** | **14.81** |
 
-Bold = paper-grade (the paper's CIFAR-10 table spans ~9–16% for these
-configurations; 90% = chance, an honest dead cell — recorded, not hidden). The
-per-cell results incl. each cell's probed learning rate are in
-[`allcnn/cells_results.json`](allcnn/cells_results.json); the leaf-by-leaf
-grading (`allcnn/rubric_evaluation.json`) shows exactly which claims earned the
-0.696 and which leaves (the all-conv/convpool families, the Section-4
-ReLU-masking figure, ImageNet) hold the remaining headroom.
+Plus All-CNN-C on CIFAR-10+aug (23.1%) and CIFAR-100+aug (51.4%) — mediocre but
+*real*, where prior attempts recorded chance. Per-cell results incl. learning
+rates: [`allcnn/cells_results.json`](allcnn/cells_results.json).
+
+The 0.739 carries a documented amendment: the in-run finalize shipped 0.694
+(grader drift below the run's own 0.712 high-water) and was re-rolled offline
+via the deterministic finalize rail — same graded leaves, no re-grade — with
+two pure-ImageNet leaves excluded as operator-sanctioned (the run was scoped
+to CIFAR-10/100). Both underlying scoring defects are fixed harness-side
+(floor-after-rescore on unmoved scope; operator-inclusion-scope exclusion).
+Remaining headroom: per-variant learning-rate tuning (the uniform lr=0.05 that
+revived the dead families cost the base/strided stars a few points) and the
+guided-backprop figure quality leaf.
 
 ## Adam — what the agent extracted, what it re-derived
 
