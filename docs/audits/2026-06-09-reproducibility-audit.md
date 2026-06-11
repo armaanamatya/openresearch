@@ -511,4 +511,11 @@ the flag ever defaults on.
      schema (shim kept at the old name); both specs now skip cleanly when
      unseeded instead of failing against a live unseeded backend.
   End state: **Playwright 21 passed / 0 failed / 1 skipped** (seeded, live
-  backend). Consider adding a Playwright job to CI.
+  backend) — and the suite now RUNS IN CI: a fifth `e2e` job seeds fixtures
+  via `scripts/seed_fake_run.py`, boots the keyless backend, and runs the
+  full suite (first green: run 27321947802). Its first run immediately
+  caught one more machine-specific artifact: `visual-shots.spec.ts` wrote
+  screenshots to an absolute `/Volumes/...` macOS path AND unconditionally
+  overwrote tracked design PNGs (the worktree churn seen all audit) —
+  now repo-relative, untracked output by default, `UPDATE_DESIGN_SHOTS=1`
+  to refresh the tracked shots deliberately.
