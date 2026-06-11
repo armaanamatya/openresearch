@@ -328,6 +328,67 @@ def _harvest_baseline_artifacts(
     return _baseline_ok_envelope(path)
 
 
+def _stash_cells_manifest(code_dir: "Any", ctx: "RunContext") -> bool:
+    """If a cells.json exists pre-repair, preserve a copy; return whether it existed.
+
+    The cells route is the failure-isolation contract (one process per cell) —
+    and the 2026-06-11 Adam repair pass dropped it under pressure, rebuilding
+    monolithic and losing the whole matrix to one device-side assert. The copy
+    at rlm_state/last_cells.json lets the agent restore the manifest instead of
+    re-deriving the grid.
+    """
+    from pathlib import Path
+    import shutil
+
+    manifest = Path(code_dir) / "cells.json"
+    if not manifest.is_file():
+        return False
+    try:
+        state_dir = ctx.project_dir / "rlm_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(manifest, state_dir / "last_cells.json")
+    except OSError:
+        logger.warning("implement_baseline: could not stash cells.json", exc_info=True)
+    return True
+
+
+def _check_cells_manifest_retention(
+    result: dict,
+    *,
+    code_dir: "Any",
+    had_manifest: bool,
+    is_repair: bool,
+    ctx: "RunContext",
+) -> dict:
+    """Warn (agent + dashboard) when a repair pass drops the cells manifest.
+
+    Advisory, never blocking — a repair may legitimately retire a completed
+    grid. But the agent must make that choice EXPLICITLY: the warning names
+    what was lost (per-cell crash isolation) and where the preserved manifest
+    lives, so the monolithic regression can't happen silently.
+    """
+    from pathlib import Path
+
+    if not (is_repair and had_manifest) or result.get("ok") is not True:
+        return result
+    if (Path(code_dir) / "cells.json").is_file():
+        return result
+    note = (
+        "cells_manifest_dropped: this repair removed code/cells.json — the matrix "
+        "will run MONOLITHIC, so one crash (e.g. a CUDA device-side assert) zeroes "
+        "every family's work instead of one cell's. If that was not deliberate, "
+        "restore the manifest from rlm_state/last_cells.json (and keep "
+        "train_cell.py) so each config runs in its own process."
+    )
+    result.setdefault("contract_warnings", []).append(note)
+    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+        "code": "cells_manifest_dropped",
+        "message": note,
+    })
+    logger.warning("implement_baseline[%s]: %s", ctx.project_id, note)
+    return result
+
+
 def _failure_class_key(value: object) -> str:
     return str(value or "").strip().lower().replace("-", "_")
 
@@ -2036,6 +2097,15 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
+    # Route-retention (2026-06-11): remember whether a cells manifest existed
+    # before this (repair) implementation so its silent disappearance — the
+    # monolithic regression that lost the Adam matrix to one device-side
+    # assert — is surfaced to the agent and the dashboard, with the manifest
+    # preserved for restoration.
+    _had_cells_manifest = (
+        _stash_cells_manifest(code_dir, ctx) if repair_context is not None else False
+    )
+
     _child_holder: dict = {}
     try:
         if _baseline_subprocess_enabled():
@@ -2202,6 +2272,11 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                             error_code="sdk_aclose_incomplete_artifacts",
                             error_prefix="implement_baseline SDK cleanup stalled after artifact write",
                         )
+                        harvested = _check_cells_manifest_retention(
+                            harvested, code_dir=code_dir,
+                            had_manifest=_had_cells_manifest,
+                            is_repair=repair_context is not None, ctx=ctx,
+                        )
                         if harvested.get("ok") is True:
                             _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
                         return harvested
@@ -2266,6 +2341,11 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         return _err
 
     harvested = _harvest_baseline_artifacts(code_dir)
+    harvested = _check_cells_manifest_retention(
+        harvested, code_dir=code_dir,
+        had_manifest=_had_cells_manifest,
+        is_repair=repair_context is not None, ctx=ctx,
+    )
     if harvested.get("ok") is True:
         _cache.put(ctx.project_dir, "implement_baseline", payload=_payload, result=harvested)
     return harvested

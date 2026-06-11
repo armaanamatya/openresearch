@@ -1101,6 +1101,15 @@ _ARTIFACT_COMPLETENESS_BLOCK = (
     "whole training. metrics.json + config_used.json are MANDATORY; figures are best-effort.\n"
     "(2026-06-01: an unguarded top-level `import matplotlib` aborted a full training run\n"
     "with zero metrics — a one-line try/except would have saved the whole run.)\n"
+    "MULTI-FAMILY ISOLATION: when train.py runs several experiment families / models\n"
+    "sequentially in ONE process, wrap EACH family in try/except and write metrics.json\n"
+    "incrementally after each family with that family's status='complete' (top-level\n"
+    "status set only at the very end) — one family's crash (a CUDA device-side assert\n"
+    "poisons the entire process) must cost one family, never the measured results of\n"
+    "the others. Prefer the cells.json + train_cell.py route outright: one process per\n"
+    "cell IS the isolation. (2026-06-11: a monolithic Adam repair lost a fully-measured\n"
+    "logreg family — 92.6% accuracy already on disk — to a device-side assert in the\n"
+    "family that ran after it; the whole matrix scored 0.)\n"
 )
 
 
