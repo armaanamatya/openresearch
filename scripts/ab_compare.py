@@ -299,7 +299,7 @@ def render_markdown(cmp: dict[str, Any]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--paper", default=None, help="Paper id to pair (final_report.json paper.id).")
-    ap.add_argument("--pair-id", default=None, help="Explicit REPROLAB_AB_PAIR_ID to pair on.")
+    ap.add_argument("--pair-id", default=None, help="Explicit OPENRESEARCH_AB_PAIR_ID to pair on.")
     ap.add_argument("--runs-root", default="runs", help="Runs root directory.")
     ap.add_argument("--out", default=None, help="Output dir (default <runs-root>/_ab/<key>/).")
     ap.add_argument("--select", choices=["latest", "best"], default="latest",

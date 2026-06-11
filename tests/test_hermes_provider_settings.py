@@ -200,6 +200,9 @@ def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     # (load_dotenv), and process env OUTRANKS this tmp dotenv — scrub every
     # spelling so the test exercises the dotenv path on any machine.
     for _k in (
+        # BOTH spellings: the import-time bridge mirrors the real keys to the
+        # legacy names, and the AliasChoices read those too (a naming sweep
+        # once collapsed this list and un-scrubbed the legacy copies).
         "OPENAI_API_KEY", "OPENRESEARCH_OPENAI_API_KEY", "REPROLAB_OPENAI_API_KEY",
         "RUNPOD_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY", "REPROLAB_RUNPOD_API_KEY",
     ):

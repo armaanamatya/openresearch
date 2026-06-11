@@ -243,7 +243,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     bk = root_model.backend_kwargs
     sub_bk = root_model.sub_backend_kwargs
 
-    # Optional quality pin (2026-06-11): REPROLAB_PRIMITIVE_LLM_MODEL routes the
+    # Optional quality pin (2026-06-11): OPENRESEARCH_PRIMITIVE_LLM_MODEL routes the
     # shared primitive LlmClient (plan_reproduction, propose_improvements,
     # generate_rubric_tree, repro-spec extraction, tool-recommendation) to an
     # explicit Claude model id (e.g. an Opus id) instead of the claude CLI's
@@ -251,7 +251,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # navigation sub-calls (llm_query/rlm_query) ride the rlm sub-backend /
     # accelerator and the root loop rides backend_kwargs, both unaffected.
     # Unset/empty = today's behavior (CLI default model).
-    _pinned_model = os.environ.get("REPROLAB_PRIMITIVE_LLM_MODEL", "").strip() or None
+    _pinned_model = os.environ.get("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "").strip() or None
 
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
     if backend == "anthropic-oauth":
@@ -1416,7 +1416,7 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
 
 
 def _load_reusable_rubric(project_dir: Path) -> dict | None:
-    """REPROLAB_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
+    """OPENRESEARCH_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
 
     Rubric generation is an LLM call, so every re-run otherwise grades against
     a slightly different rubric — rubric drift alone moves scores. A/B arms
@@ -1425,7 +1425,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
     change, not rubric variance. Default OFF; fail-soft — a missing/corrupt
     file returns None and the caller falls through to generation as before.
     """
-    enabled = os.environ.get("REPROLAB_REUSE_RUBRIC", "").strip().lower() not in (
+    enabled = os.environ.get("OPENRESEARCH_REUSE_RUBRIC", "").strip().lower() not in (
         "", "0", "false", "off",
     )
     if not enabled:
@@ -1438,7 +1438,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
             return existing
     except (OSError, json.JSONDecodeError, ValueError):
         logger.warning(
-            "REPROLAB_REUSE_RUBRIC set but no readable generated_rubric.json — "
+            "OPENRESEARCH_REUSE_RUBRIC set but no readable generated_rubric.json — "
             "falling through to rubric generation"
         )
     return None
@@ -1499,7 +1499,7 @@ async def run_pipeline_rlm(
             project_id, _archived["attempt_dir"], len(_archived["moved"]),
         )
 
-    # Anti-regression seeding (2026-06-11, REPROLAB_SEED_BEST_ATTEMPT): copy the
+    # Anti-regression seeding (2026-06-11, OPENRESEARCH_SEED_BEST_ATTEMPT): copy the
     # best prior attempt's working code into code/_best_attempt/ so the
     # implementer starts FROM the proven solution. Each Adam attempt used to
     # re-derive everything from scratch and routinely landed below the 0.831
@@ -1793,7 +1793,7 @@ async def run_pipeline_rlm(
     # from the paper so the run is scorable (bundle runs already carry one).
     # Stub-primitive runs skip GENERATION only: rubric generation is a REAL paid
     # LLM call (the one non-stubbed network path) — the 862s-suite-stall fix
-    # (audit 2026-06-09). REPROLAB_REUSE_RUBRIC (LLM-free, see
+    # (audit 2026-06-09). OPENRESEARCH_REUSE_RUBRIC (LLM-free, see
     # _load_reusable_rubric) stays active in both modes so A/B arms grade
     # against the SAME pre-seeded rubric.
     _stub_mode = os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1"
@@ -1802,7 +1802,7 @@ async def run_pipeline_rlm(
         if _reused_rubric is not None:
             context_dict["rubric_spec"] = _reused_rubric
             logger.info(
-                "run_pipeline_rlm: REPROLAB_REUSE_RUBRIC — reusing on-disk "
+                "run_pipeline_rlm: OPENRESEARCH_REUSE_RUBRIC — reusing on-disk "
                 "generated_rubric.json (no regeneration)"
             )
     if _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):

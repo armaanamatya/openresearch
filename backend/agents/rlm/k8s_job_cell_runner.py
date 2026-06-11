@@ -511,7 +511,7 @@ def _build_job_manifest(
     # legacy names. Inject both spellings until every base image is rebuilt
     # (the in-repo aks_cell_entrypoint.py reads the canonical names).
     env_vars.extend(
-        {"name": "REPROLAB_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
+        {"name": "OPENRESEARCH_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
         for e in list(env_vars)
         if e["name"].startswith("OPENRESEARCH_")
     )

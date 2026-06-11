@@ -259,7 +259,7 @@ class TestPlainOpenAI:
 
 
 # ---------------------------------------------------------------------------
-# REPROLAB_PRIMITIVE_LLM_MODEL — optional quality pin for the Claude branches
+# OPENRESEARCH_PRIMITIVE_LLM_MODEL — optional quality pin for the Claude branches
 # ---------------------------------------------------------------------------
 
 class TestPrimitiveLlmModelPin:
@@ -271,28 +271,28 @@ class TestPrimitiveLlmModelPin:
     """
 
     def test_pin_unset_leaves_model_none(self, monkeypatch):
-        monkeypatch.delenv("REPROLAB_PRIMITIVE_LLM_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", raising=False)
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
         assert client._model is None
         assert label == "claude-oauth"
 
     def test_pin_routes_oauth_client_to_pinned_model(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
+        monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
         assert client._model == "claude-opus-4-7"
         assert label == "claude-opus-4-7"
 
     def test_pin_applies_to_anthropic_api_branch(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
+        monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
         root = _make_root_model("anthropic", key="claude")
         client, label = _build_llm_client(None, root)
         assert client._model == "claude-opus-4-7"
         assert label == "claude-opus-4-7"
 
     def test_blank_pin_is_treated_as_unset(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_PRIMITIVE_LLM_MODEL", "   ")
+        monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "   ")
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
         assert client._model is None
@@ -301,7 +301,7 @@ class TestPrimitiveLlmModelPin:
     def test_pin_does_not_touch_openai_branch(self, monkeypatch):
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
-        monkeypatch.setenv("REPROLAB_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
+        monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
         root = _make_root_model(
             "openai",
             backend_kwargs={"model_name": "gpt-5"},

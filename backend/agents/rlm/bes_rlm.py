@@ -7,14 +7,14 @@ to pure RLM, so the only implementation the run ever gets is one
 N competing implementations + static rubric SELECT, experiment runs ONCE on
 the winner — to that path, reusing the mode-agnostic pieces verbatim:
 ``rdr/candidates.py`` (Candidate + select_best) and the same master flags
-(``REPROLAB_BES_ENABLED`` + ``REPROLAB_BES_CANDIDATES_PER_CLUSTER`` +
-``REPROLAB_BES_SELECT_METRIC``), so one switch drives both paths.
+(``OPENRESEARCH_BES_ENABLED`` + ``OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER`` +
+``OPENRESEARCH_BES_SELECT_METRIC``), so one switch drives both paths.
 
 Mechanics (mirror of the RDR dispatch, adapted to the file-on-disk contract):
 ``implement_baseline`` writes into the fixed ``code/``; for each candidate we
 run one inner implementation (cache-busted via a ``_bes_candidate_idx`` plan
 key; prompt-diversified via a per-candidate angle appended to
-``REPROLAB_BASELINE_EXTRA_GUIDANCE``), snapshot ``code/`` into
+``OPENRESEARCH_BASELINE_EXTRA_GUIDANCE``), snapshot ``code/`` into
 ``candidates/rlm_impl_<i>/code/``, clear, and statically grade the snapshot
 with the leaf scorer (``degraded=False`` — the code-only grade is the SELECT
 signal; no GPU spend). The winner's snapshot is restored into ``code/`` and
@@ -46,10 +46,10 @@ from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
-ENV_AB_ARM = "REPROLAB_AB_ARM"
-ENV_AB_PAIR_ID = "REPROLAB_AB_PAIR_ID"
-ENV_MIN_REMAINING_S = "REPROLAB_BES_MIN_REMAINING_S"
-ENV_CONTINUE_MIN_S = "REPROLAB_BES_CONTINUE_MIN_S"
+ENV_AB_ARM = "OPENRESEARCH_AB_ARM"
+ENV_AB_PAIR_ID = "OPENRESEARCH_AB_PAIR_ID"
+ENV_MIN_REMAINING_S = "OPENRESEARCH_BES_MIN_REMAINING_S"
+ENV_CONTINUE_MIN_S = "OPENRESEARCH_BES_CONTINUE_MIN_S"
 
 # Don't start competing with less than this much wall-clock left (each inner
 # implementation is a multi-minute Sonnet sub-agent + a static grade).
@@ -202,8 +202,8 @@ def should_compete(ctx: Any, plan: dict) -> bool:
 
 @contextmanager
 def _angle_guidance(angle: str) -> Iterator[None]:
-    """Append a candidate angle to REPROLAB_BASELINE_EXTRA_GUIDANCE, restoring after."""
-    key = "REPROLAB_BASELINE_EXTRA_GUIDANCE"
+    """Append a candidate angle to OPENRESEARCH_BASELINE_EXTRA_GUIDANCE, restoring after."""
+    key = "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"
     old = os.environ.get(key)
     try:
         if angle:
@@ -502,7 +502,7 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
 def experiment_arm_stamp(project_dir: Path | str) -> dict:
     """A/B arm label + BES flag snapshot for final_report.json.
 
-    Arm precedence: explicit ``REPROLAB_AB_ARM`` > derived from the master
+    Arm precedence: explicit ``OPENRESEARCH_AB_ARM`` > derived from the master
     flag. Always returns a stamp (control runs are labelled too) so paired
     runs are explicit for ``scripts/ab_compare.py`` and the leaderboard.
     """

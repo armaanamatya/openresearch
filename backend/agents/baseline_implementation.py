@@ -2417,7 +2417,7 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("best_attempt guidance block skipped", exc_info=True)
 
-    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+    # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
@@ -2432,7 +2432,7 @@ def _compute_constraint_guidance(
     # the candidate pool diversifies regardless of which prefix won the merge.
     extra = (
         _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
-        or _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+        or _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
     )
     if extra:
         guidance += (

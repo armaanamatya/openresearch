@@ -381,10 +381,10 @@ _CELLS_ROUTE_FAILURE_CLASSES: frozenset[str] = frozenset({
 
 
 def _cells_route_retention_enabled() -> bool:
-    """Default ON (env_pin precedent); REPROLAB_CELLS_ROUTE_RETENTION=0 disables."""
+    """Default ON (env_pin precedent); OPENRESEARCH_CELLS_ROUTE_RETENTION=0 disables."""
     import os
 
-    return os.environ.get("REPROLAB_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
+    return os.environ.get("OPENRESEARCH_CELLS_ROUTE_RETENTION", "").strip().lower() not in (
         "0", "false", "off",
     )
 
@@ -400,7 +400,7 @@ def _check_cells_manifest_retention(
 ) -> dict:
     """Route retention when a repair pass drops the cells manifest.
 
-    ACTIVE retention (default ON, REPROLAB_CELLS_ROUTE_RETENTION=0 disables):
+    ACTIVE retention (default ON, OPENRESEARCH_CELLS_ROUTE_RETENTION=0 disables):
     when the repaired tree STILL carries a per-cell trainer (train_cell.py)
     and the failure being repaired was not a cells-route failure, the manifest
     is pure grid DATA the rewrite forgot — restore it from the pre-repair stash
@@ -1949,7 +1949,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     #
     # arXiv/PDF runs never enter RDR Phase 1 (hybrid bundle guard), so
     # BES-on-RDR cannot reach them. Master-gated by the SAME flags
-    # (REPROLAB_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
+    # (OPENRESEARCH_BES_ENABLED + _CANDIDATES_PER_CLUSTER): N isolated
     # implementations, static rubric SELECT, the experiment runs once on the
     # winner restored into code/. Repairs and re-entrant candidate calls
     # (_bes_inner) stay single-shot — BES v1 semantics, mirror of

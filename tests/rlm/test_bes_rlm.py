@@ -55,7 +55,7 @@ def _fake_implement(code_dir: Path, *, fail_on: set[int] = frozenset()):
 
     def fn(plan, *, ctx, _bes_inner=False):
         idx = plan.get("_bes_candidate_idx", -1)
-        calls.append({"idx": idx, "guidance": os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "")})
+        calls.append({"idx": idx, "guidance": os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "")})
         if idx in fail_on:
             return {"ok": False, "error_code": "boom", "error": f"candidate {idx} failed", "repairable": True}
         code_dir.mkdir(parents=True, exist_ok=True)
@@ -69,8 +69,8 @@ def _fake_implement(code_dir: Path, *, fail_on: set[int] = frozenset()):
 
 @pytest.fixture(autouse=True)
 def _no_env_leak(monkeypatch):
-    for var in ("REPROLAB_AB_ARM", "REPROLAB_AB_PAIR_ID", "REPROLAB_BES_MIN_REMAINING_S",
-                "REPROLAB_BES_CONTINUE_MIN_S", "REPROLAB_BASELINE_EXTRA_GUIDANCE"):
+    for var in ("OPENRESEARCH_AB_ARM", "OPENRESEARCH_AB_PAIR_ID", "OPENRESEARCH_BES_MIN_REMAINING_S",
+                "OPENRESEARCH_BES_CONTINUE_MIN_S", "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -259,18 +259,18 @@ def test_compete_falls_back_single_shot_on_internal_error(tmp_path, monkeypatch)
 
 
 def test_angle_guidance_appends_and_restores(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BASELINE_EXTRA_GUIDANCE", "operator text")
+    monkeypatch.setenv("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "operator text")
     with bes_rlm._angle_guidance("ANGLE X"):
-        merged = os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"]
+        merged = os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"]
         assert "operator text" in merged and "ANGLE X" in merged
-    assert os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"] == "operator text"
+    assert os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] == "operator text"
 
 
 def test_angle_guidance_unset_restores_to_absent(monkeypatch):
-    monkeypatch.delenv("REPROLAB_BASELINE_EXTRA_GUIDANCE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", raising=False)
     with bes_rlm._angle_guidance("ANGLE Y"):
-        assert "ANGLE Y" in os.environ["REPROLAB_BASELINE_EXTRA_GUIDANCE"]
-    assert "REPROLAB_BASELINE_EXTRA_GUIDANCE" not in os.environ
+        assert "ANGLE Y" in os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"]
+    assert "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE" not in os.environ
 
 
 def test_candidates_see_distinct_guidance(tmp_path, monkeypatch):
@@ -342,8 +342,8 @@ def test_stamp_bes_when_flags_on(tmp_path, monkeypatch):
 
 def test_stamp_env_overrides_and_pool_summary(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.config.get_settings", lambda: _settings(enabled=True, n=2))
-    monkeypatch.setenv("REPROLAB_AB_ARM", "bes")
-    monkeypatch.setenv("REPROLAB_AB_PAIR_ID", "allcnn-ab-1")
+    monkeypatch.setenv("OPENRESEARCH_AB_ARM", "bes")
+    monkeypatch.setenv("OPENRESEARCH_AB_PAIR_ID", "allcnn-ab-1")
     state_dir = tmp_path / "rlm_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "bes_candidates.json").write_text(json.dumps({
@@ -360,20 +360,20 @@ def test_stamp_env_overrides_and_pool_summary(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Rubric reuse (REPROLAB_REUSE_RUBRIC — A/B arms grade against ONE rubric)
+# Rubric reuse (OPENRESEARCH_REUSE_RUBRIC — A/B arms grade against ONE rubric)
 # ---------------------------------------------------------------------------
 
 
 def test_reuse_rubric_off_by_default(tmp_path, monkeypatch):
     from backend.agents.rlm.run import _load_reusable_rubric
-    monkeypatch.delenv("REPROLAB_REUSE_RUBRIC", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_REUSE_RUBRIC", raising=False)
     (tmp_path / "generated_rubric.json").write_text('{"source": "generated"}')
     assert _load_reusable_rubric(tmp_path) is None
 
 
 def test_reuse_rubric_returns_seeded_rubric(tmp_path, monkeypatch):
     from backend.agents.rlm.run import _load_reusable_rubric
-    monkeypatch.setenv("REPROLAB_REUSE_RUBRIC", "1")
+    monkeypatch.setenv("OPENRESEARCH_REUSE_RUBRIC", "1")
     (tmp_path / "generated_rubric.json").write_text(
         json.dumps({"source": "generated", "leaves": [{"id": "x"}]})
     )
@@ -383,19 +383,19 @@ def test_reuse_rubric_returns_seeded_rubric(tmp_path, monkeypatch):
 
 def test_reuse_rubric_corrupt_file_falls_through(tmp_path, monkeypatch):
     from backend.agents.rlm.run import _load_reusable_rubric
-    monkeypatch.setenv("REPROLAB_REUSE_RUBRIC", "1")
+    monkeypatch.setenv("OPENRESEARCH_REUSE_RUBRIC", "1")
     (tmp_path / "generated_rubric.json").write_text("{not json")
     assert _load_reusable_rubric(tmp_path) is None
 
 
 def test_reuse_rubric_missing_file_falls_through(tmp_path, monkeypatch):
     from backend.agents.rlm.run import _load_reusable_rubric
-    monkeypatch.setenv("REPROLAB_REUSE_RUBRIC", "1")
+    monkeypatch.setenv("OPENRESEARCH_REUSE_RUBRIC", "1")
     assert _load_reusable_rubric(tmp_path) is None
 
 
 # ---------------------------------------------------------------------------
-# Adaptive gating (REPROLAB_BES_ADAPTIVE — pool only where selection pays)
+# Adaptive gating (OPENRESEARCH_BES_ADAPTIVE — pool only where selection pays)
 # ---------------------------------------------------------------------------
 
 
