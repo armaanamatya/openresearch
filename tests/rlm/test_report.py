@@ -755,3 +755,59 @@ class TestMetricProvenance:
         for off in ("false", "0", "no", "off"):
             monkeypatch.setenv("REPROLAB_METRIC_PROVENANCE", off)
             assert _metric_provenance_enabled() is False, off
+
+
+class TestExperimentArmStamp:
+    """A/B observability (2026-06-11): write_final_report_rlm labels every
+    report with its with/without-BES arm so paired runs are explicit."""
+
+    def test_report_carries_control_stamp_by_default(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: SimpleNamespace(
+                bes_enabled=False, bes_candidates_per_cluster=1,
+                bes_select_metric="cluster_score",
+            ),
+        )
+        monkeypatch.delenv("REPROLAB_AB_ARM", raising=False)
+        monkeypatch.delenv("REPROLAB_AB_PAIR_ID", raising=False)
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        report = RLMFinalReport(**_BASE_REPORT_DICT)
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["experiment_arm"]["arm"] == "control"
+        assert data["experiment_arm"]["bes"]["enabled"] is False
+
+    def test_report_carries_bes_stamp_and_pool(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        monkeypatch.setattr(
+            "backend.config.get_settings",
+            lambda: SimpleNamespace(
+                bes_enabled=True, bes_candidates_per_cluster=2,
+                bes_select_metric="cluster_score",
+            ),
+        )
+        monkeypatch.setenv("REPROLAB_AB_PAIR_ID", "allcnn-ab-1")
+        project_dir = tmp_path / "project"
+        (project_dir / "rlm_state").mkdir(parents=True)
+        (project_dir / "rlm_state" / "bes_candidates.json").write_text(json.dumps({
+            "winner": "rlm_impl#1",
+            "candidates": [
+                {"candidate_id": "rlm_impl#0", "ok": True, "score": 0.3},
+                {"candidate_id": "rlm_impl#1", "ok": True, "score": 0.7},
+            ],
+        }))
+        report = RLMFinalReport(**_BASE_REPORT_DICT)
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        stamp = data["experiment_arm"]
+        assert stamp["arm"] == "bes"
+        assert stamp["ab_pair_id"] == "allcnn-ab-1"
+        assert stamp["bes"]["winner"] == "rlm_impl#1"
+        assert len(stamp["bes"]["pool"]) == 2

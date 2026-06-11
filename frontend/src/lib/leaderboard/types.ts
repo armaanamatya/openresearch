@@ -27,4 +27,8 @@ export interface LeaderboardRow {
   verdict: string;
   status: string;
   attempts: number;
+  /** A/B observability (2026-06-11): "bes" | "control" | null on old reports. */
+  experiment_arm?: string | null;
+  ab_pair_id?: string | null;
+  bes_enabled?: boolean;
 }

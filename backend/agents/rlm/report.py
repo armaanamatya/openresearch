@@ -1160,6 +1160,21 @@ def write_final_report_rlm(
             json_content = json.dumps(_report_dict, indent=2)
     except Exception:  # noqa: BLE001 — two-axis attach is best-effort, never blocks the write
         logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
+
+    # --- Experiment-arm stamp (A/B observability, 2026-06-11) ---------------
+    # Label every report with its with/without-BES arm + flag snapshot so
+    # paired runs are explicit for scripts/ab_compare.py and the leaderboard.
+    # Operates on the serialized dict (same pattern as two-axis above) so
+    # RLMFinalReport needs no new fields. Fail-soft — never blocks the write.
+    try:
+        from backend.agents.rlm.bes_rlm import experiment_arm_stamp
+        _stamp = experiment_arm_stamp(project_dir)
+        if _stamp:
+            _d = json.loads(json_content)
+            _d["experiment_arm"] = _stamp
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — stamp is best-effort
+        logger.warning("report: experiment-arm stamp failed (non-fatal)", exc_info=True)
     _atomic_write(json_path, json_content)
 
     # --- Markdown (human-readable) ---
