@@ -219,10 +219,20 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     bk = root_model.backend_kwargs
     sub_bk = root_model.sub_backend_kwargs
 
+    # Optional quality pin (2026-06-11): REPROLAB_PRIMITIVE_LLM_MODEL routes the
+    # shared primitive LlmClient (plan_reproduction, propose_improvements,
+    # generate_rubric_tree, repro-spec extraction, tool-recommendation) to an
+    # explicit Claude model id (e.g. an Opus id) instead of the claude CLI's
+    # configured default. Scope is ONLY the Claude client paths below —
+    # navigation sub-calls (llm_query/rlm_query) ride the rlm sub-backend /
+    # accelerator and the root loop rides backend_kwargs, both unaffected.
+    # Unset/empty = today's behavior (CLI default model).
+    _pinned_model = os.environ.get("REPROLAB_PRIMITIVE_LLM_MODEL", "").strip() or None
+
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
     if backend == "anthropic-oauth":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-        return ClaudeLlmClient(), "claude-oauth"
+        return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude-oauth")
 
     # 2. OpenAI-compatible custom endpoint (Featherless, vLLM-via-OpenAI, etc.)
     if backend == "openai" and bk.get("base_url"):
@@ -275,7 +285,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # 5. Anthropic raw HTTP — uses ANTHROPIC_API_KEY through claude-agent-sdk's resolution
     if backend == "anthropic":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-        return ClaudeLlmClient(), "claude"
+        return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude")
 
     # 6. Plain OpenAI
     if backend == "openai":
@@ -289,7 +299,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         return OpenAILlmClient(), "gpt-4o-mini"
     from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-    return ClaudeLlmClient(), "claude"
+    return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude")
 
 
 def _resolve_agent_runtime(

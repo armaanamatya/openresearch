@@ -255,6 +255,101 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "series": ["regret"],
         },
     ),
+    "2511.14582": PaperHint(
+        guidance=(
+            "OmniZip (2511.14582) — TRAINING-FREE inference paper: the claim is that "
+            "audio-guided token compression accelerates Qwen2.5-Omni audio-video "
+            "inference (~2.5-3.4x prefill speedup, ~1.4x lower peak memory) while "
+            "keeping accuracy. PRIORITY ORDER: (1) uncompressed Qwen2.5-Omni-7B "
+            "baseline + OmniZip at the 45%-retained setting (rho_a=0.3, rho_v=0.6) on "
+            "WorldSense and ShortVid-Bench bounded subsets; (2) random-pruning control "
+            "at the SAME retention; (3) Qwen2.5-Omni-3B mirror; (4) DyCoke-style "
+            "competitor only if time remains.\n"
+            "ALGORITHM (the rubric inspects these): segment the interleaved audio-video "
+            "sequence into fixed time windows (~50 audio + 288 video tokens per "
+            "window); score per-window AUDIO retention via dominant-audio-token "
+            "selection (information-density / event-boundary prior); allocate "
+            "per-window VIDEO pruning INVERSELY to audio retention, bounded by "
+            "rho_max=0.75 / rho_min=0.35 (k=5; group size G=3 here), holding the TOTAL "
+            "pruning rate constant; preserve audio-anchor video tokens via cross-modal "
+            "similarity; merge surviving video tokens with the interleaved "
+            "spatio-temporal scheme. Frames cap 128; identical caps for every method.\n"
+            "MEASUREMENT (paired, or the speedup claim is unfalsifiable): the SAME "
+            "bounded subset (>=200 samples, fixed seed, identical prompts/decoding) for "
+            "baseline and every compression method; per cell record accuracy, mean "
+            "prefill + end-to-end wall-clock per sample (warmup excluded), and "
+            "torch.cuda.max_memory_allocated; report speedup as baseline_time / "
+            "method_time computed from YOUR OWN measured baseline, never paper "
+            "constants. Use FlashAttention if installable else SDPA — for ALL methods "
+            "equally, recorded in provenance. Do NOT let any method silently fall back "
+            "to CPU or fp32.\n"
+            "HOSTING: the 7B does NOT fit one 24 GB card in bf16 — each cell's slot "
+            "exposes >=2 GPUs in CUDA_VISIBLE_DEVICES: load the model ONCE with "
+            "torch_dtype=bfloat16 and device_map='auto' (sharded hosting across the "
+            "visible cards; FSDP-style full sharding also acceptable), and disable the "
+            "talker / audio-output head (text answers only) to save ~2 GB. Set "
+            "est_vram_gb ~32 for 7B cells and ~14 for 3B cells in cells.json.\n"
+            "STRUCTURE: cells.json with ONE cell per (model, benchmark, method) and "
+            "EXPLICIT model_key/env/baseline axes (e.g. model_key='qwen2_5_omni_7b', "
+            "env='worldsense', baseline='omnizip_r45'; uncompressed = "
+            "baseline='uncompressed'); each cell writes a FLAT metrics.json and the "
+            "aggregate fills per_model ATOMICALLY as cells finish so a timeout "
+            "truncates the tail, never finished work. Declared out-of-scope (write "
+            "MECHANICALLY into metrics.json scope.gaps, never fake or silently omit): "
+            "AVUT and VideoMME full runs, the 35%-retained setting, and the FastV-7B "
+            "cell (OOMs a 48 GB card even in the paper)."
+        ),
+        default_scope=ScopeSpec(
+            models=[
+                "Qwen2.5-Omni-7B",
+                "Qwen2.5-Omni-3B",
+            ],
+            datasets=[
+                DatasetSlice(name="WorldSense"),
+                DatasetSlice(name="ShortVid-Bench"),
+            ],
+            seeds=[1],
+        ),
+        invariants=[
+            InvariantSpec(
+                name="real_qwen_omni_weights_not_surrogate",
+                rationale=(
+                    "The speedup/accuracy claim is only meaningful on the real "
+                    "Qwen2.5-Omni checkpoints from HuggingFace; a surrogate or "
+                    "random-init model cannot validate token compression."
+                ),
+                must_match=[
+                    r"Qwen2\.5-Omni",
+                ],
+            ),
+            InvariantSpec(
+                name="sharded_multi_gpu_hosting",
+                rationale=(
+                    "The 7B model exceeds one 24 GB card in bf16; the cell must "
+                    "shard across its visible GPUs (device_map / accelerate / "
+                    "FSDP) instead of OOMing or downcasting."
+                ),
+                must_match=[
+                    r"device_map|accelerator\.prepare|FSDP|fully_sharded",
+                ],
+            ),
+            InvariantSpec(
+                name="window_pruning_ratio_bounds",
+                rationale=(
+                    "OmniZip's dynamic allocation is bounded by rho_max=0.75 and "
+                    "rho_min=0.35 (paper Sec. 4.1); without the bounds the "
+                    "constant-total-pruning property collapses."
+                ),
+                must_match=[
+                    r"0\.75",
+                    r"0\.35",
+                ],
+            ),
+        ],
+        blocked_resources=[
+            "github.com/KD-TAO/OmniZip",
+        ],
+    ),
 }
 
 

@@ -165,3 +165,57 @@ class TestPaperHintsTableShape:
 
     def test_sdar_present(self):
         assert SDAR_ID in PAPER_HINTS
+
+
+OMNIZIP_ID = "2511.14582"
+
+
+class TestOmniZipHint:
+    """OmniZip (2511.14582) — training-free audio-guided token compression."""
+
+    @pytest.fixture()
+    def omnizip(self) -> PaperHint:
+        hint = lookup_paper_hint(OMNIZIP_ID)
+        assert hint is not None
+        return hint
+
+    def test_lookup_with_version_suffix(self):
+        assert lookup_paper_hint("2511.14582v1") is lookup_paper_hint(OMNIZIP_ID)
+
+    def test_guidance_is_substantive(self, omnizip):
+        assert len(omnizip.guidance) > 500
+        for needle in (
+            "Qwen2.5-Omni",
+            "device_map",
+            "scope.gaps",
+            "cells.json",
+            "rho_max=0.75",
+        ):
+            assert needle in omnizip.guidance, f"guidance missing {needle!r}"
+
+    def test_default_scope_models_and_datasets(self, omnizip):
+        assert omnizip.default_scope is not None
+        assert omnizip.default_scope.models == [
+            "Qwen2.5-Omni-7B",
+            "Qwen2.5-Omni-3B",
+        ]
+        names = [d.name for d in omnizip.default_scope.datasets]
+        assert names == ["WorldSense", "ShortVid-Bench"]
+
+    def test_blocked_resources_blacklist_official_repo(self, omnizip):
+        assert any("OmniZip" in r for r in omnizip.blocked_resources)
+
+    def test_sharded_hosting_invariant_matches_real_code(self, omnizip):
+        inv = {i.name: i for i in omnizip.invariants}["sharded_multi_gpu_hosting"]
+        pattern = re.compile(inv.must_match[0])
+        assert pattern.search(
+            'model = AutoModel.from_pretrained(mid, device_map="auto")'
+        )
+        assert pattern.search("model, opt = accelerator.prepare(model, opt)")
+        assert not pattern.search("model = AutoModel.from_pretrained(mid).cuda()")
+
+    def test_real_weights_invariant_matches_hf_id(self, omnizip):
+        inv = {i.name: i for i in omnizip.invariants}[
+            "real_qwen_omni_weights_not_surrogate"
+        ]
+        assert re.search(inv.must_match[0], 'MODEL_ID = "Qwen/Qwen2.5-Omni-7B"')
