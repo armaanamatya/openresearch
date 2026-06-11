@@ -8,6 +8,7 @@ End-to-end reproductions from the OpenResearch agent — clean single runs (All-
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
+| [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |
 
 Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
 
@@ -199,3 +200,17 @@ vae/
   same shape; tokens_total.json + cost_ledger.jsonl included, timing.json absent
   (VAE pre-dates the full sidecar emit, but token telemetry was backfilled).
 ```
+
+---
+
+## All-CNN A/B — first controlled BES measurement (`allcnn_ab/`)
+
+Two arms, one variable: BES competing candidates (best-of-2 implementation
+selection, static rubric SELECT, experiment runs once on the winner). Same
+commit, same flags otherwise, byte-identical pinned rubric, identical seeded
+history, disjoint GPUs. **BES: 0.7378 · control: 0.6526 (Δ +0.085) — and the
+BES arm cost $1.69 LESS and ran 4 minutes faster**, the up-front candidate
+pool paying for itself in avoided repair cycles. The fidelity-first prompt
+angle won the pool (0.557 vs 0.549). One pair = a directional read (±0.05
+run variance); the Adam pair runs next. Full design, pool record, leaf-level
+moves and caveats: [`allcnn_ab/README.md`](allcnn_ab/README.md).

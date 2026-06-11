@@ -1,0 +1,104 @@
+{
+  "key": "allcnn-ab-20260611",
+  "paper": null,
+  "pair_id": "allcnn-ab-20260611",
+  "select": "latest",
+  "generated_at": "2026-06-11T16:26:59.463015+00:00",
+  "arms_found": {
+    "bes": 1,
+    "control": 1
+  },
+  "control": {
+    "project_id": "prj_0a3202fc187bb692_ab_control",
+    "arm": "control",
+    "ab_pair_id": "allcnn-ab-20260611",
+    "overall_score": 0.6525609756097561,
+    "compute_adjusted_score": 0.6304065040650407,
+    "verdict": "reproduced",
+    "meets_target": true,
+    "iterations": 10,
+    "wall_clock_s": 48219.900464,
+    "cost_usd": 4.9505721,
+    "completed_at": "2026-06-11T16:25:22.662478+00:00",
+    "bes": {
+      "enabled": false,
+      "candidates_per_cluster": 1,
+      "select_metric": "cluster_score"
+    }
+  },
+  "bes": {
+    "project_id": "prj_0a3202fc187bb692_ab_bes",
+    "arm": "bes",
+    "ab_pair_id": "allcnn-ab-20260611",
+    "overall_score": 0.7377540650406504,
+    "compute_adjusted_score": 0.692479674796748,
+    "verdict": "partial",
+    "meets_target": true,
+    "iterations": 10,
+    "wall_clock_s": 47990.914131,
+    "cost_usd": 3.26511,
+    "completed_at": "2026-06-11T16:22:03.271535+00:00",
+    "bes": {
+      "enabled": true,
+      "candidates_per_cluster": 2,
+      "select_metric": "cluster_score",
+      "winner": "rlm_impl#1",
+      "pool": [
+        {
+          "candidate_id": "rlm_impl#0",
+          "ok": true,
+          "score": 0.5488211382113822
+        },
+        {
+          "candidate_id": "rlm_impl#1",
+          "ok": true,
+          "score": 0.5567479674796748
+        }
+      ]
+    }
+  },
+  "deltas": {
+    "overall_score": 0.08519308943089432,
+    "compute_adjusted_score": 0.06207317073170726,
+    "wall_clock_s": -228.98633300000074,
+    "cost_usd": -1.6854620999999996
+  },
+  "top_leaf_moves": [
+    {
+      "leaf": "d442e584dfd249018d62f1648846c183",
+      "control": 0.0,
+      "bes": 0.4,
+      "delta": 0.4
+    },
+    {
+      "leaf": "985ca8baab0441a69c93f17eeb61d80c",
+      "control": 0.0,
+      "bes": 0.4,
+      "delta": 0.4
+    },
+    {
+      "leaf": "b7325d4fe66147368e9b5d63d05a60f5",
+      "control": 0.4,
+      "bes": 0.7,
+      "delta": 0.29999999999999993
+    },
+    {
+      "leaf": "ad46e5ab07ad4fe9a66ff4c35cea005b",
+      "control": 0.4,
+      "bes": 0.7,
+      "delta": 0.29999999999999993
+    },
+    {
+      "leaf": "85042ac08ac94165bddb5a6e8fd606a4",
+      "control": 0.4,
+      "bes": 0.7,
+      "delta": 0.29999999999999993
+    },
+    {
+      "leaf": "2fb0fff0618746be84f5b7ff621f0542",
+      "control": 0.2,
+      "bes": 0.0,
+      "delta": -0.2
+    }
+  ]
+}
