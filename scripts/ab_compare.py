@@ -29,20 +29,39 @@ if str(REPO_ROOT) not in sys.path:
 
 
 def _load_candidates(runs_root: Path) -> list[tuple[Path, dict]]:
-    """All (run_dir, best_report) pairs under runs_root."""
+    """All (run_dir, report) pairs under runs_root.
+
+    Prefers the run's OWN top-level final_report.json over best-attempt
+    resolution: A/B arm dirs carry the seeded ancestor history as attempts
+    (allcnn-ab-20260611: the 0.7395 ancestor out-scored the arm's 0.7378),
+    so the resolver would surface the UNSTAMPED ancestor and the pair filter
+    would drop the arm. The arm's own outcome IS the A/B measurement;
+    attempts are only a fallback for dirs without a top-level report.
+    """
     from backend.services.runs.report_resolution import resolve_best_report
 
     out: list[tuple[Path, dict]] = []
     for run_dir in sorted(runs_root.iterdir()):
         if not run_dir.is_dir() or run_dir.name.startswith(("_", ".")):
             continue
-        try:
-            resolved = resolve_best_report(run_dir)
-        except Exception:  # noqa: BLE001 — one bad dir never kills the report
+        report: dict | None = None
+        top = run_dir / "final_report.json"
+        if top.is_file():
+            try:
+                loaded = json.loads(top.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and loaded:
+                    report = loaded
+            except (json.JSONDecodeError, OSError):
+                report = None
+        if report is None:
+            try:
+                resolved = resolve_best_report(run_dir)
+            except Exception:  # noqa: BLE001 — one bad dir never kills the report
+                continue
+            report = resolved.report
+        if report is None:
             continue
-        if resolved.report is None:
-            continue
-        out.append((run_dir, resolved.report))
+        out.append((run_dir, report))
     return out
 
 

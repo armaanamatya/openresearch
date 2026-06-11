@@ -126,3 +126,24 @@ def test_missing_arm_yields_incomplete_comparison(tmp_path: Path):
     assert cmp["deltas"] == {}
     md = ab_compare.render_markdown(cmp)
     assert "_missing_" in md
+
+
+def test_arm_own_report_preferred_over_seeded_ancestor(tmp_path: Path):
+    """Arm dirs carry the seeded ancestor as an attempt; the ancestor may
+    out-score the arm's own run AND lacks the experiment_arm stamp — pairing
+    must read the arm's own top-level report (allcnn-ab-20260611 regression)."""
+    _write_report(tmp_path, "prj_y_bes", arm="bes", score=0.7378, pair_id="ab-y")
+    # Higher-scoring UNSTAMPED ancestor inside the arm's attempts/.
+    anc = tmp_path / "prj_y_bes" / "attempts" / "20260610T235900-000000-best739"
+    anc.mkdir(parents=True)
+    (anc / "final_report.json").write_text(json.dumps({
+        "paper": {"id": "1412.6806"},
+        "verdict": "reproduced",
+        "rubric": {"overall_score": 0.7395, "meets_target": True, "areas": []},
+    }))
+    _write_report(tmp_path, "prj_y_ctl", arm="control", score=0.65, pair_id="ab-y")
+
+    cmp = ab_compare.build_comparison(tmp_path, pair_id="ab-y")
+    assert cmp["bes"]["project_id"] == "prj_y_bes"
+    assert cmp["bes"]["overall_score"] == pytest.approx(0.7378)  # the arm's own, not 0.7395
+    assert cmp["control"]["project_id"] == "prj_y_ctl"
