@@ -109,3 +109,19 @@ def test_system_prompt_no_longer_teaches_two_arg_form():
     assert "rlm_query(context_slice, query)" not in text
     assert "rlm_query(slice, specific_question)` over" not in text
     assert "NEVER call `rlm_query(slice, question)`" in text
+
+
+def test_run_py_imports_the_patch_with_noqa():
+    """Audit 2026-06-11: ruff --fix DELETED this side-effect import once
+    (it lacked the noqa marker), silently disabling BUG-NEW-033 in
+    production while these unit tests stayed green. Pin the wiring at the
+    source level, noqa included, so an autofix breaks CI instead."""
+    from pathlib import Path
+
+    import backend.agents.rlm.run as run_mod
+
+    src = Path(run_mod.__file__).read_text(encoding="utf-8")
+    assert (
+        "from backend.agents.rlm import rlm_query_misuse_patch "
+        "as _rlm_query_misuse_patch  # noqa: F401"
+    ) in src

@@ -492,6 +492,14 @@ export const ConstellationCanvas = memo(function ConstellationCanvas({
 
   const handlePointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (!dragState.current) return;
+    if (e.buttons === 0) {
+      // pointerup was missed (released outside the svg before capture was
+      // taken — possible since capture is deferred to the first real pan
+      // movement): clear the stale drag so a button-less hover can't
+      // ghost-pan the canvas (audit 2026-06-11).
+      dragState.current = null;
+      return;
+    }
     const dx = e.clientX - dragState.current.startX;
     const dy = e.clientY - dragState.current.startY;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
@@ -566,6 +574,8 @@ export const ConstellationCanvas = memo(function ConstellationCanvas({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onLostPointerCapture={handlePointerUp}
         style={{ cursor: dragState.current?.moved ? "grabbing" : "grab" }}
       >
         {/* Dot grid background */}

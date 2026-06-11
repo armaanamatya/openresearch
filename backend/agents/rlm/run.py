@@ -54,6 +54,7 @@ from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
     run_experiment_call_count,
+    run_experiment_partial_timeout_count,
     run_experiment_success_count,
     write_final_report_rlm,
 )
@@ -93,6 +94,7 @@ from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback
 # auto-recover from (slice, question) misuse of rlm_query/llm_query — the
 # library API is single-prompt; the misuse routed the question as a model name
 # and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
+from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch  # noqa: F401
 # BUG-NEW-043 (ported 2026-06-09): surface real traceback when rlm._subcall's
 # child completion raises; upstream catches with `str(e)` and we get only
 # "maximum recursion depth exceeded" with no file/line. Mech-understanding
@@ -927,7 +929,8 @@ def _finalize_fatal_primitive_abort(
     )
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
-        run_experiment_ok_calls=run_experiment_success_count(ctx)
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
 
     try:
@@ -1002,6 +1005,7 @@ def _hard_stop_with_report(
     status_error: str,
     exit_code: int,
     stop_kind: str = "hard_stop",
+    ctx: Any = None,
 ) -> None:
     """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
@@ -1015,7 +1019,17 @@ def _hard_stop_with_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
     try:
-        write_final_report_rlm(report, project_dir)
+        # Evidence-gate trust counts (audit 2026-06-11): without these the
+        # watchdog/SIGTERM path fell back to content-only trust — a forging
+        # root could wedge past the deadline and ship a forged 'partial'
+        # (the exact class the gate closes on the FINAL_VAR/fatal paths).
+        write_final_report_rlm(
+            report,
+            project_dir,
+            run_experiment_calls=run_experiment_call_count(ctx) if ctx is not None else None,
+            run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx) if ctx is not None else None,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
     try:
@@ -1043,6 +1057,7 @@ def _arm_watchdog(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    ctx: Any = None,
 ) -> threading.Timer | None:
     """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
 
@@ -1098,6 +1113,7 @@ def _arm_watchdog(
                 f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
+            ctx=ctx,
             stop_kind="wall_clock_watchdog",
         )
 
@@ -1140,6 +1156,7 @@ def _install_sigterm_finalizer(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    ctx: Any = None,
 ) -> Any:
     """On SIGTERM, ship a partial report before exiting instead of dying silently.
 
@@ -1174,6 +1191,7 @@ def _install_sigterm_finalizer(
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
             stop_kind="sigterm",
+            ctx=ctx,
         )
 
     try:
@@ -1859,12 +1877,14 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        ctx=ctx,
     )
     # Ship a partial report on a graceful SIGTERM kill too (not just on a hang).
     _prev_sigterm = _install_sigterm_finalizer(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        ctx=ctx,
     )
 
     # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
@@ -2236,7 +2256,8 @@ def _finalize(
 
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
-        run_experiment_ok_calls=run_experiment_success_count(ctx)
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine

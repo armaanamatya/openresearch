@@ -1152,6 +1152,7 @@ def _apply_evidence_gate(
     *,
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
+    run_experiment_partial_timeout_calls: int | None = None,
 ) -> RLMFinalReport:
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
@@ -1253,6 +1254,10 @@ def _apply_evidence_gate(
             )
         elif (
             (run_experiment_calls is None or run_experiment_calls >= 1)
+            and (
+                run_experiment_partial_timeout_calls is None
+                or run_experiment_partial_timeout_calls >= 1
+            )
             and _has_partial_timeout_evidence(project_dir)
         ):
             # Second tier (2026-06-09): the only evidence is a timeout-finalized
@@ -1336,6 +1341,29 @@ def run_experiment_call_count(ctx: RunContext) -> int | None:
         return None
 
 
+def run_experiment_partial_timeout_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls whose outcome stamp is
+    ``partial_timeout`` (the primitive RETURNED a harness-finalized timeout
+    partial). The gate's partial-cap tier keys on this — a REPL-forged
+    partial_timeout row in experiment_runs.jsonl cannot mint one.
+    ``None`` when no ledger is available (content-only fallback)."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_partial_timeout_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and getattr(e, "outcome", "") == "partial_timeout"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def run_experiment_success_count(ctx: RunContext) -> int | None:
     """In-process ``run_experiment`` calls whose per-row ``outcome`` stamp is
     success-compatible ("ok" or unknown ""). See
@@ -1365,6 +1393,7 @@ def write_final_report_rlm(
     *,
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
+    run_experiment_partial_timeout_calls: int | None = None,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -1396,6 +1425,7 @@ def write_final_report_rlm(
         project_dir,
         run_experiment_calls=run_experiment_calls,
         run_experiment_ok_calls=run_experiment_ok_calls,
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_calls,
     )
 
     project_dir.mkdir(parents=True, exist_ok=True)

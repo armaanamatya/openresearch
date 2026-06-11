@@ -5159,6 +5159,22 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                         f"try reducing azure_max_nodes or requesting a quota increase")
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
+    # All-timeout classification (audit 2026-06-11): when the time-budget cap
+    # (cap_overall_budget) floors the matrix budget below even one cell's
+    # runtime, EVERY cell times out — that is a wall-clock condition, not a
+    # code bug, so classify it exec_timeout (the finalize-on-timeout path
+    # scores any partial metrics) instead of cell_execution_error (which
+    # sends the root into a pointless repair loop against correct code).
+    n_timeout = sum(s == "timeout" for s in statuses)
+    if n_ok == 0 and n_oom == 0 and n_err > 0 and n_timeout == n_err:
+        _persist_metrics(metrics)
+        return {"success": False, "metrics": metrics, "logs": logs,
+                "failure_class": "exec_timeout",
+                "cause_kind": "exec_timeout",
+                "error": (f"all {n_timeout} run cell(s) hit the matrix time budget "
+                          f"before finishing — the run's remaining wall clock could "
+                          f"not fit the grid; not a code bug")}
+
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
     _div_note = (
         f" (of which {n_diverged} early-stopped as dead-training: "
@@ -5668,6 +5684,16 @@ def run_experiment(
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
     _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
 
+    # Hybrid route merge (2026-06-10; ordering restored 2026-06-11): both
+    # manifests ran in this one call — graft the stashed grid aggregate into
+    # the agent-written family metrics BEFORE finalize-on-timeout and the
+    # success-gated postflight guard chain, so every guard validates the
+    # MERGED result (the 7687d2e merge had displaced this to just before
+    # persist, which made the scope guard see only the family half and let
+    # the grid half bypass all guards).
+    if _hybrid_grid_result is not None:
+        result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
+
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
     # mid-VAE, every rubric leaf scored 0). Both the inner exec_timeout/exec_stalled return
@@ -5882,11 +5908,6 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — observability must never block the run
         logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
 
-    # Hybrid route merge (2026-06-10): both manifests ran in this one call —
-    # graft the stashed grid aggregate into the agent-written family metrics so
-    # the scorer sees one combined metrics.json and neither route's work is lost.
-    if _hybrid_grid_result is not None:
-        result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
 
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 

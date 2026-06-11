@@ -152,6 +152,7 @@ def test_fatal_finalize_with_timeout_partial_evidence_caps_at_partial(make_conte
             attempt_index=0,
             provider="openai",
             model="gpt-5",
+            outcome="partial_timeout",  # what wrap_primitive stamps for this return shape
         )
     )
 
@@ -292,3 +293,50 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
 
     # repair_iter_count must reflect the one attempt.
     assert policy._repair_iter_count == 1
+
+
+def test_forged_partial_timeout_row_does_not_reach_the_cap_tier(make_context, tmp_path):
+    """Audit 2026-06-11: one real-but-FAILED run_experiment call + a forged
+    partial_timeout row used to keep a self-reported 'partial' via the cap
+    tier (it keyed on the TOTAL call count). The tier now requires an
+    in-process partial_timeout outcome stamp, which a REPL forge cannot mint."""
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    ctx = make_context(tmp_path)
+    # Forged row: file content says harness-finalized partial...
+    (ctx.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({
+            "success": False,
+            "metrics": {"accuracy": 0.93},
+            "failure_class": "partial_timeout",
+            "partial_timeout": True,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    # ...but the only real call FAILED outright (stamped 'failed', not 'partial_timeout').
+    ctx.cost_ledger.append(CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc), agent_id="run_experiment",
+        attempt_index=0, provider="openai", model="gpt-5", outcome="failed",
+    ))
+
+    from backend.agents.rlm.report import (
+        RLMFinalReport,
+        run_experiment_call_count,
+        run_experiment_partial_timeout_count,
+        run_experiment_success_count,
+        write_final_report_rlm,
+    )
+
+    report = RLMFinalReport(verdict="partial", reproduction_summary="self-reported")
+    json_path, _ = write_final_report_rlm(
+        report, ctx.project_dir,
+        run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+    )
+
+    written = json.loads(json_path.read_text(encoding="utf-8"))
+    assert written["verdict"] == "failed"
+    assert "evidence_cap" not in written["reproduction_summary"]

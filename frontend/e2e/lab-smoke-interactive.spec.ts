@@ -6,16 +6,14 @@ import { test, expect } from "@playwright/test";
 //   - /library status filter pills
 //
 // The library filter test needs two seeded fake-runs on disk so the
-// library table renders real rows. Seed them with:
+// library table renders real rows. Seed ALL e2e fixtures at once with:
 //
-//   scripts/seed-fake-run.sh prj_diffusion_smoke
-//   scripts/seed-fake-run.sh prj_completed_smoke
-//   sed -i '' 's/"status": "running"/"status": "completed"/' \
-//     runs/prj_completed_smoke/demo_status.json
+//   .venv/bin/python scripts/seed_fake_run.py
+//   (or the back-compat shim: scripts/seed-fake-run.sh — no args needed)
 //
-// Backend's live-pid check downgrades pid=1 "running" runs to "failed"
-// when the process isn't alive — that's expected and doesn't change
-// the library table's rendering for these specs.
+// The seeder writes prj_diffusion_smoke as "failed" and
+// prj_completed_smoke as "completed" with a final_report.json directly —
+// no manual status edits. The test skips cleanly when unseeded.
 
 // Use relative paths so playwright.config's `baseURL` (default
 // http://localhost:3001) resolves them. Going to 127.0.0.1 directly

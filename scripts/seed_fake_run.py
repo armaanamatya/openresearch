@@ -62,10 +62,15 @@ def _demo_status(run_dir: Path, *, status: str, title: str) -> None:
 def seed_reports_run(runs_root: Path) -> None:
     run_dir = runs_root / "seed_reports_test"
     _demo_status(run_dir, status="failed", title="Seeded worker-reports fixture")
-    # Fresh reports dir each seed so re-runs don't accumulate duplicates.
-    jsonl = run_dir / "reports" / "worker_reports.jsonl"
-    if jsonl.exists():
-        jsonl.unlink()
+    # Fresh reports each seed so re-runs don't accumulate duplicates.
+    # open_worker_report writes reports/worker_reports/<uuid>.json,
+    # reports/worker_reports.jsonl, AND a legacy run-root jsonl — reset all.
+    import shutil
+
+    reports_dir = run_dir / "reports"
+    if reports_dir.exists():
+        shutil.rmtree(reports_dir)
+    (run_dir / "worker_reports.jsonl").unlink(missing_ok=True)
 
     def _worker(agent_id: str, status: str, commands=None, **finalize_kw) -> None:
         report = build_extended_worker_report(
@@ -137,6 +142,11 @@ def seed_library_runs(runs_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs-root", type=Path, default=Path("runs"))
+    parser.add_argument(
+        "projects", nargs="*",
+        help="ignored (back-compat: historical invocations named projects; "
+             "all fixtures are always seeded)",
+    )
     args = parser.parse_args(argv)
     runs_root = args.runs_root.resolve()
     runs_root.mkdir(parents=True, exist_ok=True)

@@ -582,7 +582,17 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 coerced=coerced,
             )
             _emit_primitive_resource(ctx, primitive=name, boundary="end")
-            _ledger("failed" if failed else "ok")
+            # Three-way stamp (audit 2026-06-11): a harness-finalized timeout
+            # partial gets its own outcome so the gate's cap tier can demand
+            # in-process provenance (a REPL-forged partial_timeout row in
+            # experiment_runs.jsonl can no longer ride a real-but-failed call).
+            if failed and isinstance(result, dict) and (
+                result.get("partial_timeout") is True
+                or result.get("failure_class") == "partial_timeout"
+            ):
+                _ledger("partial_timeout")
+            else:
+                _ledger("failed" if failed else "ok")
             if failed:
                 logger.warning(
                     "primitive %s returned a failure: %s",

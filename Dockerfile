@@ -17,9 +17,16 @@
 # --------------------------------------------------------------------------- #
 # Stage 1 — Python dependency build                                            #
 # --------------------------------------------------------------------------- #
-# Digest-pinned (audit 2026-06-10): a moving :3.12-slim tag silently
-# changes the build between runs; bump deliberately by updating the digest.
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-deps
+# Digest-pinned (audit 2026-06-10; bases corrected 2026-06-11): a moving
+# :3.12-slim tag silently changes the build between runs — the first digest
+# grab proved it by quietly landing on Debian TRIXIE while node stayed on
+# bookworm, breaking the same-base invariant the cross-stage node copy
+# depends on. Both stages now pin EXPLICITLY-bookworm MULTI-ARCH INDEX
+# digests (docker buildx imagetools inspect — never `docker images
+# --digests`, which can return a single-platform digest that breaks the
+# other arch). Node 22 = active LTS, matches CI's node-version and the
+# engines range. Bump deliberately, both stages together.
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS python-deps
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -49,7 +56,7 @@ RUN pip install --upgrade pip wheel \
 # --------------------------------------------------------------------------- #
 # Stage 2 — Frontend build                                                     #
 # --------------------------------------------------------------------------- #
-FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS frontend
+FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752 AS frontend
 
 WORKDIR /frontend
 
@@ -70,7 +77,7 @@ RUN rm -rf .next/dev .next/cache \
 # --------------------------------------------------------------------------- #
 # Stage 3 — Runtime image                                                      #
 # --------------------------------------------------------------------------- #
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS runtime
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -95,7 +102,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
-# Node comes from the frontend builder stage (same Debian bookworm base), so
+# Node comes from the frontend builder stage (same Debian bookworm base —
+# pinned explicitly; see the digest note on stage 1), so
 # the runtime serves with EXACTLY the Node that built the app. This replaces
 # the old `curl -fsSL https://deb.nodesource.com/setup_20.x | bash -` — an
 # unpinned remote script piped to root at build time, which could also drift

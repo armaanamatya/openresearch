@@ -31,7 +31,17 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
+
+# POSIX flock — mirrors backend/services/runs/archive.py: the retention
+# delete must not race the attempt archiver / a warm retry reusing the dir.
+try:  # pragma: no cover - platform-dependent import
+    import fcntl as _fcntl
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover
+    _fcntl = None  # type: ignore[assignment]
+    _HAS_FCNTL = False
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +105,61 @@ def prune(
             continue
         selected.append(run_dir)
         if delete:
-            shutil.rmtree(run_dir)
-            log(f"[prune_runs] DELETED {run_dir.name}")
+            if _guarded_delete(run_dir, cutoff, log):
+                log(f"[prune_runs] DELETED {run_dir.name}")
+            else:
+                selected.pop()
         else:
             log(f"[prune_runs] would delete {run_dir.name}  (re-run with --delete)")
     return selected
+
+
+def _guarded_delete(run_dir: Path, cutoff: float, log) -> bool:
+    """Delete ``run_dir`` safely against a concurrent warm retry (TOCTOU).
+
+    Takes a non-blocking flock on ``.archive.lock`` (the same lock the attempt
+    archiver uses), RE-CHECKS terminal-status + age under the lock, then
+    atomically renames the dir aside before rmtree — a retry that races the
+    delete sees either the intact dir or no dir, never a half-deleted one.
+    Any failure → keep the dir (deleting is the unsafe direction).
+    """
+    lock_handle = None
+    try:
+        if _HAS_FCNTL:
+            try:
+                lock_handle = (run_dir / ".archive.lock").open("a")
+                _fcntl.flock(lock_handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            except OSError:
+                log(f"[prune_runs] keep   {run_dir.name}  (archive/retry lock held)")
+                return False
+        # Re-check under the lock: a warm retry's first writes flip these.
+        # Artifact mtimes only — creating .archive.lock just bumped the DIR
+        # mtime, so _last_activity_s would always read "fresh" here.
+        status = _status_of(run_dir)
+        if status not in _TERMINAL:
+            log(f"[prune_runs] keep   {run_dir.name}  (state changed under lock)")
+            return False
+        newest = 0.0
+        for name in ("demo_status.json", "final_report.json", "dashboard_events.jsonl"):
+            f = run_dir / name
+            if f.exists():
+                newest = max(newest, f.stat().st_mtime)
+        if newest > cutoff:
+            log(f"[prune_runs] keep   {run_dir.name}  (state changed under lock)")
+            return False
+        tombstone = run_dir.parent / f".pruning-{run_dir.name}-{uuid.uuid4().hex[:6]}"
+        os.rename(run_dir, tombstone)
+        shutil.rmtree(tombstone)
+        return True
+    except OSError:
+        logger.warning("retention: guarded delete failed for %s — keeping", run_dir, exc_info=True)
+        return False
+    finally:
+        if lock_handle is not None:
+            try:
+                lock_handle.close()
+            except OSError:
+                pass
 
 
 def retention_days_from_env() -> float | None:

@@ -198,6 +198,17 @@ class RunCostLedger:
             and (entry.outcome or "") in ("", "ok")
         )
 
+    def session_partial_timeout_count(self, agent_id: str) -> int:
+        """In-process entries stamped ``partial_timeout`` by the orchestrator
+        (the primitive RETURNED a harness-finalized timeout partial). The gate's
+        partial-cap tier requires >=1 of these — file content alone (forgeable
+        via the REPL's open()) no longer reaches that tier."""
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id and entry.outcome == "partial_timeout"
+        )
+
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:
         raw: dict[ProviderName, dict[str, Any]] = {}
         for entry in self.entries:

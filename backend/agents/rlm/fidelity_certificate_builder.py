@@ -224,12 +224,19 @@ def _run_tests(code_dir: Path, *, timeout_s: int, extra_env: dict[str, str] | No
         "OPENRESEARCH_SMOKE_STEPS": "1",
         "CUDA_LAUNCH_BLOCKING": "1",
     })
+    # This is a PRODUCTION pytest run inside runs/<id>/code — but runs/ lives
+    # inside the repo, so pytest's ini discovery walks up to the repo-root
+    # pyproject and would apply the SUITE's addopts (pytest-socket blocking,
+    # plugin flags the run venv may not have) to the paper's own tests
+    # (audit 2026-06-11). Neutralize both channels: the ini addopts via
+    # `-o addopts=` and the env channel via PYTEST_ADDOPTS.
+    env.pop("PYTEST_ADDOPTS", None)
     if extra_env:
         env.update(extra_env)
 
     try:
         result = subprocess.run(
-            [python, "-m", "pytest", _TEST_SCRIPT, "-x", "--tb=short", "-q"],
+            [python, "-m", "pytest", _TEST_SCRIPT, "-x", "--tb=short", "-q", "-o", "addopts="],
             cwd=str(code_dir),
             env=env,
             capture_output=True,

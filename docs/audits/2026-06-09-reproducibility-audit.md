@@ -519,3 +519,55 @@ the flag ever defaults on.
   overwrote tracked design PNGs (the worktree churn seen all audit) —
   now repo-relative, untracked output by default, `UPDATE_DESIGN_SHOTS=1`
   to refresh the tracked shots deliberately.
+
+---
+
+## Addendum — Round 6 (2026-06-11): adversarial review of rounds 4–5
+
+Six-group adversarial review (find → independently verify) over every commit
+since `2fc80da` — my own rounds 4–5 work AND the parallel track's incoming
+commits, none previously reviewed. **17 confirmed findings, all fixed**:
+
+**High:**
+1. **Watchdog/SIGTERM hard-stop bypassed the entire forge apparatus** — the
+   one report writer that passed no ledger counts, on a root-forcible path
+   (forge a success row + a rubric_score event, wedge past the deadline →
+   forged 'partial' + `.preserved` + leaderboard rank). `ctx` now threads
+   through `_arm_watchdog`/`_install_sigterm_finalizer` into the gate;
+   forge + safety-direction regression tests added.
+2. **BUG-NEW-033 was silently disabled in production**: ruff `--fix` had
+   deleted the `rlm_query_misuse_patch` import (added without `noqa` — the
+   same autofix class as the k8s re-exports, missed in my own commit while
+   its unit tests stayed green). Restored with `noqa`; a source-level guard
+   test now pins the import so autofix breaks CI instead.
+
+**Medium:** RDR mode never outcome-stamped its ledger rows (even RAISED calls
+counted success-compatible — the forge closure was vacuous in `--mode rdr`;
+now stamped with the wrapper's exact classification). The partial-timeout cap
+tier admitted a forged `partial_timeout` row riding one real failed call —
+the tier now requires an in-process `partial_timeout` outcome stamp
+(three-way wrapper stamp + new counter threaded through all four writers).
+The repo's pytest-socket addopts leaked into the PRODUCTION
+fidelity-certificate pytest runs inside `runs/<id>/code` (rootdir discovery
+walks up to the repo pyproject) — neutralized with `-o addopts=` +
+`PYTEST_ADDOPTS` scrub. The 7687d2e merge had displaced the hybrid-route
+merge to AFTER the postflight guard chain (scope guard misfired on
+grid-covered models; grid metrics bypassed all success-gated guards) —
+ordering restored. The deferred pointer capture could strand `dragState` on
+a missed pointerup (ghost-pan on hover) — `buttons===0` guard +
+`onPointerCancel`/`onLostPointerCapture`.
+
+**Low:** retention TOCTOU closed (flock + under-lock re-check + atomic
+rename-aside; the re-check deliberately ignores the dir mtime its own lock
+file bumps); duplicated 80-line block in `claude_oauth_client.py` removed;
+my digest pins had silently moved the runtime to Debian TRIXIE while node
+stayed bookworm 20 (EOL) — both stages now explicitly-bookworm MULTI-ARCH
+INDEX digests on Node 22, single-sourced with CI via `frontend/.nvmrc`;
+seeder re-runs no longer duplicate worker reports; the back-compat shim
+accepts the historically documented invocation; spec headers document the
+real seeder; all-timeout grids classify as `exec_timeout` (wall-clock, score
+the partials) instead of `cell_execution_error` (repair loop);
+`REPROLAB_AZURE_*` comment spellings corrected.
+
+Verified: backend **4794/0**, ruff + uv-lock green, image rebuilt
+(Node 22.22.3 / Debian 12 / uid 10001), Playwright re-run below.
