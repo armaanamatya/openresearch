@@ -301,6 +301,11 @@ class TestPrimitiveLlmModelPin:
     def test_pin_does_not_touch_openai_branch(self, monkeypatch):
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
+        # Keyless-runner hermeticity: constructing OpenAILlmClient requires a
+        # key; without planting one this passes only when a sibling test's env
+        # leaks into the same xdist worker (failed on the PR-context CI runner
+        # while the push run went green — same sha, different distribution).
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key-never-used")
         monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
         root = _make_root_model(
             "openai",
