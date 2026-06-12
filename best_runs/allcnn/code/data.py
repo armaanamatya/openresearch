@@ -154,20 +154,28 @@ class CIFARDataset(Dataset):
     CIFAR-10 or CIFAR-100 dataset with:
     - Optional ZCA whitening (Goodfellow et al. 2013 preprocessing)
     - Optional augmentation (hflip + random translation ±5px)
+    - Optional translate_only mode (random translation only, no h-flip)
     - Returns tensors suitable for AllCNNModel
+
+    translate_only=True is used when h-flips have been materialized offline
+    in raw pixel space before ZCA (Section 3.2 augmentation contract):
+      - Offline (raw pixel space):  add all h-flipped copies → 2N samples
+      - Online (whitened space):    random ±5px translation per step
     """
 
     def __init__(
         self,
-        data: np.ndarray,         # (N, C, H, W) float32, [0,1] or ZCA-whitened
-        targets: np.ndarray,      # (N,) int
-        augment: bool = False,    # apply hflip + random ±5px translation
+        data: np.ndarray,               # (N, C, H, W) float32, [0,1] or ZCA-whitened
+        targets: np.ndarray,            # (N,) int
+        augment: bool = False,          # apply hflip + random ±5px translation
+        translate_only: bool = False,   # apply ±5px translation only (h-flip already offline)
         device: str = 'cpu',
     ):
         # Keep on CPU as numpy; convert per-batch to avoid GPU memory overhead
         self.data = data.astype(np.float32)
         self.targets = targets.astype(np.int64)
         self.augment = augment
+        self.translate_only = translate_only
 
     def __len__(self):
         return len(self.data)
@@ -178,6 +186,8 @@ class CIFARDataset(Dataset):
 
         if self.augment:
             img = _augment(img)
+        elif self.translate_only:
+            img = _augment_translate_only(img)
 
         return torch.from_numpy(img), int(label)
 
@@ -200,6 +210,30 @@ def _augment(img: np.ndarray) -> np.ndarray:
     # Random translation (pad then crop)
     padded = np.pad(img, ((0, 0), (pad, pad), (pad, pad)), mode='reflect')
     # Random offsets in [0, 2*pad]
+    top = np.random.randint(0, 2 * pad + 1)
+    left = np.random.randint(0, 2 * pad + 1)
+    img = padded[:, top:top + H, left:left + W]
+
+    return img.astype(np.float32)
+
+
+def _augment_translate_only(img: np.ndarray) -> np.ndarray:
+    """
+    Online translation-only augmentation (no horizontal flip).
+
+    Used when h-flips have already been materialized offline in raw pixel
+    space (before ZCA whitening). Applying flips again in whitened space
+    would corrupt the whitened statistics, so only translations are applied
+    online here.
+
+    Translation: random ±5px in each dimension (same as _augment).
+    img: (C, H, W) numpy float32
+    """
+    C, H, W = img.shape
+    pad = 5
+
+    # Random translation (pad then crop) — NO horizontal flip
+    padded = np.pad(img, ((0, 0), (pad, pad), (pad, pad)), mode='reflect')
     top = np.random.randint(0, 2 * pad + 1)
     left = np.random.randint(0, 2 * pad + 1)
     img = padded[:, top:top + H, left:left + W]
@@ -260,31 +294,84 @@ def load_cifar(
     print(f"[Data] {dataset}: train={len(train_data)}, test={len(test_data)}")
 
     # ZCA preprocessing
+    # FIX (A-AUG): Augmentation ordering — h-flips MUST be materialized in raw
+    # pixel space BEFORE ZCA whitening (Section 3.2).  Applying h-flip after ZCA
+    # gives flip(W·x) ≠ W·flip(x) and corrupts whitening statistics, which caused
+    # the augmented run to score 23 % error vs the expected ~9 % error.
+    # Correct pipeline:
+    #   1. Materialize h-flipped copies offline in raw [0,1] pixel space → 2N samples
+    #   2. Fit ZCA on original (non-augmented) N training samples only
+    #   3. Apply ZCA to 2N augmented train samples + test samples
+    #   4. Apply online ±5px translations (translate_only mode) during training
     zca = None
     if use_zca:
         if zca_cache_dir is None:
             zca_cache_dir = os.path.join(data_root, 'zca_cache')
         zca = ZCAPreprocessor(zca_cache_dir)
+
+        if augment_train:
+            # Step 1: Materialize h-flipped copies in RAW pixel space
+            # img[:, :, :, ::-1] flips left-right (W axis) in (N, C, H, W) layout
+            print(f"[Data] Materializing offline h-flips in raw pixel space "
+                  f"(N={len(train_data)} → 2N={2*len(train_data)})...")
+            train_data_aug = np.concatenate(
+                [train_data, train_data[:, :, :, ::-1].copy()], axis=0
+            )  # (2N, C, H, W)
+            train_targets_aug = np.concatenate(
+                [train_targets, train_targets], axis=0
+            )  # (2N,)
+        else:
+            train_data_aug = train_data
+            train_targets_aug = train_targets
+
+        # Step 2: Fit ZCA on ORIGINAL (non-augmented) N training samples
         zca.fit_or_load(train_data, dataset)
-        print(f"[Data] Applying ZCA whitening...")
-        train_data = zca.transform(train_data)
-        test_data = zca.transform(test_data)
-        print(f"[Data] ZCA done. train range: [{train_data.min():.2f}, {train_data.max():.2f}]")
+
+        # Step 3: Apply ZCA to augmented train + test
+        print(f"[Data] Applying ZCA whitening to train ({len(train_data_aug)} samples) "
+              f"and test ({len(test_data)} samples)...")
+        train_data_w = zca.transform(train_data_aug)
+        test_data_w = zca.transform(test_data)
+        print(f"[Data] ZCA done. train range: [{train_data_w.min():.2f}, {train_data_w.max():.2f}]")
+
+        # Step 4: online translations only (h-flips already baked in offline)
+        train_dataset = CIFARDataset(
+            train_data_w, train_targets_aug,
+            augment=False,
+            translate_only=augment_train,  # ±5px random crop, no h-flip
+        )
+        test_dataset = CIFARDataset(test_data_w, test_targets, augment=False)
     else:
-        # Standard normalization (CIFAR-10 channel stats)
-        # Per-channel mean/std from the canonical recipe
+        # Standard normalization (CIFAR-10/100 channel stats)
         if dataset == 'cifar10':
             mean = np.array([0.4914, 0.4822, 0.4465], dtype=np.float32).reshape(1, 3, 1, 1)
             std = np.array([0.2470, 0.2435, 0.2616], dtype=np.float32).reshape(1, 3, 1, 1)
         else:
             mean = np.array([0.5071, 0.4867, 0.4408], dtype=np.float32).reshape(1, 3, 1, 1)
             std = np.array([0.2675, 0.2565, 0.2761], dtype=np.float32).reshape(1, 3, 1, 1)
-        train_data = (train_data - mean) / std
+
+        if augment_train:
+            # Also materialize h-flips in raw pixel space for non-ZCA path
+            print(f"[Data] Materializing offline h-flips (no-ZCA path)...")
+            train_data_aug = np.concatenate(
+                [train_data, train_data[:, :, :, ::-1].copy()], axis=0
+            )
+            train_targets_aug = np.concatenate(
+                [train_targets, train_targets], axis=0
+            )
+        else:
+            train_data_aug = train_data
+            train_targets_aug = train_targets
+
+        train_data_aug = (train_data_aug - mean) / std
         test_data = (test_data - mean) / std
 
-    # Create Dataset objects
-    train_dataset = CIFARDataset(train_data, train_targets, augment=augment_train)
-    test_dataset = CIFARDataset(test_data, test_targets, augment=False)
+        train_dataset = CIFARDataset(
+            train_data_aug, train_targets_aug,
+            augment=False,
+            translate_only=augment_train,
+        )
+        test_dataset = CIFARDataset(test_data, test_targets, augment=False)
 
     train_loader = DataLoader(
         train_dataset,

@@ -828,27 +828,58 @@ function foldCandidateProposed(
   state: RlmRunState,
   ev: CandidateProposedEvent
 ): RlmRunState {
+  // Two wire shapes arrive under event="candidate_proposed":
+  //  - canonical RLM shape: { iteration, round, candidate: { id, title, … } }
+  //    (sse_bridge.build_candidate_proposed_event)
+  //  - flat BES shape: { candidate_id, cluster_id, score, failed } — NO nested
+  //    candidate object, no iteration/round (rdr/controller.py + bes_rlm.py).
+  // Normalize the flat shape into the canonical one; drop events carrying
+  // neither (a malformed live event must never throw out of the reducer).
+  const flat = ev as unknown as {
+    candidate_id?: unknown;
+    cluster_id?: unknown;
+    failed?: unknown;
+  };
+  let candidate = ev.candidate;
+  let flatFailed = false;
+  if (!candidate || typeof candidate.id !== "string") {
+    if (typeof flat.candidate_id !== "string" || flat.candidate_id === "") {
+      return state;
+    }
+    flatFailed = flat.failed === true;
+    candidate = {
+      id: flat.candidate_id,
+      title: flat.candidate_id,
+      category:
+        typeof flat.cluster_id === "string" ? flat.cluster_id : "candidate",
+      description: "",
+      reasoning: "",
+    };
+  }
+  const iteration = typeof ev.iteration === "number" ? ev.iteration : 0;
+  const round = typeof ev.round === "number" ? ev.round : 1;
+
   const parentId = ev.parent_id ?? frontierParent(state.tree);
 
   // A buffered outcome may have arrived first (§5.3 out-of-order).
-  const pending = state._pendingOutcomes[ev.candidate.id];
+  const pending = state._pendingOutcomes[candidate.id];
 
   const node: TreeNode = {
-    id: `candidate-${ev.candidate.id}`,
+    id: `candidate-${candidate.id}`,
     kind: "candidate",
     parentId,
-    title: ev.candidate.display_title ?? ev.candidate.title,
-    iterationRange: [ev.iteration, ev.iteration],
-    round: ev.round,
+    title: candidate.display_title ?? candidate.title,
+    iterationRange: [iteration, iteration],
+    round,
     candidate: {
-      id: ev.candidate.id,
-      title: ev.candidate.title,
-      displayTitle: ev.candidate.display_title,
-      category: ev.candidate.category,
-      description: ev.candidate.description,
-      reasoning: ev.candidate.reasoning,
+      id: candidate.id,
+      title: candidate.title,
+      displayTitle: candidate.display_title,
+      category: candidate.category,
+      description: candidate.description,
+      reasoning: candidate.reasoning,
     },
-    outcome: pending?.outcome,
+    outcome: pending?.outcome ?? (flatFailed ? "failed" : undefined),
     rubricDelta: pending?.rubricDelta ?? null,
   };
 
@@ -866,20 +897,20 @@ function foldCandidateProposed(
   // Use the buffered outcome event's iteration so the declined-group iterationRange
   // reflects when the decline happened, not when the proposal was received.
   if (pending?.outcome === "declined") {
-    tree = applyDeclinedGroup(tree, ev.round, parentId, pending.iteration);
+    tree = applyDeclinedGroup(tree, round, parentId, pending.iteration);
   }
 
   // Drain the pending entry once consumed.
   const _pendingOutcomes = { ...state._pendingOutcomes };
-  delete _pendingOutcomes[ev.candidate.id];
+  delete _pendingOutcomes[candidate.id];
 
   // §4.2: update the live attributableCandidate pointer. If a buffered
   // outcome was drained above, its outcome rides through on the pointer.
   const rubric = {
     ...state.rubric,
     attributableCandidate: {
-      id: ev.candidate.id,
-      title: ev.candidate.title,
+      id: candidate.id,
+      title: candidate.title,
       outcome: pending?.outcome ?? null,
     },
   };
@@ -891,6 +922,17 @@ function foldCandidateOutcome(
   state: RlmRunState,
   ev: CandidateOutcomeEvent
 ): RlmRunState {
+  // Defensive: drop a malformed event (no candidate_id) instead of crashing.
+  if (typeof ev.candidate_id !== "string" || ev.candidate_id === "") {
+    return state;
+  }
+  // The BES selector emits outcome="selected" for the pool winner
+  // (rdr/controller.py + bes_rlm.py) — render it as a promotion.
+  const outcome =
+    (ev.outcome as string) === "selected" ? "promoted" : ev.outcome;
+  const rubricDelta = ev.rubric_delta ?? null;
+  const iteration = typeof ev.iteration === "number" ? ev.iteration : 0;
+
   const nodeIdx = state.tree.findIndex(
     (n) => n.kind === "candidate" && n.candidate?.id === ev.candidate_id
   );
@@ -901,7 +943,7 @@ function foldCandidateOutcome(
       ...state,
       _pendingOutcomes: {
         ...state._pendingOutcomes,
-        [ev.candidate_id]: { outcome: ev.outcome, rubricDelta: ev.rubric_delta, iteration: ev.iteration },
+        [ev.candidate_id]: { outcome, rubricDelta, iteration },
       },
     };
   }
@@ -909,13 +951,13 @@ function foldCandidateOutcome(
   const node = state.tree[nodeIdx];
   let tree = state.tree.map((n, i) =>
     i === nodeIdx
-      ? { ...n, outcome: ev.outcome, rubricDelta: ev.rubric_delta }
+      ? { ...n, outcome, rubricDelta }
       : n
   );
 
   // A declined candidate also collapses into its round's declined-group node.
-  if (ev.outcome === "declined" && node.round != null) {
-    tree = applyDeclinedGroup(tree, node.round, node.parentId, ev.iteration);
+  if (outcome === "declined" && node.round != null) {
+    tree = applyDeclinedGroup(tree, node.round, node.parentId, iteration);
   }
 
   // §4.2: if this outcome matches the live attributable candidate, update its
@@ -926,7 +968,7 @@ function foldCandidateOutcome(
           ...state.rubric,
           attributableCandidate: {
             ...state.rubric.attributableCandidate,
-            outcome: ev.outcome,
+            outcome,
           },
         }
       : state.rubric;
@@ -1120,6 +1162,28 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
   }
 }
 
+/**
+ * Crash-proof fold — the hooks fold LIVE SSE events, so a malformed event must
+ * never throw out of the reducer and take down the whole lab page (2026-06-11:
+ * a flat BES candidate_proposed with no nested `candidate` object did exactly
+ * that). Logs the offending event and returns the prior state.
+ */
+export function safeFold(
+  state: RlmRunState,
+  event: RlmDashboardEvent
+): RlmRunState {
+  try {
+    return fold(state, event);
+  } catch (err) {
+    console.error(
+      "[use-rlm-run] dropped malformed event:",
+      (event as { event?: string } | null | undefined)?.event,
+      err
+    );
+    return state;
+  }
+}
+
 // ─── React hook ───────────────────────────────────────────────────────────────
 
 /**
@@ -1129,7 +1193,7 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
  * The caller (WorkflowView or replay harness) owns the event accumulation.
  */
 export function useRlmRun(events: RlmDashboardEvent[]): RlmRunState {
-  return useMemo(() => events.reduce(fold, INITIAL_RLM_STATE), [events]);
+  return useMemo(() => events.reduce(safeFold, INITIAL_RLM_STATE), [events]);
 }
 
 // ─── rAF-batched hook ─────────────────────────────────────────────────────────
@@ -1165,7 +1229,7 @@ export interface UseRlmRunBatchedResult {
 export function useRlmRunBatched(initialEvents?: RlmDashboardEvent[]): UseRlmRunBatchedResult {
   const [state, setState] = useState<RlmRunState>(() =>
     initialEvents && initialEvents.length > 0
-      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      ? initialEvents.reduce(safeFold, INITIAL_RLM_STATE)
       : INITIAL_RLM_STATE
   );
 
@@ -1178,7 +1242,7 @@ export function useRlmRunBatched(initialEvents?: RlmDashboardEvent[]): UseRlmRun
   // Initialized to match the lazy initializer above.
   const committedStateRef = useRef<RlmRunState>(
     initialEvents && initialEvents.length > 0
-      ? initialEvents.reduce(fold, INITIAL_RLM_STATE)
+      ? initialEvents.reduce(safeFold, INITIAL_RLM_STATE)
       : INITIAL_RLM_STATE
   );
 
@@ -1188,7 +1252,7 @@ export function useRlmRunBatched(initialEvents?: RlmDashboardEvent[]): UseRlmRun
     const events = pendingEventsRef.current;
     if (events.length === 0) return;
     pendingEventsRef.current = [];
-    const nextState = events.reduce(fold, committedStateRef.current);
+    const nextState = events.reduce(safeFold, committedStateRef.current);
     committedStateRef.current = nextState;
     setState(nextState);
   }, []);

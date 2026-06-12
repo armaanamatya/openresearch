@@ -1,0 +1,8 @@
+{
+  "cell_id": "b_allcnn_cifar10_noaug",
+  "status": "ok",
+  "fingerprint": "4dad156c8473eeb3803c1b3f41eea2a8e50d4ea491e448166d489e69054dd29b",
+  "metric": 0.8505,
+  "retries": 0,
+  "completed_at": "2026-06-11T21:02:05.836404+00:00"
+}

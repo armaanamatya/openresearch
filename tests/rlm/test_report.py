@@ -815,3 +815,117 @@ class TestExperimentArmStamp:
         assert stamp["ab_pair_id"] == "allcnn-ab-1"
         assert stamp["bes"]["winner"] == "rlm_impl#1"
         assert len(stamp["bes"]["pool"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Authoritative rubric override + verdict floor (2026-06-11 OmniZip stale-REPL
+# report-assembly bug: meets_target=False shipped beside overall 0.656 ≥ 0.6)
+# ---------------------------------------------------------------------------
+
+def _stale_partial_report(**overrides) -> RLMFinalReport:
+    base = dict(_BASE_REPORT_DICT)
+    base["verdict"] = "partial"
+    base["rubric"] = {
+        "overall_score": 0.656,
+        "target_score": 0.6,
+        "meets_target": False,  # stale root-supplied value
+        "areas": [],
+    }
+    base.update(overrides)
+    return RLMFinalReport(**base)
+
+
+def _write_eval(project_dir: Path, **extra) -> None:
+    payload = {
+        "overall_score": 0.65632,
+        "target_score": 0.6,
+        "meets_target": True,
+        "leaf_count": 24,
+        "graded": 22,
+    }
+    payload.update(extra)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "rubric_evaluation.json").write_text(json.dumps(payload))
+
+
+class TestAuthoritativeRubricOverride:
+    def test_eval_overrides_stale_scalars_and_floors_verdict(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _write_eval(project_dir)
+        report = _stale_partial_report()
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["rubric"]["overall_score"] == pytest.approx(0.65632)
+        assert data["rubric"]["meets_target"] is True
+        assert data["verdict"] == "reproduced"
+
+    def test_hard_stop_keeps_partial_cap(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _write_eval(project_dir)
+        report = _stale_partial_report(
+            stop_reason={"kind": "wall_clock_watchdog", "detail": "hard stop"},
+        )
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        # Scalars still corrected from the authoritative eval…
+        assert data["rubric"]["meets_target"] is True
+        # …but a hard-stopped run can never be floored up to "reproduced".
+        assert data["verdict"] == "partial"
+
+    def test_degraded_run_keeps_partial_cap(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _write_eval(project_dir)
+        report = _stale_partial_report(degraded=True)
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["verdict"] == "partial"
+
+    def test_no_eval_file_leaves_report_untouched(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        report = _stale_partial_report()
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["rubric"]["meets_target"] is False
+        assert data["verdict"] == "partial"
+
+    def test_failed_verdict_is_never_floored(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _write_eval(project_dir)
+        report = _stale_partial_report()
+        report.verdict = "failed"
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["verdict"] == "failed"
+
+    def test_none_defaults_still_filled_regression(self, tmp_path):
+        # The original 2026-06-09 behavior: a hard-stopped run shipping the
+        # unscored None defaults gets them filled from the eval file.
+        project_dir = tmp_path / "proj"
+        _write_eval(project_dir)
+        base = dict(_BASE_REPORT_DICT)
+        base["verdict"] = "partial"
+        base["rubric"] = {
+            "overall_score": None,
+            "meets_target": None,
+            "target_score": None,
+            "degraded": None,
+            "areas": [],
+        }
+        report = RLMFinalReport(**base)
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+
+        assert data["rubric"]["overall_score"] == pytest.approx(0.65632)
+        assert data["rubric"]["target_score"] == 0.6
+        assert data["rubric"]["meets_target"] is True

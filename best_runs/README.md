@@ -12,7 +12,7 @@ End-to-end reproductions from the OpenResearch agent — three clean single runs
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
-| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.739 | 2 | 11h08m |
+| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | **0.744** | 14 | 7h25m |
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.831 | 1 | 65m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
@@ -24,44 +24,18 @@ The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-
 
 ---
 
-## Adam — what the agent extracted, what it re-derived
+## All-CNN — 0.744, the first run to beat its own best-ancestor floor
 
-| Paper claim | Expected | Reproduced |
-|---|---|---|
-| CIFAR-10 CNN: Adam competitive with SGD+Nesterov, both ahead of AdaGrad | accuracy ordering | Adam 0.695, SGD+N 0.745, AdaGrad 0.632 |
-| Bias correction helps as β₂ → 1 (VAE): bias-corrected ≥ no-correction / RMSProp | bc best ELBO | bc 100.44 < no-bc 101.33 < RMSProp 101.36 (lower better) |
-| MNIST logreg: Adam ≥ SGD+Nesterov ≥ AdaGrad | acc / NLL ordering | acc 0.914 / 0.906 / 0.890; NLL 0.310 / 0.334 / 0.438 |
+Fourth attempt (2026-06-12, rubric **0.744**, `meets_target: true` against the
+floored 0.7395 target): launched with the full anti-regression rail set
+(seeded best attempt, champion evidence from every prior run including both
+A/B arms, pinned rubric) plus a BES candidate pool — which the **parity**
+candidate won this time (0.560 vs the fidelity-first angle's 0.512; with the
+champion evidence already in the prompt, the extra angle bought nothing).
+Same all-converged 14-cell grid as the 0.739 run, plus CIFAR-10+aug and
+CIFAR-100 cells, in 7h25m on 3 GPUs for $5.09. Per-cell results:
+[`allcnn/cells_results.json`](allcnn/cells_results.json).
 
-The objective and all five optimizers were re-derived from agent-authored `train.py` (implementation fidelity 0.985). The result axis (0.613) is the honest gap: at this single-iteration, reduced-epoch budget the headline "Adam wins" ordering does not hold cleanly — SGD+Nesterov edges Adam on CIFAR-10 accuracy, and AdaGrad reaches a lower CIFAR-10 NLL — so result-match lands below 1.0 despite a faithful build.
-
-## All-CNN — the predicted aggregation recovery, measured
-
-The previous showcase entry (0.625) diagnosed its own ceiling: "the per-cell
-results never aggregated into the canonical `metrics.json` … fixing that
-aggregation is the single highest-leverage recovery on this run." That fix
-landed harness-side on 2026-06-09 (`cell_matrix.normalize_cell_axes` — a ran
-cell can never silently vanish from the aggregate again), and this refreshed
-run (2026-06-10, rubric **0.696**) is the measured result: a 14-cell grid
-(models A/B/C × base/strided/convpool/all-conv, 350 epochs each on CIFAR-10,
-plus All-CNN-C on CIFAR-10+aug and CIFAR-100) with an in-run repair loop —
-the harness's dead-training divergence report drove a per-cell learning-rate
-probe whose second grid resurrected `c_base` and `c_strided` to paper level.
-
-| Measured (final grid, test error %) | base | strided | convpool | all-conv |
-|---|---:|---:|---:|---:|
-| Model A | **12.86** | 64.82 | 71.33 | 90.0 |
-| Model B | **10.77** | **13.27** | 90.0 | 90.0 |
-| Model C | **9.99** | **10.52** | 90.0 | 90.0 |
-
-Bold = paper-grade (the paper's CIFAR-10 table spans ~9–16% for these
-configurations; 90% = chance — an honest dead cell, recorded, not hidden).
-Per-cell results incl. each cell's probed learning rate:
-[`allcnn/cells_results.json`](allcnn/cells_results.json). The remaining
-headroom is named in the leaf grading (`allcnn/rubric_evaluation.json`): the
-all-conv/convpool families still dead-train at the probed rates, the
-Section-4 ReLU-masking figure wasn't produced this run, and the ImageNet
-experiment went undeclared as a scope gap (declared gaps are excluded from
-scoring; undeclared ones score 0).
 ## All-CNN — every cell converged
 
 Third evidence-driven attempt (2026-06-11, rubric **0.739**): the prior-attempt

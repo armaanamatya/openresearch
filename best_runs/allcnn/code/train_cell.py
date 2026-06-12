@@ -147,6 +147,30 @@ def update_toplevel_metrics(
                             agg["cifar10"]["final_test_accuracy"] = new_acc
                             agg["cifar10"]["final_train_loss"] = cell_metrics.get("final_train_loss")
 
+                    # ---- 4 REPRODUCTION CONTRACT METRIC PATHS (0-100 percentage scale) ----
+                    # cifar10_allcnn_c_test_accuracy + cifar10_allcnn_c_final_train_loss
+                    if letter == "C" and variant == "allcnn" and dataset == "cifar10" and not augment:
+                        new_acc = cell_metrics.get("test_accuracy", 0.0) or 0.0
+                        # contract expects 0-100 scale (e.g. 90.9, not 0.909)
+                        agg["cifar10_allcnn_c_test_accuracy"] = float(new_acc * 100.0)
+                        agg["cifar10_allcnn_c_final_train_loss"] = float(
+                            cell_metrics.get("final_train_loss") or float("nan")
+                        )
+
+                    # cifar10_maxpool_baseline_test_accuracy (model C base = MaxPool variant)
+                    if letter == "C" and variant == "base" and dataset == "cifar10" and not augment:
+                        new_acc = cell_metrics.get("test_accuracy", 0.0) or 0.0
+                        # contract expects 0-100 scale
+                        agg["cifar10_maxpool_baseline_test_accuracy"] = float(new_acc * 100.0)
+
+                    # cifar10_accuracy_gap_allcnn_minus_maxpool (compute when both available)
+                    _allcnn_acc = agg.get("cifar10_allcnn_c_test_accuracy")
+                    _base_acc = agg.get("cifar10_maxpool_baseline_test_accuracy")
+                    if _allcnn_acc is not None and _base_acc is not None:
+                        agg["cifar10_accuracy_gap_allcnn_minus_maxpool"] = float(
+                            _allcnn_acc - _base_acc
+                        )
+
                     # Also keep CIFAR-100 result under cifar100 key
                     if dataset == "cifar100":
                         if "cifar100" not in agg:

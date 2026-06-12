@@ -1,0 +1,8 @@
+{
+  "cell_id": "c_convpool_cifar10_noaug",
+  "status": "ok",
+  "fingerprint": "a8283ceca568770dbdfafcf67e9963c746ab4344821b5f7adc723c841a0ec595",
+  "metric": 0.8869,
+  "retries": 0,
+  "completed_at": "2026-06-11T21:02:05.836404+00:00"
+}
