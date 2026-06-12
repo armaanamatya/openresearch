@@ -48,22 +48,26 @@ class GuidedBackpropReLU(nn.Module):
 
     Forward: standard ReLU (zero negatives).
     Backward: additionally zero gradient where either:
-        (a) the forward input was negative, OR
+        (a) the forward activation output was zero (forward input was negative), OR
         (b) the incoming gradient is negative.
 
     This is the 'guided backpropagation' rule from:
       Springenberg et al. 2014, Sec. 4 / Zeiler & Fergus 2013 / Simonyan 2013.
+
+    Backward rule: guided_grad = grad * (grad>0).float() * act_mask
+    where act_mask = (output > 0).float()  — zeroes where forward activation was 0.
     """
 
     def __init__(self, inplace: bool = True):
         super().__init__()
         self.inplace = inplace
-        self._input_tensor: Optional[torch.Tensor] = None
+        self._output: Optional[torch.Tensor] = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Save input for backward hook
-        self._input_tensor = x.clone().detach()
-        return torch.relu(x)
+        # Compute ReLU output and save it for the backward hook
+        output = torch.relu(x)
+        self._output = output.detach()  # save activation output
+        return output
 
     def backward_hook(
         self,
@@ -71,17 +75,22 @@ class GuidedBackpropReLU(nn.Module):
         grad_input: tuple,
         grad_output: tuple,
     ) -> tuple:
-        """Custom backward hook implementing guided backpropagation."""
+        """Custom backward hook implementing guided backpropagation.
+
+        Guided backprop rule (Section 4):
+            act_mask = (output > 0).float()   — zero where forward activation was 0
+            guided_grad = grad * (grad>0).float() * act_mask
+        Zeroing where either the top (incoming) gradient or the bottom (forward)
+        activation is negative combines the 'deconvnet' and 'saliency' masks.
+        """
         grad = grad_output[0]  # gradient flowing back from above
 
-        # Mask 1: standard ReLU — zero where forward input was negative
-        fwd_mask = (self._input_tensor > 0).float()
+        # act_mask: zero where forward activation output was non-positive
+        output = self._output
+        act_mask = (output > 0).float()
 
-        # Mask 2: guided — zero where incoming gradient is negative
-        guided_mask = (grad > 0).float()
-
-        # Combined: zero unless BOTH forward input > 0 AND incoming grad > 0
-        guided_grad = grad * fwd_mask * guided_mask
+        # guided backpropagation: propagate only where BOTH grad>0 AND activation>0
+        guided_grad = grad * (grad > 0).float() * act_mask
 
         return (guided_grad,)
 

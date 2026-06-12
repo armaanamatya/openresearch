@@ -4,7 +4,7 @@ End-to-end reproductions from the OpenResearch agent — clean single runs (All-
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
-| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | 0.739 | 2 | 11h08m |
+| [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | **0.744** | 14 | 7h25m |
 | Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
@@ -15,6 +15,18 @@ Each subdirectory carries the final report (`final_report.json` + `.md`), the au
 The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-back attempts from 2026-05-31→06-01 — three infrastructure failures (GPU contention, a launch crash, a dead dataset endpoint) and one scored `partial` — each with its own run logs and token-usage logs. See [`sdar/README.md`](sdar/README.md) for the per-attempt breakdown and the campaign token table.
 
 ---
+
+## All-CNN — 0.744, the first run to beat its own best-ancestor floor
+
+Fourth attempt (2026-06-12, rubric **0.744**, `meets_target: true` against the
+floored 0.7395 target): launched with the full anti-regression rail set
+(seeded best attempt, champion evidence from every prior run including both
+A/B arms, pinned rubric) plus a BES candidate pool — which the **parity**
+candidate won this time (0.560 vs the fidelity-first angle's 0.512; with the
+champion evidence already in the prompt, the extra angle bought nothing).
+Same all-converged 14-cell grid as the 0.739 run, plus CIFAR-10+aug and
+CIFAR-100 cells, in 7h25m on 3 GPUs for $5.09. Per-cell results:
+[`allcnn/cells_results.json`](allcnn/cells_results.json).
 
 ## All-CNN — every cell converged
 

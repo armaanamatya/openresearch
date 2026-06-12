@@ -1,19 +1,23 @@
 {
   "by_model": {
+    "claude-haiku-4-5-20251001": {
+      "input_tokens": 10,
+      "output_tokens": 371
+    },
     "claude-oauth": {
-      "input_tokens": 6,
-      "output_tokens": 33068
+      "input_tokens": 7,
+      "output_tokens": 54397
     },
     "claude-sonnet-4-6": {
-      "input_tokens": 5006,
-      "output_tokens": 191233
+      "input_tokens": 186,
+      "output_tokens": 165956
     }
   },
   "by_primitive": {
     "baseline-implementation": {
       "calls": 3,
-      "input_tokens": 5000,
-      "output_tokens": 182066
+      "input_tokens": 144,
+      "output_tokens": 150211
     },
     "build_environment": {
       "calls": 1,
@@ -36,27 +40,27 @@
       "output_tokens": 0
     },
     "heartbeat": {
-      "calls": 17,
+      "calls": 9,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "implement_baseline": {
-      "calls": 3,
-      "input_tokens": 0,
-      "output_tokens": 0
+      "calls": 2,
+      "input_tokens": 1,
+      "output_tokens": 17064
     },
     "plan_reproduction": {
       "calls": 1,
       "input_tokens": 2,
-      "output_tokens": 5051
+      "output_tokens": 5546
     },
     "propose_improvements": {
       "calls": 1,
       "input_tokens": 2,
-      "output_tokens": 4886
+      "output_tokens": 6041
     },
     "record_candidate_outcome": {
-      "calls": 3,
+      "calls": 7,
       "input_tokens": 0,
       "output_tokens": 0
     },
@@ -65,39 +69,34 @@
       "input_tokens": 0,
       "output_tokens": 0
     },
-    "respond_to_user": {
-      "calls": 1,
-      "input_tokens": 0,
-      "output_tokens": 0
-    },
     "rlm_root": {
-      "calls": 1,
-      "input_tokens": 6,
-      "output_tokens": 9167
+      "calls": 2,
+      "input_tokens": 52,
+      "output_tokens": 16116
     },
     "run_experiment": {
-      "calls": 3,
+      "calls": 2,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "understand_section": {
-      "calls": 4,
+      "calls": 3,
       "input_tokens": 0,
       "output_tokens": 0
     },
     "verify_against_rubric": {
-      "calls": 3,
+      "calls": 2,
       "input_tokens": 2,
-      "output_tokens": 23131
+      "output_tokens": 25746
     }
   },
-  "computed_at_utc": "2026-06-11T00:31:53.884638+00:00",
+  "computed_at_utc": "2026-06-12T03:34:39.312021+00:00",
   "grand_total": {
-    "cache_creation_input_tokens": 1000836,
-    "cache_read_input_tokens": 15802613,
-    "calls": 45,
-    "input_tokens": 5012,
-    "output_tokens": 224301
+    "cache_creation_input_tokens": 2270865,
+    "cache_read_input_tokens": 14095238,
+    "calls": 37,
+    "input_tokens": 203,
+    "output_tokens": 220724
   },
   "schema_version": 1
 }

@@ -1,0 +1,65 @@
+{
+  "method": "guided_backpropagation",
+  "paper_section": "4",
+  "rule": "zero grad where input<0 OR incoming_grad<0",
+  "num_images": 8,
+  "target_class": null,
+  "saliency_stats": [
+    {
+      "image_idx": 0,
+      "true_label": 3,
+      "saliency_mean": 0.020007511600852013,
+      "saliency_max": 0.11041033267974854,
+      "saliency_min": 2.245593350380659e-06
+    },
+    {
+      "image_idx": 1,
+      "true_label": 8,
+      "saliency_mean": 0.02916068397462368,
+      "saliency_max": 0.15335753560066223,
+      "saliency_min": 1.310987863689661e-05
+    },
+    {
+      "image_idx": 2,
+      "true_label": 8,
+      "saliency_mean": 0.028213931247591972,
+      "saliency_max": 0.1531706154346466,
+      "saliency_min": 2.3470725864171982e-05
+    },
+    {
+      "image_idx": 3,
+      "true_label": 0,
+      "saliency_mean": 0.017210377380251884,
+      "saliency_max": 0.0847049355506897,
+      "saliency_min": 2.505723387002945e-06
+    },
+    {
+      "image_idx": 4,
+      "true_label": 6,
+      "saliency_mean": 0.015435316599905491,
+      "saliency_max": 0.09880127012729645,
+      "saliency_min": 9.746290743350983e-06
+    },
+    {
+      "image_idx": 5,
+      "true_label": 6,
+      "saliency_mean": 0.01986015774309635,
+      "saliency_max": 0.12678761780261993,
+      "saliency_min": 4.195491783320904e-06
+    },
+    {
+      "image_idx": 6,
+      "true_label": 1,
+      "saliency_mean": 0.023716360330581665,
+      "saliency_max": 0.16241022944450378,
+      "saliency_min": 8.782430086284876e-06
+    },
+    {
+      "image_idx": 7,
+      "true_label": 6,
+      "saliency_mean": 0.014364195056259632,
+      "saliency_max": 0.10995246469974518,
+      "saliency_min": 5.6461431086063385e-09
+    }
+  ]
+}
