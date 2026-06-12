@@ -2417,7 +2417,21 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("best_attempt guidance block skipped", exc_info=True)
 
+<<<<<<< HEAD
     # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
+=======
+    # 6.7 Leaf repair plan (2026-06-12, default ON): the deterministic triage
+    # of the last verify's weak leaves — cheapest repairs first, most of them
+    # render/record/aggregate steps that need NO retraining.
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm.leaf_triage import guidance_block as _lt_block
+            guidance += _lt_block(project_dir)
+        except Exception:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("leaf_triage guidance block skipped", exc_info=True)
+
+    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+>>>>>>> feat/azure-aks-gpu
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
